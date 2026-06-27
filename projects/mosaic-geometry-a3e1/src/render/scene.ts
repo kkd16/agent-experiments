@@ -1,4 +1,7 @@
-import type { Circle, Edge, Point, VoronoiCell } from '../geometry/types'
+import type { Circle, Edge, Point, Triangle, VoronoiCell } from '../geometry/types'
+import type { ClosestPair } from '../geometry/graphs'
+import type { FarthestPair, MinWidth } from '../geometry/hullMetrics'
+import type { EmptyCircle } from '../geometry/emptyCircle'
 import { cellFill, type Scheme } from './palette'
 
 // All canvas drawing for the studio happens here. The renderer works in
@@ -12,9 +15,27 @@ export interface LayerToggles {
   circumcircles: boolean
   hull: boolean
   gabriel: boolean
+  rng: boolean
+  nng: boolean
+  urquhart: boolean
+  alpha: boolean
+  convexLayers: boolean
   mst: boolean
   centroids: boolean
   points: boolean
+}
+
+export interface MeasureToggles {
+  closest: boolean
+  diameter: boolean
+  width: boolean
+  mec: boolean
+  lec: boolean
+}
+
+export interface AlphaRender {
+  boundary: Edge[]
+  triangles: Triangle[]
 }
 
 export interface Scene {
@@ -26,6 +47,16 @@ export interface Scene {
   centroids: Point[]
   mst: Edge[]
   gabriel: Edge[]
+  rng: Edge[]
+  nng: Edge[]
+  urquhart: Edge[]
+  layers: number[][]
+  alpha: AlphaRender | null
+  closest: ClosestPair | null
+  diameter: FarthestPair | null
+  width: MinWidth | null
+  mec: Circle | null
+  lec: EmptyCircle | null
   hover: number
   selected: number
 }
@@ -37,11 +68,13 @@ export interface DrawOptions {
   pad: number
   scheme: Scheme
   layers: LayerToggles
+  measure: MeasureToggles
   cellAlpha: number
 }
 
 interface Tx {
   toPx: (p: Point) => Point
+  scale: number // world→pixel scale for radii
 }
 
 function makeTransform(o: DrawOptions): Tx {
@@ -49,6 +82,7 @@ function makeTransform(o: DrawOptions): Tx {
   const h = o.height - o.pad * 2
   return {
     toPx: (p) => ({ x: o.pad + p.x * w, y: o.pad + p.y * h }),
+    scale: w,
   }
 }
 
@@ -65,15 +99,28 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   ctx.fillRect(0, 0, width, height)
 
   const tx = makeTransform(o)
-  const { layers } = o
+  const { layers, measure } = o
   const pts = scene.points
 
   if (layers.voronoiFill || layers.voronoiEdges) drawVoronoi(ctx, scene.cells, pts, tx, o)
+  if (layers.alpha && scene.alpha) drawAlphaShape(ctx, scene.alpha, pts, tx)
   if (layers.circumcircles) drawCircumcircles(ctx, scene.circumcircles, tx, o)
   if (layers.delaunay) drawEdges(ctx, scene.delaunayEdges, pts, tx, 'rgba(120,170,255,0.32)', 1)
-  if (layers.gabriel) drawEdges(ctx, scene.gabriel, pts, tx, 'rgba(120,255,214,0.6)', 1.6)
+  if (layers.urquhart) drawEdges(ctx, scene.urquhart, pts, tx, 'rgba(190,242,100,0.7)', 1.4)
+  if (layers.gabriel) drawEdges(ctx, scene.gabriel, pts, tx, 'rgba(120,255,214,0.6)', 1.4)
+  if (layers.rng) drawEdges(ctx, scene.rng, pts, tx, 'rgba(244,114,182,0.85)', 1.6)
+  if (layers.nng) drawEdges(ctx, scene.nng, pts, tx, 'rgba(96,205,255,0.95)', 1.6)
+  if (layers.convexLayers) drawConvexLayers(ctx, scene.layers, pts, tx)
   if (layers.hull) drawHull(ctx, scene.hull, pts, tx)
   if (layers.mst) drawEdges(ctx, scene.mst, pts, tx, 'rgba(255,209,102,0.95)', 2.2)
+
+  // Measurement highlights sit above the structural layers.
+  if (measure.lec && scene.lec) drawLargestEmptyCircle(ctx, scene.lec, tx)
+  if (measure.mec && scene.mec) drawEnclosingCircle(ctx, scene.mec, tx)
+  if (measure.width && scene.width) drawWidth(ctx, scene.width, tx)
+  if (measure.diameter && scene.diameter) drawDiameter(ctx, scene.diameter, tx)
+  if (measure.closest && scene.closest) drawClosestPair(ctx, scene.closest, pts, tx)
+
   if (layers.centroids) drawCentroids(ctx, scene.centroids, tx)
   if (layers.points) drawPoints(ctx, scene, tx)
 }
@@ -106,13 +153,48 @@ function drawVoronoi(
   }
 }
 
+function drawAlphaShape(ctx: CanvasRenderingContext2D, alpha: AlphaRender, pts: Point[], tx: Tx): void {
+  // Translucent fill over the retained triangles, then a bright outline.
+  ctx.fillStyle = 'rgba(124,246,192,0.10)'
+  for (const t of alpha.triangles) {
+    const a = tx.toPx(pts[t.a])
+    const b = tx.toPx(pts[t.b])
+    const c = tx.toPx(pts[t.c])
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.lineTo(c.x, c.y)
+    ctx.closePath()
+    ctx.fill()
+  }
+  drawEdges(ctx, alpha.boundary, pts, tx, 'rgba(124,246,192,0.95)', 2.4)
+}
+
+function drawConvexLayers(ctx: CanvasRenderingContext2D, layers: number[][], pts: Point[], tx: Tx): void {
+  ctx.lineWidth = 1.2
+  for (let li = 0; li < layers.length; li++) {
+    const layer = layers[li]
+    if (layer.length < 2) continue
+    // Fade outer→inner so the nesting reads at a glance.
+    const a = 0.85 - (li / Math.max(1, layers.length)) * 0.55
+    ctx.strokeStyle = `rgba(150,190,255,${a.toFixed(3)})`
+    ctx.beginPath()
+    for (let i = 0; i < layer.length; i++) {
+      const q = tx.toPx(pts[layer[i]])
+      if (i === 0) ctx.moveTo(q.x, q.y)
+      else ctx.lineTo(q.x, q.y)
+    }
+    if (layer.length >= 3) ctx.closePath()
+    ctx.stroke()
+  }
+}
+
 function drawCircumcircles(ctx: CanvasRenderingContext2D, circles: Circle[], tx: Tx, o: DrawOptions): void {
-  const scaleX = (o.width - o.pad * 2)
   ctx.lineWidth = 1
   ctx.strokeStyle = 'rgba(150,160,200,0.12)'
   for (const c of circles) {
     const center = tx.toPx({ x: c.x, y: c.y })
-    const r = c.r * scaleX
+    const r = c.r * tx.scale
     if (r > Math.max(o.width, o.height) * 1.5) continue // skip degenerate huge circles
     ctx.beginPath()
     ctx.arc(center.x, center.y, r, 0, Math.PI * 2)
@@ -157,6 +239,126 @@ function drawHull(ctx: CanvasRenderingContext2D, hull: number[], pts: Point[], t
   ctx.setLineDash([6, 5])
   ctx.stroke()
   ctx.setLineDash([])
+}
+
+// ── Measurement highlights ───────────────────────────────────────────────────
+
+function strokeCircle(ctx: CanvasRenderingContext2D, c: Circle, tx: Tx, color: string, lw: number): Point {
+  const center = tx.toPx({ x: c.x, y: c.y })
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, c.r * tx.scale, 0, Math.PI * 2)
+  ctx.strokeStyle = color
+  ctx.lineWidth = lw
+  ctx.stroke()
+  return center
+}
+
+function marker(ctx: CanvasRenderingContext2D, p: Point, color: string, r = 4): void {
+  ctx.beginPath()
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.fill()
+}
+
+function drawEnclosingCircle(ctx: CanvasRenderingContext2D, c: Circle, tx: Tx): void {
+  ctx.fillStyle = 'rgba(124,246,192,0.06)'
+  const center = tx.toPx({ x: c.x, y: c.y })
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, c.r * tx.scale, 0, Math.PI * 2)
+  ctx.fill()
+  strokeCircle(ctx, c, tx, 'rgba(124,246,192,0.9)', 2)
+  marker(ctx, center, 'rgba(124,246,192,0.95)', 3)
+}
+
+function drawLargestEmptyCircle(ctx: CanvasRenderingContext2D, lec: EmptyCircle, tx: Tx): void {
+  const c = lec.circle
+  ctx.fillStyle = 'rgba(255,180,90,0.08)'
+  const center = tx.toPx({ x: c.x, y: c.y })
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, c.r * tx.scale, 0, Math.PI * 2)
+  ctx.fill()
+  strokeCircle(ctx, c, tx, 'rgba(255,180,90,0.92)', 2)
+  // Radius spoke to one of the three defining sites.
+  const s = tx.toPx(lec.sites[0])
+  ctx.beginPath()
+  ctx.moveTo(center.x, center.y)
+  ctx.lineTo(s.x, s.y)
+  ctx.strokeStyle = 'rgba(255,180,90,0.6)'
+  ctx.lineWidth = 1.2
+  ctx.setLineDash([4, 4])
+  ctx.stroke()
+  ctx.setLineDash([])
+  marker(ctx, center, 'rgba(255,180,90,0.95)', 3)
+}
+
+function drawDiameter(ctx: CanvasRenderingContext2D, d: FarthestPair, tx: Tx): void {
+  const a = tx.toPx(d.p)
+  const b = tx.toPx(d.q)
+  ctx.beginPath()
+  ctx.moveTo(a.x, a.y)
+  ctx.lineTo(b.x, b.y)
+  ctx.strokeStyle = 'rgba(255,209,102,0.95)'
+  ctx.lineWidth = 2
+  ctx.setLineDash([8, 5])
+  ctx.stroke()
+  ctx.setLineDash([])
+  marker(ctx, a, '#ffd166', 4)
+  marker(ctx, b, '#ffd166', 4)
+}
+
+function drawWidth(ctx: CanvasRenderingContext2D, w: MinWidth, tx: Tx): void {
+  const e0 = tx.toPx(w.edge[0])
+  const e1 = tx.toPx(w.edge[1])
+  const sup = tx.toPx(w.support)
+  // Direction of the supporting edge, extended across the frame for the slab look.
+  const dx = e1.x - e0.x
+  const dy = e1.y - e0.y
+  const len = Math.hypot(dx, dy) || 1
+  const ux = (dx / len) * 4000
+  const uy = (dy / len) * 4000
+  const drawLine = (px: number, py: number) => {
+    ctx.beginPath()
+    ctx.moveTo(px - ux, py - uy)
+    ctx.lineTo(px + ux, py + uy)
+    ctx.stroke()
+  }
+  ctx.strokeStyle = 'rgba(120,200,255,0.85)'
+  ctx.lineWidth = 1.6
+  ctx.setLineDash([7, 5])
+  drawLine(e0.x, e0.y)
+  drawLine(sup.x, sup.y)
+  ctx.setLineDash([])
+  // Perpendicular span from the support point to the edge line.
+  const nx = -dy / len
+  const ny = dx / len
+  const t = (sup.x - e0.x) * nx + (sup.y - e0.y) * ny
+  const foot = { x: sup.x - nx * t, y: sup.y - ny * t }
+  ctx.beginPath()
+  ctx.moveTo(sup.x, sup.y)
+  ctx.lineTo(foot.x, foot.y)
+  ctx.strokeStyle = 'rgba(150,215,255,0.95)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+  marker(ctx, sup, 'rgba(150,215,255,0.95)', 3)
+}
+
+function drawClosestPair(ctx: CanvasRenderingContext2D, cp: ClosestPair, pts: Point[], tx: Tx): void {
+  const a = tx.toPx(pts[cp.a])
+  const b = tx.toPx(pts[cp.b])
+  ctx.beginPath()
+  ctx.moveTo(a.x, a.y)
+  ctx.lineTo(b.x, b.y)
+  ctx.strokeStyle = 'rgba(182,255,107,0.95)'
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  ctx.stroke()
+  for (const q of [a, b]) {
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, 6, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(182,255,107,0.95)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
 }
 
 function drawCentroids(ctx: CanvasRenderingContext2D, centroids: Point[], tx: Tx): void {

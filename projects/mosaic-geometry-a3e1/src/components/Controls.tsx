@@ -112,6 +112,29 @@ export function Button({
   )
 }
 
+export function TextArea({
+  value,
+  onChange,
+  placeholder,
+  rows = 4,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  rows?: number
+}) {
+  return (
+    <textarea
+      className="textarea"
+      value={value}
+      rows={rows}
+      spellCheck={false}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
+}
+
 export function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="stat">

@@ -26,12 +26,49 @@ export default function About() {
             in O(n log n).
           </li>
           <li>
-            <strong>Euclidean MST &amp; Gabriel graph</strong> — proximity graphs that live inside the
-            Delaunay edges, so they fall out almost for free once the triangulation exists.
+            <strong>Proximity-graph family</strong> — a tidy nesting that all lives inside the
+            Delaunay edges: the <em>nearest-neighbor graph</em> ⊆ <em>Euclidean MST</em> ⊆{' '}
+            <em>relative-neighborhood graph</em> ⊆ <em>Urquhart graph</em> ⊆ <em>Gabriel graph</em> ⊆
+            Delaunay. Toggle them together to watch each one thin the last.
+          </li>
+          <li>
+            <strong>Alpha shapes</strong> — a one-parameter "concave hull". Picture an eraser disk of
+            radius α rolling over the points; drop the Delaunay triangles it can swallow and the
+            boundary that's left hugs the cloud, opening up concavities and holes. Slide α from a
+            tight outline up to the full convex hull.
+          </li>
+          <li>
+            <strong>Convex layers</strong> — peel the hull, recurse on what's inside, repeat. The
+            nested rings ("onion peeling") underlie convex-hull depth in robust statistics.
           </li>
           <li>
             <strong>Lloyd relaxation</strong> — iteratively move each site to its cell's centroid to
             reach a centroidal Voronoi tessellation: the even, organic "soap-film" pattern.
+          </li>
+        </ul>
+
+        <h2>Measurements</h2>
+        <p>
+          The <strong>Measure</strong> panel overlays single, exact shapes computed from the same
+          backbone:
+        </p>
+        <ul>
+          <li>
+            <strong>Closest pair</strong> — always a Delaunay edge, so the shortest edge is the
+            answer; no O(n²) scan needed.
+          </li>
+          <li>
+            <strong>Diameter &amp; minimum width</strong> — the farthest two points and the thinnest
+            parallel-line slab, both swept off the hull by <em>rotating calipers</em> in O(h).
+          </li>
+          <li>
+            <strong>Smallest enclosing circle</strong> — Welzl's randomized algorithm, expected
+            linear time, pinned by two or three points. Step through it on the Algorithms tab.
+          </li>
+          <li>
+            <strong>Largest empty circle</strong> — the biggest site-free disk centred inside the
+            hull. Its centre is a Voronoi vertex, i.e. a Delaunay circumcentre, so it's just the
+            fattest circumcircle whose centre lands inside the hull.
           </li>
         </ul>
 
@@ -49,9 +86,21 @@ export default function About() {
         <p>
           The Delaunay mesh is the backbone: the triangulation gives the Voronoi topology, the
           minimum spanning tree is computed over Delaunay edges (a known superset of the EMST) with
-          Kruskal and a union-find, and the Gabriel graph is a simple filter on the same edges.
-          Point generation offers uniform, jittered-grid, and Bridson blue-noise (Poisson-disk)
-          distributions, all seeded for reproducibility.
+          Kruskal and a union-find, the proximity graphs and alpha shapes are filters on the same
+          edges or triangles, and the closest pair and largest empty circle read straight off them.
+          Only the cheap O(n)/O(h) measurements recompute every frame; the heavier graph layers are
+          built lazily, the moment you toggle them on. Point generation offers uniform,
+          jittered-grid, and Bridson blue-noise (Poisson-disk) distributions, all seeded for
+          reproducibility.
+        </p>
+
+        <h2>Share &amp; import</h2>
+        <p>
+          Every layout is portable. <strong>Copy link</strong> packs the points into a compact,
+          URL-safe token (each axis quantized to 12 bits, two per three bytes) so a link rebuilds the
+          exact scene; <strong>Copy coords</strong> exports plain text. Paste your own coordinates in
+          any delimiters — values outside the unit square are fit into the frame with their aspect
+          ratio preserved, so raw pixel or data coordinates just work.
         </p>
 
         <h2>Tips</h2>
@@ -59,13 +108,15 @@ export default function About() {
           <li>Click empty space to drop a point; drag to move it and watch every structure follow.</li>
           <li>Shift-click or right-click a point to remove it.</li>
           <li>Turn on Delaunay + Voronoi together to see the dual relationship.</li>
+          <li>Stack the proximity graphs (NNG → MST → RNG → Urquhart → Gabriel) to see each refine the last.</li>
+          <li>Enable the alpha shape and sweep its slider to morph a concave hull into the convex one.</li>
           <li>Generate blue noise, then hit <em>Animate</em> to relax it into a honeycomb.</li>
-          <li>Open the <strong>Algorithms</strong> tab to step through the hull and Delaunay builds.</li>
+          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Delaunay, and enclosing-circle builds.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite.
+          here is implemented from scratch and exercised by an in-repo test suite of 33 checks.
         </p>
       </article>
     </div>
