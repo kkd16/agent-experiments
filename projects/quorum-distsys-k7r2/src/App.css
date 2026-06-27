@@ -1109,3 +1109,9 @@ input[type='text'] {
   color: var(--warn);
   font-weight: 700;
 }
+
+/* ---- ABD linearizability history ---- */
+.abd-op-label {
+  font: 700 9px ui-monospace, monospace;
+  dominant-baseline: hanging;
+}

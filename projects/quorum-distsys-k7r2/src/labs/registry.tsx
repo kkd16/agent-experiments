@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
 import { EPaxosLab } from './EPaxosLab';
+import { AbdLab } from './AbdLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { ChordLab } from './ChordLab';
@@ -67,6 +68,15 @@ export const LABS: LabDef[] = [
     icon: '⬡',
     tag: 'byzantine consensus',
     Component: HotStuffLab,
+  },
+  {
+    id: 'abd',
+    title: 'ABD (registers, no consensus)',
+    blurb:
+      'Linearizable storage without consensus. The ABD algorithm (Attiya–Bar-Noy–Dolev, 1995) emulates an atomic read/write register over a crash-prone network using only majority quorums and two round trips — no leader, no log, no agreed order of commands. A write reads the latest tag from a majority then writes under a strictly newer one; a read finds the newest value in a majority then writes it back so it can never be un-read. A live Jepsen-style history chart and three invariants prove every run linearizable as you add concurrent writers, crash the writer mid-operation, and partition the cluster.',
+    icon: '▤',
+    tag: 'linearizable · no consensus',
+    Component: AbdLab,
   },
   {
     id: 'dynamo',
