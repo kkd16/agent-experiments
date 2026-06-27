@@ -21,6 +21,7 @@ export type Theme =
   | 'mateIn1'
   | 'mateIn2'
   | 'mateIn3'
+  | 'mateIn4'
   | 'backRank'
   | 'smothered'
   | 'sacrifice'
@@ -42,6 +43,7 @@ export const THEMES: ThemeInfo[] = [
   { key: 'mateIn1', label: 'Mate in 1', blurb: 'One move ends the game.' },
   { key: 'mateIn2', label: 'Mate in 2', blurb: 'A forced two-move checkmate.' },
   { key: 'mateIn3', label: 'Mate in 3', blurb: 'A deeper forced mate.' },
+  { key: 'mateIn4', label: 'Mate in 4', blurb: 'A long forced mate — calculate to the end.' },
   { key: 'backRank', label: 'Back rank', blurb: "The king is trapped on its first rank." },
   { key: 'smothered', label: 'Smothered', blurb: 'The king is hemmed in by its own men.' },
   { key: 'sacrifice', label: 'Sacrifice', blurb: 'Give up material to force the finish.' },
@@ -244,6 +246,21 @@ export const PUZZLES: Puzzle[] = [
     motif: '1.Na6+! drags the king into a forced mate in three.',
   },
 
+  // ---- Mate in 4 ----
+  {
+    id: 'm4-wac006',
+    title: 'Calculate to the end',
+    fen: 'r2rb1k1/pp1q1p1p/2n1p1p1/2bp4/5P2/PP1BPR1Q/1BPN2PP/R5K1 w - - 0 1',
+    kind: 'mate',
+    mateIn: 4,
+    line: ['h3h7', 'g8f8', 'b2f6', 'c5e3', 'g1f1', 'e3d2', 'h7g7'],
+    keys: ['h3h7'],
+    themes: ['mateIn4', 'sacrifice'],
+    rating: 2050,
+    motif: '1.Qxh7+! Kf8 2.Bf6! (the quiet move) Bxe3+ 3.Kf1 Bxd2 4.Qxg7# — a forced mate in four.',
+    source: 'Win at Chess #6',
+  },
+
   // ---- Win material (engine-verified single best move) ----
   {
     id: 'w-loose-queen',
@@ -308,6 +325,45 @@ export const PUZZLES: Puzzle[] = [
     rating: 1420,
     motif: 'Rg3 attacks the queen, which has no safe retreat.',
     source: 'Win at Chess #5',
+  },
+  {
+    id: 'w-black-rxb2',
+    title: 'The passed pawns roll',
+    fen: '8/7p/5k2/5p2/p1p2P2/Pr1pPK2/1P1R3P/8 b - - 0 1',
+    kind: 'win',
+    mateIn: 0,
+    line: ['b3b2'],
+    keys: ['b3b2'],
+    themes: ['material', 'endgame'],
+    rating: 1480,
+    motif: 'Rxb2! — after Rxb2 the connected passed pawns are unstoppable.',
+    source: 'Win at Chess #2',
+  },
+  {
+    id: 'w-black-qxf3',
+    title: 'Demolish the defence',
+    fen: '4k1r1/2p3r1/1pR1p3/3pP2p/3P2qP/P4N2/1PQ4P/5RK1 b - - 0 1',
+    kind: 'win',
+    mateIn: 0,
+    line: ['g4f3'],
+    keys: ['g4f3'],
+    themes: ['material', 'sacrifice'],
+    rating: 1620,
+    motif: 'Qxf3! rips open the king — 2.gxf3 Rxg1+ or 2.Rxf3 Rxg... wins.',
+    source: 'Win at Chess #11',
+  },
+  {
+    id: 'w-qxf8-fork',
+    title: 'Sacrifice into a fork',
+    fen: '5rk1/pp4p1/2n1p2p/2Npq3/2p5/6P1/P3P1BP/R4Q1K w - - 0 1',
+    kind: 'win',
+    mateIn: 0,
+    line: ['f1f8'],
+    keys: ['f1f8'],
+    themes: ['material', 'fork', 'sacrifice'],
+    rating: 1760,
+    motif: 'Qxf8+! Kxf8 2.Nxe6+ forks king and queen, winning the queen.',
+    source: 'Win at Chess #22',
   },
   {
     id: 'w-clear-promo',
