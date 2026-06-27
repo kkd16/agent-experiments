@@ -451,6 +451,66 @@ round trips, with no leader and no log. Built from scratch on the same kernel: t
       the equivalent sequential history is explicit.
 - [ ] **Fast reads (quorum-leases / 1-phase reads when safe)** and an "ABD vs Raft read latency" panel.
 
+### Snow / Avalanche lab (metastable consensus) — NEW
+The first **leaderless, quorum-free, *probabilistic*** consensus here — a deliberate counterpoint to
+every protocol above. Raft/Paxos/EPaxos/PBFT/HotStuff all reach agreement through **intersecting
+majority quorums**; ABD does atomic storage the same way; Dynamo gives up agreement for availability.
+The **Snow family** (Team Rocket, *Avalanche*, 2018 — the engine behind the Avalanche blockchain)
+agrees a *completely different way*: **repeated random subsampling**. Each node repeatedly asks a
+small random sample of `k` peers their current opinion, adopts a colour that clears an `α > k/2`
+threshold, and **finalises** once it has seen `β` such successes in a row. There is no quorum, no
+leader, no all-to-all chatter, no global view — yet a near-even split **tips** to network-wide
+agreement, fast and irreversibly. It tolerates a Byzantine minority and is the textbook example of a
+**metastable** system. Implemented for real on the existing kernel as `protocols/snow/*` + a `SnowLab`.
+
+The three nested protocols (each adds exactly one mechanism over the last), selectable in the lab:
+
+- [x] **Slush** (memoryless) — for a fixed number of rounds, sample `k`, adopt any colour ≥ `α`; an
+      uncoloured node adopts the first colour it is asked about (the bootstrap). Shows the raw tipping
+      dynamic but never *finalises* (no notion of irreversible decision).
+- [x] **Snowflake** (+ a confidence counter) — keep one counter `cnt`; a successful round for the
+      current colour increments it, a flip resets it to 1, a failed round resets it to 0; **decide**
+      when `cnt ≥ β`. Adds finality.
+- [x] **Snowball** (+ per-colour confidence `d[·]`) — also accumulate `d[colour]` across all rounds and
+      let the **preference** track `argmax d`, so transient noise can't flip a well-supported colour.
+      The robust, Byzantine-resistant variant Avalanche actually ships.
+
+Planned build steps (each its own self-test before it lands):
+- [x] **`protocols/snow/types.ts`** — `Colour` (binary R/B, extensible to 3), per-node `SnowState`
+      (`pref`, `last`, `cnt`, `d`, `decided`, `round`, the pending-query record, a capped colour-change
+      **trail** for the over-time chart, and `byzantine`/`adversaryColour`), the `Variant` enum, config
+      (`k`, `alpha`, `beta`, `slushRounds`, `roundDelay`, network), message payloads, client commands.
+- [x] **`protocols/snow/snow.ts`** — the protocol on the kernel: a per-node round loop (sample `k`
+      peers via `rng.sample`, send `Query` carrying the querier's colour, collect `Resp`s, process the
+      round under the selected variant's update rule, re-arm the next round until decided). A
+      **round-timeout** timer so a round with lost responses still completes (liveness after a heal).
+      The Slush bootstrap (uncoloured responder adopts the query colour). Byzantine responders always
+      answer the adversary colour. Decided nodes stop querying but keep answering (so the rest finish).
+- [x] **`protocols/snow/invariants.ts`** — the honest *probabilistic*-safety panel: **Agreement**
+      (no two finalised honest nodes hold different colours — the property that holds w.h.p. and the
+      thing that would go red if sampling ever betrayed us), **Finality is stable** (a finalised node's
+      preference equals its decision — it has stopped moving), **Validity** (every finalised colour is
+      one that was actually seeded — nothing appears from nowhere). Plus a **convergence gauge**
+      (fraction finalised + whether the live network is unanimous) surfaced separately, since liveness
+      is not safety and needs a connected, mostly-honest network.
+- [x] **`labs/SnowLab.tsx`** — the studio: the cluster canvas colour-coded by preference (with a
+      finalised ring/glow and a `cnt`/`d` badge); a **network-opinion-over-time** stacked strip chart
+      reconstructed from every node's trail (the metastable *tip* made visible, and time-travel exact
+      since the trail lives in serialized state); a per-node confidence inspector; live `k`/`α`/`β`,
+      variant, colour-count, seed-split and Byzantine-count controls; seed-an-even-split / nudge /
+      crash / partition actions; curated scenarios (knife-edge 50/50, Byzantine minority, big network)
+      and a copy-link deep link.
+- [x] **Register** the lab in `labs/registry.tsx` (auto-adds the nav entry + Home card) and add a line
+      to the Home hero.
+- [x] **Self-tests** in `lib/selftest.ts`: determinism; Slush tips a split to unanimity; Snowflake &
+      Snowball finalise a single colour from a near-even split across several seeds; **Agreement never
+      violated** across a randomized chaos run (crash/heal/partition-then-heal); **Validity** holds;
+      Snowball **survives a Byzantine minority** (honest nodes still converge); and a knife-edge 50/50
+      split still resolves. Grow the suite and confirm green in-app.
+- [x] **Backlog (post-ship):** the full **Avalanche DAG** (vertices, parents, chits, transitive
+      confidence) on top of Snowball; a stronger adaptive adversary; a live **k/α/β safety-vs-latency**
+      sweep panel; 3+ colours visual.
+
 ### Future labs / ideas (backlog)
 - [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
       two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
@@ -698,3 +758,34 @@ round trips, with no leader and no log. Built from scratch on the same kernel: t
   session pivoted from a duplicate EPaxos to ABD — a distinct, non-overlapping addition rather than
   overwriting a peer's work.) Verified the full gate — scope + conformance + `pnpm lint` + `pnpm build`
   all green.
+- 2026-06-27 (claude): **added a full Snow / Avalanche lab** — the simulator's first **leaderless,
+  quorum-free, *probabilistic*** consensus, a deliberate counterpoint to every quorum protocol here.
+  Four new files (`protocols/snow/{types,snow,invariants}.ts` + `labs/SnowLab.tsx`), all on the
+  existing kernel, plus a one-line registry entry and a Home-hero mention. Implemented the whole
+  **Snow family** for real and selectable in the lab — **Slush** (memoryless: adopt any colour ≥ α,
+  no finality), **Snowflake** (+ a single confidence counter, decide at `cnt ≥ β`) and **Snowball**
+  (+ per-colour confidence `d[·]`, the preference tracking argmax d). The mechanism is genuinely
+  different from everything else: each node runs an async **round loop** — sample `k` random peers via
+  `rng.sample`, ask their colour, tally the replies (a round-timeout backstops lost ones for liveness
+  after a heal), apply the variant's update rule, repeat until finalised — with the **Slush bootstrap**
+  (an uncoloured responder adopts the colour it is asked about, so a seeded colour epidemically infects
+  the network and the sampling can take over) and **Byzantine** responders that always answer an
+  adversary colour. The invariant panel is an honest **probabilistic-safety** panel (these hold *with
+  overwhelming probability*, not absolutely): **Agreement** (no two finalised honest nodes disagree —
+  the metastable-safety headline), **Finality is irrevocable** (a decided node never moves) and
+  **Validity** (every colour traces to a client seed), with a separate **convergence gauge** (it's
+  liveness, not safety). The lab UI colour-codes the cluster ring by preference (finalised ring/glow +
+  a `cnt`/✓ badge), draws the signature **network-opinion-over-time stacked strip chart**
+  reconstructed from each node's serialized colour-trail (so the metastable **tip** is visible and
+  *time-travel-exact*), a per-node confidence inspector (pref / streak / `d[·]`), live
+  `k`/`α`/`β`/variant/colour-count/Byzantine controls (α auto-clamped to `k/2 < α ≤ k`), live "splash"
+  perturbation buttons, crash/partition/heal and five curated scenarios (knife-edge 50/50, Snowflake
+  vs Snowball, Slush-no-finality, Byzantine minority, three colours) + a deep link. One **real bug
+  found & fixed by the new invariant**: a `seed` command mutated an already-finalised node, breaking
+  irrevocable finality — fixed so a finalised decision is immutable. Self-test suite grown **91 →
+  99/99** (8 Snow tests: determinism; Slush tips to unanimity; Snowflake & Snowball finalise one
+  colour across 7 seeds each; a **knife-edge 50/50** that resolves *both ways* across seeds; Snowball
+  surviving a **25% Byzantine** minority; **Agreement never violated** across a 1,000-step chaos run;
+  and post-chaos convergence). Verified the full gate (scope + conformance + lint + build) and drove
+  the built app in headless Chromium: the Snowball default converges **15/15 finalised** with the
+  panel **HOLDING**, the Home page shows the new Snow card, and there are zero JS/console errors.

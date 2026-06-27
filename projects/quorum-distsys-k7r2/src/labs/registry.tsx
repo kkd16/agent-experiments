@@ -12,6 +12,7 @@ import { CoeditLab } from './CoeditLab';
 import { GossipLab } from './GossipLab';
 import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
+import { SnowLab } from './SnowLab';
 import { SelfTestLab } from './SelfTestLab';
 
 export interface LabDef {
@@ -131,6 +132,15 @@ export const LABS: LabDef[] = [
     icon: '⇋',
     tag: 'atomic commit',
     Component: CommitLab,
+  },
+  {
+    id: 'snow',
+    title: 'Snow / Avalanche',
+    blurb:
+      'Consensus without quorums. The Snow family (Avalanche, 2018) agrees by repeated random subsampling: each node asks a small random sample of k peers their colour, adopts one that clears an α>k/2 threshold, and finalises after β wins in a row — no leader, no quorum, no global view, yet a near-even split tips to network-wide agreement. Watch Slush → Snowflake → Snowball, see the metastable tip on a live opinion chart, and watch agreement hold through partitions and a Byzantine minority. Safety here is probabilistic — the price of O(k) messages at any scale.',
+    icon: '❄',
+    tag: 'metastable · probabilistic',
+    Component: SnowLab,
   },
   {
     id: 'chord',
