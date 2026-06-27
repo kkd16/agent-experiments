@@ -39,7 +39,18 @@ import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
 import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
-import { Camera } from './camera'
+import { Camera, sampleAperture } from './camera'
+import {
+  applyBloom,
+  applyVignette,
+  naturalVignetteFactor,
+  chromaticAberration,
+  applyGrain,
+  grainEnvelope,
+  postProcessHdr,
+  postProcessDisplay,
+  POST_OFF,
+} from './postprocess'
 import { MltState, PssmltSampler } from './pssmlt'
 import { renderSPPM, HashGrid } from './sppm'
 import type { SceneDef } from './types'
@@ -3630,6 +3641,304 @@ function testEnvRotationInvariant(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `Δradiance=${maxRad.toExponential(1)}, Δpdf=${maxPdf.toExponential(1)}, |azimuth−φ|=${maxAz.toExponential(1)}` }
 }
 
+// ---- 22.0 — physically based image formation --------------------------------
+
+// Aperture (1): the polygonal bokeh sampler is area-uniform, lies inside the unit
+// disk, and is zero-mean (so depth of field stays unbiased — no image shift).
+function testAperturePolygon(): { pass: boolean; detail: string } {
+  const blades = 6
+  const rot = 0.37
+  const N = 300000
+  const r = new Rng(20240622, 7)
+  let sx = 0
+  let sy = 0
+  let inscribed = 0
+  let maxR = 0
+  const apothem = Math.cos(Math.PI / blades) // inscribed-circle radius
+  for (let i = 0; i < N; i++) {
+    const p = sampleAperture(blades, rot, r.next(), r.next())
+    sx += p.x
+    sy += p.y
+    const rad = Math.hypot(p.x, p.y)
+    if (rad > maxR) maxR = rad
+    if (rad <= apothem) inscribed++
+  }
+  const meanMag = Math.hypot(sx / N, sy / N)
+  // Analytic: P(inside inscribed circle) = (π·apothem²) / area(n-gon),
+  // area(n-gon inscribed in unit circle) = (n/2)·sin(2π/n).
+  const polyArea = (blades / 2) * Math.sin((2 * Math.PI) / blades)
+  const expectFrac = (Math.PI * apothem * apothem) / polyArea
+  const frac = inscribed / N
+  const ok =
+    maxR <= 1 + 1e-9 && // every sample is inside the unit disk (polygon ⊂ disk)
+    meanMag < 5e-3 && // zero-mean ⇒ unbiased depth of field
+    approx(frac, expectFrac, 6e-3) // area-uniform
+  return {
+    pass: ok,
+    detail: `|mean|=${meanMag.toExponential(1)}, maxR=${maxR.toFixed(4)}, inscribed=${frac.toFixed(4)} (exp ${expectFrac.toFixed(4)})`,
+  }
+}
+
+// Aperture (2): blades < 3 reduces to the circular concentric-disk sampler
+// bit-for-bit, and as blades→∞ the polygon fills the disk (the inscribed-circle
+// fraction → 1).
+function testApertureDiskLimit(): { pass: boolean; detail: string } {
+  // Reduction: blades 0/2 must equal the concentric-disk sampler exactly.
+  const r = new Rng(99, 1)
+  let reduces = true
+  for (let i = 0; i < 5000; i++) {
+    const u1 = r.next()
+    const u2 = r.next()
+    const poly = sampleAperture(2, 0, u1, u2)
+    const disk = concentricDiskFromTest(u1, u2)
+    if (Math.abs(poly.x - disk.x) > 1e-12 || Math.abs(poly.y - disk.y) > 1e-12) {
+      reduces = false
+      break
+    }
+  }
+  // Disk limit: a 64-gon nearly fills the unit disk.
+  const blades = 64
+  const N = 200000
+  const r2 = new Rng(7, 3)
+  const apothem = Math.cos(Math.PI / blades)
+  let inscribed = 0
+  for (let i = 0; i < N; i++) {
+    const p = sampleAperture(blades, 0, r2.next(), r2.next())
+    if (Math.hypot(p.x, p.y) <= apothem) inscribed++
+  }
+  const frac = inscribed / N
+  const ok = reduces && frac > 0.99
+  return { pass: ok, detail: `reduces=${reduces}, 64-gon inscribed frac=${frac.toFixed(4)}` }
+}
+
+// A tiny local copy of the concentric-disk map so the reduction test does not
+// depend on rng.ts internals — it mirrors `concentricDiskFrom` exactly.
+function concentricDiskFromTest(u1: number, u2: number): { x: number; y: number } {
+  const a = 2 * u1 - 1
+  const b = 2 * u2 - 1
+  if (a === 0 && b === 0) return { x: 0, y: 0 }
+  let r: number
+  let phi: number
+  if (a * a > b * b) {
+    r = a
+    phi = (Math.PI / 4) * (b / a)
+  } else {
+    r = b
+    phi = Math.PI / 2 - (Math.PI / 4) * (a / b)
+  }
+  return { x: r * Math.cos(phi), y: r * Math.sin(phi) }
+}
+
+// Bloom (1): veiling glare is energy-conserving (a centred highlight keeps its
+// total energy through the PSF), and strength 0 is a bit-exact identity.
+function testBloomEnergy(): { pass: boolean; detail: string } {
+  const w = 128
+  const h = 128
+  const src = new Float32Array(w * h * 3)
+  // A small bright blob at the centre, far from every border.
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const i = ((64 + dy) * w + (64 + dx)) * 3
+      src[i] = 12
+      src[i + 1] = 7
+      src[i + 2] = 3
+    }
+  }
+  let sin = 0
+  for (let i = 0; i < src.length; i++) sin += src[i]
+  const bloomed = applyBloom(src, w, h, 1, 2) // full glare, base radius 2
+  let sout = 0
+  for (let i = 0; i < bloomed.length; i++) sout += bloomed[i]
+  const energyErr = Math.abs(sout - sin) / sin
+  // Identity at strength 0.
+  const id = applyBloom(src, w, h, 0, 2)
+  let idMax = 0
+  for (let i = 0; i < src.length; i++) idMax = Math.max(idMax, Math.abs(id[i] - src[i]))
+  const ok = energyErr < 1e-4 && idMax < 1e-6
+  return { pass: ok, detail: `ΔE/E=${energyErr.toExponential(2)}, identity max|Δ|=${idMax.toExponential(1)}` }
+}
+
+// Bloom (2): an impulse spreads into a monotone-falloff halo — the peak drops,
+// the neighbourhood lifts, and the glare decreases with distance from the source.
+function testBloomHalo(): { pass: boolean; detail: string } {
+  const w = 64
+  const h = 64
+  const src = new Float32Array(w * h * 3)
+  const ci = (32 * w + 32) * 3
+  src[ci] = 100
+  src[ci + 1] = 100
+  src[ci + 2] = 100
+  const out = applyBloom(src, w, h, 1, 2)
+  const peak = out[ci]
+  const near = out[((32 * w + 34) * 3) | 0] // 2 px away
+  const far = out[((32 * w + 40) * 3) | 0] // 8 px away
+  const ok = peak < 100 && near > 0 && near > far && far >= 0
+  return { pass: ok, detail: `peak=${peak.toFixed(3)} (<100), near=${near.toFixed(4)} > far=${far.toFixed(4)}` }
+}
+
+// Vignette: the falloff is exactly cos⁴θ — unattenuated at the optical centre,
+// monotone-decreasing with field angle, bounded in (0,1] — and strength 0 is an
+// identity while strength 1 darkens the corners.
+function testVignette(): { pass: boolean; detail: string } {
+  const centre = naturalVignetteFactor(0, 0)
+  // tanθ = 1 ⇒ θ = 45°, cos⁴45° = 0.25.
+  const at45 = naturalVignetteFactor(1, 0)
+  const cos4_45 = Math.pow(Math.cos(Math.atan(1)), 4)
+  const mono = naturalVignetteFactor(0.3, 0) > naturalVignetteFactor(0.9, 0)
+  const bounded = at45 > 0 && at45 <= 1 && naturalVignetteFactor(2, 1.5) > 0
+  // Applied: a flat field, strength 0 unchanged; strength 1 darkens a corner.
+  const w = 9
+  const h = 9
+  const flat = () => {
+    const b = new Float32Array(w * h * 3)
+    b.fill(1)
+    return b
+  }
+  const off = flat()
+  applyVignette(off, w, h, 0, 50)
+  let offMax = 0
+  for (let i = 0; i < off.length; i++) offMax = Math.max(offMax, Math.abs(off[i] - 1))
+  const on = flat()
+  applyVignette(on, w, h, 1, 50)
+  const centrePix = on[(4 * w + 4) * 3] // middle pixel ≈ axis
+  const cornerPix = on[(0 * w + 0) * 3]
+  const ok =
+    approx(centre, 1, 1e-12) &&
+    approx(at45, 0.25, 1e-9) &&
+    approx(at45, cos4_45, 1e-9) &&
+    mono &&
+    bounded &&
+    offMax < 1e-9 &&
+    cornerPix < centrePix
+  return {
+    pass: ok,
+    detail: `centre=${centre}, cos⁴45°=${at45.toFixed(4)}, off|Δ|=${offMax.toExponential(1)}, corner ${cornerPix.toFixed(3)} < centre ${centrePix.toFixed(3)}`,
+  }
+}
+
+// Chromatic aberration: identity at magnitude 0 and at the optical centre, green
+// is the untouched reference channel, and red is radially displaced (magnified —
+// so right of centre it samples from nearer the centre).
+function testChromaticAberration(): { pass: boolean; detail: string } {
+  const w = 65 // odd ⇒ an exact centre pixel exists
+  const h = 65
+  const src = new Uint8ClampedArray(w * h * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4
+      src[o] = (x / (w - 1)) * 255 // R ramps left→right
+      src[o + 1] = (y / (h - 1)) * 255 // G ramps top→bottom
+      src[o + 2] = 128
+      src[o + 3] = 255
+    }
+  }
+  // Identity at k = 0.
+  const id = chromaticAberration(src, w, h, 0)
+  let idMax = 0
+  for (let i = 0; i < src.length; i++) idMax = Math.max(idMax, Math.abs(id[i] - src[i]))
+  // k > 0: green untouched everywhere; centre a fixed point; red pulled inward.
+  const ca = chromaticAberration(src, w, h, 0.05)
+  let greenMax = 0
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4
+      greenMax = Math.max(greenMax, Math.abs(ca[o + 1] - src[o + 1]))
+    }
+  const cIdx = (32 * w + 32) * 4 // centre pixel
+  const centreOk = ca[cIdx] === src[cIdx] && ca[cIdx + 2] === src[cIdx + 2]
+  const rightIdx = (32 * w + 56) * 4 // right of centre: red magnified ⇒ samples smaller x ⇒ lower R
+  const redInward = ca[rightIdx] < src[rightIdx]
+  const ok = idMax === 0 && greenMax === 0 && centreOk && redInward
+  return {
+    pass: ok,
+    detail: `id|Δ|=${idMax}, greenΔ=${greenMax}, centre fixed=${centreOk}, red inward=${redInward}`,
+  }
+}
+
+// Film grain: zero-mean (preserves the image mean), vanishes at pure black and
+// pure white (the envelope is 0 there), strength 0 is identity, and the variance
+// grows with strength.
+function testFilmGrain(): { pass: boolean; detail: string } {
+  const envOk = grainEnvelope(0) === 0 && grainEnvelope(1) === 0 && approx(grainEnvelope(0.5), 1, 1e-12)
+  const w = 200
+  const h = 200
+  const n = w * h
+  const mk = (val: number) => {
+    const b = new Uint8ClampedArray(n * 4)
+    for (let i = 0; i < n; i++) {
+      b[i * 4] = val
+      b[i * 4 + 1] = val
+      b[i * 4 + 2] = val
+      b[i * 4 + 3] = 255
+    }
+    return b
+  }
+  // Endpoints fixed.
+  const black = mk(0)
+  applyGrain(black, w, h, 1)
+  const white = mk(255)
+  applyGrain(white, w, h, 1)
+  let blackMax = 0
+  let whiteMin = 255
+  for (let i = 0; i < n; i++) {
+    blackMax = Math.max(blackMax, black[i * 4])
+    whiteMin = Math.min(whiteMin, white[i * 4])
+  }
+  // Identity at strength 0.
+  const id = mk(128)
+  applyGrain(id, w, h, 0)
+  let idMax = 0
+  for (let i = 0; i < n; i++) idMax = Math.max(idMax, Math.abs(id[i * 4] - 128))
+  // Zero-mean + variance grows with strength on a midtone field.
+  const meanVar = (strength: number): { mean: number; varc: number } => {
+    const g = mk(128)
+    applyGrain(g, w, h, strength)
+    let s = 0
+    let s2 = 0
+    for (let i = 0; i < n; i++) {
+      const x = g[i * 4]
+      s += x
+      s2 += x * x
+    }
+    const mean = s / n
+    return { mean, varc: s2 / n - mean * mean }
+  }
+  const lo = meanVar(0.1)
+  const hi = meanVar(0.6)
+  const ok =
+    envOk &&
+    blackMax === 0 &&
+    whiteMin === 255 &&
+    idMax === 0 &&
+    Math.abs(hi.mean - 128) < 0.5 &&
+    hi.varc > lo.varc &&
+    lo.varc > 0
+  return {
+    pass: ok,
+    detail: `env✓=${envOk}, black=${blackMax}, white=${whiteMin}, mean=${hi.mean.toFixed(3)}, var ${lo.varc.toFixed(2)}→${hi.varc.toFixed(2)}`,
+  }
+}
+
+// The whole pipeline with every knob at 0 is a bit-exact identity — the headline
+// safety guarantee (the default render, and all prior proofs, are unchanged).
+function testPostIdentity(): { pass: boolean; detail: string } {
+  const w = 16
+  const h = 12
+  const hdr = new Float32Array(w * h * 3)
+  for (let i = 0; i < hdr.length; i++) hdr[i] = Math.sin(i * 0.7) * 0.5 + 0.6
+  const outHdr = postProcessHdr(hdr, w, h, POST_OFF)
+  let hdrMax = 0
+  for (let i = 0; i < hdr.length; i++) hdrMax = Math.max(hdrMax, Math.abs(outHdr[i] - hdr[i]))
+  const bytes = new Uint8ClampedArray(w * h * 4)
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37) & 255
+  const copy = bytes.slice()
+  postProcessDisplay(bytes, w, h, POST_OFF)
+  let byteMax = 0
+  for (let i = 0; i < bytes.length; i++) byteMax = Math.max(byteMax, Math.abs(bytes[i] - copy[i]))
+  const ok = hdrMax < 1e-12 && byteMax === 0
+  return { pass: ok, detail: `HDR max|Δ|=${hdrMax.toExponential(1)}, byte max|Δ|=${byteMax}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -3742,5 +4051,13 @@ export function runSelfTests(): TestResult[] {
     test('IBL — env NEE MIS-consistent (envSunPdf ≡ p/N ≡ sampler)', testEnvMisConsistency),
     test('IBL — importance unbiased, far lower variance than uniform', testEnvImportanceVariance),
     test('IBL — env rotation is a measure-preserving symmetry', testEnvRotationInvariant),
+    test('Bokeh — polygon aperture area-uniform, in-disk, zero-mean', testAperturePolygon),
+    test('Bokeh — reduces to disk sampler + fills disk as blades→∞', testApertureDiskLimit),
+    test('Glare — energy-conserving (centred) + identity off', testBloomEnergy),
+    test('Glare — impulse spreads to a monotone-falloff halo', testBloomHalo),
+    test('Vignette — exactly cos⁴θ, centre=1, monotone, identity off', testVignette),
+    test('Chromatic aberration — centre/off identity, green fixed, red shifts', testChromaticAberration),
+    test('Film grain — zero-mean, black/white fixed, variance↑ with strength', testFilmGrain),
+    test('Image-formation pipeline — all-zero is a bit-exact identity', testPostIdentity),
   ]
 }

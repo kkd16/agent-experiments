@@ -406,6 +406,24 @@ export function About() {
           preserve the white point), that black maps to black with luminance monotone in exposure, and
           that a blinding saturated colour provably desaturates toward white.
         </Card>
+        <Card title="The camera becomes physical (22.0)">
+          A photograph is not the radiance field — it is what a <em>camera and a piece of film</em> did
+          to it. Lumen now models that final stage. The iris is a <strong>regular polygon</strong> of
+          blades, so every out-of-focus highlight images as that polygon — the hexagonal/octagonal{' '}
+          <em>bokeh ball</em> a perfect circle can never make (the n-gon is sampled area-uniformly, so
+          depth of field stays exactly unbiased). Then four image-formation effects: energy-conserving{' '}
+          <strong>veiling-glare bloom</strong> (a fraction of every pixel spread by a normalised
+          multi-scale lens PSF — a passive optic creates no light), natural <strong>cos⁴θ vignetting</strong>{' '}
+          tied to the lens' field of view, lateral <strong>chromatic aberration</strong> (red and blue
+          focus to different magnifications, fringing the corners), and photographic <strong>film
+          grain</strong> (a zero-mean midtone dither that vanishes at black and white). Glare and
+          vignetting are radiometric, so they run in linear HDR before tone mapping; aberration and grain
+          are recording artefacts, so they run on the tone-mapped image. With every knob at zero the
+          stage is a <em>bit-exact identity</em>, so the transport is untouched. <strong>Verify</strong>{' '}
+          pins each law: the bokeh sampler is area-uniform and zero-mean, the glare conserves energy, the
+          vignette is exactly cos⁴θ, aberration leaves green fixed and the centre a fixed point, and the
+          grain is zero-mean and black/white-preserving.
+        </Card>
       </div>
 
       <p className="about-foot">

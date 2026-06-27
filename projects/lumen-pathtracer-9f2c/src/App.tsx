@@ -52,6 +52,12 @@ const DEFAULTS: ControlState = {
   sphereLights: false,
   envRotation: 0,
   envIntensity: 1,
+  apertureBlades: 0, // circular aperture; reset per scene below
+  bloomStrength: 0,
+  bloomRadius: 3,
+  vignette: 0,
+  chromAberration: 0,
+  filmGrain: 0,
   objText: '',
 }
 
@@ -110,6 +116,8 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
     target: orbit.target,
     aperture: ctrl.aperture,
     focusDist: distance(eye, orbit.target),
+    blades: ctrl.apertureBlades,
+    bladeRotation: def.camera.bladeRotation ?? 0,
   }
   return def
 }
@@ -126,6 +134,14 @@ function buildDisplay(ctrl: ControlState): DisplaySettings {
       sigmaAlbedo: 0.1,
     },
     showNoise: ctrl.showNoise,
+    post: {
+      bloomStrength: ctrl.bloomStrength,
+      bloomRadius: ctrl.bloomRadius,
+      vignette: ctrl.vignette,
+      chromatic: ctrl.chromAberration,
+      grain: ctrl.filmGrain,
+      vfovDeg: sceneCamera(ctrl.sceneId).vfovDeg,
+    },
   }
 }
 
@@ -150,6 +166,7 @@ export default function App() {
       // defaults the many-light importance sampler on for scenes that want it.
       if (key === 'sceneId') {
         next.aperture = sceneCamera(value as string).aperture
+        next.apertureBlades = sceneCamera(value as string).blades ?? 0
         next.manyLights = SCENES.find((s) => s.id === value)?.manyLights ?? false
         next.sphereLights = SCENES.find((s) => s.id === value)?.sphereLights ?? false
         next.envRotation = 0
@@ -191,6 +208,7 @@ export default function App() {
     rr: ctrl.rrStart,
     c: ctrl.clampIndirect,
     a: ctrl.aperture,
+    ab: ctrl.apertureBlades,
     az: ctrl.sunAzimuth,
     el: ctrl.sunElevation,
     tb: ctrl.turbidity,
@@ -224,7 +242,20 @@ export default function App() {
   useEffect(() => {
     rendererRef.current?.setDisplay(buildDisplay(ctrl))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctrl.exposure, ctrl.tonemap, ctrl.denoiseEnabled, ctrl.denoiseIterations, ctrl.denoiseSigma, ctrl.showNoise])
+  }, [
+    ctrl.exposure,
+    ctrl.tonemap,
+    ctrl.denoiseEnabled,
+    ctrl.denoiseIterations,
+    ctrl.denoiseSigma,
+    ctrl.showNoise,
+    ctrl.bloomStrength,
+    ctrl.bloomRadius,
+    ctrl.vignette,
+    ctrl.chromAberration,
+    ctrl.filmGrain,
+    ctrl.sceneId,
+  ])
 
   // Adaptive sampling → applied live; the convergence test re-runs every pass.
   useEffect(() => {

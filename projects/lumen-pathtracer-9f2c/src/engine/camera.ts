@@ -18,6 +18,43 @@ export interface CameraDef {
   vfovDeg: number
   aperture: number
   focusDist: number
+  // (22.0) Aperture *shape* for the depth-of-field bokeh. A real iris is a
+  // regular polygon of `blades` straight edges, not a perfect circle, so an
+  // out-of-focus highlight images as that polygon (the classic hexagonal/
+  // octagonal bokeh ball). `blades < 3` ⇒ a circular aperture (the historical
+  // concentric-disk sampler, bit-for-bit). `bladeRotation` (radians) spins the
+  // iris. The mean lens offset stays zero either way, so depth of field remains
+  // unbiased — only the *shape* of the circle of confusion changes.
+  blades?: number
+  bladeRotation?: number
+}
+
+// (22.0) Sample a point uniformly over a regular `blades`-gon inscribed in the
+// unit circle (vertices at radius 1), rotated by `rot`. `u1,u2 ∈ [0,1)`. For
+// uniform inputs this is *exactly* area-uniform: u1·blades splits into an integer
+// part (which triangular wedge of the polygon, each equally likely) and a
+// fractional part that — independent of the integer part for uniform u1 — is one
+// of the two barycentric coordinates inside that wedge (the (a,b)→(1−a,1−b) fold
+// turns the unit square into a uniform triangle sample). `blades < 3` falls back
+// to the circular concentric-disk sampler, so a circular aperture is unchanged.
+export function sampleAperture(blades: number, rot: number, u1: number, u2: number): { x: number; y: number } {
+  if (blades < 3) return concentricDiskFrom(u1, u2)
+  const fn = u1 * blades
+  let t = Math.floor(fn)
+  if (t >= blades) t = blades - 1
+  const ut = fn - t // independent U[0,1) for uniform u1
+  const a0 = rot + (2 * Math.PI * t) / blades
+  const a1 = rot + (2 * Math.PI * (t + 1)) / blades
+  let a = ut
+  let b = u2
+  if (a + b > 1) {
+    a = 1 - a
+    b = 1 - b
+  }
+  // Barycentric point in triangle (origin, V_t, V_{t+1}); weights (1−a−b, a, b).
+  const x = a * Math.cos(a0) + b * Math.cos(a1)
+  const y = a * Math.sin(a0) + b * Math.sin(a1)
+  return { x, y }
 }
 
 export class Camera {
@@ -28,10 +65,14 @@ export class Camera {
   private u: Vec3
   private vv: Vec3
   private lensRadius: number
+  private blades: number
+  private bladeRot: number
 
   constructor(def: CameraDef, aspect: number) {
     this.eye = def.eye
     this.lensRadius = def.aperture * 0.5
+    this.blades = def.blades ?? 0
+    this.bladeRot = def.bladeRotation ?? 0
     const theta = (def.vfovDeg * Math.PI) / 180
     const halfH = Math.tan(theta / 2)
     const halfW = aspect * halfH
@@ -55,7 +96,16 @@ export class Camera {
     let origin = this.eye
     let target = add(this.lowerLeft, add(scale(this.horizontal, s), scale(this.vertical, t)))
     if (this.lensRadius > 0) {
-      const disk = lens ? concentricDiskFrom(lens.x, lens.y) : concentricDisk(rng)
+      // A polygonal iris (blades ≥ 3) samples the n-gon for shaped bokeh; a
+      // circular iris keeps the historical concentric-disk sampler bit-for-bit.
+      const disk =
+        this.blades >= 3
+          ? lens
+            ? sampleAperture(this.blades, this.bladeRot, lens.x, lens.y)
+            : sampleAperture(this.blades, this.bladeRot, rng.next(), rng.next())
+          : lens
+            ? concentricDiskFrom(lens.x, lens.y)
+            : concentricDisk(rng)
       const offset = add(scale(this.u, disk.x * this.lensRadius), scale(this.vv, disk.y * this.lensRadius))
       origin = add(this.eye, offset)
       target = sub(target, offset)
