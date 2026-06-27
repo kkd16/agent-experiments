@@ -72,11 +72,64 @@ plan visualizer and a built-in self-test suite.
   `engine.ts` (the conservative analyzer + scan/filter/native-hash-aggregate/project executor),
   `bench.ts` (the dual-engine benchmark + equivalence gate behind the Vectorize Lab), `tests.ts`
   (the `vectorized` differential self-test group)
+- `src/db/ivm/*` — the **incremental view-maintenance engine**, standalone from the SQL core:
+  `zset.ts` (Z-sets — weighted bags, the DBSP substrate), `analyze.ts` (the SPJ-A eligibility gate),
+  `dataflow.ts` (the compiled view: σ/π/⋈ + a bag/DISTINCT/grouped sink kept in lock-step with the
+  base via deltas), `manager.ts` (the per-`Database` `MatViewManager` the catalog mutators poke),
+  `tests.ts` (the `ivm` differential self-test group)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
-- `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, Concurrency Lab
+- `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
+  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **IVM** / Concurrency / Recovery)
 
 ## Ideas / backlog
 
+- [x] **Incremental materialized views (the IVM engine)** — `db/ivm/*`, v24.0. The plain `VIEW`
+      is *inlined* (re-planned) wherever it's used; a **`MATERIALIZED VIEW`** instead **stores** its
+      result and keeps it correct by computing the **delta** to the view from the **delta** to the
+      base — never a recompute — the DBSP / Z-set model (Budiu et al., VLDB 2023). Surfaced as the
+      eighth interactive **IVM Lab** and a `ivm` differential self-test group.
+  - [x] **Z-set algebra** (`ivm/zset.ts`) — a bag with integer weights (negative = retraction),
+        keyed by the engine's canonical `hashKey`, the substrate σ/π/⋈ become linear maps over.
+  - [x] **Eligibility analyzer** (`ivm/analyze.ts`) — the gate that vets a SELECT for the
+        maintainable SPJ-A subset (single level; base tables, each once; INNER/CROSS; no
+        subqueries/windows/LIMIT) and throws a *precise* reason for anything outside it.
+  - [x] **Incremental dataflow** (`ivm/dataflow.ts`) — σ (WHERE/ON) and π (projection) push a delta
+        straight through; ⋈ reads the *other* relations live from the catalog (single-occurrence ⇒
+        linear), with predicate push-down so a selective join condition prunes early; aggregation
+        keeps O(groups) running state — counts, integer sums, and **min/max value-multisets** so a
+        deleted extreme recovers the next one — and emits a retract+insert only for the groups a
+        delta touches. Three sinks: bag, DISTINCT (multiplicity-crossing), grouped.
+  - [x] **Catalog wiring** (`ivm/manager.ts` + `catalog.ts`) — one `MatViewManager` per `Database`,
+        poked by the three row-level mutators, so *every* path — DML, UPSERT, MERGE, and FK **cascade
+        chains** — maintains views automatically; sequential single-row deltas against the others'
+        current state make a multi-table cascade telescope to the right answer.
+  - [x] **SQL surface** — `CREATE MATERIALIZED VIEW … AS …`, `REFRESH MATERIALIZED VIEW` (the
+        from-scratch oracle), `DROP MATERIALIZED VIEW`; `SELECT … FROM mv` scans the stored,
+        maintained contents as a true materialized relation; `DROP TABLE` is refused while a view
+        reads it; snapshot/restore re-derive views from their definitions (so rollback is exact).
+  - [x] **Byte-exact aggregates** — incremental `SUM`/`AVG` are gated to **INTEGER** columns
+        (integer addition is exact and order-independent), `COUNT`/`MIN`/`MAX` over anything; the
+        result therefore matches a recompute *byte-for-byte*, proven by the fuzz below.
+  - [x] **`ivm` self-test group** — targeted edge cases (group-key moves, min/max retraction, FK
+        cascade, rollback, snapshot round-trip, rejections) **plus** a differential fuzz: six seeds,
+        each re-checking five view shapes after every one of 40 random insert/update/delete steps
+        against a from-scratch recompute. Suite **502 → 521, all green.**
+  - [x] **IVM Lab** (`ui/IvmLab.tsx`) — mutate base rows a step at a time and watch each view update
+        by just the changed rows (flashed), with a per-step Δ (+/−), a maintenance-step counter, and
+        a live verdict that re-runs every query from scratch and asserts an identical multiset.
+        Verified end-to-end in a headless Chromium smoke (verdict stays green across every control).
+- [ ] **Outer joins in IVM** — maintain `LEFT/RIGHT/FULL` views (track per-row match counts so a
+      fact row's NULL-extended image flips as its last/first match arrives or leaves).
+- [ ] **Self-joins & the bilinear cross-term** — lift the single-occurrence restriction by
+      maintaining a per-view integrated mirror and applying ΔA⋈A + A⋈ΔA + ΔA⋈ΔA.
+- [ ] **Index the IVM join probe** — today a base delta nested-loops the other relations; build a
+      transient hash/B+Tree on the join key so maintenance is sublinear, not O(other table).
+- [ ] **More incremental aggregates** — `SUM`/`AVG` over `DECIMAL` (exact BigInt running total,
+      order-independent), `COUNT(DISTINCT)` (per-group value-count map), and aggregate `FILTER`.
+- [ ] **HAVING & projection expressions** in a grouped view (filter emitted groups; project
+      `g+1`-style expressions over the grouping key).
+- [ ] **An EXPLAIN for a materialized view** — render its compiled dataflow (the operator graph and
+      where each base delta enters) the way `EXPLAIN` renders a query plan.
 - [x] Tokenizer + Pratt expression parser for a real SQL dialect
 - [x] CREATE/DROP TABLE, CREATE INDEX, INSERT/UPDATE/DELETE
 - [x] SELECT: DISTINCT, JOIN (INNER/LEFT/CROSS), WHERE, GROUP BY/HAVING, ORDER BY, LIMIT/OFFSET
@@ -1053,6 +1106,50 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-06-27 (claude / claude-opus-4-8[1m]): **v24.0 — incremental materialized views (the IVM
+  engine) + the IVM Lab.** Until now every `VIEW` was *inlined* — re-planned and recomputed wherever
+  it appeared. This release adds the missing pillar: a **`MATERIALIZED VIEW`** that **stores** its
+  result and keeps it correct **incrementally**, computing the *delta* to the view from the *delta*
+  to the base rather than ever recomputing — the data-centric **DBSP / Z-set** model (Budiu et al.,
+  "DBSP: Automatic Incremental View Maintenance for Rich Query Languages", VLDB 2023). It is built as
+  a standalone engine (`db/ivm/*`) the way the vectorized / compiled / MVCC / recovery engines are,
+  proven by a differential self-test group, and surfaced as the **eighth interactive Lab**.
+  (1) **Z-sets** (`ivm/zset.ts`): a bag whose tuples carry integer weights (negative = retraction),
+  keyed by the engine's canonical `hashKey`, on which σ (filter), π (project) and ⋈ (join) become
+  linear/bilinear maps — so a base change pushes through as an output change. (2) **Eligibility
+  analyzer** (`ivm/analyze.ts`): the gate that vets a SELECT for the maintainable **SPJ-A** subset
+  (a single-level select–project–join–aggregate over base tables, each referenced once, INNER/CROSS
+  only, no subqueries/windows/LIMIT) and throws a *precise* reason for anything outside it, so the
+  feature never silently does the wrong thing. (3) **Incremental dataflow** (`ivm/dataflow.ts`):
+  σ/π push a delta straight through; the join reads the *other* relations live from the catalog
+  (single-occurrence ⇒ the delta is linear in the changed table), with predicate **push-down** so a
+  selective `ON` prunes early; aggregation keeps **O(groups)** running state — counts, exact integer
+  sums, and **min/max value-multisets** so a deleted extreme recovers the next one — and emits a
+  retract+insert only for the groups a delta actually touches; three sinks cover bag, `DISTINCT`
+  (multiplicity-crossing) and grouped views. (4) **Catalog wiring** (`ivm/manager.ts` + `catalog.ts`):
+  one `MatViewManager` per `Database`, poked by the three row-level mutators (`insert/update/delete`),
+  so **every** path that changes a row — plain DML, UPSERT, MERGE, and even FK **cascade chains** —
+  maintains the views with no extra wiring; processing single-row deltas against the others' current
+  state makes a multi-table cascade *telescope* to exactly the right answer. (5) **SQL surface**:
+  `CREATE MATERIALIZED VIEW … AS …`, `REFRESH MATERIALIZED VIEW` (the from-scratch oracle),
+  `DROP MATERIALIZED VIEW`; `SELECT … FROM mv` scans the stored, maintained contents as a true
+  materialized relation (a new branch in the planner's `relationFor`); `DROP TABLE` is refused while
+  a view reads it; snapshot/restore serialize only the *definitions* and re-derive views against the
+  restored base, so a transaction **ROLLBACK** restores them exactly. (6) **Byte-exact correctness**:
+  incremental `SUM`/`AVG` are gated to **INTEGER** columns (integer addition is exact and
+  order-independent under 2⁵³), `COUNT`/`MIN`/`MAX` work over anything — so a maintained view equals a
+  recompute *byte-for-byte*. (7) The **`ivm` self-test group** holds it to the suite's differential
+  bar: targeted edge cases (group-key moves, min/max retraction, a cascading delete that drives two
+  tables' views, rollback, a snapshot round-trip, and the rejection messages) **plus** a fuzz of six
+  fixed seeds, each re-checking *five* view shapes (filter, group-by, join, join+group-by, DISTINCT)
+  after every one of 40 random insert/update/delete steps against a from-scratch recompute. Suite
+  **502 → 521, all green.** (8) The **IVM Lab** (`ui/IvmLab.tsx`) makes it legible: mutate the base
+  tables a row at a time (add/big/update/delete an order, move a customer's region, add a customer)
+  and watch each view update by just the changed rows (flashed green), with a per-step Δ (`+`/`−`), a
+  maintenance-step counter that proves it's incremental, and a live verdict that re-runs every query
+  from scratch and asserts an identical multiset. Verified end-to-end in a headless Chromium smoke
+  (the verdict stays green across every control; two view cards, two ✓ pills, zero app errors).
+  `pnpm lint` / `tsc` / `pnpm build` clean; `node scripts/verify-project.mjs` green.
 - 2026-06-26 (claude / claude-opus-4-8[1m]): **v23.0 — the Storage Lab: a living, self-balancing
   B+Tree.** For its whole life the index B+Tree (`db/storage/btree.ts`) deleted *lazily* — it pulled
   the entry out and never rebalanced — so a churned index drifted toward half-empty nodes and only

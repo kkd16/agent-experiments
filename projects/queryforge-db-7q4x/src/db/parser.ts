@@ -159,6 +159,8 @@ class Parser {
         return this.parseSavepoint()
       case 'CREATE':
         return this.parseCreate()
+      case 'REFRESH':
+        return this.parseRefreshMatView()
       case 'ALTER':
         return this.parseAlter()
       case 'DROP':
@@ -343,6 +345,7 @@ class Parser {
       if (this.at('TRIGGER')) return this.parseCreateTrigger(true)
       return this.parseCreateView(true)
     }
+    if (this.at('MATERIALIZED')) return this.parseCreateMaterializedView()
     if (this.at('VIEW')) return this.parseCreateView(false)
     if (this.at('TABLE')) return this.parseCreateTable()
     if (this.at('FUNCTION') || this.at('PROCEDURE')) return this.parseCreateRoutine(false)
@@ -360,6 +363,25 @@ class Parser {
     this.expect('AS')
     const select = this.parseSubquerySelect()
     return { kind: 'create_view', name, columns, select, orReplace, ifNotExists }
+  }
+
+  private parseCreateMaterializedView(): Statement {
+    this.expect('MATERIALIZED')
+    this.expect('VIEW')
+    const ifNotExists = this.parseIfNotExists()
+    const name = this.parseIdent('materialized view name')
+    this.expect('AS')
+    const select = this.parseSubquerySelect()
+    return { kind: 'create_materialized_view', name, select, ifNotExists }
+  }
+
+  /** `REFRESH MATERIALIZED VIEW name`. */
+  private parseRefreshMatView(): Statement {
+    this.expect('REFRESH')
+    this.expect('MATERIALIZED')
+    this.expect('VIEW')
+    const name = this.parseIdent('materialized view name')
+    return { kind: 'refresh_materialized_view', name }
   }
 
   private parseCreateTable(): Statement {
@@ -599,6 +621,12 @@ class Parser {
 
   private parseDrop(): Statement {
     this.expect('DROP')
+    if (this.accept('MATERIALIZED')) {
+      this.expect('VIEW')
+      const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
+      const name = this.parseIdent('materialized view name')
+      return { kind: 'drop_materialized_view', name, ifExists }
+    }
     if (this.accept('VIEW')) {
       const ifExists = this.accept('IF') ? (this.expect('EXISTS'), true) : false
       const name = this.parseIdent('view name')

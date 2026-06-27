@@ -251,6 +251,20 @@ FROM orders o
 WHERE c.country = 'UK';`,
   },
   {
+    title: 'Materialized view — maintained incrementally (open the IVM Lab!)',
+    sql: `-- A MATERIALIZED VIEW stores its result and is kept correct INCREMENTALLY
+-- as the base tables change — the delta to the view is computed from the delta
+-- to the base, never a recompute (the DBSP / Z-set model). Run this, then
+-- INSERT INTO orders … and SELECT from the view again: the totals update from
+-- the change alone. The IVM Lab visualizes every step.
+DROP MATERIALIZED VIEW IF EXISTS revenue_by_country;
+CREATE MATERIALIZED VIEW revenue_by_country AS
+  SELECT c.country, COUNT(*) AS orders, SUM(o.quantity) AS units
+  FROM customers c JOIN orders o ON o.customer_id = c.id
+  GROUP BY c.country;
+SELECT * FROM revenue_by_country ORDER BY units DESC, country;`,
+  },
+  {
     title: 'PL/QF — call a stored function from SQL',
     sql: `-- compound_interest() is written in the procedural language (a DECLARE'd
 -- accumulator + a FOR loop) yet is called like any built-in, here once per row.
