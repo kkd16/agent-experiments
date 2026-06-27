@@ -349,6 +349,24 @@ export function About() {
           instead of the thousands pure BSDF sampling would need. Sampling the whole sphere reduces
           exactly to the white-furnace energy test.
         </Card>
+        <Card title="Image-based lighting (HDRI, 21.0)">
+          The sun was the <em>only</em> part of the environment Lumen could sample directly. An{' '}
+          <strong>HDRI</strong> — an equirectangular panorama of incident radiance wrapped around the
+          scene — is sampled in full. Lumen builds a <strong>2D distribution</strong> over the
+          panorama from each texel's <code>luminance × sinθ</code> (the lat-long map's solid-angle
+          element) and draws directions from it with a <em>marginal-then-conditional</em> inverse CDF
+          (a from-scratch PBRT <code>InfiniteAreaLight</code>) — so next-event estimation lands on the
+          bright features (a softbox, the sun, a window) instead of stumbling onto them. The returned
+          <strong> solid-angle pdf</strong> <code>p(ω)=p(u,v)/(2π²·sinθ)</code> MIS-pairs with BSDF
+          sampling exactly like every other light, so it is <strong>unbiased</strong> — only the
+          variance collapses (Verify measures a <strong>~22×</strong> drop on a sunset environment at
+          an identical mean, and proves a <em>constant</em> environment reduces to a uniform{' '}
+          <code>1/(4π)</code>, that the sampler matches its pdf to machine ε, MIS consistency through
+          the scene, and that env rotation is a measure-preserving symmetry). Three panoramas —{' '}
+          <em>Studio</em> (softboxes), <em>Sunset</em> (a blinding low sun) and <em>Twilight</em> (a
+          horizon of ~520 city lights) — each lit by the environment <em>alone</em>. Try{' '}
+          <em>Studio/Sunset/Twilight HDRI</em> and spin <strong>Env rotation</strong>.
+        </Card>
         <Card title="Procedural textures">
           Checkerboards, blueprint grids and value-noise marble are evaluated analytically in world
           space — no UVs, no image files — and resolved to a flat colour at each hit so the BSDF math

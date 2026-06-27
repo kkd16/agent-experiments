@@ -5,6 +5,7 @@
 import type { Vec3 } from './vec3'
 import type { Material } from './material'
 import type { CameraDef } from './camera'
+import type { HdriPreset } from './envmap'
 
 export type PrimDef =
   | { kind: 'sphere'; center: Vec3; radius: number; material: number }
@@ -31,6 +32,14 @@ export type EnvDef =
       sunIntensity?: number
       ground?: Vec3
     }
+  // (21.0) IMAGE-BASED LIGHTING: a procedural equirectangular HDRI panorama
+  // (`preset`) wrapped around the scene. Unlike the gradient/sky envs — whose
+  // only *sampled* light is the sun cone — an HDRI is importance-sampled in full
+  // (see envmap.ts): a luminance×sinθ 2D distribution drives next-event
+  // estimation toward the bright parts of the panorama, MIS-paired with BSDF
+  // sampling so the estimate stays unbiased. `intensity` scales the radiance;
+  // `rotation` (radians) spins the panorama about the vertical axis.
+  | { kind: 'hdri'; preset: HdriPreset; intensity?: number; rotation?: number }
 
 // A procedural 3D density field that modulates a medium's extinction in space,
 // turning a uniformly-foggy sphere into a real cloud / smoke plume / fog layer.

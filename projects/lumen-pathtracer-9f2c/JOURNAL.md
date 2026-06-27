@@ -103,6 +103,11 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   (12.0 translucent marble/jade/wax/skin), Caustic room, Caustic Pool
   (rippled-water caustics), Prism (dispersion), Glass Menagerie (roughness + absorption), Textured
   Studio (procedural textures), Cathedral / Nebula (media), Iridescence (thin film), …
+- `src/engine/envmap.ts` — **(21.0) image-based lighting.** A from-scratch `InfiniteAreaLight`: a
+  `Distribution1D`/`Distribution2D` over an equirectangular HDRI's **luminance × sinθ**, sampled by a
+  marginal-then-conditional inverse CDF, with `EnvMap.radiance/sample/pdf` exposing the panorama as both
+  the escaped-ray radiance **and** an importance-sampled NEE light (exact solid-angle pdf for MIS). Ships
+  three deterministic procedural panoramas (studio / sunset / twilight).
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
@@ -132,6 +137,10 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
 - [x] OBJ import (paste-in) with area-weighted normal recovery + auto-fit
 - [x] Physically based **Preetham sky** (turbidity + sun position)
 - [x] **Environment / sun next-event estimation** — the sky is now a sampled light (MIS)
+- [x] **(21.0) Image-based lighting — equirectangular HDRI environments, importance sampled** — a
+      from-scratch `Distribution2D` over luminance×sinθ (PBRT `InfiniteAreaLight`), MIS-consistent with
+      BSDF sampling; three procedural panoramas (studio/sunset/twilight), live rotation + intensity; six
+      new proofs (110 total). Every non-HDRI env stays bit-for-bit identical.
 - [x] **Bidirectional path tracing (BDPT)** — full Veach/Guibas connections + balance-heuristic MIS
 - [x] **A physically based material system (10.0)** — the surfaces made as rigorous as the transport:
   - [x] **Energy-conserving rough metal (Kulla–Conty multiscatter)** — a start-up-built GGX
@@ -151,6 +160,10 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
         oracle over a box of all four new materials (55 proofs total)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [ ] **(21.0 follow-ups) Load a real `.hdr`/`.exr` panorama** — Radiance RGBE / OpenEXR decode, drag-and-drop
+- [ ] **Two-strategy env MIS** — also draw the BSDF lobe and weight both samples against the env importance pdf
+- [ ] **Fold the env into the light tree** — a bright env region competes with triangle/sphere emitters in one unified selection
+- [ ] **Prefiltered env mip-chain** — a fast diffuse/rough-gloss IBL path (irradiance + split-sum specular)
 - [x] **Spectral/Fresnel-conductor reflectance (11.0)** — wavelength-dependent complex IOR (real gold's hue
       from η,k) layered onto the new multiscatter conductor. Measured η(λ)/k(λ) tables for gold, silver,
       copper, aluminium, iron & chromium; exact unpolarised conductor Fresnel evaluated at the path's
@@ -292,6 +305,73 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-27 Lumen 21.0: image-based lighting — HDRI environment importance sampling (claude)
+
+For twenty versions Lumen's *environment* — the radiance an escaping ray reads, and the scene's
+ambient fill — was either a constant colour, a vertical **gradient**, or the analytic **Preetham
+sky**. And the only part of it next-event estimation could ever **sample** was the **sun**: a single
+small cone (`sampleEnvLight`/`envSunPdf`). Everything else in the environment — a bright softbox, the
+warm flush of a sunset horizon, a band of city lights — was found **only by a BSDF ray that happened
+to point at it**. For a glossy surface under a vivid, structured environment that is a losing game:
+the bright features are a tiny fraction of the sphere, so most rays miss them and the image is a storm
+of colour noise. This is the same failure the 14.0 light tree fixed for *many triangle emitters* and
+20.0 fixed for *emissive spheres* — only now the "light" is the whole sky.
+
+21.0 brings the production-standard answer: an **equirectangular HDRI environment**, **importance
+sampled** in full. This is a from-scratch implementation of PBRT's `InfiniteAreaLight`
+(`src/engine/envmap.ts`): a **piecewise-constant 2D distribution** built from every texel's
+**luminance × sinθ** (the lat-long map's solid-angle Jacobian), sampled by a **marginal-then-conditional
+inverse CDF** (`Distribution1D`/`Distribution2D`). A draw returns a direction toward the *bright* parts
+of the panorama with an **exact solid-angle pdf** `p(ω) = p(u,v)/(2π² sinθ)`, which **MIS-pairs with
+BSDF sampling** byte-for-byte the way every other Lumen light does — so the estimator stays **provably
+unbiased**; only the variance collapses (the headline proof measures a **~22×** per-sample variance
+drop on a sunset environment at an identical mean — and ∞× on the parts BSDF sampling can't find).
+
+It is a **drop-in for the environment slot only**. A new `EnvDef` variant `{ kind: 'hdri' }` builds an
+`EnvMap` in the `Scene` constructor; `envRadiance` reads it, the env slot of the NEE pool samples it by
+importance instead of as a sun cone, and `envSunPdf` returns its density for the MIS weight. Every
+non-HDRI env is **untouched bit-for-bit** (the env slot's presence is generalised from `envSun !== null`
+to `hasEnvLight`, which is identical for the old kinds), so **all 104 prior proofs stay green**. The
+path tracer, the path-guided tracer and Metropolis all inherit the win for free.
+
+The panoramas are **generated procedurally** (no image assets to ship, deterministic across the worker
+pool and the verify suite): **`studio`** (a dark stage lit by three soft rectangular sources — the
+product-shot setup where most of the dome is black), **`sunset`** (a graded sky with a blinding low
+sun carrying most of the energy), and **`twilight`** (a deep dome over a horizon strewn with ~520 warm
+city lights + a moon — the many-tiny-emitters regime, breathtaking in chrome). A live **rotation** knob
+spins the panorama (the importance distribution rides with it, proven a measure-preserving symmetry)
+and an **intensity** knob scales radiance without touching the pdf.
+
+Plan / steps (all shipped this session):
+
+1. [x] **`envmap.ts` — the sampler, in its own pure module.** `Distribution1D` (PBRT inverse-CDF over
+   buckets) + `Distribution2D` (per-row conditionals + a marginal), an `EnvMap` exposing
+   `radiance(dir)` (bilinear, cyclic in u), `sample(u0,u1)` (importance direction + solid-angle pdf +
+   radiance) and `pdf(dir)` (the MIS partner), with the equirectangular ↔ direction map and the
+   `dω = 2π² sinθ du dv` Jacobian. Three deterministic procedural panorama generators.
+2. [x] **`types.ts` + `scene.ts` — HDRI as a first-class env light.** New `EnvDef` `'hdri'` variant;
+   build `EnvMap` in the `Scene` ctor; dispatch `envRadiance`; sample the env slot via `EnvMap.sample`;
+   return `EnvMap.pdf/numLights` from `envSunPdf`; generalise the env-slot count to `hasEnvLight`.
+   Non-HDRI envs reproduced **byte-for-byte**.
+3. [x] **Three showcase scenes + UI.** *Studio HDRI*, *Sunset HDRI*, *Twilight HDRI* (each lit by the
+   environment **alone** — no emitters). A scene `hdri` flag exposes an **Env rotation** + **Env
+   intensity** panel, wired through `ControlState` / App `buildScene` / `renderKey` like the sky knobs.
+4. [x] **`selftest.ts` — six proofs (110 total).** (a) the 2D distribution is a genuine density —
+   `∫∫p du dv = 1` exactly and the directional `∫_S² p dω = 1` (Monte-Carlo); (b) the importance
+   sampler ↔ `pdf(wi)` to **machine ε**, every direction unit & positive; (c) a **constant** env
+   reduces to **uniform** `1/(4π)` over the sphere (the equatorial-Jacobian oracle, the IBL analogue of
+   "coincident lights ⇒ 1/N"); (d) **MIS consistency** through the `Scene` — `envSunPdf ≡ EnvMap.pdf /
+   numLights ≡` the NEE sampler's returned pdf (the no-double-count guarantee); (e) importance sampling
+   is **unbiased** (means agree to <1%) with a **~22×** lower variance than uniform on a peaked env;
+   (f) env **rotation** is a measure-preserving symmetry (same deviates ⇒ identical radiance + pdf, the
+   azimuth advanced by exactly φ). Verified in Node: **110/110** self-tests pass; the CI gate (scope +
+   conformance + lint + build) is green.
+
+New open ideas this raised (live backlog, below): load a *real* `.hdr`/`.exr` panorama (Radiance RGBE
+/ OpenEXR decode); a **two-strategy MIS** that also cosine-importance-samples the BSDF against the env;
+fold the env into the **light tree** so a bright env region competes with triangle/sphere emitters in
+one unified selection; and a **prefiltered** env mip-chain for the diffuse/rough-gloss fast path.
 
 ## Roadmap — 2026-06-26 Lumen 20.0: direct light on every shape — sphere-light NEE (claude)
 

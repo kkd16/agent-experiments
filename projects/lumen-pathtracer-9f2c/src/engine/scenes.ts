@@ -2100,6 +2100,99 @@ function mulberry(seed: number): () => number {
   }
 }
 
+// ---- (21.0) Image-based lighting: HDRI environment showcases ----------------
+//
+// These scenes carry NO emitters at all — every photon comes from the
+// equirectangular HDRI wrapped around them (see envmap.ts), importance-sampled
+// for next-event estimation. They are the proof, by eye, that the environment is
+// a real sampled light: switch the "Env importance sampling" off (in the engine
+// the env would fall back to BSDF-only) and a glossy surface dissolves into noise.
+
+// A row of varied hero materials on a polished floor, lit only by the studio
+// softbox HDRI — the product-shot setup where most of the dome is black and
+// importance sampling is the whole ballgame.
+function studioHdri(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'metal', albedo: v(0.55, 0.56, 0.58), roughness: 0.09 }, // 0 polished floor
+    { kind: 'metal', albedo: v(0.95, 0.96, 0.98), roughness: 0.0 }, // 1 chrome
+    { kind: 'metal', albedo: conductorF0RGB('gold'), roughness: 0.06, multiscatter: true, spectrum: 'gold' }, // 2 gold
+    { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }, // 3 glass
+    { kind: 'diffuse', albedo: v(0.85, 0.2, 0.18), coat: { ior: 1.5, roughness: 0.05 } }, // 4 red ceramic
+    { kind: 'metal', albedo: conductorF0RGB('copper'), roughness: 0.28, multiscatter: true, spectrum: 'copper' }, // 5 brushed copper
+  ]
+  const prims: PrimDef[] = []
+  const g = 60
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  const order = [4, 2, 1, 3, 5]
+  for (let i = 0; i < order.length; i++) {
+    prims.push({ kind: 'sphere', center: v((i - (order.length - 1) / 2) * 2.3, 1, 0), radius: 1, material: order[i] })
+  }
+  return {
+    name: 'Studio HDRI',
+    materials,
+    prims,
+    camera: { eye: v(0, 2.4, 8.5), target: v(0, 0.9, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0.03, focusDist: 8.5 },
+    env: { kind: 'hdri', preset: 'studio', intensity: 1.4 },
+  }
+}
+
+// An outdoor still life under a graded sunset sky with a blinding low sun. The
+// sun is a tiny fraction of the panorama carrying most of the energy, so the
+// importance sampler is the difference between crisp warm highlights and a
+// firefly storm. Strong directional key from the sun, soft sky fill.
+function sunsetHdri(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'diffuse', albedo: v(0.45, 0.42, 0.38) }, // 0 sandy ground
+    { kind: 'metal', albedo: v(0.92, 0.93, 0.95), roughness: 0.04 }, // 1 polished steel
+    { kind: 'dielectric', ior: 1.5, tint: v(0.85, 0.95, 1.0) }, // 2 glass
+    { kind: 'diffuse', albedo: v(0.2, 0.45, 0.7) }, // 3 blue diffuse
+    { kind: 'metal', albedo: conductorF0RGB('gold'), roughness: 0.18, multiscatter: true, spectrum: 'gold' }, // 4 gold
+    { kind: 'diffuse', albedo: v(0.85, 0.85, 0.86), sigma: 0.6 }, // 5 chalky white (Oren–Nayar)
+  ]
+  const prims: PrimDef[] = []
+  const g = 200
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push({ kind: 'sphere', center: v(-2.6, 1, 0.4), radius: 1, material: 1 })
+  prims.push({ kind: 'sphere', center: v(0, 1.3, -0.6), radius: 1.3, material: 2 })
+  prims.push({ kind: 'sphere', center: v(2.7, 1, 0.2), radius: 1, material: 4 })
+  prims.push({ kind: 'sphere', center: v(-1.1, 0.6, 2.0), radius: 0.6, material: 3 })
+  prims.push({ kind: 'sphere', center: v(1.3, 0.6, 2.1), radius: 0.6, material: 5 })
+  return {
+    name: 'Sunset HDRI',
+    materials,
+    prims,
+    camera: { eye: v(0.5, 2.0, 9), target: v(0, 0.9, 0), up: v(0, 1, 0), vfovDeg: 42, aperture: 0.04, focusDist: 9 },
+    env: { kind: 'hdri', preset: 'sunset', intensity: 1.0, rotation: 0 },
+  }
+}
+
+// A cluster of chrome and glass on a dark glossy floor reflecting a city horizon
+// of hundreds of small warm lights at twilight — the many-tiny-emitters regime,
+// breathtaking in a mirror and a torture test for the sampler (it must resolve a
+// crowd of point-like lights, not one broad source).
+function twilightHdri(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'metal', albedo: v(0.32, 0.33, 0.36), roughness: 0.12 }, // 0 dark glossy floor
+    { kind: 'metal', albedo: v(0.96, 0.97, 0.99), roughness: 0.0 }, // 1 chrome
+    { kind: 'dielectric', ior: 1.5, tint: v(1, 1, 1) }, // 2 glass
+    { kind: 'metal', albedo: v(0.9, 0.9, 0.92), roughness: 0.22 }, // 3 satin steel
+  ]
+  const prims: PrimDef[] = []
+  const g = 80
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0))
+  prims.push({ kind: 'sphere', center: v(0, 1.4, 0), radius: 1.4, material: 1 })
+  prims.push({ kind: 'sphere', center: v(-2.6, 0.9, 1.2), radius: 0.9, material: 2 })
+  prims.push({ kind: 'sphere', center: v(2.5, 0.8, 1.0), radius: 0.8, material: 3 })
+  prims.push({ kind: 'sphere', center: v(1.3, 0.5, 2.6), radius: 0.5, material: 1 })
+  return {
+    name: 'Twilight HDRI',
+    materials,
+    prims,
+    camera: { eye: v(0, 2.1, 8.5), target: v(0, 1.1, 0), up: v(0, 1, 0), vfovDeg: 44, aperture: 0.05, focusDist: 8.5 },
+    env: { kind: 'hdri', preset: 'twilight', intensity: 1.2 },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -2110,6 +2203,7 @@ export interface ScenePreset {
   cloud?: boolean // heterogeneous fBm cloud; also exposes a coverage control
   manyLights?: boolean // many emitters — defaults the "Many lights (light BVH)" toggle on
   sphereLights?: boolean // (20.0) sphere emitters — defaults the "Sphere lights (cone NEE)" toggle on
+  hdri?: boolean // (21.0) HDRI environment — exposes the env rotation/intensity controls
 }
 
 export const SCENES: ScenePreset[] = [
@@ -2121,6 +2215,9 @@ export const SCENES: ScenePreset[] = [
   { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
   { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
   { id: 'light-cage', label: 'Light Cage (receiver-aware)', build: lightCage, manyLights: true },
+  { id: 'studio-hdri', label: 'Studio HDRI (IBL)', build: studioHdri, hdri: true },
+  { id: 'sunset-hdri', label: 'Sunset HDRI (IBL)', build: sunsetHdri, hdri: true },
+  { id: 'twilight-hdri', label: 'Twilight HDRI (IBL)', build: twilightHdri, hdri: true },
   { id: 'hidden-door', label: 'Hidden Door', build: hiddenDoor },
   { id: 'weekend', label: 'Weekend Daylight', build: weekend },
   { id: 'gallery', label: 'Material Gallery', build: gallery },

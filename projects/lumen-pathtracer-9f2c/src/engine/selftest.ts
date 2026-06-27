@@ -33,6 +33,8 @@ import {
 import type { PrimDef } from './types'
 import { Bvh } from './bvh'
 import { Scene } from './scene'
+import { EnvMap, Distribution2D } from './envmap'
+import type { HdriPreset } from './envmap'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
@@ -3390,6 +3392,244 @@ function testAgxHighlightDesaturation(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- (21.0) Image-based lighting (HDRI environment importance sampling) -----
+
+// A uniform direction on the sphere from two deviates (for the directional pdf
+// integral and the uniform-baseline variance comparison).
+function uniformSphereDir(u1: number, u2: number): Vec3 {
+  const z = 1 - 2 * u1
+  const r = Math.sqrt(Math.max(0, 1 - z * z))
+  const phi = 2 * Math.PI * u2
+  return v(r * Math.cos(phi), z, r * Math.sin(phi))
+}
+
+// (1) The piecewise-constant 2D distribution is a genuine probability density:
+// its Riemann sum over the unit square is EXACTLY 1, and — recovered through the
+// equirectangular Jacobian dω=2π²sinθ du dv — the directional pdf integrates to 1
+// over the whole sphere of directions (a Monte-Carlo confirmation that pdf(dir),
+// which re-derives (u,v) from a world direction, is consistent). This is the
+// precondition for an unbiased estimator: a sampler whose density does not sum
+// to one cannot reproduce the rendering equation.
+function testEnvDistributionNormalised(): { pass: boolean; detail: string } {
+  // Direct: a Distribution2D over an arbitrary positive function sums to 1.
+  const W = 64
+  const H = 32
+  const func = new Float64Array(W * H)
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) func[j * W + i] = 0.1 + Math.abs(Math.sin(i * 0.7) * Math.cos(j * 0.5))
+  }
+  const d2 = new Distribution2D(func, W, H)
+  let grid = 0
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) grid += d2.pdf((i + 0.5) / W, (j + 0.5) / H)
+  grid /= W * H
+  // Directional integral over S² for a real HDRI via uniform-sphere MC.
+  const em = new EnvMap('sunset', 1, 0)
+  const rng = new Rng(20260621, 3)
+  let s = 0
+  const N = 300000
+  for (let i = 0; i < N; i++) s += em.pdf(uniformSphereDir(rng.next(), rng.next()))
+  const sphereInt = (s / N) * 4 * Math.PI
+  const ok = approx(grid, 1, 1e-9) && approx(sphereInt, 1, 0.04)
+  return { pass: ok, detail: `∫∫p du dv=${grid.toFixed(9)}, ∫_S² p dω=${sphereInt.toFixed(4)}` }
+}
+
+// (2) Sampler ↔ pdf consistency: every direction the importance sampler draws is
+// a unit vector with strictly positive density, and the pdf the sampler reports
+// equals pdf(wi) recomputed from that direction to MACHINE PRECISION — the
+// MIS no-double-count guarantee, checked across all three panoramas.
+function testEnvSamplerPdf(): { pass: boolean; detail: string } {
+  const presets: HdriPreset[] = ['studio', 'sunset', 'twilight']
+  let maxRel = 0
+  let allUnit = true
+  let allPos = true
+  for (const preset of presets) {
+    const em = new EnvMap(preset, 1, 0.5)
+    const rng = new Rng(424242, 9)
+    for (let i = 0; i < 12000; i++) {
+      const r = em.sample(rng.next(), rng.next())
+      if (!r) continue
+      const len = Math.sqrt(r.wi.x * r.wi.x + r.wi.y * r.wi.y + r.wi.z * r.wi.z)
+      if (Math.abs(len - 1) > 1e-9) allUnit = false
+      if (!(r.pdf > 0)) allPos = false
+      const p2 = em.pdf(r.wi)
+      const rel = Math.abs(p2 - r.pdf) / (r.pdf + 1e-30)
+      if (rel > maxRel) maxRel = rel
+    }
+  }
+  const ok = allUnit && allPos && maxRel < 1e-9
+  return { pass: ok, detail: `unit=${allUnit} pos=${allPos} max|Δpdf|/pdf=${maxRel.toExponential(2)}` }
+}
+
+// (3) Reduces to uniform: a CONSTANT-radiance environment (so its importance
+// weights are exactly sinθ — the lat-long area element) importance-samples
+// UNIFORMLY over the sphere. The directional density collapses to 1/(2π²·⟨sinθ⟩)
+// for every row, which equals 1/(4π) to the grid's discretisation — the exact
+// analogue of the light-tree's "coincident lights ⇒ 1/N" oracle, and a direct
+// check of the equatorial-area Jacobian baked into sample()/pdf().
+function testEnvReducesToUniform(): { pass: boolean; detail: string } {
+  const W = 256
+  const H = 128
+  const func = new Float64Array(W * H)
+  let meanS = 0
+  for (let j = 0; j < H; j++) {
+    const s = Math.sin(((j + 0.5) / H) * Math.PI)
+    for (let i = 0; i < W; i++) {
+      func[j * W + i] = s
+      meanS += s
+    }
+  }
+  meanS /= W * H
+  const d2 = new Distribution2D(func, W, H)
+  const target = 1 / (2 * Math.PI * Math.PI * meanS)
+  let maxRowDev = 0 // every row's directional pdf equals the same constant
+  for (const j of [4, 32, 64, 96, 124]) {
+    const theta = ((j + 0.5) / H) * Math.PI
+    const sinT = Math.sin(theta)
+    const pw = d2.pdf(0.5, (j + 0.5) / H) / (2 * Math.PI * Math.PI * sinT)
+    const dev = Math.abs(pw - target) / target
+    if (dev > maxRowDev) maxRowDev = dev
+  }
+  const uniformDev = Math.abs(target - 1 / (4 * Math.PI)) / (1 / (4 * Math.PI))
+  const ok = maxRowDev < 1e-9 && uniformDev < 0.01
+  return {
+    pass: ok,
+    detail: `p(ω)=${target.toFixed(6)} (1/4π=${(1 / (4 * Math.PI)).toFixed(6)}), row dev=${maxRowDev.toExponential(1)}, vs 1/4π=${(uniformDev * 100).toFixed(3)}%`,
+  }
+}
+
+// (4) MIS consistency through the Scene: for an HDRI scene the explicit env-light
+// pdf the integrator uses to weight an escaped BSDF ray (scene.envSunPdf) equals
+// the map's importance density folded by the 1/numLights selection probability,
+// AND the pdf the NEE sampler (scene.sampleLight) actually returns for an env
+// sample matches envSunPdf for that very direction — so the BSDF-hit and
+// next-event estimators never double-count and the estimate stays unbiased.
+function testEnvMisConsistency(): { pass: boolean; detail: string } {
+  const sd: SceneDef = {
+    name: 'ibl-test',
+    materials: [{ kind: 'diffuse', albedo: v(0.5, 0.5, 0.5) }],
+    prims: [{ kind: 'sphere', center: v(0, 0, 0), radius: 1, material: 0 }],
+    camera: { eye: v(0, 0, 5), target: v(0, 0, 0), up: v(0, 1, 0), vfovDeg: 40, aperture: 0, focusDist: 5 },
+    env: { kind: 'hdri', preset: 'sunset', intensity: 1.3, rotation: 0.4 },
+  }
+  const scene = new Scene(sd)
+  const nL = scene.numLights // env only ⇒ 1
+  const em = scene.envMap!
+  const rng = new Rng(7777, 5)
+  let maxPdfDev = 0
+  // (a) envSunPdf == envMap.pdf / numLights for arbitrary directions.
+  for (let i = 0; i < 4000; i++) {
+    const d = uniformSphereDir(rng.next(), rng.next())
+    const expected = em.pdf(d) / nL
+    const got = scene.envSunPdf(d)
+    const dev = Math.abs(got - expected) / (expected + 1e-30)
+    if (dev > maxPdfDev) maxPdfDev = dev
+  }
+  // (b) the NEE sampler's returned pdf matches envSunPdf for the sampled dir.
+  let maxSampleDev = 0
+  const ref = v(0, 2, 0)
+  let nEnv = 0
+  for (let i = 0; i < 4000; i++) {
+    const ls = scene.sampleLight(ref, rng)
+    if (!ls || ls.primId !== -1) continue
+    nEnv++
+    const ep = scene.envSunPdf(ls.wi)
+    const dev = Math.abs(ls.pdf - ep) / (ep + 1e-30)
+    if (dev > maxSampleDev) maxSampleDev = dev
+  }
+  const ok = nL === 1 && maxPdfDev < 1e-9 && maxSampleDev < 1e-9 && nEnv > 0
+  return {
+    pass: ok,
+    detail: `numLights=${nL}, max|Δ(envSunPdf−p/N)|=${maxPdfDev.toExponential(1)}, sampler↔envSunPdf=${maxSampleDev.toExponential(1)} (${nEnv} env samples)`,
+  }
+}
+
+// (5) Importance sampling is UNBIASED with far lower variance. Estimate the
+// up-facing hemisphere's red irradiance ∫ Lᵣ(ω)cosθ dω under the sunset HDRI two
+// ways at equal samples: drawing ω uniformly on the hemisphere vs drawing ω from
+// the environment's importance distribution. The means agree (same integral —
+// the unbiasedness oracle), while the importance estimator's per-sample variance
+// is many times smaller — the whole point: the blinding sun is sampled directly
+// instead of stumbled upon.
+function testEnvImportanceVariance(): { pass: boolean; detail: string } {
+  const em = new EnvMap('sunset', 1, 0)
+  const N = 120000
+  // Uniform hemisphere baseline (pdf = 1/2π over the upper hemisphere).
+  const ru = new Rng(31337, 2)
+  let mu = 0
+  let m2u = 0
+  for (let i = 0; i < N; i++) {
+    const u1 = ru.next()
+    const u2 = ru.next()
+    const z = u1 // cosθ ∈ [0,1]
+    const r = Math.sqrt(Math.max(0, 1 - z * z))
+    const phi = 2 * Math.PI * u2
+    const d = v(r * Math.cos(phi), z, r * Math.sin(phi))
+    const est = em.radiance(d).x * d.y * (2 * Math.PI) // /(1/2π)
+    mu += est
+    m2u += est * est
+  }
+  mu /= N
+  const varU = m2u / N - mu * mu
+  // Environment importance sampling (full sphere; up-hemisphere contributes).
+  const ri = new Rng(31337, 8)
+  let mi = 0
+  let m2i = 0
+  for (let i = 0; i < N; i++) {
+    const s = em.sample(ri.next(), ri.next())
+    let est = 0
+    if (s && s.wi.y > 0 && s.pdf > 0) est = (em.radiance(s.wi).x * s.wi.y) / s.pdf
+    mi += est
+    m2i += est * est
+  }
+  mi /= N
+  const varI = m2i / N - mi * mi
+  const meanRel = Math.abs(mu - mi) / (mu + 1e-9)
+  const ratio = varI > 0 ? varU / varI : Infinity
+  const ok = meanRel < 0.05 && ratio > 3 && mu > 0
+  return {
+    pass: ok,
+    detail: `E[uniform]=${mu.toFixed(3)} E[importance]=${mi.toFixed(3)} (Δ=${(meanRel * 100).toFixed(1)}%), var ratio=${ratio.toFixed(1)}×`,
+  }
+}
+
+// (6) Rotation is a measure-preserving symmetry. Spinning the panorama about the
+// vertical axis by φ relabels directions (azimuth shifts by φ) but changes
+// neither the radiance carried along a relabelled ray nor its sampling density —
+// so the same random deviates produce identical radiance and identical pdf, with
+// the sampled direction's azimuth advanced by exactly φ. The importance
+// distribution rides with the image, as it must for the live rotation control.
+function testEnvRotationInvariant(): { pass: boolean; detail: string } {
+  const phi = 1.0
+  const em0 = new EnvMap('twilight', 1, 0)
+  const emR = new EnvMap('twilight', 1, phi)
+  const r0 = new Rng(2025, 11)
+  const rR = new Rng(2025, 11)
+  let maxRad = 0
+  let maxPdf = 0
+  let maxAz = 0
+  let n = 0
+  for (let i = 0; i < 8000; i++) {
+    const a = r0.next()
+    const b = r0.next()
+    const s0 = em0.sample(a, b)
+    rR.next()
+    rR.next()
+    const sR = emR.sample(a, b)
+    if (!s0 || !sR) continue
+    n++
+    const dr = Math.abs(s0.radiance.x - sR.radiance.x) + Math.abs(s0.radiance.y - sR.radiance.y) + Math.abs(s0.radiance.z - sR.radiance.z)
+    const rad = dr / (s0.radiance.x + s0.radiance.y + s0.radiance.z + 1e-9)
+    if (rad > maxRad) maxRad = rad
+    const pd = Math.abs(s0.pdf - sR.pdf) / (s0.pdf + 1e-30)
+    if (pd > maxPdf) maxPdf = pd
+    let dAz = Math.atan2(sR.wi.z, sR.wi.x) - Math.atan2(s0.wi.z, s0.wi.x) - phi
+    dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz)) // wrap to (−π,π]
+    if (Math.abs(dAz) > maxAz) maxAz = Math.abs(dAz)
+  }
+  const ok = n > 0 && maxRad < 1e-9 && maxPdf < 1e-9 && maxAz < 1e-6
+  return { pass: ok, detail: `Δradiance=${maxRad.toExponential(1)}, Δpdf=${maxPdf.toExponential(1)}, |azimuth−φ|=${maxAz.toExponential(1)}` }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -3496,5 +3736,11 @@ export function runSelfTests(): TestResult[] {
     test('AgX — neutral stays neutral (grey in ⇒ grey out)', testAgxNeutral),
     test('AgX — black→black, luminance monotone in exposure', testAgxBlackMonotone),
     test('AgX — highlights desaturate toward white', testAgxHighlightDesaturation),
+    test('IBL — env distribution normalised (∫∫=1, ∫_S² p dω=1)', testEnvDistributionNormalised),
+    test('IBL — importance sampler ↔ pdf (machine ε, all unit)', testEnvSamplerPdf),
+    test('IBL — constant env reduces to uniform (1/4π)', testEnvReducesToUniform),
+    test('IBL — env NEE MIS-consistent (envSunPdf ≡ p/N ≡ sampler)', testEnvMisConsistency),
+    test('IBL — importance unbiased, far lower variance than uniform', testEnvImportanceVariance),
+    test('IBL — env rotation is a measure-preserving symmetry', testEnvRotationInvariant),
   ]
 }

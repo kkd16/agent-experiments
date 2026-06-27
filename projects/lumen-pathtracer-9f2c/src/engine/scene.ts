@@ -27,6 +27,7 @@ import { spectralAt } from './subsurface'
 import type { DensityField } from './volume'
 import { buildLightTree } from './lighttree'
 import type { LightTree } from './lighttree'
+import { EnvMap } from './envmap'
 
 // A directional "sun" the environment exposes as a sampled light: a cone of
 // half-angle `size` around `dir` (the direction toward the sun).
@@ -94,6 +95,9 @@ export class Scene {
   readonly buildMs: number
   readonly sky: SkyState | null
   readonly envSun: EnvSun | null
+  // (21.0) The importance-sampleable HDRI environment, when env.kind === 'hdri'.
+  // null for every other env kind, so those scenes are unchanged bit-for-bit.
+  readonly envMap: EnvMap | null
   readonly hasEnvLight: boolean
   readonly media: MediumDef[]
   readonly hasMedia: boolean
@@ -134,7 +138,13 @@ export class Scene {
     }
     this.sky = def.env.kind === 'sky' ? makeSky(def.env) : null
     this.envSun = deriveEnvSun(def.env)
-    this.hasEnvLight = this.envSun !== null
+    this.envMap =
+      def.env.kind === 'hdri'
+        ? new EnvMap(def.env.preset, def.env.intensity ?? 1, def.env.rotation ?? 0)
+        : null
+    // (21.0) The environment occupies one slot in the NEE selection pool when it
+    // carries *any* sampleable light — a sun cone (gradient/sky) or a full HDRI.
+    this.hasEnvLight = this.envSun !== null || this.envMap !== null
     this.media = (def.media ?? []).filter((m) => m.sigmaT > 0 && m.radius > 0)
     this.hasMedia = this.media.length > 0
     this.densityFields = this.media.map((m) => makeDensityField(m))
@@ -156,7 +166,7 @@ export class Scene {
 
   // Number of explicitly sampled lights = emissive triangles + the sun, if any.
   get numLights(): number {
-    return this.lights.length + (this.envSun ? 1 : 0)
+    return this.lights.length + (this.hasEnvLight ? 1 : 0)
   }
 
   // (20.0) The size of the NEE selection pool. With `useSphere` the emissive
@@ -165,7 +175,7 @@ export class Scene {
   // the same denominator. Without it the count is the historical triangles+sun,
   // so every prior estimate is reproduced bit-for-bit.
   private effLightCount(useSphere: boolean): number {
-    return this.lights.length + (useSphere ? this.sphereLights.length : 0) + (this.envSun ? 1 : 0)
+    return this.lights.length + (useSphere ? this.sphereLights.length : 0) + (this.hasEnvLight ? 1 : 0)
   }
 
   get triangleCount(): number {
@@ -217,6 +227,7 @@ export class Scene {
   envRadiance(dir: Vec3): Vec3 {
     const e = this.env
     if (e.kind === 'solid') return e.color
+    if (e.kind === 'hdri') return this.envMap!.radiance(dir)
     if (e.kind === 'sky') return skyRadiance(this.sky!, dir, true)
     const tt = 0.5 * (dir.y + 1)
     let col = lerp(e.bottom, e.top, clamp(tt, 0, 1))
@@ -247,7 +258,7 @@ export class Scene {
     if (useTree && this.lightTree) return this.sampleLightTree(ref, rng, refNormal, useSphere)
     const nTri = this.lights.length
     const nSph = useSphere ? this.sphereLights.length : 0
-    const nL = nTri + nSph + (this.envSun ? 1 : 0)
+    const nL = nTri + nSph + (this.hasEnvLight ? 1 : 0)
     if (nL === 0) return null
     const k = rng.int(nL)
     // [0,nTri) triangle · [nTri,nTri+nSph) sphere · [nTri+nSph,nL) env. With
@@ -281,7 +292,7 @@ export class Scene {
   private sampleLightTree(ref: Vec3, rng: Rng, refNormal?: Vec3, useSphere = false): LightSampleResult | null {
     const nTri = this.lights.length
     const nSph = useSphere ? this.sphereLights.length : 0
-    const nEnv = this.envSun ? 1 : 0
+    const nEnv = this.hasEnvLight ? 1 : 0
     const nL = nTri + nSph + nEnv
     if (nL === 0) return null
     const pTriBranch = nTri / nL
@@ -312,9 +323,17 @@ export class Scene {
     return { wi, dist, radiance, pdf, primId: sel.primId }
   }
 
-  // Sample a direction within the sun's cone (uniform in solid angle) and read
-  // the environment radiance there. The light is at infinity, so dist = ∞.
+  // Sample the environment slot of the NEE pool. For an HDRI it draws a direction
+  // by importance from the luminance-weighted 2D distribution (envmap.ts); for a
+  // gradient/sky sun it samples the sun cone uniformly. Either way the light is at
+  // infinity (dist = ∞) and the returned pdf folds in the 1/nL selection
+  // probability, so the integrator's MIS is identical across env kinds.
   private sampleEnvLight(rng: Rng, nL: number): LightSampleResult | null {
+    if (this.envMap) {
+      const s = this.envMap.sample(rng.next(), rng.next())
+      if (!s || s.pdf <= 0) return null
+      return { wi: s.wi, dist: Infinity, radiance: s.radiance, pdf: s.pdf / nL, primId: ENV_PRIM_ID }
+    }
     const sun = this.envSun!
     const u1 = rng.next()
     const u2 = rng.next()
@@ -371,9 +390,15 @@ export class Scene {
     return pdfTri / nL
   }
 
-  // Solid-angle pdf that the env-light sampler assigns to direction wi: uniform
-  // inside the sun cone, zero outside. Used to MIS-weight an escaped BSDF ray.
+  // Solid-angle pdf that the env-light sampler assigns to direction wi — the MIS
+  // partner used to weight an escaped BSDF ray. For an HDRI it is the importance
+  // distribution's density (envmap.ts); for a sun it is uniform inside the cone,
+  // zero outside. Both fold in the 1/numLights selection probability.
   envSunPdf(wi: Vec3, useSphere = false): number {
+    if (this.envMap) {
+      const p = this.envMap.pdf(wi)
+      return p > 0 ? p / this.effLightCount(useSphere) : 0
+    }
     const sun = this.envSun
     if (!sun) return 0
     if (dot(wi, sun.dir) < sun.cosSize) return 0

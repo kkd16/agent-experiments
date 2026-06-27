@@ -72,6 +72,31 @@ export function Controls(props: {
         </Panel>
       )}
 
+      {preset?.hdri && (
+        <Panel title="Environment (HDRI)" subtitle="Image-based lighting — the panorama is importance-sampled">
+          <Slider
+            label="Env rotation"
+            value={state.envRotation}
+            min={0}
+            max={360}
+            step={1}
+            onChange={(v) => set('envRotation', v)}
+            format={(v) => `${v.toFixed(0)}°`}
+            hint="Spin the equirectangular HDRI about the vertical axis. The luminance-weighted importance distribution rotates with it, so next-event estimation keeps landing on the bright features (softboxes / sun / city lights) wherever you turn them."
+          />
+          <Slider
+            label="Env intensity"
+            value={state.envIntensity}
+            min={0}
+            max={4}
+            step={0.05}
+            onChange={(v) => set('envIntensity', v)}
+            format={(v) => `${v.toFixed(2)}×`}
+            hint="Scale the environment's radiance. A pure multiplier — it brightens the image but leaves the sampling pdf (a normalised distribution) unchanged, so the noise is identical at any exposure."
+          />
+        </Panel>
+      )}
+
       {preset?.fog && (
         <Panel
           title="Volumetric haze"

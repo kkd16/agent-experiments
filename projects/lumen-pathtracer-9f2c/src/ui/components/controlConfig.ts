@@ -52,6 +52,12 @@ export interface ControlState {
   // (uniform-cone sampling) rather than leaving them to BSDF sampling alone — the
   // difference between a firefly storm and a clean sphere-lit room. Unbiased.
   sphereLights: boolean
+  // (21.0) HDRI scenes only: spin the equirectangular environment about the
+  // vertical axis (degrees) and scale its radiance. Rotation only re-orients the
+  // panorama (the importance distribution rotates with it); intensity is a pure
+  // radiance multiplier that leaves the sampling pdf unchanged.
+  envRotation: number
+  envIntensity: number
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }
