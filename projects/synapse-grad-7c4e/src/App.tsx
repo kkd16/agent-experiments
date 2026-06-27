@@ -13,16 +13,18 @@ import NodeLab from './components/node/NodeLab';
 import GANLab from './components/gan/GANLab';
 import BayesLab from './components/bayes/BayesLab';
 import MoELab from './components/moe/MoELab';
+import SsmLab from './components/ssm/SsmLab';
 import NCALab from './components/nca/NCALab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
 function initialTab(): Tab {
   try {
     if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
     if (/[#&]x=/.test(location.hash)) return 'moe';
+    if (/[#&]s=/.test(location.hash)) return 'ssm';
     if (/[#&]c=/.test(location.hash)) return 'recurrent';
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
@@ -66,6 +68,9 @@ export default function App() {
             </button>
             <button className={tab === 'recurrent' ? 'on' : ''} onClick={() => setTab('recurrent')}>
               Recurrent · RNN/LSTM
+            </button>
+            <button className={tab === 'ssm' ? 'on' : ''} onClick={() => setTab('ssm')}>
+              State-Space · Mamba
             </button>
             <button className={tab === 'moe' ? 'on' : ''} onClick={() => setTab('moe')}>
               Sparse · MoE
@@ -115,6 +120,8 @@ export default function App() {
         <SeqLab />
       ) : tab === 'recurrent' ? (
         <RnnLab />
+      ) : tab === 'ssm' ? (
+        <SsmLab />
       ) : tab === 'moe' ? (
         <MoELab />
       ) : tab === 'generative' ? (

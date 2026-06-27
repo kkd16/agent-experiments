@@ -11,6 +11,7 @@ import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './l
 import { GPT } from './transformer';
 import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
+import { rmsNorm, causalConv1d, selectiveScan, MambaLM, defaultDtRank } from './ssm';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
 import {
@@ -1031,6 +1032,88 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const pairs: [number, number][] = [];
     for (let i = 0; i < seedArr.length; i++) pairs.push([after.data[i], seedArr[i]]);
     ops.push(relCheck('nca-zero-init-identity', pairs));
+  }
+
+  // ---- Selective State-Space Model (Mamba / S6 lab) --------------------------------
+  //
+  // The three hand-derived ops the Mamba block is built from — RMSNorm, the causal depthwise
+  // conv, and (the heart) the SELECTIVE SCAN, whose full vector-Jacobian product is taken w.r.t.
+  // all six inputs (x, Δ, A, B, C, D). A negative A (the contractive diagonal) keeps the
+  // recurrence stable, exactly as the live model's A = −exp(A_log).
+  {
+    const x = leaf(rng, 5, 4);
+    const g = leaf(rng, 1, 4, true);
+    ops.push(checkOp('rmsNorm', [x, g], () => rmsNorm(x, g), rng));
+  }
+  {
+    const L = 6;
+    const D = 3;
+    const K = 4;
+    const x = leaf(rng, L, D);
+    const w = leaf(rng, D, K);
+    const b = leaf(rng, 1, D);
+    ops.push(checkOp('causalConv1d', [x, w, b], () => causalConv1d(x, w, b), rng));
+  }
+  {
+    const L = 5;
+    const D = 3;
+    const N = 4;
+    const x = leaf(rng, L, D);
+    const delta = leaf(rng, L, D, true); // Δ > 0 (post-softplus)
+    const A = leaf(rng, D, N);
+    for (let i = 0; i < A.size; i++) A.data[i] = -(Math.abs(A.data[i]) + 0.3); // A < 0
+    const B = leaf(rng, L, N);
+    const C = leaf(rng, L, N);
+    const Dsk = leaf(rng, 1, D);
+    ops.push(
+      checkOp('selective-scan (x,Δ,A,B,C,D)', [x, delta, A, B, C, Dsk], () => selectiveScan(x, delta, A, B, C, Dsk), rng),
+    );
+  }
+
+  // End-to-end: a whole Mamba language model — token embedding, every layer's in/out projections,
+  // the causal conv, the x/dt projections, A_log, the D skip and RMSNorm — gradchecked through the
+  // masked cross-entropy. This proves backprop through the selective recurrence across all layers.
+  {
+    const dModel = 8;
+    const expand = 2;
+    const m = new MambaLM({
+      vocab: 6,
+      dModel,
+      dState: 4,
+      dConv: 3,
+      expand,
+      dtRank: defaultDtRank(dModel, expand),
+      nLayers: 2,
+      maxLen: 8,
+      seed: 3,
+    });
+    const ids = Int32Array.from([2, 0, 4, 1, 3, 5]);
+    const targets = Int32Array.from([0, 4, 1, 3, 5, 2]);
+    const keep = Uint8Array.from([0, 0, 1, 1, 1, 1]);
+    ops.push(
+      checkOp('mamba-ssm (e2e, masked CE)', m.parameters(), () => maskedCrossEntropy(m.forward(ids), targets, keep).loss, rng),
+    );
+  }
+
+  // Value identity: with one channel, one state, a constant negative A = −λ, a constant Δ and
+  // B = C = 1, a unit input drives an exponential-moving-average whose closed form is known
+  // exactly — h_l = Δ·(1 − aᶫ⁺¹)/(1 − a) with a = e^(−λΔ). The scan must reproduce it to machine
+  // precision, proving the discretization ā = exp(ΔA), b̄ = ΔBx and the recurrence are exact.
+  {
+    const Ln = 12;
+    const lambda = 0.8;
+    const dt = 0.3;
+    const xs = Tensor.fromFlat(new Float64Array(Ln).fill(1), Ln, 1, false);
+    const delta = Tensor.fromFlat(new Float64Array(Ln).fill(dt), Ln, 1, false);
+    const A = Tensor.fromFlat(new Float64Array([-lambda]), 1, 1, false);
+    const B = Tensor.fromFlat(new Float64Array(Ln).fill(1), Ln, 1, false);
+    const C = Tensor.fromFlat(new Float64Array(Ln).fill(1), Ln, 1, false);
+    const Dsk = Tensor.fromFlat(new Float64Array([0]), 1, 1, false);
+    const y = selectiveScan(xs, delta, A, B, C, Dsk);
+    const a = Math.exp(-lambda * dt);
+    const pairs: [number, number][] = [];
+    for (let l = 0; l < Ln; l++) pairs.push([y.data[l], (dt * (1 - Math.pow(a, l + 1))) / (1 - a)]);
+    ops.push(relCheck('ssm-scan-ema (closed form)', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
