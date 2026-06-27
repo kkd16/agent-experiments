@@ -9,6 +9,7 @@ import Lab from './components/Lab'
 import Analysis from './components/Analysis'
 import Review from './components/Review'
 import Trainer from './components/Trainer'
+import Mcts from './components/Mcts'
 import { useEngine } from './hooks/useEngine'
 import {
   Game,
@@ -49,7 +50,7 @@ import {
   pvToSan,
 } from './view'
 
-type Tab = 'play' | 'train' | 'analyze' | 'review' | 'lab'
+type Tab = 'play' | 'train' | 'analyze' | 'review' | 'mcts' | 'lab'
 
 function statusText(view: BoardView): string {
   const sideName = view.turn === WHITE ? 'White' : 'Black'
@@ -731,6 +732,9 @@ export default function App() {
           <button className={tab === 'review' ? 'tab active' : 'tab'} onClick={() => setTab('review')}>
             Review
           </button>
+          <button className={tab === 'mcts' ? 'tab active' : 'tab'} onClick={() => setTab('mcts')}>
+            MCTS
+          </button>
           <button className={tab === 'lab' ? 'tab active' : 'tab'} onClick={() => setTab('lab')}>
             Engine Lab
           </button>
@@ -1020,6 +1024,10 @@ export default function App() {
         <main className="analyze-layout">
           <Review />
         </main>
+      ) : tab === 'mcts' ? (
+        <main className="analyze-layout">
+          <Mcts />
+        </main>
       ) : (
         <main className="lab-layout">
           <Lab />
@@ -1035,7 +1043,8 @@ export default function App() {
           (mobility · king safety · pawn structure) · KPK / KRK / KQK / <strong>KBNvK</strong> tablebases · opening book +
           explorer · multi-PV analysis · PGN import + annotated export · pondering · EPD suites · <strong>game review</strong>
           (accuracy + coach) · <strong>tactics trainer</strong> (solver-verified puzzles · Glicko rating) ·
-          <strong>engine arena</strong> (Elo) · two-sided clock
+          <strong>engine arena</strong> (Elo) · two-sided clock · <strong>PUCT MCTS</strong> (AlphaZero-style tree search
+          with an MCTS-Solver + live visit policy)
         </span>
       </footer>
     </div>

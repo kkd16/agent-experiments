@@ -149,6 +149,25 @@ export { nnueSave, nnueLoad, nnueClear, NNUE_KEY } from './nnue-cache'
 export type { NnueMeta } from './nnue-cache'
 export { defaultNnueBlob, DEFAULT_NNUE_META } from './nnue-weights'
 export {
+  Mcts,
+  mctsSearch,
+  mctsSelftest,
+  makeMctsEvaluator,
+  cpToValue,
+  valueToCp,
+  MCTS_DEFAULTS,
+} from './mcts'
+export type {
+  MctsOptions,
+  MctsResult,
+  RootMoveStat,
+  PolicyKind,
+  ValueSource,
+  CpEvaluator,
+  MctsSelftest,
+  MctsSelftestCase,
+} from './mcts'
+export {
   reviewGame,
   reviewSelftest,
   winPercent,
