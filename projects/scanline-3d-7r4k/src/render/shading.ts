@@ -49,6 +49,13 @@ export interface Material {
   // substrate index is taken from `ior` (default 1.5). Shared by the path tracer and pbr.ts.
   filmThicknessNm?: number // 0 = no coat; ~100–800 nm spans the visible interference orders
   filmIor?: number // film index of refraction (soap ≈ 1.33, oil ≈ 1.45, TiO₂ ≈ 2.3)
+  // Spectral rendering (v10) — read only by the spectral path tracer; the RGB paths ignore
+  // them. `glass` names a Sellmeier dispersion curve (see spectrum.ts GLASS_PRESETS) so a
+  // transmissive body carries its real n(λ) and Abbe number instead of the achromatic `ior`
+  // + `dispersion` knob. `blackbodyK` makes an emitter a Planckian radiator at that colour
+  // temperature (kelvin), so a tungsten lamp is genuinely 3000 K and daylight ~6500 K.
+  glass?: string // GLASS_PRESETS key: 'bk7' | 'sf10' | 'silica' | 'water' | 'diamond'
+  blackbodyK?: number // emitter colour temperature (kelvin); 0/undefined = use emission RGB
 }
 
 export interface ShadowSampler {

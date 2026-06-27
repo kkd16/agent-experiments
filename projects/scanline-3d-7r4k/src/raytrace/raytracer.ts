@@ -12,7 +12,10 @@ import type { RTInstance } from './rtscene.ts'
 import { BVH } from './bvh.ts'
 import { tracePath, traceAO, primaryFeature } from './tracer.ts'
 import type { RTContext, RTLighting, PrimaryFeature } from './tracer.ts'
+import { traceSpectral, resetSpectralCaches } from './spectral.ts'
+import { sampleWavelength } from './spectrum.ts'
 import { Rng, hashSeed } from './sampling.ts'
+import type { Vec3 } from '../math/vec.ts'
 import { Denoiser } from './denoise.ts'
 import type { DenoiseSettings } from './denoise.ts'
 
@@ -25,7 +28,7 @@ export interface RTCamera {
   aspect: number
 }
 
-export type RTMode = 'path' | 'ao'
+export type RTMode = 'path' | 'ao' | 'spectral'
 
 // What the denoiser-aware resolve presents. 'denoised' is the beauty; the rest are
 // debug views into the pipeline (the raw average, the feature buffers, the variance
@@ -73,6 +76,7 @@ export class RayTracer {
     if (key === this.geomKey && this.scene) return
     this.geomKey = key
     this.scene = new RTScene(instances)
+    resetSpectralCaches() // new materials → drop stale per-material spectra
     this.bvh = new BVH(this.scene)
     this.triangles = this.scene.count
     this.nodes = this.bvh.nodeTotal
@@ -171,9 +175,21 @@ export class RayTracer {
       let dz = cam.fz + cam.rz * sx + cam.uz * sy
       const dl = Math.hypot(dx, dy, dz) || 1
       dx /= dl; dy /= dl; dz /= dl
-      const c = mode === 'ao'
-        ? traceAO(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng)
-        : tracePath(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng)
+      let c: Vec3
+      if (mode === 'spectral') {
+        // Stratify the hero wavelength across this pixel's samples with a golden-ratio
+        // (Kronecker) sequence offset by a per-pixel hash, so successive samples sweep the
+        // spectrum evenly and colour converges fast despite one wavelength per ray.
+        const off = (hashSeed(x, y, 0) >>> 8) / 0x01000000
+        let uL = counts[p] * 0.6180339887498949 + off
+        uL -= Math.floor(uL)
+        const ws = sampleWavelength(uL)
+        c = traceSpectral(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng, ws.lambda, ws.pdf)
+      } else if (mode === 'ao') {
+        c = traceAO(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng)
+      } else {
+        c = tracePath(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng)
+      }
       const o = p * 3
       // guard against the rare NaN/Inf so one bad sample can't poison a pixel
       if (c[0] === c[0] && c[1] === c[1] && c[2] === c[2]) {
