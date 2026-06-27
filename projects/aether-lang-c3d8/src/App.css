@@ -210,6 +210,8 @@ body {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.15rem 0.4rem;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* ---------- editor ---------- */
@@ -308,6 +310,185 @@ body {
 .hl-warn {
   text-decoration: wavy underline var(--amber);
   text-underline-offset: 3px;
+}
+.hl-occur {
+  background: rgba(139, 156, 255, 0.16);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(139, 156, 255, 0.28);
+}
+
+/* ---------- editor intelligence (hovers, inlays, completion) ---------- */
+.editor-measure {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  font: inherit;
+  line-height: inherit;
+}
+.editor-inlays {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  pointer-events: none;
+  overflow: hidden;
+  will-change: transform;
+}
+.editor-inlay {
+  position: absolute;
+  color: var(--fg-faint);
+  font-style: italic;
+  font-size: 0.86em;
+  white-space: pre;
+  opacity: 0.85;
+}
+
+.editor-hovercard {
+  position: fixed;
+  z-index: 60;
+  max-width: 30rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.editor-hovercard.diag {
+  color: var(--red);
+  border-color: rgba(255, 107, 129, 0.5);
+}
+.hc-title {
+  color: var(--accent);
+  font-weight: 600;
+}
+.hc-type {
+  color: var(--fg);
+  margin-top: 0.15rem;
+  white-space: pre-wrap;
+}
+.hc-sub {
+  color: var(--fg-dim);
+  margin-top: 0.1rem;
+}
+.hc-origin {
+  color: var(--fg-faint);
+  margin-top: 0.25rem;
+  font-style: italic;
+  font-size: 0.72rem;
+}
+
+.editor-completions {
+  position: fixed;
+  z-index: 60;
+  margin: 0;
+  padding: 0.2rem;
+  list-style: none;
+  min-width: 14rem;
+  max-width: 34rem;
+  max-height: 17rem;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+.cmp-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.22rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cmp-item.sel {
+  background: rgba(139, 156, 255, 0.18);
+}
+.cmp-item:hover {
+  background: rgba(139, 156, 255, 0.1);
+}
+.cmp-kind {
+  flex: 0 0 1.1rem;
+  text-align: center;
+  color: var(--bg);
+  background: var(--fg-faint);
+  border-radius: 3px;
+  font-size: 0.68rem;
+  line-height: 1.25rem;
+  height: 1.25rem;
+}
+.cmp-local,
+.cmp-param {
+  background: var(--accent);
+}
+.cmp-ctor,
+.cmp-method {
+  background: var(--accent-2);
+}
+.cmp-prelude {
+  background: var(--green);
+}
+.cmp-global {
+  background: var(--cyan);
+}
+.cmp-keyword {
+  background: var(--fg-dim);
+}
+.cmp-label {
+  color: var(--fg);
+  flex: 0 0 auto;
+}
+.cmp-detail {
+  color: var(--fg-faint);
+  margin-left: auto;
+  padding-left: 1.2rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22rem;
+}
+
+.editor-rename {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.35rem;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.rename-input {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  width: 10rem;
+  outline: none;
+}
+.rename-input:focus {
+  border-color: var(--accent);
+}
+.rename-hint {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+.rename-hint.bad {
+  color: var(--red);
 }
 
 /* ---------- status bar ---------- */

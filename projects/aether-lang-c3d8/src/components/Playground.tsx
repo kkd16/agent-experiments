@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import Editor from './Editor.tsx'
+import type { Diagnostic } from './Editor.tsx'
 import OutputView from './OutputView.tsx'
 import CanvasView from './CanvasView.tsx'
 import TokensPanel from './panels/TokensPanel.tsx'
@@ -70,6 +71,7 @@ export default function Playground() {
   )
   const [copied, setCopied] = useState(false)
   const [optimizeOn, setOptimizeOn] = useState(true)
+  const [inlayOn, setInlayOn] = useState(true)
   const [runResult, setRunResult] = useState<PipelineResult | null>(null)
   const [snapshots, setSnapshots] = useState<Snapshot[] | null>(null)
   const [traceNonce, setTraceNonce] = useState(0)
@@ -141,6 +143,16 @@ export default function Playground() {
     () => analysis.warnings.map((w) => w.span).filter((s): s is Span => s !== null),
     [analysis],
   )
+  const diagnostics = useMemo<Diagnostic[]>(() => {
+    const out: Diagnostic[] = []
+    if (analysis.error?.span) {
+      out.push({ span: analysis.error.span, message: analysis.error.message, severity: 'error' })
+    }
+    for (const w of analysis.warnings) {
+      if (w.span) out.push({ span: w.span, message: w.message, severity: 'warning' })
+    }
+    return out
+  }, [analysis])
 
   return (
     <div className="playground">
@@ -178,7 +190,17 @@ export default function Playground() {
             />
             optimize
           </label>
-          <span className="kbd-hint">⌘/Ctrl ↵</span>
+          <label className="opt-toggle" title="Show inferred types inline at the end of each binding's line">
+            <input
+              type="checkbox"
+              checked={inlayOn}
+              onChange={(e) => setInlayOn(e.target.checked)}
+            />
+            hints
+          </label>
+          <span className="kbd-hint" title="⌘/Ctrl ↵ run · ⌘/Ctrl Space complete · F2 rename · ⌘/Ctrl-click go to definition">
+            ⌘↵ · ⌘Space · F2
+          </span>
         </div>
 
         <Editor
@@ -187,6 +209,10 @@ export default function Playground() {
           errorSpan={editorError}
           highlightSpan={highlightSpan}
           warningSpans={warningSpans}
+          ast={analysis.ast}
+          typeResult={analysis.typeResult}
+          diagnostics={diagnostics}
+          showInlayHints={inlayOn}
         />
 
         <StatusBar analysis={analysis} />

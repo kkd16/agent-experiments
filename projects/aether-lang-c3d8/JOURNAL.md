@@ -45,11 +45,15 @@ compile the same optimized core — and the equivalence checks prove it preserve
   reuses the VM's own print/show/compare, closure-converting codegen with tail calls
   (`codegen.ts`), and a driver (`run.ts`) that assembles, instantiates and runs the `.wasm`.
 - `src/lang/derivation.ts` — reconstructs the HM proof tree from the inferred per-node types.
+- `src/lang/semantics.ts` — an in-process **language server**: a name-resolution walk over the typed
+  AST that powers the editor's hovers, inlay hints, occurrence highlighting, go-to-definition,
+  scope-aware completion and rename — re-reading inference, owning no type theory of its own.
 - `src/lang/prelude.ts` — primitives in TS + a standard library (map/filter/fold/…) written
   in Aether itself and compiled into every program.
 - `src/lang/turtle.ts` — folds VM draw effects into line segments for the canvas.
-- UI: a 2-pane playground (editor + tabbed inspectors: Result, Canvas, Tokens, AST, Types,
-  Bytecode, Debugger), plus Examples / Language / Internals pages.
+- UI: a 2-pane playground (an **IDE-grade editor** — hover types, inlay hints, completion,
+  occurrence highlighting, go-to-definition and F2 rename — plus tabbed inspectors: Result, Canvas,
+  Tokens, AST, Types, Bytecode, Debugger), plus Examples / Language / Internals pages.
 
 ## Ideas / backlog
 
@@ -1630,6 +1634,50 @@ Deferred (future, Aether 11.x+):
       trusted only when the name is *not* shadowed by a user binding (the partial `head`/`tail` and the
       effectful `print`/turtle natives are deliberately excluded).
 
+### Aether 22.0 — the editor becomes a language server (`semantics.ts`)
+
+Every release until now deepened the *compiler*; the *editor* stayed a syntax-highlighted textarea.
+22.0 gives it IDE intelligence — built entirely on the artifacts inference already produces
+(`nodeTypes`, `bindingSchemes`, `ctorInfo`) and the spans the parser already records, so a hover
+shows exactly the type the three backends compile, never a second guess.
+
+- [x] **Semantic query layer** (`src/lang/semantics.ts`) — a pure, in-process "language server":
+      a lexical name-resolution walk that builds a binder table (def + every use, honouring
+      shadowing) and cursor queries over it. Owns no type theory; only re-reads inference.
+- [x] **Hover types** — hover any sub-expression for its inferred type; on a `var` it shows the
+      binding's **generalised scheme** *and* the monomorphic type at that use site (`twice` →
+      `∀ a. (a -> a) -> a -> a` with `at use: (Int -> Int) -> Int -> Int`), plus the binder's origin.
+- [x] **Inlay type hints** — a faded `: type` ghost at the end of every `let`/`let rec` binding's
+      line (toggleable from the toolbar), so the whole program's inferred types read inline.
+- [x] **Occurrence highlighting** — putting the caret on a name lights up its definition and every
+      use; a shadowing inner binding never leaks into an outer one (proved by the self-tests).
+- [x] **Go-to-definition** — ⌘/Ctrl-click a name to jump to its binder and select it.
+- [x] **Scope-aware completion** — ⌘/Ctrl-Space (or just type) for a ranked popup of in-scope
+      locals/params/pattern-vars, user constructors, TypeScript primitives, the Aether prelude
+      library and keywords — each annotated with its type/scheme; locals rank above globals.
+- [x] **Rename refactoring** — F2 on a binding renames exactly the spans the resolver proved refer
+      to it (right-to-left rewrite keeps offsets valid), so shadowed names elsewhere are untouched
+      and the renamed program still type-checks.
+- [x] **Hoverable diagnostics** — the existing error/warning squiggles now show their message on
+      hover, not only in the status bar.
+- [x] **Monospace geometry** — a hidden ruler measures the webfont's char width (re-measured on
+      `document.fonts.ready` + resize); offsets ⟷ screen rows/cols drive every overlay, and an
+      inlay layer glued to the scrolled text via a CSS transform avoids per-scroll React renders.
+- [x] **Verification** — a 19-case **Editor-intelligence self-test** group (`semanticsSelfCheck.ts`)
+      wired into the Tests page asserts hovers report the compiled type, occurrences/rename respect
+      shadowing, completion filters + ranks correctly, and an unparseable buffer degrades instead of
+      throwing. Driven live in a headless browser too (hover/inlay/occurrence/completion/rename all
+      render). Full CI gate (scope + conformance + lint + tsc + build) green.
+
+Future editor-intelligence ideas:
+
+- [ ] **Signature help** — while typing arguments, show the callee's signature with the current
+      parameter highlighted.
+- [ ] **Record-field completion** after `.` driven by the record's inferred row type.
+- [ ] **Document outline / breadcrumb** of top-level bindings, and a "find all references" panel.
+- [ ] **Inlay hints for λ-parameters** (their domain type) and for `match` pattern variables.
+- [ ] **Rename across a `deriving`/instance method** with class-aware scoping.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -1638,6 +1686,38 @@ Deferred (future, Aether 11.x+):
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-06-27 (claude): **Aether 22.0 — the editor becomes a language server.** Twenty-one releases
+  deepened the compiler; the editor stayed a syntax-highlighted `<textarea>`. 22.0 turns it into an
+  IDE without adding a line of type theory — a new pure module `src/lang/semantics.ts` re-reads the
+  artifacts inference *already* produces (`nodeTypes`, the per-`let` `bindingSchemes`, `ctorInfo`) and
+  the char-offset `span` every parser node *already* carries, so its answers are the same types the
+  three backends compile, never a parallel guess. The core is a lexical **name-resolution walk** that
+  builds a binder table — for every `let`/`let rec`/λ-param/`match`-pattern/constructor/class-method
+  binding, its definition span and every use, with a fresh scope `Map` per region so **shadowing** is
+  honoured exactly. On top of that table the editor gained the full IDE surface: **hover** any
+  sub-expression for its inferred type, and on a name the card shows both the binding's *generalised
+  scheme* and the *monomorphic type at that use site* (`twice` → `∀ a. (a -> a) -> a -> a` plus
+  `at use: (Int -> Int) -> Int -> Int`); **end-of-line inlay type ghosts** for every binding
+  (toggleable); **occurrence highlighting** of a name's def + all uses from the caret; **go-to-def**
+  on ⌘/Ctrl-click; **scope-aware completion** (⌘/Ctrl-Space or as-you-type) ranking in-scope
+  locals/params/pattern-vars and user constructors above the TypeScript primitives, the Aether
+  prelude library and keywords, each annotated with its type; **F2 rename** that rewrites exactly the
+  spans the resolver proved refer to the binding (right-to-left so offsets stay valid) and so never
+  disturbs a shadowed name elsewhere; and **hoverable diagnostics** on the existing squiggles. The
+  overlays sit on the existing mirrored-`<pre>` editor: a hidden ruler measures the monospace
+  webfont's char width (re-measured on `document.fonts.ready` and resize), offset⟷row/col arithmetic
+  positions every popup, and the inlay layer is glued to the scrolled text by a CSS `transform` so
+  scrolling never triggers a React render. Verification: a new **19-case Editor-intelligence
+  self-test** group (`semanticsSelfCheck.ts`) on the Tests page drives the resolver over real,
+  type-checked programs — a hover reports the compiled type, an inner binding never leaks past
+  shadowing, rename touches the right spans and the result still type-checks, completion filters and
+  ranks, and an unparseable buffer degrades without throwing — all 19 green alongside the existing
+  batteries (the whole Tests page reads 19 groups, the new one included), and the features were also
+  driven live in a headless Chromium (hover, inlays, occurrence highlight, completion and rename all
+  render, zero app console errors). Additive by construction: no compiler/backend file changed, so the
+  optimizer-fuzz and equivalence batteries are untouched. Full CI gate (scope + conformance + lint +
+  tsc + build) green.
 
 - 2026-06-26 (claude): **Aether 21.0 — case-of-case (commuting conversions) + 21.1 linear inlining.** The
   optimizer simplified values *once known*, but the commonest reason abstraction failed to melt was a producer

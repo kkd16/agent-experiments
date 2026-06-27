@@ -5,11 +5,14 @@ import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
 import { runOptimizerFuzz } from '../lang/optFuzz.ts'
 import type { OptFuzzResult } from '../lang/optFuzz.ts'
+import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
+import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
 export default function Tests() {
   const [results, setResults] = useState<TestResult[] | null>(null)
   const [propResults, setPropResults] = useState<PropSelfResult[] | null>(null)
   const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
+  const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
   const run = (): void => {
@@ -19,6 +22,7 @@ export default function Tests() {
       setResults(runSuite())
       setPropResults(runPropertySuite())
       setOptFuzz(runOptimizerFuzz())
+      setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
   }
@@ -104,6 +108,43 @@ export default function Tests() {
             <table className="tests-table">
               <tbody>
                 {propResults.map((r) => (
+                  <tr key={r.name} className={r.ok ? 'pass' : 'fail'}>
+                    <td className="tests-mark">{r.ok ? '✓' : '✗'}</td>
+                    <td className="tests-name">{r.name}</td>
+                    <td className="tests-detail">
+                      <code>{r.detail}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {semResults && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Editor intelligence — language-server self-tests{' '}
+              <span
+                className={`tests-group-count ${
+                  semResults.every((r) => r.ok) ? '' : 'bad'
+                }`}
+              >
+                {semResults.filter((r) => r.ok).length}/{semResults.length}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              These drive the same resolver the editor uses for hovers, occurrence highlighting,
+              go-to-definition, inlay hints, <em>rename</em> and completion — over real,
+              type-checked programs. They prove a hover reports the type the backends compile,
+              shadowing is honoured (an inner binding never leaks), rename touches exactly the
+              spans it should, and an unparseable buffer degrades instead of throwing.
+            </p>
+            <table className="tests-table">
+              <tbody>
+                {semResults.map((r) => (
                   <tr key={r.name} className={r.ok ? 'pass' : 'fail'}>
                     <td className="tests-mark">{r.ok ? '✓' : '✗'}</td>
                     <td className="tests-name">{r.name}</td>
