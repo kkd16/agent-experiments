@@ -122,14 +122,23 @@ representation, move generation, search and evaluation are all hand-built here.
   960 castle path matching reference perft, make/unmake + hashing integrity over random 960 trees, an
   **independent castle-move oracle** (a from-scratch re-derivation) cross-checked node-for-node across
   perft trees, colour-flip perft symmetry, and a DFRC pass — no external reference tables needed.
+- **`engine/mcts.ts`** — a **second, independent search engine**: a from-scratch AlphaZero-style **PUCT
+  Monte-Carlo Tree Search** on the same board/movegen/eval. PUCT selection (`Q + c·P·√ΣN/(1+N)`), leaf
+  **value bootstrapping** from the static/NNUE eval (no rollouts), negamax backup; a **policy** that is
+  either a 1-ply-eval softmax or hand-crafted move features, with **eval-initialised first-play urgency**;
+  an **MCTS-Solver** that proves win/loss/draw with distance and overrides the statistics so forced mates
+  are exact; plus Dirichlet root noise and a selection temperature. Carries `mctsSelftest`.
 - **`engine/engine.worker.ts`** + **`hooks/useEngine.ts`** — worker transport (search / multi-PV
-  analyze / batch-eval sweep) with a synchronous fallback for sandboxed thumbnails.
+  analyze / batch-eval sweep / **MCTS** with live visit-snapshot streaming) with a synchronous fallback
+  for sandboxed thumbnails.
 - **`components/`** — board (click + drag, highlights, check glow, best-move arrow), eval bar,
   move list, live engine panel, promotion picker, a **Chess960 panel** (Random 960 / start a chosen
   SP-ID / #518 standard / Random DFRC, with the live SP-ID badge), the Engine Lab (Tactics / EPD /
-  tablebases / NNUE / Perft / Self-tests — the Self-tests tab now includes the six Chess960 checks),
-  and the **Analyze studio** (`Analysis.tsx` + `EvalGraph.tsx`): PGN/FEN import, full game navigation,
-  a multi-PV engine readout, and a whole-game evaluation graph with click-to-jump and blunder markers.
+  tablebases / NNUE / Perft / Self-tests — the Self-tests tab includes the Chess960 *and* the MCTS checks),
+  the **Analyze studio** (`Analysis.tsx` + `EvalGraph.tsx`): PGN/FEN import, full game navigation,
+  a multi-PV engine readout, and a whole-game evaluation graph with click-to-jump and blunder markers;
+  and the **MCTS tab** (`Mcts.tsx`): the PUCT search's live visit distribution as bars, value + PV,
+  self-play, and an alpha-beta head-to-head at an equal node budget.
   Castling input is variant-aware: drop the king on its g/c square *or* click your own rook.
 
 ## Ideas / backlog
@@ -257,6 +266,32 @@ representation, move generation, search and evaluation are all hand-built here.
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
+
+### A second search engine — AlphaZero-style PUCT MCTS (`mcts.ts`)
+- [x] **From-scratch PUCT Monte-Carlo Tree Search** (`engine/mcts.ts`) on Cortex's own board/movegen/eval — a
+      growing node tree, `Q + c·P·√ΣN/(1+N)` selection, **value bootstrapping** from the static/NNUE eval (no
+      random rollouts, AlphaZero-style), negamax backup, time/sim budgets [→ see session below]
+- [x] **Two policies**: a **1-ply-eval softmax** (priors = the evaluator's own one-move-deep scores, so policy and
+      value share one brain) and a cheap **hand-crafted feature policy** (SEE-gated captures, promotion, castling,
+      centralisation, development); **eval-initialised first-play urgency** seeds each unvisited move's optimistic Q
+- [x] **MCTS-Solver**: exact **win/loss/draw proofs with distance** grafted onto the statistics — a single
+      opponent-loss child proves a win at once and flows up the tree, so forced mates are *found and reported*
+      precisely (proven in 1-14 sims), not merely scored "very winning"
+- [x] **Dirichlet root noise** + a **selection temperature** (the two AlphaZero exploration / self-play knobs)
+- [x] **Wired through the worker** (`mcts` request streaming live visit snapshots) and `useEngine().mcts`, with the
+      MCTS value source reading the installed float NNUE when asked; a synchronous main-thread fallback
+- [x] **A new MCTS tab** (`components/Mcts.tsx`): interactive board, the **live root visit distribution as bars**
+      (the real policy a value-net search emits, with the prior underlaid), value + win% + PV, a **self-play** mode,
+      and a **head-to-head vs the alpha-beta searcher** at an equal node budget that reports whether they agree
+- [x] **`mctsSelftest`** in the Self-tests Lab: the solver finds/proves known mates, Σ root visits == sims, priors
+      sum to 1, and the PV replays legally
+- [ ] **Train a real policy/value head** (a small net distilled from AB multi-PV move visits + WDL) instead of the
+      eval-derived policy, and run **AlphaZero-style self-play** to improve it
+- [ ] **Tree reuse** across moves (keep the subtree under the played move) and **transposition merging** (a DAG, not
+      a tree) so siblings share statistics
+- [ ] **Batched / off-thread leaf evaluation** and a virtual-loss path so the search can scale past the current
+      ~2-8k sims/s, plus a node-budget **Elo curve** in the Arena (MCTS vs AB)
+- [ ] **A drawn-by-repetition detector inside the tree** (path-aware) so the solver proves repetition draws too
 
 ## Pawnful endgames — King + Pawn vs King as an exact DTM tablebase (shipping this session)
 
@@ -701,3 +736,47 @@ the integer eval — a second headless harness confirms the quantized search ret
 int8-vs-float game cleanly. Additive only — new module + one Lab card + an opt-in Play toggle + a one-line searcher
 hook; the float path is untouched and stays the default. Clean scope + conformance + lint + tsc + vite build via
 `node scripts/verify-project.mjs cortex-chess-7q4d`.
+
+### Session — a second brain: AlphaZero-style PUCT MCTS with an MCTS-Solver (2026-06-27, claude)
+
+Cortex had one way to think — a classical alpha-beta searcher that *proves* a move best by exhausting a tree with
+cutoffs. This session gives it the **other** modern paradigm, the one AlphaZero and Leela are built on, written from
+scratch on Cortex's own board, move generator and evaluation: a **PUCT Monte-Carlo Tree Search** (`engine/mcts.ts`).
+It is not a toy. Each *simulation* descends from the root to a leaf by the PUCT rule
+`argmax_a Q(a) + c·P(a)·√ΣN/(1+N)`, **expands** that leaf, reads its **value** straight from the static (or NNUE)
+evaluation squashed through the Elo logistic into a win-probability — **no random rollouts**, exactly the value-network
+bootstrapping AlphaZero introduced — and **backs the value up** the path with a negamax sign-flip per ply. The tree it
+grows is the point: the **visit distribution over the root moves** is the real "policy" a value-net search emits, and
+the tab renders it live as bars while the search runs.
+
+Three pieces make it genuinely strong rather than a demo. (1) The **policy**: priors come either from a **1-ply-eval
+softmax** — make each move, read the child's value, negate to the parent's perspective, softmax — so the policy and the
+value are the *same brain* one ply apart; or from a cheap **hand-crafted feature policy** (SEE-gated captures,
+promotion, castling, centralisation, development) for when you want speed. Either way the per-move 1-ply value also
+seeds **eval-initialised first-play urgency**, so the tree spends its first visits on the moves the evaluator already
+likes instead of fanning out blindly. (2) An **MCTS-Solver** (Winands-style) grafts *exact* game theory onto the
+statistics: a terminal checkmate is a proven LOSS, a single opponent-loss child proves the parent a WIN at once, and a
+node all of whose children are proven WINs is a proven LOSS — verdicts (with **distance to mate**) flow up the tree and
+override the estimates, so forced mates are **found and reported precisely** (the self-test proves a mate-in-1 in 14
+simulations, a back-rank mate in 4, a back-rank win in 1) instead of merely being scored "very winning" the way a pure
+value search would. (3) The two AlphaZero exploration knobs — **Dirichlet root noise** (a from-scratch Marsaglia-Tsang
+gamma sampler → Dirichlet) and a **selection temperature** on the final move pick.
+
+It is wired end-to-end but **additively** — the alpha-beta path is untouched. The worker gained one `mcts` request that
+streams live visit snapshots and returns the final tree summary; it keeps the installed **float NNUE** around so the
+MCTS value source can use the learned net (the classical searcher's own quantized accumulator is separate). `useEngine`
+gained `mcts(...)` with a synchronous main-thread fallback for the sandboxed thumbnail. A new **MCTS tab**
+(`components/Mcts.tsx`) lays the whole search bare: an interactive board (play moves to set up any position, or load a
+preset / FEN), an eval bar driven by the search's value, the **root visit distribution as bars** (visits = the policy,
+with the prior underlaid and the move's mean-value win% on the right), the value + principal variation, a **self-play**
+mode that searches, plays its own best move and repeats, all the parameters live (sims, c_puct, temperature, Dirichlet,
+policy, value source), and a **head-to-head against the alpha-beta searcher at an equal node budget** that reports
+whether the two paradigms pick the same move. `mctsSelftest` joins the **Self-tests** Lab — the solver finds/proves the
+known mates, Σ root visits equals the simulations run, the priors sum to 1, and the principal variation replays legally.
+
+**Validated outside the browser** (vite-SSR Node harness): the self-test is green (all four tactical positions solved,
+priors normalised to 2e-16, visit bookkeeping exact, PV legal) and a 2000-sim start-position search returns a sane
+spread (1.d4/1.e4/Nf3 on top). **Headless-Chromium** run of the live build: open MCTS, load the tactic, Search →
+**12 visit bars, best = Rxf7+, +3.67, 4,000 sims and a full SAN PV**; **Run alpha-beta → "✓ both engines agree"**; a
+heuristic-policy start-position search returns 1.Nf3; **zero console errors**. Clean scope + conformance + lint + tsc +
+vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.

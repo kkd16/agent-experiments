@@ -47,6 +47,7 @@ import {
   WHITE,
   chess960Selftest,
   reviewSelftest,
+  mctsSelftest,
   Searcher,
   deserializeNnue,
   defaultNnueBlob,
@@ -1238,6 +1239,24 @@ function runChecks(): CheckRow[] {
   // accuracy is 100 at no loss and decreasing, and the classifier flags a forced
   // mate / a large swing / a best move correctly.
   for (const c of reviewSelftest().checks) out.push({ group: 'Review', name: c.name, pass: c.ok, detail: c.detail })
+
+  // PUCT Monte-Carlo Tree Search (the second search engine): the MCTS-Solver finds
+  // and proves known mates, the visit bookkeeping is exact, the priors are a valid
+  // distribution and the principal variation is legal.
+  {
+    const t = mctsSelftest()
+    for (const c of t.cases) {
+      out.push({
+        group: 'MCTS',
+        name: c.name,
+        pass: c.pass,
+        detail: `played ${c.got}${c.expect ? ` (want ${c.expect})` : ''} · ${c.scoreCp >= 0 ? '+' : ''}${(c.scoreCp / 100).toFixed(2)} · ${c.nodes} sims`,
+      })
+    }
+    out.push({ group: 'MCTS', name: 'root priors sum to 1', pass: t.priorsNormalised, detail: `max error ${t.maxPriorError.toExponential(2)}` })
+    out.push({ group: 'MCTS', name: 'Σ root visits == simulations', pass: t.visitsConsistent, detail: t.visitsConsistent ? 'exact' : 'mismatch' })
+    out.push({ group: 'MCTS', name: 'principal variation is legal', pass: t.pvLegal, detail: t.pvLegal ? 'replays cleanly' : 'illegal move in PV' })
+  }
 
   return out
 }

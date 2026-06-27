@@ -7,8 +7,9 @@
 import { parseFen } from './board'
 import { generateLegal, inCheck } from './movegen'
 import { Searcher, MATE, type SearchInfo, type MultiInfo } from './search'
-import { deserializeNnue, type NnueBlob } from './nnue'
+import { deserializeNnue, type NnueBlob, type NnueWeights } from './nnue'
 import { quantize } from './nnue-quant'
+import { mctsSearch, type MctsOptions, type MctsResult } from './mcts'
 import type { NodeAnalysis } from './review'
 import { verifyKbnk, type KbnkVerification } from './kbnk'
 import { probeKxK } from './egtb'
@@ -84,6 +85,12 @@ export interface ReviewRequest {
   maxTime: number
 }
 
+export interface MctsRequest {
+  type: 'mcts'
+  fen: string
+  opt: MctsOptions
+}
+
 // Fire-and-forget config: install (or remove) the NNUE evaluation on the persistent
 // searcher. No reply — it just changes how subsequent searches evaluate.
 export interface SetNnueRequest {
@@ -102,6 +109,7 @@ export type WorkerRequest =
   | WdlRequest
   | PawnTbRequest
   | ReviewRequest
+  | MctsRequest
   | SetNnueRequest
 
 export type WorkerOut =
@@ -121,8 +129,14 @@ export type WorkerOut =
   | { type: 'pawntbdone'; report: PawnTbVerification; cached: boolean }
   | { type: 'reviewprogress'; done: number; total: number }
   | { type: 'reviewdone'; nodes: NodeAnalysis[] }
+  | { type: 'mctsprogress'; result: MctsResult }
+  | { type: 'mctsdone'; result: MctsResult }
 
 const searcher = new Searcher()
+// The current float NNUE (if any), kept so the MCTS value source can use it. The
+// classical `searcher` holds its own (possibly quantized) accumulator separately;
+// MCTS evaluates fresh leaves, so it wants the plain float weights.
+let currentNnue: NnueWeights | null = null
 const post = (out: WorkerOut) => (self as unknown as Worker).postMessage(out)
 
 // Analyse one position to top-2 lines for the game-review model. A terminal node
@@ -190,11 +204,18 @@ function oracleFor(id: string): { oracle: Oracle; name: string } | null {
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data
   if (msg.type === 'setnnue') {
+    currentNnue = msg.blob ? deserializeNnue(msg.blob) : null
     if (msg.blob && msg.quantize) {
       searcher.setQuantEvaluator(quantize(deserializeNnue(msg.blob)))
     } else {
-      searcher.setEvaluator(msg.blob ? deserializeNnue(msg.blob) : null)
+      searcher.setEvaluator(currentNnue)
     }
+    return
+  }
+  if (msg.type === 'mcts') {
+    const weights = msg.opt.evalSource === 'nnue' ? currentNnue : null
+    const result = mctsSearch(msg.fen, msg.opt, weights, (r) => post({ type: 'mctsprogress', result: r }))
+    post({ type: 'mctsdone', result })
     return
   }
   if (msg.type === 'search') {

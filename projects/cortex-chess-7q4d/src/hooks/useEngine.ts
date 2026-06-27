@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { parseFen, generateLegal, inCheck, MATE, type SearchInfo, type MultiInfo } from '../engine'
 import { Searcher, deserializeNnue, quantize, type NnueBlob } from '../engine'
+import { mctsSearch as mctsSearchSync, type MctsOptions, type MctsResult } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
 import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
 import { verifyWdl as verifyWdlSync, type WdlVerification } from '../engine/wdltb'
@@ -67,6 +68,12 @@ export interface EngineHandle {
   // Install (blob) or remove (null) the NNUE evaluation for subsequent searches.
   // Pass `useQuant` to run the net quantized (int16/int8) in play.
   setNnue: (blob: NnueBlob | null, useQuant?: boolean) => void
+  // Run an AlphaZero-style PUCT Monte-Carlo Tree Search; streams visit snapshots.
+  mcts: (
+    fen: string,
+    opt: MctsOptions,
+    onProgress: (result: MctsResult) => void,
+  ) => Promise<MctsResult>
   cancel: () => void
 }
 
@@ -129,6 +136,16 @@ export function useEngine(): EngineHandle {
           case 'reviewprogress':
             ;(infoRef.current as ((a: unknown) => void) | null)?.(msg)
             break
+          case 'mctsprogress':
+            ;(infoRef.current as ((a: unknown) => void) | null)?.(msg.result)
+            break
+          case 'mctsdone': {
+            const resolve = resolveRef.current as ((v: unknown) => void) | null
+            resolveRef.current = null
+            infoRef.current = null
+            resolve?.(msg.result)
+            break
+          }
           case 'reviewdone': {
             const resolve = resolveRef.current as ((v: unknown) => void) | null
             resolveRef.current = null
@@ -310,6 +327,21 @@ export function useEngine(): EngineHandle {
     [post],
   )
 
+  const mcts = useCallback(
+    (fen: string, opt: MctsOptions, onProgress: (result: MctsResult) => void): Promise<MctsResult> =>
+      post(
+        { type: 'mcts', fen, opt },
+        onProgress as (a: never) => void,
+        () => {
+          // Main-thread fallback (sandboxed thumbnail): run synchronously. Use the
+          // installed float net when the MCTS value source asks for it.
+          const weights = opt.evalSource === 'nnue' && nnueRef.current ? deserializeNnue(nnueRef.current) : null
+          return mctsSearchSync(fen, opt, weights, onProgress)
+        },
+      ),
+    [post],
+  )
+
   const setNnue = useCallback(
     (blob: NnueBlob | null, useQuant = false) => {
       nnueRef.current = blob
@@ -341,7 +373,7 @@ export function useEngine(): EngineHandle {
   }, [])
 
   return useMemo(
-    () => ({ think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, setNnue, cancel }),
-    [think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, setNnue, cancel],
+    () => ({ think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, mcts, setNnue, cancel }),
+    [think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, mcts, setNnue, cancel],
   )
 }
