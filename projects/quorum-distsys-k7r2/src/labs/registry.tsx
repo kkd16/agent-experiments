@@ -15,6 +15,7 @@ import { CommitLab } from './CommitLab';
 import { SnowLab } from './SnowLab';
 import { SnapshotLab } from './SnapshotLab';
 import { MutexLab } from './MutexLab';
+import { BrbLab } from './BrbLab';
 import { SelfTestLab } from './SelfTestLab';
 
 export interface LabDef {
@@ -143,6 +144,15 @@ export const LABS: LabDef[] = [
     icon: '❄',
     tag: 'metastable · probabilistic',
     Component: SnowLab,
+  },
+  {
+    id: 'brb',
+    title: 'Bracha broadcast',
+    blurb:
+      "Reliable broadcast under Byzantine faults — the primitive beneath PBFT/HotStuff. One sender delivers one message so that even an equivocating traitor sender can't split the correct nodes: all deliver the same value or none does. Bracha's SEND→ECHO→READY amplification (N≥3f+1, echo quorum >(N+f)/2, deliver at 2f+1) makes two values unable to both reach quorum. Equivocate the sender, add traitors up to f and watch Agreement hold — then push past f and watch it break.",
+    icon: '⊠',
+    tag: 'byzantine · reliable broadcast',
+    Component: BrbLab,
   },
   {
     id: 'mutex',

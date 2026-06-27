@@ -21,8 +21,9 @@ export function Home() {
           Chord DHT, CRDTs, gossip / SWIM failure detection, vector clocks and atomic commit — plus
           <b> Snow / Avalanche</b> metastable consensus that reaches agreement by random subsampling
           instead of quorums, <b>Chandy–Lamport</b> consistent global snapshots of a running
-          computation, and <b>Lamport</b> logical-clock mutual exclusion. Crash nodes, corrupt them,
-          drop links, partition the cluster — and watch the safety invariants either hold or break, live.
+          computation, <b>Lamport</b> logical-clock mutual exclusion, and <b>Bracha</b> Byzantine
+          reliable broadcast. Crash nodes, corrupt them, drop links, partition the cluster — and watch
+          the safety invariants either hold or break, live.
         </p>
       </section>
 
