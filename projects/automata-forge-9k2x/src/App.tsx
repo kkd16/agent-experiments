@@ -17,6 +17,8 @@ import LogicView from './views/LogicView'
 import type { LogicTab } from './views/LogicView'
 import BranchingView from './views/BranchingView'
 import type { BranchingTab } from './views/BranchingView'
+import StarView from './views/StarView'
+import type { StarTab } from './views/StarView'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -28,6 +30,7 @@ import { PARSE_EXAMPLES } from './engine/parse/examples'
 import { LEARN_EXAMPLES } from './engine/learn/examples'
 import { DEFAULT_FORMULA, DEFAULT_MODEL } from './engine/ltl/examples'
 import { DEFAULT_FORMULA as CTL_DEFAULT_FORMULA, DEFAULT_MODEL as CTL_DEFAULT_MODEL } from './engine/ctl/examples'
+import { DEFAULT_FORMULA as STAR_DEFAULT_FORMULA, DEFAULT_MODEL as STAR_DEFAULT_MODEL } from './engine/star/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
@@ -38,6 +41,7 @@ const VALID_PARSE_TABS: ParseTab[] = ['class', 'll1', 'automaton', 'table', 'par
 const VALID_LEARN_TABS: LearnTab[] = ['table', 'hypothesis', 'target']
 const VALID_LOGIC_TABS: LogicTab[] = ['formula', 'buchi', 'kripke', 'check', 'verify', 'about']
 const VALID_BRANCHING_TABS: BranchingTab[] = ['formula', 'label', 'check', 'verify', 'about']
+const VALID_STAR_TABS: StarTab[] = ['formula', 'decompose', 'check', 'verify', 'about']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
@@ -57,6 +61,7 @@ const DEFAULT_STATE: AppState = {
   learn: { regex: LEARN_EXAMPLES[0].regex, tab: 'table', strategy: 'rivest-schapire' },
   logic: { formula: DEFAULT_FORMULA, model: DEFAULT_MODEL, tab: 'check' },
   branching: { formula: CTL_DEFAULT_FORMULA, model: CTL_DEFAULT_MODEL, tab: 'check' },
+  star: { formula: STAR_DEFAULT_FORMULA, model: STAR_DEFAULT_MODEL, tab: 'decompose' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -70,6 +75,7 @@ function clean(s: AppState): AppState {
   const ltab = VALID_LEARN_TABS.includes(s.learn.tab as LearnTab) ? s.learn.tab : 'table'
   const lgtab = VALID_LOGIC_TABS.includes(s.logic.tab as LogicTab) ? s.logic.tab : 'check'
   const brtab = VALID_BRANCHING_TABS.includes(s.branching.tab as BranchingTab) ? s.branching.tab : 'check'
+  const startab = VALID_STAR_TABS.includes(s.star.tab as StarTab) ? s.star.tab : 'decompose'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -84,6 +90,7 @@ function clean(s: AppState): AppState {
     learn: { ...s.learn, tab: ltab, strategy: lstrat },
     logic: { ...s.logic, tab: lgtab },
     branching: { ...s.branching, tab: brtab },
+    star: { ...s.star, tab: startab },
   }
 }
 
@@ -139,7 +146,9 @@ export default function App() {
                             ? 'temporal logic: LTL → Büchi automaton, then model-check a system & get a counterexample'
                             : state.mode === 'branching'
                               ? 'branching time: CTL model checking by the labelling algorithm — Sat-set fixpoints & witness trees'
-                              : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                              : state.mode === 'star'
+                                ? 'CTL*: the logic above both — Emerson–Lei model checking, branching labelling glued to LTL automata'
+                                : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -217,6 +226,14 @@ export default function App() {
             >
               Branching
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'star'}
+              className={`mode-btn${state.mode === 'star' ? ' active' : ''}`}
+              onClick={() => setMode('star')}
+            >
+              CTL*
+            </button>
           </div>
           <button
             className="share-btn"
@@ -235,7 +252,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'branching' ? (
+      {state.mode === 'star' ? (
+        <StarView
+          formula={state.star.formula}
+          onFormula={(formula) => setState((s) => ({ ...s, star: { ...s.star, formula } }))}
+          model={state.star.model}
+          onModel={(model) => setState((s) => ({ ...s, star: { ...s.star, model } }))}
+          tab={state.star.tab as StarTab}
+          onTab={(tab) => setState((s) => ({ ...s, star: { ...s.star, tab } }))}
+        />
+      ) : state.mode === 'branching' ? (
         <BranchingView
           formula={state.branching.formula}
           onFormula={(formula) => setState((s) => ({ ...s, branching: { ...s.branching, formula } }))}
