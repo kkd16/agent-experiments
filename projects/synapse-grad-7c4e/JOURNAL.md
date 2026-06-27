@@ -1759,3 +1759,77 @@ Full CI gate (scope + conformance + lint + tsc + vite build) green via
 - [ ] An **S4 (linear-time-invariant) toggle** — freeze Δ/B/C to be input-*independent* and watch
       selective-copy break, making the case for selectivity concrete.
 - [ ] A **per-channel A spectrum** view (the learned diagonal decay rates) and a state-trajectory plot.
+
+## v17 — Contrastive · SimCLR (self-supervised representation learning) — planned + built this session
+
+The framework could *classify* (with labels), *generate* (VAE/GAN/diffusion/flows) and *model
+sequences* — but it had no example of the paradigm that powers most modern pretraining:
+**learning useful representations from raw data with no labels at all**. This session adds it as the
+seventeenth lab — a from-scratch **SimCLR** (Chen et al. 2020): instance discrimination by the
+normalized temperature-scaled cross-entropy (NT-Xent / InfoNCE), built to the same bar as every other
+lab — one new hand-derived autograd op gradchecked to ~1e-10, the whole CNN encoder gradchecked
+end-to-end through the loss, validated in node *first*, then driven in headless Chromium.
+
+**The idea (and why it's striking):** take an unlabeled glyph, make two random augmentations of it (a
+*positive pair*), and train an encoder to pull their embeddings together while pushing every other
+image in the batch apart. No class is ever named. Then — *afterwards* — fit a one-layer linear probe
+(and a kNN vote) on the **frozen** representation and watch the accuracy leap past a raw-pixel
+baseline. The clusters were there all along; the contrastive loss found them with zero supervision.
+
+**Planned steps (all shipped this session):**
+- [x] `l2NormalizeRows` — **the one new hand-derived op**: project each embedding onto the unit
+      hypersphere `y_i = x_i/‖x_i‖` (the core engine's `div` only broadcasts a `[1,C]` row, never a
+      per-row `[R,1]` scalar), full VJP `ga = (g − x·(g·x)/n²)/n`. Gradchecked to **1.1e-10**.
+- [x] `ntXentLoss` — the InfoNCE loss assembled from the new normalize + matmul/transpose/scale + an
+      additive −∞ diagonal mask + `logSoftmax` + `gatherCols` + mean: a `(2N−1)`-way classification
+      where each anchor's correct class is its matching view. Plus `cosineSimMatrix`,
+      `contrastiveAccuracy`, and Wang–Isola **alignment / uniformity** metrics.
+- [x] `Encoder` — a genuine small **CNN**: two stride-2 convolutions (downsample without pooling) →
+      a fully-connected backbone (the *representation* h) → a two-layer projection head (the
+      contrastive *z*). SimCLR's trick — run the loss on z, keep h downstream — is honoured: `represent`
+      stops at h, `project` goes to z. Three size presets.
+- [x] `augment` — the augmentation pipeline the whole method rests on: a random affine warp
+      (rotation · isotropic scale · translation, bilinearly resampled) + intensity jitter + additive
+      Gaussian noise + an optional random-erasing cutout, all driven by a single strength slider.
+- [x] Downstream evaluators (encoder frozen): `linearProbe` (a softmax classifier, shuffled
+      half-split so both halves see every class), `knnAccuracy` (parameter-free cosine kNN), and the
+      raw-pixel linear-probe baseline — the bar the learned representation has to beat.
+- [x] `useContrastiveTrainer` hook — rAF minibatch training (each step builds 2N augmented views and
+      minimises NT-Xent), periodic heavy eval (encode a fixed subset → fresh probe + kNN + PCA), live
+      similarity-matrix and augmentation previews, schedules, grad clip, one-press end-to-end gradcheck,
+      save/load + `#z=` share links.
+- [x] UI: `EmbeddingScatter` (the headline — a 2-D PCA of the *representation* coloured by the hidden
+      label, classes condensing into islands the encoder was never told about), `SimilarityMatrix`
+      (the 2N×2N cosine grid with each row's positive boxed — NT-Xent's target made literal),
+      `AugmentationView` (anchor → its random views), `MetricsChart` (NT-Xent loss + probe/kNN accuracy
+      vs the dashed pixel baseline), `ContrastivePanel`, `ContrastiveLab`; new app tab **Contrastive ·
+      SimCLR** + hash `#z=`.
+- [x] `selftest.ts` extended by **4 checks** — `l2-normalize-rows` (1.1e-10), the **whole CNN encoder
+      end-to-end through NT-Xent** (4.5e-7), the unit-sphere identity (1.0e-9), and the collapsed-batch
+      identity (the InfoNCE value of a do-nothing encoder is exactly `log(2N−1)`, matched to 5.7e-17).
+      **The self-test now covers 90 ops.**
+
+**Validated outside the browser first** (esbuild bundle, real engine, node): all four new checks green,
+and the headline result reproduced — on **distorted digits** (heavy base jitter + noise, so the raw
+pixels are *not* linearly separable) a standard encoder (~24k params) trains by NT-Xent alone and its
+frozen-representation linear probe climbs **45% → 99%** (kNN **53% → 96%**) over ~500 steps, against a
+**69% raw-pixel baseline** — i.e. the unsupervised representation goes from *worse* than pixels to
+near-perfect, far above what pixels allow. Then **driven in headless Chromium** on the production build:
+the Contrastive tab renders all ten canvases, training advances cleanly (probe passing the pixel
+baseline within seconds), the in-browser end-to-end gradient check verifies **every encoder weight**
+(max rel err **5.0e-9**), and there are **zero page errors**. Additive only — one engine module, one
+hook, five components, one tab, four self-tests, one slot prefix.
+Full CI gate (scope + conformance + lint + tsc + vite build) green via
+`node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+**Backlog / next ideas for this lab:**
+- [ ] A **projection-head ablation** toggle (probe on z vs h) to show, live, why SimCLR keeps the
+      representation and throws the head away.
+- [ ] **MoCo-style momentum encoder + queue** (a much larger negative set than the batch holds) and a
+      **SimSiam / BYOL** negatives-free variant (stop-gradient + predictor) as a head-to-head.
+- [ ] A **temperature sweep** panel charting alignment vs uniformity on one plane (the Wang–Isola
+      trade-off the τ knob slides along).
+- [ ] **Supervised-contrastive** mode (SupCon: all same-label images are positives) to contrast the
+      label-free and label-aware geometries side by side.
+- [ ] An **augmentation-importance** grid: turn each transform off and watch the probe accuracy fall —
+      making "augmentation *is* the supervision" concrete.

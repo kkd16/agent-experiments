@@ -15,11 +15,12 @@ import BayesLab from './components/bayes/BayesLab';
 import MoELab from './components/moe/MoELab';
 import SsmLab from './components/ssm/SsmLab';
 import NCALab from './components/nca/NCALab';
+import ContrastiveLab from './components/contrastive/ContrastiveLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
 function initialTab(): Tab {
   try {
     if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
@@ -30,6 +31,7 @@ function initialTab(): Tab {
     if (/[#&]g=/.test(location.hash)) return 'generative';
     if (/[#&]d=/.test(location.hash)) return 'diffusion';
     if (/[#&]f=/.test(location.hash)) return 'flows';
+    if (/[#&]z=/.test(location.hash)) return 'contrastive';
     if (/[#&]a=/.test(location.hash)) return 'adversarial';
     if (/[#&]r=/.test(location.hash)) return 'control';
     if (/[#&]n=/.test(location.hash)) return 'graph';
@@ -87,6 +89,9 @@ export default function App() {
             <button className={tab === 'adversarial' ? 'on' : ''} onClick={() => setTab('adversarial')}>
               Adversarial · GAN
             </button>
+            <button className={tab === 'contrastive' ? 'on' : ''} onClick={() => setTab('contrastive')}>
+              Contrastive · SimCLR
+            </button>
             <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
               Control · RL
             </button>
@@ -132,6 +137,8 @@ export default function App() {
         <FlowLab />
       ) : tab === 'adversarial' ? (
         <GANLab />
+      ) : tab === 'contrastive' ? (
+        <ContrastiveLab />
       ) : tab === 'control' ? (
         <RLLab />
       ) : tab === 'graph' ? (

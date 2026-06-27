@@ -30,6 +30,7 @@ import { KAN, KANLayer, makeGrid, evalSplineBasis } from './kan';
 import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointCE, makeNodeDataset } from './node-ode';
 import { gaussianNLL, gaussianKL, BayesLinear, BayesMLP, mixtureMoments } from './bayes';
 import { perceive, NCA, ncaVisibleLoss, makeSeed, renderTarget } from './nca';
+import { l2NormalizeRows, ntXentLoss, diagonalMask, Encoder } from './contrastive';
 
 export interface OpCheck {
   name: string;
@@ -1114,6 +1115,59 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const pairs: [number, number][] = [];
     for (let l = 0; l < Ln; l++) pairs.push([y.data[l], (dt * (1 - Math.pow(a, l + 1))) / (1 - a)]);
     ops.push(relCheck('ssm-scan-ema (closed form)', pairs));
+  }
+
+  // ---- Self-supervised contrastive learning (SimCLR / NT-Xent lab) -----------------
+  //
+  // The one new hand-derived op is the row-wise L2 normalization onto the unit sphere; the rest of
+  // the InfoNCE loss is matmul/transpose/scale/logSoftmax/gatherCols, already proven above. We
+  // gradcheck the op alone, then the WHOLE encoder (two stride-2 convs + backbone + projection
+  // head) end-to-end through NT-Xent — the proof the contrastive gradient flows back through every
+  // parameter — plus two exact identities.
+  {
+    // (1) l2NormalizeRows: forward + VJP vs finite differences. Rows kept away from 0 so the norm
+    // is well away from the eps floor (a clean, smooth function).
+    const x = leaf(rng, 5, 4);
+    for (let i = 0; i < x.size; i++) x.data[i] += x.data[i] >= 0 ? 0.4 : -0.4;
+    ops.push(checkOp('l2-normalize-rows', [x], () => l2NormalizeRows(x), rng));
+  }
+  {
+    // (2) a whole CNN encoder gradchecked end-to-end through the NT-Xent loss. The image batch and
+    // the positive-pair index are frozen leaves (the network's input), so the loss is a clean
+    // function of the parameters. posIdx pairs row i with row (i+3) mod 6 — two "views" per source.
+    const size = 8;
+    const m = 6;
+    const enc = new Encoder({ size, ch1: 3, ch2: 4, repDim: 6, projDim: 4 }, rngFrom(seed ^ 0x5c1));
+    const imgs = new Float64Array(m * size * size);
+    for (let i = 0; i < imgs.length; i++) imgs[i] = rng() * 2 - 1;
+    const X = Tensor.fromFlat(imgs, m, size * size, false);
+    const posIdx = Int32Array.from({ length: m }, (_, i) => (i + 3) % m);
+    const mask = diagonalMask(m);
+    ops.push(checkOp('contrastive-ntxent (e2e)', enc.parameters(), () => ntXentLoss(enc.project(X), posIdx, mask, 0.2), rng));
+  }
+  {
+    // (3) unit-sphere identity: every normalized row has L2 norm 1.
+    const x = leaf(rng, 6, 5);
+    for (let i = 0; i < x.size; i++) x.data[i] += x.data[i] >= 0 ? 0.3 : -0.3;
+    const y = l2NormalizeRows(x);
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < 6; i++) {
+      let ss = 0;
+      for (let j = 0; j < 5; j++) ss += y.data[i * 5 + j] * y.data[i * 5 + j];
+      pairs.push([Math.sqrt(ss), 1]);
+    }
+    ops.push(relCheck('contrastive-unit-norm', pairs));
+  }
+  {
+    // (4) collapsed-batch identity: if every embedding is identical, all cosine similarities are
+    // equal, the masked softmax is uniform over the 2N−1 negatives, and the loss is exactly
+    // log(2N−1) — the InfoNCE value when the encoder has learned nothing.
+    const m = 8;
+    const D = 4;
+    const z = Tensor.fromFlat(new Float64Array(m * D).fill(0.7), m, D, false);
+    const posIdx = Int32Array.from({ length: m }, (_, i) => i ^ 1); // interleaved positives
+    const loss = ntXentLoss(z, posIdx, diagonalMask(m), 0.3);
+    ops.push(relCheck('contrastive-collapse (log(2N-1))', [[loss.data[0], Math.log(m - 1)]]));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
