@@ -47,7 +47,7 @@ export interface RTContext extends RTLighting {
 }
 
 // The shaded surface at a hit, two-sided and normal-mapped, ready for the BSDF.
-interface Surface {
+export interface Surface {
   px: number; py: number; pz: number
   nx: number; ny: number; nz: number // shading normal, facing the viewer
   gx: number; gy: number; gz: number // geometric normal, facing the viewer
@@ -59,7 +59,7 @@ interface Surface {
 // Reconstruct the world-space surface at a barycentric hit. `dx,dy,dz` is the
 // incoming ray direction; the shading/geometric normals are flipped to face it so
 // planes (ground, walls) are lit from both sides.
-function surfaceAt(scene: RTScene, tri: number, u: number, v: number, dx: number, dy: number, dz: number): Surface {
+export function surfaceAt(scene: RTScene, tri: number, u: number, v: number, dx: number, dy: number, dz: number): Surface {
   const w = 1 - u - v
   const o3 = tri * 3
   const o2 = tri * 2

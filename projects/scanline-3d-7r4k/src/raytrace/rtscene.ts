@@ -12,6 +12,7 @@ import type { Material } from '../render/shading.ts'
 import type { NormalMap, Texture } from '../render/texture.ts'
 import { getFilmLUT } from './thinfilm.ts'
 import type { FilmLUT } from './thinfilm.ts'
+import { rgbToSpectrum } from './spectrum.ts'
 
 export interface RTMaterial {
   albedo: Vec3
@@ -31,6 +32,12 @@ export interface RTMaterial {
   filmThicknessNm: number
   filmIor: number
   filmLut: FilmLUT | null
+  // spectral rendering (v10): a Sellmeier glass key (or '' for the achromatic ior+dispersion
+  // fallback), an emitter colour temperature (0 = none), and the Smits-up-sampled reflectance
+  // coefficients of the albedo, cached once so the spectral inner loop is a lerp.
+  glass: string
+  blackbodyK: number
+  albedoSpectrum: Float64Array
 }
 
 export interface RTInstance {
@@ -61,6 +68,9 @@ function toRTMaterial(m: Material, texture: Texture | null, normalMap: NormalMap
     filmLut: (m.filmThicknessNm ?? 0) > 0
       ? getFilmLUT(m.filmThicknessNm as number, m.filmIor ?? 1.33, m.ior ?? 1.5)
       : null,
+    glass: m.glass ?? '',
+    blackbodyK: m.blackbodyK ?? 0,
+    albedoSpectrum: rgbToSpectrum(m.albedo[0], m.albedo[1], m.albedo[2]),
   }
 }
 

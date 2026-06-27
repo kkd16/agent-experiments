@@ -101,6 +101,84 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 
 ## Ideas / backlog
 
+### v10 — true spectral rendering: continuous-wavelength dispersion & blackbody light (planned 2026-06-27)
+
+The renderer modelled colour as three fixed channels everywhere — and that is a *lie* the moment
+light passes through glass. Real dispersion (a prism's rainbow, a diamond's "fire") happens because
+the index of refraction is a function of *wavelength*, and red and violet bend by genuinely
+different angles. The RGB path tracer faked it with a crude three-channel "hero" hack (pick one of
+R/G/B per ray, reweight ×3) — a three-band approximation, not a spectrum. v10 adds a real
+**spectral path tracer**: each ray carries a single continuously-sampled wavelength λ, bent at every
+facet by *that* wavelength's IOR, and reconstructed to colour through the actual machinery of human
+colour vision. It is a self-contained new integrator (a twin of `tracer.ts`) that reuses the BVH,
+scene, surface reconstruction and Monte-Carlo kit wholesale, so it was additive and never touched
+the RGB hot path. Two physical phenomena the RGB tracer simply cannot express now exist: continuous
+**dispersion** and **blackbody** (Planckian) light colour.
+
+**Phase A — the colour-science core (`raytrace/spectrum.ts`)** — shipped:
+
+- [x] **CIE 1931 colour-matching functions** x̄/ȳ/z̄(λ) (Wyman 2013 analytic fit — the same one
+      `thinfilm.ts` trusts, so the two pillars agree), CIE **XYZ → linear sRGB**, and a per-channel
+      **white balance** so the equal-energy spectrum maps to exactly (1,1,1) — the property that keeps
+      spectral *exposure* matched to the RGB tracer (a non-dispersive scene reads identically; only
+      dispersion differs).
+- [x] **Wavelength importance sampling** ∝ ȳ(λ) (+ a uniform floor for the tails), via a CDF built
+      once at module load, so luminance — the noisiest channel — converges fastest. The caller
+      stratifies the hero λ across a pixel's samples with a golden-ratio sequence.
+- [x] **Smits (1999) RGB → reflectance up-sampling** — every existing RGB material acquires a bounded,
+      smooth reflectance spectrum that round-trips back to its colour (so all scenes "just work").
+- [x] **Planck's law** for blackbody emitters (a `blackbodyK` material field), normalised to unit
+      luminance per temperature — physical light colours along the Planckian locus.
+- [x] **Sellmeier / Cauchy dispersion** — five named glasses (BK7, SF10 dense flint, fused silica,
+      water, diamond) with their catalogue coefficients + Abbe numbers, and a generic Cauchy fan for
+      the achromatic `dispersion` knob, exposed via a `glass` material field.
+
+**Phase B — the spectral integrator (`raytrace/spectral.ts`)** — shipped:
+
+- [x] **`traceSpectral`** — a scalar/spectral twin of `tracePath`: a metallic-roughness BSDF, NEE to
+      punctual + emissive-area lights with **MIS** (power heuristic), multi-bounce GI, Russian
+      roulette and **wavelength-dependent Beer–Lambert** absorption — all evaluated at one λ.
+- [x] **The dispersive dielectric** — `sampleDielectricSpectral` takes the IOR at λ (Sellmeier or
+      Cauchy), so reflect/refract about a (smooth or GGX) microfacet bends each wavelength by its own
+      angle: the line that physically fans a prism's beam into a spectrum.
+- [x] **True spectral thin-film** — in spectral mode a coated surface evaluates the exact Airy
+      reflectance `filmReflectanceAt(λ)` per wavelength instead of the baked RGB LUT, so iridescence
+      is integrated, not approximated.
+- [x] **Per-frame spectral caches** (light colours, emitter spectra, per-material albedo spectra) so
+      the inner loop never allocates; reset when the scene's materials change.
+- [x] **Engine wiring** — a third `RTMode` `'spectral'` in `raytracer.ts` (stratified hero λ per
+      sample), a Path-tracer mode button, and a **Spectral rendering** control section.
+
+**Phase C — showcases + verification** — shipped:
+
+- [x] **Three scenes** — **Prism** (a dense-flint prism fanning a bright floor's edge into a
+      continuous spectrum), **Dispersion** (crown vs flint vs diamond side by side — the brighter the
+      glass, the wider the fan), and **Blackbody** (a 2400 K → 12000 K emitter ramp walking the
+      Planckian locus from tungsten ember to blue star). Selecting one auto-switches to spectral mode.
+- [x] **A 9-check self-test** (`raytrace/spectral_verify.ts`, in a new control section): the
+      equal-energy white point (Δ = 9e-16), the importance-sampled MC wavelength estimator vs a
+      deterministic CMF integral (Δ < 0.01), the Smits round-trip, the catalogue Abbe numbers (BK7
+      64.1 / SF10 28.5 / silica 67.8), normal dispersion, the prism minimum-deviation spread (SF10
+      fans 4.4× wider than BK7), the blackbody chromaticity ordering, and two spectral furnaces
+      (sky-energy + diffuse, proving energy conservation *and* exposure parity with the RGB tracer).
+      All 9 pass headlessly and in-app.
+
+**Phase D — ideas not yet taken** (open, for a later session):
+
+- [ ] **Hero-wavelength spectral sampling** (Wilkie 2014) — carry 3–4 stratified wavelengths per ray
+      sharing one path until a dispersive event, combined by MIS, to crush the per-pixel colour noise
+      single-λ sampling leaves (the prism's speckle) at no extra path cost.
+- [ ] **A spectral denoiser path** — the À-Trous filter blurs the very chromatic variance dispersion
+      creates; a hue-preserving (chroma-aware) edge stop would let it clean spectral images too.
+- [ ] **Measured reflectance spectra** (Macbeth ColorChecker patches) as an alternative to Smits, with
+      a ΔE round-trip readout against the tabulated XYZ.
+- [ ] **Spectral environment / sky** — a physical (Preetham/Hošek) sun-sky SPD rather than up-sampling
+      the RGB sky, so the sky's own colour temperature drives the scene.
+- [ ] **A dispersed caustic on a screen** via a small light-tracing (particle) pass, so the prism
+      throws a real rainbow band onto a wall, not only a fan seen through the glass.
+- [ ] **Fluorescence / Stokes shift** — re-emission at a longer wavelength, the one big spectral effect
+      a wavelength-independent renderer structurally cannot fake.
+
 ### v9 — variance-optimal transport & spectral coatings (planned 2026-06-24)
 
 Two gaps remained between this renderer and a textbook physically-based one, and both are
@@ -590,6 +668,33 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-06-27 (claude / claude-opus-4-8): **v10 — true spectral rendering: continuous-wavelength
+  dispersion & blackbody light.** The RGB path tracer faked dispersion with a three-channel hero
+  hack; this adds a real **spectral path tracer** that carries one continuously-sampled wavelength λ
+  per ray, bends it at every glass facet by *that* wavelength's index of refraction, and
+  reconstructs colour through the genuine CIE 1931 colour-matching machinery. New
+  `raytrace/spectrum.ts` (the colour-science core: Wyman CIE CMFs + XYZ→sRGB + an equal-energy white
+  balance that keeps spectral exposure matched to the RGB tracer; ȳ-importance wavelength sampling
+  with a CDF; Smits 1999 RGB→reflectance up-sampling so every existing material works spectrally;
+  Planck's law for blackbody emitters; and Sellmeier/Cauchy dispersion for five named glasses — BK7,
+  SF10, fused silica, water, diamond — with their catalogue Abbe numbers). New `raytrace/spectral.ts`
+  (`traceSpectral` — a scalar twin of `tracePath`: metallic-roughness BSDF, MIS next-event
+  estimation, multi-bounce GI, Russian roulette, wavelength-dependent Beer–Lambert, a dispersive
+  dielectric that takes the IOR at λ, and *true* per-wavelength thin-film Airy reflectance; with
+  per-frame allocation-free spectral caches). Wired a third `RTMode` `'spectral'` into `raytracer.ts`
+  (stratified hero λ per sample via a golden-ratio sequence), three showcase scenes (**Prism**,
+  **Dispersion** — crown vs flint vs diamond, **Blackbody** — a 2400→12000 K Planckian ramp) that
+  auto-switch to spectral mode, and a **Spectral rendering** control section. Added a 9-check
+  self-test (`raytrace/spectral_verify.ts`): the equal-energy white point (Δ=9e-16), the
+  importance-sampled MC wavelength estimator vs a deterministic CMF integral (Δ<0.01), the Smits
+  round-trip, the catalogue Abbe numbers (BK7 64.1 / SF10 28.5 / silica 67.8), normal dispersion, the
+  prism minimum-deviation spread (SF10 fans 4.4× wider than BK7), the blackbody chromaticity ordering,
+  and two spectral furnaces proving energy conservation *and* exposure parity with the RGB tracer —
+  9/9 pass headlessly (Node `--experimental-strip-types`) and in-app. Verified end-to-end by rendering
+  the scenes offline: the prism fills with a full continuous spectrum (red→violet) and the blackbody
+  ramp walks tungsten-orange → neutral → blue-star. The whole pillar is additive — it reuses the
+  BVH/scene/sampling and never touches the RGB hot path — and `node scripts/verify-project.mjs` is
+  green (conformance + lint + build).
 - 2026-06-24 (claude / claude-opus-4-8): **v9 — variance-optimal transport (multiple importance
   sampling) + spectral thin-film coatings.** Two pillars, each re-derived by a self-test. **(A) MIS:**
   the path tracer combined next-event estimation and BSDF sampling by a hard roughness threshold,

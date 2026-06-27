@@ -553,29 +553,102 @@ const glass = (): SceneConfig => {
 // path tracer renders one hero RGB channel per ray with that channel's IOR, recombining
 // to the rainbow over many samples. Dispersion is on; let it converge.
 const prism = (): SceneConfig => {
-  const prismMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.52, attenuation: [0, 0, 0], dispersion: 1.4 }
+  // `glass: 'sf10'` gives the spectral tracer dense-flint's real Sellmeier n(λ) (Abbe ≈ 28 —
+  // a wide fan); `ior`/`dispersion` are the achromatic fallback the RGB tracer still uses.
+  // The prism is turned 90° about Y so its non-parallel slanted faces face the camera: a ray
+  // enters one face and leaves another, dispersing the bright backdrop it then points at —
+  // so the white light-panel behind reads through the glass as a smeared spectrum.
+  const prismMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.728, attenuation: [0, 0, 0], dispersion: 1.4, glass: 'sf10' }
   const objects: SceneObject[] = [
-    { id: 'prism', meshKind: 'prism', position: [0, 1.0, 0], scale: 1.5, spin: 0, tiltSpin: 0, baseRotation: [0, 0.0, 0], material: prismMat, texture: 'none', normalMap: 'none' },
-    // a bright emissive bar behind the prism acts as the light source the prism disperses
-    { id: 'lamp', meshKind: 'cube', position: [-3.2, 1.4, -1.0], scale: 0.12, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [22, 22, 22] }, texture: 'none', normalMap: 'none' },
+    { id: 'prism', meshKind: 'prism', position: [0, 1.1, 0], scale: 2.0, spin: 0, tiltSpin: 0, baseRotation: [0, Math.PI / 2, 0.18], material: prismMat, texture: 'none', normalMap: 'none' },
   ]
   return {
     name: 'Prism',
     ground: true,
     groundTexture: 'none',
     groundNormalMap: 'none',
-    groundMaterial: mat([0.16, 0.17, 0.2], 0.2, 24, 0, 0, 0.6),
+    // a bright, self-lit floor beneath a dark sky: the prism deviates the camera ray downward
+    // toward the floor, and because each wavelength bends by its own SF10 index the floor's
+    // edge fans through the glass into a clean spectrum.
+    groundMaterial: { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [2.6, 2.6, 2.7] },
     objects,
-    lights: [
-      { type: 'dir', direction: normalize([0.7, -0.35, -0.2]) as Vec3, color: [1, 1, 1], intensity: 1.4 },
-    ],
-    ambient: [0.02, 0.02, 0.03],
-    bgTop: [0.015, 0.018, 0.025],
-    bgBottom: [0.02, 0.022, 0.03],
+    lights: [],
+    ambient: [0.0, 0.0, 0.0],
+    bgTop: [0.01, 0.01, 0.013],
+    bgBottom: [0.012, 0.012, 0.015],
     fogColor: [0, 0, 0],
     fogDensity: 0,
-    sky: { ...DEFAULT_SKY, zenith: [0.02, 0.025, 0.04], horizon: [0.04, 0.04, 0.05], ground: [0.01, 0.01, 0.012], sunDir: normalize([-0.7, 0.4, 0.2]) as Vec3, sunColor: [1, 1, 1], sunIntensity: 6, sunAngularSize: 0.012 },
-    view: { target: [0, 1.0, 0], yaw: 0.0, pitch: 0.05, distance: 6.4 },
+    sky: { ...DEFAULT_SKY, zenith: [0.01, 0.01, 0.014], horizon: [0.012, 0.012, 0.016], ground: [0.01, 0.01, 0.012], sunDir: normalize([0, 1, 0]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, intensity: 1 },
+    view: { target: [0, 1.0, 0], yaw: 0.0, pitch: 0.06, distance: 5.4 },
+  }
+}
+
+// A dispersion comparison — the v10 spectral showcase. Three identical prisms of crown
+// (BK7), dense flint (SF10) and diamond glass stand side by side under one bright white
+// sun. Each carries its real Sellmeier n(λ) curve, so the spectral tracer fans the sun's
+// beam by each glass's true dispersive power: the crown barely splits, the flint fans wide,
+// and the diamond — index ~2.4 — throws the brightest, widest "fire". Renders correctly
+// ONLY under the spectral tracer (it auto-switches); the RGB path can only fake one of them.
+const dispersion = (): SceneConfig => {
+  const gem = (glass: string, ior: number): Material =>
+    ({ albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior, attenuation: [0, 0, 0], dispersion: 1.4, glass })
+  // turned 90° about Y (slanted faces toward the camera) over a bright self-lit floor, so each
+  // prism deviates the camera ray down to the floor and fans its edge by that glass's own n(λ).
+  const objects: SceneObject[] = [
+    { id: 'crown', meshKind: 'prism', position: [-2.5, 1.0, 0], scale: 1.6, spin: 0, tiltSpin: 0, baseRotation: [0, Math.PI / 2, 0.18], material: gem('bk7', 1.517), texture: 'none', normalMap: 'none' },
+    { id: 'flint', meshKind: 'prism', position: [0, 1.0, 0], scale: 1.6, spin: 0, tiltSpin: 0, baseRotation: [0, Math.PI / 2, 0.18], material: gem('sf10', 1.728), texture: 'none', normalMap: 'none' },
+    { id: 'diamond', meshKind: 'prism', position: [2.5, 1.0, 0], scale: 1.6, spin: 0, tiltSpin: 0, baseRotation: [0, Math.PI / 2, 0.18], material: gem('diamond', 2.417), texture: 'none', normalMap: 'none' },
+  ]
+  return {
+    name: 'Dispersion',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: { albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [2.6, 2.6, 2.7] },
+    objects,
+    lights: [],
+    ambient: [0.0, 0.0, 0.0],
+    bgTop: [0.01, 0.01, 0.013],
+    bgBottom: [0.012, 0.012, 0.015],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, zenith: [0.01, 0.01, 0.014], horizon: [0.012, 0.012, 0.016], ground: [0.01, 0.01, 0.012], sunDir: normalize([0, 1, 0]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, intensity: 1 },
+    view: { target: [0, 0.95, 0], yaw: 0.0, pitch: 0.06, distance: 8.0 },
+  }
+}
+
+// A blackbody ramp — emitters as physical Planckian radiators. Six glowing spheres carry a
+// colour TEMPERATURE (2400 K … 12000 K) rather than a colour: the spectral tracer evaluates
+// Planck's law at each wavelength, so the row walks the Planckian locus from a warm tungsten
+// ember through neutral daylight to a hot blue star, and each sphere bathes the floor in its
+// own colour of light. Spectral-only: the RGB tracer can't know a temperature, so it renders
+// them as identical white lamps — flip the engine to compare. (Auto-switches to spectral.)
+const blackbody = (): SceneConfig => {
+  const temps = [2400, 3200, 4500, 6500, 9000, 12000]
+  const lamp = (K: number): Material =>
+    ({ albedo: [0, 0, 0], specular: 0, shininess: 1, rim: 0, metallic: 0, roughness: 1, emission: [6, 6, 6], blackbodyK: K })
+  const objects: SceneObject[] = temps.map((K, i): SceneObject => ({
+    id: `bb${K}`,
+    meshKind: 'sphere',
+    position: [(i - (temps.length - 1) / 2) * 1.5, 0.95, 0],
+    scale: 0.55, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0],
+    material: lamp(K), texture: 'none', normalMap: 'none',
+  }))
+  return {
+    name: 'Blackbody',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.5, 0.5, 0.52], 0.1, 16, 0, 0, 0.85),
+    objects,
+    lights: [],
+    ambient: [0.0, 0.0, 0.0],
+    bgTop: [0.01, 0.01, 0.013],
+    bgBottom: [0.012, 0.012, 0.015],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, zenith: [0.01, 0.01, 0.014], horizon: [0.012, 0.012, 0.016], ground: [0.006, 0.006, 0.008], sunDir: normalize([0, 1, 0]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, intensity: 1 },
+    view: { target: [0, 0.8, 0], yaw: 0.0, pitch: 0.12, distance: 8.0 },
   }
 }
 
@@ -640,6 +713,8 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   reflections,
   glass,
   prism,
+  dispersion,
+  blackbody,
   iridescence,
   cathedral,
   nebula,
@@ -658,6 +733,8 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'reflections', label: 'Reflections' },
   { key: 'glass', label: 'Glass' },
   { key: 'prism', label: 'Prism' },
+  { key: 'dispersion', label: 'Dispersion' },
+  { key: 'blackbody', label: 'Blackbody' },
   { key: 'iridescence', label: 'Iridescence' },
   { key: 'cathedral', label: 'Cathedral' },
   { key: 'nebula', label: 'Nebula' },

@@ -18,6 +18,8 @@ import type { ThinFilmTest } from '../raytrace/thinfilm_verify.ts'
 import { MEDIUM_PRESETS } from '../raytrace/medium.ts'
 import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
+import { runSpectralSelfTest } from '../raytrace/spectral_verify.ts'
+import type { SpectralTest } from '../raytrace/spectral_verify.ts'
 import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
 import type { SSFXTest } from '../render/ssfx_verify.ts'
 import type { TransparencySettings } from '../render/oit.ts'
@@ -209,6 +211,16 @@ export default function Controls(props: Props) {
       setMedTesting(false)
     }, 30)
   }
+  const [specTests, setSpecTests] = useState<SpectralTest[] | null>(null)
+  const [specTesting, setSpecTesting] = useState(false)
+  const runSpec = (): void => {
+    setSpecTesting(true)
+    setSpecTests(null)
+    setTimeout(() => {
+      setSpecTests(runSpectralSelfTest())
+      setSpecTesting(false)
+    }, 30)
+  }
   const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
   const rtViews: { key: RTView; label: string }[] = [
     { key: 'denoised', label: 'Denoised' },
@@ -229,6 +241,7 @@ export default function Controls(props: Props) {
   ]
   const rtModes: { key: RTMode; label: string }[] = [
     { key: 'path', label: 'Path tracer' },
+    { key: 'spectral', label: 'Spectral' },
     { key: 'ao', label: 'Ambient occlusion' },
   ]
 
@@ -317,13 +330,13 @@ export default function Controls(props: Props) {
               onChange={(v) => setRT({ splitPos: v })} format={(v) => `${(v * 100).toFixed(0)}%`}
             />
           )}
-          {rt.mode === 'path' && (
+          {rt.mode !== 'ao' && (
             <Slider
               label="Max bounces" value={rt.maxBounces} min={1} max={8} step={1}
               onChange={(v) => setRT({ maxBounces: v })} format={(v) => v.toFixed(0)}
             />
           )}
-          {rt.mode === 'path' && (
+          {rt.mode !== 'ao' && (
             <Toggle
               label="Multiple importance sampling"
               value={rt.mis}
@@ -359,6 +372,46 @@ export default function Controls(props: Props) {
             MIS off to watch next-event-only fireflies erupt on the same scene. The analytic sky is
             an infinite emitter — drag to orbit and it re-converges.
           </p>
+        </Section>
+      )}
+
+      {isRT && rt.mode === 'spectral' && (
+        <Section title="Spectral rendering — true dispersion">
+          <p className="blurb">
+            The path tracer's RGB cousin fakes dispersion with a three-channel hero hack; this mode
+            does the real thing. Each camera ray carries a single <em>wavelength</em> λ — importance-
+            sampled ∝ ȳ(λ) and stratified across a pixel's samples — and every glass facet bends it by
+            <em> that</em> wavelength's index of refraction (a real <em>Sellmeier</em> curve for named
+            glasses, BK7 / SF10 / silica / water / diamond, or the achromatic Cauchy fan), so a prism
+            splits white light into a <em>continuous</em> spectrum. Radiance per λ is reconstructed to
+            colour through the <em>CIE 1931</em> matching functions and white-balanced so a
+            non-dispersive scene reads at the same exposure as the RGB tracer — only dispersion differs.
+            Existing RGB materials get a <em>Smits</em>-up-sampled reflectance spectrum; emitters can be
+            true <em>Planckian</em> blackbodies. Try <em>Prism</em>, <em>Dispersion</em> and
+            <em> Blackbody</em>, and let them converge — one wavelength per ray makes colour noisy
+            early, so the progressive average (the <em>Noisy</em> view) cleans up to a fully
+            saturated spectrum; the edge-avoiding denoiser is best left off here since it blurs the
+            very chromatic detail dispersion creates.
+          </p>
+          <button className="reset" onClick={runSpec} type="button" disabled={specTesting} style={{ width: '100%' }}>
+            {specTesting ? 'Running…' : 'Run spectral self-test'}
+          </button>
+          {specTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {specTests.filter((t) => t.pass).length}/{specTests.length} checks passed — the
+                equal-energy white point, the importance-sampled wavelength estimator vs a deterministic
+                CMF integral, the Smits round-trip, the catalogue Abbe numbers &amp; normal dispersion,
+                the prism minimum-deviation spread (flint vs crown), the blackbody locus, and two
+                spectral furnaces (energy &amp; exposure parity).
+              </p>
+              {specTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
         </Section>
       )}
 

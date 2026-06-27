@@ -49,6 +49,10 @@ const DEFAULT_SETTINGS: RenderSettings = {
 // tracer so they don't read as a flat rasterized box.
 const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula'])
 
+// Scenes built for the v10 spectral path tracer — selecting one switches to the ray tracer
+// AND to the spectral mode, since a real rainbow / Planckian colour only exists there.
+const SPECTRAL_SCENES = new Set(['prism', 'dispersion', 'blackbody'])
+
 // Scenes built to show off the volumetric medium — selecting one switches to the ray
 // tracer AND turns the medium on with a fitting preset.
 const MEDIUM_SCENES: Record<string, { preset: string; density: number; g: number }> = {
@@ -91,13 +95,15 @@ export default function App() {
   const choosePreset = (key: string): void => {
     setPreset(key)
     const med = MEDIUM_SCENES[key]
-    if (RT_SCENES.has(key) || med) {
+    if (SPECTRAL_SCENES.has(key)) {
+      setSettings((s) => ({ ...s, engine: 'rt', rt: { ...s.rt, mode: 'spectral' } }))
+    } else if (RT_SCENES.has(key) || med) {
       setSettings((s) => ({
         ...s,
         engine: 'rt',
         rt: med
           ? { ...s.rt, mode: 'path', medium: { ...s.rt.medium, enabled: true, ...med } }
-          : s.rt,
+          : { ...s.rt, mode: s.rt.mode === 'spectral' ? 'path' : s.rt.mode },
       }))
     }
   }
