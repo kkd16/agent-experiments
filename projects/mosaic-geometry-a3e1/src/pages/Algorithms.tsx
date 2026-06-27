@@ -2,16 +2,19 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Point, Rect } from '../geometry/types'
 import { convexHullSteps, type HullStep } from '../geometry/convexHull'
 import { delaunaySteps, type DelaunaySnapshot } from '../geometry/delaunay'
-import { mulberry32, poissonDisk } from '../geometry/random'
+import { mecSteps, type MecSnapshot } from '../geometry/enclosingCircle'
+import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'delaunay'
+type Algo = 'hull' | 'delaunay' | 'mec'
 const PAD = 28
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
 
 function makePoints(algo: Algo, seed: number): Point[] {
   const rng = mulberry32(seed)
+  // The enclosing-circle trace reads best on a loose scatter; the others on blue noise.
+  if (algo === 'mec') return uniformPoints(12, GEN_RECT, rng)
   return poissonDisk(algo === 'hull' ? 14 : 18, GEN_RECT, rng)
 }
 
@@ -29,7 +32,11 @@ export default function Algorithms() {
     () => (algo === 'delaunay' ? delaunaySteps(points) : []),
     [algo, points],
   )
-  const total = algo === 'hull' ? hullSteps.length : delSteps.length
+  const mecStepList = useMemo<MecSnapshot[]>(
+    () => (algo === 'mec' ? mecSteps(points, seed) : []),
+    [algo, points, seed],
+  )
+  const total = algo === 'hull' ? hullSteps.length : algo === 'delaunay' ? delSteps.length : mecStepList.length
   const clamped = Math.min(step, Math.max(0, total - 1))
 
   // Playback timer.
@@ -66,10 +73,12 @@ export default function Algorithms() {
     const toPx = (p: Point) => ({ x: PAD + p.x * w, y: PAD + p.y * h })
 
     if (algo === 'hull') drawHullStep(ctx, hullSteps[clamped], points, toPx)
-    else drawDelaunayStep(ctx, delSteps[clamped], toPx)
-  }, [ref, size, algo, hullSteps, delSteps, clamped, points])
+    else if (algo === 'delaunay') drawDelaunayStep(ctx, delSteps[clamped], toPx)
+    else drawMecStep(ctx, mecStepList[clamped], toPx, w)
+  }, [ref, size, algo, hullSteps, delSteps, mecStepList, clamped, points])
 
-  const note = algo === 'hull' ? hullSteps[clamped]?.note : delSteps[clamped]?.note
+  const note =
+    algo === 'hull' ? hullSteps[clamped]?.note : algo === 'delaunay' ? delSteps[clamped]?.note : mecStepList[clamped]?.note
   const phase = algo === 'hull' ? hullSteps[clamped]?.phase : undefined
   const changeAlgo = (a: Algo) => {
     setAlgo(a)
@@ -104,6 +113,7 @@ export default function Algorithms() {
             options={[
               { id: 'hull', label: 'Convex hull' },
               { id: 'delaunay', label: 'Delaunay' },
+              { id: 'mec', label: 'Enclosing circle' },
             ]}
             value={algo}
             onChange={changeAlgo}
@@ -111,7 +121,9 @@ export default function Algorithms() {
           <p className="muted">
             {algo === 'hull'
               ? "Andrew's monotone chain: sort by x, then sweep building lower and upper hulls, popping any point that would make a right turn."
-              : 'Bowyer-Watson: insert points into a super-triangle one by one, carve out the triangles whose circumcircle is violated, and retriangulate the cavity.'}
+              : algo === 'delaunay'
+                ? 'Bowyer-Watson: insert points into a super-triangle one by one, carve out the triangles whose circumcircle is violated, and retriangulate the cavity.'
+                : "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."}
           </p>
           <Button variant="ghost" onClick={regen}>
             New points
@@ -148,11 +160,17 @@ export default function Algorithms() {
                 <li><i className="dot dot--active" /> point being considered</li>
                 <li><i className="dot dot--pop" /> point popped (right turn)</li>
               </>
-            ) : (
+            ) : algo === 'delaunay' ? (
               <>
                 <li><i className="dot dot--mesh" /> current triangulation</li>
                 <li><i className="dot dot--active" /> inserted point</li>
                 <li><i className="dot dot--cavity" /> cavity (circumcircle violated)</li>
+              </>
+            ) : (
+              <>
+                <li><i className="dot dot--mesh" /> current enclosing circle</li>
+                <li><i className="dot dot--active" /> point being tested</li>
+                <li><i className="dot dot--hull" /> boundary support points</li>
               </>
             )}
           </ul>
@@ -250,4 +268,48 @@ function drawDelaunayStep(
     ctx.fillStyle = i === s.inserted ? '#7cf6c0' : '#f4f7ff'
     ctx.fill()
   }
+}
+
+function drawMecStep(
+  ctx: CanvasRenderingContext2D,
+  s: MecSnapshot | undefined,
+  toPx: (p: Point) => Point,
+  scale: number,
+) {
+  if (!s) return
+  const isSupport = (p: Point) => s.support.some((q) => q.x === p.x && q.y === p.y)
+
+  // The working circle — tinted gold on the step where it was just rebuilt.
+  const center = toPx({ x: s.circle.x, y: s.circle.y })
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, Math.max(0, s.circle.r * scale), 0, Math.PI * 2)
+  ctx.fillStyle = s.rebuilt ? 'rgba(255,209,102,0.08)' : 'rgba(124,246,192,0.06)'
+  ctx.fill()
+  ctx.strokeStyle = s.rebuilt ? 'rgba(255,209,102,0.9)' : 'rgba(124,246,192,0.85)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+
+  // Points, in shuffled scan order: faint until processed, bright once seen.
+  for (let i = 0; i < s.order.length; i++) {
+    const q = toPx(s.order[i])
+    const processed = i < s.processed
+    const current = i === s.current
+    const support = isSupport(s.order[i])
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, current ? 7 : support ? 6 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = current ? '#7cf6c0' : support ? '#9cc0ff' : processed ? '#f4f7ff' : 'rgba(150,160,200,0.4)'
+    ctx.fill()
+    if (support) {
+      ctx.beginPath()
+      ctx.arc(q.x, q.y, 9, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(156,192,255,0.8)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+  }
+  // Centre marker.
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, 2.5, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'
+  ctx.fill()
 }
