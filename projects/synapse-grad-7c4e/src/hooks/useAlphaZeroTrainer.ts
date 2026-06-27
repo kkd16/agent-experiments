@@ -157,7 +157,7 @@ export function useAlphaZeroTrainer(cfg: AZConfigUI) {
       dirichletAlpha: cfgRef.current.dirichletAlpha,
       dirichletFrac: 0,
     };
-    return runSearch(game, s, netEvaluator(net, game), mcts, rngRef.current);
+    return runSearch(game, s, netEvaluator(net, game), mcts, rngRef.current, { topK: 4, maxDepth: 3 });
   }, []);
 
   const syncPlay = useCallback(() => {

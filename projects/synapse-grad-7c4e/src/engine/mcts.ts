@@ -39,6 +39,23 @@ export interface SearchResult {
   rootValue: number;
   /** Total simulations actually run. */
   sims: number;
+  /** An optional snapshot of the tree the search grew (for the "watch it think" view). */
+  tree?: TreeNode;
+}
+
+/** A serializable snapshot of one search-tree node, decoupled from the live mutable `Node`. */
+export interface TreeNode {
+  move: number; // the action that reached this node (−1 at the root)
+  n: number; // visits along the edge into this node
+  q: number; // mean value of this node from the *root mover's* perspective
+  p: number; // prior of the edge into this node
+  depth: number;
+  children: TreeNode[];
+}
+
+export interface TreeOptions {
+  topK: number; // keep the most-visited K children per node
+  maxDepth: number; // stop expanding past this depth
 }
 
 class Node {
@@ -150,6 +167,7 @@ export function runSearch(
   evaluate: Evaluator,
   cfg: MctsConfig,
   rng: () => number,
+  treeOpts?: TreeOptions,
 ): SearchResult {
   const A = game.numActions;
   const rootNode = new Node(A, root);
@@ -207,7 +225,40 @@ export function runSearch(
     q[a] = rootNode.N[a] > 0 ? rootNode.W[a] / rootNode.N[a] : 0;
     priors[a] = rootNode.P[a];
   }
-  return { counts, q, priors, rootValue, sims: cfg.simulations };
+  const tree = treeOpts ? buildTree(rootNode, -1, rootNode.visits, 1, 0, rootValue, treeOpts) : undefined;
+  return { counts, q, priors, rootValue, sims: cfg.simulations, tree };
+}
+
+// Snapshot the most-visited slice of the live search tree into a plain, serializable structure.
+// Each node's `q` is expressed from the *root mover's* perspective (so "green = good for the player
+// to move at the root" holds at every depth, flipping the raw per-node value by parity).
+function buildTree(
+  node: Node,
+  move: number,
+  n: number,
+  p: number,
+  depth: number,
+  qRoot: number,
+  opts: TreeOptions,
+): TreeNode {
+  const children: TreeNode[] = [];
+  if (depth < opts.maxDepth) {
+    const edges = node.legal
+      .filter((a) => node.N[a] > 0)
+      .sort((a, b) => node.N[b] - node.N[a])
+      .slice(0, opts.topK);
+    const sign = (depth + 1) % 2 === 1 ? 1 : -1; // child perspective relative to the root mover
+    for (const a of edges) {
+      const childQRoot = (node.W[a] / node.N[a]) * sign;
+      const child = node.children[a];
+      children.push(
+        child
+          ? buildTree(child, a, node.N[a], node.P[a], depth + 1, childQRoot, opts)
+          : { move: a, n: node.N[a], q: childQRoot, p: node.P[a], depth: depth + 1, children: [] },
+      );
+    }
+  }
+  return { move, n, q: qRoot, p, depth, children };
 }
 
 // Turn visit counts into a move-selection distribution at a temperature τ:

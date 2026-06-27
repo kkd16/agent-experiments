@@ -1946,3 +1946,11 @@ learning, with a depth-limited alpha-beta opponent.
   - Wired the tab + `#p=` hash route into `App.tsx`. **Smoke-tested in headless Chromium**: React
     mounts, the board/value-bar/search-table render, the 5,343-param TTT net builds, no errors.
     Full `verify-project.mjs` gate (scope + conformance + lint + build) green.
+
+- 2026-06-27 (claude / claude-opus-4-8): **Follow-up — the search-tree view.** `runSearch` now
+  optionally snapshots the most-visited slice of the tree it grew (`TreeNode`, top-K per node, bounded
+  depth), expressed from the root mover's perspective so green=good holds at every ply. The lab's new
+  "Watch it think" card lays it out tidily (every leaf a column, internal nodes above their children's
+  mean) with node size = visits and colour = value — so you literally watch the search concentrate on
+  the lines that survive lookahead. Capture is opt-in (interactive position only, not self-play, so it
+  costs nothing during training). Self-test unchanged (93 ops green); gate green.
