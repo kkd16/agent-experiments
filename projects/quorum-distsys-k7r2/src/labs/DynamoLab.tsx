@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Kernel } from '../sim/kernel';
 import { createDynamo } from '../protocols/dynamo/dynamo';
 import { convergenceGauge } from '../protocols/dynamo/invariants';
@@ -41,17 +41,49 @@ const MSG_COLORS: Record<string, string> = {
   Forward: '#9aa2b1',
 };
 
+interface DynScenario {
+  seed: number;
+  count: number;
+  n: number;
+  r: number;
+  w: number;
+  sloppy: boolean;
+  key: string;
+}
+const DEFAULT_SCENARIO: DynScenario = { seed: 7, count: 5, n: 3, r: 2, w: 2, sloppy: true, key: 'cart' };
+
+function readHash(): Partial<DynScenario> {
+  try {
+    const q = window.location.hash.split('?')[1];
+    if (!q) return {};
+    const p = new URLSearchParams(q);
+    const out: Partial<DynScenario> = {};
+    if (p.has('seed')) out.seed = Number(p.get('seed')) || 0;
+    if (p.has('nodes')) out.count = Number(p.get('nodes')) || 5;
+    if (p.has('n')) out.n = Number(p.get('n')) || 3;
+    if (p.has('r')) out.r = Number(p.get('r')) || 2;
+    if (p.has('w')) out.w = Number(p.get('w')) || 2;
+    if (p.has('sloppy')) out.sloppy = p.get('sloppy') !== '0';
+    if (p.has('key')) out.key = p.get('key') || 'cart';
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function DynamoLab() {
-  const [seed, setSeed] = useState(7);
-  const [count, setCount] = useState(5);
-  const [n, setN] = useState(3);
-  const [r, setR] = useState(2);
-  const [w, setW] = useState(2);
-  const [sloppy, setSloppy] = useState(true);
+  const initial = useMemo(() => ({ ...DEFAULT_SCENARIO, ...readHash() }), []);
+  const [seed, setSeed] = useState(initial.seed);
+  const [count, setCount] = useState(initial.count);
+  const [n, setN] = useState(initial.n);
+  const [r, setR] = useState(initial.r);
+  const [w, setW] = useState(initial.w);
+  const [sloppy, setSloppy] = useState(initial.sloppy);
   const [selected, setSelected] = useState('A');
-  const [keyInput, setKeyInput] = useState('cart');
+  const [keyInput, setKeyInput] = useState(initial.key);
   const [valueInput, setValueInput] = useState('book');
   const [blind, setBlind] = useState(false);
+  const [copied, setCopied] = useState(false);
   const reqId = useRef(1);
 
   const nodeIds = useMemo(() => NAMES.slice(0, count), [count]);
@@ -77,6 +109,28 @@ export function DynamoLab() {
   const ctrl = useSimulation(makeKernel);
   const snap = ctrl.snapshot;
   const key = keyInput.trim() || 'cart';
+
+  // Round-trip the whole configuration through the URL hash so a scenario is shareable.
+  useEffect(() => {
+    const q = new URLSearchParams({
+      seed: String(seed),
+      nodes: String(count),
+      n: String(cfgN),
+      r: String(cfgR),
+      w: String(cfgW),
+      sloppy: sloppy ? '1' : '0',
+      key,
+    });
+    history.replaceState(null, '', `#/dynamo?${q.toString()}`);
+  }, [seed, count, cfgN, cfgR, cfgW, sloppy, key]);
+
+  const copyLink = () => {
+    const url = `${location.origin}${location.pathname}${location.hash}`;
+    void navigator.clipboard?.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    });
+  };
 
   // --- preference / placement info for the selected key --------------------
   const placement = useMemo(() => {
@@ -224,9 +278,14 @@ export function DynamoLab() {
         seed={seed}
         onSeed={setSeed}
         right={
-          <span className={`leader-pill ${strong ? 'has' : 'none'}`} title="R + W > N guarantees read/write quorum overlap">
-            {consistencyLabel(config)}
-          </span>
+          <>
+            <button className="btn tiny" onClick={copyLink} title="Copy a shareable link to this exact configuration">
+              {copied ? '✓ copied' : '🔗 link'}
+            </button>
+            <span className={`leader-pill ${strong ? 'has' : 'none'}`} title="R + W > N guarantees read/write quorum overlap">
+              {consistencyLabel(config)}
+            </span>
+          </>
         }
       />
 
