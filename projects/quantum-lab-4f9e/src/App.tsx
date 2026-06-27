@@ -25,14 +25,15 @@ import ShannonLab from './components/ShannonLab';
 import DistillationLab from './components/DistillationLab';
 import NonlocalityLab from './components/NonlocalityLab';
 import DeviceIndependentLab from './components/DeviceIndependentLab';
+import MetrologyLab from './components/MetrologyLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'metrology' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -144,7 +145,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -169,6 +170,7 @@ export default function App() {
                 : tab === 'distill' ? '💎 Distillation'
                 : tab === 'bell' ? '🔔 Bell'
                 : tab === 'deviceindep' ? '🛡️ Device-Indep'
+                : tab === 'metrology' ? '📡 Metrology'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
@@ -236,6 +238,7 @@ export default function App() {
               {activeTab === 'distill' && <DistillationLab />}
               {activeTab === 'bell' && <NonlocalityLab />}
               {activeTab === 'deviceindep' && <DeviceIndependentLab />}
+              {activeTab === 'metrology' && <MetrologyLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
@@ -642,6 +645,10 @@ function AboutPage() {
         {
           title: 'Device-Independent Quantum Information (NPA SDP, SOS, Randomness, Steering, Eberhard)',
           content: "The device-independent pillar turns nonlocality into a resource and a security primitive — trust NOTHING about the boxes' internal physics, only the observed statistics, and still prove things. Its centrepiece is a from-scratch SEMIDEFINITE-PROGRAMMING solver (the workhorse of modern quantum information), built on the lab's own Jacobi eigensolver: a Burer–Monteiro low-rank primal over the elliptope plus an eigenvalue-penalised dual. With it the NAVASCUÉS–PIRONIO–ACÍN hierarchy (level 1) computes Tsirelson's bound S ≤ 2√2 as a CERTIFIED CEILING — the moment matrix Γ of operator inner products is necessarily PSD, so maximising the Bell functional over Γ ⪰ 0, diag = 1 upper-bounds EVERY quantum strategy in any dimension (where 15.0's Monte-Carlo only sampled qubit strategies, this proves the ceiling); the primal and dual both land on 2√2 with a vanishing duality gap. An independent, basis-independent OPERATOR SUM-OF-SQUARES certificate 2√2·I − S = (1/√2)(u²+v²) is verified to be the exact zero matrix, a second proof needing no numerics. Then the consequences: DEVICE-INDEPENDENT RANDOMNESS, where an observed S certifies P_guess = ½ + ½√(2−S²/4) against any adversary who built the devices, so the min-entropy rises from 0 bits at S=2 to 1 full bit at 2√2; EPR STEERING, the asymmetric middle of the hierarchy, with the steering ellipsoid (Jevtic et al.) drawn live and the CJWR inequalities S_n = (1/√n)|Σ⟨AₖBₖ⟩| ≤ 1 violated up to S₂=√2, S₃=√3 with the Werner critical visibility w > 1/√n; the DETECTION LOOPHOLE, where the maximally-entangled CH threshold is η > 2(√2−1) ≈ 82.8% but Eberhard's non-maximally-entangled states push it toward 2/3 ≈ 66.7% (computed by minimising the per-configuration η* = M/Q over measurements); and the POPESCU–ROHRLICH box, the no-signalling correlation reaching the algebraic maximum S = 4, placing quantum theory's 2√2 strictly between the local bound 2 and what causality alone permits. Every headline number — the SDP primal=dual=2√2, the SOS residual ~1e-16, the randomness endpoints, S₃=√3, the Eberhard threshold, the PR box's S=4 and no-signalling — is proven to machine precision in the Tests tab.",
+        },
+        {
+          title: 'Quantum Metrology & Sensing (Fisher Information, the Heisenberg Limit, Huelga)',
+          content: "The third great application of entanglement, alongside computing and cryptography: measuring better. A phase θ imprinted by U(θ) = e^{−iθG} is estimated with an uncertainty bounded below by the QUANTUM CRAMÉR–RAO BOUND Δθ ≥ 1/√(ν·F_Q), where the QUANTUM FISHER INFORMATION F_Q — built here from scratch — is the most information ANY measurement could extract. For a pure probe F_Q = 4·Var(G); the lab anchors everything on the collective generator G = J_z = ½ΣZᵢ so every number is an exact rational. N independent |+⟩ probes give F_Q = N — the STANDARD QUANTUM LIMIT, Δθ ∝ 1/√N — while an N-qubit GHZ cat (|0…0⟩+|1…1⟩)/√2 accumulates phase N times faster for F_Q = N², the HEISENBERG LIMIT Δθ ∝ 1/N: a genuine √N quantum advantage with no classical analogue, the principle behind LIGO's squeezed light and optical atomic clocks. The general open-system case is handled by the SLD formula F_Q = 2Σ|⟨i|∂_θρ|j⟩|²/(λᵢ+λⱼ) on an eigendecomposition of ρ (the lab's Jacobi eigensolver), verified to reduce to 4·Var(G) on pure states. The bound is shown to be ATTAINABLE: measuring the parity X^⊗N gives ⟨X^⊗N⟩ = cos(Nθ) whose classical Fisher information saturates F_C = N² = F_Q at every phase, whereas measuring Z^⊗N — the eigenbasis of the very generator being estimated — extracts exactly F_C = 0, and F_C ≤ F_Q holds everywhere (the quantum Cramér–Rao ordering). The honest punchline is fragility: under independent dephasing λ the cat's single global coherence decays as (1−λ)^N, so F_Q(GHZ) = N²(1−λ)^N rises then collapses below the product probe's F_Q(product) = N(1−λ) past a critical N — the Huelga et al. (1997) result that the Heisenberg advantage is erased by Markovian noise, the reason real metrology turned to robust spin-squeezing rather than fragile cat states. Every headline number is proven to machine precision in the Tests tab.",
         },
         {
           title: 'Solovay–Kitaev — Compiling to a Fault-Tolerant Gate Set',

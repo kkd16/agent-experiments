@@ -31,6 +31,93 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 17.0 — Quantum Metrology & Sensing (this session)
+
+Entanglement powers three great applications: **computing** (the algorithms / Shor / synthesis
+pillars), **communication & cryptography** (the nonlocality + device-independent pillars), and
+**sensing** — and the third was the one pillar the lab had never built. 17.0 adds it: a
+from-scratch **quantum-metrology** engine that makes precise *why* entanglement lets you measure a
+phase better than any classical strategy, *how good* that advantage can possibly be (the
+information-theoretic limit), and *why it is so fragile* that the very entanglement that helps is
+destroyed by the noise it is most sensitive to.
+
+The whole thing is anchored on three numbers that are provable to machine precision, so it lands
+as rigorous mathematics, not a demo: the **standard quantum limit** `F_Q = N`, the **Heisenberg
+limit** `F_Q = N²`, and the **Heisenberg-limited-then-Huelga-killed** behaviour under dephasing.
+
+### Why this is interesting
+
+A phase θ imprinted by `U(θ) = e^{−iθG}` can be estimated with an uncertainty bounded below by the
+**quantum Cramér–Rao bound** `Δθ ≥ 1/√(ν·F_Q)`, where the **quantum Fisher information** `F_Q` is
+an intrinsic property of the probe state and the generator `G` — the largest information *any*
+measurement could extract. For N independent probes `F_Q = N` (the *standard quantum limit*,
+`Δθ ∝ 1/√N`); for an N-qubit GHZ probe `F_Q = N²` (the *Heisenberg limit*, `Δθ ∝ 1/N`) — a genuine
+√N quantum advantage with no classical analogue. This is the principle behind LIGO's squeezed
+light, optical atomic clocks, and quantum-enhanced magnetometry.
+
+### The plan / new steps (this session)
+
+- [x] **`metrology.ts` — a from-scratch quantum-estimation engine** (no new dependencies; built on
+      the lab's existing `Complex`/`Matrix`/`QuantumState`/`DensityMatrix`/Jacobi eigensolver):
+  - [x] **Pure-state QFI = 4·Var(G).** For `|ψ_θ⟩ = e^{−iθG}|ψ⟩` the QFI is exactly four times the
+        generator variance in the probe. Implemented for a diagonal collective generator
+        `G = J_z = ½Σ Zᵢ` so every headline number is an exact rational.
+  - [x] **Mixed-state SLD QFI.** The general open-system formula
+        `F_Q = 2 Σ_{λᵢ+λⱼ>0} |⟨i|∂_θρ|j⟩|² / (λᵢ+λⱼ)` via an eigendecomposition of ρ (the lab's
+        Hermitian Jacobi solver), using `∂_θρ = −i[G, ρ]` evaluated efficiently from G's diagonal.
+        Verified to reduce to `4·Var(G)` on pure states.
+  - [x] **Classical Fisher information of a measurement.** For a dichotomic observable M (M²=I),
+        `F_C(θ) = (d⟨M⟩/dθ)² / (1 − ⟨M⟩²)` on `ρ_θ = U(θ)ρU(θ)†` — the information a *specific*
+        readout extracts, always `≤ F_Q` (the quantum Cramér–Rao ordering).
+  - [x] **Probes & generators**: GHZ and product-`|+⟩` builders; the collective `J_z` generator;
+        the parity observable `X^⊗N` (the optimal GHZ readout) and `Z^⊗N` (the *useless*
+        generator-basis readout).
+  - [x] **The two scaling laws, exact**: `sqlQFI(N)=N`, `heisenbergQFI(N)=N²`, Δθ from the CRB, and
+        the √N advantage ratio.
+  - [x] **Noise (the honest part)**: local dephasing applied with the lab's phase-damping Kraus
+        channel, with the closed forms `F_Q(GHZ)=N²(1−λ)^N` and `F_Q(product)=N(1−λ)` derived and
+        cross-checked against the numerical SLD engine — the basis of the **Huelga et al.** result
+        that Markovian dephasing erases the Heisenberg advantage.
+- [x] **`MetrologyLab.tsx` + a new "📡 Metrology" tab** with three cards:
+  - [x] **Scaling laws** — Δθ-vs-N on a log–log plot, SQL (`1/√N`) vs Heisenberg (`1/N`), with the
+        QFI values and the √N advantage read out live.
+  - [x] **Quantum Cramér–Rao & measurement saturation** — a θ sweep showing the parity readout's
+        `F_C` rising to exactly the QFI `N²` (saturation) while the generator-basis readout extracts
+        **zero** information, with the CRB error bands.
+  - [x] **Noise & the fragility of the advantage (Huelga)** — a dephasing slider and an N sweep
+        showing `F_Q(GHZ)=N²(1−λ)^N` cross *below* `F_Q(product)=N(1−λ)`: the Heisenberg advantage
+        evaporates past a critical N, the deep reason metrology turned to *squeezing* not cat states.
+- [x] **Self-tests** (new "Metrology" group in the Tests tab) proving every headline to machine
+      precision: SQL `F_Q=N`, Heisenberg `F_Q=N²`, the SLD engine matching both, the noisy closed
+      forms, parity saturating the QFI (`F_C=N²`), the generator-basis readout giving `F_C=0`, the
+      `F_C ≤ F_Q` ordering over a θ grid, and the noise crossover where product beats GHZ.
+- [x] **About-page pillar** + `project.json` description/tags refreshed.
+
+### Verified (all green)
+
+- **SQL**: product-`|+⟩^N` QFI = N exactly for N=1…6. **Heisenberg**: GHZ QFI = N² exactly for
+  N=1…6 — a clean factor-N (√N in Δθ) advantage.
+- **SLD engine**: the general mixed-state QFI reproduces N (product) and N² (GHZ) from a density
+  matrix to ~1e-9, confirming the open-system formula reduces to 4·Var(G) on pure states.
+- **Noise**: numerical SLD QFI matches `N²(1−λ)^N` (GHZ) and `N(1−λ)` (product) to ~1e-9; at
+  λ=0.2, N=20 the product QFI (16) exceeds the GHZ QFI (≈4.6) — the advantage is gone.
+- **Measurement**: the parity readout `X^⊗N` saturates `F_C = N²` at every θ (to ~1e-9), while the
+  generator-basis readout `Z^⊗N` extracts `F_C = 0` — measuring in the eigenbasis of the thing you
+  are trying to estimate is information-free. `F_C ≤ F_Q` holds across the whole θ grid.
+- **Build gate green** (conformance + lint + `tsc -b` + `vite build`).
+
+### Future ideas (open)
+
+- [ ] **Spin squeezing** (the Kitagawa–Ueda one-axis-twisting Hamiltonian) and the Wineland
+      squeezing parameter ξ² — the noise-robust route to sub-SQL sensing that *actually* powers
+      atomic clocks, contrasted with the fragile GHZ cat state.
+- [ ] **Multiparameter metrology** — the quantum Fisher information *matrix* and the
+      Holevo/SLD bounds when several phases are estimated at once (incompatible optimal measurements).
+- [ ] **Bayesian / adaptive phase estimation** — the van-Trees bound and an adaptive Kitaev-style
+      protocol reaching the Heisenberg limit without an entangled probe.
+- [ ] **The interferometric picture** — a Mach–Zehnder / NOON-state interferometer view tying the
+      abstract generator back to a concrete optical phase.
+
 ## Quantum Lab 16.0 — Device-Independent Quantum Information (this session)
 
 15.0 built the **nonlocality** pillar: CHSH, the GHZ/Mermin game, the magic square, Mermin–Klyshko.

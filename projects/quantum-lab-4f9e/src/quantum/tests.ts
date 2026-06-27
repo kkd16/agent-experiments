@@ -85,6 +85,11 @@ import { certifiedMinEntropy, guessingProbability } from './randomness';
 import { wernerData, pureData, cjwrSteering, steeringEllipsoid, criticalVisibility, correlationSingularValues } from './steering';
 import { detectionThreshold, CHSH_THRESHOLD } from './detection';
 import { prBox, whiteNoiseBox, chshOf, signallingDeviation, gameWinProbability, ceilings, NO_SIGNALLING_BOUND } from './nosignaling';
+import {
+  jzDiagonal, ghzState, productPlusState, varianceQFI, sldQFI, ghzDensity, productDensity,
+  dephaseEachQubit, parityX, parityZ, cfiObservable, cfiSweep,
+  noisyGhzQFI, noisyProductQFI, heisenbergQFI, sqlQFI, noiseCrossoverN,
+} from './metrology';
 
 export interface TestResult {
   group: string;
@@ -1523,6 +1528,87 @@ export function runTests(): TestResult[] {
       add('Device-Independent', 'The three CHSH ceilings: local 2  <  quantum 2√2 ≈ 2.828 (NPA-proven)  <  no-signalling 4 (PR box) — quantum is more nonlocal than classical, less than causality allows',
         close(chshOf(wn), 0, 1e-9) && ceilings()[1].chsh > 2 && ceilings()[1].chsh < ceilings()[2].chsh,
         `ceilings: ${ceilings().map((c) => c.chsh.toFixed(3)).join(' < ')}`);
+    }
+  }
+
+  // ─────────────────────────────── Metrology (quantum sensing) ───────────────────────────────
+  {
+    // (1) Standard quantum limit: N independent |+⟩ probes give F_Q = N (exact rational).
+    {
+      let okSQL = true;
+      let okHL = true;
+      for (let n = 1; n <= 6; n++) {
+        const g = jzDiagonal(n);
+        if (!close(varianceQFI(productPlusState(n), g), n, 1e-9)) okSQL = false;
+        if (!close(varianceQFI(ghzState(n), g), n * n, 1e-9)) okHL = false;
+      }
+      add('Metrology', 'Standard quantum limit: N independent probes give the pure-state QFI F_Q = 4·Var(J_z) = N (N=1…6) — Δθ ∝ 1/√N', okSQL);
+      add('Metrology', 'Heisenberg limit: the N-qubit GHZ probe gives F_Q = N² (N=1…6) — a factor-N advantage (√N in Δθ), the principle behind quantum-enhanced sensing', okHL);
+    }
+
+    // (2) The general open-system SLD QFI reduces to 4·Var(G) on pure states (engine cross-check).
+    {
+      let okG = true;
+      let okP = true;
+      for (let n = 1; n <= 4; n++) {
+        const g = jzDiagonal(n);
+        if (!close(sldQFI(ghzDensity(n), g), n * n, 1e-7)) okG = false;
+        if (!close(sldQFI(productDensity(n), g), n, 1e-7)) okP = false;
+      }
+      add('Metrology', 'Open-system SLD formula F_Q = 2Σ|⟨i|∂ρ|j⟩|²/(λᵢ+λⱼ) reproduces N² (GHZ) and N (product) from a density matrix — the mixed-state QFI reduces to 4·Var(G) on pure states', okG && okP);
+    }
+
+    // (3) Noise: numerical SLD QFI matches the closed forms N²(1−λ)^N (GHZ) and N(1−λ) (product).
+    {
+      let okClosed = true;
+      const detail: string[] = [];
+      for (const [n, lam] of [[2, 0.1], [3, 0.2], [4, 0.05]] as [number, number][]) {
+        const g = jzDiagonal(n);
+        const ghz = sldQFI(dephaseEachQubit(ghzDensity(n), n, lam), g);
+        const prod = sldQFI(dephaseEachQubit(productDensity(n), n, lam), g);
+        if (!close(ghz, noisyGhzQFI(n, lam), 1e-7)) okClosed = false;
+        if (!close(prod, noisyProductQFI(n, lam), 1e-7)) okClosed = false;
+        detail.push(`n=${n}: GHZ ${ghz.toFixed(4)}≈${noisyGhzQFI(n, lam).toFixed(4)}`);
+      }
+      add('Metrology', 'Dephasing: SLD QFI matches F_Q(GHZ)=N²(1−λ)^N and F_Q(product)=N(1−λ) — verified numerically against the closed forms', okClosed, detail.join('; '));
+    }
+
+    // (4) Huelga: at fixed dephasing the GHZ advantage is erased past a critical N.
+    {
+      const nStar = noiseCrossoverN(40, 0.2);
+      const ghz20 = noisyGhzQFI(20, 0.2);
+      const prod20 = noisyProductQFI(20, 0.2);
+      add('Metrology', `Fragility of the Heisenberg advantage (Huelga et al.): under λ=0.2 dephasing the product probe overtakes GHZ at N=${nStar} — at N=20 the GHZ QFI (${ghz20.toFixed(2)}) has fallen below the product QFI (${prod20.toFixed(2)})`,
+        Number.isFinite(nStar) && nStar <= 20 && prod20 > ghz20);
+    }
+
+    // (5) Measurement saturation: parity X^⊗N attains F_C = N² = F_Q at every θ; Z^⊗N extracts 0.
+    {
+      let okParity = true;
+      let okZero = true;
+      for (let n = 2; n <= 4; n++) {
+        const g = jzDiagonal(n);
+        const rho = ghzDensity(n);
+        const X = parityX(n);
+        const Z = parityZ(n);
+        const th = Math.PI / (4 * n);
+        if (!close(cfiObservable(rho, g, X, th), n * n, 1e-7)) okParity = false;
+        if (!close(cfiObservable(rho, g, Z, th), 0, 1e-9)) okZero = false;
+      }
+      add('Metrology', 'Optimal readout: the parity observable X^⊗N saturates the classical Fisher info F_C = N² = F_Q (the quantum Cramér–Rao bound is attainable) for N=2…4', okParity);
+      add('Metrology', 'Information-free readout: measuring Z^⊗N — in the eigenbasis of the generator J_z being estimated — gives F_C = 0 (the phase is invisible to it)', okZero);
+    }
+
+    // (6) The quantum Cramér–Rao ordering F_C ≤ F_Q holds across the whole phase sweep.
+    {
+      let okOrder = true;
+      for (let n = 2; n <= 4; n++) {
+        for (const p of cfiSweep(n, 60)) {
+          if (p.fcParity > p.qfi + 1e-6 || p.fcZ > p.qfi + 1e-6) okOrder = false;
+        }
+      }
+      add('Metrology', 'Quantum Cramér–Rao ordering: F_C(θ) ≤ F_Q for every measurement and every phase θ across the sweep — no readout beats the intrinsic quantum bound', okOrder);
+      add('Metrology', `Advantage ratio F_Q(GHZ)/F_Q(product) = N exactly (e.g. ${heisenbergQFI(5) / sqlQFI(5)}× at N=5)`, heisenbergQFI(5) / sqlQFI(5) === 5);
     }
   }
 
