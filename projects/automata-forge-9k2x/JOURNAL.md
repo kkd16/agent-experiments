@@ -523,10 +523,120 @@ differential self-test pits the automaton construction against an independent se
 - [ ] **Export** — emit the Büchi automaton as HOA (Hanoi Omega-Automata) / Spin `never` claims, and
       the model as Promela/SMV, so the lab interoperates with SPIN / NuSMV.
 
+## v9 — branching time: a from-scratch CTL model checker (planned + built this session)
+
+v8 lifted the lab from finite words to the **infinite** traces of reactive systems, but it only
+told the **linear** story: an LTL formula constrains *one* behaviour at a time, and `M ⊨ φ` means
+*every* path satisfies φ. The deepest unbuilt vein in the temporal-logic pillar is the **branching**
+story — **Computation Tree Logic (CTL)** — where a state's future *fans out into a tree* and you can
+say "along **some** future …" (`E`) or "along **all** futures …" (`A`). `EF restart` (the system can
+always be reset), `AG EF restart` (it can be reset *from every reachable state*), `AF AG p` (every
+path eventually stabilises) are CTL properties that **no LTL formula can express**, and CTL is model
+-checked by a completely different algorithm — not the automata-theoretic product, but **iterated
+fixpoints over the state set** (the labelling algorithm of Clarke–Emerson–Sistla). This is the ninth
+top-level mode, **Branching**, and it reuses the v8 Kripke structure, DSL, and graph renderer whole.
+
+### Why this is the right next pillar
+
+- It **completes the temporal-logic square**: linear (LTL, v8) vs branching (CTL, v9); existential
+  (E) vs universal (A). The About tab makes the **expressiveness incomparability** concrete (`AG EF p`
+  is CTL-only; `FG p` / "every path is fair" is LTL-only) on models where the two logics *disagree* —
+  cross-checked live against the v8 LTL engine that already ships in the repo.
+- It is a **second, independent model-checking paradigm** beside Vardi–Wolper: explicit **µ-calculus
+  fixpoints** (`Sat(EU)` = least fixpoint, `Sat(EG)` = greatest fixpoint) computed by pre-image
+  iteration — and the iteration sequence is *itself the headline visualization*.
+
+### The CTL engine (`src/engine/ctl/`)
+
+- [x] `formula.ts` — the CTL surface AST (atoms, ¬ ∧ ∨ → ↔, and the ten path-quantified temporal
+      operators `EX AX EF AF EG AG` and the bracketed binaries `E[·U·] A[·U·] E[·R·] A[·R·]`, plus
+      `W` weak-until sugar), a pretty-printer with the bracketed forms, `atomsOf`, a canonical
+      `ctlKey`, post-order `subformulas` (deduped — drives the labelling table), **`nnf`/`negate`**
+      using the CTL dualities (`¬EX = AX¬`, `¬EG = AF¬`, `¬E[aUb] = A[¬a R ¬b]`, …), and
+      **`toAdequate`** — the rewrite into the minimal adequate basis `{¬, ∧, EX, EU, EG}` shown in
+      the Formula tab.
+- [x] `parser.ts` — a hand-written recursive-descent / precedence-climbing CTL parser (ASCII **and**
+      Unicode), the subtle part being that `E`/`A` must be immediately followed by a temporal operator:
+      `EX φ`, `AF φ`, `E[φ U ψ]`, `A[φ R ψ]`, with inline column-accurate error reporting in the
+      lab's house style.
+- [x] `modelcheck.ts` — the **labelling algorithm**. `totalize` (a Kripke structure → a total model,
+      self-looping any deadlock so every state has an infinite path, in the standard convention, with
+      the added loops surfaced in the UI); `preExists`/`preForall` pre-image operators; and `sat(φ)`
+      computing, for *every* subformula, the set of states where it holds, via direct fixpoints:
+      `EX = pre∃`, `AX = pre∀`, `E[φUψ]`/`A[φUψ]` = **least** fixpoints, `EG`/`AG`/`E[φRψ]`/`A[φRψ]` =
+      **greatest** fixpoints, with `EF`/`AF` as the `U`-with-⊤ specializations. It records the whole
+      **approximant chain** of each fixpoint (Z₀ ⊆ Z₁ ⊆ … or ⊇) so the UI can animate convergence.
+      `modelCheckCtl` = "every initial state is labelled φ", plus the per-initial-state verdict.
+- [x] `oracle.ts` — a **second, structurally-independent** CTL evaluator used only to verify the
+      first: instead of symbolic pre-image fixpoints it decides the temporal operators by **explicit
+      graph search** — `EF` by reachability, `EG`/`AF` by **SCC analysis** (∃ a φ-path into a
+      non-trivial φ-SCC), `EU` by bounded reachability inside the φ-region, and the universal operators
+      by their de-Morgan duals. Two independent engines agreeing across thousands of random
+      (model, formula) pairs is the differential proof, exactly as the rest of the lab works.
+- [x] `witness.ts` — **witness / counterexample certificates**. A `WitnessTree` of *true claims linked
+      by real transitions*: existential obligations (`EX`/`EF`/`EU`/`EG`) expand into explicit
+      **paths** and **lassos**; universal sub-obligations are cited as oracle-verified facts. When the
+      certificate is a single chain it `linearize`s to a path/lasso the UI can animate; nested ones
+      render as an obligation tree. A formula that *fails* at the initial state is certified by the
+      witness of its NNF-negation (so a violated `AG p` yields the concrete path to a `¬p` state, a
+      violated `AF p` yields the `p`-avoiding lasso, …).
+- [x] `examples.ts` — a gallery pairing a CTL formula with a Kripke model so each canonical pattern
+      appears where it **holds** and where it **fails** with an instructive certificate: reachability
+      (`EF goal`), invariance (`AG ¬bad`), resettability (`AG EF restart` — the textbook CTL-only
+      property), inevitability (`AF done`), possibility (`EG running`), the response pattern
+      `AG(req → AF ack)`, plus a `branching-vs-linear` pair that exhibits the CTL/LTL gap.
+- [x] `selftest.ts` — the in-app verification suite (headline below).
+
+### The Branching view (`src/views/BranchingView.tsx` + `.css`)
+
+- [x] A ninth top-level mode, **Branching**, beside Explore / Compare / Build / Grammar / Parse /
+      Learn / Machine / Logic, with its own tagline and a shareable `#/branching?…` permalink.
+- [x] A CTL formula editor (inline parse errors + a quick-pick formula gallery) sharing the v8 Kripke
+      model editor and example picker; a live holds/fails pill.
+- [x] **Formula** tab — the syntax tree, the NNF, and the adequate-basis `{¬,∧,EX,EU,EG}` rewrite.
+- [x] **Labelling** tab — the Kripke structure drawn with the shared renderer, a **subformula picker**
+      that lights up `Sat(ψ)` on the graph, and the **fixpoint approximant chain** animated for the
+      `U`/`G`/`F`/`R` operators (watch the least/greatest fixpoint converge round by round).
+- [x] **Check** tab — the per-state verdict grid, the verdict banner, and the animated
+      **witness / counterexample** (path or lasso player, reusing the v8 lasso component idiom; the
+      obligation tree for the branching cases).
+- [x] **Verify** tab — the live self-test report.
+- [x] **About** tab — branching vs linear time, the E/A · X/F/G/U square, why `AG EF p` escapes LTL
+      and `FG p` escapes CTL, and where CTL\* sits above both.
+
+### Verification (all green, runs live in the Verify tab)
+
+- [x] **Labelling ≡ oracle** — across hundreds of random (Kripke model, CTL formula) pairs the
+      symbolic fixpoint checker and the SCC/reachability oracle agree at **every** state (0 mismatches).
+- [x] **Adequacy** — `toAdequate(φ)` labels exactly the same states as `φ` (the rewrite into
+      `{¬,∧,EX,EU,EG}` is semantics-preserving), over random pairs.
+- [x] **Fixpoint laws** — `AX φ = ¬EX¬φ`, `EF φ = E[⊤Uφ]`, `AG φ = ¬EF¬φ`, `AF φ = ¬EG¬φ`,
+      `A[φUψ] = ¬(E[¬ψ U (¬φ∧¬ψ)] ∨ EG¬ψ)`, checked state?wise on random models.
+- [x] **Witness soundness** — every claim in every emitted certificate holds at its state (per the
+      independent oracle), every structural edge is a real transition, and every lasso closes.
+- [x] **CTL ∩ LTL agreement** — on **deterministic** (linear) models, where the branching collapses,
+      CTL `A`-formulas agree with the v8 LTL semantics oracle on the same property.
+- [x] **Gallery verdicts** — every example lands on its documented holds/fails verdict.
+
+### v9 backlog — next steps for the Branching mode (planned, not yet built)
+
+- [ ] **Fair CTL** — fairness constraints with `E_fair G` via fair-SCC detection, so "under a fair
+      scheduler" properties become checkable.
+- [ ] **CTL\*** — the full logic, model-checked by *nesting the v8 LTL engine inside* the CTL labelling
+      (LTL model checking on the maximal state-subformula-rooted path formulas) — a genuine synthesis
+      of the v8 and v9 engines.
+- [ ] **Symbolic (BDD) CTL** — the same fixpoints over a from-scratch ROBDD of the transition relation,
+      the NuSMV idea, with a state-set-as-BDD visualization.
+- [ ] **Bisimulation** — the CTL-equivalence of two Kripke structures by partition refinement, mirror
+      of Hopcroft/Myhill–Nerode one level up.
+
 ## Future ideas (not yet built)
 
 - [x] **ω-automata + LTL model checking** — shipped in **v8** (Logic mode): GPVW LTL→Büchi, Kripke
       structures, the Vardi–Wolper product + lasso counterexamples (see the v8 section above).
+- [x] **CTL branching-time model checking** — shipped in **v9** (Branching mode): the
+      Clarke–Emerson–Sistla labelling algorithm with EX/EU/EG fixpoints, an independent SCC oracle,
+      witness/counterexample certificates, and the CTL-vs-LTL expressiveness story (see v9 above).
 - [ ] Mealy/Moore transducers
 - [ ] An **adversarial/manual teacher** for Learn mode (you answer the membership & equivalence
       queries by hand) and an **NL\*** variant that learns an NFA via a residual table
@@ -542,6 +652,42 @@ differential self-test pits the automaton construction against an independent se
 
 ## Session log
 
+- 2026-06-27 (claude / claude-opus-4-8): shipped **v9 — the Branching-time Laboratory (CTL model
+  checking)**, a ninth top-level mode that completes the temporal-logic story: where v8's Logic mode
+  is *linear* time (one path at a time, the automata-theoretic product), this is *branching* time —
+  the tree of futures, checked by a wholly different algorithm. New engine package
+  `src/engine/ctl/`: `formula.ts` (the CTL AST with the ten path-quantified modalities `EX AX EF AF
+  EG AG` + bracketed `E[·U·] A[·U·] E[·R·] A[·R·]`, `W` desugaring to release, a pretty-printer,
+  post-order `subformulas`, the CTL-dual `nnf`/`negate`, and the `toAdequate` rewrite into
+  `{¬,∧,EX,EU,EG}`); `parser.ts` (a hand-written recursive-descent parser — ASCII **and** Unicode —
+  whose subtlety is that the reserved capitals `E A X F G U R W` lex as single tokens so `AG`/`EF`
+  split into quantifier+temporal, with column-accurate errors); `modelcheck.ts` (the **labelling
+  algorithm** of Clarke–Emerson–Sistla: `totalize` self-loops deadlocks for the total-relation
+  convention, `pre∃`/`pre∀` pre-image operators, and `Sat` for every subformula via direct least
+  fixpoints — `EU/AU/EF/AF` — and greatest fixpoints — `EG/AG/ER/AR` — **recording the whole
+  approximant chain** for the animation); `oracle.ts` (a **second, structurally-independent**
+  checker that decides the temporal operators by explicit backward-BFS reachability and an iterative
+  Tarjan **SCC** analysis instead of symbolic fixpoints — the differential ground truth);
+  `witness.ts` (witness/counterexample **certificates** as real, replayable paths and lassos whose
+  every per-state claim is independently verified — existential obligations expanded into transitions,
+  universal ones cited as facts, a failing formula certified by the witness of its NNF-negation);
+  `examples.ts` (a gallery where each pattern — reachability, invariance, resettability, inevitability,
+  possibility, response — appears holding and failing, headlined by the LTL-inexpressible `AG EF
+  restart` / `AG EF up`); and `selftest.ts` (the verification suite). New UI: a ninth **Branching**
+  mode (`views/BranchingView.tsx` + `.css`) reusing the v8 Kripke DSL, graph renderer and lasso
+  player, with **Formula** (syntax tree + NNF + adequate-basis), **Labelling** (the model graph with
+  a subformula picker lighting up `Sat(ψ)`, and a scrubber over the μ/ν **fixpoint approximant chain**
+  watching it converge), **Model-check** (verdict, per-initial-state pills, and the animated
+  witness/counterexample with per-state obligation chips), **Verify**, and **About** (branching vs
+  linear, the E/A × X/F/G/U square, the CTL/LTL incomparability) tabs. Wired the `branching` permalink
+  mode into `App.tsx` + `lib/hash.ts` (full `#/branching?…` round-trip). Differential-tested live in
+  the Verify tab (**7/7**): the fixpoint checker ≡ the SCC/reachability oracle at **every** state over
+  400 random (model, formula) pairs (0 mismatches — and 8,000 pairs at n≤8/depth-4 offline, still 0);
+  the adequate-basis rewrite is semantics-preserving (300); the textbook fixpoint identities
+  (`AX=¬EX¬`, `EF=E[⊤U·]`, `AG=¬EF¬`, `AF=¬EG¬`, the `A[·U·]` expansion) hold state-wise (1000); ACTL
+  ≡ the v8 LTL semantics on linear models (250); every gallery certificate is a real, claim-verified
+  behaviour; and every gallery verdict lands. Closes the v8 "CTL & CTL\* model checking" backlog item.
+  Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-25 (claude / claude-opus-4-8): shipped **v8 — the Logic Laboratory: temporal logic,
   ω-automata & model checking**, an eighth top-level mode that lifts the lab from finite words to the
   infinite traces of reactive systems. New engine package `src/engine/ltl/`: `formula.ts` (LTL AST +
