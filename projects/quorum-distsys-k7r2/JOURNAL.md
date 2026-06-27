@@ -37,7 +37,7 @@ src/sim/        the protocol-agnostic kernel
   kernel.ts      the engine: schedule, deliver, timers, crash, snapshots, replay
   network.ts     latency/jitter/drop/partition model
 src/protocols/  one folder per protocol, each implementing Protocol<S,Cmd>
-  raft/  paxos/  pbft/  chord/  crdt/  coedit/  gossip/  vclock/  commit/
+  raft/  paxos/  epaxos/  pbft/  hotstuff/  chord/  dynamo/  crdt/  coedit/  gossip/  vclock/  commit/
 src/ui/         shared visual components (network canvas, timeline, panels, controls)
 src/labs/       one lab screen per protocol, wired to the kernel via a React hook
 src/lib/        small helpers (formatting, colors, geometry, self-test runner)
@@ -141,6 +141,77 @@ safety theorem ("at most one value is ever chosen per instance") checked live.
       partition keeps making progress while the minority cannot; partition-heal catch-up; a 1,000+
       step randomized chaos run (proposes + crashes + partitions) asserting Agreement & Quorum-backing
       hold throughout and all live nodes converge to one chosen log + KV.
+
+### EPaxos lab (leaderless consensus) — NEW
+The headline complement to Raft and Paxos: consensus with **no leader at all**. Where Raft and
+Multi-Paxos funnel every command through one elected leader and a single totally-ordered log,
+**EPaxos** (Moraru, Andersen & Kaminsky, SOSP 2013) lets *any* replica commit its own commands
+directly into its private slice of a shared instance space, and orders only the commands that
+actually *interfere* — recording the partial order as a live **dependency graph** that every
+replica linearises identically by computing strongly-connected components. Built for real on the
+same kernel: `protocols/epaxos/{types,epaxos,invariants}.ts`, a bespoke dependency-graph
+visualiser (`ui/DepGraph.tsx`) and `labs/EPaxosLab.tsx`.
+- [x] **Instance space + interference** — each command lives in instance `owner.index`; two commands
+      interfere iff they touch the same key. EPaxos orders only interfering pairs (everything else
+      commutes and may execute in any order on any replica), recorded as a per-command **dep set**
+      plus a **sequence number** for cycle tie-breaking.
+- [x] **PreAccept (Phase 1)** — a command leader attaches the deps/seq it computes locally and asks a
+      quorum; each replica folds in *its own* interfering commands and replies with the (possibly
+      enlarged) deps/seq.
+- [x] **Fast path** — if every reply is identical to the leader's proposal the deps are final and the
+      command commits in **one round-trip**, no leader in the path. (We use a **unanimous** fast quorum:
+      a deliberate, provably-safe simplification — see the safety note below.)
+- [x] **Slow path (explicit Accept)** — any disagreement unions all the replies and runs a classic
+      Paxos **Accept** round over a majority, then commits. The deps a command commits are always folded
+      over ≥ a majority of replicas, which is exactly what makes the dependency graph capture every
+      conflict.
+- [x] **Execution by SCC** — to apply a committed command, build its committed dependency closure, find
+      **Tarjan strongly-connected components**, execute them in reverse-topological order, and within a
+      cycle by `(seq, instance-id)`. Because every replica commits the same `(cmd, deps, seq)` for every
+      instance and executes by the same deterministic rule, interfering commands run in the **same order
+      on every replica** — the leaderless store is linearizable.
+- [x] **Explicit-Prepare recovery (the safety crux)** — each instance is a single-decree Paxos register
+      with its own **ballot**, so a crashed command-leader's instance is finished by *any* replica via
+      explicit **Prepare**: gather a majority of records, then (a) adopt a committed value verbatim,
+      (b) re-drive the highest-ballot Accepted value, (c) if a whole **majority** holds an identical
+      default-ballot PreAccept, re-Accept it verbatim (its deps were folded over a majority → safe, and
+      it covers a possible fast commit), else (d) **re-run PreAccept** over a fresh majority (re-folding
+      conflicts) and Accept, or (e) commit a **no-op** if nobody ever recorded anything.
+- [x] **Anti-entropy catch-up** — recovery **retries** at ever-higher ballots if its messages are lost;
+      a per-tick **gap recovery** drives any uncommitted instance sitting below a committed one; and a
+      lightweight **Sync** gossip ships a peer the committed instances it's missing above its watermark —
+      so a long-crashed or partitioned replica rejoins and reconverges with no leader to stream from.
+- [x] **Live safety invariants** — **Per-instance consensus** (every replica that decides an instance
+      chose the same cmd/deps/seq), **Execution consistency** (every pair of interfering commands
+      executes in the same order on every replica — the headline) and **State-machine safety** (each
+      replica's KV equals its own execution order replayed). Convergence is reported separately as an
+      *eventual* gauge (it dips during a partition and heals).
+- [x] **Dependency-graph UI** (`ui/DepGraph.tsx`) — the signature picture: instances placed by owner
+      (column) and index (row), `γ→δ` dependency arrows, nodes tinted by how far agreement carried them
+      (pre-accepted → accepted → committed → executed) with their execution-order number, and any
+      **dependency cycle boxed in gold** ("cycle → seq order"). Watching commands fill in and cycles
+      resolve *is* the protocol. Plus a per-instance inspector, executed-log/KV panels, a "conflict
+      burst" button (every replica proposes a conflicting write at once → slow path + cycles), a
+      per-instance "recover" button, crash/partition controls and deep links.
+- [x] **Safety note (honest simplification)** — the fast path here requires a **unanimous** quorum
+      rather than EPaxos's `F+⌊(F+1)/2⌋` fast quorum. This keeps recovery airtight with a clean,
+      provably-correct rule (a value committed on a unanimous fast path is held by everyone, so any
+      recovery majority reconstructs it) and *still* demonstrates fast-vs-slow vividly — any conflict or
+      laggard drops to the slow path. The real sub-quorum fast path needs the intricate deps-validation
+      that the original paper got subtly wrong (and NSDI'21 "EPaxos Revisited" later fixed); it's left
+      as a backlog item rather than shipped half-correct.
+- [x] **Self-tests (10)** — quorum arithmetic; no-conflict fast-path commit + convergence; concurrent
+      conflicting writes resolving on the slow path in a consistent order; non-interfering commands with
+      no edge between them; a crashed command-leader's instance recovered via Prepare; a partition's
+      majority making progress while the minority stalls then heals; a **1,200-step randomized chaos run**
+      (crashes/restarts/partitions/5% drops) asserting all three safety invariants throughout; a 7-node
+      cluster tolerating 2 crashes; post-chaos convergence; and determinism (same seed ⇒ byte-identical
+      run). Stress-tested separately across 30 adversarial N=5 runs (700 steps each, 7% drops +
+      partitions + crashes): zero safety violations.
+- [ ] **Real `F+⌊(F+1)/2⌋` fast quorum** with the EPaxos-Revisited deps-validation, offered as a toggle
+      beside the unanimous fast path to show the latency/robustness trade-off.
+- [ ] **Optimized-deps / sequence-free execution** (the `EPaxos` paper's later refinements).
+- [ ] **Animate one command's PreAccept→fast/slow→commit→execute path** step by step on the canvas.
 
 ### Chord DHT lab (peer-to-peer routing) — NEW
 A scalable distributed hash table on one consistent-hashing ring, the classic Stoica et al. (2001)
@@ -345,7 +416,9 @@ invariants}.ts`) + `labs/DynamoLab.tsx`.
       then add the NEW-VIEW validation that defeats them.
 - [ ] **Hybrid Logical Clocks** in the vector-clock lab — one-line causal timestamps that stay close
       to physical time.
-- [ ] **EPaxos / leaderless Paxos** — dependency graphs and out-of-order commit.
+- [x] **EPaxos / leaderless Paxos** — shipped; see the EPaxos lab section above (leaderless instances,
+      dependency-graph ordering with SCC execution, fast/slow paths, explicit-Prepare recovery + anti-entropy
+      catch-up, and a bespoke dependency-graph visualiser).
 
 ### Polish
 - [x] Landing page / lab switcher with hash routing
@@ -531,3 +604,37 @@ invariants}.ts`) + `labs/DynamoLab.tsx`.
   scenarios: siblings fork and then converge (**HOLDING**), a sloppy write acks via a substitute and
   hinted handoff repairs the recovered owner, read repair fixes a stale replica, and the in-app
   self-tests report **75/75 passing** with zero runtime errors.
+- 2026-06-27 (claude): **added a full EPaxos (Egalitarian Paxos) lab** — the headline new
+  capability and the first **leaderless** consensus here, a deliberate counterpoint to Raft and
+  Multi-Paxos. Three new files (`protocols/epaxos/{types,epaxos,invariants}.ts`), a bespoke
+  **dependency-graph visualiser** (`ui/DepGraph.tsx`) and `labs/EPaxosLab.tsx`, all on the existing
+  kernel. Implemented the real protocol: per-replica **instance space**, interference-based
+  **dependency sets** + sequence numbers, the **PreAccept** fast/slow paths, **Commit**, and
+  **execution by Tarjan SCC** (interfering commands run in the same order on every replica). Each
+  instance is a single-decree Paxos register with its own ballot, so a crashed command-leader's
+  instance is finished by anyone via **explicit Prepare** recovery; added recovery **retry**,
+  **gap recovery** and a **Sync** anti-entropy gossip so a long-down replica reconverges with no
+  leader. Three genuine correctness issues found & fixed while bringing it up on a strong test
+  harness: (1) a **timer-starvation** bug — the per-tick recovery sweep kept re-arming the
+  `recover:` timer before it could fire, so recovery never triggered (same class of bug the Chord
+  lab hit); fixed with a `recoverArmed` guard. (2) The **dependency property breaking under
+  failures** — a command could commit with deps folded over too few replicas (a fast-timeout slow
+  path or a recovery that computed deps only locally), so two interfering commands committed with no
+  edge between them and executed in different orders; fixed by making every commit fold deps over ≥ a
+  **majority** (a unanimous fast path, a majority slow path, and a recovery that re-runs PreAccept to
+  re-fold conflicts) — a majority always intersects another command's quorum, so the conflict is
+  always captured. (3) An **invariant** false-positive — execution-consistency was reading a stale
+  *PreAccepted* value at a crashed replica instead of the *decided* (committed) value; fixed to
+  consider only committed/executed records. Four live panels (Per-instance consensus, Execution
+  consistency, State-machine safety + an eventual Convergence gauge). The lab UI draws the signature
+  **dependency graph** (nodes by owner/index, `γ→δ` arrows, status colours, execution-order badges,
+  **gold-boxed SCC cycles**), a per-instance inspector, executed-log/KV panels, a "conflict burst"
+  button, a per-instance "recover" button, crash/partition controls and deep links. Self-test suite
+  grown **75 → 85/85** (10 EPaxos tests incl. the 1,200-step chaos run and determinism); stress-tested
+  separately across **30 adversarial N=5 runs** (700 steps each, 7% drops + partitions + crashes):
+  **zero safety violations**. Documented the one honest simplification (a unanimous fast quorum instead of
+  EPaxos's `F+⌊(F+1)/2⌋`, which keeps recovery provably airtight) with the real variant left as a
+  backlog item. Verified the full gate (scope + conformance + lint + build) and drove the built app in
+  headless Chromium: proposing + a conflict burst commits 21 commands across 5 replicas (**fast 16 ·
+  slow 5**), every replica converges, the dependency graph fills in with a live SCC cycle box, and the
+  in-app self-tests report **85/85 passing** with zero runtime errors.

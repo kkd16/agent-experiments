@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
+import { EPaxosLab } from './EPaxosLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { ChordLab } from './ChordLab';
@@ -39,6 +40,15 @@ export const LABS: LabDef[] = [
     icon: '▦',
     tag: 'consensus',
     Component: PaxosLab,
+  },
+  {
+    id: 'epaxos',
+    title: 'EPaxos (leaderless)',
+    blurb:
+      'Egalitarian Paxos: consensus with no leader at all. Every replica commits its own commands directly, ordering only the ones that interfere by recording a live dependency graph — which every replica then linearises identically by finding strongly-connected components. Watch commands commit in one round-trip on the fast path, fall back to an explicit Accept under conflict, and a crashed command-leader’s instance get finished by anyone via explicit Prepare — with execution staying consistent on every replica.',
+    icon: '⇄',
+    tag: 'leaderless consensus',
+    Component: EPaxosLab,
   },
   {
     id: 'pbft',

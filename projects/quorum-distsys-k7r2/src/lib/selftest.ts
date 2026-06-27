@@ -58,6 +58,18 @@ import {
   type Command as HsCommand,
   type FaultMode as HsFaultMode,
 } from '../protocols/hotstuff/types';
+import { createEPaxos } from '../protocols/epaxos/epaxos';
+import { epaxosInvariants, convergenceGauge as epConvergence } from '../protocols/epaxos/invariants';
+import {
+  DEFAULT_EPAXOS_CONFIG,
+  fastQuorum as epFastQuorum,
+  slowQuorum as epSlowQuorum,
+  faultBudget as epFaultBudget,
+  instKey as epInstKey,
+  type Command as EpCommand,
+  type EPaxosCmd,
+  type EPaxosState,
+} from '../protocols/epaxos/types';
 
 export interface TestResult {
   group: string;
@@ -1527,6 +1539,184 @@ export function runSelfTests(): TestResult[] {
     const b = dynChaos(99, 600);
     if (a.firstBreak) return [false, a.firstBreak];
     const ok = a.ser === b.ser;
+    return [ok, ok ? 'two independent chaotic runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  // ---- EPaxos (leaderless consensus) ----
+  const epKernel = (seed: number, ids: string[], net?: Partial<{ minLatency: number; maxLatency: number; dropRate: number }>) =>
+    new Kernel<EPaxosState, EPaxosCmd>({
+      seed,
+      protocol: createEPaxos(DEFAULT_EPAXOS_CONFIG),
+      nodeIds: ids,
+      network: net ? { minLatency: 20, maxLatency: 60, dropRate: 0, ...net } : undefined,
+    });
+  const epOk = (k: Kernel<EPaxosState, EPaxosCmd>) => epaxosInvariants(k.views()).every((i) => i.ok);
+  const epBad = (k: Kernel<EPaxosState, EPaxosCmd>) => {
+    const r = epaxosInvariants(k.views()).find((i) => !i.ok);
+    return r ? `${r.name}: ${r.detail}` : '';
+  };
+  const epPropose = (k: Kernel<EPaxosState, EPaxosCmd>, target: string, cmd: EpCommand) =>
+    k.command(target, { type: 'propose', target, cmd });
+  const epSettle = (k: Kernel<EPaxosState, EPaxosCmd>, n: number) => {
+    for (let i = 0; i < n; i++) k.advance(20);
+  };
+  const epConverged = (k: Kernel<EPaxosState, EPaxosCmd>) => {
+    const up = k.views().filter((v) => v.up);
+    const kvs = up.map((v) => JSON.stringify(Object.fromEntries(Object.keys(v.state.kv).sort().map((kk) => [kk, v.state.kv[kk]]))));
+    return kvs.every((x) => x === kvs[0]);
+  };
+
+  t('EPaxos', 'Quorum arithmetic (fast = N, majority = F+1)', () => {
+    const ok =
+      epFaultBudget(5) === 2 && epSlowQuorum(5) === 3 && epFastQuorum(5) === 3 &&
+      epFaultBudget(7) === 3 && epSlowQuorum(7) === 4 && epFastQuorum(7) === 5;
+    return [ok, ok ? 'F=⌊(N-1)/2⌋, majority=F+1, EPaxos fast quorum=F+⌊(F+1)/2⌋ (3 for N=5, 5 for N=7)' : 'quorum sizes wrong'];
+  });
+
+  t('EPaxos', 'No-conflict commands commit on the fast path & converge', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = epKernel(42, ids);
+    let c = 1;
+    for (let r = 0; r < 6; r++) {
+      epPropose(k, ids[r % 5], { op: 'set', key: ['x', 'y', 'z'][r % 3], value: String(c), cid: 'u' + c });
+      c++;
+      epSettle(k, 6);
+    }
+    epSettle(k, 160);
+    const fast = k.views().reduce((a, v) => a + v.state.fastCommits, 0);
+    const ok = epOk(k) && epConverged(k) && fast >= 6;
+    return [ok, ok ? `all 6 committed on the fast path (fast=${fast}); every replica converged to ${JSON.stringify(k.views()[0].state.kv)}` : epBad(k) || `fast=${fast} conv=${epConverged(k)}`];
+  });
+
+  t('EPaxos', 'Concurrent conflicting writes take the slow path, ordered consistently', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = epKernel(7, ids, { minLatency: 30, maxLatency: 90 });
+    for (const id of ids) epPropose(k, id, { op: 'set', key: 'x', value: id, cid: 'c' + id });
+    let safe = true;
+    for (let i = 0; i < 400 && safe; i++) {
+      k.advance(20);
+      safe = epOk(k);
+    }
+    epSettle(k, 200);
+    const slow = k.views().reduce((a, v) => a + v.state.slowCommits, 0);
+    const orders = k.views().map((v) => v.state.executedOrder.filter((kk) => v.state.inst[kk]?.cmd?.op === 'set').join('>'));
+    const sameOrder = orders.every((o) => o === orders[0]);
+    const ok = safe && epOk(k) && epConverged(k) && sameOrder && slow >= 1;
+    return [ok, ok ? `${slow} commands resolved on the slow path; every replica executed key x in the same order and converged to x=${k.views()[0].state.kv.x}` : epBad(k) || `slow=${slow} sameOrder=${sameOrder}`];
+  });
+
+  t('EPaxos', 'Non-interfering commands never depend on each other', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = epKernel(5, ids);
+    epPropose(k, 'A', { op: 'set', key: 'x', value: '1', cid: 'a' });
+    epPropose(k, 'E', { op: 'set', key: 'y', value: '2', cid: 'e' }); // different key — must not conflict
+    epSettle(k, 160);
+    const ax = k.views()[0].state.inst[epInstKey('A', 1)];
+    const ey = k.views()[0].state.inst[epInstKey('E', 1)];
+    const independent = ax && ey && !ax.deps.includes('E.1') && !ey.deps.includes('A.1');
+    const ok = epOk(k) && epConverged(k) && !!independent;
+    return [ok, ok ? 'commands on different keys committed with no dependency edge between them (they commute)' : epBad(k) || `A.1.deps=${ax?.deps} E.1.deps=${ey?.deps}`];
+  });
+
+  t('EPaxos', 'A crashed command-leader’s instance is recovered via explicit Prepare', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = epKernel(13, ids, { minLatency: 30, maxLatency: 80 });
+    epPropose(k, 'A', { op: 'set', key: 'k', value: '1', cid: 'a1' });
+    k.advance(10); // PreAccept goes out but A crashes before committing
+    k.crash('A');
+    epPropose(k, 'B', { op: 'set', key: 'k', value: '2', cid: 'b1' }); // conflicts → depends on A.1 → recovers it
+    let safe = true;
+    for (let i = 0; i < 500 && safe; i++) {
+      k.advance(20);
+      safe = epOk(k);
+    }
+    const up = k.views().filter((v) => v.up);
+    const recovered = up.every((v) => { const it = v.state.inst['A.1']; return it && (it.status === 'committed' || it.status === 'executed'); });
+    const ok = safe && epOk(k) && epConverged(k) && recovered;
+    return [ok, ok ? 'the live replicas recovered the crashed leader’s instance and converged' : epBad(k) || `recovered=${recovered} conv=${epConverged(k)}`];
+  });
+
+  t('EPaxos', 'A partition’s majority makes progress; the minority cannot', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = epKernel(21, ids);
+    epSettle(k, 10);
+    k.partition([['A', 'B', 'C'], ['D', 'E']]);
+    epPropose(k, 'A', { op: 'set', key: 'x', value: 'maj', cid: 'm' });
+    epPropose(k, 'D', { op: 'set', key: 'x', value: 'min', cid: 'n' }); // minority — must stall
+    epSettle(k, 200);
+    const majDone = ['A', 'B', 'C'].every((id) => { const it = k.views().find((v) => v.id === id)!.state.inst['A.1']; return it && (it.status === 'committed' || it.status === 'executed'); });
+    const minStuck = ['D', 'E'].every((id) => { const it = k.views().find((v) => v.id === id)!.state.inst['D.1']; return !it || (it.status !== 'committed' && it.status !== 'executed'); });
+    const safe = epOk(k);
+    k.healNetwork();
+    epSettle(k, 400);
+    const ok = safe && epOk(k) && epConverged(k) && majDone && minStuck;
+    return [ok, ok ? 'the majority committed during the split, the minority could not, and the cluster converged after heal' : epBad(k) || `majDone=${majDone} minStuck=${minStuck}`];
+  });
+
+  const epChaos = (seed: number, steps: number, ids: string[]) => {
+    const k = epKernel(seed, ids, { minLatency: 20, maxLatency: 80, dropRate: 0.05 });
+    const chaos = new Rng(seed * 7 + 1);
+    const half = Math.floor(ids.length / 2) + 1;
+    let c = 1;
+    let firstBreak = '';
+    for (let step = 0; step < steps; step++) {
+      k.advance(15);
+      if (step % 8 === 0 && !epOk(k)) { firstBreak = `step ${step}: ${epBad(k)}`; break; }
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.05 && up.length > half) k.crash(chaos.pick(up)!);
+      else if (roll < 0.13 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.17) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.22) k.healNetwork();
+      else if (roll < 0.5) {
+        const t2 = chaos.pick(up);
+        if (t2) epPropose(k, t2, { op: chaos.next() < 0.8 ? 'set' : 'del', key: ['x', 'y', 'z', 'w'][chaos.int(0, 3)], value: String(c), cid: 'u' + c });
+        c++;
+      }
+    }
+    return { k, firstBreak };
+  };
+
+  t('EPaxos', 'Never violates safety under 1,200 chaos steps', () => {
+    const { firstBreak } = epChaos(31337, 1200, ['A', 'B', 'C', 'D', 'E']);
+    return [!firstBreak, firstBreak || 'per-instance consensus, execution consistency & state-machine safety all held through 1,200 crashes/restarts/partitions/drops'];
+  });
+
+  t('EPaxos', 'A 7-node cluster tolerates 2 simultaneous crashes', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+    const k = epKernel(88, ids, { minLatency: 25, maxLatency: 70 });
+    epSettle(k, 10);
+    k.crash('F');
+    k.crash('G');
+    let c = 1;
+    for (let r = 0; r < 6; r++) { epPropose(k, ids[r % 5], { op: 'set', key: ['x', 'y'][r % 2], value: String(c++), cid: 'u' + c }); epSettle(k, 8); }
+    epSettle(k, 300);
+    const live = k.views().filter((v) => v.up);
+    const kvs = live.map((v) => JSON.stringify(Object.fromEntries(Object.keys(v.state.kv).sort().map((kk) => [kk, v.state.kv[kk]]))));
+    const ok = epOk(k) && kvs.every((x) => x === kvs[0]) && Object.keys(live[0].state.kv).length > 0;
+    return [ok, ok ? 'with 2 of 7 down, the surviving majority kept committing and converged' : epBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('EPaxos', 'After chaos heals, every replica converges', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const { k, firstBreak } = epChaos(4242, 800, ids);
+    if (firstBreak) return [false, firstBreak];
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    epSettle(k, 800);
+    const ok = epConverged(k) && epOk(k);
+    return [ok, ok ? 'all replicas converged to one executed KV after the churn' : epBad(k) || epConvergence(k.views()).detail];
+  });
+
+  t('EPaxos', 'Determinism: same seed & ops ⇒ byte-identical run', () => {
+    const a = epChaos(99, 600, ['A', 'B', 'C', 'D', 'E']);
+    const b = epChaos(99, 600, ['A', 'B', 'C', 'D', 'E']);
+    if (a.firstBreak) return [false, a.firstBreak];
+    const ok = a.k.serialize() === b.k.serialize();
     return [ok, ok ? 'two independent chaotic runs produced identical serialized state' : 'runs diverged'];
   });
 
