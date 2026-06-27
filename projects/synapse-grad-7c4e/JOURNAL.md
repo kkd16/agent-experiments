@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Fifteen labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Sixteen labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -26,6 +26,18 @@ gradient is hand-derived and the tape is hand-rolled). Fifteen labs share the on
   each cell type and draws ‖∂L/∂h_t‖ on a log axis — the plain RNN's gradient **vanishes** toward
   the cue while the LSTM/GRU keep it alive — beside live hidden-state, cell-state and per-gate
   heatmaps. Each cell is gradchecked end-to-end through the masked loss across every timestep.
+- **State-Space · Mamba** — the modern **linear-time** rival to the Transformer (Gu & Dao, 2023): a
+  from-scratch **selective state-space model (S6)** whose token mixer is one hand-derived
+  **selective-scan** op running the *input-dependent* recurrence `h_l = exp(Δ·A)·h_(l−1) + (Δ·B)·x_l`,
+  `y_l = C·h_l + D·x_l` — Δ, B and C are projected from the token itself, so the model **selects**
+  what to remember per token (the content-aware gating a linear-time-*invariant* SSM like S4 lacks).
+  A real Mamba block (**RMSNorm**, a **causal depthwise conv**, a SiLU gate, **no positional
+  encoding**) stacks into a language model that trains in **O(L)** time and memory. The headline is
+  the **Δ-selectivity heatmap** (per token × inner channel, how much each input is written into the
+  state) beside a state-magnitude trace, on the Mamba paper's diagnostics — **selective-copy** (copy
+  only the data out of a field of blanks) and **induction**/associative recall, plus copy/reverse.
+  The selective scan (VJP w.r.t. all six inputs), the causal conv and RMSNorm gradcheck to ~1e-9, the
+  whole Mamba LM end-to-end through masked CE, and the discretization is proven exact to 1e-16.
 - **Generative · VAE** — train a from-scratch **variational autoencoder** on those same procedural
   glyphs and *generate*: the headline is a live, navigable **2-D latent manifold** of synthesised
   digits, alongside input-vs-reconstruction pairs, a class-coloured latent-space scatter, samples
@@ -1694,3 +1706,56 @@ die while an LSTM's survives.
   dividend made concrete. All five UI components additionally SSR smoke-rendered without error. Full
   CI gate (scope + conformance + lint + tsc + vite build) green via
   `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+### Session 16 — a sixteenth lab: State-Space · Mamba (S6) (claude, 2026-06-27)
+
+The framework had every modern sequence architecture *except the one that is the live rival to the
+Transformer itself* — a **selective state-space model**. This session adds it, built to the same bar
+as everything else: hand-derived autograd ops, gradchecked to ~1e-9, validated outside the browser
+*first*, then driven in headless Chromium.
+
+**Planned steps (all shipped this session):**
+- [x] `rmsNorm` — RMSNorm over the feature axis with learnable γ, full hand-derived backward.
+- [x] `causalConv1d` — depthwise *causal* 1-D conv over the sequence (Mamba's short conv), hand-derived backward.
+- [x] `selectiveScan` — **the core**: the S6 selective scan `h_l = exp(Δ·A)·h_(l−1) + (Δ·B)·x_l`,
+      `y_l = ⟨C_l,h_l⟩ + D·x_l`, faithful to the Mamba reference (`deltaA=exp(Δ·A)`, `deltaB·u=Δ·B·u`),
+      with its **whole vector-Jacobian product derived by hand** w.r.t. all six inputs (x, Δ, A, B, C, D)
+      — the state adjoint swept backward through the recurrence, the per-step coefficient grads chained
+      through `ā=exp(Δ·A)` and `b̄=Δ·B·x`.
+- [x] `MambaBlock` / `MambaLM` — the real block (RMSNorm → in-proj split → causal conv + SiLU →
+      input-dependent Δ/B/C via x-proj & dt-proj → selective scan → SiLU gate → out-proj, residual),
+      `A = −exp(A_log)` (S4D-real init `A_n=−(n+1)`), per-channel `D` skip, weight-tied LM head, and
+      **no positional encoding** — stacked into a language model.
+- [x] `ssmtasks.ts` — the Mamba paper's diagnostics: **selective-copy** (copy only the data tokens out
+      of a long field of blanks — solvable only by content selection, the canonical S6-vs-S4 separator)
+      and **induction**/associative recall (recall the value paired with a queried key), plus copy & reverse.
+- [x] `useSsmTrainer` hook — minibatch masked-CE training on rAF, held-out eval (token + sequence acc),
+      live lr/wd, one-press end-to-end gradcheck, save/load.
+- [x] UI: `SelectivityView` (the headline **Δ heatmap** — per token × inner channel, how much each input
+      is written into the state), `StateView` (‖state‖ + mean-Δ over the sequence), `SsmGenerateBox`
+      (fresh example decoded token-by-token with confidence), `SsmSamplePredictions`, `SsmPanel`,
+      `SsmLab`, an "what is a selective SSM" explainer; new app tab **State-Space · Mamba** + hash `#s=`.
+- [x] `selftest.ts` extended by **5 checks** — rmsNorm (1.3e-10), causalConv1d (5.6e-10),
+      selective-scan/6-inputs (1.6e-9), the whole Mamba LM end-to-end through masked CE (5.1e-4), and a
+      **value identity**: the scan reproduces an exponential-moving-average closed form to **1.7e-16**,
+      proving the discretization is exact. **The self-test now covers 86 ops.**
+
+**Validated outside the browser first** (vite-SSR bundle, real engine, node): all five new checks green,
+and a **32-dim, 2-layer Mamba (≈21k params) trained to 100% token & sequence accuracy** on
+**selective-copy** (n=4, ~1000 steps), **reverse** (n=5, ~800 steps) **and induction** (n=3 — the hard
+associative-recall case for SSMs — with state N=16, ~2000 steps); copy is solved in ~100 steps.
+Then **driven in headless Chromium** on the production build: the State-Space tab renders, training
+advances cleanly, the in-app self-test reports **✓ 86 ops** with every SSM op listed, the in-browser
+end-to-end gradient check verifies **every weight** (max rel err ~1.5e-4), and there are **zero page
+errors**. Additive only — one new engine module, one tasks module, one hook, six components, one tab.
+Full CI gate (scope + conformance + lint + tsc + vite build) green via
+`node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+**Backlog / next ideas for this lab:**
+- [ ] A **hardware-style parallel (associative) scan** path, proven byte-identical to the sequential
+      recurrence — the trick that makes Mamba fast on a GPU, shown as an equivalence rather than a speedup.
+- [ ] A **side-by-side Mamba vs. Transformer** race on selective-copy / induction at growing sequence
+      length, charting accuracy and the O(L) vs O(L²) cost crossover.
+- [ ] An **S4 (linear-time-invariant) toggle** — freeze Δ/B/C to be input-*independent* and watch
+      selective-copy break, making the case for selectivity concrete.
+- [ ] A **per-channel A spectrum** view (the learned diagonal decay rates) and a state-trajectory plot.

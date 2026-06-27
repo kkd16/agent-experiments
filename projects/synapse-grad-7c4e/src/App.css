@@ -2275,3 +2275,31 @@ label.toggle input {
   background: rgba(251, 113, 133, 0.18);
   color: #fda4af;
 }
+
+/* State-Space (Mamba) lab */
+.gen-arrow {
+  font-size: 16px;
+  color: var(--muted);
+  padding-bottom: 18px;
+}
+.ssm-about {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.ssm-about p {
+  margin: 0 0 8px;
+}
+.ssm-about ul {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+.ssm-about li {
+  margin: 2px 0;
+}
+.ssm-about code {
+  font-size: 12px;
+  background: rgba(148, 163, 184, 0.14);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
