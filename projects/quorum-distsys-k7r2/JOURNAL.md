@@ -328,6 +328,9 @@ invariants}.ts`) + `labs/DynamoLab.tsx`.
       stale replica; anti-entropy convergence with no reads; a **1,200-step randomized chaos run**
       (crashes/restarts/partitions/heals + mixed puts/gets/blind writes) asserting Causality &
       Durability throughout; post-chaos convergence; and determinism (same seed ⇒ byte-identical run).
+- [x] **Deep-linkable configuration** — the whole Dynamo setup (seed, node count, N, R, W, sloppy
+      on/off, key) round-trips through the URL hash with a one-click "🔗 link" button, exactly like the
+      Raft and Paxos labs.
 - [ ] **Merkle-tree anti-entropy** — replace the push-everything sync with Dynamo's real Merkle-tree
       diff so only the keys that actually differ are exchanged.
 - [ ] **Quorum-state machine view** — animate a single PUT's W-ack collection and a GET's R-reply
