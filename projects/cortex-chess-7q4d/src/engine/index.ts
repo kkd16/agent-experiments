@@ -92,6 +92,24 @@ export { allocateTime, formatClock, TIME_CONTROLS } from './clock'
 export type { TimeControl, TimeBudget } from './clock'
 export { TACTICS } from './tactics'
 export type { TacticCase } from './tactics'
+export {
+  PUZZLES,
+  THEMES,
+  DEFAULT_RATING,
+  expectedScore,
+  updateRating,
+  puzzlesWithTheme,
+  dailyPuzzle,
+  pickByRating,
+  puzzleSelftest,
+  uciToMove,
+  uciFrom,
+  uciTo,
+  uciPromo,
+  moveToUci,
+  sideToMove,
+} from './puzzles'
+export type { Puzzle, PuzzleKind, Theme, ThemeInfo, Rating, PuzzleSelftest } from './puzzles'
 export { EPD_SUITES, parseEpd, parseEpdBlock } from './epd'
 export type { EpdCase, EpdSuite } from './epd'
 export {
