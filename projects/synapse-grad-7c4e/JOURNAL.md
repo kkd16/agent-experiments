@@ -1841,3 +1841,108 @@ on these near-linearly-separable glyphs the two stay close (and `z` can even edg
 node: after ~600 steps probe·h ≈ 97–98%, probe·z ≈ 99–100%); the caption explains SimCLR keeps `h`
 because on *harder* data the head discards information and `h` wins — i.e. the lab shows the
 mechanism without overclaiming the textbook result on a task that's too easy to exhibit it.
+
+## v18 — AlphaZero · Self-play (MCTS + a policy/value net) — planned + built this session
+
+The eighteenth lab, and the first that *plays a game*. Every other lab learns from a fixed
+dataset; this one has **no data at all** — it learns a board game purely by playing itself, the
+way DeepMind's **AlphaZero** (Silver et al., 2017) did. One neural network with two heads (a move
+**policy** and a position **value**) guides a **Monte-Carlo Tree Search** (PUCT); the search makes
+the network stronger than itself; self-play games labelled by the search train the network; repeat.
+It is a tabula-rasa reinforcement loop with a tree search in the middle, all on the same
+hand-rolled autograd engine — no MCTS library, no game library, every gradient gradchecked.
+
+Why it belongs here: it's the most famous result in modern RL, it's visually legible (you watch
+the search think and play against the result), and — crucially for this repo's "prove it" culture —
+it is **exactly verifiable**. Tic-Tac-Toe is a *solved* game: a from-scratch perfect **negamax**
+solver is the ground-truth oracle (optimal play is a draw from the empty board), so we can assert
+the trained agent **never loses to perfect play** and that MCTS handed a perfect evaluator reproduces
+the minimax move at every position. Connect-Four is the bigger, prettier cousin for watching real
+learning, with a depth-limited alpha-beta opponent.
+
+### Plan (this session)
+
+- [x] **`engine/games.ts`** — a generic `Game` abstraction (state, legal moves, `apply`, terminal
+      status/winner, canonical *current-player-perspective* plane encoding, board symmetries for data
+      augmentation) with two implementations: **Tic-Tac-Toe** (3×3, 9 actions) and **Connect-Four**
+      (6×7, 7 column actions, gravity + 4-in-a-row over all four directions).
+- [x] **A perfect solver** (`solveTicTacToe`) — exact **negamax with alpha-beta** + memoization
+      returning the game-theoretic value and the set of optimal moves of any position. This is the
+      verifiable oracle (and an unbeatable opponent). A bounded-depth `negamaxValue` for Connect-Four.
+- [x] **`engine/aznet.ts`** — the AlphaZero network: a small **conv tower** (3×3 "same" convs, no
+      pooling — the board stays full resolution) feeding a **policy head** (masked move logits) and a
+      **value head** (`tanh` scalar in [−1, 1]). Combined loss = soft-target policy cross-entropy
+      (against the MCTS visit distribution) + value MSE (against the game outcome) + L2. `parameters()`,
+      `exportWeights`/`importWeights`, and a single composite loss that **gradchecks to ~1e-6**.
+- [x] **`engine/mcts.ts`** — **PUCT** Monte-Carlo Tree Search: per-edge `N/W/Q/P`, the
+      `Q + c_puct·P·√ΣN/(1+N)` selection rule, network-guided leaf expansion, value **backup with
+      per-ply perspective negation**, **Dirichlet** root noise for self-play exploration, and
+      **temperature** move selection (τ→0 = greedy). Returns the visit-count policy π and a readable
+      per-move stat table (P, N, Q, U).
+- [x] **`engine/selfplay.ts`** — self-play game generation (temperature schedule: explore early,
+      greedy late) emitting `(encoding, π, z)` examples with **8-fold / mirror symmetry augmentation**;
+      a ring **replay buffer**; a **train step** (minibatch SGD/Adam over the combined loss); and
+      **evaluation** that pits the net (greedy-MCTS or raw-policy) against a **random** and the
+      **perfect** opponent, returning win/draw/loss — the headline metric being *losses-to-perfect = 0*.
+- [x] **`hooks/useAlphaZeroTrainer.ts`** — a RAF loop that interleaves self-play (fill buffer) and
+      training (drain minibatches), runs periodic evaluation, and exposes the live net + metrics +
+      an interactive "play against it" surface.
+- [x] **`components/az/`** — the lab UI: a configurable control panel (game, sims/move, c_puct,
+      Dirichlet, lr, channels…), live **loss + win-rate-vs-perfect** charts, an SVG **board you can
+      play against the AI on** with the search's visit counts / priors / value drawn as overlays, a
+      **search-statistics panel** (top moves with P/N/Q/U bars), and a one-click **self-test badge**.
+- [x] **Self-tests** (wired into the engine self-test): gradcheck the combined AZ loss end-to-end;
+      and two *oracle* properties — (a) the negamax solver values the empty Tic-Tac-Toe board as a
+      **draw** and every optimal-play rollout draws; (b) MCTS driven by a **perfect** evaluator
+      selects a minimax-optimal move at a battery of positions. Plus an after-training assertion that
+      the learned agent **never loses to perfect play**.
+- [x] Wire the **AlphaZero · Self-play** tab into `App.tsx` (+ `#p=` hash route), refresh
+      `project.json`, and pass the full `verify-project.mjs` gate (conformance + lint + build).
+
+### Stretch / next-time ideas (open)
+
+- [ ] **Replay scrubber** — record every self-play game and let the user scrub one move-by-move with
+      the search tree that produced each move.
+- [ ] **A true search-tree view** — draw the MCTS tree (not just the root's children) as it grows.
+- [ ] **Connect-Four perfect-play** via a stronger solver (bitboard + transposition table) so C4 gets
+      the same exactly-verifiable "never loses" guarantee as Tic-Tac-Toe.
+- [ ] **Gumbel-AlphaZero** root action selection (Danihelka et al., 2022) — provably-improving policy
+      with far fewer simulations; compare sample-efficiency against vanilla PUCT.
+- [ ] **Elo arena** — round-robin between checkpoints to plot a real strength curve over training.
+
+## Session log (v18)
+
+- 2026-06-27 (claude / claude-opus-4-8): **Built the eighteenth lab — AlphaZero · Self-play —
+  end to end.** Five new engine modules, a trainer hook, the lab UI, and three new self-tests,
+  all on the existing autograd engine (no MCTS/game library).
+  - **`engine/games.ts`** — a game-agnostic `Game` interface with **Tic-Tac-Toe** and
+    **Connect-Four** (gravity + 4-in-a-row over all four directions), canonical side-to-move plane
+    encoding, and board symmetries (D4 for TTT, mirror for C4) for data augmentation. Plus an exact
+    **negamax + alpha-beta + memo** `solve()` (the verifiable oracle / unbeatable opponent) and a
+    depth-limited `boundedSearch()` for the C4 opponent. *Verified offline:* the empty TTT board is
+    a draw, all perfect-vs-perfect games draw, and **perfect play lost 0/300 games to random**.
+  - **`engine/aznet.ts`** — the two-headed net: a 3×3 "same"-conv tower → a masked **policy head**
+    and a `tanh` **value head**, with the combined **policy-CE + value-MSE + L2** loss. *Gradchecked*
+    end-to-end: TTT **4.3e-7**, C4 **8.6e-8** (off-kink continuous inputs).
+  - **`engine/mcts.ts`** — **PUCT** search: per-edge N/W/Q/P, network-guided expansion, value backup
+    with per-ply perspective negation, **Dirichlet** root noise, and temperature move selection.
+    *Verified:* handed a **perfect** evaluator, MCTS picked a minimax-optimal move at **4520/4520**
+    reachable TTT positions and never lost to random.
+  - **`engine/selfplay.ts`** — self-play data generation (temperature schedule + symmetry
+    augmentation), a ring **replay buffer**, the Adam **train step**, and **evaluation** vs random /
+    perfect (TTT) / strong-αβ (C4). *Verified:* a from-scratch run reached **0 losses to perfect
+    play (all draws) by iteration 4** (~7 s of compute) and ≈99% score vs random, holding through
+    iter 24 as value-loss fell 0.50 → 0.08.
+  - **`hooks/useAlphaZeroTrainer.ts`** — a RAF loop interleaving self-play + training, periodic
+    evaluation, a live position-analysis overlay, and an interactive play-vs-the-net surface.
+  - **`components/az/`** — the lab: control panel (game, sims, c_puct, Dirichlet, lr, architecture),
+    an SVG board you **play against the live network** on with the search's visit/Q/prior halos and
+    the net's value bar, a **top-moves search table** (P / visits / Q / prior), strength-vs-reference
+    readouts, and library-free learning-curve charts. One-click **gradient-check** and **search
+    soundness** badges.
+  - **Self-tests** wired into the engine self-test (now **93 ops, all green**): `alphazero-loss
+    ttt/c4 (e2e)` gradchecks and `alphazero-oracle (solver+search sound)` (empty board = draw,
+    every searched position got a value-optimal move, perfect play never loses to random — all exact).
+  - Wired the tab + `#p=` hash route into `App.tsx`. **Smoke-tested in headless Chromium**: React
+    mounts, the board/value-bar/search-table render, the 5,343-param TTT net builds, no errors.
+    Full `verify-project.mjs` gate (scope + conformance + lint + build) green.
