@@ -1,0 +1,108 @@
+/* CTL* mode — styles for the elements unique to this view; lasso/cert/sub/verify classes are reused
+   from LogicView.css and BranchingView.css. */
+
+/* Fragment badges: which logic the formula lives in. */
+.frag-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  vertical-align: middle;
+  border: 1px solid transparent;
+}
+.frag-badge.frag-ltl {
+  background: color-mix(in srgb, #38bdf8 18%, transparent);
+  color: #38bdf8;
+  border-color: color-mix(in srgb, #38bdf8 45%, transparent);
+}
+.frag-badge.frag-ctl {
+  background: color-mix(in srgb, #a78bfa 18%, transparent);
+  color: #a78bfa;
+  border-color: color-mix(in srgb, #a78bfa 45%, transparent);
+}
+.frag-badge.frag-star {
+  background: color-mix(in srgb, #f59e0b 20%, transparent);
+  color: #f59e0b;
+  border-color: color-mix(in srgb, #f59e0b 50%, transparent);
+}
+
+.frag-card {
+  border: 1px solid var(--border, #2a2f3a);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.4rem 0 0.8rem;
+  background: color-mix(in srgb, var(--panel, #161a22) 70%, transparent);
+}
+.frag-card.frag-ltl {
+  border-left-color: #38bdf8;
+}
+.frag-card.frag-ctl {
+  border-left-color: #a78bfa;
+}
+.frag-card.frag-star {
+  border-left-color: #f59e0b;
+}
+.frag-title {
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+/* Quantifier nodes in the syntax tree get a hint of the proper-CTL* accent. */
+.ltl-opnode.star-quant {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 45%, transparent);
+}
+
+/* χ-substitution list in the Decompose side panel. */
+.chi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.4rem 0;
+}
+.chi-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.chi-name {
+  color: #f59e0b;
+  font-weight: 700;
+}
+.chi-eq {
+  color: var(--muted, #8a93a6);
+}
+.chi-src {
+  color: var(--text, #e6e9ef);
+  word-break: break-word;
+}
+.resid-row {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border, #2a2f3a);
+}
+.resid-row.big {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel, #161a22) 70%, transparent);
+}
+.resid-row code {
+  color: #f59e0b;
+}
+
+/* Witness start-state picker. */
+.witness-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.35rem 0;
+  font-size: 0.8rem;
+  color: var(--muted, #8a93a6);
+}

@@ -622,13 +622,113 @@ top-level mode, **Branching**, and it reuses the v8 Kripke structure, DSL, and g
 
 - [ ] **Fair CTL** — fairness constraints with `E_fair G` via fair-SCC detection, so "under a fair
       scheduler" properties become checkable.
-- [ ] **CTL\*** — the full logic, model-checked by *nesting the v8 LTL engine inside* the CTL labelling
+- [x] **CTL\*** — the full logic, model-checked by *nesting the v8 LTL engine inside* the CTL labelling
       (LTL model checking on the maximal state-subformula-rooted path formulas) — a genuine synthesis
-      of the v8 and v9 engines.
+      of the v8 and v9 engines. **Shipped in v10 below** (the tenth, **CTL\***, mode — Emerson–Lei).
 - [ ] **Symbolic (BDD) CTL** — the same fixpoints over a from-scratch ROBDD of the transition relation,
       the NuSMV idea, with a state-set-as-BDD visualization.
 - [ ] **Bisimulation** — the CTL-equivalence of two Kripke structures by partition refinement, mirror
       of Hopcroft/Myhill–Nerode one level up.
+
+## v10 — the temporal capstone: a from-scratch CTL\* model checker (planned + built this session)
+
+v8 built the **linear** half of temporal logic (LTL, one path at a time, the automata-theoretic
+product) and v9 built the **branching** half (CTL, the tree of futures, the labelling fixpoints). Each
+can state something the other cannot — `F G p` ("every path eventually stabilises") is LTL-only, while
+`A G E F restart` ("resettable from every reachable state") is CTL-only — so the temporal-logic story
+had one chapter left: **CTL\***, the logic *above both*, which drops CTL's rule that a path quantifier
+must hug a single temporal operator and lets `E`/`A` bind an arbitrary path formula. `E[G F p]`
+("some path is fair") and `A[(G F req) → (G F ack)]` (strong-fairness response) are expressible in
+**neither** CTL nor LTL alone; CTL\* is exactly the closure that contains them. This is the **tenth**
+top-level mode, **CTL\***, and it is the genuine *synthesis* the v9 backlog called for: branching
+labelling on the outside, LTL automata on the inside.
+
+### Why this is the right capstone
+
+- It is **literally the two engines working together.** The Emerson–Lei algorithm decides `E ρ` ("some
+  path from here satisfies the LTL body ρ") by the v8 GPVW/Vardi–Wolper product — one Büchi-emptiness
+  check per state — and `A ρ = ¬E¬ρ` by its dual; it strips the **innermost** quantifier first, names
+  the result with a fresh proposition `χ`, substitutes upward, and finishes with a Boolean residual.
+  So the inside is v8 and the outside is v9, glued by atom introduction. Nothing new had to be invented
+  in the cores — the reuse *is* the result.
+- It **closes the temporal-logic hierarchy**: LTL ⊂ CTL\* ⊃ CTL, with CTL and LTL incomparable inside
+  it. The About tab makes the three-way expressiveness concrete.
+- It is **independently checkable from three directions at once** — which is the bar the rest of the
+  lab sets and the reason CTL\* (notoriously fiddly) can be shipped with confidence.
+
+### The CTL\* engine (`src/engine/star/`)
+
+- [x] `formula.ts` — one **unified `Star` AST** (every LTL surface operator plus the `E`/`A` path
+      quantifiers), `showStar` with precedence-correct bracketing, `starKey`/`subformulas`/`atomsOf`,
+      `hasQuant`, the **`isStateFormula` well-formedness** predicate (temporal operators may only sit
+      under a quantifier) with a friendly `offendingTemporal` message, `starToLtl` (lower a
+      quantifier-free path body to the v8 LTL AST), the **`ctlToStar`/`starToCtl` bridges** (CTL is a
+      syntactic fragment) and a `classify` that tells `ltl` / `ctl` / proper `star`.
+- [x] `parser.ts` — a hand-written recursive-descent / precedence-climbing CTL\* parser (ASCII **and**
+      Unicode). It is the v8 LTL parser plus two extra prefix operators — `E`/`A` — that nest freely;
+      a quantifier binds a unary path body (so `A G F p` = `A(G(F p))` and `AG p ∧ q` = `(A G p) ∧ q`,
+      keeping the CTL reading) or a bracketed `E[…]`/`A[…]` for binary bodies.
+- [x] `pathexist.ts` — the one primitive CTL\* rests on: **∃ a path from `s` satisfying a pure-LTL body
+      ρ**, for every `s`. It builds the v8 GPVW Büchi automaton for ρ once, then runs the v8 product
+      **emptiness** check (`checkEmptiness`) with the start state pinned to each state in turn, over the
+      v9 *totalized* `CtlModel` (so the CTL fragment agrees with the labelling engine state-for-state).
+      Returns the satisfying set **and** a witnessing lasso per state.
+- [x] `modelcheck.ts` — the **Emerson–Lei driver**: a post-order rewrite that eliminates the innermost
+      quantifier (`E ρ` → path-existence; `A ρ` → complement of path-existence on `¬ρ`), introduces a
+      fresh `χᵢ` label true exactly on its satisfying set, substitutes upward, and evaluates the
+      Boolean residual per state. Emits the full decomposition trace (each `χᵢ`, the LTL body it
+      abbreviates, its satisfying set, and a witnessing/refuting path) plus the verdict.
+- [x] `oracle.ts` — a **second, structurally-independent** path-existence engine: same GPVW automaton,
+      but emptiness decided by an **iterative Tarjan SCC** analysis of the product (an accepting state
+      reachable from an initial state and on a cycle), and **every positive answer re-validated** by
+      replaying the witnessing ω-word through the v8 **direct lasso semantics** (`evalLtlOnLasso`) — so
+      a "yes" is never taken on the automaton's word alone.
+- [x] `examples.ts` — a gallery spanning the fragments: CTL-inside-CTL\* (`A G E F reset`,
+      `E F A G p`), proper CTL\* (`E[G F p]`, `A[F G p]`, `E[F G p]`, `E[(G p) U q]`, strong-fairness
+      response, `A[G(req → F ack)]`), and a **failing** one (`A[G F p]`) so the counterexample lasso
+      has something to replay.
+- [x] `selftest.ts` — the differential suite (see below).
+
+### The UI — a tenth mode (`views/StarView.tsx` + `.css`)
+
+- [x] **Formula** tab — the syntax tree (quantifier nodes accented), plus a live **classification**
+      card explaining *which* logic the formula lives in (linear / CTL / proper CTL\*) and why.
+- [x] **Decompose** tab — the heart: the Emerson–Lei elimination **round by round**, each `χᵢ ≡ Q ρ`
+      lighting up its `Sat` set on the v9 graph renderer, with a **replayable witnessing/refuting
+      lasso** (per start state) and the running `χ`-substitution list down to the Boolean residual.
+- [x] **Model-check** tab — verdict banner, per-initial-state `⊨`/`⊭` pills, the residual and the
+      per-round summary ("`χ₀ ≡ A G F p` holds at 3/4 states, decided by a per-state `A = ¬E¬` check").
+- [x] **Verify** tab — the live self-test report; **About** tab — CTL\* completes the hierarchy, the
+      three-way expressiveness table, and the Emerson–Lei walkthrough.
+- [x] Wired the `star` permalink mode into `App.tsx` + `lib/hash.ts` (full `#/star?…` round-trip).
+
+### Verification — three independent engines, none sharing code with the checker
+
+- [x] **CTL ⊂ CTL\*** — on the CTL fragment the Emerson–Lei (GPVW) checker must equal the v9
+      **symbolic-fixpoint** labelling engine at **every** state: **700** random (model, CTL formula)
+      pairs, **0 mismatches**.
+- [x] **full CTL\*** — on randomly-nested formulas the production GPVW emptiness must equal the
+      independent **Tarjan-SCC** oracle: **350** pairs, **0 mismatches**.
+- [x] **linear fragment** — `A ρ` / `E ρ` on a deterministic model must equal the v8 **direct ω-word
+      semantics** (automaton-free ground truth): **400** pairs, **0 off**.
+- [x] **duality** `A ρ ≡ ¬E¬ρ` state-wise (300); **certificate soundness** — every witness lasso is a
+      real model path that replays under the direct semantics (464 lassos); **gallery verdicts** land
+      (9/9). **7/7 green**, live in the Verify tab.
+
+### v10 backlog — next steps for the CTL\* mode (planned, not yet built)
+
+- [ ] **Fair CTL\*** — fairness constraints (`E_fair`, `A_fair`) by restricting the path-existence to
+      runs meeting Büchi/Streett fairness, so "under a fair scheduler" CTL\* holds.
+- [ ] **A single global certificate tree** — stitch the per-round witnesses into one replayable
+      computation-tree witness for the whole formula (not just per quantifier round).
+- [ ] **Shared-subformula memoization** — cache `Sat(χ)` across identical path bodies so a formula that
+      repeats `G F p` only pays for one Büchi build.
+- [ ] **The product automaton, drawn** — render `M ⊗ A(ρ)` for the selected round with the accepting
+      lasso highlighted, mirroring the v8 product view.
+- [ ] **CTL\* satisfiability / synthesis** — decide `SAT(φ)` for a CTL\* formula (the harder,
+      2EXPTIME problem) via the tree-automata emptiness, sitting beside model checking.
+- [ ] **Counterexample minimization** — shrink a refuting lasso to its shortest stem+loop and explain
+      which sub-obligation each cell discharges, as the v9 certificates do.
 
 ## Future ideas (not yet built)
 
@@ -637,6 +737,10 @@ top-level mode, **Branching**, and it reuses the v8 Kripke structure, DSL, and g
 - [x] **CTL branching-time model checking** — shipped in **v9** (Branching mode): the
       Clarke–Emerson–Sistla labelling algorithm with EX/EU/EG fixpoints, an independent SCC oracle,
       witness/counterexample certificates, and the CTL-vs-LTL expressiveness story (see v9 above).
+- [x] **CTL\* model checking** — shipped in **v10** (CTL\* mode): the Emerson–Lei algorithm nesting the
+      v8 LTL automata engine inside the v9 branching labelling, with a unified parser, an independent
+      Tarjan-SCC path-existence oracle, replayable per-round certificates, and the three-way LTL/CTL/CTL\*
+      expressiveness story (see v10 above).
 - [ ] Mealy/Moore transducers
 - [ ] An **adversarial/manual teacher** for Learn mode (you answer the membership & equivalence
       queries by hand) and an **NL\*** variant that learns an NFA via a residual table
@@ -652,6 +756,38 @@ top-level mode, **Branching**, and it reuses the v8 Kripke structure, DSL, and g
 
 ## Session log
 
+- 2026-06-27 (claude / claude-opus-4-8): shipped **v10 — the temporal capstone (CTL\* model
+  checking)**, a tenth top-level mode that completes the temporal-logic hierarchy: where v8's Logic
+  mode is *linear* time and v9's Branching mode is *branching* time, CTL\* is the logic **above both**,
+  in which a path quantifier `E`/`A` binds an arbitrary path formula so the temporal operators nest
+  freely (`E[G F p]`, `A[F G p]` — expressible in neither CTL nor LTL alone). It is checked by the
+  **Emerson–Lei algorithm**, which is the genuine *synthesis* of the existing engines: new package
+  `src/engine/star/` — `formula.ts` (a unified `Star` AST of the LTL operators + the `E`/`A`
+  quantifiers, `showStar`, the `isStateFormula` well-formedness check, `starToLtl`, the
+  `ctlToStar`/`starToCtl` fragment bridges, and a `classify`); `parser.ts` (the v8 LTL parser plus two
+  freely-nesting prefix quantifiers, with `E[…]`/`A[…]` bracket bodies); `pathexist.ts` (the core
+  primitive — *∃ a path from s satisfying an LTL body ρ*, decided per state by the v8 GPVW Büchi
+  automaton + the v8 product-emptiness check, over the v9 totalized model, returning a witness lasso);
+  `modelcheck.ts` (the Emerson–Lei driver — eliminate the innermost quantifier via path-existence
+  (`A ρ = ¬E¬ρ`), name it with a fresh `χ`, substitute upward, evaluate the Boolean residual — with a
+  full decomposition trace and per-round witnesses); `oracle.ts` (a structurally-independent
+  path-existence engine deciding emptiness by **iterative Tarjan SCC** and re-validating every positive
+  answer through the v8 direct lasso semantics); `examples.ts` (a 9-problem gallery across the
+  fragments, incl. a failing case); `selftest.ts` (the differential suite). New UI: a tenth **CTL\***
+  mode (`views/StarView.tsx` + `.css`) with **Formula** (syntax tree + live fragment classification),
+  **Decompose** (the elimination round by round — each `χᵢ ≡ Q ρ` lighting up its `Sat` set on the
+  graph, with a replayable witnessing/refuting lasso and the running `χ`-substitution list to the
+  residual), **Model-check** (verdict, per-initial `⊨`/`⊭` pills, per-round summary), **Verify**, and
+  **About** (CTL\* completes the hierarchy; the three-way expressiveness table; the Emerson–Lei
+  walkthrough) tabs. Wired the `star` permalink mode into `App.tsx` + `lib/hash.ts` (`#/star?…`
+  round-trip). Differential-tested live in the Verify tab (**7/7**): on the **CTL fragment** the
+  Emerson–Lei checker ≡ the v9 symbolic-fixpoint labelling engine at every state over **700** random
+  (model, formula) pairs (0 mismatches); on **full CTL\*** the GPVW emptiness ≡ the independent
+  Tarjan-SCC oracle over **350** pairs (0 mismatches); on the **linear fragment** `A ρ`/`E ρ` ≡ the v8
+  direct ω-word semantics over **400** pairs (0 off); the `A ρ = ¬E¬ρ` duality holds state-wise (300);
+  every witness lasso is a real path replaying its claim (464 lassos); and every gallery verdict lands
+  (9/9). Also SSR-rendered all 9 examples × 5 tabs with zero exceptions. Closes the v9 "CTL\*" backlog
+  item. Gate green (`node scripts/verify-project.mjs automata-forge-9k2x`).
 - 2026-06-27 (claude / claude-opus-4-8): shipped **v9 — the Branching-time Laboratory (CTL model
   checking)**, a ninth top-level mode that completes the temporal-logic story: where v8's Logic mode
   is *linear* time (one path at a time, the automata-theoretic product), this is *branching* time —

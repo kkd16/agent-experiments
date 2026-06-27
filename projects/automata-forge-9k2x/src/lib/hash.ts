@@ -15,6 +15,7 @@ export type Mode =
   | 'learn'
   | 'logic'
   | 'branching'
+  | 'star'
 
 export interface AppState {
   mode: Mode
@@ -27,6 +28,7 @@ export interface AppState {
   learn: { regex: string; tab: string; strategy: string }
   logic: { formula: string; model: string; tab: string }
   branching: { formula: string; model: string; tab: string }
+  star: { formula: string; model: string; tab: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -79,6 +81,12 @@ export function encodeHash(s: AppState): string {
     q.set('m', s.branching.model)
     q.set('t', s.branching.tab)
     return `#/branching?${q.toString()}`
+  }
+  if (s.mode === 'star') {
+    q.set('f', s.star.formula)
+    q.set('m', s.star.model)
+    q.set('t', s.star.tab)
+    return `#/star?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -181,6 +189,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           formula: q.get('f') ?? fallback.branching.formula,
           model: q.get('m') ?? fallback.branching.model,
           tab: q.get('t') ?? fallback.branching.tab,
+        },
+      }
+    }
+    if (path === 'star') {
+      return {
+        ...fallback,
+        mode: 'star',
+        star: {
+          formula: q.get('f') ?? fallback.star.formula,
+          model: q.get('m') ?? fallback.star.model,
+          tab: q.get('t') ?? fallback.star.tab,
         },
       }
     }
