@@ -18,6 +18,8 @@ import { Guide } from '../engine/guiding'
 import { tonemapToBytes, noiseToBytes } from '../engine/tonemap'
 import { denoise } from '../engine/denoise'
 import type { DenoiseParams } from '../engine/denoise'
+import { postProcessHdr, postProcessDisplay, postActiveHdr, postActiveDisplay, POST_OFF } from '../engine/postprocess'
+import type { PostSettings } from '../engine/postprocess'
 import type {
   FromWorker,
   IntegratorSettings,
@@ -44,6 +46,10 @@ export interface DisplaySettings {
   denoiseEnabled: boolean
   denoise: DenoiseParams
   showNoise: boolean // overlay the per-pixel relative-error heatmap instead
+  // (22.0) Physically based image-formation post-processing (glare bloom,
+  // natural vignetting, chromatic aberration, film grain). All-zero ⇒ a bit-exact
+  // identity, so the default output is unchanged. Optional for back-compat.
+  post?: PostSettings
 }
 
 // Adaptive sampling: once a band's mean relative error falls below `threshold`
@@ -645,7 +651,10 @@ export class Renderer {
     // the raw average — backed by different buffer kinds — unify cleanly.
     let display: Float32Array = this.avg
     if (this.display.denoiseEnabled) display = this.maybeDenoise()
+    const post = this.display.post ?? POST_OFF
+    if (postActiveHdr(post)) display = postProcessHdr(display, this.width, this.height, post)
     tonemapToBytes(display, this.out, this.display.exposure, this.display.tonemap)
+    if (postActiveDisplay(post)) postProcessDisplay(this.out, this.width, this.height, post)
     this.image.data.set(this.out)
     this.ctx.putImageData(this.image, 0, 0)
   }
@@ -680,7 +689,11 @@ export class Renderer {
       }
       if (totalW > 0) for (let k = 0; k < n; k++) this.avg[k] /= totalW
     }
-    tonemapToBytes(this.avg, this.out, this.display.exposure, this.display.tonemap)
+    let display: Float32Array = this.avg
+    const post = this.display.post ?? POST_OFF
+    if (postActiveHdr(post)) display = postProcessHdr(display, this.width, this.height, post)
+    tonemapToBytes(display, this.out, this.display.exposure, this.display.tonemap)
+    if (postActiveDisplay(post)) postProcessDisplay(this.out, this.width, this.height, post)
     this.image.data.set(this.out)
     this.ctx.putImageData(this.image, 0, 0)
   }

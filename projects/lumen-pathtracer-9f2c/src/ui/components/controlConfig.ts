@@ -58,6 +58,18 @@ export interface ControlState {
   // radiance multiplier that leaves the sampling pdf unchanged.
   envRotation: number
   envIntensity: number
+  // (22.0) Aperture *shape* (depth-of-field bokeh): number of iris blades. 0 (or
+  // < 3) is a circular aperture (the historical concentric-disk sampler); 5–8
+  // gives the pentagonal/hexagonal/octagonal bokeh balls of a real lens. A render
+  // setting (it changes how camera rays are sampled), unbiased either way.
+  apertureBlades: number
+  // (22.0) Physically based image-formation pipeline (applied live, no
+  // re-render). Each is a [0,1] strength; all-zero is a bit-exact identity.
+  bloomStrength: number // veiling-glare bloom (energy-conserving multi-scale PSF)
+  bloomRadius: number // base glare radius in pixels
+  vignette: number // natural cos⁴θ lens falloff
+  chromAberration: number // lateral chromatic aberration (colour fringing)
+  filmGrain: number // photographic film grain (midtone-peaked, zero-mean)
   // Custom-OBJ scene only: the pasted model text.
   objText: string
 }

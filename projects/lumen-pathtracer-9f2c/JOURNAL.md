@@ -160,6 +160,20 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
         oracle over a box of all four new materials (55 proofs total)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [x] **Physically based image formation (22.0)** — a post-capture camera & film pipeline: a
+      polygonal-aperture **bokeh** sampler (shaped circle of confusion), energy-conserving veiling-glare
+      **bloom**, natural **cos⁴θ vignetting**, lateral **chromatic aberration**, and photographic **film
+      grain**. All display-side stages leave light transport untouched (all-zero ⇒ bit-exact identity);
+      the bokeh sampler is area-uniform so depth of field stays unbiased. Two scenes (**Neon Bokeh**,
+      **Lumière Hall**) + eight proofs (118 total).
+- [ ] **(22.0 follow-ups) Cat's-eye / optical vignetting** — truncate the entrance pupil toward the
+      frame edge so off-axis bokeh deforms into the swirly cat's-eye shape of a real fast lens
+- [ ] **(22.0 follow-ups) Lens flare & ghosts** — trace the bright-source reflections between glass
+      elements (the aperture-shaped ghost chain) as an additive, energy-budgeted overlay
+- [ ] **(22.0 follow-ups) Anamorphic bokeh + barrel/pincushion distortion** — a per-axis aperture
+      stretch and a radial distortion polynomial in the camera ray generation
+- [ ] **(22.0 follow-ups) Tilt-shift / Scheimpflug focal plane** — tilt the plane of focus for a
+      wedge-of-focus look (a non-fronto-parallel focus distance)
 - [ ] **(21.0 follow-ups) Load a real `.hdr`/`.exr` panorama** — Radiance RGBE / OpenEXR decode, drag-and-drop
 - [ ] **Two-strategy env MIS** — also draw the BSDF lobe and weight both samples against the env importance pdf
 - [ ] **Fold the env into the light tree** — a bright env region competes with triangle/sphere emitters in one unified selection
@@ -305,6 +319,84 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-27 Lumen 22.0: the camera becomes physical — image formation (claude)
+
+For twenty-one versions Lumen has been about getting the *scene-referred radiance* exactly right —
+five integrators, spectral subsurface, a chromatic atmosphere, importance-sampled HDRIs — all of it in
+service of the number a perfect sensor would read at each pixel. But a **photograph is not the radiance
+field.** It is what a *camera and a piece of film* did to that field: light scatters inside the lens and
+veils the highlights, the pupil cuts off-axis rays so the corners darken, the glass refracts each colour
+to a slightly different magnification, the iris is a polygon so out-of-focus points are polygons, and the
+emulsion records discrete grains. Lumen had exactly one of these (a circular thin-lens DoF). 22.0 adds the
+rest — a complete **post-capture image-formation pipeline** — and, in the house style, proves every part.
+
+The design splits by colour space, the way a real imaging chain does. **Glare** and **vignetting** are
+*radiometric* — they redistribute and attenuate energy — so they run in **linear HDR, before tone
+mapping**. **Chromatic aberration** and **film grain** are artefacts of the *recording medium*, so they
+run on the **tone-mapped 8-bit image, after** the tone curve. And the whole thing is a strict superset of
+the old behaviour: with every knob at zero it is a **bit-exact identity**, so the default render — and all
+117 prior transport proofs — are untouched. None of it touches the integrator; the four film effects live
+in a new pure `postprocess.ts` on the UI thread, and the one transport-adjacent change (aperture *shape*)
+is gated so a circular iris is the historical concentric-disk sampler **bit-for-bit**.
+
+The five pieces, each with an analytic invariant the verify suite pins down:
+
+- **Polygonal-aperture bokeh.** A real iris is a regular polygon of blades, so an out-of-focus highlight
+  images as that polygon — the hexagonal/octagonal *bokeh ball* a perfect circle can never make.
+  `sampleAperture` draws a point **area-uniformly** over a regular n-gon: `u₁·n` splits into an integer
+  wedge index (each equally likely) and a fractional part that — *independent* of the index for uniform
+  `u₁` — becomes a barycentric coordinate inside that wedge (with the `(a,b)→(1−a,1−b)` fold giving a
+  uniform triangle sample). Because the polygon is symmetric the **mean lens offset is zero**, so depth of
+  field stays **exactly unbiased** — only the *shape* of the circle of confusion changes.
+- **Veiling-glare bloom (energy-conserving).** A passive optic neither creates nor destroys light, so
+  glare is a *linear, energy-preserving* spread: the displayed image is the convex blend
+  `(1−s)·image + s·glare(image)`, where `glare` is a normalised multi-scale Gaussian PSF (a tight core +
+  a broad veil — the Spencer et al. 1995 model), each Gaussian built from three O(N) box-blur passes. The
+  normalisation (Σweights = 1) is what makes a centred highlight keep its **total energy** through the PSF.
+- **Natural cos⁴θ vignetting.** Off-axis image points receive less irradiance by the textbook cos⁴θ law
+  (inverse-square distance + foreshortened aperture + tilted sensor patch); with `tanθ = r` that is
+  `1/(1+r²)²`. Tied to the camera's field of view, the optical centre is exactly unattenuated.
+- **Lateral chromatic aberration.** A lens focuses each wavelength to a slightly different magnification,
+  so red and blue are radially rescaled about the optical centre (green the reference channel), bilinearly
+  resampled. The centre is a fixed point of every channel; magnitude 0 is a bit-exact identity.
+- **Photographic film grain.** A monochromatic, **zero-mean** dither whose amplitude follows √(L(1−L)), so
+  it peaks in the midtones and **vanishes at pure black and pure white**. Deterministic in the pixel
+  coordinate (a hash, not the wall clock), so the catalog thumbnail and the verify suite are reproducible.
+
+Plan / steps (all shipped this session):
+
+1. [x] **`postprocess.ts` — the pipeline, in its own pure module.** `gaussianBlurRGB` (3× box, O(N) via
+   running sums) → `glareRGB` (normalised multi-scale PSF) → `applyBloom`; `naturalVignetteFactor` +
+   `applyVignette`; `chromaticAberration` (bilinear, green-fixed, centre-fixed); `grainEnvelope` +
+   `applyGrain` (TPDF, midtone-peaked); and the `postProcessHdr`/`postProcessDisplay` orchestrators with
+   `postActiveHdr`/`postActiveDisplay` guards so a zeroed pipeline allocates nothing and runs nothing.
+2. [x] **`camera.ts` — polygonal bokeh.** `sampleAperture(blades, rot, u₁, u₂)` (area-uniform n-gon, disk
+   fallback) + `CameraDef.blades`/`bladeRotation`; `generateRay` routes through it only for `blades ≥ 3`,
+   so a circular iris is the historical path bit-for-bit.
+3. [x] **`renderer.ts` — wire both composite paths.** `DisplaySettings.post`; the HDR stages run on the
+   averaged/denoised buffer (into a fresh buffer, never mutating the accumulation) before `tonemapToBytes`,
+   the display stages on the byte image after — in both the Monte-Carlo and the PSSMLT/SPPM frame paths.
+4. [x] **UI — `controlConfig`/`App`/`Controls`.** An "Iris blades" render control (per-scene default) and a
+   live **Camera & Film** panel (bloom + radius, vignette, chromatic aberration, film grain), threaded
+   through `buildScene`/`buildDisplay`/`renderKey`/the display effect; an About card.
+5. [x] **Two showcase scenes.** *Neon Bokeh* (a focused subject behind ~70 tiny neon motes at a wide depth
+   spread + a 6-blade wide-open iris ⇒ hexagonal bokeh balls) and *Lumière Hall* (a dim corridor of fierce
+   bulbs for energy-conserving glare + corner vignetting).
+6. [x] **`selftest.ts` — eight proofs (118 total).** (a) the bokeh sampler is **area-uniform** (the
+   inscribed-circle fraction matches `π·apothem²/area(n-gon)`), inside the unit disk, and **zero-mean**
+   (unbiased DoF); (b) it **reduces to the disk sampler** for `blades < 3` and **fills the disk** as
+   `blades→∞`; (c) glare is **energy-conserving** for a centred feature and an **identity at strength 0**;
+   (d) an impulse spreads into a **monotone-falloff halo**; (e) the vignette is **exactly cos⁴θ**, unit at
+   the centre, monotone, identity off; (f) chromatic aberration is an **identity at the centre and at
+   magnitude 0**, leaves **green fixed**, and shifts red radially; (g) film grain is **zero-mean**, fixes
+   **black & white**, identity off, variance rising with strength; (h) the **whole pipeline at zero is a
+   bit-exact identity**. Verified in Node: **118/118** self-tests pass; the CI gate (scope + conformance +
+   lint + build) is green, and smoke renders of both new scenes through the full pipeline are finite & lit.
+
+New open ideas this raised (live backlog, above): cat's-eye / optical vignetting (a truncated entrance
+pupil for swirly off-axis bokeh); lens flare & ghosts (the aperture-shaped inter-element reflection chain);
+anamorphic bokeh + barrel/pincushion distortion; and a tilt-shift (Scheimpflug) focal plane.
 
 ## Roadmap — 2026-06-27 Lumen 21.0: image-based lighting — HDRI environment importance sampling (claude)
 

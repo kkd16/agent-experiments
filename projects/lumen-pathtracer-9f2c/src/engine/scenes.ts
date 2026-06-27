@@ -2193,6 +2193,116 @@ function twilightHdri(): SceneDef {
   }
 }
 
+// ---- Scene: Neon Bokeh (polygonal aperture + bloom, 22.0) ------------------
+// A focused matte subject on a dark reflective floor, behind and around it a
+// cloud of tiny, intensely coloured emissive spheres at a wide spread of depths.
+// With a wide hexagonal aperture every out-of-focus mote images as a crisp
+// six-sided bokeh ball — the signature of a real iris, which the circular
+// (concentric-disk) sampler can never produce. Crank "Bloom" for the glow and
+// "Film grain" for the night-photography look. The scene defaults a finite
+// aperture and a 6-blade iris; sphere-light NEE keeps the motes clean.
+function neonBokeh(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'metal', albedo: v(0.16, 0.17, 0.2), roughness: 0.22 }, // 0 dark wet floor
+    { kind: 'diffuse', albedo: v(0.82, 0.8, 0.78) }, // 1 matte subject
+    { kind: 'metal', albedo: v(0.96, 0.96, 0.98), roughness: 0.06 }, // 2 chrome accent
+  ]
+  // A neon palette — saturated and bright so each tiny mote reads as a vivid
+  // bokeh disc and blooms cleanly.
+  const palette: Vec3[] = [
+    v(40, 6, 22), // magenta
+    v(6, 30, 44), // cyan
+    v(38, 30, 6), // amber
+    v(10, 40, 16), // green
+    v(30, 10, 44), // violet
+    v(44, 18, 6), // orange
+  ]
+  const EMIT0 = 3
+  for (const c of palette) materials.push({ kind: 'emissive', emission: c })
+  const prims: PrimDef[] = []
+  const W = 30
+  prims.push(...quad(v(-W, 0, -W), v(W, 0, -W), v(W, 0, W), v(-W, 0, W), 0)) // floor
+  // The in-focus subject (the orbit target focuses here) + a chrome ball beside it.
+  prims.push({ kind: 'sphere', center: v(0, 0.9, 0), radius: 0.9, material: 1 })
+  prims.push({ kind: 'sphere', center: v(1.7, 0.6, -0.6), radius: 0.6, material: 2 })
+  // The bokeh field: ~70 tiny bright motes spread across a wide depth range so
+  // many are far from the focal plane and blur into shaped discs.
+  const rng = mulberry(0xb0fea11)
+  const N = 70
+  for (let i = 0; i < N; i++) {
+    const cx = (rng() - 0.5) * 16
+    const cy = 0.4 + rng() * 6.5
+    const cz = -3.5 + rng() * 13 // from just in front of the lens to well behind
+    const r = 0.04 + rng() * 0.14 // tiny — a hard target, a small bokeh disc
+    const mat = EMIT0 + ((rng() * palette.length) | 0)
+    prims.push({ kind: 'sphere', center: v(cx, cy, cz), radius: r, material: mat })
+  }
+  return {
+    name: 'Neon Bokeh',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 1.3, -7.5),
+      target: v(0, 0.9, 0),
+      up: v(0, 1, 0),
+      vfovDeg: 40,
+      aperture: 0.34, // wide open — strong defocus for big bokeh discs
+      focusDist: 7.6,
+      blades: 6, // hexagonal iris
+    },
+    env: { kind: 'solid', color: v(0.004, 0.005, 0.009) },
+  }
+}
+
+// ---- Scene: Lumière Hall (veiling glare + vignette, 22.0) -------------------
+// A dim hall lined with a row of small, fierce emissive bulbs receding toward a
+// dark vanishing point. With a pinhole aperture (sharp) it showcases the
+// radiometric half of the 22.0 pipeline: crank "Bloom" and each bulb blooms a
+// soft, energy-conserving halo into the gloom; "Vignette" darkens the corners
+// with the natural cos⁴ falloff. A polished floor doubles every bulb.
+function lumiereHall(): SceneDef {
+  const materials: Material[] = [
+    { kind: 'metal', albedo: v(0.22, 0.22, 0.25), roughness: 0.12 }, // 0 polished dark floor
+    { kind: 'diffuse', albedo: v(0.26, 0.25, 0.27) }, // 1 matte wall
+    { kind: 'metal', albedo: v(0.95, 0.93, 0.88), roughness: 0.1 }, // 2 brass fixture
+    { kind: 'emissive', emission: v(26, 18, 8) }, // 3 warm bulb
+    { kind: 'emissive', emission: v(10, 16, 28) }, // 4 cool bulb
+  ]
+  const prims: PrimDef[] = []
+  const L = 40
+  prims.push(...quad(v(-L, 0, -2), v(L, 0, -2), v(L, 0, L), v(-L, 0, L), 0)) // floor
+  prims.push(...quad(v(-6, 0, -2), v(-6, 8, -2), v(-6, 8, L), v(-6, 0, L), 1)) // left wall
+  prims.push(...quad(v(6, 0, -2), v(6, 0, L), v(6, 8, L), v(6, 8, -2), 1)) // right wall
+  // Two receding rows of small bright bulbs (warm left, cool right), shrinking
+  // and dimming with distance toward a dark vanishing point.
+  const rows = 9
+  for (let i = 0; i < rows; i++) {
+    const z = 1.5 + i * 4.0
+    const r = 0.34 - i * 0.018
+    prims.push({ kind: 'sphere', center: v(-4.4, 2.6, z), radius: r, material: 3 })
+    prims.push({ kind: 'sphere', center: v(4.4, 2.6, z), radius: r, material: 4 })
+    // Small brass fixtures the bulbs sit in.
+    prims.push({ kind: 'sphere', center: v(-4.4, 2.1, z), radius: r * 0.6, material: 2 })
+    prims.push({ kind: 'sphere', center: v(4.4, 2.1, z), radius: r * 0.6, material: 2 })
+  }
+  // A chrome sphere on the floor to catch the corridor of lights.
+  prims.push({ kind: 'sphere', center: v(0, 1.1, 6.5), radius: 1.1, material: 2 })
+  return {
+    name: 'Lumière Hall',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 2.7, -7),
+      target: v(0, 2.2, 10),
+      up: v(0, 1, 0),
+      vfovDeg: 52,
+      aperture: 0,
+      focusDist: 17,
+    },
+    env: { kind: 'solid', color: v(0.005, 0.005, 0.008) },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -2212,6 +2322,8 @@ export const SCENES: ScenePreset[] = [
   { id: 'glowing-orb', label: 'Glowing Orb (Guided)', build: glowingOrb },
   { id: 'plasma-lamps', label: 'Plasma Lamps (sphere lights)', build: plasmaLamps, sphereLights: true },
   { id: 'fireflies', label: 'Firefly Swarm (sphere lights)', build: fireflySwarm, sphereLights: true },
+  { id: 'neon-bokeh', label: 'Neon Bokeh (polygonal aperture)', build: neonBokeh, sphereLights: true },
+  { id: 'lumiere-hall', label: 'Lumière Hall (glare + vignette)', build: lumiereHall, sphereLights: true },
   { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
   { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
   { id: 'light-cage', label: 'Light Cage (receiver-aware)', build: lightCage, manyLights: true },

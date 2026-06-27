@@ -226,6 +226,16 @@ export function Controls(props: {
           format={(v) => v.toFixed(2)}
           hint="Lens radius. 0 is a pinhole; larger blurs out-of-focus depths."
         />
+        <Slider
+          label="Iris blades (bokeh shape)"
+          value={state.apertureBlades}
+          min={0}
+          max={9}
+          step={1}
+          onChange={(v) => set('apertureBlades', v)}
+          format={(v) => (v < 3 ? 'circular' : `${v}-gon`)}
+          hint="The shape of the lens iris. A real aperture is a regular polygon of straight blades, so an out-of-focus highlight images as that polygon — the classic pentagonal/hexagonal/octagonal bokeh ball. 0 (or 1–2) is a perfect circle (the historical concentric-disk sampler). The n-gon is sampled area-uniformly, so depth of field stays exactly unbiased — only the *shape* of the circle of confusion changes. Needs a finite aperture to be visible. Try Neon Bokeh."
+        />
         <Toggle
           label="Adaptive sampling"
           value={state.adaptive}
@@ -301,6 +311,61 @@ export function Controls(props: {
             />
           </>
         )}
+      </Panel>
+
+      <Panel title="Camera & Film" subtitle="Image formation — applied live, no re-render">
+        <Slider
+          label="Bloom (lens glare)"
+          value={state.bloomStrength}
+          min={0}
+          max={1}
+          step={0.02}
+          onChange={(v) => set('bloomStrength', v)}
+          format={(v) => (v === 0 ? 'off' : `${(v * 100).toFixed(0)}%`)}
+          hint="Veiling glare: a fraction of every pixel's light is spread by the lens' point-spread function (a normalised multi-scale Gaussian — a tight core plus a broad veil), so bright sources bleed a soft halo. It is energy-conserving — a passive optical element neither creates nor destroys light — so the glare lifts the haze around highlights without globally brightening the frame (the Verify tab proves total energy is preserved). Runs in linear HDR, before tone mapping."
+        />
+        {state.bloomStrength > 0 && (
+          <Slider
+            label="Bloom radius"
+            value={state.bloomRadius}
+            min={1}
+            max={16}
+            step={1}
+            onChange={(v) => set('bloomRadius', v)}
+            format={(v) => `${v} px`}
+            hint="The tightest of the three glare scales, in pixels (the veil reaches 4× as far). Larger = a softer, wider bloom."
+          />
+        )}
+        <Slider
+          label="Vignette"
+          value={state.vignette}
+          min={0}
+          max={1}
+          step={0.02}
+          onChange={(v) => set('vignette', v)}
+          format={(v) => (v === 0 ? 'off' : `${(v * 100).toFixed(0)}%`)}
+          hint="Natural lens vignetting: off-axis points receive less light by the textbook cos⁴θ law (inverse-square distance, foreshortened aperture, tilted sensor patch), darkening the frame corners. The falloff is tied to the camera's field of view, and the optical centre is exactly unattenuated (the Verify tab pins it to cos⁴θ). Runs in linear HDR."
+        />
+        <Slider
+          label="Chromatic aberration"
+          value={state.chromAberration}
+          min={0}
+          max={1}
+          step={0.02}
+          onChange={(v) => set('chromAberration', v)}
+          format={(v) => (v === 0 ? 'off' : `${(v * 100).toFixed(0)}%`)}
+          hint="Lateral chromatic aberration: a lens focuses each wavelength to a slightly different magnification, so red and blue are scaled differently about the optical centre — coloured fringes that grow toward the corners and vanish at the centre. Green is the reference channel (untouched); the centre is a fixed point of every channel. A display-referred artefact, applied after tone mapping."
+        />
+        <Slider
+          label="Film grain"
+          value={state.filmGrain}
+          min={0}
+          max={1}
+          step={0.02}
+          onChange={(v) => set('filmGrain', v)}
+          format={(v) => (v === 0 ? 'off' : `${(v * 100).toFixed(0)}%`)}
+          hint="Photographic grain: a monochromatic, zero-mean dither whose amplitude follows √(L(1−L)), so it peaks in the midtones and vanishes at pure black and pure white (no exposure ⇒ no grains; full saturation ⇒ all developed). Deterministic in the pixel coordinate, so the image is reproducible. A display-referred film effect, applied last."
+        />
       </Panel>
 
       <div className="action-row">
