@@ -106,11 +106,21 @@ light, optical atomic clocks, and quantum-enhanced magnetometry.
   are trying to estimate is information-free. `F_C ≤ F_Q` holds across the whole θ grid.
 - **Build gate green** (conformance + lint + `tsc -b` + `vite build`).
 
+### Update — Spin squeezing (the robust route) shipped
+
+The Huelga card ends on "real metrology turned to spin-squeezing" — so the pillar now *builds* it.
+`squeezing.ts` implements the **Kitagawa–Ueda one-axis-twisting** Hamiltonian `H = χ·J_z²` acting on a
+coherent spin state, the collective spin operators `J_a = ½Σσ_a` applied directly to the 2^N vector,
+the full 3×3 spin covariance, and the **Wineland parameter** `ξ²_R = N·(ΔJ⊥min)²/|⟨J⟩|²`, plus a
+**Husimi-Q** quasiprobability so you can *see* the noise blob shear on the Bloch sphere. A 4th
+Metrology card lets you twist live (N and μ sliders, the ξ²(μ) sweep, the optimal-ξ² vs-N log–log
+plot sitting between the SQL and Heisenberg lines). New self-tests (suite now 164/164): the coherent
+state has ξ²=1 exactly; one-axis twisting conserves the Casimir `⟨J²⟩=(N/2)(N/2+1)` (it stays in the
+symmetric Dicke manifold); the optimum gives genuine sub-SQL squeezing `ξ²<1` respecting `1/ξ²≤N`;
+and the squeezing deepens with N along the `N^−2/3` law.
+
 ### Future ideas (open)
 
-- [ ] **Spin squeezing** (the Kitagawa–Ueda one-axis-twisting Hamiltonian) and the Wineland
-      squeezing parameter ξ² — the noise-robust route to sub-SQL sensing that *actually* powers
-      atomic clocks, contrasted with the fragile GHZ cat state.
 - [ ] **Multiparameter metrology** — the quantum Fisher information *matrix* and the
       Holevo/SLD bounds when several phases are estimated at once (incompatible optimal measurements).
 - [ ] **Bayesian / adaptive phase estimation** — the van-Trees bound and an adaptive Kitaev-style
