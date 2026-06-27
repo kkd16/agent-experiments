@@ -22,8 +22,11 @@ export function Home() {
           <b> Snow / Avalanche</b> metastable consensus that reaches agreement by random subsampling
           instead of quorums, <b>Chandy–Lamport</b> consistent global snapshots of a running
           computation, <b>Lamport</b> logical-clock mutual exclusion, and <b>Bracha</b> Byzantine
-          reliable broadcast. Crash nodes, corrupt them, drop links, partition the cluster — and watch
-          the safety invariants either hold or break, live.
+          reliable broadcast. And a from-scratch <b>linearizability checker</b> — the Wing &amp; Gong
+          decision procedure — that certifies a concurrent history (textbook, random, or a real ABD run)
+          against any sequential object, handing back a witness order when it passes and naming the
+          operation that went back in time when it fails. Crash nodes, corrupt them, drop links, partition
+          the cluster — and watch the safety invariants either hold or break, live.
         </p>
       </section>
 

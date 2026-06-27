@@ -16,6 +16,7 @@ import { SnowLab } from './SnowLab';
 import { SnapshotLab } from './SnapshotLab';
 import { MutexLab } from './MutexLab';
 import { BrbLab } from './BrbLab';
+import { LinzLab } from './LinzLab';
 import { SelfTestLab } from './SelfTestLab';
 
 export interface LabDef {
@@ -180,6 +181,15 @@ export const LABS: LabDef[] = [
     icon: '◌',
     tag: 'p2p · routing',
     Component: ChordLab,
+  },
+  {
+    id: 'linz',
+    title: 'Linearizability',
+    blurb:
+      "The gold-standard correctness condition, made into a tool. A from-scratch Wing & Gong checker decides whether a concurrent history could have come from a real atomic object — for any spec (register, CAS, counter, set, FIFO queue, stack, lock). Deciding it is NP-complete, so it prunes to real-time-respecting orders and memoizes dead ends, and splits by object via Herlihy & Wing's locality theorem. Feed it the textbook counterexamples, randomly generated schedules, or a real ABD run pulled live off the kernel: it certifies a pass with a concrete witness order, or convicts a fail by naming the operation that went back in time.",
+    icon: '⊑',
+    tag: 'correctness · verification',
+    Component: LinzLab,
   },
   {
     id: 'selftest',
