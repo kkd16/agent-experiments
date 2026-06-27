@@ -3,6 +3,9 @@ import {
   scalingCurve, noiseCrossover, noiseCrossoverN, cfiSweep,
   heisenbergQFI, sqlQFI, crbUncertainty, noisyGhzQFI, noisyProductQFI,
 } from '../quantum/metrology';
+import {
+  coherentSpinState, oneAxisTwist, squeezingParameter, squeezingSweep, squeezingScaling, husimi,
+} from '../quantum/squeezing';
 
 export default function MetrologyLab() {
   return (
@@ -24,6 +27,7 @@ export default function MetrologyLab() {
       <ScalingCard />
       <SaturationCard />
       <NoiseCard />
+      <SqueezingCard />
     </div>
   );
 }
@@ -221,6 +225,133 @@ function NoisePlot({ curve, nStar }: { curve: { n: number; ghz: number; product:
       <text x={xPix(nMax) - 150} y={yPix(curve[nMax - 1].ghz) + 4} fontSize={10} fill="#34d399">GHZ: N²(1−λ)^N</text>
       <text x={xPix(nMax) - 150} y={yPix(curve[nMax - 1].product) - 6} fontSize={10} fill="#67e8f9">product: N(1−λ)</text>
       <text x={W / 2} y={H - 2} fontSize={9} fill="#64748b" textAnchor="middle">number of qubits N — the GHZ advantage rises then collapses</text>
+    </svg>
+  );
+}
+
+// ─────────────────────────── 4 · spin squeezing (the robust route) ───────────────────────────
+
+function SqueezingCard() {
+  const [n, setN] = useState(6);
+  const [mu, setMu] = useState(0.3);
+  const css = useMemo(() => coherentSpinState(n), [n]);
+  const state = useMemo(() => oneAxisTwist(css, n, mu), [css, n, mu]);
+  const sq = useMemo(() => squeezingParameter(state, n), [state, n]);
+  const sweep = useMemo(() => squeezingSweep(n, 1.6, 161), [n]);
+  const scaling = useMemo(() => squeezingScaling(10), []);
+  const map = useMemo(() => husimi(state, n, 28, 56), [state, n]);
+  return (
+    <Card title="The robust alternative — spin squeezing (one-axis twisting & the Wineland parameter)" accent="#fbbf24">
+      <p style={{ color: '#475569', fontSize: 11, margin: '0 0 12px', lineHeight: 1.6 }}>
+        If the GHZ cat is too fragile, what do real atomic clocks use? <b style={{ color: '#fbbf24' }}>Spin
+        squeezing</b>. Start from the coherent spin state (all spins aligned — the best classical probe, ξ²=1)
+        and apply <b style={{ color: '#67e8f9' }}>Kitagawa–Ueda one-axis twisting</b>{' '}
+        <code>H = χ·J_z²</code>: a shear that <i>redistributes</i> the quantum noise, narrowing the spin
+        fluctuation in the direction that carries phase information at the expense of an irrelevant one — never
+        leaving the symmetric Dicke manifold. The <b style={{ color: '#34d399' }}>Wineland parameter</b>{' '}
+        <code style={{ color: '#67e8f9' }}>ξ²_R = N·(ΔJ⊥min)²/|⟨J⟩|²</code> drops below 1: a metrological gain
+        of 1/ξ², robust to a lost atom in a way the cat never is. Watch the noise blob shear on the sphere.
+      </p>
+
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ minWidth: 210, flex: 1 }}>
+          <Slider label={`number of spins N = ${n}`} value={n} min={2} max={8} step={1} onChange={(v) => setN(Math.round(v))} color="#fbbf24" />
+        </div>
+        <div style={{ minWidth: 210, flex: 1 }}>
+          <Slider label={`twisting strength μ = ${mu.toFixed(3)}`} value={mu} min={0} max={1.6} step={0.005} onChange={setMu} color="#67e8f9" />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <HusimiMap grid={map} />
+        <div style={{ flex: 1, minWidth: 280 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <Stat label="Wineland ξ²_R" value={sq.xi2.toFixed(3)} ok={sq.xi2 < 1} />
+            <Stat label="metrological gain" value={`${sq.gainDb.toFixed(1)} dB`} accent="#34d399" />
+            <Stat label="contrast |⟨J⟩|/(N/2)" value={(sq.meanLength / (n / 2)).toFixed(3)} accent="#67e8f9" />
+          </div>
+          <p style={{ color: '#475569', fontSize: 10, margin: 0, lineHeight: 1.5 }}>
+            ξ² &lt; 1 (green) means the probe beats the standard quantum limit. Twist too hard and the mean
+            spin shrinks (contrast → 0) and the state over-wraps the sphere — ξ² shoots back up. The optimum
+            is a balance, scaling as <b style={{ color: '#fbbf24' }}>ξ² ∝ N^−2/3</b>.
+          </p>
+          <MuSweepPlot sweep={sweep} mu={mu} />
+        </div>
+      </div>
+
+      <h4 style={{ margin: '16px 0 6px', fontSize: 12, fontWeight: 700, color: '#cbd5e1' }}>
+        optimal squeezing vs N — between the two limits
+      </h4>
+      <SqueezeScalingPlot scaling={scaling} />
+    </Card>
+  );
+}
+
+function HusimiMap({ grid }: { grid: number[][] }) {
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const max = Math.max(1e-12, ...grid.flat());
+  const cell = 3;
+  const W = cols * cell, H = rows * cell;
+  return (
+    <div style={{ flexShrink: 0 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: 224, height: 224 * (rows / cols), background: '#020617', border: '1px solid #1e293b', borderRadius: 8 }}>
+        {grid.map((row, ti) => row.map((v, pi) => {
+          const t = Math.pow(v / max, 0.6);
+          if (t < 0.02) return null;
+          const r = Math.round(40 + 215 * t);
+          const g = Math.round(40 + 100 * t);
+          const b = Math.round(120 + 80 * t);
+          return <rect key={`${ti}-${pi}`} x={pi * cell} y={ti * cell} width={cell} height={cell} fill={`rgb(${r},${g},${b})`} />;
+        }))}
+      </svg>
+      <div style={{ fontSize: 8, color: '#475569', textAlign: 'center', marginTop: 2 }}>Husimi Q on the spin sphere (θ↓, φ→)</div>
+    </div>
+  );
+}
+
+function MuSweepPlot({ sweep, mu }: { sweep: { mu: number; xi2: number }[]; mu: number }) {
+  const W = 480, H = 120, padL = 30, padR = 8, padT = 10, padB = 20;
+  const muMax = sweep[sweep.length - 1].mu;
+  const yMax = 1.6;
+  const xPix = (m: number) => padL + (m / muMax) * (W - padL - padR);
+  const yPix = (v: number) => padT + ((yMax - Math.min(yMax, v)) / yMax) * (H - padT - padB);
+  const path = sweep.map((p, i) => `${i === 0 ? 'M' : 'L'}${xPix(p.mu).toFixed(1)},${yPix(p.xi2).toFixed(1)}`).join(' ');
+  const cur = sweep.reduce((a, b) => (Math.abs(b.mu - mu) < Math.abs(a.mu - mu) ? b : a), sweep[0]);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', marginTop: 8, background: 'rgba(2,6,23,0.5)', border: '1px solid #1e293b', borderRadius: 8 }}>
+      <line x1={padL} y1={yPix(1)} x2={W - padR} y2={yPix(1)} stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 3" />
+      <text x={padL + 2} y={yPix(1) - 3} fontSize={8} fill="#f59e0b">SQL ξ²=1</text>
+      <path d={path} fill="none" stroke="#fbbf24" strokeWidth={2} />
+      <line x1={xPix(cur.mu)} y1={padT} x2={xPix(cur.mu)} y2={H - padB} stroke="#67e8f9" strokeWidth={1} strokeDasharray="2 2" />
+      <circle cx={xPix(cur.mu)} cy={yPix(cur.xi2)} r={3} fill="#67e8f9" />
+      <text x={W / 2} y={H - 4} fontSize={8} fill="#64748b" textAnchor="middle">twisting strength μ — ξ²_R</text>
+    </svg>
+  );
+}
+
+function SqueezeScalingPlot({ scaling }: { scaling: { n: number; xi2: number; heisenberg: number }[] }) {
+  const W = 820, H = 180, padL = 50, padR = 14, padT = 14, padB = 28;
+  const nMax = scaling[scaling.length - 1].n;
+  const xLog = (v: number) => Math.log10(v);
+  const yMin = xLog(1 / nMax) - 0.1, yMax = 0.1;
+  const xMin = xLog(2), xMax = xLog(nMax);
+  const xPix = (v: number) => padL + ((xLog(v) - xMin) / (xMax - xMin)) * (W - padL - padR);
+  const yPix = (v: number) => padT + ((yMax - xLog(v)) / (yMax - yMin)) * (H - padT - padB);
+  const pXi = scaling.map((p, i) => `${i === 0 ? 'M' : 'L'}${xPix(p.n).toFixed(1)},${yPix(p.xi2).toFixed(1)}`).join(' ');
+  const pHL = scaling.map((p, i) => `${i === 0 ? 'M' : 'L'}${xPix(p.n).toFixed(1)},${yPix(p.heisenberg).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: 'rgba(2,6,23,0.5)', border: '1px solid #1e293b', borderRadius: 8 }}>
+      <line x1={padL} y1={yPix(1)} x2={W - padR} y2={yPix(1)} stroke="#f59e0b" strokeWidth={1.2} strokeDasharray="4 3" />
+      <text x={padL + 4} y={yPix(1) - 4} fontSize={10} fill="#f59e0b">SQL ξ² = 1</text>
+      <path d={pHL} fill="none" stroke="#34d399" strokeWidth={1.6} strokeDasharray="5 3" />
+      <path d={pXi} fill="none" stroke="#fbbf24" strokeWidth={2.4} />
+      {[2, 4, 6, 8, 10].filter((v) => v <= nMax).map((v) => (
+        <text key={v} x={xPix(v)} y={H - 14} fontSize={9} fill="#475569" textAnchor="middle">{v}</text>
+      ))}
+      <text x={xPix(nMax) - 110} y={yPix(scaling[scaling.length - 1].xi2) - 6} fontSize={10} fill="#fbbf24">one-axis twisting (∝ N^−2/3)</text>
+      <text x={xPix(nMax) - 110} y={yPix(scaling[scaling.length - 1].heisenberg) + 12} fontSize={10} fill="#34d399">Heisenberg 1/N</text>
+      <text x={W / 2} y={H - 2} fontSize={9} fill="#64748b" textAnchor="middle">number of spins N (log–log: ξ²_R, lower = better)</text>
     </svg>
   );
 }

@@ -90,6 +90,9 @@ import {
   dephaseEachQubit, parityX, parityZ, cfiObservable, cfiSweep,
   noisyGhzQFI, noisyProductQFI, heisenbergQFI, sqlQFI, noiseCrossoverN,
 } from './metrology';
+import {
+  coherentSpinState, oneAxisTwist, spinStats, squeezingParameter, optimalSqueezing,
+} from './squeezing';
 
 export interface TestResult {
   group: string;
@@ -1609,6 +1612,41 @@ export function runTests(): TestResult[] {
       }
       add('Metrology', 'Quantum Cramér–Rao ordering: F_C(θ) ≤ F_Q for every measurement and every phase θ across the sweep — no readout beats the intrinsic quantum bound', okOrder);
       add('Metrology', `Advantage ratio F_Q(GHZ)/F_Q(product) = N exactly (e.g. ${heisenbergQFI(5) / sqlQFI(5)}× at N=5)`, heisenbergQFI(5) / sqlQFI(5) === 5);
+    }
+
+    // (7) Spin squeezing (Kitagawa–Ueda one-axis twisting + the Wineland parameter).
+    {
+      // Coherent spin state sits exactly on the SQL: ξ²_R = 1.
+      let okCSS = true;
+      for (let n = 2; n <= 6; n++) {
+        if (!close(squeezingParameter(coherentSpinState(n), n).xi2, 1, 1e-9)) okCSS = false;
+      }
+      add('Metrology', 'Spin squeezing: the coherent spin state |+⟩^⊗N has Wineland ξ²_R = 1 exactly — it sits precisely on the standard quantum limit (N=2…6)', okCSS);
+
+      // One-axis twisting stays in the symmetric Dicke manifold: ⟨J²⟩ = (N/2)(N/2+1) is conserved.
+      let okCasimir = true;
+      for (const [n, mu] of [[3, 0.4], [4, 0.7], [5, 0.25]] as [number, number][]) {
+        const j2 = (n / 2) * (n / 2 + 1);
+        const css = coherentSpinState(n);
+        if (!close(spinStats(css, n).jSquared, j2, 1e-9)) okCasimir = false;
+        if (!close(spinStats(oneAxisTwist(css, n, mu), n).jSquared, j2, 1e-9)) okCasimir = false;
+      }
+      add('Metrology', 'One-axis twisting H = χ·J_z² conserves the total-spin Casimir ⟨J²⟩ = (N/2)(N/2+1) — the squeezed state never leaves the symmetric Dicke manifold', okCasimir);
+
+      // Twisting produces real squeezing (ξ²<1) that respects the Heisenberg bound (1/ξ² ≤ N).
+      let okSqueeze = true;
+      const gains: string[] = [];
+      for (let n = 3; n <= 7; n++) {
+        const opt = optimalSqueezing(n);
+        if (!(opt.xi2 < 1 - 1e-3 && 1 / opt.xi2 <= n + 1e-6)) okSqueeze = false;
+        gains.push(`N=${n}: ξ²=${opt.xi2.toFixed(3)}`);
+      }
+      add('Metrology', 'One-axis twisting beats the SQL: the optimal ξ²_R < 1 (sub-shot-noise) while respecting the Heisenberg bound 1/ξ² ≤ N', okSqueeze, gains.join(', '));
+
+      // The squeezing deepens with system size (the N^{−2/3} trend).
+      const x3 = optimalSqueezing(3).xi2;
+      const x8 = optimalSqueezing(8).xi2;
+      add('Metrology', `Squeezing deepens with N (the N^{−2/3} one-axis-twisting law): optimal ξ²_R falls from ${x3.toFixed(3)} at N=3 to ${x8.toFixed(3)} at N=8`, x8 < x3 - 1e-3);
     }
   }
 
