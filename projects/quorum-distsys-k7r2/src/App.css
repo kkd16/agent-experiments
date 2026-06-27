@@ -1115,3 +1115,134 @@ input[type='text'] {
   font: 700 9px ui-monospace, monospace;
   dominant-baseline: hanging;
 }
+
+/* ---- Linearizability lab ---- */
+.linz-source-line {
+  font-size: 13px;
+  margin: 2px 0 6px;
+}
+.linz-note {
+  font-size: 12.5px;
+  color: var(--tx-dim);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 7px 11px;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.linz-seed {
+  min-width: 28px;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 700;
+}
+.linz-curated .ctl-group {
+  gap: 5px;
+}
+.linz-verdict {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+.linz-verdict.ok {
+  border-color: rgba(115, 224, 138, 0.5);
+}
+.linz-verdict.bad {
+  border-color: rgba(255, 93, 108, 0.5);
+}
+.linz-verdict.warn {
+  border-color: rgba(255, 212, 121, 0.5);
+}
+.linz-verdict-head {
+  font-size: 16px;
+  font-weight: 800;
+  padding: 9px 13px;
+}
+.linz-verdict.ok .linz-verdict-head {
+  color: var(--good);
+  background: rgba(115, 224, 138, 0.08);
+}
+.linz-verdict.bad .linz-verdict-head {
+  color: var(--bad);
+  background: rgba(255, 93, 108, 0.08);
+}
+.linz-verdict.warn .linz-verdict-head {
+  color: var(--warn);
+  background: rgba(255, 212, 121, 0.08);
+}
+.linz-verdict-body {
+  font-size: 12.5px;
+  color: var(--tx-dim);
+  padding: 9px 13px 4px;
+  line-height: 1.5;
+}
+.linz-witness {
+  padding: 6px 13px 12px;
+}
+.linz-witness-obj {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tx-faint);
+  margin: 6px 0 3px;
+}
+.linz-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12px ui-monospace, monospace;
+}
+.linz-table th {
+  text-align: left;
+  color: var(--tx-faint);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.linz-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid rgba(39, 43, 54, 0.5);
+}
+.linz-step {
+  color: var(--tx-faint);
+  width: 26px;
+}
+.linz-op {
+  color: var(--tx);
+}
+.linz-proc {
+  color: var(--accent);
+  font-weight: 700;
+}
+.linz-state {
+  color: var(--tx-dim);
+}
+.linz-state-after {
+  color: var(--good);
+}
+.linz-blame {
+  padding: 4px 13px 12px;
+}
+.linz-blame-head {
+  font-size: 12.5px;
+  color: var(--tx);
+  margin-bottom: 5px;
+}
+.linz-blame ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.linz-blame li {
+  font-size: 12.5px;
+  margin: 3px 0;
+}
+.linz-blame code {
+  color: var(--bad);
+  font-weight: 600;
+}

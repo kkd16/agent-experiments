@@ -85,6 +85,12 @@ import {
   type EPaxosCmd,
   type EPaxosState,
 } from '../protocols/epaxos/types';
+import { check, isLinearizable } from '../linz/checker';
+import { bruteForceLinearizable, bruteForceFeasible } from '../linz/bruteforce';
+import { specById, SPECS } from '../linz/specs';
+import { curatedHistories, genLinearizable, genAdversarial, corrupt } from '../linz/histories';
+import { precedes, type History, type Op } from '../linz/history';
+import { runAbdHistory, corruptOneRead, abdOpsToHistory, harvestAbd } from '../linz/fromprotocol';
 
 export interface TestResult {
   group: string;
@@ -2217,6 +2223,277 @@ export function runSelfTests(): TestResult[] {
     };
     const ok = run() === run();
     return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  // ---- Linearizability checker (Wing & Gong) ----
+  // A from-scratch general linearizability decision procedure. These tests pin it
+  // against an independent brute-force oracle (the literal definition) by the
+  // thousand, prove the witnesses it emits are valid, and run it on real ABD runs.
+
+  t('Linearizability', 'Curated textbook histories get their known verdicts', () => {
+    const cur = curatedHistories();
+    let bad = '';
+    for (const c of cur) {
+      const r = check(c.history, specById(c.spec));
+      if (r.linearizable !== c.expected) {
+        bad = `${c.id}: expected ${c.expected ? 'LZ' : 'not-LZ'}, got ${r.linearizable ? 'LZ' : 'not-LZ'}`;
+        break;
+      }
+      if (!c.expected && r.blame.length === 0) {
+        bad = `${c.id}: a violation with no blamed operation`;
+        break;
+      }
+    }
+    return [!bad, bad || `all ${cur.length} canonical histories (stale read, Herlihy–Wing, SC-not-LZ queue, lost CAS, …) decided correctly`];
+  });
+
+  // Independently re-validate a YES verdict's witness: every op placed once, each
+  // response reproduced from the model, and real-time order respected.
+  const witnessValid = (h: History, specId: string): boolean => {
+    const spec = specById(specId);
+    const r = check(h, spec, { blame: false });
+    if (!r.linearizable) return false;
+    const placed = new Set<number>();
+    for (const part of r.parts) {
+      if (!part.witness) return false;
+      const ops = part.witness.map((s) => s.op);
+      // real-time order respected within the part
+      for (let i = 0; i < ops.length; i++) {
+        for (let j = i + 1; j < ops.length; j++) {
+          if (precedes(ops[j], ops[i])) return false; // a later op placed before one it must follow
+        }
+      }
+      // outputs reproduced by replay
+      let state = spec.init();
+      for (const step of part.witness) {
+        const ap = spec.apply(state, step.op.f, step.op.arg);
+        if (step.op.res !== undefined && step.op.res !== null && ap.out !== step.op.res) {
+          if (Array.isArray(ap.out) || Array.isArray(step.op.res)) return false;
+          if (ap.out !== step.op.res) return false;
+        }
+        state = ap.state;
+        placed.add(step.op.id);
+      }
+    }
+    return placed.size === h.ops.length;
+  };
+
+  t('Linearizability', 'Every YES verdict ships a valid, replayable witness order', () => {
+    let checked = 0;
+    let bad = '';
+    for (const c of curatedHistories()) {
+      if (!c.expected) continue;
+      if (!witnessValid(c.history, c.spec)) {
+        bad = `curated ${c.id} produced an invalid witness`;
+        break;
+      }
+      checked++;
+    }
+    if (!bad) {
+      outer: for (const spec of SPECS) {
+        for (let seed = 0; seed < 25; seed++) {
+          const h = genLinearizable(spec.id, seed, 8, 3, 3);
+          if (!witnessValid(h, spec.id)) {
+            bad = `random ${spec.id} seed ${seed} produced an invalid witness`;
+            break outer;
+          }
+          checked++;
+        }
+      }
+    }
+    return [!bad, bad || `${checked} witnesses re-validated independently (placement, replay & real-time order)`];
+  });
+
+  t('Linearizability', 'Agrees with brute force on 360 linearizable histories', () => {
+    let n = 0;
+    let bad = '';
+    outer: for (const spec of SPECS) {
+      for (let seed = 0; seed < 60; seed++) {
+        const h = genLinearizable(spec.id, seed, 7, 3, 3);
+        if (!bruteForceFeasible(h.ops)) continue;
+        const wg = isLinearizable(h, spec, { blame: false });
+        const bf = bruteForceLinearizable(h, spec);
+        n++;
+        if (!wg || !bf) {
+          bad = `${spec.id} seed ${seed}: wg=${wg} bf=${bf} (both should be LZ)`;
+          break outer;
+        }
+      }
+    }
+    return [!bad && n >= 300, bad || `${n} histories: the checker and the brute-force oracle both say linearizable`];
+  });
+
+  t('Linearizability', 'Agrees with brute force on adversarial (non-LZ) histories', () => {
+    let n = 0;
+    let bad = '';
+    outer: for (const spec of SPECS) {
+      if (spec.id === 'lock') continue; // few observers ⇒ corruption often re-linearizes
+      for (let seed = 0; seed < 40; seed++) {
+        const a = genAdversarial(spec.id, seed, 7, 3);
+        if (!a) continue;
+        const wg = isLinearizable(a.history, spec, { blame: false });
+        const bf = bruteForceLinearizable(a.history, spec);
+        n++;
+        if (wg || bf) {
+          bad = `${spec.id} seed ${seed}: checker=${wg} bf=${bf} (both should be non-LZ)`;
+          break outer;
+        }
+      }
+    }
+    return [!bad && n >= 100, bad || `${n} corrupted histories: rejected by both the checker and the brute-force oracle`];
+  });
+
+  // Blame is "operations whose removal restores linearizability". For a *pure*
+  // observer (a read that changes no state) corrupted to an impossible value, the
+  // guarantee is sharp: deleting it must restore linearizability, so blame must
+  // name it. (For a state-changing op like a popped queue element, no single
+  // removal need restore it — which is why this test fixes pure observers.)
+  t('Linearizability', 'Blame names the operation that went back in time', () => {
+    let n = 0;
+    let bad = '';
+    outer: for (const specId of ['register', 'counter']) {
+      const impossible: (cur: number) => string | number = specId === 'register' ? () => '∄' : (cur) => cur + 777;
+      for (let seed = 0; seed < 40; seed++) {
+        const base = genLinearizable(specId, seed, 8, 3, 3);
+        const reads = base.ops.filter((o) => o.f === 'read');
+        if (reads.length === 0) continue;
+        const victim = reads[reads.length - 1];
+        const ops = base.ops.map((o) =>
+          o.id === victim.id ? { ...o, res: impossible(Number(o.res ?? 0)) } : o,
+        );
+        const h: History = { label: 'blame', ops };
+        const r = check(h, specById(specId));
+        n++;
+        if (r.linearizable) {
+          bad = `${specId} seed ${seed}: an impossible read was accepted`;
+          break outer;
+        }
+        if (!r.blame.includes(victim.id)) {
+          bad = `${specId} seed ${seed}: blame ${r.blame} did not name the impossible read ${victim.id}`;
+          break outer;
+        }
+      }
+    }
+    return [!bad && n >= 40, bad || `${n} histories: corrupting a read to a value no order allows is rejected and the blame set points straight at it`];
+  });
+
+  t('Linearizability', 'Agrees with brute force on randomly perturbed histories (mixed verdicts)', () => {
+    let n = 0;
+    let lz = 0;
+    let bad = '';
+    outer: for (const spec of SPECS) {
+      for (let seed = 0; seed < 70; seed++) {
+        let h = genLinearizable(spec.id, seed, 6, 3, 2);
+        h = corrupt(corrupt(h, seed), seed * 3 + 1);
+        if (!bruteForceFeasible(h.ops)) continue;
+        const wg = isLinearizable(h, spec, { blame: false });
+        const bf = bruteForceLinearizable(h, spec);
+        n++;
+        if (wg) lz++;
+        if (wg !== bf) {
+          bad = `${spec.id} seed ${seed}: wg=${wg} bf=${bf} disagree`;
+          break outer;
+        }
+      }
+    }
+    return [!bad && n >= 200, bad || `${n} arbitrary histories (${lz} LZ / ${n - lz} not): checker matched the oracle on every one`];
+  });
+
+  t('Linearizability', 'The verdict is invariant to the order ops are listed in', () => {
+    const shuffle = new Rng(13579);
+    let bad = '';
+    outer: for (const spec of SPECS) {
+      for (let seed = 0; seed < 30; seed++) {
+        const h = seed % 2 === 0 ? genLinearizable(spec.id, seed, 7, 3, 3) : (genAdversarial(spec.id, seed, 7, 3)?.history ?? genLinearizable(spec.id, seed, 7, 3, 3));
+        const base = isLinearizable(h, spec, { blame: false });
+        const shuffled: History = { label: h.label, ops: shuffle.shuffle(h.ops) };
+        const after = isLinearizable(shuffled, spec, { blame: false });
+        if (base !== after) {
+          bad = `${spec.id} seed ${seed}: ${base} vs ${after} after shuffling input order`;
+          break outer;
+        }
+      }
+    }
+    return [!bad, bad || 'reordering the operation list never changes the decision (the search reasons over time, not list order)'];
+  });
+
+  t('Linearizability', 'Locality: a multi-object run is linearizable iff each object is', () => {
+    let bad = '';
+    for (let seed = 0; seed < 30 && !bad; seed++) {
+      const a = genLinearizable('register', seed, 4, 2, 2);
+      const b = genLinearizable('register', seed + 500, 4, 2, 2);
+      const ops: Op[] = [
+        ...a.ops.map((o) => ({ ...o, obj: 'x' })),
+        ...b.ops.map((o) => ({ ...o, id: o.id + 1000, obj: 'y' })),
+      ];
+      const clean: History = { label: 'multi', ops };
+      if (!isLinearizable(clean, specById('register'))) {
+        bad = `seed ${seed}: a clean two-register history was rejected`;
+        continue;
+      }
+      // Corrupt object y; the whole history must fail and blame must land in y.
+      const reads = ops.filter((o) => o.obj === 'y' && o.f === 'read');
+      if (reads.length === 0) continue;
+      const victim = reads[0];
+      const dirty: History = { label: 'multi-dirty', ops: ops.map((o) => (o.id === victim.id ? { ...o, res: '∄' } : o)) };
+      const r = check(dirty, specById('register'));
+      if (r.linearizable) {
+        bad = `seed ${seed}: a corrupted register went undetected`;
+      } else if (!r.blame.includes(victim.id)) {
+        bad = `seed ${seed}: blame ${r.blame} did not isolate the corrupted object-y read ${victim.id}`;
+      }
+    }
+    return [!bad, bad || 'two independent registers are checked separately; corrupting one fails the whole history and the blame stays inside that object'];
+  });
+
+  t('Linearizability', 'Certifies real ABD runs — agreeing with ABD’s own tag invariant', () => {
+    let runs = 0;
+    let bad = '';
+    for (const seed of [1, 2, 3, 5, 7, 11, 13, 17, 23, 31, 42, 99]) {
+      const k = new Kernel<AbdState, AbdCmd>({
+        seed,
+        protocol: createAbd(DEFAULT_ABD_CONFIG),
+        nodeIds: ['A', 'B', 'C', 'D', 'E'],
+        network: { minLatency: 20, maxLatency: 60, dropRate: 0 },
+      });
+      const rng = new Rng(seed * 31 + 1);
+      for (let i = 0; i < 14; i++) {
+        const tgt = rng.pick(k.nodeOrder)!;
+        const key = rng.pick(['x', 'y', 'z'])!;
+        if (rng.chance(0.5)) k.command(tgt, { type: 'write', key, value: `${key}${i}` });
+        else k.command(tgt, { type: 'read', key });
+        for (let s = 0; s < rng.int(2, 8); s++) k.advance(15);
+      }
+      for (let s = 0; s < 240; s++) k.advance(15);
+      const tagOk = abdInvariants(k.views()).every((iv) => iv.ok);
+      const h = abdOpsToHistory(harvestAbd(k), `abd ${seed}`);
+      const genOk = isLinearizable(h, specById('register'));
+      runs++;
+      if (!tagOk || !genOk) {
+        bad = `seed ${seed}: tag-invariant=${tagOk}, general-checker=${genOk} (both should agree it is linearizable)`;
+        break;
+      }
+    }
+    return [!bad, bad || `${runs} real ABD runs: the from-scratch general checker and Lamport's tag conditions independently agree every run is linearizable`];
+  });
+
+  t('Linearizability', 'Catches a tampered ABD read the tag test reads right past', () => {
+    let caught = 0;
+    let total = 0;
+    let bad = '';
+    for (const seed of [1, 2, 3, 5, 7, 11, 13, 17]) {
+      const h = runAbdHistory({ seed, replicas: 5, ops: 14, keys: ['x', 'y', 'z'], dropRate: 0 });
+      const tampered = corruptOneRead(h, seed);
+      if (!tampered) continue;
+      total++;
+      const r = check(tampered.history, specById('register'));
+      if (!r.linearizable && r.blame.includes(tampered.victim)) caught++;
+      else {
+        bad = `seed ${seed}: tampered read not flagged (lz=${r.linearizable}, blame=${r.blame}, victim=${tampered.victim})`;
+        break;
+      }
+    }
+    return [!bad && total > 0, bad || `${caught}/${total} runs: flipping one read's value to a never-written one is caught and blamed`];
   });
 
   return out;

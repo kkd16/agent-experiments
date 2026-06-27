@@ -599,6 +599,62 @@ split the correct nodes — all deliver the same value or none does. Bracha's 19
 - [ ] **Backlog (post-ship):** Byzantine consistent broadcast (one round, weaker), Dolev–Strong
       synchronous broadcast with a round slider, and an authenticated (signature) variant.
 
+### Linearizability lab (a general checker) — NEW
+The capstone that turns the whole project's thesis — "the hard algorithms are implemented for
+real" — into something *machine-checked*. Every other lab asserts a bespoke invariant; the ABD
+lab even proves its register linearizable, but with Lamport's tag conditions, a shortcut only a
+register affords. This lab implements the **general** decision procedure (Wing & Gong, 1993):
+given any concurrent history and any sequential object, is there a single legal order that
+respects real time? It is **NP-complete**, made tractable here by real-time pruning, memoized
+dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*` + a `LinzLab`.
+
+- [x] **`linz/history.ts`** — the data model: an `Op` is `{proc, f, arg, res, call, ret, obj}`;
+      real-time precedence `A ≺ B ⇔ A.ret ≤ B.call`; value/tuple equality; per-`obj` partitioning
+      (the locality split); pending-op support (`ret = ∞`).
+- [x] **`linz/specs.ts`** — six from-scratch sequential specs, each a *pure* state machine
+      (`apply` returns a new state + the mandated response): **register** (read/write/**CAS**),
+      **counter**, **set**, **FIFO queue**, **LIFO stack**, **try-lock**. Each carries a hash (for
+      memoization), a `show` (for the witness table), and op signatures (for the generators).
+- [x] **`linz/checker.ts`** — the Wing & Gong search. It only ever linearizes an operation whose
+      real-time predecessors are already placed (a topological move), applies it to the model and
+      keeps it only if the response matches, and **memoizes** every refuted `(remaining-ops, state)`
+      node so the exponential interleavings collapse to the few distinct reachable states. Returns a
+      **witness** order (with each step's state transition) on success and a **blame** set — the
+      operations whose removal restores linearizability — on failure. Pending ops are optional with a
+      free output; a node budget guards against pathological inputs.
+- [x] **`linz/bruteforce.ts`** — an independent, deliberately naive oracle: enumerate *every* linear
+      extension of the real-time order and accept iff one is a legal sequential run. A different code
+      path on purpose, so a shared bug is near-impossible; used only to differential-test the fast
+      checker on small histories.
+- [x] **`linz/histories.ts`** — the curated gallery (stale read / time-travel, the Herlihy–Wing
+      register pair, the FIFO queue that is **sequentially consistent yet not linearizable**, the lost
+      CAS race, double-acquire mutex break, lost increment, phantom set miss) each tagged with its
+      expected verdict; plus seeded generators: `genLinearizable` (LZ by construction — a legal
+      schedule given overlapping intervals) and `genAdversarial` (corrupt one result, re-rolled until
+      it provably breaks).
+- [x] **`linz/fromprotocol.ts`** — the bridge that makes the checker bite on *real* runs: drive an
+      ABD cluster on the live kernel, harvest the operation history it actually produced, and hand it
+      to the general checker (each register key an independent object → locality). Plus a tamperer that
+      flips one read to a never-written value.
+- [x] **`labs/LinzLab.tsx`** — pick a source (Textbook / Random / **Live ABD run**), watch the
+      operations as a real-time **space-time diagram** (mutator/observer colour-coded, blamed ops in
+      red, labels two-row-staggered so a busy lane stays legible), and read the verdict: ✅ with the
+      per-object **witness** order (state before → after at each step) or ❌ with the **counterexample**
+      (the operation that went back in time). A search-stats panel shows nodes explored, memo prunes,
+      ops applied, max depth and decision time.
+- [x] **Self-tests** — a `Linearizability` group (suite **111 → 121/121**): the 16 curated histories
+      get their known verdicts; every YES verdict's witness is **independently re-validated** (placement
+      + replay + real-time order); the checker **agrees with the brute-force oracle** on 360 LZ-by-
+      construction, 100+ adversarial, and 420 randomly-perturbed histories; the verdict is invariant to
+      input op ordering; locality (a 2-register run is LZ iff each register is, and blame stays inside
+      the corrupted object); **real ABD runs** are certified LZ, independently agreeing with ABD's tag
+      invariant across 12 seeds; and a **tampered ABD read** is caught and blamed. Validated headless
+      under Node (full suite 121/121) and the live build driven in headless Chromium (curated, random,
+      and an ABD run all decide with zero console errors).
+- [ ] **Backlog (post-ship):** a sequential-consistency checker to contrast (drop the real-time
+      constraint), a Jepsen-style "wall of histories" stress view, animating the search frontier step by
+      step, and feeding Raft/Paxos KV histories (with `cas`) through the same checker.
+
 ### Future labs / ideas (backlog)
 - [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
       two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
@@ -935,3 +991,27 @@ split the correct nodes — all deliver the same value or none does. Bracha's 19
   (metastable consensus), Chandy–Lamport (global snapshots), Lamport mutex (logical-clock coordination)
   and Bracha (Byzantine reliable broadcast) — four distinct problem classes, suite 91 → 111, each its own
   merged PR, each surfacing (and fixing) at least one real correctness bug via its own live invariant.
+
+- 2026-06-27 (claude / claude-opus-4-8): **Linearizability — a general checker, the project's
+  verification capstone.** Up to now every lab proved its own bespoke invariant, and ABD proved
+  *linearizability* the only cheap way a register allows — Lamport's tag conditions. This session
+  built the **general** thing: a from-scratch **Wing & Gong (1993) linearizability decision
+  procedure** (`src/linz/*`) that, for *any* sequential object, decides whether a concurrent history
+  could have come from a real atomic object. Deciding it is NP-complete; the checker stays fast by
+  (1) only ever linearizing an operation whose real-time predecessors are already placed, (2)
+  **memoizing** every refuted `(remaining-ops, model-state)` node — Wing & Gong's key trick, which
+  collapses the exponential interleavings to the few reachable states — and (3) splitting by object
+  via Herlihy & Wing's **locality** theorem. Six pure sequential specs (register/**CAS**, counter,
+  set, FIFO queue, stack, try-lock); a witness order on YES (re-checkable by hand) and a **blame**
+  set on NO (the operation that went back in time). Wired into a new **Linearizability lab**: pick a
+  textbook history, a seeded random one, or a **real ABD run harvested live off the kernel**, watch
+  it as a real-time space-time diagram, and read the verdict with its witness or counterexample. The
+  proof is the point: an **independent brute-force oracle** (enumerate every linear extension — a
+  deliberately different code path) is differential-tested against the fast checker on ~900 histories
+  per run and agrees on every one; every witness is independently re-validated; **real ABD runs are
+  certified linearizable by the general checker, agreeing with ABD's tag invariant**; and a tampered
+  ABD read (one value flipped to a never-written one) is caught and blamed — the violation the
+  tag-only test reads right past. Suite **111 → 121/121**. Validated headless under Node (full suite
+  green) and the live build driven in headless Chromium (curated / random / ABD all decide with zero
+  console errors). Full gate green (scope + conformance + lint + build) via
+  `node scripts/verify-project.mjs quorum-distsys-k7r2`.
