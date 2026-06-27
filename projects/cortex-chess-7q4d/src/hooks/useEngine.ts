@@ -12,6 +12,7 @@ import { Searcher, deserializeNnue, quantize, type NnueBlob } from '../engine'
 import { verifyKbnk as verifyKbnkSync, type KbnkVerification } from '../engine/kbnk'
 import { verifyGtb as verifyGtbSync, type GtbVerification } from '../engine/gtb'
 import { verifyWdl as verifyWdlSync, type WdlVerification } from '../engine/wdltb'
+import { verifyPawnTb as verifyPawnTbSync, type PawnTbVerification } from '../engine/pawntb'
 import type { NodeAnalysis } from '../engine/review'
 import type { WorkerOut, WorkerRequest } from '../engine/engine.worker'
 
@@ -53,6 +54,10 @@ export interface EngineHandle {
     opts: { id: string; sample: number; games: number },
     onProgress: (frac: number, phase: string) => void,
   ) => Promise<WdlVerification>
+  verifyPawnTb: (
+    opts: { sample: number; games: number },
+    onProgress: (frac: number, phase: string) => void,
+  ) => Promise<PawnTbVerification>
   // Analyse every node of a game (top-2 lines per position) for the review model.
   reviewGame: (
     items: EvalItem[],
@@ -93,6 +98,7 @@ export function useEngine(): EngineHandle {
           case 'kbnkprogress':
           case 'gtbprogress':
           case 'wdlprogress':
+          case 'pawntbprogress':
             ;(infoRef.current as ((a: unknown) => void) | null)?.(msg)
             break
           case 'result':
@@ -112,7 +118,8 @@ export function useEngine(): EngineHandle {
           }
           case 'kbnkdone':
           case 'gtbdone':
-          case 'wdldone': {
+          case 'wdldone':
+          case 'pawntbdone': {
             const resolve = resolveRef.current as ((v: unknown) => void) | null
             resolveRef.current = null
             infoRef.current = null
@@ -290,6 +297,19 @@ export function useEngine(): EngineHandle {
     [post],
   )
 
+  const verifyPawnTb = useCallback(
+    (
+      opts: { sample: number; games: number },
+      onProgress: (frac: number, phase: string) => void,
+    ): Promise<PawnTbVerification> =>
+      post(
+        { type: 'pawntb', ...opts },
+        ((m: { frac: number; phase: string }) => onProgress(m.frac, m.phase)) as (a: never) => void,
+        () => verifyPawnTbSync({ sample: opts.sample, games: opts.games }, onProgress),
+      ),
+    [post],
+  )
+
   const setNnue = useCallback(
     (blob: NnueBlob | null, useQuant = false) => {
       nnueRef.current = blob
@@ -321,7 +341,7 @@ export function useEngine(): EngineHandle {
   }, [])
 
   return useMemo(
-    () => ({ think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, setNnue, cancel }),
-    [think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, setNnue, cancel],
+    () => ({ think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, setNnue, cancel }),
+    [think, analyze, evalGame, reviewGame, verifyKbnk, verifyGtb, verifyWdl, verifyPawnTb, setNnue, cancel],
   )
 }

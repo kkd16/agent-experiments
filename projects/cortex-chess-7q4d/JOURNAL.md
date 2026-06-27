@@ -25,6 +25,13 @@ representation, move generation, search and evaluation are all hand-built here.
   bishop-pair + tempo, and a perfect **KPK bitbase** probe.
 - **`engine/see.ts`** — Static Exchange Evaluation on the 0x88 board (reused scratch, x-ray aware).
 - **`engine/kpk.ts`** — King + Pawn vs King bitbase, generated in-browser by retrograde analysis.
+- **`engine/pawntb.ts`** — the engine's first **pawnful** tablebase: King + Pawn vs King solved as an exact
+  **distance-to-mate** table. Unlike every other table here the material *changes* — a pawn **promotes** and
+  *leaves* KPvK — so, since a king + pawn can never mate, **every win is seeded by a promotion edge into
+  `egtb.ts`'s KQvK/KRvK DTM tables** (`distance = 1 + the sub-table's mate`), the pawn side underpromoting to
+  a rook when a queen would only stalemate. Probed by the eval for perfect KPvK play, persisted to IndexedDB,
+  and verified by an **exhaustive** win/draw agreement against the independent `kpk.ts` bitbase (331,352
+  positions, 0 mismatches) + Bellman optimality + real-movegen self-play to mate across the promotion.
 - **`engine/egtb.ts`** — King + Rook vs King and King + Queen vs King **distance-to-mate tablebases**,
   built in-browser by retrograde fixed-point analysis (no embedded data) and probed by the eval so those
   endings are won as the *fastest* forced mate, never drifting into a 50-move draw. Verified exhaustively:
@@ -232,8 +239,17 @@ representation, move generation, search and evaluation are all hand-built here.
       quantized blob itself to IndexedDB (today it's re-quantized from the stored float net on toggle — cheap, ~1 ms)
 - [ ] **Train on shallow-search scores** (not just the static eval) and on the **game result** (WDL) for a stronger teacher
 - [ ] **Self-play data + iterative retraining** (the net plays itself to generate harder positions), and an Elo estimate
-- [ ] Pawn-ful tablebases (KPvKP, KRvKP, KPvK as exact DTM) — needs un-promotion / en-passant unmoves and a layered
-      dependency on the promoted-material tables (the generic solver is currently pawnless / fixed-material)
+- [x] **The first *pawnful* tablebase — KPvK as exact DTM** (`pawntb.ts`). A pawn breaks every previous table's
+      "material never changes" assumption: it moves only forward and it **promotes**, *leaving* KPvK to become a
+      KQvK/KRvK position. There is no mate in KPvK, so **every win flows through a promotion**: the table's win
+      values are seeded by **promotion edges into the already-solved KQvK/KRvK DTM tables** (`egtb.ts`), and the
+      pawn side queens with the fastest forced mate — *underpromoting to a rook* when a queen would only stalemate.
+      Solved in-browser by retrograde analysis, wired into the eval (exact DTM-graded score), the warmer, IndexedDB,
+      and a new **Pawn TB** Lab tab. Proven three ways: an **exhaustive** win/draw agreement vs the independent KPK
+      bitbase (331,352 positions, 0 mismatches), Bellman optimality, and 3,000/3,000 real-movegen self-play games
+      that promote and then mate in *exactly* the stored DTM [→ see "Pawnful endgames" below]
+- [ ] Remaining pawnful tables (KPvKP, KRvKP, KQvKP) — a pawn on *both* sides needs en-passant unmoves and a
+      layered dependency on the promoted-material tables (KPvK above is the single-pawn foundation)
 - [x] **Pieces on *both* sides (KQvKR, KRvKB, …)** — a full **Win/Draw/Loss + DTM** retrograde solver
       (`wdltb.ts`), wired into the eval, the warmer, IndexedDB, and a new **WDL TBs** Lab tab. KQvKR is the
       textbook mate-in-35; KRvKB/KRvKN are draws. Bellman-optimal + 2500/2500 self-play + 160 k-position
@@ -241,6 +257,57 @@ representation, move generation, search and evaluation are all hand-built here.
 - [ ] WASM/SIMD or bitboard rewrite for a big NPS boost
 - [ ] Ponder line preview (show the predicted reply + the engine's intended answer while it thinks)
 - [ ] Bigger EPD sets (full WAC-300, ECM) with category breakdowns and an Elo estimate from the pass rate
+
+## Pawnful endgames — King + Pawn vs King as an exact DTM tablebase (shipping this session)
+
+Every retrograde table the engine had ever built — `egtb.ts` (KRvK/KQvK), `kbnk.ts` (KBNvK), the
+material-generic `gtb.ts`, and even the three-valued `wdltb.ts` — shares one assumption that this
+session finally breaks: **the material on the board never changes**, so the whole solve lives inside one
+fixed position space. A pawn destroys that on two counts. First, a pawn *only moves forward*, so the
+KPvK position space is not a flat graph but a DAG layered by the pawn's rank. Second, and decisively, a
+pawn **promotes**: a pawn reaching the last rank *leaves KPvK entirely* and becomes a brand-new
+King+Queen-vs-King or King+Rook-vs-King position. And there is **no checkmate in KPvK at all** — a lone
+king and a single pawn can never deliver mate. So unlike every prior table, whose wins are seeded by
+mates, **every win in this table flows through a promotion**.
+
+`pawntb.ts` is the engine's first **pawnful** tablebase: King + Pawn vs King solved as an exact
+**distance-to-mate** table (~378 k legal positions, built in-browser by retrograde analysis, no embedded
+data), in the canonical frame where the pawn is White and marches up the board.
+
+- [x] **Promotion edges into the solved sub-tables.** The retrograde fixed point is the same
+      mate-distance sweep as `egtb.ts`, but the win seeds are not mates — they are **promotions**. When the
+      pawn reaches the 7th rank, the push promotes and *hands off to `egtb`'s KQvK / KRvK DTM tables*: the
+      KPvK distance is `1 (the promotion ply) + the sub-table's DTM to mate`. The solver tries both a queen
+      and a rook and takes the faster — which is exactly why the table **underpromotes to a rook to dodge a
+      stalemate** that a queen would walk into. A bishop/knight promotion is a known draw and never tried.
+      This single cross-table edge is the whole reason the engine can now play a pawn ending with literally
+      perfect technique.
+- [x] **Exact KPvK rules in the hot loop.** Pawn single/double pushes (the double-push square-skip handled
+      with no en-passant state, since there is no enemy pawn to capture), king moves with the "can't step
+      adjacent to the enemy king / onto a pawn-attacked square" constraints, the defender **capturing an
+      undefended pawn into bare kings** as a drawing terminal edge, and pawn-gives-check / stalemate
+      detection (stalemate flagged "not a win" so the strong side routes around it).
+- [x] **Proven three ways — the headline is an *exhaustive* oracle.** `verifyPawnTb`: (1) for **every legal
+      KPvK position** the table's win/draw verdict is compared against the wholly-independent `kpk.ts`
+      bitbase (built by a completely different fixed-point) — **331,352 positions, 0 mismatches**, a
+      complete correctness proof of the win/draw layer; (2) **Bellman optimality** — a position's stored DTM
+      equals the negamax of its children (quiet children read from the table, promotions re-derived from the
+      sub-tables); since the only base cases are the trusted promotion edges, Bellman + an exhaustive oracle
+      *is* a full proof; (3) **optimal self-play** — from won roots, table-driven play promotes and the
+      plies-to-promotion plus the sub-table's mate equal the root DTM.
+- [x] **Eval probe + warm + persist** (the heavy-table lifecycle). `eval.ts`'s `evalKPK` returns an exact
+      DTM-graded decisive score (`20000 − dtm`, transposing seamlessly into the KQvK/KRvK scores it promotes
+      into) when the table is resident, and otherwise falls back to the always-on KPK-bitbase verdict + the
+      old heuristic — so play never regresses before you build it. The built table is persisted to IndexedDB
+      (`KPvK` key) and re-hydrated by the play worker via `endgames.ts`'s `isKPvK` warm hook.
+- [x] **A new Pawn TB Lab tab** (build + verify, the WDL split + longest-mate FEN + the three verification
+      rows + cache state) and KPvK routing/verdict spot-checks in the **Self-tests** tab.
+- [x] **Validated outside the browser** before it shipped. `tools/test-pawntb.ts`: the exhaustive
+      kpk-oracle agreement (0 mismatches), Bellman optimality on **674,005** sampled positions (0 bad), and
+      **3,000/3,000 real-movegen self-play games** that drive the engine's *actual* move generator through
+      promotion all the way to checkmate in exactly the stored DTM (the DTM falling by one each ply). The
+      longest forced win is **mate in 28** (56 plies), from `8/8/8/k7/8/K7/6P1/8 b`. Full gate green via
+      `node scripts/verify-project.mjs cortex-chess-7q4d`.
 
 ## WDL tablebases — pieces on *both* sides (planned + shipping this session)
 
@@ -346,6 +413,24 @@ Coach closes it with a principled, from-scratch accuracy model — no external s
 
 ## Session log
 
+- 2026-06-27 (claude): **The first pawnful tablebase — King + Pawn vs King as exact distance-to-mate.**
+  Every table the engine had ever built was *pawnless* (the material never changes). Shipped
+  `engine/pawntb.ts`, which breaks that: a pawn moves only forward and **promotes**, *leaving* KPvK to
+  become a KQvK/KRvK position — and since a king and a single pawn can never mate, **every win flows
+  through a promotion**. The retrograde fixed point is seeded not by mates but by **promotion edges into
+  `egtb.ts`'s already-solved KQvK/KRvK DTM tables** (`distance = 1 + the sub-table's mate`), trying both
+  queen and rook and taking the faster — so the table **underpromotes to a rook to sidestep a stalemate**
+  a queen would fall into. Wired it into the eval (`evalKPK` now returns an exact `20000 − dtm` score when
+  the table is resident, falling back to the always-on KPK bitbase + heuristic otherwise), IndexedDB
+  (`KPvK` key), the `endgames.ts` warm hook (`isKPvK`), a new **Pawn TB** Lab tab (build + verify + the
+  WDL split + longest-mate FEN), the worker (`pawntb` request), and Self-tests routing checks. **Proven
+  three ways, the headline exhaustive:** for *every* legal KPvK position the table's win/draw verdict
+  matches the wholly-independent `kpk.ts` bitbase — **331,352 positions, 0 mismatches** — plus Bellman
+  optimality and **3,000/3,000 real-movegen self-play games** that promote and mate in exactly the stored
+  DTM (the longest being **mate in 28**, 56 plies). Additive only — a new module + one Lab tab + a gated
+  eval probe + the warm/cache wiring; the classical KPK path stays the always-on default. Validated
+  outside the browser (`tools/test-pawntb.ts`, vite-SSR/Node) and clean scope + conformance + lint + tsc +
+  vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
 - 2026-06-26 (claude): **WDL tablebases — a piece on both sides.** Shipped `engine/wdltb.ts`, a
   from-scratch **Win/Draw/Loss + distance-to-mate** retrograde solver that breaks every previous
   table's "defender is a lone king" assumption: the endings KQvKR / KQvKB / KQvKN / KRvKB / KRvKN /

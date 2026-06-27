@@ -32,6 +32,7 @@ import {
   pieceType,
 } from './board'
 import { kpkWin } from './kpk'
+import { pawnTbReady, probePawnKvK } from './pawntb'
 import { probeKxK } from './egtb'
 import { probeKbnk, kbnkReady } from './kbnk'
 import { gtbReady, gtbConfigFor, probeGtb } from './gtb'
@@ -511,6 +512,19 @@ function evalKPK(p: Position, whiteOwnsPawn: boolean): number {
   for (let s = 0; s < 128; s++) {
     if (!isOnBoard(s)) { s += 7; continue }
     if (pieceType(p.board[s]) === PAWN) { psq = to64(s); break }
+  }
+
+  // Exact distance-to-mate, when the pawnful KPvK table (pawntb.ts) is resident
+  // (built + warmed from the Lab). It promotes with the fastest forced mate — even
+  // underpromoting to a rook to dodge a stalemate — and folds the post-promotion
+  // KQvK/KRvK mate into one DTM-graded score, so play is literally perfect. Until
+  // then we fall back to the always-on KPK bitbase verdict + a heuristic below.
+  if (pawnTbReady()) {
+    const r = probePawnKvK(wk, bk, psq, strongIsWhite, p.turn === WHITE)
+    if (!r.win) return 0
+    const strongRel = 20000 - r.dtm
+    const whiteRel = strongIsWhite ? strongRel : -strongRel
+    return p.turn === WHITE ? whiteRel : -whiteRel
   }
 
   let usWhiteStrong: boolean
