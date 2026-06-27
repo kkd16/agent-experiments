@@ -56,6 +56,18 @@ the structure of a production engine (Box2D), implemented from first principles 
   two-ways, so a heavy blob shoves a light crate and a falling crate dents a hammock. Builders
   for blobs (pressurised rings), cloth/membranes, ropes and lattice solids (`makeBlob`,
   `makeCloth`, `makeRope`, `makeSoftBox`).
+- **Finite elements** (`fem/`, v8) — the engine's first *continuum* solver, a fourth physics
+  paradigm beside rigid, XPBD and SPH: **co-rotational linear FEM** on constant-strain
+  triangles, stepped with an **implicit (backward-Euler)** integrator. Each step factors out
+  every element's rigid rotation via a closed-form 2-D polar decomposition (so large rotations
+  cost no spurious energy — the failure that breaks plain linear FEM) and solves one SPD system
+  `M + hC + h²K′` with a matrix-free, Jacobi-preconditioned **conjugate gradient** that never
+  assembles the global stiffness; pinned nodes are Dirichlet boundaries via a projected CG.
+  Materials carry real Young's modulus / Poisson ratio / Rayleigh damping; the von-Mises stress
+  field is recovered for a live heatmap; nodes couple two-ways to the rigid world through the same
+  `collideParticle` bridge. Builders `makeFemBeam`, `makeFemBox`, `makeFemDisk`. The headline
+  validation: a clamped cantilever **converges to the Euler–Bernoulli tip deflection** as the mesh
+  refines.
 - **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
   **contact events**) → fluid forces → island assembly (union-find) → solve → **break overloaded
   joints** → **gather impact loads** → integrate → **CCD sweep of bullet bodies** → **shatter
@@ -91,7 +103,7 @@ a React UI with live solver controls (incl. CCD and block-solver toggles), **Sha
 
 ## Verification
 
-`src/verify/suite.ts` runs 166 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 182 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
@@ -107,8 +119,12 @@ momentum about the COM = I·ω, deterministic shatters, live impact shatter + ge
 and **SPH fluids** (the poly6 kernel numerically integrating to 1, the spiky gradient's sign &
 support, the spatial hash vs brute force, rest-density recovery, a settling column's
 incompressibility / mass conservation / hydrostatic rest / no-escape, communicating-vessel level
-equalisation, two-way buoyancy (float vs sink) + a jet pushing a body, and fluid determinism).
-All 166 pass; click **Verify engine** in the app.
+equalisation, two-way buoyancy (float vs sink) + a jet pushing a body, and fluid determinism),
+and **finite-element elasticity** (co-rotational rotation invariance, the rest/translation
+energy null space, the plane-stress patch test, cantilever convergence to Euler–Bernoulli beam
+theory, the doubling-E-halves-deflection linearity, free-body momentum conservation, FEM
+determinism, two-way coupling and a stable jelly drop). All 182 pass; click **Verify engine** in
+the app.
 
 ## Ideas / backlog
 
@@ -143,6 +159,17 @@ All 166 pass; click **Verify engine** in the app.
       artificial-pressure surface tension, XSPH viscosity, vorticity confinement, jet emitters,
       and two-way rigid coupling through the engine's own `collideParticle`; a metaball renderer,
       a "spray water" pointer tool, 7 scenes (a new Fluid category) and 20 new verification checks
+- [x] **Finite-element elasticity — co-rotational FEM (v8)** — a fourth physics paradigm and the
+      first true continuum solver: constant-strain triangles, implicit backward-Euler with a
+      matrix-free Jacobi-preconditioned conjugate-gradient solve, closed-form 2-D polar
+      decomposition for the co-rotational frame, real E/ν/Rayleigh materials, a von-Mises stress
+      heatmap, two-way rigid coupling and pointer node-grabbing; 4 scenes and 16 new verification
+      checks (incl. cantilever convergence to Euler–Bernoulli beam theory)
+- [ ] Self-collision *within* a FEM body (node-vs-node contacts) and FEM↔FEM / FEM↔soft collision
+- [ ] FEM plasticity (a yield surface that permanently deforms past a stress threshold) and
+      brittle FEM fracture (split elements along the maximum-principal-stress direction)
+- [ ] A larger-deformation **Neo-Hookean / St-Venant–Kirchhoff** energy (the corotational model is
+      linear-strain per element; a true hyperelastic energy removes the small-strain assumption)
 - [ ] SVG/JSON scene export and a small scene editor
 - [ ] Self-collision *within* a soft body (intra-body particle contacts)
 - [ ] Pressure (rest-area > natural) without the energy it currently feeds a confined body
@@ -155,6 +182,100 @@ All 166 pass; click **Verify engine** in the app.
 - [ ] **Debris budget & fade-out**: cull or merge the smallest shards after they settle to keep
       a long demolition session cheap
 - [ ] Run the Voronoi build + shatter off the main thread for very large slabs
+
+## v8 — the finite-element release (co-rotational FEM, implicit, two-way coupled) ✅ shipped
+
+The eighth major upgrade adds a **fourth physics paradigm** and the engine's **first true continuum
+solver**. Rigid bodies, XPBD soft bodies and SPH fluid are all *particle/constraint* methods; v8
+discretises the actual elasticity PDE on a triangle mesh and solves it with the machinery real-time
+FEM engines use: **co-rotational linear finite elements** advanced by an **implicit backward-Euler**
+integrator. The pay-off is *physical fidelity you can check against a textbook* — a clamped beam
+sags to the deflection **Euler–Bernoulli beam theory** predicts, materials are parameterised by real
+**Young's modulus / Poisson ratio**, and the **von-Mises stress** field is recoverable and drawn as a
+live heatmap that traces the load path.
+
+**Why co-rotational + implicit (and not the obvious alternatives).** Plain *linear* FEM is fast but
+catastrophically wrong under rotation: rotate an element rigidly and the small-strain energy reports a
+huge phantom force (a spinning beam inflates). The **co-rotational** trick factors each element's rigid
+rotation `R` out of the deformation gradient `F = Ds·Dm⁻¹` (a closed-form 2-D polar decomposition,
+`θ = atan2(F₁₀−F₀₁, F₀₀+F₁₁)`) so the linear stiffness `Ke` only ever sees the genuinely small elastic
+strain. And *explicit* integration of a stiff material needs a microscopic timestep to stay stable;
+**implicit backward-Euler** is unconditionally stable at the engine's fixed 1/60 step. Treating `R` as
+fixed within the step (stiffness warping) makes the implicit update a single **SPD** linear system
+
+```
+(M + h·C + h²·K′)·Δv = h·(f_int + f_ext − h·K′·v),   C = α·M + β·K′ (Rayleigh damping)
+```
+
+with the warped global stiffness `K′ = Σ Rₑ·Kₑ·Rₑᵀ`. It is never assembled densely — a **matrix-free,
+Jacobi-preconditioned conjugate gradient** evaluates its action element-by-element (rotate by Rᵀ, apply
+the 6×6 `Ke`, rotate back, scatter-add). Pinned nodes become **Dirichlet boundaries** via a projected
+CG that zeros their DOFs each iteration.
+
+### Plan (this session) — all shipped
+
+1. **The FEM body** (`fem/fembody.ts`). `FemBody` stores node positions/velocities/masses as flat
+   `Float64Array`s so the CG operates on plain length-2N vectors with zero per-node allocation. Per
+   element it precomputes the **constant-strain-triangle (CST)** 6×6 stiffness `Ke = area·Bᵀ·D·B`
+   (plane stress) and the rest edge-matrix inverse for `F`. The step: refresh rotations →
+   assemble internal force + gravity → projected PCG solve → integrate → collide with the rigid world.
+2. **Builders** (`fem/builders.ts`). `makeFemBeam` (structured rectangular mesh, union-jack diagonals
+   so the discretisation has no directional bias, with a `pin` predicate), `makeFemBox`, and
+   `makeFemDisk` (a clean radial mesh fanned from a centre node).
+3. **The subsystem stepper** (`fem/solver.ts`) and wiring into `World` (`femBodies`, stepped right
+   after the soft bodies against the freshly-integrated rigid poses — the same one-step co-simulation
+   coupling, so FEM solids, soft bodies and fluid share a scene).
+4. **Rendering** (`render/renderer.ts`). The deformed triangle mesh, either a flat translucent fill or
+   a **von-Mises stress heatmap** (navy → teal → amber → red over the live peak stress), plus the
+   wireframe and the pinned Dirichlet anchors. Stresses are computed in a single O(elements) pass.
+5. **Interaction** (`ui/Simulation.tsx`). Grab the nearest FEM node with the pointer — it becomes a
+   movable Dirichlet anchor and is released with the flick's momentum (the soft-grab pattern, for FEM).
+6. **Scenes** — FEM Cantilever (two beams of different E, heatmap), FEM Load Bridge (pinned both ends,
+   crates rain on the deck and the bending stress lights up), FEM Jelly (squishy elastic discs/blocks),
+   and FEM Springboard (a diving board flexes and flings a heavy ball back). 46 → **50 scenes**.
+7. **Verification** — a 16-check FEM section, growing the suite **166 → 182** (all green).
+
+### Verified — all shipped ✅
+
+- **Co-rotational rotation invariance** — a *large* (1.2 rad) rigid rotation of a beam stores strain
+  energy ≈ 0 (to 1e-6). This is the property plain linear FEM gets catastrophically wrong; it's the
+  whole reason for the polar-decomposition machinery.
+- **Exact symmetries** — rest configuration has zero strain energy *and* zero internal force; a rigid
+  translation stores zero energy (the stiffness' translational null space).
+- **Plane-stress patch test** — a uniform uniaxial strain reproduces the analytic von-Mises stress
+  `√(σₓ²−σₓσy+σy²)`, `σₓ = E/(1−ν²)·ε`, `σy = ν·σₓ`, to 1%.
+- **Euler–Bernoulli beam theory** — a clamped cantilever sagging under self-weight converges to the
+  textbook tip deflection `δ = ρ·H·g·L⁴/(8·E·I)` (`I = H³/12`) as the mesh refines: measured
+  **0.52 → 0.79 → 0.94 → 0.97** of theory at nx=12/24/48/64 — the monotone-from-below convergence CST
+  elements are known for. The suite asserts the coarse→fine convergence and that the refined mesh is
+  within ~20%.
+- **Linear elasticity** — doubling Young's modulus exactly halves the deflection (ratio 2.00).
+- **Conservation & determinism** — a free elastic body conserves linear momentum (to 1e-6) through the
+  implicit solve; identical setups evolve bit-for-bit identically.
+- **Two-way coupling & stability** — a dense FEM disc pushes a free rigid box down without either
+  tunnelling; a FEM jelly dropped on the floor stays finite, rests on the surface and stays ~volume
+  preserving. All 50 scenes smoke-tested 700/200 steps headless — no NaN; FEM steps run ~1.4–3.2 ms.
+
+### The subtlety the headless harness caught
+
+The first cut of the "doubling E halves deflection" check compared the *theory-normalised* ratios
+`δ/δ_theory` of the two runs — but since `δ_theory ∝ 1/E`, that ratio is **E-independent by
+construction** (it came out 1.01, not 2). The fix: compare the *absolute* deflections. A good reminder
+that a verification check is only as honest as the quantity it actually compares.
+
+### Session log
+
+- 2026-06-27 (claude): Shipped **v8 — the finite-element release**, a fourth physics paradigm and the
+  first continuum solver. From-scratch **co-rotational linear FEM** (constant-strain triangles, plane
+  stress) with an **implicit backward-Euler** step solved by a **matrix-free, Jacobi-preconditioned,
+  projected conjugate gradient** over the warped stiffness `M + hC + h²K′` — closed-form 2-D polar
+  decomposition for the per-element rotation, real Young's/Poisson/Rayleigh materials, a recovered
+  **von-Mises stress heatmap**, two-way rigid coupling through `collideParticle`, and pointer
+  node-grabbing. Builders `makeFemBeam/Box/Disk`; 4 scenes (Cantilever, Load Bridge, Jelly,
+  Springboard) for **50 total**; suite **166 → 182** (all green). The headline: the cantilever
+  converges to **Euler–Bernoulli** beam theory (0.52→0.79→0.94→0.97 of δ as the mesh refines).
+  Optimised the CG hot path to zero allocations (reused length-6 scratch), so a 640-element beam steps
+  in a few ms. All scenes smoke-tested headless (no NaN). Lint + build + the exact CI gate green.
 
 ## v7 — the fluids release (Position-Based SPH, two-way coupled)
 

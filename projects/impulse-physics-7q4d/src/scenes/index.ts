@@ -23,6 +23,9 @@ import {
   crossSV,
   makeBlob,
   makeCloth,
+  makeFemBeam,
+  makeFemBox,
+  makeFemDisk,
   makeRope,
   makeSoftBox,
   type FluidParams,
@@ -1849,6 +1852,155 @@ const waterSandbox: SceneDef = {
   },
 };
 
+// ---- Finite-element (continuum FEM) scenes --------------------------------
+
+const femCantilever: SceneDef = {
+  id: 'fem-cantilever',
+  name: 'FEM Cantilever',
+  description:
+    'Two clamped finite-element beams of different Young\'s modulus sag under their own weight, shaded live by von-Mises stress — the load path glows brightest at the clamped root, exactly as beam theory predicts. The soft beam droops; the stiff one barely bends. Drop balls on them (or drag a node) to watch the stress flare and ring out.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 16, -5);
+    // A cosmetic post the beams clamp into.
+    world.addBody(new Body(Polygon.box(0.45, 2.6), { type: BodyType.Static, position: new Vec2(-5.2, 1.6) }));
+    const x0 = -4.9;
+    const soft = makeFemBeam(new Vec2(x0, 3.0), 5, 0.5, 30, 4, {
+      material: { young: 7e4, poisson: 0.3, density: 1, dampingMass: 1.0, dampingStiff: 0.04 },
+      stressHeatmap: true,
+      pin: (r) => r.x <= x0 + 1e-3,
+    });
+    const stiff = makeFemBeam(new Vec2(x0, 1.0), 5, 0.5, 30, 4, {
+      material: { young: 5e5, poisson: 0.3, density: 1, dampingMass: 1.0, dampingStiff: 0.04 },
+      stressHeatmap: true,
+      pin: (r) => r.x <= x0 + 1e-3,
+    });
+    world.addFemBody(soft);
+    world.addFemBody(stiff);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(-0.6, 1.4), scale: 48 },
+      update: (time) => {
+        if (dropped < 6 && time > dropped * 1.1 + 1.0) {
+          dropped++;
+          world.addBody(
+            new Body(new Circle(rng.range(0.28, 0.42)), {
+              position: new Vec2(rng.range(-2.5, 1.5), 6),
+              density: 1.2,
+              restitution: 0.1,
+              color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const femBridge: SceneDef = {
+  id: 'fem-bridge',
+  name: 'FEM Load Bridge',
+  description:
+    'A finite-element deck pinned at both ends spans a gap. Rigid crates rain onto it and it bows under the load — the von-Mises heatmap traces the bending stress, tension along the sagging underside and compression up top, peaking under each weight. Real continuum mechanics, solved implicitly every frame.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 16, -5);
+    world.addBody(new Body(Polygon.box(0.5, 2), { type: BodyType.Static, position: new Vec2(-5, 0.5) }));
+    world.addBody(new Body(Polygon.box(0.5, 2), { type: BodyType.Static, position: new Vec2(5, 0.5) }));
+    const span = makeFemBeam(new Vec2(-4.6, 2.5), 9.2, 0.42, 46, 3, {
+      material: { young: 6e5, poisson: 0.3, density: 1, dampingMass: 0.7, dampingStiff: 0.03 },
+      stressHeatmap: true,
+      pin: (r) => r.x <= -4.6 + 1e-3 || r.x >= 4.6 - 1e-3,
+    });
+    world.addFemBody(span);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 1.8), scale: 46 },
+      update: (time) => {
+        if (dropped < 7 && time > dropped * 0.9 + 0.8) {
+          dropped++;
+          const hw = rng.range(0.3, 0.5);
+          world.addBody(
+            new Body(Polygon.box(hw, hw), {
+              position: new Vec2(rng.range(-3.2, 3.2), 6),
+              density: 1.6,
+              color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const femJelly: SceneDef = {
+  id: 'fem-jelly',
+  name: 'FEM Jelly',
+  description:
+    'Soft finite-element solids — discs and blocks of low Young\'s modulus — dropped into a bin. Unlike the position-based jellies, these are genuine elastic continua: they squash on impact, store strain energy and spring back to their exact rest shape, the stiffer ones wobbling faster. Grab and stretch one to feel the material.',
+  category: 'Soft',
+  build: (world) => {
+    ground(world, 8);
+    walls(world, 8, 7);
+    const discs: Array<[number, number, number, number, string]> = [
+      [-3.2, 3.0, 0.85, 2.5e4, '#6ea8ff'],
+      [-1.0, 4.2, 0.95, 4.5e4, '#c792ea'],
+      [1.3, 3.2, 0.8, 7e4, '#7CFFCB'],
+    ];
+    for (const [x, y, r, E, color] of discs) {
+      world.addFemBody(
+        makeFemDisk(new Vec2(x, y), r, 3, 16, {
+          material: { young: E, poisson: 0.32, density: 1, dampingMass: 0.6, dampingStiff: 0.03 },
+          color,
+        }),
+      );
+    }
+    world.addFemBody(
+      makeFemBox(new Vec2(3.0, 4.0), 0.7, 0.7, 6, 6, {
+        material: { young: 3.5e4, poisson: 0.3, density: 1, dampingMass: 0.6, dampingStiff: 0.03 },
+        color: '#ffd166',
+      }),
+    );
+    return { camera: { center: new Vec2(0, 2.5), scale: 42 } };
+  },
+};
+
+const femSpringboard: SceneDef = {
+  id: 'fem-springboard',
+  name: 'FEM Springboard',
+  description:
+    'A finite-element diving board clamped at one end. A heavy rigid ball drops onto the tip, loads the board into a deep elastic bend (watch the stress heatmap saturate at the root), and the board flings it back — momentum handed cleanly from the continuum solver into the rigid solver and back.',
+  category: 'Stress',
+  build: (world, rng) => {
+    ground(world, 16, -6);
+    world.addBody(new Body(Polygon.box(0.5, 2.2), { type: BodyType.Static, position: new Vec2(-5.0, 1.0) }));
+    const x0 = -4.7;
+    const board = makeFemBeam(new Vec2(x0, 2.6), 6, 0.32, 36, 3, {
+      material: { young: 9e5, poisson: 0.3, density: 1, dampingMass: 0.5, dampingStiff: 0.02 },
+      stressHeatmap: true,
+      pin: (r) => r.x <= x0 + 1e-3,
+    });
+    world.addFemBody(board);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(-0.5, 1.6), scale: 50 },
+      update: (time) => {
+        if (dropped < 4 && time > dropped * 2.4 + 1.2) {
+          dropped++;
+          world.addBody(
+            new Body(new Circle(0.5), {
+              position: new Vec2(rng.range(0.5, 1.2), 6.5),
+              density: 3,
+              restitution: 0.05,
+              color: colorFor(dropped + 2),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -1869,6 +2021,10 @@ export const SCENES: SceneDef[] = [
   jellyPit,
   clothHammock,
   jelloCubes,
+  femCantilever,
+  femBridge,
+  femJelly,
+  femSpringboard,
   trampoline,
   waterBalloons,
   ropeSwings,

@@ -80,6 +80,20 @@ export {
 } from './soft';
 
 export {
+  DEFAULT_FEM_CONFIG,
+  DEFAULT_FEM_MATERIAL,
+  FemBody,
+  makeFemBeam,
+  makeFemBox,
+  makeFemDisk,
+  stepFemBodies,
+  type FemConfig,
+  type FemMaterial,
+  type FemOptions,
+  type FemRender,
+} from './fem';
+
+export {
   FluidParticle,
   FluidSystem,
   fluidParams,
