@@ -178,6 +178,40 @@ export function concatCols(parts: Tensor[]): Tensor {
   return out;
 }
 
+// Stack several equal-width tensors along the row axis: [r0,C] , [r1,C] , … -> [Σr, C].
+// The dual of `concatCols`. A recurrent net emits one logit row [1,V] per timestep, and this
+// glues the whole unrolled sequence back into the [T,V] matrix the shared masked-cross-entropy
+// loss (and the accuracy readout) expects — so the RNN trains through exactly the same loss the
+// Transformer does. Backward slices the output gradient back to each part, contiguously.
+export function stackRows(parts: Tensor[]): Tensor {
+  if (parts.length === 0) throw new Error('stackRows needs at least one tensor');
+  const C = parts[0].cols;
+  let total = 0;
+  for (const p of parts) {
+    if (p.cols !== C) throw new Error('stackRows column mismatch');
+    total += p.rows;
+  }
+  const out = Tensor.zeros(total, C);
+  let off = 0;
+  for (const p of parts) {
+    out.data.set(p.data, off * C);
+    off += p.rows;
+  }
+  out.op = 'stackRows';
+  out.prev = parts.slice();
+  out.backwardFn = () => {
+    const g = out.grad;
+    let roff = 0;
+    for (const p of parts) {
+      const gp = p.grad;
+      const base = roff * C;
+      for (let k = 0; k < p.size; k++) gp[k] += g[base + k];
+      roff += p.rows;
+    }
+  };
+  return out;
+}
+
 // Per-row column gather: pick one entry from each row by an integer index, giving a [R, 1]
 // column. out[i] = x[i, idx[i]]. The backward scatters each output gradient straight back to
 // the single entry it came from. This is what reads off the log-probability of the *chosen*

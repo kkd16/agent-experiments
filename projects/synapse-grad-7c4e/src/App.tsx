@@ -2,6 +2,7 @@ import { useState } from 'react';
 import PlaygroundLab from './components/PlaygroundLab';
 import VisionLab from './components/vision/VisionLab';
 import SeqLab from './components/seq/SeqLab';
+import RnnLab from './components/rnn/RnnLab';
 import GenLab from './components/gen/GenLab';
 import DiffLab from './components/diff/DiffLab';
 import FlowLab from './components/flow/FlowLab';
@@ -15,13 +16,14 @@ import MoELab from './components/moe/MoELab';
 import NCALab from './components/nca/NCALab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'control' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #g= generative, #d= diffusion, #f= flows, #a= GAN, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
 function initialTab(): Tab {
   try {
     if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
     if (/[#&]x=/.test(location.hash)) return 'moe';
+    if (/[#&]c=/.test(location.hash)) return 'recurrent';
     if (/[#&]t=/.test(location.hash)) return 'transformer';
     if (/[#&]g=/.test(location.hash)) return 'generative';
     if (/[#&]d=/.test(location.hash)) return 'diffusion';
@@ -61,6 +63,9 @@ export default function App() {
             </button>
             <button className={tab === 'transformer' ? 'on' : ''} onClick={() => setTab('transformer')}>
               Transformer · Attention
+            </button>
+            <button className={tab === 'recurrent' ? 'on' : ''} onClick={() => setTab('recurrent')}>
+              Recurrent · RNN/LSTM
             </button>
             <button className={tab === 'moe' ? 'on' : ''} onClick={() => setTab('moe')}>
               Sparse · MoE
@@ -108,6 +113,8 @@ export default function App() {
         <VisionLab />
       ) : tab === 'transformer' ? (
         <SeqLab />
+      ) : tab === 'recurrent' ? (
+        <RnnLab />
       ) : tab === 'moe' ? (
         <MoELab />
       ) : tab === 'generative' ? (

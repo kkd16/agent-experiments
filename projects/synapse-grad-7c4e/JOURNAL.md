@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Fourteen labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Fifteen labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -19,6 +19,13 @@ gradient is hand-derived and the tape is hand-rolled). Fourteen labs share the o
   transpose, a scaled dot-product, an additive causal mask, a row-wise softmax, a concat) and the
   whole network — every head's Q/K/V, the output projection, both LayerNorms, the GELU MLP — is
   gradchecked end-to-end to ~1e-7.
+- **Recurrent · RNN/LSTM** — train from-scratch **RNN / GRU / LSTM** cells, unrolled over a
+  sequence and learning by **back-propagation through time**, on temporal tasks (long-range
+  **recall**, streaming **parity**, delayed **copy**, a char-level **language model** you sample
+  from). The headline is a **gradient-through-time** plot that backprops one long-range loss through
+  each cell type and draws ‖∂L/∂h_t‖ on a log axis — the plain RNN's gradient **vanishes** toward
+  the cue while the LSTM/GRU keep it alive — beside live hidden-state, cell-state and per-gate
+  heatmaps. Each cell is gradchecked end-to-end through the masked loss across every timestep.
 - **Generative · VAE** — train a from-scratch **variational autoencoder** on those same procedural
   glyphs and *generate*: the headline is a live, navigable **2-D latent manifold** of synthesised
   digits, alongside input-vs-reconstruction pairs, a class-coloured latent-space scatter, samples
@@ -1515,6 +1522,113 @@ on the *final* frame of a 20–40-step rollout, and the gradient flows back thro
 - [ ] **Rotation-invariant** perception (steerable filters) — grow at any angle.
 - [ ] **Texture NCA** (a VGG/Gram style loss) and **classification NCA** (cells vote a label).
 - [ ] **Variable target** (interpolate between two glyphs through the hidden state).
+
+## v15 — Recurrent · RNN/LSTM (planned + shipped this session)
+
+Fourteen labs in, the framework had attention (the Transformer / MoE labs) but not the thing that
+*defined* sequence learning before attention, and that exhibits the one phenomenon nothing else in
+the framework does: **memory carried through time, trained by back-propagation through time**, and
+its failure mode — the **vanishing gradient**. This lab is built to *show* that, not just assert it.
+The whole point is that the same reverse-mode tape that powers every other lab, when unrolled over a
+sequence, is exactly what lets you read ‖∂L/∂h_t‖ at every timestep and watch a plain RNN's gradient
+die while an LSTM's survives.
+
+### The model (all on the existing engine)
+
+- [x] **`engine/recurrent.ts`** — a `RecurrentLM` over three from-scratch cells, each assembled
+  from the engine's primitive tape ops (no fused kernel), unrolled one step at a time:
+  - [x] **vanilla RNN** — `h_t = tanh(x_t·W + h_{t-1}·U + b)`.
+  - [x] **GRU** — update `z` & reset `r` gates, candidate `n = tanh(x·W + (r⊙h)·U + b)`,
+    `h' = (1−z)⊙n + z⊙h`.
+  - [x] **LSTM** — input/forget/output gates + candidate over a protected cell-state highway
+    `c' = f⊙c + i⊙g`, `h' = o⊙tanh(c')`, with the classic **positive forget-bias init** so the
+    cell defaults to "remember" and early gradients stay alive.
+- [x] **Embedding → stacked recurrent layers → linear readout**, the hidden of layer `l` feeding
+  layer `l+1`; a per-timestep logit row, all rows stacked into `[T, vocab]`.
+- [x] **A new `stackRows` op** (the row-axis dual of `concatCols`) glues the per-step logit rows
+  into the `[T,vocab]` matrix the shared **masked cross-entropy** loss already consumes — so the
+  RNN trains through the *exact same loss* the Transformer does. Hand-derived backward, gradchecked.
+- [x] **Capture hooks** — a forward can stash the per-step top-layer hidden state, the LSTM cell
+  state and every gate's activation for the visualizers, and keep references to the `h_t` tensors
+  so the loss's gradient w.r.t. each can be read after a backward (the grad-through-time view).
+- [x] **Temperature sampling** (`generate`) for the generative tasks; greedy when `temp ≤ 0`.
+
+### The tasks (procedural, what recurrence is *for*)
+
+- [x] **`charseq.ts`** with four temporal tasks, each an `(input, target, keep)` triple (general
+  enough for both next-token prediction and aligned sequence labelling):
+  - [x] **recall** — emit the cue symbol seen `lag` distractor steps ago; the canonical
+    long-range credit-assignment probe (trivial for an LSTM, where the RNN's gradient vanishes).
+  - [x] **parity** — stream the running XOR of a bit string; one bit of state for the whole run,
+    the textbook task a feed-forward net provably can't do online.
+  - [x] **copy** — memorise a block, reproduce it verbatim after a GO marker (delayed copy).
+  - [x] **lang** — a character-level language model over a tiny procedural grammar; the one task
+    you *sample* from, watching it learn to spell and order words at a chosen temperature.
+
+### The headline + views
+
+- [x] **Gradient through time** (`GradientFlowView` + `engine/gradflow.ts`) — backprop one
+  long-range loss through a freshly-initialised RNN / GRU / LSTM and plot ‖∂L/∂h_t‖ on a **log
+  axis** against timestep, with cue/query markers and a per-cell **grad@cue / grad@query** ratio.
+  The RNN's curve collapses toward the cue; the gated cells stay roughly flat. An architectural
+  property of the *untrained* nets — which is exactly why it predicts which ones learn long deps.
+- [x] **Hidden-state & cell-state heatmaps** evolving step by step (units × time, diverging ramp).
+- [x] **Per-gate activation heatmaps** (GRU/LSTM) — watch the forget gate stay near 1 over
+  distractors, which *is* why the cell remembers.
+- [x] **Generate & check** (recall/copy reproduction coloured by correctness; lang sampling with a
+  temperature slider) + **held-out predictions** (teacher-forced argmax vs target) + training curves.
+
+### Engine / wiring / proof
+
+- [x] **`useRnnTrainer` hook** — build/optimizer/eval-set/probe, minibatch train step, live
+  metrics, gradcheck, snapshot/load — mirroring the Transformer trainer.
+- [x] **`components/rnn/*`** — `RnnLab`, `RnnPanel`, `GradientFlowView`, `HiddenStateView`,
+  `GateView`, `ActivationHeatmap`, `GenerateBox`, `SamplePredictions`.
+- [x] **Self-test grows by four checks** — `stackRows`, and **each cell gradchecked end-to-end
+  through the masked loss across every timestep** (RNN/GRU/LSTM backprop-through-time) — **81 ops**.
+- [x] **App tab "Recurrent · RNN/LSTM" + hash route `#c=`.**
+- [x] **Validated outside the browser** (vite SSR) and a **headless-Chromium** smoke run of the
+  live build, then the full CI gate via `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+### Open / future (Recurrent)
+
+- [ ] **Bidirectional** + a real seq-to-seq (encoder/decoder) recipe.
+- [ ] **Exploding-gradient** companion view (grad norm vs. spectral radius of `U`, clip on/off).
+- [ ] **Truncated BPTT** window control for long streams; a web-worker training path.
+- [ ] **Per-timestep saliency** (which input step the recall actually reads from).
+
+## Session log (v15)
+
+- 2026-06-27 (claude, session 17): added the **fifteenth lab — Recurrent · RNN/LSTM**, the
+  architecture that defined sequence learning before attention, and the one phenomenon no other lab
+  exhibits: **memory carried through time, trained by back-propagation through time**, and its
+  failure mode, the **vanishing gradient**. New **`engine/recurrent.ts`**: a `RecurrentLM` over
+  three from-scratch cells — vanilla **RNN** (`tanh(Wx+Uh+b)`), **GRU** (update/reset gates) and
+  **LSTM** (input/forget/output gates over a protected cell-state highway, with the classic
+  positive forget-bias init) — each assembled from the engine's primitive tape ops and unrolled one
+  step at a time, embedding → stacked recurrent layers → readout. A new **`stackRows`** op (the
+  row-axis dual of `concatCols`, hand-derived backward) glues the per-step logit rows into the
+  `[T,vocab]` matrix the shared **masked cross-entropy** already consumes, so the RNN trains through
+  the *exact same loss* the Transformer does. New **`engine/charseq.ts`** with four procedural
+  temporal tasks — **recall** (emit the cue after a wall of distractors), **parity** (stream the
+  running XOR), **copy** (delayed verbatim reproduction) and **lang** (a char-level LM over a tiny
+  grammar you sample from). The headline, **`engine/gradflow.ts` + `GradientFlowView`**:
+  back-propagate one long-range loss through a freshly-initialised cell of each type and plot
+  ‖∂L/∂h_t‖ on a log axis against timestep — the RNN's gradient **collapses** toward the cue while
+  the LSTM/GRU keep it alive (out-of-browser, at lag 30 the LSTM reaches the cue **~23×** more
+  strongly than the RNN). Plus live **hidden-state / cell-state** heatmaps, **per-gate** activation
+  heatmaps, temperature **sampling**, generate-and-check and held-out predictions. `useRnnTrainer`
+  mirrors the Transformer trainer (minibatch, AdamW, grad-clip, live metrics, gradcheck,
+  snapshot/load); `components/rnn/*` holds the lab, panel and views; wired an app tab **"Recurrent ·
+  RNN/LSTM" + hash route `#c=`**. The engine **self-test grew by four checks** — `stackRows`
+  (3.4e-11) and **each cell gradchecked end-to-end through the masked loss across every timestep**
+  (RNN 8.3e-9 / GRU 5.1e-6 / LSTM 3.4e-5 backprop-through-time) — **81 ops in all**, max rel err
+  1.4e-4. **Validated outside the browser first** (vite SSR): the LSTM drives **streaming parity to
+  100%** (loss 0.732→0.000) and **lag-8 recall to 100%**, and generation stays in-vocab; then a
+  **headless-Chromium** run of the live build opened the lab (gradient-flow + hidden-state cards, 8
+  canvases), trained 56 steps, switched tasks/cells and in-browser gradchecked to **1.7e-6**, with
+  **zero console errors**. Full CI gate (scope + conformance + lint + tsc + vite build) green via
+  `node scripts/verify-project.mjs synapse-grad-7c4e`.
 
 ## Session log (v14)
 
