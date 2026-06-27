@@ -2565,3 +2565,62 @@ body {
 @media (max-width: 900px) {
   .sl-lower { grid-template-columns: 1fr; }
 }
+
+/* ============================ IVM Lab ============================ */
+.ivm-lab .lab-head h2 { color: var(--accent-2); }
+.ivm-lab .lab-sub { max-width: 70ch; }
+.ivm-verdict {
+  margin: 12px 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid var(--line);
+}
+.ivm-verdict.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); background: color-mix(in srgb, var(--green) 9%, transparent); }
+.ivm-verdict.bad { color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, var(--line)); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.ivm-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.ivm-controls button {
+  font: 500 12.5px var(--sans);
+  padding: 7px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--txt);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ivm-controls button:hover { background: var(--bg-3); border-color: var(--accent); }
+.ivm-controls .ivm-reset { margin-left: auto; color: var(--txt-dim); }
+.ivm-cols { display: grid; grid-template-columns: minmax(260px, 0.8fr) 1.4fr; gap: 20px; align-items: start; }
+.ivm-cols h3, .ivm-log h3 { font: 600 13px var(--sans); color: var(--txt-dim); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 10px; }
+.ivm-sub-title { font: 600 11px var(--mono); color: var(--accent); margin: 10px 0 4px; }
+.ivm-grid { border-collapse: collapse; font: 12px var(--mono); width: 100%; }
+.ivm-grid th { text-align: left; color: var(--txt-faint); font-weight: 600; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); }
+.ivm-grid td { padding: 3px 10px 3px 0; color: var(--txt); border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); white-space: nowrap; }
+.ivm-grid td.ivm-null { color: var(--txt-faint); font-style: italic; }
+.ivm-row-new td { background: color-mix(in srgb, var(--green) 16%, transparent); animation: ivm-flash 0.9s ease-out; }
+@keyframes ivm-flash { from { background: color-mix(in srgb, var(--green) 42%, transparent); } to { background: color-mix(in srgb, var(--green) 16%, transparent); } }
+.ivm-empty { color: var(--txt-faint); font: italic 12px var(--sans); padding: 6px 0; }
+.ivm-views { display: flex; flex-direction: column; gap: 14px; }
+.ivm-view-card { border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; background: var(--bg-1); }
+.ivm-view-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+.ivm-view-name { font: 600 13px var(--mono); color: var(--accent-2); }
+.ivm-pill { font: 600 11px var(--sans); padding: 2px 9px; border-radius: 999px; }
+.ivm-pill.ok { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.ivm-pill.bad { color: var(--red); background: color-mix(in srgb, var(--red) 16%, transparent); }
+.ivm-view-blurb { font: 12px var(--sans); color: var(--txt-dim); margin-bottom: 6px; }
+.ivm-view-sql { display: block; font: 11.5px var(--mono); color: var(--txt-dim); background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.45; }
+.ivm-view-stats { font: 11.5px var(--mono); color: var(--txt-faint); margin-top: 7px; }
+.ivm-plus { color: var(--green); font-weight: 600; }
+.ivm-minus { color: var(--red); font-weight: 600; }
+.ivm-log { margin-top: 22px; }
+.ivm-log-entry { border-left: 2px solid var(--line-2); padding: 4px 0 8px 12px; margin-bottom: 8px; }
+.ivm-log-label { font: 600 12.5px var(--sans); color: var(--txt); }
+.ivm-log-sql { display: block; font: 11px var(--mono); color: var(--txt-faint); margin: 2px 0 5px; }
+.ivm-log-deltas { display: flex; flex-wrap: wrap; gap: 14px; }
+.ivm-log-delta { font: 11.5px var(--mono); display: inline-flex; gap: 6px; align-items: center; }
+.ivm-log-view { color: var(--accent-2); }
+.ivm-log-none { color: var(--txt-faint); }
+.ivm-log-bad { color: var(--red); font-weight: 700; }
+@media (max-width: 900px) { .ivm-cols { grid-template-columns: 1fr; } }

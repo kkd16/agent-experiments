@@ -1535,6 +1535,17 @@ function relationFor(item: FromItem | JoinClause, env: PlanEnv): { table: Table;
   // CTEs / derived overlays (more local) win over a catalog view or base table.
   const overlay = env.relations.get(name.toLowerCase())
   if (overlay) return { table: overlay, alias: item.alias ?? overlay.name }
+  // A materialized view is *scanned* from its stored, incrementally-maintained
+  // contents (not re-planned like a plain view) — a true materialized relation.
+  const matview = env.db.matviews.get(name)
+  if (matview) {
+    const rows = matview.materializedRows()
+    const alias = item.alias ?? matview.name
+    const cols = dataDrivenColumns(rows, matview.outputSchema, matview.outputColumns)
+    const t = new Table(alias, cols)
+    for (const r of rows) t.insertRawRow(r.slice())
+    return { table: t, alias }
+  }
   // A view inlines its body as a derived table. It is resolved in the *catalog*
   // scope — a fresh env with no caller CTEs or correlations — so its meaning is
   // independent of where it's used; a trail breaks definition cycles.

@@ -318,6 +318,27 @@ export interface DropViewStmt {
   name: string
   ifExists: boolean
 }
+/** `CREATE MATERIALIZED VIEW [IF NOT EXISTS] name AS <query>`. Unlike a plain
+ *  VIEW (re-planned on every use), a materialized view stores its result and is
+ *  maintained *incrementally* as its base tables change (see `db/ivm/*`). */
+export interface CreateMatViewStmt {
+  kind: 'create_materialized_view'
+  name: string
+  select: SelectStmt
+  ifNotExists: boolean
+}
+/** `REFRESH MATERIALIZED VIEW name` — recompute the stored result from scratch
+ *  (the from-scratch oracle the incremental maintenance is proven against). */
+export interface RefreshMatViewStmt {
+  kind: 'refresh_materialized_view'
+  name: string
+}
+/** `DROP MATERIALIZED VIEW [IF EXISTS] name`. */
+export interface DropMatViewStmt {
+  kind: 'drop_materialized_view'
+  name: string
+  ifExists: boolean
+}
 export interface CreateIndexStmt {
   kind: 'create_index'
   name: string
@@ -607,6 +628,9 @@ export type Statement =
   | DropTableStmt
   | CreateViewStmt
   | DropViewStmt
+  | CreateMatViewStmt
+  | RefreshMatViewStmt
+  | DropMatViewStmt
   | CreateIndexStmt
   | AnalyzeStmt
   | InsertStmt

@@ -65,6 +65,10 @@ export const KEYWORDS = new Set([
   // v17 — session settings. SET is already reserved (UPDATE … SET); SHOW/RESET
   // only ever appear in statement position, matched by token value.
   'SHOW', 'RESET',
+  // v33 — incremental materialized views. MATERIALIZED/REFRESH only ever appear
+  // in statement position (after CREATE/DROP, or leading a REFRESH), so reserving
+  // them is harmless and gives them proper editor highlighting.
+  'MATERIALIZED', 'REFRESH',
 ])
 
 // Multi-character operators, longest first so the scanner is greedy. The

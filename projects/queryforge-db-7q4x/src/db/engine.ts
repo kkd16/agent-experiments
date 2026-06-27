@@ -241,6 +241,12 @@ export class Engine implements PlHost {
         return this.createView(stmt, sql, t0)
       case 'drop_view':
         return this.dropView(stmt, sql, t0)
+      case 'create_materialized_view':
+        return this.createMatView(stmt, sql, t0)
+      case 'refresh_materialized_view':
+        return this.refreshMatView(stmt, sql, t0)
+      case 'drop_materialized_view':
+        return this.dropMatView(stmt, sql, t0)
       case 'create_index':
         return this.createIndex(stmt, sql, t0)
       case 'analyze':
@@ -526,6 +532,41 @@ export class Engine implements PlHost {
     }
     this.db.dropView(stmt.name)
     return msg(`view "${stmt.name}" dropped`, sql, t0)
+  }
+
+  private createMatView(stmt: Extract<Statement, { kind: 'create_materialized_view' }>, sql: string, t0: number): QueryResult {
+    if (this.db.matviews.has(stmt.name)) {
+      if (stmt.ifNotExists) return msg(`materialized view "${stmt.name}" already exists, skipped`, sql, t0)
+      throw new SqlError(`materialized view "${stmt.name}" already exists`, 'ddl')
+    }
+    if (this.db.hasTable(stmt.name)) throw new SqlError(`"${stmt.name}" already exists as a table`, 'ddl')
+    if (this.db.hasView(stmt.name)) throw new SqlError(`"${stmt.name}" already exists as a view`, 'ddl')
+    // build() runs the eligibility analyzer (throwing a descriptive SqlError for
+    // anything outside the maintainable SPJ-A subset) and initialize() populates
+    // it from the current base tables. Atomic: a throw rolls the statement back.
+    const view = this.db.matviews.create(stmt.name, stmt.select)
+    return msg(
+      `materialized view "${stmt.name}" created — ${view.rowCount()} row${view.rowCount() === 1 ? '' : 's'}, ` +
+        `maintained incrementally (${view.shapeLabel})`,
+      sql,
+      t0,
+    )
+  }
+
+  private refreshMatView(stmt: Extract<Statement, { kind: 'refresh_materialized_view' }>, sql: string, t0: number): QueryResult {
+    if (!this.db.matviews.has(stmt.name)) throw new SqlError(`unknown materialized view "${stmt.name}"`, 'ddl')
+    this.db.matviews.refresh(stmt.name)
+    const view = this.db.matviews.get(stmt.name)!
+    return msg(`materialized view "${stmt.name}" refreshed — ${view.rowCount()} row${view.rowCount() === 1 ? '' : 's'}`, sql, t0)
+  }
+
+  private dropMatView(stmt: Extract<Statement, { kind: 'drop_materialized_view' }>, sql: string, t0: number): QueryResult {
+    if (!this.db.matviews.has(stmt.name)) {
+      if (stmt.ifExists) return msg(`materialized view "${stmt.name}" does not exist, skipped`, sql, t0)
+      throw new SqlError(`unknown materialized view "${stmt.name}"`, 'ddl')
+    }
+    this.db.matviews.drop(stmt.name)
+    return msg(`materialized view "${stmt.name}" dropped`, sql, t0)
   }
 
   private createIndex(stmt: Extract<Statement, { kind: 'create_index' }>, sql: string, t0: number): QueryResult {
@@ -1057,6 +1098,9 @@ export class Engine implements PlHost {
       if (!grew) break
     }
     for (const t of set.values()) t.truncate(stmt.restartIdentity)
+    // TRUNCATE empties a heap directly (bypassing per-row deletes); rebuild any
+    // materialized view that reads a truncated table from scratch.
+    for (const t of set.values()) this.db.matviews.onTruncate(t.name.toLowerCase())
     const names = [...set.values()].map((t) => `"${t.name}"`).join(', ')
     return msg(`truncated ${names}`, sql, t0, 0)
   }
@@ -1075,6 +1119,9 @@ function isMutation(kind: Statement['kind']): boolean {
     kind === 'drop_table' ||
     kind === 'create_view' ||
     kind === 'drop_view' ||
+    kind === 'create_materialized_view' ||
+    kind === 'refresh_materialized_view' ||
+    kind === 'drop_materialized_view' ||
     kind === 'create_index' ||
     kind === 'create_routine' ||
     kind === 'drop_routine' ||

@@ -31,6 +31,7 @@ import {
   type TableConstraints,
 } from './ast'
 import type { Routine, Trigger } from './pl'
+import { MatViewManager, type MatViewSerialized } from './ivm/manager'
 
 export type Row = SqlValue[]
 
@@ -482,6 +483,9 @@ export class Database {
   readonly routines = new Map<string, Routine>()
   /** Triggers: name (lower-case) -> trigger. */
   readonly triggers = new Map<string, Trigger>()
+  /** Incrementally-maintained materialized views (the IVM engine). Poked by the
+   *  row-level mutators below, so every DML path maintains them automatically. */
+  readonly matviews = new MatViewManager(this)
 
   // --- routines & triggers -------------------------------------------------
   getRoutine(name: string): Routine | undefined {
@@ -612,6 +616,11 @@ export class Database {
   dropTable(name: string): void {
     const t = this.tables.get(name.toLowerCase())
     if (!t) return
+    // Refuse to drop a table a materialized view is built on.
+    if (this.matviews.isBaseOfSomeView(name.toLowerCase())) {
+      const dep = this.matviews.dependentsOf(name.toLowerCase())[0]
+      throw new SqlError(`cannot drop "${name}" — read by MATERIALIZED VIEW "${dep.name}"`, 'ddl')
+    }
     // Refuse to drop a table another table still references.
     for (const other of this.tables.values()) {
       if (other === t) continue
@@ -662,6 +671,7 @@ export class Database {
   insertChecked(table: Table, row: Row): number {
     const rowid = table.insertRow(row)
     this.checkReferences(table, row)
+    this.matviews.onInsert(table, row)
     return rowid
   }
 
@@ -674,6 +684,10 @@ export class Database {
     const oldSnapshot = old.slice()
     table.updateRow(rowid, newRow)
     this.checkReferences(table, newRow)
+    // Maintain materialized views for this row's change before cascading: the
+    // deltas must be applied in the order they actually happen so the join's
+    // bilinearity telescopes correctly across a multi-table cascade.
+    this.matviews.onUpdate(table, oldSnapshot, newRow)
     // Parent side: a referenced key may have moved.
     for (const { child, fk } of this.referencingForeignKeys(table)) {
       const refIdx = fk.refColumns.map((c) => table.requireColumnIndex(c))
@@ -702,6 +716,10 @@ export class Database {
       if (matches.length === 0) continue
       this.applyAction(child, fk, childIdx, matches, fk.onDelete, null, depth)
     }
+    // Cascades to children already maintained their views above; now retract
+    // this row from any view that reads `table` (it reads the children live,
+    // which already reflect the cascade), then physically remove it.
+    this.matviews.onDelete(table, row)
     table.deleteRow(rowid)
   }
 
@@ -772,11 +790,12 @@ export class Database {
       select: v.select,
     }))
     return {
-      version: 6,
+      version: 7,
       tables,
       views,
       routines: [...this.routines.values()],
       triggers: [...this.triggers.values()],
+      matviews: this.matviews.serialize(),
     }
   }
 
@@ -800,6 +819,9 @@ export class Database {
     // Routines & triggers (added in snapshot v6).
     for (const r of snap.routines ?? []) db.setRoutine(r)
     for (const t of snap.triggers ?? []) db.setTrigger(t)
+    // Materialized views (added in snapshot v7): rebuilt from their definitions
+    // against the now-restored base tables — no incremental state is persisted.
+    db.matviews.rebuildFrom(snap.matviews ?? [])
     return db
   }
 }
@@ -933,6 +955,8 @@ export interface SerializedDb {
   routines?: Routine[]
   /** Triggers (added in snapshot v6). */
   triggers?: Trigger[]
+  /** Materialized-view definitions (added in snapshot v7). */
+  matviews?: MatViewSerialized[]
 }
 
 export type { CheckConstraint, ForeignKeyDef }
