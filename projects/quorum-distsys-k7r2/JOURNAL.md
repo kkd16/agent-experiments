@@ -281,9 +281,61 @@ a lab (`labs/HotStuffLab.tsx`) and a bespoke chain visualiser (`ui/ChainView.tsx
 - [ ] **Forensics / accountability** — when faulty > f and agreement breaks, identify the ≥ f+1 replicas
       that signed two conflicting QCs (the culprit-exposure HotStuff enables).
 
+### Dynamo lab (tunable-quorum replication) — NEW
+The **AP counterpoint** to every consensus lab here, and the headline backlog item now shipped. Where
+Raft/Paxos/PBFT/HotStuff buy consistency with a leader and an agreed order, Dynamo (DeCandia et al.,
+SOSP 2007) keeps the store *always writeable* and reconciles divergence after the fact with vector
+clocks. Built for real on the same kernel: four new files (`protocols/dynamo/{types,ring,dynamo,
+invariants}.ts`) + `labs/DynamoLab.tsx`.
+- [x] **Consistent-hashing ring + preference lists** (`ring.ts`) — FNV node positions with collision
+      probing; a key's N owners are the nodes clockwise of its hash, so adding/removing a node moves
+      only a 1/N slice.
+- [x] **Vector clocks + reconciliation** (`types.ts`) — the heart of the lab: `descends` / `dominates`
+      / `concurrent`, and `reconcile` that prunes causally-dominated versions to a maximal **antichain
+      of siblings**. The merge is commutative, associative and idempotent (what makes anti-entropy
+      converge).
+- [x] **Tunable (N, R, W) quorums** — a write returns after **W** of N acks, a read gathers **R**
+      replies and reconciles them. Live sliders for N/R/W and a **strong (R+W>N) vs eventual (R+W≤N)**
+      consistency pill.
+- [x] **Coordinator get/put with read-modify-write vs blind writes** — a read-modify-write inherits
+      the causal context so it collapses existing siblings; a **blind** write ignores context so it can
+      *fork* a sibling (the proliferation Dynamo warns about). Either way the coordinator's own clock
+      component advances monotonically, so a node can never collide a clock with itself.
+- [x] **Sloppy quorum + hinted handoff** — a ping/pong failure detector lets the coordinator route
+      around unreachable owners: an absent owner's slot goes to the next healthy node clockwise, which
+      stores the data as a **hint**; when the owner recovers, a handoff timer ships the hint back and
+      clears it. This is the "always writeable" property — crash an owner and writes still ack.
+- [x] **Read repair** — a GET that sees a stale/partial replica pushes the reconciled result back to it
+      (the anti-entropy that rides on every read).
+- [x] **Anti-entropy** — a background timer pushes each owned key to its co-replicas, so replicas that
+      diverged during a partition reconverge even with no client reads.
+- [x] **Live safety invariants** (`invariants.ts`, always green under chaos): **Causality** (every
+      stored set is a clean vector-clock antichain — reconciliation never keeps a dominated version)
+      and **Durability** (no write the cluster has *acknowledged* to a client is ever lost: its causal
+      fingerprint is always recoverable from the live data, proved at the clock level via a per-key
+      acked-frontier ≤ the held join). **Convergence** is reported separately as an *eventual* gauge —
+      it dips during a partition and heals — rather than asserted under chaos.
+- [x] **Dynamo lab UI** (`labs/DynamoLab.tsx`) — a ring canvas that colours each node by its role for
+      the selected key (home replica / hint-holding substitute / siblings glow), a per-key **conflict
+      view** listing every replica's version set with vector clocks (siblings highlighted), the latest
+      PUT/GET across the cluster, an outstanding-hints metric, live N/R/W/sloppy controls, crash /
+      partition / heal, and three curated scenarios: **concurrent → siblings**, **sloppy + handoff**,
+      **read repair**.
+- [x] **Self-tests** (12) — quorum-overlap arithmetic; vector-clock reconciliation (drops dominated,
+      keeps concurrent); healthy write-read-converge; R+W>N read-your-writes; **concurrent partitioned
+      writes fork siblings then a read-modify-write heals them**; **sloppy quorum + hinted handoff**
+      under a dead owner; strict quorum's availability cost (with safety still held); read repair of a
+      stale replica; anti-entropy convergence with no reads; a **1,200-step randomized chaos run**
+      (crashes/restarts/partitions/heals + mixed puts/gets/blind writes) asserting Causality &
+      Durability throughout; post-chaos convergence; and determinism (same seed ⇒ byte-identical run).
+- [ ] **Merkle-tree anti-entropy** — replace the push-everything sync with Dynamo's real Merkle-tree
+      diff so only the keys that actually differ are exchanged.
+- [ ] **Quorum-state machine view** — animate a single PUT's W-ack collection and a GET's R-reply
+      reconciliation step by step on the canvas.
+
 ### Future labs / ideas (backlog)
-- [ ] **Dynamo-style quorums** — tunable (N, R, W), sloppy quorums + hinted handoff, read-repair,
-      and a vector-clock conflict view, with the R+W>N consistency invariant.
+- [x] **Dynamo-style quorums** — shipped; see the Dynamo lab section above (tunable N/R/W, sloppy
+      quorums + hinted handoff, read repair, vector-clock siblings, R+W>N consistency pill).
 - [ ] **PBFT checkpoints + garbage collection** — stable 2f+1-certified checkpoints to bound the log
       and give Byzantine-robust state transfer (the current catch-up is f+1-report gossip).
 - [ ] **PBFT view-change attacks** — extend the Byzantine modes to forge view-change certificates,
@@ -445,3 +497,34 @@ a lab (`labs/HotStuffLab.tsx`) and a bespoke chain visualiser (`ui/ChainView.tsx
   in headless Chromium: the HotStuff lab commits blocks through the pipeline (invariants **HOLDING**),
   the equivocating-leader scenario stays **HOLDING**, "Beyond f" flips to **VIOLATED**, and the in-app
   self-tests report **63/63 passing**.
+- 2026-06-27 (claude): **added a full Dynamo lab** — the headline backlog item, and the simulator's
+  first deliberately-**AP** protocol: a leaderless, always-writeable key/value store that is the exact
+  counterpoint to the consensus labs. Four new files (`protocols/dynamo/{types,ring,dynamo,
+  invariants}.ts`) + `labs/DynamoLab.tsx`, all on the existing kernel. Implemented Dynamo for real:
+  a consistent-hashing ring with N-node **preference lists**; **vector-clock** versioning with
+  `reconcile` that prunes causally-dominated versions to a maximal antichain of **siblings**; tunable
+  **(N, R, W)** quorums (a write returns after W of N acks, a read reconciles R replies) with a live
+  **strong (R+W>N) vs eventual** consistency pill; **read-modify-write vs blind** writes (blind forks a
+  sibling, RMW collapses them, and a coordinator's own clock component always advances monotonically so
+  it can never collide a clock with itself); a ping/pong failure detector driving **sloppy quorums +
+  hinted handoff** (an absent owner's slot goes to the next healthy node, which holds a hint and hands
+  it back on recovery — the "always writeable" property); **read repair** on every GET; and background
+  **anti-entropy** so partitioned replicas reconverge with no client reads. Two genuine safety
+  invariants checked live and asserted under chaos: **Causality** (every stored set is a clean
+  vector-clock antichain) and **Durability** (no acknowledged write is ever lost — proved at the clock
+  level via a per-key acked-frontier ≤ the held join, robust across crashes since disk persists);
+  **Convergence** is surfaced separately as an *eventual* gauge that dips during partitions and heals.
+  One real bug found & fixed bringing it up on the test harness: the coordinator's complete-put/
+  complete-get were firing unconditionally instead of only once the W/R threshold was met — so a strict
+  W=3 write appeared to ack at 1 and reads didn't actually gather R replies; guarding them on the
+  quorum size fixed both (and exposed read-repair, which then worked). The **lab UI** draws a ring
+  coloured by per-key role (home replica / hint-holding substitute / siblings glow), a per-key
+  **conflict view** listing every replica's versions with vector clocks (siblings highlighted), the
+  latest PUT/GET across the cluster, live N/R/W/sloppy controls, crash/partition/heal, and three
+  curated scenarios (**concurrent → siblings**, **sloppy + handoff**, **read repair**). Self-test suite
+  grown **63 → 75/75** (12 Dynamo tests incl. a **1,200-step chaos run** asserting Causality &
+  Durability throughout, post-chaos convergence, and a determinism check). Verified the full gate
+  (scope + conformance + lint + build) and drove the built app in headless Chromium across all three
+  scenarios: siblings fork and then converge (**HOLDING**), a sloppy write acks via a substitute and
+  hinted handoff repairs the recovered owner, read repair fixes a stale replica, and the in-app
+  self-tests report **75/75 passing** with zero runtime errors.

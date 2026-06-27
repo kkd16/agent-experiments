@@ -33,6 +33,19 @@ import {
   type ClientRequest,
   type FaultMode,
 } from '../protocols/pbft/types';
+import { createDynamo } from '../protocols/dynamo/dynamo';
+import { dynamoInvariants, convergenceGauge } from '../protocols/dynamo/invariants';
+import {
+  DEFAULT_DYNAMO_CONFIG,
+  overlaps,
+  descends,
+  concurrent,
+  reconcile,
+  type DynamoCmd,
+  type DynamoState,
+  type Version,
+} from '../protocols/dynamo/types';
+import { buildRing, preferenceList } from '../protocols/dynamo/ring';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -1286,6 +1299,235 @@ export function runSelfTests(): TestResult[] {
     const inv = k.protocol.invariants!(k.views());
     const ok = inv.every((iv) => iv.ok);
     return [ok, ok ? 'causal-delivery invariant held over the whole run' : inv.find((iv) => !iv.ok)!.detail];
+  });
+
+  // ---- Dynamo (tunable-quorum replication) ----
+  const dynKernel = (seed: number, ids: string[], cfg: Partial<typeof DEFAULT_DYNAMO_CONFIG> = {}) =>
+    new Kernel<DynamoState, DynamoCmd>({
+      seed,
+      protocol: createDynamo({ ...DEFAULT_DYNAMO_CONFIG, ...cfg }),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: 0 },
+    });
+  let dynReq = 1;
+  const dynPut = (k: Kernel<DynamoState, DynamoCmd>, coord: string, key: string, value: string, blind = false) =>
+    k.command(coord, { type: 'put', key, value, blind, reqId: dynReq++ });
+  const dynGet = (k: Kernel<DynamoState, DynamoCmd>, coord: string, key: string) =>
+    k.command(coord, { type: 'get', key, reqId: dynReq++ });
+  const dynSettle = (k: Kernel<DynamoState, DynamoCmd>, ticks = 120, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const dynOk = (k: Kernel<DynamoState, DynamoCmd>) => dynamoInvariants(k.views()).every((iv) => iv.ok);
+  const dynBad = (k: Kernel<DynamoState, DynamoCmd>) =>
+    dynamoInvariants(k.views()).filter((iv) => !iv.ok).map((iv) => `${iv.name}: ${iv.detail}`).join(' | ');
+  const dynConverged = (k: Kernel<DynamoState, DynamoCmd>) => convergenceGauge(k.views()).ok;
+  const homeOf = (ids: string[], key: string, n: number) => preferenceList(key, buildRing(ids), n);
+  const sread = (k: Kernel<DynamoState, DynamoCmd>, id: string) => k.views().find((v) => v.id === id)!.state;
+
+  t('Dynamo', 'Quorum overlap: R+W>N ⇒ strong, else eventual', () => {
+    const ok =
+      overlaps({ n: 3, r: 2, w: 2 }) &&
+      overlaps({ n: 3, r: 3, w: 1 }) &&
+      !overlaps({ n: 3, r: 1, w: 1 }) &&
+      !overlaps({ n: 5, r: 2, w: 2 });
+    return [ok, ok ? 'R+W>N classified correctly for (3,2,2),(3,3,1),(3,1,1),(5,2,2)' : 'overlap arithmetic wrong'];
+  });
+
+  t('Dynamo', 'Vector clocks: reconciliation drops dominated versions, keeps concurrent ones', () => {
+    const mk = (value: string, clock: Record<string, number>): Version => ({ value, clock, wrote: 0, by: 'A' });
+    const rec = reconcile([mk('x', { A: 1 }), mk('y', { A: 2 }), mk('z', { B: 1 })]);
+    const vals = rec.map((v) => v.value).sort().join(',');
+    const dom = descends({ A: 2, B: 1 }, { A: 1 }) && !descends({ A: 1 }, { A: 2 });
+    const conc = concurrent({ A: 2 }, { B: 1 });
+    const ok = vals === 'y,z' && dom && conc;
+    return [ok, ok ? '{A:2} dominated {A:1} (dropped); {B:1} kept as a concurrent sibling' : `rec=${vals} dom=${dom} conc=${conc}`];
+  });
+
+  t('Dynamo', 'Healthy cluster: a write is read back and every replica converges', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(1, ids, { n: 3, r: 2, w: 2 });
+    dynSettle(k, 20);
+    const home = homeOf(ids, 'k1', 3);
+    dynPut(k, home[0], 'k1', 'hello');
+    dynSettle(k, 30);
+    dynGet(k, home[0], 'k1');
+    dynSettle(k, 15);
+    const lr = sread(k, home[0]).lastRead;
+    const ok = !!lr && !lr.conflict && lr.versions[0]?.value === 'hello' && dynConverged(k) && dynOk(k);
+    return [ok, ok ? 'read back hello; all home replicas converged' : dynBad(k) || `lastRead=${JSON.stringify(lr)}`];
+  });
+
+  t('Dynamo', 'R+W>N gives read-your-writes through a coordinator', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(2, ids, { n: 3, r: 2, w: 2 });
+    dynSettle(k, 20);
+    const c = homeOf(ids, 'x', 3)[0];
+    for (let i = 0; i < 5; i++) {
+      dynPut(k, c, 'x', 'v' + i);
+      dynSettle(k, 20);
+    }
+    dynGet(k, c, 'x');
+    dynSettle(k, 15);
+    const lr = sread(k, c).lastRead;
+    const ok = !!lr && !lr.conflict && lr.versions[0]?.value === 'v4' && dynOk(k);
+    return [ok, ok ? '5 sequential writes; the read returns the latest, v4' : dynBad(k) || `lastRead=${JSON.stringify(lr)}`];
+  });
+
+  t('Dynamo', 'Concurrent partitioned writes fork siblings; a read-modify-write heals them', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(3, ids, { n: 3, r: 2, w: 2 });
+    dynSettle(k, 20);
+    const [a, b] = homeOf(ids, 'cart', 3);
+    k.partition([[a], ids.filter((id) => id !== a)]);
+    dynSettle(k, 20);
+    dynPut(k, a, 'cart', 'red', true);
+    dynPut(k, b, 'cart', 'blue', true);
+    dynSettle(k, 20);
+    k.healNetwork();
+    dynSettle(k, 100);
+    dynGet(k, b, 'cart');
+    dynSettle(k, 20);
+    const lr1 = sread(k, b).lastRead;
+    const forked = !!lr1 && lr1.versions.length === 2;
+    dynPut(k, b, 'cart', 'reconciled', false);
+    dynSettle(k, 100);
+    dynGet(k, b, 'cart');
+    dynSettle(k, 20);
+    const lr2 = sread(k, b).lastRead;
+    const healed = !!lr2 && lr2.versions.length === 1 && lr2.versions[0].value === 'reconciled';
+    const ok = forked && healed && dynOk(k) && dynConverged(k);
+    return [ok, ok ? 'fork → 2 siblings, then a read-modify-write reconciled to one value' : dynBad(k) || `forked=${forked} healed=${healed}`];
+  });
+
+  t('Dynamo', 'Sloppy quorum keeps writing through a failure; hinted handoff repairs the owner', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(5, ids, { n: 3, r: 2, w: 3, sloppy: true });
+    dynSettle(k, 20);
+    const [coord, victim] = homeOf(ids, 'sess', 3);
+    k.crash(victim);
+    dynSettle(k, 30); // detector marks the victim dead
+    dynPut(k, coord, 'sess', 'token', false);
+    dynSettle(k, 30);
+    const lw = sread(k, coord).lastWrite;
+    const acked = !!lw && lw.value === 'token' && lw.sloppy;
+    k.restart(victim);
+    dynSettle(k, 60); // hinted handoff delivers to the recovered owner
+    const got = reconcile(sread(k, victim).store['sess'] ?? []).some((v) => v.value === 'token');
+    const ok = acked && got && dynOk(k);
+    return [ok, ok ? 'W=3 still acked via a sloppy substitute; handoff repopulated the recovered owner; nothing lost' : dynBad(k) || `acked=${acked} ownerGot=${got}`];
+  });
+
+  t('Dynamo', 'Strict quorum sacrifices availability under failure but never loses data', () => {
+    const ids = ['A', 'B', 'C'];
+    const k = dynKernel(8, ids, { n: 3, r: 2, w: 3, sloppy: false });
+    dynSettle(k, 20);
+    const home = homeOf(ids, 'q', 3);
+    k.crash(home[2]);
+    dynSettle(k, 30);
+    dynPut(k, home[0], 'q', 'strict', false);
+    dynSettle(k, 30);
+    const lw = sread(k, home[0]).lastWrite;
+    const notAcked = !lw || lw.value !== 'strict';
+    const ok = notAcked && dynOk(k);
+    return [ok, ok ? 'strict W=3 with a dead replica could not ack (availability cost); safety held' : dynBad(k) || `lw=${JSON.stringify(lw)}`];
+  });
+
+  t('Dynamo', 'A stale replica is repaired by a read (read repair)', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(11, ids, { n: 3, r: 3, w: 2, sloppy: false, antiEntropyInterval: 5000, handoffInterval: 5000 });
+    dynSettle(k, 20);
+    const home = homeOf(ids, 'rr', 3);
+    const coord = home[0];
+    const stale = home[2];
+    k.partition([[stale], ids.filter((id) => id !== stale)]);
+    dynSettle(k, 20);
+    dynPut(k, coord, 'rr', 'vNew', false);
+    dynSettle(k, 25);
+    const before = reconcile(sread(k, stale).store['rr'] ?? []).map((v) => v.value);
+    k.healNetwork();
+    dynSettle(k, 22); // health refreshes (so the stale owner rejoins the read set); anti-entropy is disabled this run
+    dynGet(k, coord, 'rr');
+    dynSettle(k, 25);
+    const after = reconcile(sread(k, stale).store['rr'] ?? []).map((v) => v.value);
+    const ok = !before.includes('vNew') && after.includes('vNew') && dynOk(k);
+    return [ok, ok ? 'the read pushed the fresh value to the previously-stale replica' : dynBad(k) || `before=[${before}] after=[${after}]`];
+  });
+
+  t('Dynamo', 'Anti-entropy converges divergent replicas after a heal (no reads)', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(13, ids, { n: 3, r: 2, w: 1 });
+    dynSettle(k, 20);
+    for (let i = 0; i < 4; i++) {
+      const kk = 'ae' + i;
+      dynPut(k, homeOf(ids, kk, 3)[0], kk, 'a' + i);
+      dynSettle(k, 10);
+    }
+    k.partition([['A', 'B'], ['C', 'D', 'E']]);
+    dynSettle(k, 30);
+    for (let i = 0; i < 4; i++) {
+      const kk = 'ae' + i;
+      const c = homeOf(ids, kk, 3).find((id) => ['C', 'D', 'E'].includes(id)) ?? 'C';
+      dynPut(k, c, kk, 'b' + i);
+    }
+    dynSettle(k, 30);
+    k.healNetwork();
+    dynSettle(k, 220);
+    const ok = dynConverged(k) && dynOk(k);
+    return [ok, ok ? 'every key converged across its replicas via anti-entropy alone' : dynBad(k) || convergenceGauge(k.views()).detail];
+  });
+
+  const dynChaos = (seed: number, steps: number): { firstBreak: string; ser: string; k: Kernel<DynamoState, DynamoCmd> } => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const k = dynKernel(seed, ids, { n: 3, r: 2, w: 2 });
+    const chaos = new Rng(seed ^ 0x5eed);
+    let nput = 0;
+    let firstBreak = '';
+    let rq = 1;
+    for (let i = 0; i < steps && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.04 && up.length > 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.12 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.15) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.2) k.healNetwork();
+      else if (roll < 0.45 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'put', key: 'c' + chaos.int(0, 5), value: 'v' + nput++, blind: chaos.chance(0.25), reqId: rq++ });
+      } else if (roll < 0.6 && up.length > 0) {
+        k.command(chaos.pick(up)!, { type: 'get', key: 'c' + chaos.int(0, 5), reqId: rq++ });
+      }
+      const bad = dynamoInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return { firstBreak, ser: k.serialize(), k };
+  };
+
+  t('Dynamo', 'Safety holds through 1,200 randomized faults (chaos)', () => {
+    const { firstBreak } = dynChaos(2026, 1200);
+    return [!firstBreak, firstBreak || 'Causality & Durability held through 1,200 faults with mixed puts/gets/blind writes'];
+  });
+
+  t('Dynamo', 'After chaos heals, every replica converges', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const { k, firstBreak } = dynChaos(4242, 700);
+    if (firstBreak) return [false, firstBreak];
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    dynSettle(k, 400);
+    const ok = dynConverged(k) && dynOk(k);
+    return [ok, ok ? 'all replicas converged to one reconciled value set per key after the churn' : dynBad(k) || convergenceGauge(k.views()).detail];
+  });
+
+  t('Dynamo', 'Determinism: same seed & ops ⇒ byte-identical run', () => {
+    const a = dynChaos(99, 600);
+    const b = dynChaos(99, 600);
+    if (a.firstBreak) return [false, a.firstBreak];
+    const ok = a.ser === b.ser;
+    return [ok, ok ? 'two independent chaotic runs produced identical serialized state' : 'runs diverged'];
   });
 
   return out;
