@@ -1176,8 +1176,16 @@ result.
 
 ### Backlog — where auto-vectorization goes next (deliberately deferred, all clean)
 
-- [ ] **Reductions** — `sum += a[i]` via a vector accumulator + a final `hsum` horizontal reduce
-      (the lone extra header phi the pass declines today).
+- [x] **Reductions** — `sum += a[i]` via a vector accumulator + a final horizontal reduce (shipped
+      2026-06-27; integer `+ * & | ^`, multiple accumulators, map+reduce in one loop). See that entry.
+- [ ] **Float reductions under `--ffast-math`** — `f32`/`f64` `sum`/`product` are declined today
+      because lane-reordering rounds differently; gate them behind an explicit "reassociate floats"
+      flag (the only knob that would make the lane-shuffled fold acceptable) and prove it against a
+      *separately-rounded* reference rather than the strict interpreter.
+- [ ] **`min`/`max` reductions** — add scalar integer `min`/`max` ops (the language has none yet),
+      then reduce them with `i32x4.min_s`/`max_s` + a horizontal min/max (already in the VM).
+- [ ] **Reduction + IV-affine contributions** (`sum += i`, `sum += a[i]*i`) — needs a lane-offset
+      vector `[i, i+1, i+2, i+3]` for the IV, which the pass splats as a scalar today (so declines).
 - [ ] **2-wide `i64`/`f64` arrays** (`i64x2`/`f64x2`, stride-2, 8-byte elements) — the lane plumbing
       already exists; only the recognizer's element-size and guard stride are hard-wired to 4.
 - [ ] **Constant offsets / small stencils** (`a[i+1]`, `a[i-1]`) once a proper dependence test (or a
@@ -1188,6 +1196,79 @@ result.
       value number would share them.
 - [ ] **`v128.const` for all-constant splats** and aligned `v128.load`/`store` hints once arrays are
       16-byte aligned.
+
+## 2026-06-27 — plan + shipped: reduction vectorization — fold an array four lanes at a time + a horizontal reduce (claude / claude-opus-4-8)
+
+The auto-vectorizer (shipped earlier this month) widened *maps* — `c[i] = f(a[i], b[i], …)` — but
+declined the moment a loop carried a value across iterations, i.e. **any loop with more than one
+header phi** (`recognize` enforced `H.phis.length === 1`). That excluded the single most important
+data-parallel idiom there is: the **reduction** — `sum += a[i]`, a product, an OR/XOR fold, a dot
+product. The vectorizer's own backlog flagged it as the #1 next step. This session closes it.
+
+### The idea — a fold over a commutative monoid may be reordered, so split it across lanes
+
+A reduction `s = s ⊕ a[i]` looks un-parallel: iteration `i` reads what `i-1` wrote. But if `⊕` is
+**associative and commutative**, the elements may be combined in *any* order. So run four independent
+partial folds in the four lanes of a `v128` accumulator (`vacc = vacc ⊕ v128.load a[i]`, `i += 4`),
+and at loop exit do one **horizontal reduce** — combine the four lanes into a scalar — then fold that
+into the original initial value. The lane-shuffled result is *bit-identical* to the sequential one,
+which is the only thing the three-engine oracle (interpreter = V8 = our wasm VM) will accept.
+
+The load-bearing subtlety is **which ops actually qualify**. On `i32`, `+` and `*` wrap mod 2³² and
+are therefore exactly associative+commutative, and `&`/`|`/`^` are bitwise (trivially so) — five
+exact monoids, identities `0 / 1 / -1 / 0 / 0`. But `f32`/`f64` `+` and `*` are **not** associative
+under rounding: a lane-shuffled float sum rounds differently and would diverge from the `-O0`
+sequential order. So **float reductions are declined** (left scalar), and `−`/`/`/`%` are declined on
+*any* type (not commutative / no SIMD form). The pass only ever vectorizes what is provably exact.
+
+### The plan (each step landed and is proven)
+
+1. **Recognize the IV among many phis.** Find the induction variable as the header phi the loop test
+   compares (stride +1); treat *every other* header phi as a reduction candidate, declining the whole
+   loop if any one isn't a clean reduction (never a partial transform).
+2. **Recognize an accumulator** (`recognizeAcc`): an `i32` header phi whose latch value is
+   `acc ⊕ contrib` over an op in `{add, mul, and, or, xor}`, with a loop-invariant initial value, the
+   phi **used only by its own fold** and the fold **used only by the phi** (copy-transparent). That
+   one usage rule is what forbids a mid-loop, per-lane-partial value leaking out — and, for free,
+   forbids cross-accumulator chains (`t += s`) that would not reorder.
+3. **Reuse the kernel machinery.** Seed the accumulator phi into the pass's `vec` set, so its fold
+   `ibin` rewrites into a `vbin` through the exact same lane-widening code a map kernel uses — the
+   contribution can be any elementwise expression over loads and invariants.
+4. **Lane-init = the monoid identity**, splatted in the preheader, so each lane starts neutral.
+5. **Horizontal reduce in a new exit block.** On the guard's "no more groups of four" edge, a fresh
+   block does four `i32x4.extract_lane` + three scalar `⊕` to collapse the lanes, then one more `⊕`
+   with the original initial value, and feeds *that* into the untouched original loop — now the
+   **remainder**. Crucially this needs **no new opcode in any engine**: `extract_lane` and the scalar
+   ops already exist in the backend, the from-scratch VM, and the interpreter.
+6. **Multiple accumulators and map+reduce fall out for free** — each non-IV phi is handled
+   independently, and an elementwise store kernel in the same loop still widens beside the fold (a
+   real dot product: `c[i] = a[i]*b[i]` *and* `dot += a[i]*b[i]` in one pass).
+
+The rewrite keeps the elementwise pass's **strictly-additive** shape: it only *prepends* a vector
+main loop and reuses the original loop verbatim as the remainder, so every live-out (including the
+reduced accumulator) is still produced by the original machinery on the trailing `< 4` elements.
+
+### A real bug, caught by the oracle
+
+Mid-session the no-reduction path briefly pointed the guard's exit edge at the **vector header
+itself** instead of the remainder loop — an infinite loop at run time (compiles fine, hangs on
+execution). The reduction fuzz didn't see it (reductions route through the new exit block); the
+**elementwise** fuzz did, immediately. Fixed (exit edge → remainder `H`; only the phi's recorded
+predecessor is the vector header) and re-proven. Exactly the "a bug can only ever miss an
+opportunity, never change a result — and the oracle proves it" discipline the pass is built on.
+
+### Proof
+
+- The differential harness grew **1144 → 1188** (interp = V8 = our wasm VM at -O0…-O3): eleven new
+  adversarial reduction programs — every op, multiple accumulators, a fused dot product, runtime trip
+  counts and runtime initial values, the all-remainder `< 4` lengths, plus the *declined* cases
+  (float sum, subtraction fold) asserting the scalar fallback is itself correct.
+- A new headless fuzzer **`tools/check-vecreduce.mjs`**: **4,000** random integer reduction loops
+  (1–3 independent accumulators over `+ * & | ^`, optional in-loop map kernel, lengths 0…40 straddling
+  every multiple of four) — **zero** divergences between `-O0` scalar and `-O3` vectorized wasm, with
+  the reduction path firing on **~95%**. The existing 8,000-kernel elementwise fuzz stays clean.
+- `tsc -b` + `eslint` + the full CI gate green. UI pass-legend, the "Auto-vectorization" example
+  (now demonstrating a vectorized sum and a fused dot product) updated.
 
 ## 2026-06-22 — plan + shipped: reassociation — canonicalize integer affine + bitwise expression trees (claude / claude-opus-4-8)
 
@@ -2591,6 +2672,16 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-06-27 (claude / claude-opus-4-8): **Reduction vectorization** (see the dated plan above).
+  Generalized the auto-vectorizer from maps to *folds*: an `i32` loop-carried accumulator over an
+  associative+commutative monoid (`+ * & | ^`) now widens into four lane partials + a horizontal
+  reduce at loop exit, reusing the existing kernel-widening machinery and **no new opcode in any of
+  the three engines** (the horizontal reduce is four `extract_lane` + scalar ops). Multiple
+  accumulators and a fused map+reduce (real dot product) both work; float folds and `−`/`/`/`%` are
+  declined as not bit-exact under reordering. Found+fixed an infinite-loop bug in the no-reduction
+  guard edge (caught by the elementwise fuzz). Harness **1144 → 1188** at -O0…-O3; new
+  `tools/check-vecreduce.mjs` fuzzer (4,000 random reduction loops, **0** divergences, ~95% fire);
+  elementwise fuzz still clean; `tsc` + `eslint` + CI gate green; example + pass-legend updated.
 - 2026-06-19 (claude / claude-opus-4-8): **SROA — escape analysis + scalar replacement of
   aggregates** (see plan III). Closed the two longest-standing deferred items at once: the
   allocation/escape analysis `memopt` lacked, and scalar replacement of a (loop-carried)

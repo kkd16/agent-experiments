@@ -79,6 +79,48 @@ const FBIN_VEC: Record<string, string> = {
   add: 'f32x4.add', sub: 'f32x4.sub', mul: 'f32x4.mul', div: 'f32x4.div', min: 'f32x4.min', max: 'f32x4.max',
 };
 
+// =====================================================================
+// Reductions — a loop-carried accumulator folded 4 lanes at a time
+// =====================================================================
+//
+// A counted loop can also *fold* the array into one scalar:
+//
+//      let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; }
+//
+// Here `s` is loop-carried (iteration `i` reads what `i-1` wrote), so the naive
+// lane-independence argument fails. But the fold is over an **associative and
+// commutative** monoid, so the elements may be summed in any order: run four
+// independent partial sums in the four lanes, then collapse them once at exit.
+// The vector body keeps a `v128` accumulator (`vacc = vacc ⊕ vload a[i]`); the
+// exit block does a **horizontal reduce** — four `extract_lane`s combined with the
+// same scalar op — and seeds the remainder loop's accumulator with it. Because
+// `⊕` is exactly associative+commutative on i32 (`add`/`mul` wrap mod 2³², and
+// the bitwise ops are trivially so), the lane-shuffled fold is *bit-identical* to
+// the sequential one — which the three-engine oracle then proves.
+//
+// Only **integer** reductions qualify: f32 `add`/`mul` are NOT associative under
+// rounding, so a lane-shuffled float sum would round differently — that loses the
+// bit-for-bit equality the oracle demands, so float accumulators are declined.
+// The horizontal-combine, the per-lane init (the monoid identity) and the
+// final init-fold are all the *same* scalar op `⊕`, which is what makes the one
+// table below sufficient.
+const REDUCE_OPS = new Set(['add', 'mul', 'and', 'or', 'xor']);
+// The monoid identity per reduce op — the value each lane starts at so that
+// `identity ⊕ x = x` and the four partial folds compose to the whole.
+const REDUCE_IDENTITY: Record<string, number> = { add: 0, mul: 1, and: -1, or: 0, xor: 0 };
+
+// A loop-carried integer accumulator `acc = acc ⊕ contrib`, recognised as a
+// reduction. `vaccRes`/`init`/`enterRes` are filled in as the rewrite proceeds.
+interface Acc {
+  phi: Phi; // the header accumulator phi (i32)
+  op: string; // the reduce op (`sub` of the body ibin), in REDUCE_OPS
+  accNextRes: number; // the body ibin result that feeds the phi's latch incoming
+  init: Operand; // the phi's preheader incoming (loop-invariant)
+  vaccRes?: number; // the v128 lane-accumulator phi id (assigned during rewrite)
+  vaccNext?: Operand; // the lane accumulator after one vector step (from the body)
+  accEnter?: Operand; // the horizontally-reduced scalar that seeds the remainder
+}
+
 export function vectorize(fn: IRFunc): number {
   const done = new Set<number>();
   let changed = 0;
@@ -113,13 +155,14 @@ interface Recognized {
   cmpSub: string;
   trueIsBody: boolean;
   incInst: Inst; // the `i = i + 1` latch update
+  accs: Acc[]; // loop-carried integer reductions (possibly empty)
 }
 
 function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean {
   const byId = new Map(fn.blocks.map((b) => [b.id, b]));
   const rec = recognize(fn, loop, byId);
   if (!rec) return false;
-  const { H, PH, bodyBlocks, ivPhi, ivIsA, boundOp, cmpSub, trueIsBody, incInst } = rec;
+  const { H, PH, bodyBlocks, ivPhi, ivIsA, boundOp, cmpSub, trueIsBody, incInst, accs } = rec;
   const bodyInsts: Inst[] = bodyBlocks.flatMap((b) => b.insts);
   const findInst = (res: number): Inst | undefined => bodyInsts.find((i) => i.res === res);
 
@@ -148,10 +191,15 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
     else if (elem !== m.sub) return false; // mixed i32/f32 in one body — decline
   }
   const shape = elem === 'i32' ? 'i32x4' : 'f32x4';
+  // Integer accumulators only fold bit-exactly into an i32x4 lane vector.
+  if (accs.length > 0 && shape !== 'i32x4') return false;
 
-  // `vec` = SSA values that hold (or derive from) loaded vector data.
+  // `vec` = SSA values that hold (or derive from) loaded vector data. A reduction
+  // accumulator phi also rides in the lanes, so seed it as a vector too — its fold
+  // then validates and rewrites through the very same vbin machinery as a kernel.
   const vec = new Set<number>();
   for (const l of loads) if (l.res !== null) vec.add(l.res);
+  for (const acc of accs) vec.add(acc.phi.res);
   const opInVec = (a: Operand): boolean => { const c = chase(a); return c.tag === 'val' && vec.has(c.id); };
   for (let again = true; again; ) {
     again = false;
@@ -217,12 +265,17 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
 
   const VH = nextBlock; // vector header (carries the strided IV + the guard)
   const VB = nextBlock + 1; // vector body
+  const VE = nextBlock + 2; // vector exit (horizontal reduce; only used with reductions)
   const viRes = fresh('i32'); // the vector IV (strides by 4)
+  for (const acc of accs) acc.vaccRes = fresh('v128'); // one v128 lane accumulator each
 
   // --- vector body: rewrite the original body, op by op ----------------------
   const vb: Block = { id: VB, phis: [], insts: [], term: { op: 'br', target: VH }, preds: [] };
   const map = new Map<number, Operand>(); // old SSA id -> new operand
   map.set(ivPhi.res, { tag: 'val', id: viRes });
+  // The accumulator phi reads as its lane vector inside the body; its fold ibin
+  // then rewrites (above) into a `vbin` over these lanes, exactly like a kernel op.
+  for (const acc of accs) map.set(acc.phi.res, { tag: 'val', id: acc.vaccRes! });
   const remap = (o: Operand): Operand => {
     const c = chase(o); // copies are transparent
     return c.tag === 'const' ? clone(c) : (map.get(c.id) ?? clone(c));
@@ -283,12 +336,24 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
     }
   }
 
+  // Each accumulator's lane vector after one vector step (the rewritten fold).
+  for (const acc of accs) acc.vaccNext = map.get(acc.accNextRes)!;
+
   // --- vector header: phi + the "4 more iterations?" guard --------------------
   const ivInit = clone(ivPhi.incomings.find((x) => x.pred === PH)!.val);
   const vi: Operand = { tag: 'val', id: viRes };
+  const ph = byId.get(PH)!;
+  // A reduction's lane accumulator enters the loop at the monoid identity, splatted
+  // into all four lanes in the preheader (so `identity ⊕ x = x` per lane).
+  const accPhis: Phi[] = [];
+  for (const acc of accs) {
+    const sid = fresh('v128');
+    ph.insts.push({ res: sid, ty: 'v128', kind: 'vsplat', sub: shape, args: [{ tag: 'const', ty: 'i32', num: REDUCE_IDENTITY[acc.op] }] });
+    accPhis.push({ res: acc.vaccRes!, ty: 'v128', incomings: [{ pred: PH, val: { tag: 'val', id: sid } }, { pred: VB, val: acc.vaccNext! }] });
+  }
   const vh: Block = {
     id: VH,
-    phis: [{ res: viRes, ty: 'i32', incomings: [{ pred: PH, val: ivInit }, { pred: VB, val: viNext }] }],
+    phis: [{ res: viRes, ty: 'i32', incomings: [{ pred: PH, val: ivInit }, { pred: VB, val: viNext }] }, ...accPhis],
     insts: [],
     term: { op: 'unreachable' },
     preds: [],
@@ -300,18 +365,45 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
     const enter = trueIsBody ? cond : push(vh, fresh('i32'), 'i32', 'ibin', 'xor', [cond, { tag: 'const', ty: 'i32', num: 1 }]);
     allK = allK === null ? enter : push(vh, fresh('i32'), 'i32', 'ibin', 'and', [allK, enter]);
   }
-  vh.term = { op: 'condbr', cond: allK!, t: VB, f: H.id };
 
-  // --- splice: preheader → vector header; guard "no" edge → original loop -----
-  const ph = byId.get(PH)!;
+  // --- vector exit: collapse each lane accumulator to one scalar ---------------
+  // Only built when there is a reduction; otherwise the guard's "no" edge goes
+  // straight to the original loop, exactly as the elementwise pass always did.
+  const hasAcc = accs.length > 0;
+  // The guard's "no" edge goes to the remainder loop H — directly when there is no
+  // reduction, or via the exit block VE (which horizontally reduces first) when
+  // there is. `remPred` is the block H is *entered from*, for its phi incomings.
+  const remPred = hasAcc ? VE : VH;
+  vh.term = { op: 'condbr', cond: allK!, t: VB, f: hasAcc ? VE : H.id };
+  const ve: Block = { id: VE, phis: [], insts: [], term: { op: 'br', target: H.id }, preds: [] };
+  for (const acc of accs) {
+    const lanes: Operand[] = [];
+    for (let k = 0; k < LANES; k++) {
+      lanes.push(push(ve, fresh('i32'), 'i32', 'vextract', `${shape}.extract_lane:${k}`, [{ tag: 'val', id: acc.vaccRes! }]));
+    }
+    // Fold the four lanes pairwise, then fold in the loop-invariant initial value
+    // — every combine is the same associative+commutative op the loop carried.
+    const r01 = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [lanes[0], lanes[1]]);
+    const r23 = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [lanes[2], lanes[3]]);
+    const hred = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [r01, r23]);
+    acc.accEnter = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [clone(acc.init), hred]);
+  }
+
+  // --- splice: preheader → vector header; guard "no" edge → remainder ----------
   ph.term = redirectTerm(ph.term, H.id, VH);
-  // The original header now enters from the vector header (with the strided IV)
-  // instead of the preheader — making it the remainder loop, reused verbatim.
-  const inc = H.phis.find((p) => p.res === ivPhi.res)!.incomings.find((x) => x.pred === PH)!;
-  inc.pred = VH;
-  inc.val = vi;
+  // The original header now enters from the vector exit (with the strided IV and
+  // the reduced accumulators) instead of the preheader — making it the remainder
+  // loop, reused verbatim. With no reduction, `remPred` is the header itself.
+  const setEnter = (phiRes: number, val: Operand): void => {
+    const inc = H.phis.find((p) => p.res === phiRes)!.incomings.find((x) => x.pred === PH)!;
+    inc.pred = remPred;
+    inc.val = val;
+  };
+  setEnter(ivPhi.res, vi);
+  for (const acc of accs) setEnter(acc.phi.res, acc.accEnter!);
 
   fn.blocks.push(vh, vb);
+  if (hasAcc) fn.blocks.push(ve);
   recomputePreds(fn);
   done.add(H.id);
   return true;
@@ -366,18 +458,19 @@ function recognize(fn: IRFunc, loop: NaturalLoop, byId: Map<number, Block>): Rec
   if (H.term.cond.tag !== "val") return no("cond not val");
   const icmp = H.insts.find((i) => i.res === (H.term as { cond: Operand & { tag: 'val' } }).cond.id);
   if (!icmp || icmp.kind !== "icmp") return no("not icmp");
+  const [cmpA, cmpB] = icmp.args;
 
-  // Exactly one induction phi, and it is the loop's IV.
-  if (H.phis.length !== 1) return no("header phis="+H.phis.length);
-  const ivPhi = H.phis[0];
+  // The IV is the header phi the loop test compares; it must be i32 and stride +1.
+  // Every *other* header phi has to be a recognised reduction accumulator, else we
+  // decline — we never partially vectorize a loop with an unclassified carried value.
+  const headerPhi = (o: Operand): Phi | undefined => (o.tag === 'val' ? H.phis.find((p) => p.res === o.id) : undefined);
+  const aPhi = headerPhi(cmpA), bPhi = headerPhi(cmpB);
+  let ivPhi: Phi, ivIsA: boolean, boundOp: Operand;
+  if (aPhi && !bPhi) { ivPhi = aPhi; ivIsA = true; boundOp = cmpB; }
+  else if (bPhi && !aPhi) { ivPhi = bPhi; ivIsA = false; boundOp = cmpA; }
+  else return no("iv/bound");
   if (ivPhi.ty !== "i32") return no("iv not i32");
   const isIv = (o: Operand): boolean => o.tag === 'val' && o.id === ivPhi.res;
-  const [cmpA, cmpB] = icmp.args;
-  let ivIsA: boolean;
-  let boundOp: Operand;
-  if (isIv(cmpA) && !isIv(cmpB)) { ivIsA = true; boundOp = cmpB; }
-  else if (isIv(cmpB) && !isIv(cmpA)) { ivIsA = false; boundOp = cmpA; }
-  else return no("iv/bound");
   // Runtime bound must be loop-invariant.
   if (boundOp.tag === "val" && definedInBody(fn, body, boundOp.id)) return no("bound not invariant");
 
@@ -392,8 +485,60 @@ function recognize(fn: IRFunc, loop: NaturalLoop, byId: Map<number, Block>): Rec
   const stepOne = (isIv(sa) && sb.tag === 'const' && sb.num === 1) || (isIv(sb) && sa.tag === 'const' && sa.num === 1);
   if (!stepOne) return no("step!=1");
 
+  // Classify the remaining header phis as reductions; any survivor that isn't one
+  // means a carried value we can't reorder, so the whole loop is declined.
+  const bodyInsts = bodyBlocks.flatMap((b) => b.insts);
+  const accs: Acc[] = [];
+  for (const phi of H.phis) {
+    if (phi === ivPhi) continue;
+    const acc = recognizeAcc(fn, body, phi, PH, latchId, bodyInsts);
+    if (!acc) return no("header phi neither iv nor reduction");
+    accs.push(acc);
+  }
+
   const trueIsBody = bodyEntry === H.term.t;
-  return { H, PH, bodyBlocks, ivPhi, ivIsA, boundOp, cmpSub: icmp.sub, trueIsBody, incInst };
+  return { H, PH, bodyBlocks, ivPhi, ivIsA, boundOp, cmpSub: icmp.sub, trueIsBody, incInst, accs };
+}
+
+/** Recognise a loop-carried integer accumulator `acc = acc ⊕ contrib` over an
+ *  associative+commutative op (so the four lanes may fold independently). Returns
+ *  the reduction, or null to decline. */
+function recognizeAcc(fn: IRFunc, body: Set<number>, phi: Phi, PH: number, latchId: number, bodyInsts: Inst[]): Acc | null {
+  if (phi.ty !== 'i32') return null; // only the exact integer monoids reorder bit-for-bit
+  const initInc = phi.incomings.find((x) => x.pred === PH);
+  const latchInc = phi.incomings.find((x) => x.pred === latchId);
+  if (!initInc || !latchInc || latchInc.val.tag !== 'val') return null;
+  if (initInc.val.tag === 'val' && definedInBody(fn, body, initInc.val.id)) return null; // init must be invariant
+
+  // SSA can leave body-local `copy`s (a loop-carried value renamed through a temp);
+  // the elementwise pass makes them transparent with the same `chase`. `root`
+  // follows a value through any chain of body copies to its real definition.
+  const copySrc = new Map<number, number>();
+  for (const i of bodyInsts) if (i.kind === 'copy' && i.res !== null && i.args[0].tag === 'val') copySrc.set(i.res, i.args[0].id);
+  const root = (id: number): number => { let c = id; const seen = new Set<number>(); while (copySrc.has(c) && !seen.has(c)) { seen.add(c); c = copySrc.get(c)!; } return c; };
+
+  const accNextRes = root(latchInc.val.id);
+  const accNext = bodyInsts.find((i) => i.res === accNextRes);
+  if (!accNext || accNext.kind !== 'ibin' || !REDUCE_OPS.has(accNext.sub)) return null;
+  // Exactly one operand is the accumulator itself; the other is the contribution.
+  // (Rules out `s = s ⊕ s` and a non-carried `s = c ⊕ d`.)
+  const [x, y] = accNext.args;
+  const xIsAcc = x.tag === 'val' && root(x.id) === phi.res;
+  const yIsAcc = y.tag === 'val' && root(y.id) === phi.res;
+  if (xIsAcc === yIsAcc) return null;
+  // The phi may be consumed *only* by this fold, and the fold's result *only* by
+  // the phi (copies are transparent and don't count as a real use). Any other use
+  // would observe a mid-loop, per-lane-partial value and break under reordering —
+  // which also forbids cross-accumulator chains.
+  for (const inst of bodyInsts) {
+    if (inst === accNext || inst.kind === 'copy') continue;
+    for (const a of inst.args) {
+      if (a.tag !== 'val') continue;
+      const r = root(a.id);
+      if (r === phi.res || r === accNextRes) return null;
+    }
+  }
+  return { phi, op: accNext.sub, accNextRes, init: initInc.val };
 }
 
 type Find = (res: number) => Inst | undefined;
