@@ -3,6 +3,7 @@ import {
   Body,
   BodyType,
   DEFAULT_CONFIG,
+  FemBody,
   isFracturable,
   MouseJoint,
   Particle,
@@ -45,7 +46,7 @@ export interface SimulationProps {
 }
 
 interface Interaction {
-  mode: 'none' | 'drag' | 'softgrab' | 'maybe' | 'pan' | 'spray';
+  mode: 'none' | 'drag' | 'softgrab' | 'femgrab' | 'maybe' | 'pan' | 'spray';
   startX: number;
   startY: number;
 }
@@ -53,6 +54,15 @@ interface Interaction {
 /** A grabbed soft-body particle: pinned to the pointer until released. */
 interface SoftGrab {
   particle: Particle;
+  savedInvMass: number;
+  prev: Vec2;
+  flingVel: Vec2;
+}
+
+/** A grabbed FEM node: turned into a Dirichlet anchor following the pointer. */
+interface FemGrab {
+  fem: FemBody;
+  index: number;
   savedInvMass: number;
   prev: Vec2;
   flingVel: Vec2;
@@ -77,6 +87,23 @@ function findSoftParticle(world: World, wp: Vec2): Particle | null {
   return best;
 }
 
+/** Nearest free FEM node to `wp` within `GRAB_RADIUS`, or null. */
+function findFemNode(world: World, wp: Vec2): { fem: FemBody; index: number } | null {
+  let best: { fem: FemBody; index: number } | null = null;
+  let bestD = GRAB_RADIUS;
+  for (const fb of world.femBodies) {
+    for (let i = 0; i < fb.nodeCount; i++) {
+      if (fb.invMass[i] === 0) continue;
+      const d = Math.hypot(fb.pos[2 * i] - wp.x, fb.pos[2 * i + 1] - wp.y);
+      if (d < bestD) {
+        bestD = d;
+        best = { fem: fb, index: i };
+      }
+    }
+  }
+  return best;
+}
+
 export default function Simulation(props: SimulationProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -90,6 +117,7 @@ export default function Simulation(props: SimulationProps) {
   const rngRef = useRef<Rng>(new Rng(0xc0ffee));
   const mouseJointRef = useRef<MouseJoint | null>(null);
   const softGrabRef = useRef<SoftGrab | null>(null);
+  const femGrabRef = useRef<FemGrab | null>(null);
   const hoveredRef = useRef<Body | null>(null);
   const interactionRef = useRef<Interaction>({ mode: 'none', startX: 0, startY: 0 });
   const pointerWorldRef = useRef<Vec2>(Vec2.ZERO);
@@ -115,6 +143,7 @@ export default function Simulation(props: SimulationProps) {
     }
     mouseJointRef.current = null;
     softGrabRef.current = null;
+    femGrabRef.current = null;
     hoveredRef.current = null;
   }, [props.sceneId, props.resetSignal]);
 
@@ -183,6 +212,15 @@ export default function Simulation(props: SimulationProps) {
         g.particle.prev = pointerWorldRef.current;
         g.particle.vel = Vec2.ZERO;
       }
+      // Keep a grabbed FEM node pinned to the pointer (a movable Dirichlet anchor).
+      if (femGrabRef.current) {
+        const g = femGrabRef.current;
+        const wp = pointerWorldRef.current;
+        g.fem.pos[2 * g.index] = wp.x;
+        g.fem.pos[2 * g.index + 1] = wp.y;
+        g.fem.vel[2 * g.index] = 0;
+        g.fem.vel[2 * g.index + 1] = 0;
+      }
 
       const extras = computeExtras(world, controls, hoveredRef.current, mouseJointRef.current);
       ctx.save();
@@ -250,6 +288,18 @@ export default function Simulation(props: SimulationProps) {
       interactionRef.current = { mode: 'softgrab', startX: e.clientX, startY: e.clientY };
       return;
     }
+    const femNode = findFemNode(world, wp);
+    if (femNode) {
+      const { fem, index } = femNode;
+      femGrabRef.current = { fem, index, savedInvMass: fem.invMass[index], prev: wp, flingVel: Vec2.ZERO };
+      fem.invMass[index] = 0;
+      fem.pos[2 * index] = wp.x;
+      fem.pos[2 * index + 1] = wp.y;
+      fem.vel[2 * index] = 0;
+      fem.vel[2 * index + 1] = 0;
+      interactionRef.current = { mode: 'femgrab', startX: e.clientX, startY: e.clientY };
+      return;
+    }
     interactionRef.current = { mode: 'maybe', startX: e.clientX, startY: e.clientY };
   }
 
@@ -278,6 +328,16 @@ export default function Simulation(props: SimulationProps) {
       }
       return;
     }
+    if (it.mode === 'femgrab') {
+      const g = femGrabRef.current;
+      if (g) {
+        g.flingVel = clampLen(wp.sub(g.prev).mul(1 / FIXED_DT), 18);
+        g.prev = wp;
+        g.fem.pos[2 * g.index] = wp.x;
+        g.fem.pos[2 * g.index + 1] = wp.y;
+      }
+      return;
+    }
     if (it.mode === 'maybe' || it.mode === 'pan') {
       const dx = e.clientX - it.startX;
       const dy = e.clientY - it.startY;
@@ -299,6 +359,12 @@ export default function Simulation(props: SimulationProps) {
       g.particle.invMass = g.savedInvMass;
       g.particle.vel = g.flingVel; // release with the flick's momentum
       softGrabRef.current = null;
+    } else if (it.mode === 'femgrab' && femGrabRef.current) {
+      const g = femGrabRef.current;
+      g.fem.invMass[g.index] = g.savedInvMass;
+      g.fem.vel[2 * g.index] = g.flingVel.x; // release with the flick's momentum
+      g.fem.vel[2 * g.index + 1] = g.flingVel.y;
+      femGrabRef.current = null;
     } else if (it.mode === 'maybe') {
       spawnBody(world, propsRef.current.controls.spawnKind, toWorld(e), rngRef.current);
     }

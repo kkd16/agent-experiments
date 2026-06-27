@@ -2,6 +2,7 @@ import {
   Body,
   BodyType,
   BuoyancyZone,
+  FemBody,
   FluidSystem,
   PulleyJoint,
   SoftBody,
@@ -105,6 +106,8 @@ export class Renderer {
     }
 
     for (const sb of world.softBodies) this.drawSoft(sb, camera, opts);
+
+    for (const fb of world.femBodies) this.drawFem(fb, camera, opts);
 
     if (world.fluid && world.fluid.particles.length > 0) this.drawFluid(world.fluid, camera, opts);
 
@@ -383,6 +386,80 @@ export class Renderer {
       ctx.fillStyle = COLORS.staticStroke;
       ctx.beginPath();
       ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /**
+   * A finite-element body: the deformed triangle mesh. With `stressHeatmap` on,
+   * each element is shaded by its von-Mises stress over a cool→hot ramp (the load
+   * paths light up); otherwise it's a flat translucent fill. The mesh wireframe and
+   * the pinned (Dirichlet) nodes draw on top.
+   */
+  private drawFem(fb: FemBody, camera: Camera, opts: DebugOptions): void {
+    const ctx = this.ctx;
+    const screen: Vec2[] = new Array(fb.nodeCount);
+    for (let i = 0; i < fb.nodeCount; i++) {
+      screen[i] = camera.worldToScreen(new Vec2(fb.pos[2 * i], fb.pos[2 * i + 1]));
+    }
+    const heat = fb.render.stressHeatmap;
+    const stresses = heat ? fb.computeStresses() : null;
+    let peak = 1e-6;
+    if (stresses) for (const s of stresses) if (s > peak) peak = s;
+
+    if (opts.fill) {
+      if (heat && stresses) {
+        for (let k = 0; k < fb.elements.length; k++) {
+          const e = fb.elements[k];
+          const t = clamp01(stresses[k] / peak);
+          ctx.fillStyle = stressColor(t);
+          ctx.beginPath();
+          ctx.moveTo(screen[e.a].x, screen[e.a].y);
+          ctx.lineTo(screen[e.b].x, screen[e.b].y);
+          ctx.lineTo(screen[e.c].x, screen[e.c].y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else {
+        ctx.fillStyle = withAlpha(fb.render.color, 0.78);
+        ctx.beginPath();
+        for (const e of fb.elements) {
+          ctx.moveTo(screen[e.a].x, screen[e.a].y);
+          ctx.lineTo(screen[e.b].x, screen[e.b].y);
+          ctx.lineTo(screen[e.c].x, screen[e.c].y);
+          ctx.closePath();
+        }
+        ctx.fill();
+      }
+    }
+
+    if (opts.outlines) {
+      ctx.strokeStyle = withAlpha(shade(fb.render.color, 0.7), heat ? 0.35 : 0.7);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const e of fb.elements) {
+        ctx.moveTo(screen[e.a].x, screen[e.a].y);
+        ctx.lineTo(screen[e.b].x, screen[e.b].y);
+        ctx.lineTo(screen[e.c].x, screen[e.c].y);
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
+
+    // Pinned nodes (Dirichlet boundary) as small anchors.
+    for (let i = 0; i < fb.nodeCount; i++) {
+      if (fb.invMass[i] !== 0) continue;
+      ctx.fillStyle = COLORS.staticStroke;
+      ctx.beginPath();
+      ctx.arc(screen[i].x, screen[i].y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (opts.centerOfMass) {
+      const c = camera.worldToScreen(fb.centroid());
+      ctx.fillStyle = COLORS.com;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -772,6 +849,29 @@ function withAlpha(color: string, alpha: number): string {
   const rgb = parseColor(color);
   if (!rgb) return color;
   return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
+}
+
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/** Stress heatmap ramp: navy → teal → amber → red as t goes 0→1. */
+const STRESS_RAMP: [number, number, number][] = [
+  [30, 50, 110],
+  [40, 170, 170],
+  [240, 200, 90],
+  [235, 70, 60],
+];
+function stressColor(t: number): string {
+  const u = clamp01(t) * (STRESS_RAMP.length - 1);
+  const i = Math.min(STRESS_RAMP.length - 2, Math.floor(u));
+  const f = u - i;
+  const a = STRESS_RAMP[i];
+  const b = STRESS_RAMP[i + 1];
+  const r = Math.round(a[0] + (b[0] - a[0]) * f);
+  const g = Math.round(a[1] + (b[1] - a[1]) * f);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * f);
+  return `rgba(${r},${g},${bl},0.92)`;
 }
 
 function shade(color: string, factor: number): string {

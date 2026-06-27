@@ -11,6 +11,8 @@ import { clamp, EPSILON, Transform, Vec2 } from './math';
 import { boundingRadius, computeAABB, type Shape } from './shapes';
 import { SoftBody } from './soft/softbody';
 import { DEFAULT_SOFT_CONFIG, stepSoftBodies, type SoftConfig } from './soft/solver';
+import { FemBody } from './fem/fembody';
+import { DEFAULT_FEM_CONFIG, stepFemBodies, type FemConfig } from './fem/solver';
 import { FluidSystem } from './sph/fluid';
 
 /** Per-step statistics surfaced to the UI HUD. */
@@ -93,6 +95,9 @@ export class World {
   /** Deformable (XPBD) bodies, stepped after the rigid solve each frame. */
   readonly softBodies: SoftBody[] = [];
   softConfig: SoftConfig = { ...DEFAULT_SOFT_CONFIG };
+  /** Finite-element (implicit co-rotational) bodies, stepped after the soft bodies. */
+  readonly femBodies: FemBody[] = [];
+  femConfig: FemConfig = { ...DEFAULT_FEM_CONFIG };
   /** Optional Position-Based-Fluids system, stepped after the soft bodies. */
   fluid: FluidSystem | null = null;
   private broadphase = new BroadPhase<Body>();
@@ -167,6 +172,17 @@ export class World {
     if (idx >= 0) this.softBodies.splice(idx, 1);
   }
 
+  /** Add a finite-element deformable body to the world. */
+  addFemBody(fem: FemBody): FemBody {
+    this.femBodies.push(fem);
+    return fem;
+  }
+
+  removeFemBody(fem: FemBody): void {
+    const idx = this.femBodies.indexOf(fem);
+    if (idx >= 0) this.femBodies.splice(idx, 1);
+  }
+
   /** Attach (or replace) the world's SPH fluid system. */
   setFluid(fluid: FluidSystem | null): FluidSystem | null {
     this.fluid = fluid;
@@ -192,6 +208,7 @@ export class World {
     this.joints.length = 0;
     this.fluidZones.length = 0;
     this.softBodies.length = 0;
+    this.femBodies.length = 0;
     this.fluid = null;
     this.flashes.length = 0;
     this.contacts.clear();
@@ -306,6 +323,12 @@ export class World {
     // rigid poses, exchanging reaction impulses back into the rigid world.
     if (this.softBodies.length > 0) {
       stepSoftBodies(this.softBodies, this.bodies, this.gravity, dt, this.softConfig);
+    }
+
+    // 6c″. FEM bodies: advance the implicit co-rotational subsystem against the
+    // same freshly-integrated rigid poses, feeding reaction impulses back in.
+    if (this.femBodies.length > 0) {
+      stepFemBodies(this.femBodies, this.bodies, this.gravity, dt, this.femConfig);
     }
 
     // 6c′. SPH fluid: advance the Position-Based-Fluids system against the same

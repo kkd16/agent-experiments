@@ -27,6 +27,9 @@ import {
   GearJoint,
   gjkDistance,
   Kernels,
+  makeFemBeam,
+  makeFemBox,
+  makeFemDisk,
   makeBlob,
   SpatialHash,
   makeCloth,
@@ -1001,6 +1004,165 @@ export function runVerification(): CheckResult[] {
     }
     const d = wa.softBodies[0].centroid().sub(wb.softBodies[0].centroid()).length();
     a.close('Soft simulation is deterministic', d, 0, 1e-12);
+  }
+
+  // ---- Finite elements: co-rotational elasticity ---------------------------
+  // The continuum-mechanics pillar. Every claim re-derives a property a correct
+  // FEM solver must satisfy: the strain energy's exact symmetries, the
+  // plane-stress constitutive law, mesh convergence to Euler–Bernoulli beam
+  // theory, and conservation in free flight.
+  a.section('Finite elements · elasticity');
+  {
+    // At rest the strain energy and the internal force both vanish exactly.
+    const beam = makeFemBeam(new Vec2(0, 0), 2, 0.6, 6, 3, {
+      material: { young: 1e5, poisson: 0.3, density: 1 },
+    });
+    a.close('Rest config: strain energy = 0', beam.elasticEnergy(), 0, 1e-9);
+    const f0 = beam.forces();
+    let fmax = 0;
+    for (const v of f0) fmax = Math.max(fmax, Math.abs(v));
+    a.close('Rest config: internal force = 0', fmax, 0, 1e-9);
+  }
+  {
+    // A rigid translation of every node leaves the energy at zero (translational
+    // null space of the stiffness).
+    const beam = makeFemBeam(new Vec2(0, 0), 2, 0.6, 6, 3, { material: { young: 1e5 } });
+    for (let i = 0; i < beam.nodeCount; i++) {
+      beam.pos[2 * i] += 3.7;
+      beam.pos[2 * i + 1] -= 1.9;
+    }
+    a.close('Rigid translation: strain energy = 0', beam.elasticEnergy(), 0, 1e-9);
+  }
+  {
+    // THE headline: a *large* rigid rotation also leaves the energy at zero —
+    // the defining property of the co-rotational formulation. Plain linear FEM
+    // would report a huge spurious energy (and a phantom restoring force) here.
+    const beam = makeFemBeam(new Vec2(0, 0), 2, 0.6, 8, 3, { material: { young: 1e5 } });
+    const ang = 1.2, c = Math.cos(ang), s = Math.sin(ang);
+    for (let i = 0; i < beam.nodeCount; i++) {
+      const x = beam.rest[2 * i], y = beam.rest[2 * i + 1];
+      beam.pos[2 * i] = c * x - s * y + 4;
+      beam.pos[2 * i + 1] = s * x + c * y - 2;
+    }
+    a.close('Large rigid rotation: strain energy ≈ 0 (co-rotational)', beam.elasticEnergy(), 0, 1e-6);
+  }
+  {
+    // Plane-stress patch test: a uniform uniaxial strain εₓ produces the exact
+    // analytic von-Mises stress √(σₓ²−σₓσy+σy²) with σₓ=E/(1−ν²)·ε, σy=ν·σₓ.
+    const E = 1e5, nu = 0.3, eps = 0.01;
+    const beam = makeFemBeam(new Vec2(0, 0), 2, 0.6, 4, 2, {
+      material: { young: E, poisson: nu, density: 1 },
+    });
+    for (let i = 0; i < beam.nodeCount; i++) beam.pos[2 * i] = beam.rest[2 * i] * (1 + eps);
+    const sx = (E / (1 - nu * nu)) * eps;
+    const sy = nu * sx;
+    const vm = Math.sqrt(sx * sx - sx * sy + sy * sy);
+    a.close('Uniaxial strain → analytic von-Mises stress', beam.elementStress(0), vm, vm * 0.01);
+    a.ok('Stretched body stores positive energy', beam.elasticEnergy() > 0, beam.elasticEnergy().toExponential(2));
+  }
+
+  a.section('Finite elements · beam theory');
+  {
+    // A clamped cantilever sagging under self-weight must converge to the
+    // Euler–Bernoulli tip deflection δ = ρ·H·g·L⁴/(8·E·I), I = H³/12, as the
+    // mesh is refined. CST elements approach it monotonically from below.
+    const L = 4, H = 0.4, rho = 1, g = 9.8;
+    const I = (H * H * H) / 12;
+    const theory = (E: number): number => (rho * H * g * L * L * L * L) / (8 * E * I);
+    const cantileverDeflection = (nx: number, ny: number, E: number, steps: number): number => {
+      const w = new World(new Vec2(0, -g));
+      const beam = makeFemBeam(new Vec2(0, 2), L, H, nx, ny, {
+        material: { young: E, poisson: 0.3, density: rho, dampingMass: 2, dampingStiff: 0.05 },
+        pin: (r) => r.x <= 1e-6,
+      });
+      w.addFemBody(beam);
+      for (let i = 0; i < steps; i++) w.step(1 / 60);
+      let tip = 0, n = 0, rest0 = 0;
+      for (let i = 0; i < beam.nodeCount; i++) {
+        if (Math.abs(beam.rest[2 * i] - L) < 1e-6) {
+          tip += beam.pos[2 * i + 1];
+          rest0 += beam.rest[2 * i + 1];
+          n++;
+        }
+      }
+      return rest0 / n - tip / n;
+    };
+
+    const coarse = cantileverDeflection(12, 3, 1.5e5, 400) / theory(1.5e5);
+    const medium = cantileverDeflection(24, 4, 1.5e5, 400) / theory(1.5e5);
+    a.ok('Cantilever converges toward beam theory (coarse → fine)',
+      coarse < medium && medium <= 1.05,
+      `ratio ${coarse.toFixed(3)} → ${medium.toFixed(3)} (→1)`);
+    a.ok('Refined cantilever within ~20% of Euler–Bernoulli',
+      medium > 0.78 && medium < 1.05, `δ/δ_theory = ${medium.toFixed(3)}`);
+
+    // Linear elasticity: doubling Young's modulus halves the *absolute* deflection.
+    const dRef = cantileverDeflection(20, 4, 1.5e5, 400);
+    const dStiff = cantileverDeflection(20, 4, 3.0e5, 400);
+    a.close('Doubling E halves deflection', dRef / dStiff, 2, 0.15);
+  }
+
+  a.section('Finite elements · dynamics');
+  {
+    // A free elastic body (no gravity, no damping) conserves linear momentum
+    // exactly through the implicit solve and the internal forces.
+    const w = new World(new Vec2(0, 0));
+    const disk = makeFemDisk(new Vec2(0, 0), 1, 3, 12, {
+      material: { young: 5e4, poisson: 0.3, density: 1, dampingMass: 0, dampingStiff: 0 },
+    });
+    disk.applyVelocity(new Vec2(2, 1));
+    disk.vel[2] += 1; // a little internal wobble
+    w.addFemBody(disk);
+    const p0 = disk.linearMomentum();
+    for (let i = 0; i < 240; i++) w.step(1 / 60);
+    a.close('Free FEM body conserves momentum', disk.linearMomentum().sub(p0).length(), 0, 1e-6);
+  }
+  {
+    // Determinism: identical FEM setups evolve bit-for-bit identically.
+    const mk = (): World => {
+      const w = new World(new Vec2(0, -9.8));
+      w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+      w.addFemBody(makeFemBox(new Vec2(0.1, 2), 0.6, 0.6, 5, 5, { material: { young: 4e4 } }));
+      return w;
+    };
+    const wa = mk(), wb = mk();
+    for (let i = 0; i < 200; i++) { wa.step(1 / 60); wb.step(1 / 60); }
+    const d = wa.femBodies[0].centroid().sub(wb.femBodies[0].centroid()).length();
+    a.close('FEM simulation is deterministic', d, 0, 1e-12);
+  }
+  {
+    // A FEM jelly dropped on the floor stays finite, rests on the surface, and
+    // is roughly volume-preserving (the implicit solve never blows up).
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const disk = makeFemDisk(new Vec2(0, 2), 0.8, 3, 14, {
+      material: { young: 3e4, poisson: 0.3, density: 1, dampingMass: 0.5, dampingStiff: 0.02 },
+    });
+    w.addFemBody(disk);
+    let finite = true, minY = Infinity;
+    for (let i = 0; i < 360; i++) {
+      w.step(1 / 60);
+      for (let k = 0; k < disk.nodeCount; k++) {
+        if (!Number.isFinite(disk.pos[2 * k + 1])) finite = false;
+        minY = Math.min(minY, disk.pos[2 * k + 1]);
+      }
+    }
+    a.ok('FEM jelly stays finite (no blow-up)', finite, finite ? 'finite' : 'NaN/Inf');
+    a.ok('FEM jelly rests on the ground', minY > -0.2 && minY < 0.3, `minY=${minY.toFixed(3)}`);
+    a.close('FEM jelly roughly preserves area', disk.area() / disk.restArea(), 1, 0.12);
+  }
+  {
+    // Two-way coupling: a dense FEM disc dropped on a free rigid box pushes it
+    // down without either tunnelling — reaction impulses cross the bridge.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(10, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const boxBody = w.addBody(new Body(Polygon.box(0.5, 0.4), { position: new Vec2(0, 0.4), density: 1 }));
+    w.addFemBody(makeFemDisk(new Vec2(0, 2.2), 0.7, 3, 14, { material: { young: 6e4, density: 1.5 } }));
+    let minY = Infinity;
+    for (let i = 0; i < 280; i++) { w.step(1 / 60); minY = Math.min(minY, boxBody.worldCenter.y); }
+    a.ok('FEM body pushes the rigid box (coupling)', minY < 0.4, `box dipped to y=${minY.toFixed(3)}`);
+    a.ok('Coupled box never tunnels', boxBody.worldCenter.y > -0.1 && boxBody.worldCenter.isFinite(),
+      `y=${boxBody.worldCenter.y.toFixed(3)}`);
   }
 
   // ---- Fracture: clip + Voronoi geometry -----------------------------------
