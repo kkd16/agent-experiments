@@ -424,6 +424,20 @@ export function About() {
           vignette is exactly cos⁴θ, aberration leaves green fixed and the centre a fixed point, and the
           grain is zero-mean and black/white-preserving.
         </Card>
+        <Card title="Anamorphic & distorted optics (23.0)">
+          The lens also bends the <em>geometry</em> of the image. No real lens is perfectly
+          rectilinear: a wide-angle bows straight lines <em>outward</em> (<strong>barrel</strong>, the
+          fisheye look), a tele bows them <em>inward</em> (<strong>pincushion</strong>). Lumen remaps
+          each image-plane ray by the Brown–Conrady term <code>r·(1+k·r²)</code>, half-diagonal
+          normalised so <code>k</code> is corner-relative — the optical centre is a <strong>fixed
+          point</strong> and the map is <strong>fold-free</strong> (invertible) for{' '}
+          <code>|k|≤⅓</code>. And an <strong>anamorphic</strong> squeeze scales the entrance pupil on
+          one axis, so an out-of-focus highlight images as a vertical <em>oval</em> — the cinema bokeh
+          a round iris can't make — while the zero mean lens offset keeps depth of field exactly
+          unbiased. Both are gated to a bit-exact identity. <strong>Verify</strong> pins the centre as
+          a fixed point, the radial map as monotone, and the squeeze as the sampled pupil's std ratio.
+          Try <em>Fisheye Court</em>.
+        </Card>
       </div>
 
       <p className="about-foot">

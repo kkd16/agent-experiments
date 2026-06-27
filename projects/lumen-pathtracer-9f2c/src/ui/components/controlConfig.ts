@@ -63,6 +63,12 @@ export interface ControlState {
   // gives the pentagonal/hexagonal/octagonal bokeh balls of a real lens. A render
   // setting (it changes how camera rays are sampled), unbiased either way.
   apertureBlades: number
+  // (23.0) Radial lens distortion (Brown–Conrady r'=r(1+k·r²)): negative = barrel
+  // (fisheye), positive = pincushion, 0 = rectilinear. A render setting.
+  lensDistortion: number
+  // (23.0) Anamorphic bokeh squeeze (entrance-pupil x scale): 1 = round, < 1 =
+  // vertical-oval cinematic bokeh. A render setting (changes camera-ray sampling).
+  anamorphic: number
   // (22.0) Physically based image-formation pipeline (applied live, no
   // re-render). Each is a [0,1] strength; all-zero is a bit-exact identity.
   bloomStrength: number // veiling-glare bloom (energy-conserving multi-scale PSF)

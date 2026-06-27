@@ -39,7 +39,7 @@ import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
 import { radianceBDPT, areaDensity, misPartitionResidual } from './bdpt'
-import { Camera, sampleAperture } from './camera'
+import { Camera, sampleAperture, sampleApertureShaped, distortImagePoint, radialDistortScale } from './camera'
 import {
   applyBloom,
   applyVignette,
@@ -3939,6 +3939,99 @@ function testPostIdentity(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `HDR max|Δ|=${hdrMax.toExponential(1)}, byte max|Δ|=${byteMax}` }
 }
 
+// ---- 23.0 — anamorphic & distorted optics -----------------------------------
+
+// Lens distortion: identity at k=0, the optical centre is a fixed point for any
+// k, the radial map r↦r(1+k·r²) is strictly monotone (fold-free, hence
+// invertible) on the image disk for |k|≤1/3, and the sign is right (barrel pulls
+// a corner inward, pincushion pushes it outward).
+function testLensDistortion(): { pass: boolean; detail: string } {
+  const aspect = 4 / 3
+  // Identity at k=0 over a grid of image points.
+  let idMax = 0
+  for (let s = 0; s <= 1.0001; s += 0.25)
+    for (let t = 0; t <= 1.0001; t += 0.25) {
+      const d = distortImagePoint(s, t, aspect, 0)
+      idMax = Math.max(idMax, Math.abs(d.s - s), Math.abs(d.t - t))
+    }
+  // Centre is a fixed point for any k.
+  let centreMax = 0
+  for (const k of [-0.3, -0.1, 0.1, 0.3]) {
+    const c = distortImagePoint(0.5, 0.5, aspect, k)
+    centreMax = Math.max(centreMax, Math.abs(c.s - 0.5), Math.abs(c.t - 0.5))
+  }
+  // Monotone (fold-free) on [0,1] for the boundary case |k|=1/3.
+  const monotone = (k: number): boolean => {
+    let prev = -1
+    let ok = true
+    for (let i = 0; i <= 200; i++) {
+      const rho = i / 200
+      const R = rho * radialDistortScale(rho * rho, k)
+      if (R < prev - 1e-12) ok = false
+      prev = R
+    }
+    return ok && approx(0 * radialDistortScale(0, k), 0, 1e-12)
+  }
+  const monoOk = monotone(-1 / 3) && monotone(1 / 3)
+  // Sign: barrel (k<0) pulls a corner toward the centre; pincushion (k>0) pushes
+  // it away. Measure the corner sample's distance from the centre.
+  const cornerDist = (k: number): number => {
+    const d = distortImagePoint(1, 1, aspect, k)
+    return Math.hypot(d.s - 0.5, d.t - 0.5)
+  }
+  const base = cornerDist(0)
+  const signOk = cornerDist(-0.25) < base && cornerDist(0.25) > base
+  const ok = idMax === 0 && centreMax < 1e-12 && monoOk && signOk
+  return {
+    pass: ok,
+    detail: `id|Δ|=${idMax}, centre|Δ|=${centreMax.toExponential(1)}, monotone=${monoOk}, barrel<base<pincushion=${signOk}`,
+  }
+}
+
+// Anamorphic bokeh: a squeeze < 1 makes the pupil an ellipse (the sampled cloud's
+// x/y standard-deviation ratio matches the squeeze), squeeze 1 reduces to the
+// base aperture sampler exactly, and the mean stays zero (unbiased DoF).
+function testAnamorphicBokeh(): { pass: boolean; detail: string } {
+  // squeeze 1 ≡ base sampler (circular here, blades 0).
+  const r0 = new Rng(11, 5)
+  let reduces = true
+  for (let i = 0; i < 4000; i++) {
+    const u1 = r0.next()
+    const u2 = r0.next()
+    const a = sampleApertureShaped(0, 0, 1, u1, u2)
+    const b = sampleAperture(0, 0, u1, u2)
+    if (Math.abs(a.x - b.x) > 1e-12 || Math.abs(a.y - b.y) > 1e-12) {
+      reduces = false
+      break
+    }
+  }
+  // squeeze 0.5 on a hexagonal pupil: measure the std ratio + zero mean.
+  const squeeze = 0.5
+  const N = 300000
+  const r = new Rng(424242, 9)
+  let sx = 0
+  let sy = 0
+  let sx2 = 0
+  let sy2 = 0
+  for (let i = 0; i < N; i++) {
+    const p = sampleApertureShaped(6, 0.2, squeeze, r.next(), r.next())
+    sx += p.x
+    sy += p.y
+    sx2 += p.x * p.x
+    sy2 += p.y * p.y
+  }
+  const mx = sx / N
+  const my = sy / N
+  const stdx = Math.sqrt(sx2 / N - mx * mx)
+  const stdy = Math.sqrt(sy2 / N - my * my)
+  const ratio = stdx / stdy
+  const ok = reduces && Math.hypot(mx, my) < 5e-3 && approx(ratio, squeeze, 8e-3)
+  return {
+    pass: ok,
+    detail: `reduces=${reduces}, |mean|=${Math.hypot(mx, my).toExponential(1)}, std x/y=${ratio.toFixed(4)} (exp ${squeeze})`,
+  }
+}
+
 export function runSelfTests(): TestResult[] {
   return [
     test('Vector algebra identities', testVectorMath),
@@ -4059,5 +4152,7 @@ export function runSelfTests(): TestResult[] {
     test('Chromatic aberration — centre/off identity, green fixed, red shifts', testChromaticAberration),
     test('Film grain — zero-mean, black/white fixed, variance↑ with strength', testFilmGrain),
     test('Image-formation pipeline — all-zero is a bit-exact identity', testPostIdentity),
+    test('Lens distortion — identity off, centre fixed, monotone, sign', testLensDistortion),
+    test('Anamorphic bokeh — squeezes std ratio, reduces to round, zero-mean', testAnamorphicBokeh),
   ]
 }
