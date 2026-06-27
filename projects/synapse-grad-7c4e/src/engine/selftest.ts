@@ -5,10 +5,11 @@
 // machine-checked proof that the hand-derived backward passes are correct, surfaced in the UI.
 
 import { Tensor } from './tensor';
-import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, gatherCols } from './ops';
+import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, stackRows, gatherCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './losses';
 import { GPT } from './transformer';
+import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
@@ -365,6 +366,33 @@ export function runSelfTest(seed = 7): SelfTestReport {
         'transformer (e2e)',
         gpt.parameters(),
         () => maskedCrossEntropy(gpt.forward(ids), targets, keep).loss,
+        rng,
+      ),
+    );
+  }
+
+  // stackRows: glue per-timestep logit rows back into the [T,V] matrix the recurrent net trains
+  // through. Reduced to a scalar against fixed random weights.
+  {
+    const a = leaf(rng, 1, 4);
+    const b = leaf(rng, 2, 4);
+    const c = leaf(rng, 1, 4);
+    ops.push(checkOp('stackRows', [a, b, c], () => stackRows([a, b, c]), rng));
+  }
+
+  // End-to-end: each recurrent cell — vanilla RNN, GRU, LSTM — unrolled over a sequence and
+  // gradchecked through the masked loss. This proves backprop-through-time: every gate's W/U/b,
+  // the embedding and the readout, differentiated across every timestep.
+  for (const cell of ['rnn', 'gru', 'lstm'] as CellKind[]) {
+    const m = new RecurrentLM({ cell, vocab: 5, embDim: 4, hidden: 6, nLayers: 2, seed: 7 });
+    const ids = Int32Array.from([1, 3, 0, 4, 2, 1]);
+    const targets = Int32Array.from([3, 0, 4, 2, 1, 0]);
+    const keep = Uint8Array.from([0, 1, 1, 0, 1, 1]);
+    ops.push(
+      checkOp(
+        `${cell} backprop-through-time (e2e)`,
+        m.parameters(),
+        () => maskedCrossEntropy(m.forward(ids), targets, keep).loss,
         rng,
       ),
     );

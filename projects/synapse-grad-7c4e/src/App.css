@@ -2134,3 +2134,144 @@ label.toggle input {
   border: 1px solid var(--border);
   image-rendering: pixelated;
 }
+
+/* ---- Recurrent lab ---------------------------------------------------------------------- */
+.rnn-heat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 2px;
+}
+.rnn-heat-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+.rnn-heat-axis {
+  display: grid;
+  gap: 0;
+  font: 10px ui-monospace, monospace;
+  color: var(--muted);
+}
+.rnn-heat-tick {
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.rnn-sub {
+  margin: 10px 0 2px;
+}
+.rnn-gates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rnn-gate-name {
+  margin-bottom: 1px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.rnn-lag {
+  margin-top: 8px;
+}
+.rnn-gradstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+}
+.rnn-gen-out {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #0b1220;
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.rnn-gen-prompt {
+  font: 13px ui-monospace, monospace;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.rnn-gen-text {
+  font: 13px ui-monospace, monospace;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+.rnn-gen-tok,
+.rnn-pred-tok {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font: 13px ui-monospace, monospace;
+  font-weight: 600;
+}
+.rnn-gen-tok.ok,
+.rnn-pred-tok.ok {
+  background: rgba(74, 222, 128, 0.18);
+  color: #86efac;
+}
+.rnn-gen-tok.bad,
+.rnn-pred-tok.bad {
+  background: rgba(251, 113, 133, 0.18);
+  color: #fda4af;
+}
+.rnn-gen-ctl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rnn-temp {
+  flex: 1;
+  min-width: 150px;
+  margin: 0;
+}
+.rnn-preds {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rnn-pred-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.rnn-pred-cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.rnn-pred-loss {
+  flex-shrink: 0;
+}
+.pill {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.pill.ok {
+  background: rgba(74, 222, 128, 0.18);
+  color: #86efac;
+}
+.pill.bad {
+  background: rgba(251, 113, 133, 0.18);
+  color: #fda4af;
+}
