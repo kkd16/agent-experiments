@@ -774,9 +774,11 @@ policy, value source), and a **head-to-head against the alpha-beta searcher at a
 whether the two paradigms pick the same move. `mctsSelftest` joins the **Self-tests** Lab — the solver finds/proves the
 known mates, Σ root visits equals the simulations run, the priors sum to 1, and the principal variation replays legally.
 
-**Validated outside the browser** (vite-SSR Node harness): the self-test is green (all four tactical positions solved,
-priors normalised to 2e-16, visit bookkeeping exact, PV legal) and a 2000-sim start-position search returns a sane
-spread (1.d4/1.e4/Nf3 on top). **Headless-Chromium** run of the live build: open MCTS, load the tactic, Search →
+**Validated outside the browser** (vite-SSR Node harness): the self-test is green — six positions solved, including a
+mate-in-1 *proven* in 14 simulations, a back-rank mate in 4, a **multi-ply forced mate** (the rook ladder, exact
+mate-in-3, proven in ~2.3k sims) and a **two-ply knight royal fork** that wins the rook — with priors normalised to
+2e-16, visit bookkeeping exact and the PV legal; a 2000-sim start-position search returns a sane spread
+(1.d4/1.e4/Nf3 on top). **Headless-Chromium** run of the live build: open MCTS, load the tactic, Search →
 **12 visit bars, best = Rxf7+, +3.67, 4,000 sims and a full SAN PV**; **Run alpha-beta → "✓ both engines agree"**; a
 heuristic-policy start-position search returns 1.Nf3; **zero console errors**. Clean scope + conformance + lint + tsc +
 vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
