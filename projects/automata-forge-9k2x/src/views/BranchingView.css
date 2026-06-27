@@ -1,0 +1,229 @@
+/* Branching mode (CTL) — the bits not already shared with the Logic view's stylesheet. */
+
+/* Labelling tab: a graph on the left, the subformula list on the right. */
+.label-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+  padding: 14px;
+  box-sizing: border-box;
+}
+.label-graph {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.label-graph .graph-wrap {
+  flex: 1;
+  min-height: 240px;
+}
+.label-side {
+  overflow-y: auto;
+  border-left: 1px solid var(--border, #2a2f3a);
+  padding-left: 14px;
+}
+
+.sub-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+}
+.sub-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.sub-row.active {
+  border-color: var(--accent, #6ea8fe);
+  background: rgba(110, 168, 254, 0.14);
+}
+.sub-text {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sub-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.sub-count {
+  font-size: 11px;
+  color: var(--muted, #8a93a6);
+  font-variant-numeric: tabular-nums;
+}
+.fix-badge {
+  font-size: 12px;
+  font-weight: 700;
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 5px;
+}
+.fix-badge.least {
+  background: rgba(120, 220, 160, 0.18);
+  color: #7fe0a6;
+}
+.fix-badge.greatest {
+  background: rgba(255, 190, 120, 0.18);
+  color: #ffc479;
+}
+.sat-states {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text, #cdd3df);
+}
+
+/* The fixpoint approximant chain strip. */
+.approx {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.approx-head {
+  font-size: 12.5px;
+  color: var(--muted, #8a93a6);
+  margin-bottom: 8px;
+}
+.approx-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.approx-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 40px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text, #cdd3df);
+  cursor: pointer;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.approx-cell:hover {
+  border-color: var(--accent, #6ea8fe);
+}
+.approx-cell.cur {
+  border-color: var(--accent, #6ea8fe);
+  background: rgba(110, 168, 254, 0.18);
+}
+.approx-size {
+  font-size: 10px;
+  color: var(--muted, #8a93a6);
+}
+.approx-detail {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text, #cdd3df);
+}
+
+/* Model-check tab: initial-state verdicts + the certificate. */
+.init-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+
+.cert {
+  margin: 12px 0 8px;
+  padding: 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.cert-kind {
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--muted, #8a93a6);
+}
+.cert-kind.counterexample {
+  color: #ff9c9c;
+}
+.cert-kind.witness {
+  color: #7fe0a6;
+}
+.cert-strip {
+  flex-wrap: wrap;
+}
+.cert-cell {
+  min-width: 76px;
+}
+.cert-oblig {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  align-items: center;
+}
+.cert-oblig code {
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--accent, #6ea8fe);
+  background: rgba(110, 168, 254, 0.1);
+  padding: 0 4px;
+  border-radius: 4px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* About tab: the E/A × X/F/G/U square. */
+.ctl-square {
+  border-collapse: collapse;
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+.ctl-square th,
+.ctl-square td {
+  border: 1px solid var(--border, #2a2f3a);
+  padding: 6px 12px;
+  text-align: center;
+}
+.ctl-square thead th,
+.ctl-square tbody th {
+  color: var(--muted, #8a93a6);
+  font-weight: 600;
+}
+.ctl-square tbody td {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-weight: 700;
+  color: var(--accent, #6ea8fe);
+}
+
+@media (max-width: 860px) {
+  .label-wrap {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .label-side {
+    border-left: none;
+    padding-left: 0;
+  }
+}
