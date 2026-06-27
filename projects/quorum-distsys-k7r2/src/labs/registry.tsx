@@ -13,6 +13,7 @@ import { GossipLab } from './GossipLab';
 import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
 import { SnowLab } from './SnowLab';
+import { SnapshotLab } from './SnapshotLab';
 import { SelfTestLab } from './SelfTestLab';
 
 export interface LabDef {
@@ -141,6 +142,15 @@ export const LABS: LabDef[] = [
     icon: '❄',
     tag: 'metastable · probabilistic',
     Component: SnowLab,
+  },
+  {
+    id: 'snapshot',
+    title: 'Chandy–Lamport',
+    blurb:
+      'Photograph a running distributed computation without stopping it. Nodes trade a conserved token economy; the Chandy–Lamport marker algorithm records a globally consistent snapshot — every balance and every in-flight message — over FIFO channels. The recorded total always equals the conserved total, capturing money that a naive snapshot would miss. Watch markers flood the network and the recorded cut prove consistent, live.',
+    icon: '◳',
+    tag: 'global state · snapshots',
+    Component: SnapshotLab,
   },
   {
     id: 'chord',

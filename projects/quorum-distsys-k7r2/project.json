@@ -1,6 +1,6 @@
 {
   "title": "Quorum — Distributed Systems Lab",
-  "description": "A deterministic distributed-systems simulator: Raft, Multi-Paxos and leaderless EPaxos consensus (egalitarian, dependency-graph ordering with fast/slow paths, SCC execution and explicit-prepare recovery), PBFT and HotStuff Byzantine fault tolerance (survive malicious replicas), Snow/Avalanche metastable consensus (Slush/Snowflake/Snowball — agreement by random subsampling instead of quorums, with a live opinion-over-time chart and Byzantine resilience), a Dynamo-style tunable-quorum store (sloppy quorums, hinted handoff, read repair, vector-clock siblings), a Chord DHT, CRDTs, gossip/SWIM failure detection, vector clocks and 2PC/3PC, an ABD linearizable register (atomic read/write storage with no consensus), all from scratch on one seeded discrete-event kernel with a controllable network, time-travel scrubbing and live invariant checking.",
+  "description": "A deterministic distributed-systems simulator: Raft, Multi-Paxos and leaderless EPaxos consensus (egalitarian, dependency-graph ordering with fast/slow paths, SCC execution and explicit-prepare recovery), PBFT and HotStuff Byzantine fault tolerance (survive malicious replicas), Snow/Avalanche metastable consensus (Slush/Snowflake/Snowball — agreement by random subsampling instead of quorums, with a live opinion-over-time chart and Byzantine resilience), a Dynamo-style tunable-quorum store (sloppy quorums, hinted handoff, read repair, vector-clock siblings), a Chord DHT, CRDTs, gossip/SWIM failure detection, vector clocks and 2PC/3PC, an ABD linearizable register (atomic read/write storage with no consensus), Chandy–Lamport consistent global snapshots (FIFO-channel marker algorithm recording a consistent cut of a running, conserved token economy), all from scratch on one seeded discrete-event kernel with a controllable network, time-travel scrubbing and live invariant checking.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
@@ -15,6 +15,8 @@
     "avalanche",
     "snowball",
     "metastable",
+    "chandy-lamport",
+    "snapshots",
     "dynamo",
     "abd",
     "linearizability",

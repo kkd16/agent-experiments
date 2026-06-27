@@ -511,6 +511,43 @@ Planned build steps (each its own self-test before it lands):
       confidence) on top of Snowball; a stronger adaptive adversary; a live **k/α/β safety-vs-latency**
       sweep panel; 3+ colours visual.
 
+### Chandy–Lamport lab (consistent global snapshots) — NEW
+A different *kind* of problem from every other lab: not deciding or storing a value, but **observing**
+a running distributed computation. **Chandy–Lamport (1985)** photographs the whole system — every
+node's local state *and* every message in flight — as a **consistent global state** it really passed
+through, with no shared clock and *without pausing the computation*. That recorded state is what you
+test a **stable property** on (deadlock, termination, conservation). Implemented on the existing kernel
+as `protocols/snapshot/*` + a `SnapshotLab`.
+
+The running computation is a **conserved token economy**: every node holds a balance and continuously
+transfers random amounts to peers; the global total never changes but lives partly "in flight". A naive
+"ask everyone their balance" snapshot undercounts; Chandy–Lamport records channel contents too and gets
+it exactly right.
+
+- [x] **`protocols/snapshot/types.ts`** — per-node `SnapState`: balance + the per-channel **FIFO layer**
+      (`outSeq`/`inExpected`/`inBuf` reorder buffer over the kernel's reordering network — FIFO is a hard
+      Chandy–Lamport precondition), and the recording fields (`recordedOwn`, `recordedState`,
+      per-incoming-channel `channelState`/`channelClosed`, `done`, `snapId`).
+- [x] **`protocols/snapshot/snapshot.ts`** — the marker algorithm: an initiator records its balance and
+      floods markers; a node records on its **first** marker (closing the arrival channel empty, opening
+      the others) and floods onward; a later marker **closes** a channel; app messages on an open channel
+      after own-state are added to that channel's recording. Markers ride the **same FIFO stream** as app
+      messages — the ordering between them is exactly what makes the cut consistent. A spontaneous-transfer
+      `tick` keeps the economy moving. Supports re-snapshots (`snapId` supersession).
+- [x] **`protocols/snapshot/invariants.ts`** — the live proof: **Snapshot consistency** (a completed
+      snapshot's recorded node-states + recorded channel-states equal the conserved total — a consistent
+      cut, captured mid-flight), **FIFO channels honoured** (nothing stuck behind a channel's read
+      pointer), plus a **live-economy gauge** (balances + in-flight = conserved, snapshot progress).
+- [x] **`labs/SnapshotLab.tsx`** — the cluster canvas (balances; recorded nodes glow; markers drawn in
+      gold with an `M` glyph), a **recorded-snapshot ledger** (each node's recorded state + the in-flight
+      money caught on each incoming channel, totalled and checked against the conserved total), a
+      live balances/in-flight bar, FIFO/jittery network presets, partition/heal, and deep links.
+- [x] **Register** the lab + a Home card; **self-tests** (recorded = conserved mid-flight across 8 seeds
+      with in-flight money actually captured; determinism; any initiator under heavy reordering; invariants
+      hold across repeated snapshots in a long run). Suite **99 → 103/103**.
+- [ ] **Backlog (post-ship):** a deadlock-detection demo (record a wait-for graph and test it for a
+      cycle), a termination-detection variant, and an animated marker-wavefront overlay.
+
 ### Future labs / ideas (backlog)
 - [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
       two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
@@ -789,3 +826,22 @@ Planned build steps (each its own self-test before it lands):
   and post-chaos convergence). Verified the full gate (scope + conformance + lint + build) and drove
   the built app in headless Chromium: the Snowball default converges **15/15 finalised** with the
   panel **HOLDING**, the Home page shows the new Snow card, and there are zero JS/console errors.
+- 2026-06-27 (claude): **added a full Chandy–Lamport lab** in the same session — a different *class*
+  of problem from every other lab (not consensus/storage but **observing** a running computation).
+  Four new files (`protocols/snapshot/{types,snapshot,invariants}.ts` + `labs/SnapshotLab.tsx`) on the
+  existing kernel, plus a registry entry. The computation is a **conserved token economy** (nodes
+  continuously transfer random amounts; the total is constant but partly in-flight); the protocol is the
+  real **Chandy–Lamport marker algorithm** — initiator records + floods markers, each node records on its
+  first marker and records each incoming channel until that channel's marker arrives. Because the
+  algorithm requires **FIFO channels** and the kernel network *reorders*, the protocol layers a
+  per-channel sequence number + reorder buffer, with markers riding the same FIFO stream as app messages
+  (the ordering is the whole trick). Headline invariant — **Snapshot consistency**: a completed
+  snapshot's recorded node-states + recorded channel-states always equal the conserved total, a
+  *consistent cut captured mid-flight* that a naive "sum everyone's balance" snapshot would get wrong;
+  plus **FIFO channels honoured**. The lab UI draws balances + gold markers (with an `M` glyph) and a
+  **recorded-snapshot ledger** (per-node state + the money caught on each incoming channel, totalled vs
+  the conserved invariant). Self-test suite grown **99 → 103/103** (recorded = conserved mid-flight
+  across 8 seeds *with* in-flight money genuinely captured; determinism; every initiator under a heavy
+  reordering network; invariants holding across three snapshots in a long run). Verified the full gate
+  (scope + conformance + lint + build) and drove the built app in headless Chromium: a snapshot records
+  **500 = conserved 500 ✓** with the panel **HOLDING**, both new cards appear on Home, zero JS errors.

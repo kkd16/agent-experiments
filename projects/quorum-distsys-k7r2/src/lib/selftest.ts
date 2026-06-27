@@ -52,6 +52,9 @@ import { DEFAULT_ABD_CONFIG, type AbdCmd, type AbdState } from '../protocols/abd
 import { createSnow } from '../protocols/snow/snow';
 import { snowInvariants, snowGauge } from '../protocols/snow/invariants';
 import { DEFAULT_SNOW_CONFIG, type SnowCmd, type SnowState, type Variant, type Colour } from '../protocols/snow/types';
+import { createSnapshot } from '../protocols/snapshot/snapshot';
+import { snapInvariants, snapGauge } from '../protocols/snapshot/invariants';
+import { DEFAULT_SNAP_CONFIG, type SnapCmd, type SnapState } from '../protocols/snapshot/types';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -1989,6 +1992,75 @@ export function runSelfTests(): TestResult[] {
     const g = snowGauge(k.views());
     const ok = g.unanimous && snowOk(k);
     return [ok, ok ? `every live node converged to ${g.plurality} after the network healed` : snowFirstBad(k) || `not unanimous (plurality ${g.plurality} ${g.pluralityCount}/${g.liveHonest})`];
+  });
+
+  // ---- Chandy–Lamport global snapshots ----
+  const snapKernel = (seed: number, n: number, net = { minLatency: 10, maxLatency: 80, dropRate: 0 }) =>
+    new Kernel<SnapState, SnapCmd>({
+      seed,
+      protocol: createSnapshot(DEFAULT_SNAP_CONFIG),
+      nodeIds: 'ABCDEFGH'.split('').slice(0, n),
+      network: net,
+    });
+  const snapAdvance = (k: Kernel<SnapState, SnapCmd>, ticks: number, dt = 10) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+
+  t('Chandy–Lamport', 'Recorded snapshot equals the conserved total (mid-flight)', () => {
+    let captured = false;
+    for (const seed of [1, 2, 3, 7, 13, 42, 99, 256]) {
+      const k = snapKernel(seed, 5);
+      snapAdvance(k, 60); // let money start flowing
+      k.command('A', { type: 'snapshot' });
+      snapAdvance(k, 220); // markers propagate while transfers continue
+      const g = snapGauge(k.views());
+      if (!g.complete || g.recordedTotal !== g.conserved || !snapInvariants(k.views()).every((iv) => iv.ok)) {
+        return [false, `seed ${seed}: complete=${g.complete} recorded=${g.recordedTotal} conserved=${g.conserved}`];
+      }
+      if (g.inFlight !== g.conserved - g.trueTotal) return [false, `seed ${seed}: in-flight accounting off`];
+      // At least some seed must actually capture in-flight money (the whole point).
+      if ((g.recordedTotal ?? 0) - k.views().reduce((a, v) => a + (v.state.recordedState ?? 0), 0) > 0) captured = true;
+    }
+    return [captured, captured ? 'all 8 seeds recorded a consistent cut, with in-flight money captured in the channels' : 'no seed captured channel money (suspicious)'];
+  });
+
+  t('Chandy–Lamport', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = snapKernel(555, 6);
+      snapAdvance(k, 50);
+      k.command('C', { type: 'snapshot' });
+      snapAdvance(k, 220);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('Chandy–Lamport', 'Any initiator records a consistent cut under jittery (reordering) channels', () => {
+    let good = 0;
+    const inits = ['A', 'B', 'C', 'D', 'E'];
+    for (const init of inits) {
+      const k = snapKernel(31, 5, { minLatency: 10, maxLatency: 240, dropRate: 0 });
+      snapAdvance(k, 50);
+      k.command(init, { type: 'snapshot' });
+      snapAdvance(k, 320);
+      const g = snapGauge(k.views());
+      if (g.complete && g.recordedTotal === g.conserved && snapInvariants(k.views()).every((iv) => iv.ok)) good++;
+    }
+    return [good === inits.length, good === inits.length ? 'every initiator recorded recorded=conserved under heavy reordering (FIFO + markers held)' : `${good}/${inits.length} initiators produced a consistent cut`];
+  });
+
+  t('Chandy–Lamport', 'Invariants never break across repeated snapshots in a long run', () => {
+    const k = snapKernel(2024, 6);
+    const ids = k.nodeOrder;
+    let firstBreak = '';
+    for (let i = 0; i < 900 && !firstBreak; i++) {
+      k.advance(10);
+      if (i === 100 || i === 350 || i === 600) k.command(ids[i % ids.length], { type: 'snapshot' });
+      const bad = snapInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Snapshot consistency & FIFO held across three snapshots over a long run'];
   });
 
   return out;
