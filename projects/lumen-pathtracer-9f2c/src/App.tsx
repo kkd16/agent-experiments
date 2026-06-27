@@ -53,6 +53,8 @@ const DEFAULTS: ControlState = {
   envRotation: 0,
   envIntensity: 1,
   apertureBlades: 0, // circular aperture; reset per scene below
+  lensDistortion: 0, // rectilinear; reset per scene below
+  anamorphic: 1, // round pupil; reset per scene below
   bloomStrength: 0,
   bloomRadius: 3,
   vignette: 0,
@@ -118,6 +120,8 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
     focusDist: distance(eye, orbit.target),
     blades: ctrl.apertureBlades,
     bladeRotation: def.camera.bladeRotation ?? 0,
+    distortion: ctrl.lensDistortion,
+    anamorphic: ctrl.anamorphic,
   }
   return def
 }
@@ -167,6 +171,8 @@ export default function App() {
       if (key === 'sceneId') {
         next.aperture = sceneCamera(value as string).aperture
         next.apertureBlades = sceneCamera(value as string).blades ?? 0
+        next.lensDistortion = sceneCamera(value as string).distortion ?? 0
+        next.anamorphic = sceneCamera(value as string).anamorphic ?? 1
         next.manyLights = SCENES.find((s) => s.id === value)?.manyLights ?? false
         next.sphereLights = SCENES.find((s) => s.id === value)?.sphereLights ?? false
         next.envRotation = 0
@@ -209,6 +215,8 @@ export default function App() {
     c: ctrl.clampIndirect,
     a: ctrl.aperture,
     ab: ctrl.apertureBlades,
+    ld: ctrl.lensDistortion,
+    an: ctrl.anamorphic,
     az: ctrl.sunAzimuth,
     el: ctrl.sunElevation,
     tb: ctrl.turbidity,

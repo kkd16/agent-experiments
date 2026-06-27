@@ -236,6 +236,26 @@ export function Controls(props: {
           format={(v) => (v < 3 ? 'circular' : `${v}-gon`)}
           hint="The shape of the lens iris. A real aperture is a regular polygon of straight blades, so an out-of-focus highlight images as that polygon — the classic pentagonal/hexagonal/octagonal bokeh ball. 0 (or 1–2) is a perfect circle (the historical concentric-disk sampler). The n-gon is sampled area-uniformly, so depth of field stays exactly unbiased — only the *shape* of the circle of confusion changes. Needs a finite aperture to be visible. Try Neon Bokeh."
         />
+        <Slider
+          label="Lens distortion"
+          value={state.lensDistortion}
+          min={-0.32}
+          max={0.32}
+          step={0.02}
+          onChange={(v) => set('lensDistortion', v)}
+          format={(v) => (v === 0 ? 'rectilinear' : v < 0 ? `barrel ${v.toFixed(2)}` : `pincushion +${v.toFixed(2)}`)}
+          hint="Radial lens distortion (the division-free Brown–Conrady term r' = r·(1 + k·r²)). Negative is barrel distortion — straight lines bow outward, the fisheye/wide-angle look; positive is pincushion — lines bow inward, the telephoto look. The optical centre is always a fixed point, and 0 is a perfect rectilinear lens (unchanged bit-for-bit). Try Fisheye Court."
+        />
+        <Slider
+          label="Anamorphic squeeze (oval bokeh)"
+          value={state.anamorphic}
+          min={0.4}
+          max={1}
+          step={0.02}
+          onChange={(v) => set('anamorphic', v)}
+          format={(v) => (v === 1 ? 'round' : `${v.toFixed(2)}× wide`)}
+          hint="Scales the entrance pupil on the horizontal axis, so an out-of-focus highlight images as a vertical oval instead of a circle — the signature anamorphic-cinema bokeh. 1 is a round pupil (unchanged). The squeeze keeps the mean lens offset at zero, so depth of field stays exactly unbiased. Needs a finite aperture. Try Neon Bokeh with a squeeze."
+        />
         <Toggle
           label="Adaptive sampling"
           value={state.adaptive}

@@ -2303,6 +2303,64 @@ function lumiereHall(): SceneDef {
   }
 }
 
+// ---- Scene: Fisheye Court (lens distortion, 23.0) --------------------------
+// A grid-lined room — floor, walls and ceiling all ruled with a blueprint grid —
+// so the straight lines make the radial lens distortion impossible to miss: the
+// scene defaults to a strong barrel (fisheye) k, bowing every line outward, and
+// the Lens-distortion control sweeps from barrel through rectilinear to
+// pincushion. A few glossy spheres anchor the centre (a fixed point of the map).
+function fisheyeCourt(): SceneDef {
+  const grid = (base: Vec3, line: Vec3): Material => ({
+    kind: 'diffuse',
+    albedo: base,
+    tex: { kind: 'grid', base, line, scale: 1, width: 0.04 },
+  })
+  const materials: Material[] = [
+    grid(v(0.62, 0.63, 0.66), v(0.12, 0.13, 0.16)), // 0 floor grid
+    grid(v(0.7, 0.71, 0.74), v(0.15, 0.16, 0.2)), // 1 wall grid
+    grid(v(0.66, 0.67, 0.7), v(0.14, 0.15, 0.18)), // 2 ceiling grid
+    { kind: 'metal', albedo: v(0.95, 0.78, 0.4), roughness: 0.12 }, // 3 brass
+    { kind: 'metal', albedo: v(0.96, 0.96, 0.98), roughness: 0.05 }, // 4 chrome
+    { kind: 'diffuse', albedo: v(0.85, 0.3, 0.28) }, // 5 red ball
+  ]
+  const prims: PrimDef[] = []
+  const R = 10 // room half-size
+  const H = 8 // room height
+  prims.push(...quad(v(-R, 0, -R), v(R, 0, -R), v(R, 0, R), v(-R, 0, R), 0)) // floor
+  // Open top: the daylight sky floods in (the grid floor + walls carry the
+  // straight lines that reveal the distortion curve). Material 2 stays as a
+  // reserved grid for the back wall's upper band.
+  prims.push(...quad(v(-R, 0, R), v(R, 0, R), v(R, H, R), v(-R, H, R), 1)) // back wall
+  prims.push(...quad(v(-R, 0, -R), v(-R, H, -R), v(-R, H, R), v(-R, 0, R), 1)) // left wall
+  prims.push(...quad(v(R, 0, -R), v(R, 0, R), v(R, H, R), v(R, H, -R), 1)) // right wall
+  // Centre-anchoring objects (the optical centre is a fixed point of distortion).
+  prims.push({ kind: 'sphere', center: v(0, 1.3, 1.5), radius: 1.3, material: 4 })
+  prims.push({ kind: 'sphere', center: v(-3, 0.9, -1), radius: 0.9, material: 3 })
+  prims.push({ kind: 'sphere', center: v(3.2, 0.8, -1.5), radius: 0.8, material: 5 })
+  return {
+    name: 'Fisheye Court',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 3.0, -8.5),
+      target: v(0, 2.4, 1.5),
+      up: v(0, 1, 0),
+      vfovDeg: 68,
+      aperture: 0,
+      focusDist: 10,
+      distortion: -0.26, // a pronounced barrel (fisheye) by default
+    },
+    env: {
+      kind: 'gradient',
+      top: v(0.5, 0.62, 0.86),
+      bottom: v(0.82, 0.82, 0.8),
+      sunDir: normalize(v(-0.5, 0.9, -0.3)),
+      sunColor: v(7, 6.6, 6),
+      sunSize: 0.06,
+    },
+  }
+}
+
 export interface ScenePreset {
   id: string
   label: string
@@ -2324,6 +2382,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'fireflies', label: 'Firefly Swarm (sphere lights)', build: fireflySwarm, sphereLights: true },
   { id: 'neon-bokeh', label: 'Neon Bokeh (polygonal aperture)', build: neonBokeh, sphereLights: true },
   { id: 'lumiere-hall', label: 'Lumière Hall (glare + vignette)', build: lumiereHall, sphereLights: true },
+  { id: 'fisheye-court', label: 'Fisheye Court (lens distortion)', build: fisheyeCourt },
   { id: 'star-field', label: 'Star Field (many lights)', build: starField, manyLights: true },
   { id: 'lantern-hall', label: 'Lantern Hall (many lights)', build: lanternHall, manyLights: true },
   { id: 'light-cage', label: 'Light Cage (receiver-aware)', build: lightCage, manyLights: true },

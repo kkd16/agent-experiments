@@ -170,8 +170,11 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       frame edge so off-axis bokeh deforms into the swirly cat's-eye shape of a real fast lens
 - [ ] **(22.0 follow-ups) Lens flare & ghosts** — trace the bright-source reflections between glass
       elements (the aperture-shaped ghost chain) as an additive, energy-budgeted overlay
-- [ ] **(22.0 follow-ups) Anamorphic bokeh + barrel/pincushion distortion** — a per-axis aperture
-      stretch and a radial distortion polynomial in the camera ray generation
+- [x] **Anamorphic & distorted optics (23.0)** — radial **barrel/pincushion lens distortion**
+      (Brown–Conrady `r·(1+k·r²)`, half-diagonal normalised so it is fold-free for |k|≤⅓) and
+      **anamorphic bokeh** (an entrance-pupil x-squeeze ⇒ oval bokeh), both in the camera ray
+      generation, gated to a bit-exact identity (k=0, squeeze=1). One scene (**Fisheye Court**) +
+      two proofs (120 total).
 - [ ] **(22.0 follow-ups) Tilt-shift / Scheimpflug focal plane** — tilt the plane of focus for a
       wedge-of-focus look (a non-fronto-parallel focus distance)
 - [ ] **(21.0 follow-ups) Load a real `.hdr`/`.exr` panorama** — Radiance RGBE / OpenEXR decode, drag-and-drop
@@ -319,6 +322,54 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-06-27 Lumen 23.0: anamorphic & distorted optics (claude)
+
+22.0 modelled the *film* (glare, vignette, grain) and the *iris shape* (polygonal bokeh). 23.0
+finishes the lens itself — the two distortions a real optical system imposes on the *geometry* of
+the image, both living in the camera's ray generation and both, in the house style, gated to a
+**bit-exact identity** and pinned by an analytic proof.
+
+- **Radial lens distortion.** No real lens is perfectly rectilinear: a wide-angle bows straight
+  lines outward (**barrel**, the fisheye look) and a tele bows them inward (**pincushion**). 23.0
+  remaps each image-plane sample by the division-free Brown–Conrady first term `r ↦ r·(1 + k·r²)`,
+  measured about the frame centre in **half-diagonal-normalised** coordinates (so the corner sits at
+  radius 1 and `k` is corner-relative). The optical centre is a **fixed point** for every `k`, and
+  the map is **monotone — fold-free, hence invertible —** for `|k| ≤ ⅓` (the UI clamps to that
+  range). `k = 0` is the rectilinear lens, returned unchanged bit-for-bit.
+- **Anamorphic bokeh.** A cinema anamorphic lens squeezes the entrance pupil on one axis, so an
+  out-of-focus highlight images as a vertical **oval** rather than a circle. 23.0 scales the sampled
+  aperture point's x by a `squeeze` factor; because the squeeze is a linear scaling of a zero-mean
+  sampler, the **mean lens offset stays zero** and depth of field remains exactly unbiased — only the
+  bokeh's *aspect* changes. `squeeze = 1` is the round pupil, bit-for-bit.
+
+Neither touches light transport; both are pure additions to `camera.ts` (`distortImagePoint`,
+`radialDistortScale`, `sampleApertureShaped`), so every prior proof and every non-distorted, round-
+pupil render is untouched.
+
+Plan / steps (all shipped this session):
+
+1. [x] **`camera.ts` — the optics.** `distortImagePoint(s,t,aspect,k)` (half-diagonal-normalised
+   Brown–Conrady remap, identity at `k=0`), `radialDistortScale(r²,k)`, and `sampleApertureShaped(
+   blades,rot,squeeze,u₁,u₂)` (the 22.0 polygon sampler with an x-squeeze); `CameraDef.distortion`
+   /`anamorphic` + the gated `generateRay` (distortion remaps the sample first, the shaped pupil only
+   when `blades ≥ 3` or `squeeze ≠ 1`, else the historical path verbatim).
+2. [x] **UI — `controlConfig`/`App`/`Controls`.** A "Lens distortion" slider (barrel↔pincushion, clamped
+   to ±0.32) and an "Anamorphic squeeze" slider, threaded through `buildScene`/`renderKey`/the
+   scene-switch per-scene defaults; an About card.
+3. [x] **One showcase scene.** *Fisheye Court* — an open-top room ruled with a blueprint **grid** on
+   the floor and walls (straight lines that make the curvature obvious), a default barrel `k = −0.26`,
+   a wide 68° lens and chrome/brass spheres anchoring the fixed-point centre.
+4. [x] **`selftest.ts` — two proofs (120 total).** (a) distortion is an **identity at `k=0`**, the
+   **centre is a fixed point** for any `k`, the radial map is **strictly monotone (fold-free)** on the
+   image disk for `|k| = ⅓`, and the **sign is right** (barrel pulls a corner inward, pincushion
+   pushes it out); (b) anamorphic squeeze makes the sampled pupil's **x/y std ratio equal the
+   squeeze**, **reduces to the round sampler** at `squeeze = 1`, and stays **zero-mean** (unbiased DoF).
+   Verified in Node: **120/120** self-tests pass; the CI gate (scope + conformance + lint + build) is
+   green, and a smoke render of *Fisheye Court* is finite and lit.
+
+New open ideas this raised (live backlog, above): cat's-eye / optical vignetting; lens flare &
+ghosts; and a tilt-shift (Scheimpflug) focal plane.
 
 ## Roadmap — 2026-06-27 Lumen 22.0: the camera becomes physical — image formation (claude)
 

@@ -27,6 +27,57 @@ export interface CameraDef {
   // unbiased — only the *shape* of the circle of confusion changes.
   blades?: number
   bladeRotation?: number
+  // (23.0) Radial lens distortion: the division-free Brown–Conrady first term.
+  // An image-plane point at normalised radius r is remapped to r·(1 + k·r²):
+  // k < 0 is **barrel** (straight lines bow outward — a fisheye/wide-angle look),
+  // k > 0 is **pincushion** (lines bow inward — a tele look). `0` (default) is a
+  // perfect rectilinear lens, bit-for-bit. The centre is always a fixed point.
+  distortion?: number
+  // (23.0) Anamorphic bokeh squeeze: the entrance pupil is scaled on the x axis
+  // by this factor, so an out-of-focus highlight images as a vertical **oval**
+  // (the cinematic anamorphic look). `1` (default) is a round pupil, bit-for-bit.
+  anamorphic?: number
+}
+
+// (23.0) Remap an image-plane sample (s,t ∈ [0,1], origin bottom-left) through
+// radial lens distortion r' = r·(1 + k·r²), measured about the frame centre in
+// aspect-correct normalised coordinates. The centre (0.5,0.5) is a fixed point;
+// `k = 0` returns the input unchanged. Exported for the verify suite.
+export function distortImagePoint(
+  s: number,
+  t: number,
+  aspect: number,
+  k: number,
+): { s: number; t: number } {
+  if (k === 0) return { s, t }
+  const px = (2 * s - 1) * aspect
+  const py = 2 * t - 1
+  // Normalise by the half-diagonal so the corner sits at radius 1 — then `k` is
+  // corner-relative and the map r↦r(1+k·r²) is monotone (fold-free) for |k|≤1/3.
+  const hd2 = aspect * aspect + 1
+  const r2 = (px * px + py * py) / hd2
+  const f = 1 + k * r2
+  return { s: ((px * f) / aspect + 1) / 2, t: (py * f + 1) / 2 }
+}
+
+// (23.0) The radial distortion scale factor f(r²) = 1 + k·r², exported so the
+// verify suite can pin its monotonicity (a bijective, fold-free remap).
+export function radialDistortScale(r2: number, k: number): number {
+  return 1 + k * r2
+}
+
+// (23.0) Sample the (possibly anamorphic) aperture: a regular-polygon point with
+// the x axis scaled by `squeeze` for oval bokeh. `squeeze = 1` and `blades < 3`
+// is exactly the circular concentric-disk sampler.
+export function sampleApertureShaped(
+  blades: number,
+  rot: number,
+  squeeze: number,
+  u1: number,
+  u2: number,
+): { x: number; y: number } {
+  const p = sampleAperture(blades, rot, u1, u2)
+  return { x: p.x * squeeze, y: p.y }
 }
 
 // (22.0) Sample a point uniformly over a regular `blades`-gon inscribed in the
@@ -67,12 +118,18 @@ export class Camera {
   private lensRadius: number
   private blades: number
   private bladeRot: number
+  private aspect: number
+  private distortion: number
+  private squeeze: number
 
   constructor(def: CameraDef, aspect: number) {
     this.eye = def.eye
     this.lensRadius = def.aperture * 0.5
     this.blades = def.blades ?? 0
     this.bladeRot = def.bladeRotation ?? 0
+    this.aspect = aspect
+    this.distortion = def.distortion ?? 0
+    this.squeeze = def.anamorphic ?? 1
     const theta = (def.vfovDeg * Math.PI) / 180
     const halfH = Math.tan(theta / 2)
     const halfW = aspect * halfH
@@ -94,18 +151,27 @@ export class Camera {
   // lens point is drawn from the RNG.
   generateRay(s: number, t: number, rng: Rng, lens?: { x: number; y: number }): Ray {
     let origin = this.eye
+    // (23.0) Radial lens distortion remaps the image-plane sample first (the
+    // centre is a fixed point; k = 0 is the identity, so a rectilinear lens is
+    // untouched bit-for-bit).
+    if (this.distortion !== 0) {
+      const d = distortImagePoint(s, t, this.aspect, this.distortion)
+      s = d.s
+      t = d.t
+    }
     let target = add(this.lowerLeft, add(scale(this.horizontal, s), scale(this.vertical, t)))
     if (this.lensRadius > 0) {
-      // A polygonal iris (blades ≥ 3) samples the n-gon for shaped bokeh; a
-      // circular iris keeps the historical concentric-disk sampler bit-for-bit.
-      const disk =
-        this.blades >= 3
-          ? lens
-            ? sampleAperture(this.blades, this.bladeRot, lens.x, lens.y)
-            : sampleAperture(this.blades, this.bladeRot, rng.next(), rng.next())
-          : lens
-            ? concentricDiskFrom(lens.x, lens.y)
-            : concentricDisk(rng)
+      // A polygonal iris (blades ≥ 3) or an anamorphic squeeze samples the shaped
+      // pupil for hexagonal / oval bokeh; a round circular iris keeps the
+      // historical concentric-disk sampler bit-for-bit.
+      const shaped = this.blades >= 3 || this.squeeze !== 1
+      const disk = shaped
+        ? lens
+          ? sampleApertureShaped(this.blades, this.bladeRot, this.squeeze, lens.x, lens.y)
+          : sampleApertureShaped(this.blades, this.bladeRot, this.squeeze, rng.next(), rng.next())
+        : lens
+          ? concentricDiskFrom(lens.x, lens.y)
+          : concentricDisk(rng)
       const offset = add(scale(this.u, disk.x * this.lensRadius), scale(this.vv, disk.y * this.lensRadius))
       origin = add(this.eye, offset)
       target = sub(target, offset)
