@@ -2924,4 +2924,136 @@ fn main(){
   print(acc);
 }`,
   },
+
+  // === Reduction vectorizer (opt/vectorize.ts) ==============================
+  // A loop-carried integer accumulator over an associative+commutative monoid is
+  // folded four lanes at a time and horizontally reduced at exit. The fold is
+  // bit-identical to the scalar one only because `+`/`*` wrap mod 2^32 and the
+  // bitwise ops are lane-order-blind — so these double as a soundness proof that
+  // the -O3 lane-shuffled result equals the -O0 sequential one, at every length.
+  {
+    name: 'reduce-sum',
+    source: `fn main(){
+  let N = 23; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * i - 7 * i + 3; }
+  let s = 0; for (let i = 0; i < N; i = i + 1) { s = s + a[i]; }
+  print(s);
+}`,
+  },
+  {
+    // Sum seeded with a loop-invariant non-zero initial value: the exit fold must
+    // combine the horizontal lane-sum with the original s0, not the identity.
+    name: 'reduce-sum-init',
+    source: `fn main(){
+  let N = 30; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i - 11; }
+  let s = 100000; for (let i = 0; i < N; i = i + 1) { s = s + a[i]; }
+  print(s);
+}`,
+  },
+  {
+    // Product reduction that overflows i32 — the lane products and the final
+    // horizontal multiply must wrap exactly like the scalar chain (mul mod 2^32).
+    name: 'reduce-product-wrap',
+    source: `fn main(){
+  let N = 19; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * 3 + 1; }
+  let p = 1; for (let i = 0; i < N; i = i + 1) { p = p * a[i]; }
+  print(p);
+}`,
+  },
+  {
+    // All three bitwise monoids in one loop (three accumulators), with `and`
+    // seeded at all-ones (-1) — its identity — and `or`/`xor` at 0.
+    name: 'reduce-bitwise-multi',
+    source: `fn main(){
+  let N = 27; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * 2654435761; }
+  let x = 0; let o = 0; let n = -1;
+  for (let i = 0; i < N; i = i + 1) { x = x ^ a[i]; o = o | a[i]; n = n & a[i]; }
+  print(x); print(o); print(n);
+}`,
+  },
+  {
+    // Dot product: an elementwise store kernel (c[i] = a[i]*b[i]) and a sum
+    // reduction (dot += a[i]*b[i]) in the SAME loop — map and fold widened together.
+    name: 'reduce-dot-product',
+    source: `fn main(){
+  let N = 26; let a = int_array(N); let b = int_array(N); let c = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * 3 - 5; b[i] = 7 - i; }
+  let dot = 0;
+  for (let i = 0; i < N; i = i + 1) { c[i] = a[i] * b[i]; dot = dot + a[i] * b[i]; }
+  for (let i = 0; i < N; i = i + 1) { print(c[i]); }
+  print(dot);
+}`,
+  },
+  {
+    // The contribution is a non-trivial elementwise expression over two arrays.
+    name: 'reduce-expr-contribution',
+    source: `fn main(){
+  let N = 21; let a = int_array(N); let b = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * i; b[i] = i + 1; }
+  let s = 0; for (let i = 0; i < N; i = i + 1) { s = s + (a[i] * b[i] - a[i]); }
+  print(s);
+}`,
+  },
+  {
+    // Runtime trip count (n is a parameter, not a constant), swept across every
+    // residue mod 4 including the all-remainder lengths 0..3 — the ragged-tail
+    // path where the vector body may run zero times and the original loop mops up.
+    name: 'reduce-runtime-bound',
+    source: `fn sumto(n: int) -> int {
+  let a = int_array(n + 1);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * i - i; }
+  let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; }
+  return s;
+}
+fn main(){ for (let k = 0; k < 11; k = k + 1) { print(sumto(k)); } }`,
+  },
+  {
+    // Accumulator initial value is itself a runtime quantity carried in from a
+    // parameter — the exit fold must thread it through the horizontal reduce.
+    name: 'reduce-runtime-init',
+    source: `fn fold(n: int, seed: int) -> int {
+  let a = int_array(n + 1);
+  for (let i = 0; i < n; i = i + 1) { a[i] = (i * 1103515245 + 12345); }
+  let acc = seed; for (let i = 0; i < n; i = i + 1) { acc = acc ^ a[i]; }
+  return acc;
+}
+fn main(){ for (let k = 0; k < 9; k = k + 1) { print(fold(k * 2 + 1, k * 777)); } }`,
+  },
+  {
+    // A reduction over a SUBTRACTION is not a commutative monoid, so the pass
+    // declines it (sub is excluded from REDUCE_OPS). This must still be correct —
+    // it just runs as the scalar loop. A guard that the decline path is sound.
+    name: 'reduce-decline-sub',
+    source: `fn main(){
+  let N = 17; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = i * 5 - 3; }
+  let s = 1000; for (let i = 0; i < N; i = i + 1) { s = s - a[i]; }
+  print(s);
+}`,
+  },
+  {
+    // A FLOAT sum is declined (f32 add is not associative under rounding), so the
+    // sequential scalar order is preserved — the only order that matches -O0.
+    name: 'reduce-decline-float',
+    source: `fn main(){
+  let N = 20; let a = f32_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = f32(i) * f32(0.1) - f32(1.0); }
+  let s = f32(0.0); for (let i = 0; i < N; i = i + 1) { s = s + a[i]; }
+  print(s);
+}`,
+  },
+  {
+    // Two accumulators that read the same array — independent folds sharing a load.
+    name: 'reduce-shared-load',
+    source: `fn main(){
+  let N = 33; let a = int_array(N);
+  for (let i = 0; i < N; i = i + 1) { a[i] = (i * 31 + 7) & 1023; }
+  let s = 0; let q = 0;
+  for (let i = 0; i < N; i = i + 1) { s = s + a[i]; q = q + a[i] * a[i]; }
+  print(s); print(q);
+}`,
+  },
 ];

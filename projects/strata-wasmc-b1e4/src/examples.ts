@@ -402,7 +402,7 @@ fn main() {
   {
     id: 'autovec',
     title: 'Auto-vectorization (SIMD)',
-    blurb: 'Write a plain scalar array loop; the optimizer discovers the data parallelism and emits real f32x4 / i32x4 v128.load → lanewise arith → v128.store. Compare -O0 vs -O3 in the WASM/CFG tabs — and read the Optimizer panel for the vectorize pass.',
+    blurb: 'Write a plain scalar array loop; the optimizer discovers the data parallelism and emits real f32x4 / i32x4 v128.load → lanewise arith → v128.store. Elementwise MAPS and integer REDUCTIONS (sum/product/and/or/xor, folded 4 lanes at a time + a horizontal reduce) both widen. Compare -O0 vs -O3 in the WASM/CFG tabs — and read the Optimizer panel for the vectorize pass.',
     source: `// These are ORDINARY scalar loops — no SIMD types, no intrinsics. At -O2+ the
 // auto-vectorizer recognizes each counted "a[i] = f(a[i], b[i], …)" loop, proves
 // the four iterations independent, and runs four lanes at once: one v128.load per
@@ -411,8 +411,12 @@ fn main() {
 // 'v128.load' / 'f32x4.mul'; flip to -O0 to see the scalar loads it replaced. The
 // Verify tab proves the vectorized code matches the interpreter at every -O level.
 
-// Sum the elements of an i32 array (a plain reduction — left scalar on purpose:
-// horizontal reduce isn't vectorized, only the elementwise maps below are).
+// Sum the elements of an i32 array. This is a REDUCTION — the accumulator is
+// loop-carried — yet it still vectorizes: four partial sums run in the four lanes
+// (vacc = vacc + v128.load a), then a single horizontal reduce (four
+// i32x4.extract_lane + three adds) collapses them at loop exit. It is bit-exact
+// because i32 add wraps mod 2^32, so it is associative+commutative — the lanes may
+// be summed in any order. (f32 sums are NOT, so they stay scalar; see below.)
 fn isum(a: int[], n: int) -> int { let s = 0; for (let i = 0; i < n; i = i + 1) { s = s + a[i]; } return s; }
 
 fn main() {
@@ -427,6 +431,13 @@ fn main() {
   for (let i = 0; i < n; i = i + 1) { a[i] = i - 11; b[i] = i * 2 + 1; }
   for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * b[i] + a[i]; }
   print(isum(c, n));                   // 671
+
+  // A MAP and a REDUCTION fused in one loop: the dot product a·b. The same v128
+  // loads feed both the elementwise product (stored to c) and a sum accumulator
+  // (dot), which widens into a lane vector and is horizontally reduced at exit.
+  let dot = 0;
+  for (let i = 0; i < n; i = i + 1) { dot = dot + a[i] * b[i]; }
+  print(dot);                          // ⟨a, b⟩
 
   // A single-precision SAXPY y[i] = α·x[i] + y[i]: α is splatted across a lane,
   // then f32x4.mul + f32x4.add. Floating-point lanes round to single precision

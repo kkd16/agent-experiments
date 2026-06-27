@@ -238,7 +238,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
       <div className="pass-legend">
         <b>Pipeline:</b>{comp.level >= 2 ? ' tail-call → loop → function inlining (pre-SSA) → ' : ' '}
         copy-propagation → sparse conditional constant propagation →
-        {comp.level >= 2 ? ' auto-vectorization (a counted array loop a[i]=f(a[i],b[i],…) widened to 4-wide v128.load → lanewise i32x4/f32x4 → v128.store, with a scalar remainder loop) →' : ''}
+        {comp.level >= 2 ? ' auto-vectorization (a counted array loop a[i]=f(a[i],b[i],…) widened to 4-wide v128.load → lanewise i32x4/f32x4 → v128.store, with a scalar remainder loop; integer reductions s⊕=a[i] fold four lanes at a time and horizontally reduce at exit) →' : ''}
         {comp.level >= 2 ? ' loop unswitching (a loop-invariant if(C) is hoisted above the loop, which is cloned into two branch-free specialized versions) →' : ''}
         {' '}devirtualization →
         {comp.level >= 2 ? ' full loop unrolling (induction-variable + trip-count analysis) →' : ''}
