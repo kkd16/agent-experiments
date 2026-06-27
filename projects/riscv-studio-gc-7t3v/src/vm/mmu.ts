@@ -28,6 +28,54 @@ export const CAUSE = {
   STORE_PAGE_FAULT: 15,
 } as const;
 
+// --- interrupt causes (the cause code with mcause/scause bit 31 set) -------
+// Bit positions in mip/mie double as the interrupt cause codes.
+export const IRQ = {
+  S_SOFT: 1,
+  M_SOFT: 3,
+  S_TIMER: 5,
+  M_TIMER: 7,
+  S_EXT: 9,
+  M_EXT: 11,
+} as const;
+
+/** mip/mie field bits (one per interrupt; the bit index *is* the cause code). */
+export const MIP = {
+  SSIP: 1 << IRQ.S_SOFT,
+  MSIP: 1 << IRQ.M_SOFT,
+  STIP: 1 << IRQ.S_TIMER,
+  MTIP: 1 << IRQ.M_TIMER,
+  SEIP: 1 << IRQ.S_EXT,
+  MEIP: 1 << IRQ.M_EXT,
+} as const;
+
+/**
+ * The order interrupts are serviced when several are pending at once (RISC-V privileged spec):
+ * external before software before timer, machine before supervisor. The first takeable cause
+ * in this list wins.
+ */
+export const INT_PRIORITY: readonly number[] = [
+  IRQ.M_EXT, IRQ.M_SOFT, IRQ.M_TIMER, IRQ.S_EXT, IRQ.S_SOFT, IRQ.S_TIMER,
+];
+
+/** Human-readable name for an interrupt cause code (mcause/scause with bit 31 set). */
+export function interruptName(code: number): string {
+  switch (code) {
+    case IRQ.S_SOFT: return 'supervisor software interrupt';
+    case IRQ.M_SOFT: return 'machine software interrupt';
+    case IRQ.S_TIMER: return 'supervisor timer interrupt';
+    case IRQ.M_TIMER: return 'machine timer interrupt';
+    case IRQ.S_EXT: return 'supervisor external interrupt';
+    case IRQ.M_EXT: return 'machine external interrupt';
+    default: return `interrupt ${code}`;
+  }
+}
+
+/** Decode any mcause/scause value (the interrupt bit selects the namespace). */
+export function mcauseName(code: number): string {
+  return (code & 0x8000_0000) !== 0 ? interruptName(code & 0x7fff_ffff) : causeName(code & 0x7fff_ffff);
+}
+
 /** Human-readable name for a synchronous exception cause code. */
 export function causeName(code: number): string {
   switch (code) {
@@ -55,18 +103,33 @@ export const MSTATUS = {
   MPRV: 1 << 17,
   SUM: 1 << 18,
   MXR: 1 << 19,
+  TVM: 1 << 20, // trap satp access + sfence.vma in S-mode
+  TW: 1 << 21, // trap wfi below M-mode
+  TSR: 1 << 22, // trap sret in S-mode
 } as const;
 
 /** Every mstatus bit this machine models — the writable mask for the CSR. */
 export const MSTATUS_MASK =
   MSTATUS.SIE | MSTATUS.MIE | MSTATUS.SPIE | MSTATUS.MPIE | MSTATUS.SPP | MSTATUS.MPP |
-  MSTATUS.MPRV | MSTATUS.SUM | MSTATUS.MXR;
+  MSTATUS.MPRV | MSTATUS.SUM | MSTATUS.MXR | MSTATUS.TVM | MSTATUS.TW | MSTATUS.TSR;
 
 /** The subset of mstatus visible through (and writable via) the sstatus alias. */
 export const SSTATUS_MASK = MSTATUS.SIE | MSTATUS.SPIE | MSTATUS.SPP | MSTATUS.SUM | MSTATUS.MXR;
 
 /** Supervisor-visible interrupt bits for the sie/sip aliases (SSI=1, STI=5, SEI=9). */
 export const S_INT_MASK = (1 << 1) | (1 << 5) | (1 << 9);
+
+// --- CSR address encoding (privilege + writability live in the number) -----
+// A CSR address encodes its access policy: bits [9:8] = lowest privilege that may access it,
+// and bits [11:10] = 11 means read-only (no instruction may write it).
+/** Lowest privilege level allowed to access a CSR, from its address. */
+export function csrMinPriv(addr: number): number {
+  return (addr >>> 8) & 3;
+}
+/** Whether a CSR address denotes a read-only register (writes are illegal). */
+export function csrIsReadOnly(addr: number): boolean {
+  return ((addr >>> 10) & 3) === 3;
+}
 
 // --- satp + Sv32 page-table entries ----------------------------------------
 export const SATP_MODE_SV32 = 0x8000_0000; // MODE = 1 in bit 31

@@ -324,16 +324,94 @@ a teachable MMU with a live walk visualizer.
   with a live page-table-walk visualizer, an Sv32 example with an M-mode supervisor-call gate, a
   docs section, and time-travel over all the new state. 80 self-tests green; gate green. The studio
   is now a full **RV32GC (IMAFDC) + Zicsr machine with M/S/U privilege and Sv32 paging**.
+- 2026-06-27 (claude / claude-opus-4-8): shipped **Milestone P (completing the privileged
+  architecture)** — the privileged ISA is no longer "relaxed". (1) A **full interrupt subsystem**:
+  all six standard sources (M/S × software/timer/external) modelled across `mip`/`mie`; the CLINT
+  `msip` register (a self-IPI → `mip.MSIP`); the **Sstc** `stimecmp`/`stimecmph` CSRs driving a
+  genuine supervisor timer interrupt with no M-mode mediation; and a generalised trap-entry that
+  picks the highest-priority takeable interrupt (MEI>MSI>MTI>SEI>SSI>STI) with correct per-mode
+  gating + `mideleg` delegation, replacing the single MTIP check. (2) **CSR access protection** —
+  a below-privilege access (`addr[9:8]`) or a read-only write (`addr[11:10]=11`) raises an
+  illegal-instruction trap, and `mstatus.TVM/TW/TSR` trap `satp`/`sfence.vma`, `wfi` and `sret`
+  from S-mode. (3) **Hardware-managed A/D bits (Svadu)** — the walk sets Accessed on any access and
+  Dirty on a store, writing the PTE back (sticky → one write per page), which needed the undo
+  journal generalised to **multiple memory writes per step** (also fixing a latent time-travel gap
+  for page-crossing stores). (4) **A real OS demo + two interrupt demos** — `Demand paging` (an
+  S-mode page-fault handler that allocates a fresh frame, installs a leaf PTE, and `sret`s to retry
+  the faulting instruction; sums 1..16 through 16 lazily-mapped pages = 136), `Supervisor timer`
+  (Sstc preemption, cause 5), and `Software interrupt` (a CLINT self-IPI, cause 3). (5) Surface:
+  the register inspector gained a decoded interrupt line (MEI/MSI/MTI/SEI/SSI/STI pending·enable),
+  the supervisor trap-CSR block and `stimecmp`; the docs cover every new CSR, the protection rules,
+  the Svadu A/D story and the three demos. **15 new self-tests (now 95, all green)** cover the
+  CSR privilege/read-only traps, the software/timer interrupts in both modes, the priority order,
+  the Svadu A/D writeback, TVM/TSR enforcement, demand paging, and time-travel over an A-bit
+  writeback. Validated in a **headless-Chromium** run of the live build: the Verify tab reports
+  **95/95 passed** with zero console errors and the new inspector rows render. Gate green
+  (`node scripts/verify-project.mjs riscv-studio-gc-7t3v`).
 
 ### Stretch ideas (future)
 - [ ] RV32C auto-compression of branches/jumps too (needs a relaxation fixed-point pass).
-- [ ] Vectored-interrupt demo + software interrupt (`mip.MSIP` via the CLINT).
+- [x] Vectored-interrupt demo + software interrupt (`mip.MSIP` via the CLINT). *(Milestone P)*
 - [ ] Have the C compiler optionally emit compressed code through the new `rvc` option.
-- [ ] Hardware-managed `A`/`D` bits (Svadu) — today translation ignores them; the walk could
-      set them on access (recording the write for time-travel).
-- [ ] A supervisor **timer interrupt** (`STI`, cause 5) delegated via `mideleg`, plus an
-      `mstatus.TVM`/`TW`/`TSR` trap-virtualization story.
-- [ ] CSR **privilege enforcement** (accessing an M-CSR from S/U → illegal-instruction trap),
-      currently relaxed so plain programs are never surprised.
-- [ ] A larger worked OS demo: a trap-driven page-fault handler that demand-maps a fresh frame.
+- [x] Hardware-managed `A`/`D` bits (Svadu) — the walk now sets them on access, recording the
+      write for time-travel. *(Milestone P)*
+- [x] A supervisor **timer interrupt** (`STI`, cause 5) delegated via `mideleg`, plus the
+      `mstatus.TVM`/`TW`/`TSR` trap-virtualization story. *(Milestone P, via the Sstc `stimecmp`)*
+- [x] CSR **privilege enforcement** (accessing an M-CSR from S/U → illegal-instruction trap) +
+      read-only-write protection. *(Milestone P)*
+- [x] A larger worked OS demo: a trap-driven page-fault handler that demand-maps a fresh frame.
+      *(Milestone P — the `Demand paging` example)*
+
+### Milestone P — completing the privileged architecture *(shipped 2026-06-27)*
+
+Milestone S gave the machine the *structure* of a privileged core (three modes, Sv32, trap
+delegation) but left the privileged ISA deliberately *relaxed*: only the machine **timer**
+interrupt existed, any privilege could touch any CSR, the page-table walk ignored the
+**A**/**D** bits, and there was no OS-shaped program that actually *uses* the trap machinery to
+manage memory. Milestone P closes every one of those gaps so the studio models a real
+privileged hart end-to-end — the hard, teachable parts of an operating-system substrate.
+
+**A full interrupt subsystem (software + timer, both privileges).**
+- [x] Model every standard interrupt-pending/enable bit, not just MTIP: **MSIP**(3), **MTIP**(7),
+      **MEIP**(11), **SSIP**(1), **STIP**(5), **SEIP**(9) across `mip`/`mie` (and the `sip`/`sie`
+      windows). Software-settable bits become writable (`mip.SSIP` from M, `sip.SSIP` from S).
+- [x] **CLINT `msip`** at `CLINT_BASE+0`: writing bit 0 raises/clears the machine **software**
+      interrupt (`mip.MSIP`) — self-IPI, the classic way a core kicks itself or (on real SMP)
+      another hart.
+- [x] **Sstc extension**: `stimecmp`/`stimecmph` CSRs (0x14D/0x15D) that *directly* drive
+      `mip.STIP` from the timer — a genuine **supervisor** timer interrupt with no M-mode
+      mediation, exactly as modern Linux uses it.
+- [x] Generalise trap entry to pick the **highest-priority** takeable interrupt per the spec
+      order (MEI, MSI, MTI, SEI, SSI, STI) with correct per-privilege gating *and* `mideleg`
+      delegation, replacing the single-bit MTIP check.
+
+**CSR access protection.** Enforce the encoded access rules: a CSR access below its required
+privilege (`csr[9:8]`) → **illegal-instruction**; a write to a read-only CSR (`csr[11:10]==11`)
+→ illegal; with the right `mstatus` virtualization bits set, `satp`/`sfence.vma`/`sret`/`wfi`
+trap from S. Keep the "unknown CSR reads as zero" studio convenience.
+- [x] `mstatus.TVM`/`TW`/`TSR` modelled + enforced (trap-virtualization story).
+- [x] CSR privilege + read-only + TVM checks in the CSR execute path (tval = the instruction).
+
+**Hardware-managed A/D bits (Svadu).** The live walk now sets the **Accessed** bit on any
+access and the **Dirty** bit on a store, writing the updated PTE back to physical memory —
+sticky, so it costs one write per page and is free thereafter. This needs the undo journal to
+record **multiple** memory writes per step (a PTE update *and* the data store), which also
+fixes a latent time-travel gap for page-crossing stores.
+- [x] Undo journal: one→many memory writes per step.
+- [x] A/D set on translate, TLB carries the PTE address, writeback recorded for time-travel.
+
+**A real OS demo + two interrupt demos.**
+- [x] **`demand`** — demand paging: S-mode page-fault handler that allocates a fresh frame from
+      a pool, maps the faulting page, and `sret`s to retry the access. Touches several unmapped
+      pages, each mapped on first use; prints the running sum it accumulated through them.
+- [x] **`sgtimer`** — preemptive **supervisor** timer (Sstc): a periodic S-timer interrupt
+      preempts a busy loop N times, all in S-mode, no M-mode handler.
+- [x] **`swint`** — machine **software** interrupt: arm `msip` via the CLINT, take the IPI
+      (cause 3), ack by clearing it.
+
+**Surface it.** Register inspector shows the supervisor trap CSRs + a decoded interrupt line
+(MEIP/MTIP/MSIP/SEIP/STIP/SSIP) + `stimecmp`; the ISA docs gain the new CSRs, the protection
+rules, the Svadu A/D story, and the three demos; the verification suite gets a full battery
+(CSR privilege/read-only traps, the software/timer interrupts in both modes, priority order,
+A/D writeback, TVM enforcement, demand paging, and time-travel over all of it).
 

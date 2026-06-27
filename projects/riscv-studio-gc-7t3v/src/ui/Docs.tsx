@@ -127,19 +127,21 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'csrrwi / csrrsi / csrrci', desc: 'the same, with a 5-bit immediate' },
       { m: 'cycle / time / instret', desc: 'read-only hardware counters (plus the high words)' },
       { m: 'fcsr / frm / fflags', desc: 'float control: rounding mode + accrued exceptions' },
+      { m: 'access protection', desc: "below-privilege access (addr[9:8]) or a read-only write (addr[11:10]=11) traps illegal" },
     ],
   },
   {
     title: 'Machine-mode traps & interrupts',
     items: [
-      { m: 'mstatus', desc: 'MIE (global enable), MPIE (previous), MPP (previous mode)' },
+      { m: 'mstatus', desc: 'MIE/MPIE/MPP + MPRV/SUM/MXR + TVM/TW/TSR (trap virtualization)' },
       { m: 'mtvec', desc: 'trap-vector base (+ mode: 0 = direct, 1 = vectored for interrupts)' },
       { m: 'mepc / mcause / mtval', desc: 'saved pc / cause (bit 31 = interrupt) / trap value' },
-      { m: 'mie / mip', desc: 'interrupt enable / pending (MTIE/MTIP = machine timer)' },
+      { m: 'mie / mip', desc: 'enable / pending: M+S software (MSI/SSI), timer (MTI/STI), external (MEI/SEI)' },
       { m: 'mscratch / mhartid / misa', desc: 'scratch word / hart id (0) / ISA id (read-only)' },
       { m: 'mret', desc: 'return from trap: restore MIE from MPIE, jump to mepc' },
-      { m: 'wfi', desc: 'wait-for-interrupt (a no-op here; the timer keeps ticking)' },
+      { m: 'wfi', desc: 'wait-for-interrupt (a no-op here; mstatus.TW traps it below M)' },
       { m: 'mtime / mtimecmp', desc: 'CLINT MMIO 64-bit timer & compare (0x0200_bff8 / 0x0200_4000)' },
+      { m: 'msip', desc: 'CLINT software-interrupt register (0x0200_0000): bit 0 ↔ mip.MSIP (a self-IPI)' },
     ],
   },
   {
@@ -148,10 +150,12 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'satp', desc: 'address translation: MODE[31] (0=Bare, 1=Sv32) · ASID · root PPN[21:0]' },
       { m: 'sstatus', desc: 'a restricted view of mstatus (SIE/SPIE/SPP/SUM/MXR)' },
       { m: 'stvec / sepc / scause / stval', desc: 'supervisor trap vector / pc / cause / value' },
-      { m: 'sie / sip / sscratch', desc: 'supervisor interrupt enable / pending / scratch' },
-      { m: 'medeleg / mideleg', desc: 'cause bitmaps: which traps are handled in S- instead of M-mode' },
-      { m: 'sret', desc: 'return from a supervisor trap: restore SIE from SPIE, drop to SPP' },
-      { m: 'sfence.vma', desc: 'flush the (incoherent) TLB after editing a page table' },
+      { m: 'sie / sip / sscratch', desc: 'supervisor interrupt enable / pending (S may set sip.SSIP) / scratch' },
+      { m: 'stimecmp (Sstc)', desc: 'supervisor timer compare → drives mip.STIP directly, no M-mode mediation' },
+      { m: 'medeleg / mideleg', desc: 'cause bitmaps: which traps/interrupts are handled in S- instead of M-mode' },
+      { m: 'sret', desc: 'return from a supervisor trap: restore SIE from SPIE, drop to SPP (mstatus.TSR traps it)' },
+      { m: 'sfence.vma', desc: 'flush the (incoherent) TLB after editing a page table (mstatus.TVM traps it)' },
+      { m: 'A/D bits', desc: 'the walk sets PTE Accessed on any access and Dirty on a store (Svadu), in hardware' },
     ],
   },
   {
@@ -325,7 +329,7 @@ export default function Docs() {
               </tr>
               <tr>
                 <td className="doc-m">0x02000000</td>
-                <td className="doc-d">CLINT — mtimecmp (+0x4000) &amp; mtime (+0xbff8), the machine timer (MMIO)</td>
+                <td className="doc-d">CLINT — msip (+0x0000), mtimecmp (+0x4000) &amp; mtime (+0xbff8): software + timer interrupts (MMIO)</td>
               </tr>
               <tr>
                 <td className="doc-m">{hexWord(FB_BASE)}</td>
@@ -373,6 +377,25 @@ export default function Docs() {
             <code>satp</code>) to flush it. The MMU tab probes any virtual address and shows the
             walk PTE-by-PTE, the resulting physical address (or fault), and the TLB&rsquo;s
             contents and hit-rate.
+          </p>
+          <p className="docs-intro">
+            <strong>Interrupts &amp; protection.</strong> The machine models all six standard
+            interrupt sources — software (<code>MSI/SSI</code>), timer (<code>MTI/STI</code>) and
+            external (<code>MEI/SEI</code>) at both privileges — decoded live in the register
+            inspector. A <strong>software interrupt</strong> is raised by writing the CLINT{' '}
+            <code>msip</code> register (a self-IPI); the <strong>supervisor timer</strong> uses the{' '}
+            <strong>Sstc</strong> <code>stimecmp</code> CSR, which drives <code>mip.STIP</code>{' '}
+            straight from the timer with no M-mode mediation. When several interrupts are pending the
+            highest-priority takeable one is serviced (external &gt; software &gt; timer; machine
+            &gt; supervisor), honouring per-mode enables and <code>mideleg</code> delegation. CSRs
+            are now <strong>access-protected</strong>: touching a CSR below its required privilege,
+            or writing a read-only one, raises an illegal-instruction trap, and{' '}
+            <code>mstatus.TVM/TW/TSR</code> trap <code>satp</code>/<code>sfence.vma</code>,{' '}
+            <code>wfi</code> and <code>sret</code> from supervisor mode. The page-table walk manages
+            the <code>A</code>/<code>D</code> bits in hardware (Svadu). Three worked examples put it
+            together: <em>Demand paging</em> (a fault handler that maps fresh frames lazily and
+            retries the faulting instruction), the <em>Supervisor timer</em> (Sstc preemption), and
+            a <em>Software interrupt</em> self-IPI.
           </p>
         </section>
 

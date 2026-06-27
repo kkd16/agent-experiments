@@ -16,6 +16,7 @@ import {
   DEFAULT_MAX_STEPS,
   CLINT_BASE,
   CLINT_SIZE,
+  MSIP_BASE,
   MTIMECMP_LO,
   MTIMECMP_HI,
   MTIME_LO,
@@ -48,7 +49,12 @@ import {
   SSTATUS_MASK,
   S_INT_MASK,
   PAGESIZE,
+  PTE,
   CAUSE,
+  MIP,
+  INT_PRIORITY,
+  csrMinPriv,
+  csrIsReadOnly,
   decodePte,
   decodeSatp,
   pageFaultCause,
@@ -59,18 +65,22 @@ import type { Access, WalkTrace, WalkLevel } from './mmu';
 
 export type RunStatus = 'idle' | 'paused' | 'halted' | 'error' | 'ebreak';
 
-// mie / mip field bits we model.
-const IRQ_M_TIMER = 7; // mcause code for a machine timer interrupt
-const MIP_MTIP = 1 << 7;
-const MIE_MTIE = 1 << 7;
+/** The mip bits software may set/clear by writing `mip` from M-mode. */
+const MIP_M_WRITABLE = MIP.SSIP | MIP.STIP | MIP.SEIP;
+/** The mip bits software may set/clear by writing `sip` from S-mode (just SSIP). */
+const MIP_S_WRITABLE = MIP.SSIP;
+/** The mie bits this machine models (all six standard interrupts). */
+const MIE_MASK = MIP.SSIP | MIP.MSIP | MIP.STIP | MIP.MTIP | MIP.SEIP | MIP.MEIP;
 /** misa: MXL=1 (RV32) + the extensions this machine implements (IMAFDCSU). */
 const MISA =
   (1 << 30) | (1 << 0) | (1 << 2) | (1 << 3) | (1 << 5) | (1 << 8) | (1 << 12) | (1 << 18) | (1 << 20);
 
-/** A leaf translation cached in the (incoherent) TLB: the resolved PTE word + its level. */
+/** A leaf translation cached in the (incoherent) TLB: the resolved PTE word, its level, and the
+ * physical address the PTE was read from (so A/D updates can be written back without re-walking). */
 interface TlbEntry {
   pte: number;
   level: number;
+  pteAddr: number;
 }
 
 /** Everything needed to revert exactly one executed instruction. */
@@ -104,9 +114,11 @@ interface UndoStep {
   stval: number;
   satp: number;
   mtimecmp: number;
+  stimecmp: number;
   reg?: { i: number; prev: number };
   freg?: { i: number; prevLo: number; prevHi: number };
-  mem?: { addr: number; prev: number[] };
+  /** Every memory region this step overwrote (data store + any page-table A/D writeback). */
+  mems?: { addr: number; prev: number[] }[];
 }
 
 const SP = 2;
@@ -148,8 +160,14 @@ export class Cpu {
   /** Trap-delegation registers: which exceptions/interrupts are handled in S-mode. */
   medeleg = 0;
   mideleg = 0;
-  /** 64-bit timer compare; the timer interrupt fires when `cycles ≥ mtimecmp`. */
+  /** 64-bit timer compare; the machine timer interrupt fires when `cycles ≥ mtimecmp`. */
   mtimecmp = Number.POSITIVE_INFINITY;
+  /**
+   * Sstc supervisor timer compare. When finite it *directly* drives `mip.STIP` from the timer
+   * (a supervisor timer interrupt with no M-mode mediation); left at +∞ it is disabled and
+   * `mip.STIP` stays software-controlled.
+   */
+  stimecmp = Number.POSITIVE_INFINITY;
 
   // --- supervisor-mode trap CSRs + virtual memory (Sv32) --------------------
   stvec = 0;
@@ -244,6 +262,7 @@ export class Cpu {
     this.tlbHits = 0;
     this.tlbMisses = 0;
     this.mtimecmp = Number.POSITIVE_INFINITY;
+    this.stimecmp = Number.POSITIVE_INFINITY;
     this.regs[SP] = STACK_TOP | 0;
     this.regs[GP] = GLOBAL_POINTER | 0;
     this.pc = this.entry >>> 0;
@@ -331,7 +350,7 @@ export class Cpu {
     if (!this.rec) return;
     const prev: number[] = [];
     for (let i = 0; i < size; i++) prev.push(this.mem.readByte(addr + i));
-    this.rec.mem = { addr: addr >>> 0, prev };
+    (this.rec.mems ??= []).push({ addr: addr >>> 0, prev });
   }
 
   /** OR accrued exception flags into fcsr[4:0]. */
@@ -354,8 +373,9 @@ export class Cpu {
     // Service the timer and take any pending, enabled interrupt *before* fetching — a trap
     // is its own step (no instruction retires) so the handler sees the interrupted pc in mepc.
     this.updateTimer();
-    if (this.interruptPending()) {
-      this.takeInterrupt(IRQ_M_TIMER);
+    const irq = this.pendingInterruptCause();
+    if (irq >= 0) {
+      this.takeInterrupt(irq);
       if (this.rec) this.commitRecord();
       return true;
     }
@@ -413,10 +433,15 @@ export class Cpu {
 
   // --- traps & interrupts (machine mode) ------------------------------------
 
-  /** Recompute the timer-interrupt-pending bit from the free-running timer vs. mtimecmp. */
+  /** Recompute the timer-driven interrupt-pending bits from the free-running timer. */
   private updateTimer(): void {
-    if (this.cycles >= this.mtimecmp) this.mip |= MIP_MTIP;
-    else this.mip &= ~MIP_MTIP;
+    if (this.cycles >= this.mtimecmp) this.mip |= MIP.MTIP;
+    else this.mip &= ~MIP.MTIP;
+    // Sstc: when stimecmp is armed (finite) it owns STIP; otherwise STIP stays software-set.
+    if (Number.isFinite(this.stimecmp)) {
+      if (this.cycles >= this.stimecmp) this.mip |= MIP.STIP;
+      else this.mip &= ~MIP.STIP;
+    }
   }
 
   /** Read the CLINT MMIO window (mtime / mtimecmp), or null if the address is elsewhere. */
@@ -424,6 +449,8 @@ export class Cpu {
     if (addr < CLINT_BASE || addr >= CLINT_BASE + CLINT_SIZE) return null;
     const cmp = Number.isFinite(this.mtimecmp) ? this.mtimecmp : 0xffff_ffff_ffff;
     switch (addr) {
+      case MSIP_BASE:
+        return (this.mip & MIP.MSIP) !== 0 ? 1 : 0;
       case MTIME_LO:
         return this.cycles >>> 0;
       case MTIME_HI:
@@ -441,6 +468,12 @@ export class Cpu {
   private clintWrite(addr: number, value: number): boolean {
     if (addr < CLINT_BASE || addr >= CLINT_BASE + CLINT_SIZE) return false;
     const v = value >>> 0;
+    if (addr === MSIP_BASE) {
+      // Only bit 0 is implemented; it is the machine software interrupt pending bit.
+      if (v & 1) this.mip |= MIP.MSIP;
+      else this.mip &= ~MIP.MSIP;
+      return true;
+    }
     if (addr === MTIMECMP_LO) {
       const hi = Number.isFinite(this.mtimecmp) ? Math.floor(this.mtimecmp / 0x1_0000_0000) : 0;
       this.mtimecmp = hi * 0x1_0000_0000 + v;
@@ -453,16 +486,31 @@ export class Cpu {
   }
 
   /**
-   * Whether the modelled machine timer interrupt is pending and currently takeable. A machine
-   * interrupt is taken whenever the hart runs below M-mode, or in M-mode with `mstatus.MIE` set.
-   * (As a studio convenience we still require a vector — `mtvec ≠ 0` — so plain programs that
-   * never install a handler are never disturbed.)
+   * The highest-priority interrupt that is pending, locally enabled, and globally takeable at the
+   * current privilege — or −1 if none. An interrupt with cause `i` targets S-mode when it occurs
+   * at privilege ≤ S and `mideleg[i]` is set, otherwise M-mode; it is taken when running *below*
+   * the target mode, or *in* the target mode with that mode's global interrupt-enable set. Ties
+   * are broken by the spec priority order (external > software > timer; machine > supervisor).
+   * (Studio convenience preserved: we require the target's trap vector to be installed, so a plain
+   * program that never opts into traps is never disturbed.)
    */
-  private interruptPending(): boolean {
-    if (this.mtvec === 0) return false;
-    if ((this.mip & this.mie & MIP_MTIP) === 0) return false;
-    if (this.priv < PRIV_M) return true;
-    return (this.mstatus & MSTATUS.MIE) !== 0;
+  private pendingInterruptCause(): number {
+    const active = this.mip & this.mie;
+    if (active === 0) return -1;
+    for (const i of INT_PRIORITY) {
+      if (((active >>> i) & 1) === 0) continue;
+      const deleg = this.priv <= PRIV_S && ((this.mideleg >>> i) & 1) !== 0;
+      const target = deleg ? PRIV_S : PRIV_M;
+      const tvec = target === PRIV_M ? this.mtvec : this.stvec;
+      if (tvec === 0) continue; // no handler installed in the target mode
+      let takeable: boolean;
+      if (this.priv < target) takeable = true;
+      else if (this.priv === target)
+        takeable = (this.mstatus & (target === PRIV_M ? MSTATUS.MIE : MSTATUS.SIE)) !== 0;
+      else takeable = false; // an interrupt for a lower privilege is held while running higher
+      if (takeable) return i;
+    }
+    return -1;
   }
 
   /** Take an interrupt, honouring `mideleg` (machine interrupts normally stay in M-mode). */
@@ -585,7 +633,7 @@ export class Cpu {
         this.raiseTrap(pageFaultCause(access), va);
         return -1;
       }
-      leaf = { pte: w.leaf.pte.raw, level: w.leaf.level };
+      leaf = { pte: w.leaf.pte.raw, level: w.leaf.level, pteAddr: w.leaf.pteAddr };
       this.tlb.set(vpn, leaf);
       this.tlbMisses++;
     } else {
@@ -597,7 +645,24 @@ export class Cpu {
       this.raiseTrap(pageFaultCause(access), va);
       return -1;
     }
+    this.updateAccessedDirty(leaf, access);
     return pa;
+  }
+
+  /**
+   * Svadu-style hardware management of the **Accessed** and **Dirty** PTE bits: set A on any
+   * access and D on a store, writing the updated PTE word back to physical memory. The bits are
+   * sticky, so this costs exactly one memory write the first time a page is touched (and is then
+   * free), and the cached TLB entry is updated so a later store on the same page doesn't re-walk.
+   * The writeback is recorded in the undo journal alongside any data store this same step.
+   */
+  private updateAccessedDirty(leaf: TlbEntry, access: Access): void {
+    let np = leaf.pte | PTE.A;
+    if (access === 'store') np |= PTE.D;
+    if (np === leaf.pte) return; // already set — nothing to do (the common, steady-state case)
+    this.recordMem(leaf.pteAddr, 4);
+    this.mem.writeWord(leaf.pteAddr, np);
+    leaf.pte = np >>> 0; // keep the TLB copy current so we don't rewrite it next time
   }
 
   /**
@@ -627,7 +692,11 @@ export class Cpu {
     va: number,
     rootPpn: number,
     record: boolean,
-  ): { levels: WalkLevel[]; leaf?: { pte: ReturnType<typeof decodePte>; level: number }; fault?: boolean } {
+  ): {
+    levels: WalkLevel[];
+    leaf?: { pte: ReturnType<typeof decodePte>; level: number; pteAddr: number };
+    fault?: boolean;
+  } {
     const levels: WalkLevel[] = [];
     let a = (rootPpn * PAGESIZE) >>> 0;
     for (let i = 1; i >= 0; i--) {
@@ -636,7 +705,7 @@ export class Cpu {
       const pte = decodePte(this.mem.readWord(pteAddr));
       if (record) levels.push({ level: i, vpn, pteAddr, pte });
       if (!pte.v || (!pte.r && pte.w)) return { levels, fault: true }; // invalid, or W without R
-      if (pte.leaf) return { levels, leaf: { pte, level: i } };
+      if (pte.leaf) return { levels, leaf: { pte, level: i, pteAddr } };
       a = (pte.ppn * PAGESIZE) >>> 0; // a pointer to the next level
     }
     return { levels, fault: true }; // four-byte leaf never found
@@ -793,6 +862,7 @@ export class Cpu {
       stval: this.stval,
       satp: this.satp,
       mtimecmp: this.mtimecmp,
+      stimecmp: this.stimecmp,
     };
   }
 
@@ -830,7 +900,12 @@ export class Cpu {
       this.fregs[u.freg.i] = u.freg.prevLo >>> 0;
       this.fregsHi[u.freg.i] = u.freg.prevHi >>> 0;
     }
-    if (u.mem) for (let i = 0; i < u.mem.prev.length; i++) this.mem.writeByte(u.mem.addr + i, u.mem.prev[i]);
+    // Restore memory writes newest-first, so overlapping regions revert to their true prior bytes.
+    if (u.mems)
+      for (let m = u.mems.length - 1; m >= 0; m--) {
+        const w = u.mems[m];
+        for (let i = 0; i < w.prev.length; i++) this.mem.writeByte(w.addr + i, w.prev[i]);
+      }
     this.pc = u.pc >>> 0;
     this.cycles = u.cycles;
     this.status = u.status;
@@ -857,6 +932,7 @@ export class Cpu {
     this.stval = u.stval;
     this.satp = u.satp;
     this.mtimecmp = u.mtimecmp;
+    this.stimecmp = u.stimecmp;
     // The TLB is just a cache of the (now-restored) page tables; drop it and let it re-fill.
     this.flushTlb();
     if (u.outLen < this.output.length) this.output = this.output.slice(0, u.outLen);
@@ -1072,16 +1148,26 @@ export class Cpu {
         this.status = 'ebreak';
         return false;
       case 'mret':
+        if (this.priv < PRIV_M) return this.trapOrFail(d.raw, 'mret executed outside machine mode');
         this.mret();
         return true;
       case 'sret':
+        if (this.priv < PRIV_S) return this.trapOrFail(d.raw, 'sret executed outside supervisor mode');
+        if (this.priv === PRIV_S && this.mstatus & MSTATUS.TSR)
+          return this.trapOrFail(d.raw, 'sret trapped by mstatus.TSR');
         this.sret();
         return true;
       case 'sfence.vma':
+        if (this.priv < PRIV_S) return this.trapOrFail(d.raw, 'sfence.vma executed outside supervisor mode');
+        if (this.priv === PRIV_S && this.mstatus & MSTATUS.TVM)
+          return this.trapOrFail(d.raw, 'sfence.vma trapped by mstatus.TVM');
         this.flushTlb();
         return false;
       case 'wfi':
-        return false; // single-hart: behaves as a no-op (the timer keeps ticking)
+        // Single-hart: a no-op (the timer keeps ticking). mstatus.TW traps it below M-mode.
+        if (this.priv < PRIV_M && this.mstatus & MSTATUS.TW)
+          return this.trapOrFail(d.raw, 'wfi trapped by mstatus.TW');
+        return false;
       case 'fence':
         return false;
 
@@ -1480,6 +1566,10 @@ export class Cpu {
       case 0x144:
         this.updateTimer();
         return this.mip & S_INT_MASK; // sip
+      case 0x14d: // stimecmp (Sstc) — low word
+        return Number.isFinite(this.stimecmp) ? this.stimecmp >>> 0 : 0xffff_ffff;
+      case 0x15d: // stimecmph (Sstc) — high word
+        return Number.isFinite(this.stimecmp) ? Math.floor(this.stimecmp / 0x1_0000_0000) >>> 0 : 0xffff_ffff;
       case 0x180:
         return this.satp | 0;
       // --- machine-mode trap CSRs ---
@@ -1547,7 +1637,22 @@ export class Cpu {
       case 0x143:
         this.stval = v | 0;
         break;
-      // sip: the modelled interrupt bits are timer-driven (read-only); writes are ignored.
+      case 0x144: // sip — S-mode may set/clear only its own software-interrupt pending bit
+        this.mip = (this.mip & ~MIP_S_WRITABLE) | (v & MIP_S_WRITABLE);
+        break;
+      case 0x14d: {
+        // stimecmp (Sstc) low word — arming a finite compare puts STIP under the timer's control.
+        const hi = Number.isFinite(this.stimecmp) ? Math.floor(this.stimecmp / 0x1_0000_0000) : 0;
+        this.stimecmp = hi * 0x1_0000_0000 + v;
+        this.updateTimer();
+        break;
+      }
+      case 0x15d: {
+        const lo = Number.isFinite(this.stimecmp) ? this.stimecmp >>> 0 : 0;
+        this.stimecmp = v * 0x1_0000_0000 + lo;
+        this.updateTimer();
+        break;
+      }
       case 0x180:
         this.satp = v | 0; // changing the address space invalidates cached translations
         this.flushTlb();
@@ -1563,7 +1668,7 @@ export class Cpu {
         this.mideleg = v | 0;
         break;
       case 0x304:
-        this.mie = v & (MIE_MTIE | S_INT_MASK);
+        this.mie = v & MIE_MASK;
         break;
       case 0x305:
         this.mtvec = v | 0;
@@ -1580,7 +1685,11 @@ export class Cpu {
       case 0x343:
         this.mtval = v | 0;
         break;
-      // mip.MTIP is read-only here (driven by the timer); mip writes are ignored.
+      case 0x344:
+        // mip — the hardware-driven bits (MSIP/MTIP/MEIP) are read-only; software may set the
+        // supervisor-injected pending bits (SSIP/STIP/SEIP).
+        this.mip = (this.mip & ~MIP_M_WRITABLE) | (v & MIP_M_WRITABLE);
+        break;
       default:
         break; // counters / read-only / unknown CSRs ignore writes
     }
@@ -1588,6 +1697,20 @@ export class Cpu {
 
   private executeCsr(d: DecodedInstruction): boolean {
     const addr = d.imm & 0xfff;
+    const m = d.mnemonic;
+    // Does this access actually write the CSR? csrrw/csrrwi always do; the set/clear forms write
+    // only with a nonzero source operand (so `csrr` = `csrrs rd, csr, x0` is a pure read).
+    const writes =
+      m === 'csrrw' || m === 'csrrwi' || ((m === 'csrrs' || m === 'csrrc') && d.rs1 !== 0) ||
+      ((m === 'csrrsi' || m === 'csrrci') && (d.rs1 & 0x1f) !== 0);
+    // --- CSR access protection (privilege, writability, trap-virtualization) ---
+    if (this.priv < csrMinPriv(addr))
+      return this.trapOrFail(d.raw, `CSR access at ${privName(this.priv)}-mode below required ${privName(csrMinPriv(addr))}-mode`);
+    if (writes && csrIsReadOnly(addr))
+      return this.trapOrFail(d.raw, `write to read-only CSR 0x${addr.toString(16)}`);
+    if (addr === 0x180 && this.priv === PRIV_S && this.mstatus & MSTATUS.TVM)
+      return this.trapOrFail(d.raw, 'satp access trapped by mstatus.TVM');
+
     const old = this.readCsr(addr);
     // For the immediate variants the 5-bit zimm rides in the rs1 field.
     const imm = d.rs1 & 0x1f;

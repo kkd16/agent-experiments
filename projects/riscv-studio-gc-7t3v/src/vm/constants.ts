@@ -25,6 +25,12 @@ export const GLOBAL_POINTER = DATA_BASE;
  */
 export const CLINT_BASE = 0x0200_0000;
 export const CLINT_SIZE = 0x0001_0000;
+/**
+ * `msip` for hart 0 — the machine **software** interrupt pending bit, memory-mapped. Writing
+ * bit 0 raises (or, with 0, clears) `mip.MSIP`; this is how a hart sends itself (or, on real
+ * SMP, another hart) an inter-processor interrupt. Matches the SiFive CLINT layout.
+ */
+export const MSIP_BASE = CLINT_BASE + 0x0000;
 export const MTIMECMP_LO = CLINT_BASE + 0x4000;
 export const MTIMECMP_HI = CLINT_BASE + 0x4004;
 export const MTIME_LO = CLINT_BASE + 0xbff8;

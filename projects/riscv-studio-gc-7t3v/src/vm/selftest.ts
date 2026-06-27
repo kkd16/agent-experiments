@@ -1761,6 +1761,456 @@ const TESTS: Test[] = [
       eq(cpu.status, 'halted', 'status');
     },
   },
+
+  // ===== Milestone P — completing the privileged architecture =====
+  {
+    name: 'priv: a CSR access below its required privilege traps illegal (S reads mstatus)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, mh
+          csrw mtvec, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800           # MPP <- S
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          csrr t0, mstatus       # S-mode reads an M-CSR (0x300) -> illegal instruction
+          li a0, 99              # (never reached)
+          li a7, 1
+          ecall
+        mh:
+          csrr a0, mcause
+          andi a0, a0, 0x7f      # 2 = illegal instruction
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'illegal-instruction cause from a below-privilege CSR access');
+    },
+  },
+  {
+    name: 'priv: writing a read-only CSR traps illegal (csrw cycle)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, mh
+          csrw mtvec, t0
+          li t0, 5
+          csrw cycle, t0         # cycle (0xc00) is read-only -> illegal even in M-mode
+          li a0, 99
+          li a7, 1
+          ecall
+        mh:
+          csrr a0, mcause
+          andi a0, a0, 0x7f
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'illegal-instruction cause from a read-only CSR write');
+    },
+  },
+  {
+    name: 'priv: a pure CSR read of a read-only counter is allowed (rdcycle)',
+    fn: () => {
+      // The same instruction class with rs1=x0 performs no write, so it must NOT trap.
+      const cpu = run(`
+        main:
+          la t0, mh
+          csrw mtvec, t0
+          rdcycle a0             # csrrs a0, cycle, x0 — a read, never a write
+          li a7, 10
+          ecall
+        mh:
+          li a0, 999
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.status, 'halted', 'rdcycle did not trap');
+      assert(!cpu.output.includes('999'), 'handler must not have run');
+    },
+  },
+  {
+    name: 'interrupts: a machine software interrupt (msip) is taken with mcause = 3',
+    fn: () => {
+      const cpu = run(`
+        .equ MSIP, 0x02000000
+        main:
+          la t0, h
+          csrw mtvec, t0
+          li t0, 0x8             # mie.MSIE
+          csrs mie, t0
+          csrsi mstatus, 0x8     # mstatus.MIE
+          li t0, MSIP
+          li t1, 1
+          sw t1, 0(t0)           # raise mip.MSIP
+          nop                    # the IPI preempts here
+          mv a0, s0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        h:
+          csrr s0, mcause
+          andi s0, s0, 0x7f      # 3 = machine software interrupt
+          li t0, MSIP
+          sw zero, 0(t0)         # ack
+          mret
+      `);
+      eq(cpu.output, '3', 'machine software interrupt cause');
+    },
+  },
+  {
+    name: 'interrupts: priority — MSI is taken before MTI when both are pending',
+    fn: () => {
+      const cpu = run(`
+        .equ MSIP, 0x02000000
+        .equ MTIMECMP, 0x02004000
+        main:
+          la t0, h
+          csrw mtvec, t0
+          li t2, MTIMECMP
+          sw zero, 0(t2)         # mtimecmp = 0 -> MTIP pending (cycles >= 0)
+          li t0, MSIP
+          li t1, 1
+          sw t1, 0(t0)           # MSIP pending too
+          li t0, 0x88            # enable MTIE + MSIE
+          csrs mie, t0
+          csrsi mstatus, 0x8
+          nop                    # both pending; the higher-priority one wins
+          li a7, 10
+          ecall
+        h:
+          csrr a0, mcause
+          andi a0, a0, 0x7f      # expect 3 (software) before 7 (timer)
+          li t0, MSIP
+          sw zero, 0(t0)
+          li t1, MTIMECMP
+          li t2, -1
+          sw t2, 0(t1)
+          sw t2, 4(t1)
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '3', 'software interrupt outranks timer');
+    },
+  },
+  {
+    name: 'interrupts: a supervisor software interrupt (SSIP) is delegated and taken (cause 1)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x2             # mideleg bit 1 (SSI) -> S
+          csrw mideleg, t0
+          la t0, gate
+          csrw mtvec, t0
+          la t0, sh
+          csrw stvec, t0
+          li t0, 0x2
+          csrs sie, t0           # enable SSIE
+          li t0, 0x2
+          csrs mip, t0           # raise SSIP (M may write mip.SSIP)
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x802           # MPP <- S, SIE <- 1
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          mv a0, s0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        sh:
+          csrr s0, scause
+          andi s0, s0, 0x7f      # 1 = supervisor software interrupt
+          li t0, 0x2
+          csrc sip, t0           # ack via sip (S may clear SSIP)
+          sret
+        gate:
+          csrr t6, mepc
+          addi t6, t6, 4
+          csrw mepc, t6
+          ecall
+          mret
+      `);
+      eq(cpu.output, '1', 'supervisor software interrupt cause');
+    },
+  },
+  {
+    name: 'interrupts: Sstc supervisor timer (stimecmp) preempts S-mode with cause 5',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x20            # mideleg bit 5 (S timer) -> S
+          csrw mideleg, t0
+          la t0, gate
+          csrw mtvec, t0
+          la t0, sh
+          csrw stvec, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x802           # MPP <- S, SIE <- 1
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          csrr t0, time
+          addi t0, t0, 20
+          csrw stimecmp, t0      # arm the Sstc compare
+          li t0, 0x20
+          csrs sie, t0           # enable STIE
+          li s0, 0
+        spin:
+          beqz s0, spin          # wait to be preempted
+          mv a0, s0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+        sh:
+          csrr s0, scause
+          andi s0, s0, 0x7f      # 5 = supervisor timer interrupt
+          li t0, 0x7FFFFFFF
+          csrw stimecmp, t0      # disarm by pushing the deadline far out
+          sret
+        gate:
+          csrr t6, mepc
+          addi t6, t6, 4
+          csrw mepc, t6
+          ecall
+          mret
+      `);
+      eq(cpu.output, '5', 'supervisor timer interrupt cause via Sstc');
+    },
+  },
+  {
+    name: 'priv: mstatus.TVM traps a satp access in S-mode',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, mh
+          csrw mtvec, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800           # MPP <- S
+          or t0, t0, t1
+          li t1, 0x100000        # mstatus.TVM
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          csrr t0, satp          # satp access in S with TVM -> illegal
+          li a7, 10
+          ecall
+        mh:
+          csrr a0, mcause
+          andi a0, a0, 0x7f
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'TVM makes a supervisor satp access illegal');
+    },
+  },
+  {
+    name: 'priv: mstatus.TSR traps sret in S-mode',
+    fn: () => {
+      const cpu = run(`
+        main:
+          la t0, mh
+          csrw mtvec, t0
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800           # MPP <- S
+          or t0, t0, t1
+          li t1, 0x400000        # mstatus.TSR
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          sret                   # sret in S with TSR -> illegal
+        mh:
+          csrr a0, mcause
+          andi a0, a0, 0x7f
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '2', 'TSR makes a supervisor sret illegal');
+    },
+  },
+  {
+    name: 'Zicsr: stimecmp (Sstc) low word round-trips',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x12340000
+          csrw stimecmp, t0
+          csrr a0, stimecmp
+          li a7, 34
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '0x12340000', 'stimecmp read-back');
+    },
+  },
+  {
+    // A leaf PTE created with A/D clear gets A set by a load and D set by a store (Svadu).
+    name: 'Sv32: the walk sets the Accessed bit on a load and the Dirty bit on a store',
+    fn: () => {
+      const ADTEST = `
+        .equ ROOT, 0x10020000
+        .equ L2,   0x10021000
+        main:
+          li t0, ROOT
+          li t1, 0x000000CF
+          sw t1, 0(t0)
+          li t1, 0x040000CF
+          sw t1, 256(t0)
+          li t1, 0x1FF000CF
+          sw t1, 2044(t0)
+          li t1, 0x04008401      # root[256] -> L2
+          sw t1, 1024(t0)
+          li t0, L2
+          li t1, 0x04008807      # L2[0] -> a frame, V R W, A and D CLEAR
+          sw t1, 0(t0)
+          li t0, 0x80010020
+          csrw satp, t0
+          sfence.vma
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          li t0, 0x40000000
+          lw t1, 0(t0)           # load -> sets A
+          sw t1, 0(t0)           # store -> sets D
+          ebreak
+      `;
+      const result = assemble(ADTEST);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      const L2 = 0x10021000;
+      let g = 0;
+      while (cpu.priv === PRIV_M && g++ < 300) cpu.step();
+      eq(cpu.priv, PRIV_S, 'entered S-mode');
+      eq((cpu.mem.readWord(L2) >>> 6) & 1, 0, 'A clear before any access');
+      // Step until the load sets the Accessed bit.
+      while (((cpu.mem.readWord(L2) >>> 6) & 1) === 0 && g++ < 50) cpu.step();
+      eq((cpu.mem.readWord(L2) >>> 6) & 1, 1, 'A set by the load');
+      eq((cpu.mem.readWord(L2) >>> 7) & 1, 0, 'D still clear after a load');
+      // Step until the store sets the Dirty bit.
+      while (((cpu.mem.readWord(L2) >>> 7) & 1) === 0 && g++ < 50) cpu.step();
+      eq((cpu.mem.readWord(L2) >>> 7) & 1, 1, 'D set by the store');
+    },
+  },
+  {
+    name: 'Sv32: time-travel reverts a hardware A-bit page-table writeback',
+    fn: () => {
+      const ADTEST = `
+        .equ ROOT, 0x10020000
+        .equ L2,   0x10021000
+        main:
+          li t0, ROOT
+          li t1, 0x000000CF
+          sw t1, 0(t0)
+          li t1, 0x040000CF
+          sw t1, 256(t0)
+          li t1, 0x1FF000CF
+          sw t1, 2044(t0)
+          li t1, 0x04008401
+          sw t1, 1024(t0)
+          li t0, L2
+          li t1, 0x04008807      # A/D clear
+          sw t1, 0(t0)
+          li t0, 0x80010020
+          csrw satp, t0
+          sfence.vma
+          csrr t0, mstatus
+          li t1, 0xFFFFE7FF
+          and t0, t0, t1
+          li t1, 0x800
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          li t0, 0x40000000
+          lw t1, 0(t0)           # load -> sets A (a PTE writeback this step)
+          ebreak
+      `;
+      const result = assemble(ADTEST);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      const L2 = 0x10021000;
+      let g = 0;
+      while (((cpu.mem.readWord(L2) >>> 6) & 1) === 0 && g++ < 350) cpu.step();
+      eq((cpu.mem.readWord(L2) >>> 6) & 1, 1, 'A set by the load');
+      cpu.stepBack(); // undo the load — its A-bit writeback must revert
+      eq((cpu.mem.readWord(L2) >>> 6) & 1, 0, 'A reverted by time-travel');
+    },
+  },
+  {
+    name: 'example: demand paging maps 16 fresh frames (sum 1..16 = 136)',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'demand')!.code);
+      assert(cpu.output.includes('= 136'), `demand paging output: ${JSON.stringify(cpu.output)}`);
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'example: supervisor-timer (Sstc) program services 5 ticks',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'stimer')!.code);
+      eq(cpu.output, '5', 'Sstc tick count');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'example: software-interrupt (IPI) program services 4 self-IPIs',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'swint')!.code);
+      eq(cpu.output, '4', 'IPI count');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
 ];
 
 export function runSelfTests(): TestResult[] {
