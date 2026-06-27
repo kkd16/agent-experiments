@@ -28,12 +28,16 @@ import {
   wdlReady,
   probeWdl,
   wdlStats,
+  isKPvK,
+  pawnTbReady,
+  pawnTbStats,
   ROOK,
   QUEEN,
   tbCacheKeys,
   tbCacheClear,
   type GtbVerification,
   type WdlVerification,
+  type PawnTbVerification,
   Accumulator,
   nnueEvalFresh,
   NnueTrainer,
@@ -52,7 +56,7 @@ import {
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'wdl' | 'nnue' | 'arena' | 'checks'
+type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'wdl' | 'pawn' | 'nnue' | 'arena' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -862,6 +866,152 @@ function WdlLab() {
   )
 }
 
+// ---------------- Pawnful KPvK distance-to-mate tablebase ----------------
+
+function PawnTbLab() {
+  const engine = useEngine()
+  const [running, setRunning] = useState(false)
+  const [frac, setFrac] = useState(0)
+  const [phase, setPhase] = useState('')
+  const [report, setReport] = useState<PawnTbVerification | null>(null)
+  const [fromCache, setFromCache] = useState(false)
+  const [cached, setCached] = useState(false)
+
+  const refreshCache = useCallback(() => {
+    tbCacheKeys().then((ks) => setCached(ks.includes('KPvK')))
+  }, [])
+  useEffect(() => {
+    refreshCache()
+  }, [refreshCache])
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    setReport(null)
+    setFrac(0)
+    setPhase('starting')
+    await sleep(30)
+    const before = await tbCacheKeys()
+    const r = await engine.verifyPawnTb({ sample: 120000, games: 3000 }, (f, ph) => {
+      setFrac(f)
+      setPhase(ph)
+    })
+    setFromCache(before.includes('KPvK'))
+    setReport(r)
+    setRunning(false)
+    refreshCache()
+  }, [engine, refreshCache])
+
+  const clearOne = useCallback(async () => {
+    await tbCacheClear('KPvK')
+    refreshCache()
+  }, [refreshCache])
+
+  const s = report?.stats
+  const pct = (n: number) => (s && s.legal > 0 ? ((n / s.legal) * 100).toFixed(1) + '%' : '')
+  const moves = (plies: number) => `${Math.ceil(plies / 2)} moves (${plies} plies)`
+
+  const rows: { name: string; value: string; ok: boolean }[] = report
+    ? [
+        { name: 'Verdict (perfect play)', value: `the pawn side wins ${pct(s!.wins)} of legal positions; the rest are exact draws`, ok: true },
+        { name: 'Legal positions', value: s!.legal.toLocaleString(), ok: true },
+        { name: 'Wins for the pawn side', value: `${s!.wins.toLocaleString()} (${pct(s!.wins)})`, ok: true },
+        { name: 'Drawn positions', value: `${s!.draws.toLocaleString()} (${pct(s!.draws)})`, ok: true },
+        { name: 'Longest forced mate', value: moves(s!.maxDtm), ok: true },
+        {
+          name: 'EXHAUSTIVE WDL agreement vs the kpk bitbase',
+          value: `${(report.oracleChecked - report.oracleMismatch).toLocaleString()} / ${report.oracleChecked.toLocaleString()} agree`,
+          ok: report.oracleMismatch === 0,
+        },
+        {
+          name: 'Bellman optimality (sampled)',
+          value: `${(report.bellmanChecked - report.bellmanBad).toLocaleString()} / ${report.bellmanChecked.toLocaleString()} hold`,
+          ok: report.bellmanBad === 0,
+        },
+        {
+          name: 'Self-play to promotion matches the stored DTM',
+          value: `${report.selfPlayOk.toLocaleString()} / ${report.selfPlayGames.toLocaleString()}`,
+          ok: report.selfPlayBad === 0 && report.selfPlayOk > 0,
+        },
+        { name: 'Cached to IndexedDB', value: fromCache ? 'loaded from cache' : 'built + persisted', ok: true },
+      ]
+    : []
+  const allOk = rows.length > 0 && rows.every((r) => r.ok)
+
+  return (
+    <div className="lab">
+      <div className="lab-intro">
+        <p>
+          The engine's first <strong>pawnful</strong> tablebase. Every other table here is{' '}
+          <em>pawnless</em> — the material never changes. A pawn breaks that: it only moves forward, and it{' '}
+          <strong>promotes</strong>, <em>leaving</em> King + Pawn vs King to become a brand-new K+Q-vs-K or
+          K+R-vs-K position. There is no checkmate in KPvK at all, so <strong>every win flows through a
+          promotion</strong>: the win values are seeded by <strong>promotion edges into the already-solved
+          KQvK / KRvK distance-to-mate tables</strong>. The pawn side queens with the fastest forced mate —
+          and <em>underpromotes to a rook</em> when a queen would only stalemate. The whole ~378-thousand
+          position table is solved in-browser by retrograde analysis (no embedded data) and proven three ways:
+          an <strong>exhaustive</strong> win/draw agreement against the wholly-independent KPK bitbase, Bellman
+          optimality, and optimal self-play whose plies-to-promotion plus the sub-table's mate equal the stored
+          distance.
+        </p>
+        <div className="epd-controls">
+          <button className="btn primary" onClick={run} disabled={running}>
+            {running ? 'Solving…' : 'Build & verify KPvK'}
+          </button>
+          {cached && (
+            <button className="btn" onClick={clearOne} disabled={running}>
+              Clear cache
+            </button>
+          )}
+          {cached && <span className="lab-summary">cached ●</span>}
+          {report && <span className={`lab-summary ${allOk ? 'ok' : 'bad'}`}>{allOk ? 'verified ✓' : 'check failed'}</span>}
+        </div>
+        <p className="tb-note">
+          Once built &amp; verified here it is cached, and the engine plays King + Pawn vs King with literally
+          perfect technique. (The classical KPK bitbase already prevents blunders before you build this.)
+        </p>
+      </div>
+      {running && (
+        <div className="tb-progress">
+          <div className="tb-bar">
+            <div className="tb-fill" style={{ width: `${Math.round(frac * 100)}%` }} />
+          </div>
+          <span className="tb-phase">
+            {phase} — {Math.round(frac * 100)}%
+          </span>
+        </div>
+      )}
+      {report && (
+        <>
+          <table className="lab-table">
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>Value</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} className={`lab-row ${r.ok ? 'pass' : 'fail'}`}>
+                  <td>{r.name}</td>
+                  <td>{r.value}</td>
+                  <td className="lab-status">{r.ok ? '✓' : '✗'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {s!.maxDtm > 0 && s!.maxDtmFen && (
+            <p className="tb-note">
+              A position realising the longest forced win (mate in {Math.ceil(s!.maxDtm / 2)}):{' '}
+              <code>{s!.maxDtmFen}</code>
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------- Correctness self-tests ----------------
 
 interface CheckRow {
@@ -979,6 +1129,21 @@ function runChecks(): CheckRow[] {
     out.push({ group: 'WDL', name: 'KQvKR table resident (build it in the WDL TBs tab)', pass: true, detail: 'not built — optional' })
   }
 
+  // Pawnful KPvK routing + the always-on (bitbase) verdict. The exact-DTM table
+  // builds in the Pawn TB tab; here we check classification and the won/drawn eval
+  // that the classical KPK bitbase already gives before any build.
+  out.push({ group: 'Pawn TB', name: 'K+P vs K is detected as a pawn ending', pass: isKPvK('4k3/8/4K3/4P3/8/8/8/8 w - - 0 1'), detail: 'isKPvK' })
+  out.push({ group: 'Pawn TB', name: 'K+Q vs K is not a KPvK ending', pass: !isKPvK('8/8/8/5k2/8/8/8/Q3K3 w - - 0 1'), detail: 'isKPvK' })
+  const kpWin = evaluate(parseFen('4k3/8/4K3/4P3/8/8/8/8 w - - 0 1'))
+  out.push({ group: 'Pawn TB', name: 'Ke6/Pe5 vs Ke8 → winning for the pawn side', pass: kpWin > 500, detail: String(kpWin) })
+  const kpDraw = evaluate(parseFen('k7/8/8/8/8/8/P7/K7 w - - 0 1'))
+  out.push({ group: 'Pawn TB', name: 'a-pawn, defending king on a8 (cut off) → draw', pass: kpDraw === 0, detail: String(kpDraw) })
+  if (pawnTbReady()) {
+    const st = pawnTbStats()
+    out.push({ group: 'Pawn TB', name: 'exact DTM table resident → KPvK plays perfectly', pass: st.wins > 0 && st.maxDtm > 0, detail: `maxDTM ${st.maxDtm}` })
+  } else {
+    out.push({ group: 'Pawn TB', name: 'exact DTM table resident (build it in the Pawn TB tab)', pass: true, detail: 'not built — optional' })
+  }
   // SAN round-trip: every legal move's notation must parse back to that move.
   const sanFens = [
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
@@ -1435,6 +1600,9 @@ export default function Lab() {
         <button className={mode === 'wdl' ? 'tab active' : 'tab'} onClick={() => setMode('wdl')}>
           WDL TBs
         </button>
+        <button className={mode === 'pawn' ? 'tab active' : 'tab'} onClick={() => setMode('pawn')}>
+          Pawn TB
+        </button>
         <button className={mode === 'nnue' ? 'tab active' : 'tab'} onClick={() => setMode('nnue')}>
           NNUE
         </button>
@@ -1454,6 +1622,7 @@ export default function Lab() {
       {mode === 'tablebase' && <TablebaseLab />}
       {mode === 'gtb' && <EndgamesLab />}
       {mode === 'wdl' && <WdlLab />}
+      {mode === 'pawn' && <PawnTbLab />}
       {mode === 'nnue' && <NnueLab />}
       {mode === 'arena' && <ArenaLab />}
       {mode === 'checks' && <ChecksLab />}

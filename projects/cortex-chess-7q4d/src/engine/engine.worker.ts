@@ -22,6 +22,7 @@ import {
   type Oracle,
 } from './gtb'
 import { verifyWdl, tryLoadWdlFromCache, persistWdl, type WdlVerification } from './wdltb'
+import { verifyPawnTb, tryLoadPawnTbFromCache, persistPawnTb, type PawnTbVerification } from './pawntb'
 import { warmTablebasesFor } from './endgames'
 
 export interface SearchRequest {
@@ -70,6 +71,12 @@ export interface WdlRequest {
   games: number
 }
 
+export interface PawnTbRequest {
+  type: 'pawntb'
+  sample: number
+  games: number
+}
+
 export interface ReviewRequest {
   type: 'review'
   items: { fen: string; history: bigint[] }[]
@@ -93,6 +100,7 @@ export type WorkerRequest =
   | KbnkRequest
   | GtbRequest
   | WdlRequest
+  | PawnTbRequest
   | ReviewRequest
   | SetNnueRequest
 
@@ -109,6 +117,8 @@ export type WorkerOut =
   | { type: 'gtbdone'; report: GtbVerification; cached: boolean }
   | { type: 'wdlprogress'; frac: number; phase: string }
   | { type: 'wdldone'; report: WdlVerification; cached: boolean }
+  | { type: 'pawntbprogress'; frac: number; phase: string }
+  | { type: 'pawntbdone'; report: PawnTbVerification; cached: boolean }
   | { type: 'reviewprogress'; done: number; total: number }
   | { type: 'reviewdone'; nodes: NodeAnalysis[] }
 
@@ -243,6 +253,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     )
     if (!cached) await persistWdl(msg.id)
     post({ type: 'wdldone', report, cached })
+  } else if (msg.type === 'pawntb') {
+    const cached = await tryLoadPawnTbFromCache()
+    const report = verifyPawnTb(
+      { sample: msg.sample, games: msg.games },
+      (frac, phase) => post({ type: 'pawntbprogress', frac, phase }),
+    )
+    if (!cached) await persistPawnTb()
+    post({ type: 'pawntbdone', report, cached })
   } else if (msg.type === 'review') {
     const total = msg.items.length
     const nodes: NodeAnalysis[] = []

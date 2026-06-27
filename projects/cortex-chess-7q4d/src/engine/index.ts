@@ -75,7 +75,18 @@ export {
   WDL_CONFIGS,
 } from './wdltb'
 export type { WdlConfig, WdlStats, WdlVerification, WdlResult, Wdl } from './wdltb'
-export { wdlMatch, endgameMatch } from './endgames'
+export {
+  buildPawnTb,
+  ensurePawnTb,
+  pawnTbReady,
+  pawnTbStats,
+  probePawnKvK,
+  verifyPawnTb,
+  persistPawnTb,
+  tryLoadPawnTbFromCache,
+} from './pawntb'
+export type { PawnTbStats, PawnTbResult, PawnTbVerification } from './pawntb'
+export { wdlMatch, endgameMatch, isKPvK } from './endgames'
 export { tbCacheKeys, tbCacheClear } from './tbcache'
 export { allocateTime, formatClock, TIME_CONTROLS } from './clock'
 export type { TimeControl, TimeBudget } from './clock'

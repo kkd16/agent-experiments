@@ -10,6 +10,7 @@ import { KNIGHT, BISHOP, ROOK, QUEEN } from './board'
 import { GTB_CONFIGS, tryLoadGtbFromCache } from './gtb'
 import { tryLoadKbnkFromCache } from './kbnk'
 import { tryLoadWdlFromCache } from './wdltb'
+import { tryLoadPawnTbFromCache } from './pawntb'
 
 export interface EndgameMatch {
   id: string // generic config id, e.g. 'KBBvK'
@@ -83,9 +84,27 @@ export function wdlMatch(fen: string): string | null {
   return WDL_IDS.has(id) ? id : null
 }
 
+// King + Pawn vs King: exactly one pawn on the board and no other non-king pieces.
+// Served by the pawnful distance-to-mate table (pawntb.ts).
+export function isKPvK(fen: string): boolean {
+  const placement = fen.split(/\s+/)[0]
+  let pawns = 0
+  let others = 0
+  for (const ch of placement) {
+    if (ch === '/' || (ch >= '1' && ch <= '8')) continue
+    if (ch === 'P' || ch === 'p') pawns++
+    else if (ch !== 'K' && ch !== 'k') others++
+  }
+  return pawns === 1 && others === 0
+}
+
 // Warm any cached tablebase that applies to `fen`. Best-effort and cheap: a no-op
 // when the position isn't a supported ending or nothing is cached.
 export async function warmTablebasesFor(fen: string): Promise<void> {
+  if (isKPvK(fen)) {
+    await tryLoadPawnTbFromCache()
+    return
+  }
   const wdl = wdlMatch(fen)
   if (wdl) {
     await tryLoadWdlFromCache(wdl)
