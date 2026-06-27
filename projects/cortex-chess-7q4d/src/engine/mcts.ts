@@ -820,18 +820,22 @@ function moveToUciLocal(m: Move): string {
 }
 
 export function mctsSelftest(): MctsSelftest {
-  const cases: { name: string; fen: string; expect: string; mate: boolean }[] = [
+  const cases: { name: string; fen: string; expect: string; mate: boolean; nodes?: number }[] = [
     // King-and-rook mate in one: Rh1-h8#, the lone king boxed on a8 by Kb6.
     { name: 'mate in 1 (Rh8#)', fen: 'k7/8/1K6/8/8/8/8/7R w - - 0 1', expect: 'h1h8', mate: true },
     // Back-rank mate in one: Re8#.
     { name: 'back-rank mate (Re8#)', fen: '6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1', expect: 'e1e8', mate: true },
+    // A proven *multi-ply* forced mate: the rook-and-rook ladder mate. The solver
+    // must prove every defence loses, then report the exact distance (Ra7, mate-in-3).
+    { name: 'multi-ply forced mate (Ra7)', fen: '6k1/8/8/8/8/8/5PPP/R3R1K1 w - - 0 1', expect: 'a1a7', mate: true, nodes: 8000 },
     // Free queen: White just hangs it; Black must grab it (…Rxd1).
     { name: 'win the queen', fen: '3r2k1/5ppp/8/8/8/8/5PPP/3Q2K1 b - - 0 1', expect: 'd8d1', mate: false },
     // Promote to win: pawn on b7, White to move, b8=Q is best.
     { name: 'promotion (b8=Q)', fen: '8/1P4k1/8/8/8/8/6K1/8 w - - 0 1', expect: 'b7b8q', mate: false },
+    // A two-ply tactic (not a mate): the knight royal fork Ne6-c7+ wins the rook.
+    { name: 'knight fork (Nc7+)', fen: 'r3k3/8/4N3/8/8/8/8/4K3 w - - 0 1', expect: 'e6c7', mate: false, nodes: 4000 },
   ]
 
-  const opt: MctsOptions = { ...MCTS_DEFAULTS, maxNodes: 1600, policy: 'eval1', evalSource: 'classical', cpuct: 2.0 }
   const out: MctsSelftestCase[] = []
   let allMovesPass = true
   let priorsNormalised = true
@@ -840,6 +844,13 @@ export function mctsSelftest(): MctsSelftest {
   let pvLegal = true
 
   for (const c of cases) {
+    const opt: MctsOptions = {
+      ...MCTS_DEFAULTS,
+      maxNodes: c.nodes ?? 1600,
+      policy: 'eval1',
+      evalSource: 'classical',
+      cpuct: 2.0,
+    }
     const r = mctsSearch(c.fen, opt, null)
     const got = r.bestMove !== null ? moveToUciLocal(r.bestMove) : '(none)'
     const movePass = c.expect === '' ? true : got === c.expect
