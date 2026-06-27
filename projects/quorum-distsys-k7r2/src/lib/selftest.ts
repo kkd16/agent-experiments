@@ -58,6 +58,9 @@ import { DEFAULT_SNAP_CONFIG, type SnapCmd, type SnapState } from '../protocols/
 import { createMutex } from '../protocols/mutex/mutex';
 import { mutexInvariants, mutexGauge } from '../protocols/mutex/invariants';
 import { DEFAULT_MUTEX_CONFIG, type MutexCmd, type MutexState } from '../protocols/mutex/types';
+import { createBrb } from '../protocols/brb/brb';
+import { brbInvariants, brbGauge } from '../protocols/brb/invariants';
+import { faultBudget as brbFaultBudget, type BrbCmd, type BrbState } from '../protocols/brb/types';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -2142,6 +2145,78 @@ export function runSelfTests(): TestResult[] {
     }
     const ok = log.length > 5 && inversions === 0;
     return [ok, ok ? `${log.length} grants, all in non-decreasing (ts,id) order — the FIFO total order held` : `grants=${log.length} (ts,id) inversions=${inversions}`];
+  });
+
+  // ---- Bracha reliable broadcast (Byzantine) ----
+  const brbIds = (nNodes: number) => 'ABCDEFGHIJ'.split('').slice(0, nNodes);
+  const brbKernel = (seed: number, nNodes: number) =>
+    new Kernel<BrbState, BrbCmd>({
+      seed,
+      protocol: createBrb(),
+      nodeIds: brbIds(nNodes),
+      network: { minLatency: 10, maxLatency: 60, dropRate: 0 },
+    });
+  const brbAdvance = (k: Kernel<BrbState, BrbCmd>, ticks: number, dt = 10) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+
+  t('Bracha-RB', 'Honest sender, no faults: every correct node delivers the value (totality)', () => {
+    for (const nNodes of [4, 7, 10]) {
+      for (const seed of [1, 2, 3, 7, 13]) {
+        const k = brbKernel(seed, nNodes);
+        k.command(brbIds(nNodes)[0], { type: 'broadcast', value: 'A' });
+        brbAdvance(k, 220);
+        const g = brbGauge(k.views());
+        if (!g.totality || g.value !== 'A' || !brbInvariants(k.views()).every((iv) => iv.ok)) {
+          return [false, `n=${nNodes} seed=${seed}: delivered ${g.delivered}/${g.correctTotal} value=${g.value}`];
+        }
+      }
+    }
+    return [true, 'totality reached on the sender’s value across N=4/7/10 and every seed'];
+  });
+
+  t('Bracha-RB', 'Equivocating Byzantine sender (≤ f): correct nodes never disagree', () => {
+    for (const nNodes of [4, 7, 10]) {
+      const f = brbFaultBudget(nNodes);
+      for (const seed of [1, 2, 3, 7, 13, 42]) {
+        const k = brbKernel(seed, nNodes);
+        brbIds(nNodes).slice(0, f).forEach((id) => k.command(id, { type: 'byzantine', on: true })); // sender + traitors = f
+        k.command(brbIds(nNodes)[0], { type: 'broadcast', value: 'A' }); // sender is Byzantine → equivocates
+        brbAdvance(k, 320);
+        const inv = brbInvariants(k.views());
+        const bad = inv.find((iv) => !iv.ok);
+        if (bad) return [false, `n=${nNodes} f=${f} seed=${seed}: ${bad.name} — ${bad.detail}`];
+      }
+    }
+    return [true, 'Agreement & justified-delivery held against an equivocating sender with f Byzantine, across N=4/7/10'];
+  });
+
+  t('Bracha-RB', 'Honest sender with f Byzantine echoers: still totality', () => {
+    let good = 0;
+    const seeds = [1, 2, 3, 7, 13];
+    const nNodes = 7;
+    const f = brbFaultBudget(nNodes);
+    for (const seed of seeds) {
+      const k = brbKernel(seed, nNodes);
+      brbIds(nNodes).slice(1, 1 + f).forEach((id) => k.command(id, { type: 'byzantine', on: true })); // traitors, not the sender
+      k.command(brbIds(nNodes)[0], { type: 'broadcast', value: 'A' });
+      brbAdvance(k, 320);
+      const g = brbGauge(k.views());
+      if (g.totality && g.value === 'A' && brbInvariants(k.views()).every((iv) => iv.ok)) good++;
+    }
+    return [good === seeds.length, good === seeds.length ? `all ${seeds.length} seeds delivered A to every correct node despite f=${f} Byzantine echoers` : `${good}/${seeds.length} reached totality`];
+  });
+
+  t('Bracha-RB', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = brbKernel(99, 7);
+      brbIds(7).slice(0, 2).forEach((id) => k.command(id, { type: 'byzantine', on: true }));
+      k.command('A', { type: 'broadcast', value: 'A' });
+      brbAdvance(k, 320);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
   });
 
   return out;

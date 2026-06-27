@@ -574,6 +574,31 @@ serves them in that one global order. Implemented on the kernel as `protocols/mu
 - [ ] **Backlog (post-ship):** Ricart–Agrawala (drop RELEASE, defer replies — fewer messages) as a toggle;
       a Maekawa quorum-based variant; a starvation/fairness timeline.
 
+### Bracha reliable-broadcast lab (Byzantine) — NEW
+The foundational Byzantine primitive *beneath* PBFT/HotStuff: **reliable broadcast** of a single
+message such that an **equivocating** sender (one that tells different nodes different things) can never
+split the correct nodes — all deliver the same value or none does. Bracha's 1987 asynchronous algorithm,
+`N ≥ 3f+1`, two amplification rounds. Implemented on the kernel as `protocols/brb/*` + a `BrbLab`.
+
+- [x] **`protocols/brb/{types,brb,invariants}.ts`** — SEND → ECHO (go READY on `> (N+f)/2` echoes of one
+      value) → READY (amplify on `f+1`, **deliver** on `2f+1`), counting distinct senders per value and
+      counting a node's own echo/ready. Byzantine nodes **equivocate** via per-recipient payloads
+      (`ctx.broadcast((peer)=>…)`): a traitor sender sends A to some and B to others; traitor echoers split
+      ECHO/READY. Invariants: **Agreement** (no two correct nodes deliver different values — holds because
+      the echo quorum `>(N+f)/2` admits at most one value) and **Justified delivery** (a delivery is backed
+      by `2f+1` READY); plus a totality/budget gauge.
+- [x] **`labs/BrbLab.tsx`** — the ring colour-coded by phase (idle / echo / ready / **delivered**), the
+      sender ringed gold and traitors amber, SEND/ECHO/READY messages colour+glyph-coded, and a **quorum
+      tally** with per-value ECHO/READY bars and the threshold ticks. "Broadcast A" (honest) vs
+      "Equivocating sender" buttons, a Byzantine-count slider with the live `N≥3f+1` budget pill, and the
+      "push past f → Agreement breaks" demo.
+- [x] **Self-tests** (honest-sender totality across N=4/7/10; equivocating sender with f Byzantine never
+      splits correct nodes; honest sender with f Byzantine echoers still reaches totality; determinism).
+      Suite **107 → 111/111**. Validated separately that beyond the bound (byz=f+1) Agreement does break
+      10/10 seeds — the `3f+1` limit made visible.
+- [ ] **Backlog (post-ship):** Byzantine consistent broadcast (one round, weaker), Dolev–Strong
+      synchronous broadcast with a round slider, and an authenticated (signature) variant.
+
 ### Future labs / ideas (backlog)
 - [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
       two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
@@ -891,3 +916,22 @@ serves them in that one global order. Implemented on the kernel as `protocols/mu
   Chromium: "everyone requests" yields one holder at a time (**★ D in CS · 2 waiting**, panel **HOLDING**),
   the mutex card appears on Home, zero JS/console errors. Three labs shipped this session
   (Snow/Avalanche, Chandy–Lamport, Lamport mutex), each its own merged PR.
+- 2026-06-27 (claude): **added a full Bracha reliable-broadcast lab** — a fourth new lab this session, the
+  Byzantine broadcast primitive beneath PBFT/HotStuff. Three new files (`protocols/brb/{types,brb,
+  invariants}.ts` + `labs/BrbLab.tsx`) on the existing kernel. Implemented Bracha's 1987 algorithm for
+  real: SEND → ECHO (go READY on `>(N+f)/2` echoes) → READY (amplify on `f+1`, deliver on `2f+1`),
+  `N ≥ 3f+1`. Byzantine nodes **equivocate** through per-recipient payloads — a traitor sender sends A to
+  some peers and B to others; traitor echoers split ECHO/READY — and the **Agreement** invariant (no two
+  correct nodes deliver different values) holds anyway because the echo quorum `>(N+f)/2` can be met by at
+  most one value. Second invariant **Justified delivery** (2f+1 READY witness). The lab UI colour-codes
+  nodes by phase, rings the sender gold and traitors amber, animates SEND/ECHO/READY, and draws a
+  **quorum-tally** with per-value ECHO/READY bars and threshold ticks; "Broadcast A" vs "Equivocating
+  sender" buttons and a Byzantine slider with the live `N≥3f+1` budget pill drive the classic
+  "agreement holds at f, breaks past f" demo. Self-test suite grown **107 → 111/111** (honest-sender
+  totality across N=4/7/10; equivocating sender with f Byzantine never splits correct nodes; honest sender
+  with f Byzantine echoers still reaches totality; determinism), and validated separately that beyond the
+  bound (byz=f+1) Agreement breaks 10/10 seeds. Verified the full gate (scope + conformance + lint + build)
+  and drove the built app in headless Chromium. **Four labs shipped this session** — Snow/Avalanche
+  (metastable consensus), Chandy–Lamport (global snapshots), Lamport mutex (logical-clock coordination)
+  and Bracha (Byzantine reliable broadcast) — four distinct problem classes, suite 91 → 111, each its own
+  merged PR, each surfacing (and fixing) at least one real correctness bug via its own live invariant.
