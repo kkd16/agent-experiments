@@ -50,6 +50,8 @@ const DEFAULTS: ControlState = {
   cloudCoverage: 0,
   manyLights: false,
   sphereLights: false,
+  envRotation: 0,
+  envIntensity: 1,
   objText: '',
 }
 
@@ -78,6 +80,14 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
       ...def.env,
       sunDir: sunFromAzEl(ctrl.sunAzimuth, ctrl.sunElevation),
       turbidity: ctrl.turbidity,
+    }
+  }
+  // (21.0) HDRI scenes: spin and scale the equirectangular environment live.
+  if (preset.hdri && def.env.kind === 'hdri') {
+    def.env = {
+      ...def.env,
+      rotation: (ctrl.envRotation * Math.PI) / 180,
+      intensity: (def.env.intensity ?? 1) * ctrl.envIntensity,
     }
   }
   // Volumetric scenes: scale the medium extinction by the live fog-density knob,
@@ -142,6 +152,8 @@ export default function App() {
         next.aperture = sceneCamera(value as string).aperture
         next.manyLights = SCENES.find((s) => s.id === value)?.manyLights ?? false
         next.sphereLights = SCENES.find((s) => s.id === value)?.sphereLights ?? false
+        next.envRotation = 0
+        next.envIntensity = 1
       }
       return next
     })
@@ -186,6 +198,8 @@ export default function App() {
     cc: ctrl.cloudCoverage,
     ml: ctrl.manyLights,
     sl: ctrl.sphereLights,
+    erot: ctrl.envRotation,
+    eint: ctrl.envIntensity,
     obj: ctrl.objText,
     o: orbit,
   })
@@ -332,7 +346,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )
