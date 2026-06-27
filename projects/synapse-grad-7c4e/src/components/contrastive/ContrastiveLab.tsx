@@ -198,11 +198,18 @@ export default function ContrastiveLab() {
             <MetricsChart
               lossHistory={metrics.lossHistory}
               probeHistory={metrics.probeHistory}
+              projProbeHistory={metrics.projProbeHistory}
               knnHistory={metrics.knnHistory}
               pixelProbeAcc={metrics.pixelProbeAcc}
               width={300}
               height={230}
             />
+            <p className="muted small">
+              Projection-head ablation: probe on the representation <b>h</b>{' '}
+              ({Number.isFinite(metrics.probeAcc) ? `${(metrics.probeAcc * 100).toFixed(0)}%` : '—'}) vs the projection <b>z</b>{' '}
+              ({Number.isFinite(metrics.projProbeAcc) ? `${(metrics.projProbeAcc * 100).toFixed(0)}%` : '—'}) the loss optimizes. On these
+              near-linearly-separable glyphs the two stay close; SimCLR keeps <b>h</b> because on harder data the head discards information and <b>h</b> wins.
+            </p>
             <div className="stat-row tight">
               <div className="stat">
                 <span className="muted small">alignment ↓</span>

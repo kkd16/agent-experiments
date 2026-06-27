@@ -1833,3 +1833,11 @@ Full CI gate (scope + conformance + lint + tsc + vite build) green via
       label-free and label-aware geometries side by side.
 - [ ] An **augmentation-importance** grid: turn each transform off and watch the probe accuracy fall —
       making "augmentation *is* the supervision" concrete.
+
+**Follow-up (same session) — projection-head ablation.** Added a live probe on *both* feature
+spaces: the representation `h` (kept downstream) and the projection `z` (what NT-Xent optimizes),
+plotted together against the pixel baseline (`probe·h` / `probe·z` in the chart). Honest framing:
+on these near-linearly-separable glyphs the two stay close (and `z` can even edge ahead — verified in
+node: after ~600 steps probe·h ≈ 97–98%, probe·z ≈ 99–100%); the caption explains SimCLR keeps `h`
+because on *harder* data the head discards information and `h` wins — i.e. the lab shows the
+mechanism without overclaiming the textbook result on a task that's too easy to exhibit it.
