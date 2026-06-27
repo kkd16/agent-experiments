@@ -657,6 +657,230 @@ msg1:   .asciz "wrote 0xcafe to VA 0x40000000; read back PA 0x10022000: "
 nl:     .asciz "\\n"
 `;
 
+const SOFT_IRQ = `# Machine software interrupts (the CLINT msip / self-IPI).
+# Writing bit 0 of the memory-mapped 'msip' register raises mip.MSIP — a machine *software*
+# interrupt (cause 3), the mechanism a core uses to kick itself or another hart. The handler
+# acks it by clearing msip. Here we self-trigger 4 times and count them.
+.equ MSIP, 0x02000000            # CLINT msip for hart 0
+.text
+main:
+        la   t0, on_soft
+        csrw mtvec, t0           # install the trap vector
+        li   t0, 0x8             # mie.MSIE (bit 3) — enable machine software interrupts
+        csrs mie, t0
+        csrsi mstatus, 0x8       # mstatus.MIE — globally enable interrupts
+        li   s0, 0               # count of IPIs serviced
+        li   s1, 4               # send 4
+loop:
+        bge  s0, s1, done
+        li   t0, MSIP            # raise a software interrupt to ourselves...
+        li   t1, 1
+        sw   t1, 0(t0)           # ...mip.MSIP set — taken before the next instruction
+        nop                      # (the interrupt preempts here; handler returns to it)
+        j    loop
+done:
+        mv   a0, s0              # print how many we serviced
+        li   a7, 1
+        ecall
+        li   a7, 10
+        ecall
+
+# ---- software-interrupt handler ---------------------------------------------
+on_soft:
+        addi s0, s0, 1           # one more IPI
+        li   t0, MSIP
+        sw   zero, 0(t0)         # ack: clear msip → mip.MSIP
+        mret
+`;
+
+const STIMER = `# Preemptive SUPERVISOR timer interrupts (the Sstc extension).
+# M-mode delegates the supervisor timer interrupt to S (mideleg bit 5) and drops into S-mode.
+# The supervisor arms 'stimecmp' — a compare that drives mip.STIP straight from the timer, with
+# no machine-mode mediation — and a periodic S-timer interrupt (cause 5) preempts a busy loop.
+.equ PERIOD, 40                  # cycles between ticks
+.text
+main:                            # --- machine mode ---
+        li   t0, 0x20            # mideleg bit 5 (supervisor timer) → handle it in S-mode
+        csrw mideleg, t0
+        la   t0, gate            # an M-mode gate forwards S-mode ecalls (print/exit)
+        csrw mtvec, t0
+        csrr t0, mstatus
+        li   t1, 0xFFFFE7FF      # MPP <- 0
+        and  t0, t0, t1
+        li   t1, 0x800           # MPP <- S
+        or   t0, t0, t1
+        csrw mstatus, t0
+        la   t0, smain
+        csrw mepc, t0
+        mret                     # → S-mode at smain
+
+smain:                          # --- supervisor mode ---
+        la   t0, on_stimer
+        csrw stvec, t0           # supervisor trap vector
+        li   s0, 0               # ticks serviced
+        li   s1, 5               # stop after 5
+        csrr t0, time            # arm the first deadline: stimecmp = time + PERIOD
+        addi t0, t0, PERIOD
+        csrw stimecmp, t0
+        li   t0, 0x20            # sie.STIE (bit 5)
+        csrs sie, t0
+        csrsi sstatus, 0x2       # sstatus.SIE (bit 1) — enable S-mode interrupts
+spin:
+        blt  s0, s1, spin        # do nothing but wait to be preempted
+        mv   a0, s0
+        li   a7, 1               # print the tick count (traps to the gate)
+        ecall
+        li   a7, 10
+        ecall
+
+# ---- supervisor timer handler (S-mode) --------------------------------------
+on_stimer:
+        addi s0, s0, 1           # one more tick
+        csrr t0, time            # re-arm (writing a future compare also clears STIP)
+        addi t0, t0, PERIOD
+        csrw stimecmp, t0
+        sret                     # return to the interrupted pc (sepc)
+
+# ---- supervisor-call gate (M-mode): forward an S-mode ecall to the host ------
+gate:
+        csrr t6, mepc
+        addi t6, t6, 4
+        csrw mepc, t6
+        ecall                    # M-mode ecall = host syscall (halts if a7 = exit)
+        mret
+`;
+
+const DEMAND = `# Demand paging — an OS that maps memory lazily, on the page fault.
+# A 64 KiB virtual window (VA 0x40000000+) starts entirely UNMAPPED. As the supervisor walks
+# it, each first touch raises a store page fault (cause 15); the S-mode handler allocates a
+# fresh physical frame from a pool, installs a leaf PTE for the faulting page, and 'sret's to
+# RETRY the very instruction that faulted — which now succeeds. Open the MMU tab to watch new
+# leaves appear in the page table as the program runs. It writes i+1 into page i and sums the
+# read-backs (1+2+…+16 = 136).
+.equ ROOT,   0x10020000          # root page table
+.equ L2,     0x10021000          # L2 table for the demand window (starts all-invalid)
+.equ FRAMES, 0x10030000          # base of the free-frame pool (16 × 4 KiB)
+.text
+main:                            # --- machine mode: build the base address space ---
+        li   t0, ROOT
+        li   t1, 0x000000CF      # V R W X A D → identity megapage vpn1=0   (code)
+        sw   t1, 0(t0)
+        li   t1, 0x040000CF      #              identity megapage vpn1=64  (data/tables/frames)
+        sw   t1, 256(t0)
+        li   t1, 0x1FF000CF      #              identity megapage vpn1=511 (stack)
+        sw   t1, 2044(t0)
+        li   t1, 0x04008401      # V only, non-leaf → L2  (covers VA 0x40000000, vpn1=256)
+        sw   t1, 1024(t0)        # root[256] = L2
+        # initialise the frame allocator's bump pointer
+        li   t0, FRAMES
+        la   t1, next_frame
+        sw   t0, 0(t1)
+        # turn on Sv32
+        li   t0, 0x80010020      # satp = Sv32 | (ROOT >> 12)
+        csrw satp, t0
+        sfence.vma
+        # delegate load/store page faults (causes 13 & 15) to S-mode
+        li   t0, 0xA000          # bit 13 | bit 15
+        csrw medeleg, t0
+        la   t0, strap
+        csrw stvec, t0
+        la   t0, gate            # M gate forwards S-mode ecalls
+        csrw mtvec, t0
+        csrr t0, mstatus
+        li   t1, 0xFFFFE7FF
+        and  t0, t0, t1
+        li   t1, 0x800           # MPP <- S
+        or   t0, t0, t1
+        csrw mstatus, t0
+        la   t0, smain
+        csrw mepc, t0
+        mret                     # → S-mode at smain, virtual memory live
+
+smain:                          # --- supervisor mode: walk the unmapped window ---
+        li   s0, 0               # running sum
+        li   s1, 0x40000000      # base of the demand-paged window
+        li   s2, 0               # page index i
+        li   s3, 16              # touch 16 pages
+sloop:
+        bge  s2, s3, sdone
+        slli t0, s2, 12          # offset = i * 4096 → a fresh page each iteration
+        add  t0, s1, t0
+        addi t1, s2, 1           # value to store = i + 1
+        sw   t1, 0(t0)           # first touch → store page fault → handler maps the page
+        lw   t2, 0(t0)           # now mapped: read it back
+        add  s0, s0, t2
+        addi s2, s2, 1
+        j    sloop
+sdone:
+        la   a0, msg
+        li   a7, 4
+        ecall
+        mv   a0, s0              # 1+2+…+16 = 136
+        li   a7, 1
+        ecall
+        la   a0, nl
+        li   a7, 4
+        ecall
+        li   a7, 10
+        ecall
+
+# ---- supervisor page-fault handler: demand-map the faulting page ------------
+# A handler must preserve every register it touches: it 'sret's back to the *faulting
+# instruction*, which still depends on its original operands. We stash t0 in sscratch to free a
+# base register, save t1-t6 to a scratch block, do the work, then restore everything.
+strap:
+        csrw sscratch, t0        # free up t0
+        la   t0, tsave           # base of the register save block
+        sw   t1, 4(t0)
+        sw   t2, 8(t0)
+        sw   t3, 12(t0)
+        sw   t4, 16(t0)
+        sw   t5, 20(t0)
+        sw   t6, 24(t0)
+        csrr t1, sscratch
+        sw   t1, 0(t0)           # save the original t0 too
+        # --- compute and install the leaf PTE for the faulting page ---
+        csrr t1, stval           # faulting virtual address
+        srli t1, t1, 12
+        andi t1, t1, 0x3FF       # vpn0 = index into the L2 table
+        slli t1, t1, 2           # × 4 bytes per PTE
+        li   t2, L2
+        add  t1, t2, t1          # &L2[vpn0]
+        la   t2, next_frame      # allocate a frame: f = *next_frame; *next_frame += 4096
+        lw   t3, 0(t2)
+        li   t6, 0x1000
+        add  t4, t3, t6
+        sw   t4, 0(t2)
+        srli t3, t3, 12          # frame PPN
+        slli t3, t3, 10          # into PTE bits [31:10]
+        ori  t3, t3, 0x7         # V R W  (A/D are set by hardware on access)
+        sw   t3, 0(t1)           # install the leaf PTE
+        sfence.vma               # make the new mapping visible (flush the TLB)
+        # --- restore the saved registers and retry the faulting instruction ---
+        la   t0, tsave
+        lw   t1, 4(t0)
+        lw   t2, 8(t0)
+        lw   t3, 12(t0)
+        lw   t4, 16(t0)
+        lw   t5, 20(t0)
+        lw   t6, 24(t0)
+        lw   t0, 0(t0)
+        sret                     # retry the faulting store — it now succeeds
+
+# ---- supervisor-call gate (M-mode) ------------------------------------------
+gate:
+        csrr t6, mepc
+        addi t6, t6, 4
+        csrw mepc, t6
+        ecall
+        mret
+.data
+next_frame: .word 0
+tsave:      .space 28            # save block for t0-t6 across the trap
+msg:        .asciz "demand-paged 16 fresh frames; sum of pages = "
+nl:         .asciz "\\n"
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
@@ -673,6 +897,9 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'timerirq', title: 'Timer interrupts', blurb: 'mtvec/mret + CLINT timer (traps)', focus: 'console', code: TIMER_IRQ },
   { id: 'double', title: 'Double precision √2', blurb: 'RV32D Newton iteration (15 digits)', focus: 'console', code: DOUBLE_SQRT },
   { id: 'paging', title: 'Sv32 virtual memory', blurb: 'supervisor mode + page tables + a syscall gate', focus: 'console', code: PAGING },
+  { id: 'demand', title: 'Demand paging', blurb: 'page-fault handler maps fresh frames lazily', focus: 'console', code: DEMAND },
+  { id: 'stimer', title: 'Supervisor timer (Sstc)', blurb: 'stimecmp preempts S-mode (cause 5)', focus: 'console', code: STIMER },
+  { id: 'swint', title: 'Software interrupt (IPI)', blurb: 'CLINT msip → machine software interrupt', focus: 'console', code: SOFT_IRQ },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },
   { id: 'mandelf', title: 'Mandelbrot (float)', blurb: 'RV32F fractal → framebuffer', focus: 'framebuffer', code: MANDEL_FLOAT },
   { id: 'rings', title: 'Colour rings', blurb: 'memory-mapped graphics', focus: 'framebuffer', code: RINGS },

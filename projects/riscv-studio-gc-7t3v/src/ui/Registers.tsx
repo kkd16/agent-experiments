@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import type { Cpu } from '../vm/cpu';
 import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
-import { privName, privLong } from '../vm/mmu';
+import { privName, privLong, SSTATUS_MASK } from '../vm/mmu';
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
 import { f32FromBits, f64FromBits } from '../vm/fp';
@@ -16,6 +16,11 @@ interface Props {
 }
 
 const RADII: Radix[] = ['hex', 'dec', 'udec', 'bin'];
+
+/** The six standard interrupt sources and their mip/mie bit positions, in priority order. */
+const INT_BITS: readonly [string, number][] = [
+  ['MEI', 11], ['MSI', 3], ['MTI', 7], ['SEI', 9], ['SSI', 1], ['STI', 5],
+];
 
 /** Pretty-print a float value for the inspector. */
 function pretty(x: number, sig: number): string {
@@ -119,8 +124,8 @@ export default function Registers({ cpu, prevRegs }: Props) {
       <div className="reg-subhead">
         <span>machine trap CSRs (Zicsr)</span>
         <span className="reg-fcsr">
-          MIE={(cpu.mstatus >>> 3) & 1} · MPIE={(cpu.mstatus >>> 7) & 1} · MTIP=
-          {(cpu.mip >>> 7) & 1}
+          MIE={(cpu.mstatus >>> 3) & 1} · MPIE={(cpu.mstatus >>> 7) & 1} · MPP=
+          {privName((cpu.mstatus >>> 11) & 3)}
         </span>
       </div>
       <div className="reg-grid mcsr-grid">
@@ -134,6 +139,8 @@ export default function Registers({ cpu, prevRegs }: Props) {
             ['mie', cpu.mie],
             ['mip', cpu.mip],
             ['mscratch', cpu.mscratch],
+            ['medeleg', cpu.medeleg],
+            ['mideleg', cpu.mideleg],
           ] as const
         ).map(([name, val]) => (
           <div key={name} className="reg-cell" title={`CSR ${name}`}>
@@ -149,6 +156,54 @@ export default function Registers({ cpu, prevRegs }: Props) {
           <span className="reg-name">mtimecmp</span>
           <span className="reg-val">
             {Number.isFinite(cpu.mtimecmp) ? cpu.mtimecmp.toLocaleString() : '∞'}
+          </span>
+        </div>
+      </div>
+
+      <div className="reg-subhead">
+        <span>interrupts (mip / mie)</span>
+        <span className="reg-fcsr" title="pending·enabled, per interrupt source">
+          {INT_BITS.map(([label, bit]) => {
+            const p = (cpu.mip >>> bit) & 1;
+            const e = (cpu.mie >>> bit) & 1;
+            return (
+              <span key={label} className={`irq-flag${p ? ' irq-pending' : ''}${p && e ? ' irq-armed' : ''}`}>
+                {label}
+                <sub>{p}{e}</sub>
+              </span>
+            );
+          })}
+        </span>
+      </div>
+
+      <div className="reg-subhead">
+        <span>supervisor trap CSRs + Sv32</span>
+        <span className="reg-fcsr">
+          SIE={(cpu.mstatus >>> 1) & 1} · SPIE={(cpu.mstatus >>> 5) & 1} · SPP=
+          {privName((cpu.mstatus >>> 8) & 1)}
+        </span>
+      </div>
+      <div className="reg-grid mcsr-grid">
+        {(
+          [
+            ['sstatus', cpu.mstatus & SSTATUS_MASK],
+            ['stvec', cpu.stvec],
+            ['sepc', cpu.sepc],
+            ['scause', cpu.scause],
+            ['stval', cpu.stval],
+            ['sscratch', cpu.sscratch],
+            ['satp', cpu.satp],
+          ] as const
+        ).map(([name, val]) => (
+          <div key={name} className="reg-cell" title={`CSR ${name}`}>
+            <span className="reg-name">{name}</span>
+            <span className="reg-val">{hexWord(val)}</span>
+          </div>
+        ))}
+        <div className="reg-cell" title="Sstc supervisor timer compare (drives mip.STIP)">
+          <span className="reg-name">stimecmp</span>
+          <span className="reg-val">
+            {Number.isFinite(cpu.stimecmp) ? cpu.stimecmp.toLocaleString() : '∞'}
           </span>
         </div>
       </div>

@@ -200,4 +200,7 @@ export const CSR_NUMBERS: Record<string, number> = {
   stval: 0x143,
   sip: 0x144,
   satp: 0x180,
+  // Sstc extension: a supervisor timer compare that drives the S-timer interrupt directly.
+  stimecmp: 0x14d,
+  stimecmph: 0x15d,
 };
