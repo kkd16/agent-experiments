@@ -31,6 +31,10 @@ import { NeuralODE, ODEFunc, odeIntegrate, adjointDynamicsGrad, terminalAdjointC
 import { gaussianNLL, gaussianKL, BayesLinear, BayesMLP, mixtureMoments } from './bayes';
 import { perceive, NCA, ncaVisibleLoss, makeSeed, renderTarget } from './nca';
 import { l2NormalizeRows, ntXentLoss, diagonalMask, Encoder } from './contrastive';
+import { makeAZNet, azLoss } from './aznet';
+import { makeGame, solve, type GameState, type SolveResult } from './games';
+import { runSearch, visitPolicy, argmaxPolicy } from './mcts';
+import { gradCheck } from './gradcheck';
 
 export interface OpCheck {
   name: string;
@@ -1168,6 +1172,102 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const posIdx = Int32Array.from({ length: m }, (_, i) => i ^ 1); // interleaved positives
     const loss = ntXentLoss(z, posIdx, diagonalMask(m), 0.3);
     ops.push(relCheck('contrastive-collapse (log(2N-1))', [[loss.data[0], Math.log(m - 1)]]));
+  }
+
+  // --- AlphaZero (the eighteenth lab) ---------------------------------------------------------
+  {
+    // (1) End-to-end gradient check of the combined policy-CE + value-MSE + L2 loss, on both games.
+    // Inputs are continuous and nudged off the ReLU kink (exact 0/1 board planes would put conv
+    // pre-activations on the kink and confuse the finite-difference estimate) — the same trick the
+    // other ops use via `leaf()`. All-legal masks keep the masked log-softmax exact.
+    const azCfgs = [
+      { name: 'alphazero-loss ttt (e2e)', planes: 2, rows: 3, cols: 3, numActions: 9, channels: 8, blocks: 2, valueHidden: 8 },
+      { name: 'alphazero-loss c4 (e2e)', planes: 2, rows: 6, cols: 7, numActions: 7, channels: 6, blocks: 2, valueHidden: 8 },
+    ];
+    for (const cfg of azCfgs) {
+      const net = makeAZNet(cfg, seed ^ 0x7a2);
+      const N = 4;
+      const cells = cfg.rows * cfg.cols;
+      const enc = new Float64Array(N * cfg.planes * cells);
+      for (let i = 0; i < enc.length; i++) {
+        let v = rng() * 2 - 1;
+        if (Math.abs(v) < 0.15) v += v >= 0 ? 0.15 : -0.15;
+        enc[i] = v;
+      }
+      const mask = new Float64Array(N * cfg.numActions).fill(1);
+      const pi = new Float64Array(N * cfg.numActions);
+      for (let n = 0; n < N; n++) {
+        let s = 0;
+        for (let a = 0; a < cfg.numActions; a++) {
+          const v = rng();
+          pi[n * cfg.numActions + a] = v;
+          s += v;
+        }
+        for (let a = 0; a < cfg.numActions; a++) pi[n * cfg.numActions + a] /= s;
+      }
+      const z = new Float64Array(N);
+      for (let n = 0; n < N; n++) z[n] = rng() * 1.6 - 0.8;
+      const gc = gradCheck(net.parameters(), () => azLoss(net, enc, mask, pi, z, N, 1e-4).loss, {
+        samplesPerParam: 4,
+        seed: (seed ^ 0x33aa) >>> 0,
+      });
+      ops.push({ name: cfg.name, maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
+    }
+
+    // (2) Oracle soundness (exact algebraic / game-theoretic facts, not gradients): the perfect
+    // negamax solver and the MCTS that consumes it. This is the "the search is correct" proof.
+    const ttt = makeGame('ttt');
+    const memo = new Map<string, SolveResult>();
+    const perfect = (s: GameState) => {
+      const legal = ttt.legalMoves(s);
+      const policy = new Float64Array(ttt.numActions);
+      for (const a of legal) policy[a] = 1 / legal.length;
+      return { policy, value: solve(ttt, s, memo).score };
+    };
+    // Empty Tic-Tac-Toe is a draw under optimal play.
+    const emptyValue = solve(ttt, ttt.initial(), memo).score;
+    // MCTS handed the perfect evaluator must pick a minimax-optimal move at a battery of positions.
+    let tested = 0;
+    let optimal = 0;
+    for (let t = 0; t < 40; t++) {
+      let s = ttt.initial();
+      const depth = Math.floor(rng() * 5);
+      for (let d = 0; d < depth; d++) {
+        if (ttt.status(s).done) break;
+        const moves = ttt.legalMoves(s);
+        s = ttt.apply(s, moves[Math.floor(rng() * moves.length)]);
+      }
+      if (ttt.status(s).done) continue;
+      const res = runSearch(ttt, s, perfect, { simulations: 40, cPuct: 1.5, dirichletAlpha: 0.3, dirichletFrac: 0 }, rng);
+      const move = argmaxPolicy(visitPolicy(res.counts, 0));
+      const opt = new Set(solve(ttt, s, memo).optimalMoves);
+      tested++;
+      if (opt.has(move)) optimal++;
+    }
+    // A perfect player must never lose to a random one (it can only draw or win Tic-Tac-Toe).
+    let perfLosses = 0;
+    for (let g = 0; g < 60; g++) {
+      let s = ttt.initial();
+      const perfectIsP1 = g % 2 === 0;
+      for (;;) {
+        const st = ttt.status(s);
+        if (st.done) {
+          if (st.winner !== 0 && (st.winner === 1) !== perfectIsP1) perfLosses++;
+          break;
+        }
+        const perfectToMove = (s.player === 1) === perfectIsP1;
+        const moves = ttt.legalMoves(s);
+        const a = perfectToMove ? solve(ttt, s, memo).bestMove : moves[Math.floor(rng() * moves.length)];
+        s = ttt.apply(s, a);
+      }
+    }
+    ops.push(
+      relCheck('alphazero-oracle (solver+search sound)', [
+        [emptyValue, 0], // empty board is a draw
+        [optimal, tested], // every searched position got a value-optimal move
+        [perfLosses, 0], // perfect play never loses to random
+      ]),
+    );
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

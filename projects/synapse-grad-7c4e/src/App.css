@@ -2378,3 +2378,131 @@ label.toggle input {
 .aug-view {
   display: flex;
 }
+
+/* ---- AlphaZero lab ---- */
+.az-board {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0b1220;
+  user-select: none;
+}
+.az-status {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: #e2e8f0;
+}
+.az-status.done {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(167, 139, 250, 0.18));
+  border-color: var(--border-strong);
+}
+.az-eval {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+.az-value-bar {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: #1e293b;
+  overflow: hidden;
+}
+.az-value-bar > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 6px;
+}
+.az-value-bar > i {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: rgba(226, 232, 240, 0.6);
+}
+.az-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.az-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.az-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  vertical-align: middle;
+}
+.az-bar {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 8px;
+  border-radius: 4px;
+  background: #1e293b;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.az-bar.center {
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.15) 50%, rgba(74, 222, 128, 0.15) 50%);
+}
+.az-bar > span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 4px;
+}
+.az-bar:not(.center) > span {
+  left: 0;
+}
+.az-bar-num {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.az-eval-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.az-eval-row {
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+.az-eval-row.hl {
+  border-color: var(--border-strong);
+}
+.az-wdl {
+  display: flex;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.az-wdl .win {
+  color: #4ade80;
+}
+.az-wdl .draw {
+  color: #fbbf24;
+}
+.az-wdl .loss {
+  color: #f87171;
+}
