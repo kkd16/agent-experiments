@@ -4,6 +4,7 @@ import { PaxosLab } from './PaxosLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { ChordLab } from './ChordLab';
+import { DynamoLab } from './DynamoLab';
 import { CrdtLab } from './CrdtLab';
 import { CoeditLab } from './CoeditLab';
 import { GossipLab } from './GossipLab';
@@ -56,6 +57,15 @@ export const LABS: LabDef[] = [
     icon: '⬡',
     tag: 'byzantine consensus',
     Component: HotStuffLab,
+  },
+  {
+    id: 'dynamo',
+    title: 'Dynamo (tunable quorums)',
+    blurb:
+      'The AP counterpoint to the consensus labs: a leaderless, always-writeable key/value store with tunable (N,R,W) quorums. No agreed order — a write returns after W of N acks, a read reconciles R replies with vector clocks. Crash an owner and a sloppy quorum writes to a stand-in holding a hint; partition the cluster, write on both sides, heal, and watch the conflict surface as siblings. Slide (N,R,W) between strong and eventual consistency.',
+    icon: '⬢',
+    tag: 'replication · AP',
+    Component: DynamoLab,
   },
   {
     id: 'crdt',
