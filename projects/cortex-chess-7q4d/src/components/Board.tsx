@@ -64,6 +64,7 @@ export default function Board({
               key={sq}
               className={classes.join(' ')}
               role="gridcell"
+              data-square={sq}
               onClick={() => onSquareClick(sq)}
               onDragOver={(e) => {
                 if (interactive) e.preventDefault()

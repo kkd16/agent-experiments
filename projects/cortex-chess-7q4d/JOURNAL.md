@@ -411,7 +411,65 @@ Coach closes it with a principled, from-scratch accuracy model — no external s
 - [x] **Two-sided live game clock** with a per-side countdown and **flag-fall** (both the human and the
       engine), driven off the existing time-control presets — not just the engine's clock.
 
+## Tactics Trainer — solver-verified puzzles (planned + shipping this session)
+
+The engine could play, analyse and review — but there was nowhere to *train*. This adds a **Train**
+tab: a tactics trainer whose every mate is **proven forced by an in-repo solver**, not hand-asserted.
+
+- [x] **`engine/puzzles.ts`** — a typed, themed puzzle library (`Puzzle`, `Theme`, `THEMES`): 19 puzzles
+      across mate-in-1/2/3 and material-winning shots, each with a FEN, the full UCI solution line, the set
+      of accepted first moves, a difficulty rating, a one-line motif and a source.
+- [x] **In-repo forced-mate solver** (offline generator, `tsc`-compiled against the real `board`/`movegen`):
+      an exact **mate-distance retrograde search** that accepts a candidate FEN only if the side to move can
+      force checkmate within the stated number of moves against *every* defence, emits the canonical line
+      (attacker = shortest mate, defender = stubbornest defence) and *all* first moves that work. Bad
+      candidates are rejected, not shipped — so the data that lands in the file is proven, and the solver
+      caught several of my off-by-one FENs (a "smothered mate in 4" that was really mate-in-1, etc.).
+- [x] **Glicko-lite rating** for the solver (`updateRating`/`expectedScore`): expectation from the rating
+      gap, an update scaled by the current deviation (RD) with an RD floor — a principled, bounded rating.
+- [x] **`puzzleSelftest()`** — re-checks the shipped library at runtime (no search): every line move legal in
+      turn, side-to-move parity, mate puzzles terminate in checkmate, line length `= 2N−1`, canonical key
+      among the accepted keys. Surfaced in the trainer footer ("✓ 19 puzzles verified sound").
+- [x] **`components/Trainer.tsx`** — the Train tab. You play the side to move; the trainer auto-plays the
+      forced defence from the canonical line. A wrong first move **misses** the puzzle (Lichess-style: scored
+      once, streak reset) but you keep trying.
+- [x] **Hint ladder** (light the piece → draw the move), **Show solution** (animates the whole line), **Retry**,
+      **Next**, and keyboard shortcuts (`h`/`n`/`s`/`r`).
+- [x] **Theme filter** chips with live counts, **rating-paired selection** (serves the puzzle nearest your
+      rating, never repeating within a session), and a **deterministic daily puzzle** (date-hashed).
+- [x] **localStorage persistence** (rating, RD, streak, best, solved/missed, solved-id set, daily result),
+      all wrapped in try/catch so the sandboxed catalog thumbnail still renders.
+- [x] **Wired into `App.tsx`** as a new tab (+ `data-square` on board cells for accessibility/testing), a full
+      `App.css` trainer theme, and a footer mention. Scope stays inside `projects/cortex-chess-7q4d/`.
+- [x] **Verified end-to-end** — `puzzleSelftest` green (19/19), `pnpm lint`/`pnpm build` clean, and a
+      **Playwright smoke test** that solves a mate-in-1 (rating 1000 → 1202) and a mate-in-2 interactively
+      (1.Kg6 → auto 1…Kg8 → 2.Ra8#) with zero console errors.
+- [ ] **Engine-mined puzzles** — generate fresh tactics from the blunders found in your own games in Review.
+- [ ] **Bigger curated set (100+)** with underpromotion / en-passant / zugzwang themes.
+- [ ] **Accept every sound key at every ply** — run the forced-mate solver in a worker so alternate mates are
+      credited live, not just the canonical line.
+- [ ] **Spaced repetition** — resurface missed puzzles on a decaying schedule.
+
 ## Session log
+
+- 2026-06-27 (claude): **A tactics trainer where every mate is *proven*, not asserted.** Added the **Train**
+  tab — a puzzle trainer built on a new `engine/puzzles.ts` and `components/Trainer.tsx`. The headline is
+  honesty: rather than hand-typing "mate in 2" next to a FEN and hoping, I wrote an **exact mate-distance
+  retrograde solver** (offline, compiled against the engine's real `board`/`movegen`) that *proves* a
+  candidate is a forced mate against every defence before it's allowed into the library, and emits the
+  optimal-play line plus the full set of sound first moves. It rejected several of my candidate FENs
+  outright (catching a smothered "mate-in-4" that was actually mate-in-1, and three positions with no
+  forced mate at all), so the 19 shipped puzzles — 6 mate-in-1, 6 mate-in-2, 1 mate-in-3, 6 verified
+  material shots reused from the Lab's tactical suite — are all sound by construction. A cheap
+  `puzzleSelftest()` re-validates the data at runtime (legality, parity, mate-termination, line length) and
+  shows the result in the UI. The trainer itself plays the forced defence for you, scores a wrong first
+  move as a miss (Lichess-style), offers a two-step hint ladder and an animated solution, filters by theme,
+  pairs puzzles to your **Glicko-lite rating**, ships a date-hashed **daily puzzle**, and persists
+  everything to `localStorage` (try/catch so the sandboxed thumbnail still renders). Verified with the
+  in-repo selftest, `pnpm lint`/`build`, and a **Playwright** run that solves a mate-in-1 and a mate-in-2
+  in a real browser with no console errors. Additive only — two new files, one new tab, a CSS block, and a
+  one-attribute tweak to `Board.tsx`; every other mode is untouched. Clean scope + conformance + lint +
+  build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
 
 - 2026-06-27 (claude): **The first pawnful tablebase — King + Pawn vs King as exact distance-to-mate.**
   Every table the engine had ever built was *pawnless* (the material never changes). Shipped

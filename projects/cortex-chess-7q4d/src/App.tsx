@@ -8,6 +8,7 @@ import PromotionPicker from './components/PromotionPicker'
 import Lab from './components/Lab'
 import Analysis from './components/Analysis'
 import Review from './components/Review'
+import Trainer from './components/Trainer'
 import { useEngine } from './hooks/useEngine'
 import {
   Game,
@@ -48,7 +49,7 @@ import {
   pvToSan,
 } from './view'
 
-type Tab = 'play' | 'analyze' | 'review' | 'lab'
+type Tab = 'play' | 'train' | 'analyze' | 'review' | 'lab'
 
 function statusText(view: BoardView): string {
   const sideName = view.turn === WHITE ? 'White' : 'Black'
@@ -721,6 +722,9 @@ export default function App() {
           <button className={tab === 'play' ? 'tab active' : 'tab'} onClick={() => setTab('play')}>
             Play
           </button>
+          <button className={tab === 'train' ? 'tab active' : 'tab'} onClick={() => setTab('train')}>
+            Train
+          </button>
           <button className={tab === 'analyze' ? 'tab active' : 'tab'} onClick={() => setTab('analyze')}>
             Analyze
           </button>
@@ -1004,6 +1008,10 @@ export default function App() {
             </div>
           </aside>
         </main>
+      ) : tab === 'train' ? (
+        <main className="analyze-layout">
+          <Trainer />
+        </main>
       ) : tab === 'analyze' ? (
         <main className="analyze-layout">
           <Analysis />
@@ -1026,7 +1034,8 @@ export default function App() {
           null-move + late-move reductions · internal iterative reduction · countermoves + history · tapered eval
           (mobility · king safety · pawn structure) · KPK / KRK / KQK / <strong>KBNvK</strong> tablebases · opening book +
           explorer · multi-PV analysis · PGN import + annotated export · pondering · EPD suites · <strong>game review</strong>
-          (accuracy + coach) · <strong>engine arena</strong> (Elo) · two-sided clock
+          (accuracy + coach) · <strong>tactics trainer</strong> (solver-verified puzzles · Glicko rating) ·
+          <strong>engine arena</strong> (Elo) · two-sided clock
         </span>
       </footer>
     </div>
