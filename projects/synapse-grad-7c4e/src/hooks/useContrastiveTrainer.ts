@@ -50,13 +50,15 @@ export interface ContrastiveMetrics {
   gradNorm: number;
   lr: number;
   contrastiveAcc: number;
-  probeAcc: number;
+  probeAcc: number; // linear probe on the representation h (the one SimCLR keeps)
+  projProbeAcc: number; // linear probe on the projection z (the head the loss optimizes)
   knnAcc: number;
   pixelProbeAcc: number;
   alignment: number;
   uniformity: number;
   lossHistory: number[];
   probeHistory: number[];
+  projProbeHistory: number[];
   knnHistory: number[];
   alignHistory: number[];
   uniformHistory: number[];
@@ -106,12 +108,14 @@ const EMPTY_METRICS: ContrastiveMetrics = {
   lr: NaN,
   contrastiveAcc: NaN,
   probeAcc: NaN,
+  projProbeAcc: NaN,
   knnAcc: NaN,
   pixelProbeAcc: NaN,
   alignment: NaN,
   uniformity: NaN,
   lossHistory: [],
   probeHistory: [],
+  projProbeHistory: [],
   knnHistory: [],
   alignHistory: [],
   uniformHistory: [],
@@ -180,9 +184,10 @@ export function useContrastiveTrainer(cfg: ContrastiveConfig) {
     loadId: cfg.loadId,
   });
 
-  // Encode a set of base-image indices into representation vectors (forward only, no graph kept).
+  // Encode a set of base-image indices into representation (h) *and* projection (z) vectors —
+  // forward only, no graph kept. The two feature spaces drive SimCLR's projection-head ablation.
   const encodeFeatures = useCallback(
-    (idx: Int32Array): { feats: Float64Array; labels: Int32Array; repDim: number } => {
+    (idx: Int32Array): { feats: Float64Array; projFeats: Float64Array; labels: Int32Array; repDim: number; projDim: number } => {
       const enc = encRef.current!;
       const data = dataRef.current!;
       const k = idx.length;
@@ -193,7 +198,8 @@ export function useContrastiveTrainer(cfg: ContrastiveConfig) {
         y[i] = data.y[idx[i]];
       }
       const h = enc.represent(Tensor.fromFlat(X, k, px, false));
-      return { feats: h.data.slice(), labels: y, repDim: h.cols };
+      const z = enc.head(h);
+      return { feats: h.data.slice(), projFeats: z.data.slice(), labels: y, repDim: h.cols, projDim: z.cols };
     },
     [px],
   );
@@ -231,10 +237,10 @@ export function useContrastiveTrainer(cfg: ContrastiveConfig) {
       const data = dataRef.current;
       if (!enc || !data) return;
       const idx = evalIdxRef.current;
-      const { feats, labels, repDim } = encodeFeatures(idx);
+      const { feats, projFeats, labels, repDim, projDim: featProjDim } = encodeFeatures(idx);
       const k = idx.length;
-      const probeRng = mulberry32(0x9e37 ^ cfg.seed);
-      const probe = linearProbe(feats, labels, k, repDim, numClasses, probeRng);
+      const probe = linearProbe(feats, labels, k, repDim, numClasses, mulberry32(0x9e37 ^ cfg.seed));
+      const projProbe = linearProbe(projFeats, labels, k, featProjDim, numClasses, mulberry32(0x9e37 ^ cfg.seed));
       const knn = knnAccuracy(feats, labels, k, repDim, numClasses, 5);
 
       // PCA of the representation to a plane (subsample so the scatter stays readable)
@@ -274,21 +280,25 @@ export function useContrastiveTrainer(cfg: ContrastiveConfig) {
       setMetrics((prev) => {
         const cap2 = (arr: number[]) => (arr.length >= MAX_HISTORY ? arr.slice(1) : arr.slice());
         const probeHistory = cap2(prev.probeHistory);
+        const projProbeHistory = cap2(prev.projProbeHistory);
         const knnHistory = cap2(prev.knnHistory);
         const alignHistory = cap2(prev.alignHistory);
         const uniformHistory = cap2(prev.uniformHistory);
         probeHistory.push(probe.testAcc);
+        projProbeHistory.push(projProbe.testAcc);
         knnHistory.push(knn);
         alignHistory.push(au.alignment);
         uniformHistory.push(au.uniformity);
         return {
           ...prev,
           probeAcc: probe.testAcc,
+          projProbeAcc: projProbe.testAcc,
           knnAcc: knn,
           pixelProbeAcc: pixelBaselineRef.current,
           alignment: au.alignment,
           uniformity: au.uniformity,
           probeHistory,
+          projProbeHistory,
           knnHistory,
           alignHistory,
           uniformHistory,

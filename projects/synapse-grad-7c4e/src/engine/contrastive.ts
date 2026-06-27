@@ -209,10 +209,15 @@ export class Encoder {
     return this.back.forward(c2).relu();
   }
 
+  // Apply the projection head to a representation h → z: [N, projDim]. Split out so the lab can
+  // probe the *representation* and the *projection* separately (SimCLR's headline ablation).
+  head(h: Tensor): Tensor {
+    return this.proj2.forward(this.proj1.forward(h).relu());
+  }
+
   // Full path to the contrastive projection z: [N, projDim].
   project(x: Tensor): Tensor {
-    const h = this.represent(x);
-    return this.proj2.forward(this.proj1.forward(h).relu());
+    return this.head(this.represent(x));
   }
 
   parameters(): Tensor[] {

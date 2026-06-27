@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 interface Props {
   lossHistory: number[];
   probeHistory: number[];
+  projProbeHistory: number[];
   knnHistory: number[];
   pixelProbeAcc: number;
   width: number;
@@ -17,7 +18,7 @@ function finite(arr: number[]): number[] {
 // (bottom) — the linear probe and the kNN vote on the frozen representation, against the dashed
 // raw-pixel baseline. The gap between the rising curves and that flat baseline is exactly how much
 // structure the unsupervised objective recovered.
-export default function MetricsChart({ lossHistory, probeHistory, knnHistory, pixelProbeAcc, width, height }: Props) {
+export default function MetricsChart({ lossHistory, probeHistory, projProbeHistory, knnHistory, pixelProbeAcc, width, height }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -88,9 +89,10 @@ export default function MetricsChart({ lossHistory, probeHistory, knnHistory, pi
     // bottom: accuracies (fixed 0..1 axis)
     panel(topH + gap, botH);
     if (Number.isFinite(pixelProbeAcc)) hline(pixelProbeAcc, topH + gap, botH, 'rgba(148,163,184,0.6)');
-    line(probeHistory.map((v) => v), topH + gap, botH, 1, '#34d399', false);
-    line(knnHistory.map((v) => v), topH + gap, botH, 1, '#fbbf24', false);
-  }, [lossHistory, probeHistory, knnHistory, pixelProbeAcc, width, height]);
+    line(projProbeHistory, topH + gap, botH, 1, 'rgba(52,211,153,0.5)', true);
+    line(knnHistory, topH + gap, botH, 1, '#fbbf24', false);
+    line(probeHistory, topH + gap, botH, 1, '#34d399', false);
+  }, [lossHistory, probeHistory, projProbeHistory, knnHistory, pixelProbeAcc, width, height]);
 
   const last = (arr: number[]) => {
     const f = finite(arr);
@@ -107,7 +109,10 @@ export default function MetricsChart({ lossHistory, probeHistory, knnHistory, pi
           <span className="swatch" style={{ background: '#a78bfa' }} /> NT-Xent <b>{f3(last(lossHistory))}</b>
         </span>
         <span className="legend-item">
-          <span className="swatch" style={{ background: '#34d399' }} /> probe <b>{pct(last(probeHistory))}</b>
+          <span className="swatch" style={{ background: '#34d399' }} /> probe·h <b>{pct(last(probeHistory))}</b>
+        </span>
+        <span className="legend-item">
+          <span className="swatch" style={{ background: 'rgba(52,211,153,0.5)' }} /> probe·z <b>{pct(last(projProbeHistory))}</b>
         </span>
         <span className="legend-item">
           <span className="swatch" style={{ background: '#fbbf24' }} /> kNN <b>{pct(last(knnHistory))}</b>
