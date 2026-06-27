@@ -14,6 +14,7 @@ import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
 import { SnowLab } from './SnowLab';
 import { SnapshotLab } from './SnapshotLab';
+import { MutexLab } from './MutexLab';
 import { SelfTestLab } from './SelfTestLab';
 
 export interface LabDef {
@@ -142,6 +143,15 @@ export const LABS: LabDef[] = [
     icon: '❄',
     tag: 'metastable · probabilistic',
     Component: SnowLab,
+  },
+  {
+    id: 'mutex',
+    title: 'Lamport mutex',
+    blurb:
+      "Distributed mutual exclusion with no lock server — Lamport's 1978 logical-clock algorithm. Processes contend for one critical section using only REQUEST/REPLY/RELEASE messages, ordered globally by (timestamp, id) over FIFO channels. A process enters only when its request is the queue minimum and it has heard from everyone later — so two can never enter at once. Watch the request queues converge to one order and mutual exclusion hold live under contention and reordering.",
+    icon: '▥',
+    tag: 'logical clocks · mutual exclusion',
+    Component: MutexLab,
   },
   {
     id: 'snapshot',

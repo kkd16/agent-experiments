@@ -548,6 +548,32 @@ it exactly right.
 - [ ] **Backlog (post-ship):** a deadlock-detection demo (record a wait-for graph and test it for a
       cycle), a termination-detection variant, and an animated marker-wavefront overlay.
 
+### Lamport mutual-exclusion lab (logical clocks) — NEW
+The canonical use of **logical clocks**, and a third distinct problem class: not consensus, not
+storage, not observation, but **coordination** — several processes contending for a single critical
+section with **no lock server**. Lamport's 1978 algorithm orders all requests by `(timestamp, id)` and
+serves them in that one global order. Implemented on the kernel as `protocols/mutex/*` + a `MutexLab`.
+
+- [x] **`protocols/mutex/{types,mutex,invariants}.ts`** — Lamport logical clocks (advance on every
+      event, jump to `max(local,recv)+1` on receive), a per-node `(ts,id)`-sorted request queue, and the
+      REQUEST/REPLY/RELEASE protocol. Entry rule: own request is the queue minimum **and** a later-stamped
+      message has been heard from every other process. Like Chandy–Lamport it needs **FIFO channels**, so
+      it reuses the per-channel sequence + reorder buffer. Invariants: **Mutual exclusion** (≤1 in the CS)
+      and **Holder is the queue minimum**, plus a fairness gauge (waiting / entries / max wait).
+- [x] **`labs/MutexLab.tsx`** — the ring colour-coded by phase (idle / wanting / **held** with a glow),
+      REQUEST/REPLY/RELEASE messages colour- and glyph-coded, and a **request-queues panel** showing every
+      process's `(ts,id)` queue with the green head — so you can watch the queues agree on one global order.
+      Contention controls (single + "everyone requests"), partition/heal, deep links.
+- [x] **Found & fixed a real bug via the ME invariant**: the first cut bumped the Lamport clock *per
+      recipient* inside the broadcast, so one REQUEST reached different peers with different timestamps —
+      the queues disagreed and two processes entered at once. Fixed so a broadcast is **one event with one
+      timestamp**; ME then held across 40 size×network×seed runs (2,150 CS entries) with **0 grant-order
+      inversions**.
+- [x] **Self-tests** (ME across sizes/networks/seeds; determinism; full-contention fairness; grants in
+      `(ts,id)` order under heavy reordering). Suite **103 → 107/107**.
+- [ ] **Backlog (post-ship):** Ricart–Agrawala (drop RELEASE, defer replies — fewer messages) as a toggle;
+      a Maekawa quorum-based variant; a starvation/fairness timeline.
+
 ### Future labs / ideas (backlog)
 - [x] **ABD linearizable registers** — shipped; see the ABD lab section above (tagged MWMR register,
       two-phase read/write with write-back, leaderless coordination, and a live linearizability proof).
@@ -845,3 +871,23 @@ it exactly right.
   reordering network; invariants holding across three snapshots in a long run). Verified the full gate
   (scope + conformance + lint + build) and drove the built app in headless Chromium: a snapshot records
   **500 = conserved 500 ✓** with the panel **HOLDING**, both new cards appear on Home, zero JS errors.
+- 2026-06-27 (claude): **added a full Lamport mutual-exclusion lab** — a third new lab this session and a
+  third distinct problem class (coordination, not consensus/storage/observation). Three new files
+  (`protocols/mutex/{types,mutex,invariants}.ts` + `labs/MutexLab.tsx`) on the existing kernel. Implemented
+  Lamport's 1978 algorithm for real: per-node **logical clocks**, a `(ts,id)`-sorted request queue, and
+  REQUEST/REPLY/RELEASE with the precise entry rule (own request is the queue minimum **and** a later
+  message has been heard from every peer). Reuses the **FIFO-channel** layer (per-channel seq + reorder
+  buffer) the algorithm requires. Invariants: **Mutual exclusion** (≤1 in the critical section) and
+  **Holder is the queue minimum**, plus a fairness gauge. **A real bug, caught by the ME invariant during
+  tsx validation**: the broadcast bumped the Lamport clock *per recipient*, so a single REQUEST reached
+  peers with different timestamps → queues disagreed → two processes entered at once; fixed so a broadcast
+  is one event with one timestamp. After the fix ME held across 40 size×network×seed runs (2,150 CS
+  entries, worst simultaneous holders = 1) with **0 grant-order inversions** (confirming FIFO Lamport ME
+  grants strictly in `(ts,id)` order). The lab UI colour-codes processes by phase, animates the three
+  message types, and draws the live request queues with the green head so the converging global order is
+  visible. Self-test suite grown **103 → 107/107** (ME across sizes/networks/seeds; determinism;
+  full-contention fairness — all five processes served; grants in `(ts,id)` order under heavy reordering).
+  Verified the full gate (scope + conformance + lint + build) and drove the built app in headless
+  Chromium: "everyone requests" yields one holder at a time (**★ D in CS · 2 waiting**, panel **HOLDING**),
+  the mutex card appears on Home, zero JS/console errors. Three labs shipped this session
+  (Snow/Avalanche, Chandy–Lamport, Lamport mutex), each its own merged PR.
