@@ -55,6 +55,9 @@ import { DEFAULT_SNOW_CONFIG, type SnowCmd, type SnowState, type Variant, type C
 import { createSnapshot } from '../protocols/snapshot/snapshot';
 import { snapInvariants, snapGauge } from '../protocols/snapshot/invariants';
 import { DEFAULT_SNAP_CONFIG, type SnapCmd, type SnapState } from '../protocols/snapshot/types';
+import { createMutex } from '../protocols/mutex/mutex';
+import { mutexInvariants, mutexGauge } from '../protocols/mutex/invariants';
+import { DEFAULT_MUTEX_CONFIG, type MutexCmd, type MutexState } from '../protocols/mutex/types';
 import { createHotStuff } from '../protocols/hotstuff/hotstuff';
 import { hotstuffInvariants } from '../protocols/hotstuff/invariants';
 import {
@@ -2061,6 +2064,84 @@ export function runSelfTests(): TestResult[] {
       if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
     }
     return [!firstBreak, firstBreak || 'Snapshot consistency & FIFO held across three snapshots over a long run'];
+  });
+
+  // ---- Lamport mutual exclusion ----
+  const mutexKernel = (seed: number, nNodes: number, net = { minLatency: 12, maxLatency: 60, dropRate: 0 }) =>
+    new Kernel<MutexState, MutexCmd>({
+      seed,
+      protocol: createMutex(DEFAULT_MUTEX_CONFIG),
+      nodeIds: 'ABCDEFGH'.split('').slice(0, nNodes),
+      network: net,
+    });
+
+  t('Lamport-Mutex', 'Mutual exclusion holds across sizes, networks & seeds', () => {
+    let worst = 0;
+    let entries = 0;
+    for (const nNodes of [3, 4, 5, 6]) {
+      for (const net of [{ minLatency: 12, maxLatency: 60, dropRate: 0 }, { minLatency: 30, maxLatency: 220, dropRate: 0 }]) {
+        for (const seed of [1, 3, 7, 42, 99]) {
+          const k = mutexKernel(seed, nNodes, net);
+          for (let i = 0; i < 1500; i++) {
+            k.advance(8);
+            const holders = k.views().filter((v) => v.state.inCS).length;
+            if (holders > worst) worst = holders;
+            const bad = mutexInvariants(k.views()).find((iv) => !iv.ok);
+            if (bad) return [false, `n=${nNodes} maxLat=${net.maxLatency} seed=${seed}: ${bad.name} — ${bad.detail}`];
+          }
+          entries += mutexGauge(k.views()).totalEntries;
+        }
+      }
+    }
+    const ok = worst <= 1 && entries > 200;
+    return [ok, ok ? `≤1 process in the CS at all times across 40 runs; ${entries} total CS entries (liveness)` : `worst simultaneous holders=${worst}, entries=${entries}`];
+  });
+
+  t('Lamport-Mutex', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = mutexKernel(777, 5);
+      for (let i = 0; i < 800; i++) k.advance(8);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('Lamport-Mutex', 'Full contention: everyone requests, everyone is served (fair, exclusive)', () => {
+    const k = mutexKernel(5, 5);
+    for (const id of k.nodeOrder) k.command(id, { type: 'request' });
+    let worst = 0;
+    for (let i = 0; i < 1600; i++) {
+      k.advance(8);
+      worst = Math.max(worst, k.views().filter((v) => v.state.inCS).length);
+      const bad = mutexInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) return [false, `${bad.name}: ${bad.detail}`];
+    }
+    const entries = k.views().map((v) => v.state.entries);
+    const everyoneServed = entries.every((e) => e >= 1);
+    const ok = worst <= 1 && everyoneServed;
+    return [ok, ok ? `all five processes entered the CS (${entries.join('/')}) with mutual exclusion intact` : `worst=${worst} entries=${entries.join('/')}`];
+  });
+
+  t('Lamport-Mutex', 'Grants the CS in (ts,id) order under heavy reordering', () => {
+    const k = mutexKernel(31, 5, { minLatency: 10, maxLatency: 240, dropRate: 0 });
+    const log: { ts: number; id: string }[] = [];
+    const was = new Map<string, boolean>();
+    for (let i = 0; i < 2000; i++) {
+      k.advance(6);
+      for (const v of k.views()) {
+        const prev = was.get(v.id) ?? false;
+        if (v.state.inCS && !prev && v.state.myReqTs != null) log.push({ ts: v.state.myReqTs, id: v.id });
+        was.set(v.id, v.state.inCS);
+      }
+    }
+    let inversions = 0;
+    for (let i = 1; i < log.length; i++) {
+      const a = log[i - 1], b = log[i];
+      if (b.ts < a.ts || (b.ts === a.ts && b.id < a.id)) inversions++;
+    }
+    const ok = log.length > 5 && inversions === 0;
+    return [ok, ok ? `${log.length} grants, all in non-decreasing (ts,id) order — the FIFO total order held` : `grants=${log.length} (ts,id) inversions=${inversions}`];
   });
 
   return out;
