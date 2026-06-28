@@ -19,6 +19,33 @@ import {
   endOfMonth,
   formatSerialPattern,
 } from './dates'
+import {
+  matMul,
+  inverse as matInverse,
+  determinant as matDeterminant,
+  transpose as matTranspose,
+  identity as matIdentity,
+  regress,
+  type Mat,
+} from './linalg'
+import {
+  gamma as gammaFn,
+  lgamma,
+  erf as erfFn,
+  erfc as erfcFn,
+  normPdf,
+  normCdf,
+  normInv,
+  tPdf,
+  tCdf,
+  tInv,
+  chiPdf,
+  chiCdf,
+  chiInv,
+  fPdf,
+  fCdf,
+  fInv,
+} from './distributions'
 
 // ---- argument helpers -------------------------------------------------------
 
@@ -1809,3 +1836,619 @@ function regexOp(args: Node[], h: FnHelpers, op: 'match' | 'extract' | 'replace'
   if (isError(repl)) return repl
   return s.replace(re, repl)
 }
+
+// =============================================================================
+// v7 — linear algebra, regression & statistical distributions
+// =============================================================================
+// A from-scratch numerical layer wired onto the pure `linalg.ts` (LU / Householder
+// QR / OLS regression) and `distributions.ts` (incomplete gamma & beta → Normal /
+// Student-t / chi-square / F) modules. Matrix functions return a `matrix` value so
+// they spill naturally; LINEST returns the real Excel statistics block.
+
+/** Coerce a node to a numeric matrix (number[][]); the first non-number errors. */
+function toNumMatrix(node: Node, h: FnHelpers): Mat | ErrorValue {
+  const m = h.asMatrix(node)
+  if (isError(m)) return m
+  const out: number[][] = []
+  for (const row of m.data) {
+    const r: number[] = []
+    for (const c of row) {
+      const n = toNumber(c)
+      if (isError(n)) return n
+      r.push(n)
+    }
+    out.push(r)
+  }
+  return out
+}
+
+/** Wrap a numeric matrix back into a spreadsheet matrix value, flagging non-finite cells. */
+function numMatrixValue(m: Mat): MatrixValue {
+  return matrix(m.map((row) => row.map((x) => (Number.isFinite(x) ? (x as Scalar) : err('#NUM!')))))
+}
+
+/** Collect only the numeric pairs from two equal-length ranges (text/blank pairs drop). */
+function numPairs(yNode: Node, xNode: Node, h: FnHelpers): { ys: number[]; xs: number[] } | ErrorValue {
+  const ym = h.asMatrix(yNode)
+  if (isError(ym)) return ym
+  const xm = h.asMatrix(xNode)
+  if (isError(xm)) return xm
+  const yf = ym.data.flat()
+  const xf = xm.data.flat()
+  if (yf.length !== xf.length) return err('#N/A', 'arrays have different sizes')
+  const ys: number[] = []
+  const xs: number[] = []
+  for (let i = 0; i < yf.length; i++) {
+    const a = yf[i]
+    const b = xf[i]
+    if (isError(a)) return a
+    if (isError(b)) return b
+    if (typeof a === 'number' && typeof b === 'number') {
+      ys.push(a)
+      xs.push(b)
+    }
+  }
+  return { ys, xs }
+}
+
+/** Parse the (known_ys, [known_xs]) shape shared by LINEST / LOGEST / TREND / GROWTH
+ *  into an observation-per-row design. Orientation is inferred so a row- or
+ *  column-vector of ys both work; an omitted known_xs defaults to {1,2,…,n}. */
+function regressionInputs(
+  args: Node[],
+  h: FnHelpers,
+  yIdx: number,
+  xIdx: number,
+): { y: number[]; x: Mat } | ErrorValue {
+  const ym = h.asMatrix(args[yIdx])
+  if (isError(ym)) return ym
+  const y: number[] = []
+  for (const v of ym.data.flat()) {
+    const n = toNumber(v)
+    if (isError(n)) return n
+    y.push(n)
+  }
+  const nObs = y.length
+  if (nObs === 0) return err('#REF!', 'known_ys is empty')
+  let x: Mat
+  if (xIdx < args.length) {
+    const xnum = toNumMatrix(args[xIdx], h)
+    if (isError(xnum)) return xnum
+    let oriented = xnum
+    if (xnum.length !== nObs && (xnum[0]?.length ?? 0) === nObs) oriented = matTranspose(xnum)
+    if (oriented.length !== nObs) return err('#REF!', 'known_xs and known_ys sizes differ')
+    x = oriented
+  } else {
+    x = y.map((_, i) => [i + 1])
+  }
+  return { y, x }
+}
+
+/** Build the LINEST output: a single coefficient row, or the full 5-row stats block.
+ *  Coefficients come out in Excel order: [mₖ, mₖ₋₁, …, m₁, b]. */
+function linestOutput(reg: ReturnType<typeof regress>, withStats: boolean): RuntimeValue {
+  if (!reg) return err('#NUM!', 'the regression is rank-deficient')
+  const k = reg.coefficients.length // includes the intercept term
+  // natural order is [m₁,…,m_{k-1}, b]; reverse the slopes, keep b last.
+  const slopes = reg.coefficients.slice(0, k - 1)
+  const b = reg.coefficients[k - 1]
+  const slopeSE = reg.standardErrors.slice(0, k - 1)
+  const bSE = reg.standardErrors[k - 1]
+  const row1: Scalar[] = [...slopes.slice().reverse(), b]
+  if (!withStats) return matrix([row1])
+  const width = k
+  const na = (): Scalar => err('#N/A')
+  const pad = (head: Scalar[]): Scalar[] => {
+    const r = head.slice()
+    while (r.length < width) r.push(na())
+    return r
+  }
+  const row2: Scalar[] = [...slopeSE.slice().reverse(), bSE]
+  const out: Scalar[][] = [
+    row1,
+    row2,
+    pad([reg.rSquared, reg.standardError]),
+    pad([reg.fStatistic, reg.degreesOfFreedom]),
+    pad([reg.ssRegression, reg.ssResidual]),
+  ]
+  return matrix(out)
+}
+
+/** Predict ŷ for `newX` rows given coefficients in natural order [m₁,…,mₖ, b?]. */
+function predictRows(newX: Mat, coeffs: number[], withIntercept: boolean): number[] {
+  const k = withIntercept ? coeffs.length - 1 : coeffs.length
+  const b = withIntercept ? coeffs[coeffs.length - 1] : 0
+  return newX.map((row) => {
+    let s = b
+    for (let j = 0; j < k; j++) s += (coeffs[j] ?? 0) * (row[j] ?? 0)
+    return s
+  })
+}
+
+// ---- scalar statistics helpers ---------------------------------------------
+function mean(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0) / xs.length
+}
+function devsq(xs: number[]): number {
+  const m = mean(xs)
+  return xs.reduce((a, b) => a + (b - m) ** 2, 0)
+}
+function covariance(xs: number[], ys: number[], sample: boolean): number {
+  const mx = mean(xs)
+  const my = mean(ys)
+  let s = 0
+  for (let i = 0; i < xs.length; i++) s += (xs[i] - mx) * (ys[i] - my)
+  return s / (xs.length - (sample ? 1 : 0))
+}
+
+const STATS_FUNCTIONS: Record<string, FnImpl> = {
+  // ---- dense matrix algebra ----
+  MMULT: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    const b = toNumMatrix(args[1], h)
+    if (isError(b)) return b
+    const p = matMul(a, b)
+    if (!p) return err('#VALUE!', 'MMULT inner dimensions disagree')
+    return numMatrixValue(p)
+  },
+  MINVERSE: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0 || a.length !== a[0].length) return err('#VALUE!', 'MINVERSE needs a square matrix')
+    const inv = matInverse(a)
+    if (!inv) return err('#NUM!', 'the matrix is singular')
+    return numMatrixValue(inv)
+  },
+  MDETERM: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0 || a.length !== a[0].length) return err('#VALUE!', 'MDETERM needs a square matrix')
+    const d = matDeterminant(a)
+    return d === null ? err('#VALUE!') : d
+  },
+  MUNIT: (args, h) => {
+    const n = numAt(args, 0, h, 1)
+    if (isError(n)) return n
+    const k = Math.trunc(n)
+    if (k < 1 || k > 1000) return err('#VALUE!')
+    return numMatrixValue(matIdentity(k))
+  },
+
+  // ---- regression family ----
+  LINEST: (args, h) => {
+    const inp = regressionInputs(args, h, 0, 1)
+    if (isError(inp)) return inp
+    const constArg = args.length > 2 ? toBool(h.scalarOf(args[2])) : true
+    if (isError(constArg)) return constArg
+    const withStats = args.length > 3 ? truthy(toBool(h.scalarOf(args[3]))) : false
+    const reg = regress(inp.y, inp.x, constArg !== false)
+    return linestOutput(reg, withStats)
+  },
+  LOGEST: (args, h) => {
+    const inp = regressionInputs(args, h, 0, 1)
+    if (isError(inp)) return inp
+    const constArg = args.length > 2 ? toBool(h.scalarOf(args[2])) : true
+    if (isError(constArg)) return constArg
+    const withStats = args.length > 3 ? truthy(toBool(h.scalarOf(args[3]))) : false
+    if (inp.y.some((v) => v <= 0)) return err('#NUM!', 'LOGEST needs positive y values')
+    const lny = inp.y.map((v) => Math.log(v))
+    const reg = regress(lny, inp.x, constArg !== false)
+    if (!reg) return err('#NUM!')
+    // exponentiate the coefficient & SE-free rows; the stats block stays in log space.
+    const expReg = { ...reg, coefficients: reg.coefficients.map((c) => Math.exp(c)) }
+    const out = linestOutput(expReg, withStats)
+    return out
+  },
+  TREND: (args, h) => {
+    const inp = regressionInputs(args, h, 0, 1)
+    if (isError(inp)) return inp
+    const constArg = args.length > 3 ? toBool(h.scalarOf(args[3])) : true
+    if (isError(constArg)) return constArg
+    const reg = regress(inp.y, inp.x, constArg !== false)
+    if (!reg) return err('#NUM!')
+    let newX = inp.x
+    let asColumn = true
+    if (args.length > 2) {
+      const nx = toNumMatrix(args[2], h)
+      if (isError(nx)) return nx
+      const k = inp.x[0].length
+      let oriented = nx
+      if ((nx[0]?.length ?? 0) !== k && nx.length === k) {
+        oriented = matTranspose(nx)
+        asColumn = false
+      }
+      newX = oriented
+    }
+    const preds = predictRows(newX, reg.coefficients, constArg !== false)
+    return asColumn ? matrix(preds.map((p) => [p])) : matrix([preds])
+  },
+  GROWTH: (args, h) => {
+    const inp = regressionInputs(args, h, 0, 1)
+    if (isError(inp)) return inp
+    const constArg = args.length > 3 ? toBool(h.scalarOf(args[3])) : true
+    if (isError(constArg)) return constArg
+    if (inp.y.some((v) => v <= 0)) return err('#NUM!', 'GROWTH needs positive y values')
+    const lny = inp.y.map((v) => Math.log(v))
+    const reg = regress(lny, inp.x, constArg !== false)
+    if (!reg) return err('#NUM!')
+    let newX = inp.x
+    let asColumn = true
+    if (args.length > 2) {
+      const nx = toNumMatrix(args[2], h)
+      if (isError(nx)) return nx
+      const k = inp.x[0].length
+      let oriented = nx
+      if ((nx[0]?.length ?? 0) !== k && nx.length === k) {
+        oriented = matTranspose(nx)
+        asColumn = false
+      }
+      newX = oriented
+    }
+    const preds = predictRows(newX, reg.coefficients, constArg !== false).map((p) => Math.exp(p))
+    return asColumn ? matrix(preds.map((p) => [p])) : matrix([preds])
+  },
+  'FORECAST.LINEAR': forecastLinear,
+  FORECAST: forecastLinear,
+
+  // ---- simple-regression scalars ----
+  SLOPE: (args, h) => regPair(args, h, (r) => r.slope),
+  INTERCEPT: (args, h) => regPair(args, h, (r) => r.intercept),
+  RSQ: (args, h) => regPair(args, h, (r) => r.r2),
+  STEYX: (args, h) => {
+    const p = numPairs(args[0], args[1], h)
+    if (isError(p)) return p
+    const n = p.xs.length
+    if (n < 3) return err('#DIV/0!')
+    const sxx = devsq(p.xs)
+    const syy = devsq(p.ys)
+    let sxy = 0
+    const mx = mean(p.xs)
+    const my = mean(p.ys)
+    for (let i = 0; i < n; i++) sxy += (p.xs[i] - mx) * (p.ys[i] - my)
+    const v = (syy - (sxy * sxy) / sxx) / (n - 2)
+    return Math.sqrt(Math.max(v, 0))
+  },
+  CORREL: (args, h) => correl(args, h),
+  PEARSON: (args, h) => correl(args, h),
+  COVAR: (args, h) => covar(args, h, false),
+  'COVARIANCE.P': (args, h) => covar(args, h, false),
+  'COVARIANCE.S': (args, h) => covar(args, h, true),
+  DEVSQ: (args, h) => {
+    const ns = numbers(args, h)
+    if (isError(ns)) return ns
+    return ns.length ? devsq(ns) : err('#NUM!')
+  },
+  SKEW: (args, h) => moment(args, h, 'skew-s'),
+  'SKEW.P': (args, h) => moment(args, h, 'skew-p'),
+  KURT: (args, h) => moment(args, h, 'kurt'),
+  FISHER: (args, h) => need1(numAt(args, 0, h), (x) => (x <= -1 || x >= 1 ? err('#NUM!') : 0.5 * Math.log((1 + x) / (1 - x)))),
+  FISHERINV: (args, h) => need1(numAt(args, 0, h), (y) => Math.tanh(y)),
+
+  // ---- special functions ----
+  GAMMA: (args, h) => need1(numAt(args, 0, h), (x) => (Number.isInteger(x) && x <= 0 ? err('#NUM!') : finite(gammaFn(x)))),
+  GAMMALN: (args, h) => need1(numAt(args, 0, h), (x) => (x <= 0 ? err('#NUM!') : lgamma(x))),
+  'GAMMALN.PRECISE': (args, h) => need1(numAt(args, 0, h), (x) => (x <= 0 ? err('#NUM!') : lgamma(x))),
+  ERF: (args, h) => {
+    const lo = numAt(args, 0, h)
+    if (isError(lo)) return lo
+    if (args.length > 1) {
+      const hi = numAt(args, 1, h)
+      if (isError(hi)) return hi
+      return erfFn(hi) - erfFn(lo)
+    }
+    return erfFn(lo)
+  },
+  ERFC: (args, h) => need1(numAt(args, 0, h), (x) => erfcFn(x)),
+
+  // ---- Normal distribution ----
+  'NORM.DIST': (args, h) => normDist(args, h),
+  NORMDIST: (args, h) => normDist(args, h),
+  'NORM.S.DIST': (args, h) => {
+    const z = numAt(args, 0, h)
+    if (isError(z)) return z
+    const cum = args.length > 1 ? toBool(h.scalarOf(args[1])) : true
+    if (isError(cum)) return cum
+    return cum ? normCdf(z) : normPdf(z)
+  },
+  NORMSDIST: (args, h) => need1(numAt(args, 0, h), (z) => normCdf(z)),
+  'NORM.INV': (args, h) => normInvFn(args, h),
+  NORMINV: (args, h) => normInvFn(args, h),
+  'NORM.S.INV': (args, h) => need1(numAt(args, 0, h), (p) => (p <= 0 || p >= 1 ? err('#NUM!') : normInv(p))),
+  NORMSINV: (args, h) => need1(numAt(args, 0, h), (p) => (p <= 0 || p >= 1 ? err('#NUM!') : normInv(p))),
+  PHI: (args, h) => need1(numAt(args, 0, h), (x) => normPdf(x)),
+  GAUSS: (args, h) => need1(numAt(args, 0, h), (x) => normCdf(x) - 0.5),
+  CONFIDENCE: (args, h) => confidenceNorm(args, h),
+  'CONFIDENCE.NORM': (args, h) => confidenceNorm(args, h),
+  'CONFIDENCE.T': (args, h) => {
+    const alpha = numAt(args, 0, h)
+    if (isError(alpha)) return alpha
+    const sd = numAt(args, 1, h)
+    if (isError(sd)) return sd
+    const n = numAt(args, 2, h)
+    if (isError(n)) return n
+    if (alpha <= 0 || alpha >= 1 || sd <= 0 || n < 2) return err('#NUM!')
+    return (tInv(1 - alpha / 2, n - 1) * sd) / Math.sqrt(n)
+  },
+
+  // ---- Student's t ----
+  'T.DIST': (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const df = numAt(args, 1, h)
+    if (isError(df)) return df
+    const cum = args.length > 2 ? toBool(h.scalarOf(args[2])) : true
+    if (isError(cum)) return cum
+    if (df < 1) return err('#NUM!')
+    return cum ? tCdf(x, df) : tPdf(x, df)
+  },
+  'T.DIST.RT': (args, h) => tTail(args, h, 'rt'),
+  'T.DIST.2T': (args, h) => tTail(args, h, '2t'),
+  TDIST: (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const df = numAt(args, 1, h)
+    if (isError(df)) return df
+    const tails = numAt(args, 2, h, 1)
+    if (isError(tails)) return tails
+    if (x < 0 || df < 1 || (tails !== 1 && tails !== 2)) return err('#NUM!')
+    const rt = 1 - tCdf(x, df)
+    return tails === 2 ? 2 * rt : rt
+  },
+  'T.INV': (args, h) => {
+    const p = numAt(args, 0, h)
+    if (isError(p)) return p
+    const df = numAt(args, 1, h)
+    if (isError(df)) return df
+    if (p <= 0 || p >= 1 || df < 1) return err('#NUM!')
+    return tInv(p, df)
+  },
+  'T.INV.2T': (args, h) => tInv2t(args, h),
+  TINV: (args, h) => tInv2t(args, h),
+
+  // ---- chi-square ----
+  'CHISQ.DIST': (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const df = numAt(args, 1, h)
+    if (isError(df)) return df
+    const cum = args.length > 2 ? toBool(h.scalarOf(args[2])) : true
+    if (isError(cum)) return cum
+    if (x < 0 || df < 1) return err('#NUM!')
+    return cum ? chiCdf(x, df) : chiPdf(x, df)
+  },
+  'CHISQ.DIST.RT': (args, h) => chiRt(args, h),
+  CHIDIST: (args, h) => chiRt(args, h),
+  'CHISQ.INV': (args, h) => {
+    const p = numAt(args, 0, h)
+    if (isError(p)) return p
+    const df = numAt(args, 1, h)
+    if (isError(df)) return df
+    if (p < 0 || p >= 1 || df < 1) return err('#NUM!')
+    return chiInv(p, df)
+  },
+  'CHISQ.INV.RT': (args, h) => chiInvRt(args, h),
+  CHIINV: (args, h) => chiInvRt(args, h),
+
+  // ---- Fisher's F ----
+  'F.DIST': (args, h) => {
+    const x = numAt(args, 0, h)
+    if (isError(x)) return x
+    const d1 = numAt(args, 1, h)
+    if (isError(d1)) return d1
+    const d2 = numAt(args, 2, h)
+    if (isError(d2)) return d2
+    const cum = args.length > 3 ? toBool(h.scalarOf(args[3])) : true
+    if (isError(cum)) return cum
+    if (x < 0 || d1 < 1 || d2 < 1) return err('#NUM!')
+    return cum ? fCdf(x, d1, d2) : fPdf(x, d1, d2)
+  },
+  'F.DIST.RT': (args, h) => fRt(args, h),
+  FDIST: (args, h) => fRt(args, h),
+  'F.INV': (args, h) => {
+    const p = numAt(args, 0, h)
+    if (isError(p)) return p
+    const d1 = numAt(args, 1, h)
+    if (isError(d1)) return d1
+    const d2 = numAt(args, 2, h)
+    if (isError(d2)) return d2
+    if (p < 0 || p >= 1 || d1 < 1 || d2 < 1) return err('#NUM!')
+    return fInv(p, d1, d2)
+  },
+  'F.INV.RT': (args, h) => fInvRt(args, h),
+  FINV: (args, h) => fInvRt(args, h),
+}
+
+function finite(x: number): number | ErrorValue {
+  return Number.isFinite(x) ? x : err('#NUM!')
+}
+
+function regPair(args: Node[], h: FnHelpers, pick: (r: { slope: number; intercept: number; r2: number }) => number): RuntimeValue {
+  const p = numPairs(args[0], args[1], h)
+  if (isError(p)) return p
+  if (p.xs.length < 2) return err('#DIV/0!')
+  const reg = regress(
+    p.ys,
+    p.xs.map((v) => [v]),
+    true,
+  )
+  if (!reg) return err('#DIV/0!')
+  return finite(pick({ slope: reg.coefficients[0], intercept: reg.coefficients[1], r2: reg.rSquared }))
+}
+
+function correl(args: Node[], h: FnHelpers): RuntimeValue {
+  const p = numPairs(args[0], args[1], h)
+  if (isError(p)) return p
+  const n = p.xs.length
+  if (n < 2) return err('#DIV/0!')
+  const cov = covariance(p.xs, p.ys, false)
+  const sx = Math.sqrt(devsq(p.xs) / n)
+  const sy = Math.sqrt(devsq(p.ys) / n)
+  if (sx === 0 || sy === 0) return err('#DIV/0!')
+  return cov / (sx * sy)
+}
+
+function covar(args: Node[], h: FnHelpers, sample: boolean): RuntimeValue {
+  const p = numPairs(args[0], args[1], h)
+  if (isError(p)) return p
+  if (p.xs.length < (sample ? 2 : 1)) return err('#DIV/0!')
+  return covariance(p.xs, p.ys, sample)
+}
+
+function moment(args: Node[], h: FnHelpers, kind: 'skew-s' | 'skew-p' | 'kurt'): RuntimeValue {
+  const ns = numbers(args, h)
+  if (isError(ns)) return ns
+  const n = ns.length
+  const m = mean(ns)
+  if (kind === 'kurt') {
+    if (n < 4) return err('#DIV/0!')
+    const s = Math.sqrt(devsq(ns) / (n - 1))
+    if (s === 0) return err('#DIV/0!')
+    let sum = 0
+    for (const x of ns) sum += ((x - m) / s) ** 4
+    return (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * sum - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+  }
+  if (kind === 'skew-s') {
+    if (n < 3) return err('#DIV/0!')
+    const s = Math.sqrt(devsq(ns) / (n - 1))
+    if (s === 0) return err('#DIV/0!')
+    let sum = 0
+    for (const x of ns) sum += ((x - m) / s) ** 3
+    return (n / ((n - 1) * (n - 2))) * sum
+  }
+  // population skew
+  if (n < 1) return err('#DIV/0!')
+  const sp = Math.sqrt(devsq(ns) / n)
+  if (sp === 0) return err('#DIV/0!')
+  let sum = 0
+  for (const x of ns) sum += ((x - m) / sp) ** 3
+  return sum / n
+}
+
+function forecastLinear(args: Node[], h: FnHelpers): RuntimeValue {
+  // FORECAST(x, known_ys, known_xs) — x may be a scalar or an array of new x values.
+  const p = numPairs(args[1], args[2], h)
+  if (isError(p)) return p
+  if (p.xs.length < 2) return err('#DIV/0!')
+  const reg = regress(
+    p.ys,
+    p.xs.map((v) => [v]),
+    true,
+  )
+  if (!reg) return err('#DIV/0!')
+  const slope = reg.coefficients[0]
+  const intercept = reg.coefficients[1]
+  const xm = h.asMatrix(args[0])
+  if (isError(xm)) return xm
+  if (xm.rows === 1 && xm.cols === 1) {
+    const xv = toNumber(xm.data[0][0])
+    if (isError(xv)) return xv
+    return slope * xv + intercept
+  }
+  return matrix(
+    xm.data.map((row) =>
+      row.map((c) => {
+        const xv = toNumber(c)
+        return isError(xv) ? xv : slope * xv + intercept
+      }),
+    ),
+  )
+}
+
+function normDist(args: Node[], h: FnHelpers): RuntimeValue {
+  const x = numAt(args, 0, h)
+  if (isError(x)) return x
+  const m = numAt(args, 1, h, 0)
+  if (isError(m)) return m
+  const sd = numAt(args, 2, h, 1)
+  if (isError(sd)) return sd
+  if (sd <= 0) return err('#NUM!')
+  const cum = args.length > 3 ? toBool(h.scalarOf(args[3])) : true
+  if (isError(cum)) return cum
+  return cum ? normCdf(x, m, sd) : normPdf(x, m, sd)
+}
+
+function normInvFn(args: Node[], h: FnHelpers): RuntimeValue {
+  const p = numAt(args, 0, h)
+  if (isError(p)) return p
+  const m = numAt(args, 1, h, 0)
+  if (isError(m)) return m
+  const sd = numAt(args, 2, h, 1)
+  if (isError(sd)) return sd
+  if (p <= 0 || p >= 1 || sd <= 0) return err('#NUM!')
+  return normInv(p, m, sd)
+}
+
+function confidenceNorm(args: Node[], h: FnHelpers): RuntimeValue {
+  const alpha = numAt(args, 0, h)
+  if (isError(alpha)) return alpha
+  const sd = numAt(args, 1, h)
+  if (isError(sd)) return sd
+  const n = numAt(args, 2, h)
+  if (isError(n)) return n
+  if (alpha <= 0 || alpha >= 1 || sd <= 0 || n < 1) return err('#NUM!')
+  return (normInv(1 - alpha / 2) * sd) / Math.sqrt(n)
+}
+
+function tTail(args: Node[], h: FnHelpers, kind: 'rt' | '2t'): RuntimeValue {
+  const x = numAt(args, 0, h)
+  if (isError(x)) return x
+  const df = numAt(args, 1, h)
+  if (isError(df)) return df
+  if (df < 1) return err('#NUM!')
+  if (kind === 'rt') return 1 - tCdf(x, df)
+  if (x < 0) return err('#NUM!')
+  return 2 * (1 - tCdf(x, df))
+}
+
+function tInv2t(args: Node[], h: FnHelpers): RuntimeValue {
+  const p = numAt(args, 0, h)
+  if (isError(p)) return p
+  const df = numAt(args, 1, h)
+  if (isError(df)) return df
+  if (p <= 0 || p > 1 || df < 1) return err('#NUM!')
+  return tInv(1 - p / 2, df)
+}
+
+function chiRt(args: Node[], h: FnHelpers): RuntimeValue {
+  const x = numAt(args, 0, h)
+  if (isError(x)) return x
+  const df = numAt(args, 1, h)
+  if (isError(df)) return df
+  if (x < 0 || df < 1) return err('#NUM!')
+  return 1 - chiCdf(x, df)
+}
+
+function chiInvRt(args: Node[], h: FnHelpers): RuntimeValue {
+  const p = numAt(args, 0, h)
+  if (isError(p)) return p
+  const df = numAt(args, 1, h)
+  if (isError(df)) return df
+  if (p <= 0 || p > 1 || df < 1) return err('#NUM!')
+  return chiInv(1 - p, df)
+}
+
+function fRt(args: Node[], h: FnHelpers): RuntimeValue {
+  const x = numAt(args, 0, h)
+  if (isError(x)) return x
+  const d1 = numAt(args, 1, h)
+  if (isError(d1)) return d1
+  const d2 = numAt(args, 2, h)
+  if (isError(d2)) return d2
+  if (x < 0 || d1 < 1 || d2 < 1) return err('#NUM!')
+  return 1 - fCdf(x, d1, d2)
+}
+
+function fInvRt(args: Node[], h: FnHelpers): RuntimeValue {
+  const p = numAt(args, 0, h)
+  if (isError(p)) return p
+  const d1 = numAt(args, 1, h)
+  if (isError(d1)) return d1
+  const d2 = numAt(args, 2, h)
+  if (isError(d2)) return d2
+  if (p <= 0 || p > 1 || d1 < 1 || d2 < 1) return err('#NUM!')
+  return fInv(1 - p, d1, d2)
+}
+
+// Merge the v7 statistics & linear-algebra functions into the main registry.
+Object.assign(FUNCTIONS, STATS_FUNCTIONS)

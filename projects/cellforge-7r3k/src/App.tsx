@@ -834,6 +834,15 @@ export default function App() {
               <li>
                 What-if: <kbd>🎯 Goal Seek</kbd> · <kbd>▦ Data Table</kbd>
               </li>
+              <li>
+                Regression: <code>=LINEST(y, x, TRUE, TRUE)</code> spills the full stats block · <code>=TREND(…)</code>
+              </li>
+              <li>
+                Matrix algebra: <code>=MMULT(MINVERSE(A), b)</code> · <code>=MDETERM(A)</code>
+              </li>
+              <li>
+                Distributions: <code>=NORM.S.INV(0.975)</code>, <code>=T.DIST.2T(t, df)</code>, <code>=F.INV.RT(…)</code>
+              </li>
             </ul>
           </div>
         </aside>

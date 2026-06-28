@@ -19,11 +19,14 @@ src/engine/            ← pure logic, zero React imports
   lexer.ts             hand-written tokenizer for the formula grammar
   ast.ts               AST node types (union, no classes) — incl. apply (lambda call)
   parser.ts            Pratt / precedence-climbing parser -> AST, postfix application
-  functions.ts         the function library (~190 fns: math … dynamic arrays … LAMBDA)
+  functions.ts         the function library (~230 fns: math … dynamic arrays … LAMBDA … regression)
   evaluator.ts         tree-walking evaluator: error propagation, array broadcasting, closures
   workbook.ts          the model: cells, dep graph, topo recalc, cycle detection, SPILL engine
   solver.ts            1-D root finder (secant + bisection) behind Goal Seek
-  selftest.ts          assertions exercising every layer (159, runs in-app)
+  optimizer.ts         two-phase simplex + branch & bound + Nelder–Mead behind the Solver
+  linalg.ts            dense linear algebra (LU, Householder QR) + OLS regression (the LINEST core)
+  distributions.ts     special fns (incomplete Γ/Β, erf) + Normal/t/χ²/F distributions
+  selftest.ts          assertions exercising every layer (290, runs in-app)
 src/components/        ← React, presentational
   Grid (+ spill outline), FormulaBar, Toolbar, Inspector, SelfTestPanel, Sparkline,
   SheetTabs, ChartLayer/View, NameManager, FindReplace, FormatBar, GoalSeek
@@ -377,6 +380,76 @@ simplex, and the engine stays pure / React-free with every claim re-derived in t
 - [ ] **Integer Data Table** / scenario sweep that re-runs the MILP across a parameter
 - [ ] **Warm-start** the child LPs from the parent basis (dual simplex) for far fewer iterations
 
+## v7 — "from an optimization engine to a *statistics & linear-algebra* engine" (this session)
+
+v6 made the grid prescriptive (it finds the *best* numbers). v7 makes it *inferential and
+analytical in the textbook sense*: it fits models to data, quantifies the uncertainty, and does
+real matrix algebra. The marquee is a from-scratch, genuinely-correct **regression engine** —
+`LINEST` returns the complete Excel statistics block (coefficients, standard errors, R², the
+standard error of the estimate, the F statistic, the residual degrees of freedom, and the
+regression/residual sums of squares), all read off the *same* numerically-stable **Householder
+QR** decomposition used to solve the least-squares system. Alongside it: a dense **linear-algebra
+core** (`MMULT`/`MINVERSE`/`MDETERM`/`MUNIT` over LU with partial pivoting) and a full set of
+**statistical distributions** (Normal, Student's t, χ², Fisher's F — each with CDF, PDF and
+inverse) built on hand-rolled incomplete gamma/beta functions. Two new pure, React-free modules
+(`linalg.ts`, `distributions.ts`) join the family; the in-app self-test suite grows 246 → **290**,
+every value cross-checked against the known textbook answer.
+
+### A real regression engine — `LINEST` & friends *(the marquee)*
+- [x] `src/engine/linalg.ts` — a pure, React-free numerical core, unit-tested in isolation:
+  - [x] dense ops: `matMul`, `transpose`, `identity`
+  - [x] **LU with partial pivoting** → `determinant`, `inverse`, `solve` (singular-aware)
+  - [x] a thin **Householder QR** → `lstsq`, a numerically-stable least-squares solver
+  - [x] **`regress`** — ordinary least squares returning coefficients **and** the full LINEST
+    statistics block; the coefficient covariance is `σ²·R⁻¹R⁻ᵀ` read straight off the QR factor R
+- [x] **`LINEST(known_ys, [known_xs], [const], [stats])`** — multiple linear regression that
+  *spills* a single coefficient row, or the full 5-row stats block, in Excel's reversed-`m` order
+  with `#N/A` padding — exactly matching Excel's layout. Infers row/column orientation; an omitted
+  `known_xs` defaults to `{1,2,…,n}`; `const = FALSE` forces a zero intercept.
+- [x] **`TREND`** / **`FORECAST.LINEAR`** (predict from a fitted line) and **`LOGEST`** /
+  **`GROWTH`** (the exponential-model analogues, fit on `ln y`).
+- [x] Simple-regression scalars: `SLOPE`, `INTERCEPT`, `RSQ`, `CORREL` (= `PEARSON`), `STEYX`,
+  `COVARIANCE.P`/`.S` (= `COVAR`), `DEVSQ`, `SKEW`/`SKEW.P`, `KURT`, `FISHER`/`FISHERINV`.
+
+### Dense matrix algebra
+- [x] `MMULT` (dimension-checked), `MINVERSE` (singular → `#NUM!`, non-square → `#VALUE!`),
+  `MDETERM`, `MUNIT(n)` — all returning matrices that spill, so `=MMULT(MINVERSE(A),b)` solves a
+  linear system live in the grid.
+
+### Statistical distributions
+- [x] `src/engine/distributions.ts` — hand-rolled **log-gamma** (Lanczos), **regularized
+  incomplete gamma** (series + continued fraction) and **incomplete beta**, and the **error
+  function**, all accurate to ~1e-12; robust monotone inverters for the inverse CDFs.
+- [x] **Normal**: `NORM.DIST`, `NORM.S.DIST`, `NORM.INV`, `NORM.S.INV`, `PHI`, `GAUSS`,
+  `CONFIDENCE.NORM`/`.T` (+ legacy `NORMDIST`/`NORMSDIST`/`NORMINV`/`NORMSINV`/`CONFIDENCE`).
+- [x] **Student's t**: `T.DIST`, `T.DIST.RT`, `T.DIST.2T`, `T.INV`, `T.INV.2T` (+ legacy `TDIST`/`TINV`).
+- [x] **chi-square**: `CHISQ.DIST`, `CHISQ.DIST.RT`, `CHISQ.INV`, `CHISQ.INV.RT` (+ legacy `CHIDIST`/`CHIINV`).
+- [x] **Fisher's F**: `F.DIST`, `F.DIST.RT`, `F.INV`, `F.INV.RT` (+ legacy `FDIST`/`FINV`).
+- [x] Special functions: `GAMMA`, `GAMMALN`(`.PRECISE`), `ERF` (one- and two-arg), `ERFC`.
+
+### Demo + tests
+- [x] New flagship **"Statistics Lab"** demo (now the default): a live **multiple regression**
+  (`LINEST` spilling the full stats block, with `TREND` forecasts beyond the data and a scatter
+  chart), a real **one-sample t-test** (t statistic → two-tailed p via `T.DIST.2T`, a 95% CI via
+  `CONFIDENCE.T`, and a reject/can't-reject verdict), and a **3×3 linear system** solved with
+  `MINVERSE`/`MMULT` to the exact `(1, 2, 3)`.
+- [x] +44 self-tests across `linalg` (10), `regression` (18) and `dist` (16) — 246 → **290**:
+  MMULT·MINVERSE = I, MDETERM of a singular matrix = 0, simple & multiple regression recovered
+  exactly (`y = 1 + 2x₁ + 3x₂`), the LINEST stats block (R² 0.996709, F 908.5122, SE, df, SS), and
+  every distribution checked against its textbook value (NORM.S.INV(0.975)=1.95996, T.INV.2T,
+  CHISQ.INV.RT, F.INV.RT, GAMMA(½)=√π, ERF(1)) plus round-trip inverses.
+- [x] Validated outside the browser too: an isolated tsx harness cross-checked all 26 core numerics
+  against known reference values (erf, the four distribution CDFs/inverses, gamma, LU det/inverse,
+  QR regression coefficients & standard errors) before a single self-test was written.
+
+### Forward backlog (next sessions)
+- [ ] A **Regression / Data-Analysis dialog** (pick y & x ranges → drop a labelled LINEST block + a
+  residual plot), the natural UI marquee on top of this engine
+- [ ] Polynomial / weighted regression helpers and **prediction intervals** for `TREND`/`FORECAST`
+- [ ] Eigenvalues & SVD (a QR-algorithm iteration on the existing Householder core)
+- [ ] Two-sample / paired **`T.TEST`**, **`Z.TEST`**, **`F.TEST`**, **`CHISQ.TEST`** and an ANOVA
+- [ ] Trendlines on scatter charts (fit with `regress`, draw the line + R² on the SVG renderer)
+
 ## Session log
 
 - 2026-06-23 (claude): created Cellforge from the template. Built the full engine
@@ -464,3 +537,22 @@ simplex, and the engine stays pure / React-free with every claim re-derived in t
   in a real browser (Playwright): the knapsack solves to $1.3M via branch & bound (21 nodes) and
   the carpenter Sensitivity report prints the exact textbook shadow prices and ranges — no console
   errors. Gate green (scope + conformance + lint + build).
+- 2026-06-28 (claude): **v7 — a statistics & linear-algebra engine.** Planned and shipped the whole
+  v7 roadmap above. Two new pure, React-free modules: `linalg.ts` (dense ops, **LU with partial
+  pivoting** → determinant/inverse/solve, a thin **Householder QR** → a stable least-squares solver,
+  and an OLS **`regress`** that returns coefficients *plus* the full statistics block, its covariance
+  read off the QR factor R) and `distributions.ts` (hand-rolled **log-gamma**, **regularized
+  incomplete gamma & beta**, **erf**, and the **Normal / Student-t / χ² / F** distributions with CDF,
+  PDF and inverse). Wired ~60 new functions into the library (now ~230): the marquee **`LINEST`**
+  (multiple regression spilling Excel's exact 5-row stats block in reversed-`m` order with `#N/A`
+  padding), `TREND`/`FORECAST`/`LOGEST`/`GROWTH`, the simple-regression scalars
+  (`SLOPE`/`INTERCEPT`/`RSQ`/`CORREL`/`STEYX`/`COVARIANCE.*`/`DEVSQ`/`SKEW`/`KURT`/`FISHER`), dense
+  matrix algebra (`MMULT`/`MINVERSE`/`MDETERM`/`MUNIT`), and the full distribution family
+  (`NORM.*`, `T.*`, `CHISQ.*`, `F.*`, `CONFIDENCE.*`, `GAMMA`/`GAMMALN`/`ERF`) with their legacy
+  aliases. New flagship **"Statistics Lab"** demo (now default): a live multiple regression with a
+  spilling LINEST block + TREND forecasts + a scatter chart, a one-sample t-test (t → two-tailed p
+  via `T.DIST.2T`, 95% CI via `CONFIDENCE.T`), and a 3×3 system solved with `MINVERSE`/`MMULT` to the
+  exact `(1, 2, 3)`. The in-app self-test suite grew 246 → **290** (+10 `linalg`, +18 `regression`,
+  +16 `dist`), every value cross-checked against the textbook answer; also validated in an isolated
+  tsx harness (26 core numerics vs known references) before wiring. Gate green (scope + conformance +
+  lint + build).
