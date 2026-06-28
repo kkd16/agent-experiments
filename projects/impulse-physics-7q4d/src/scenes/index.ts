@@ -61,7 +61,8 @@ export interface SceneDef {
     | 'Fracture'
     | 'Showcase'
     | 'Materials'
-    | 'Stress';
+    | 'Stress'
+    | 'Plastic';
   build: (world: World, rng: Rng) => BuildResult;
 }
 
@@ -2014,6 +2015,175 @@ const femSpringboard: SceneDef = {
   },
 };
 
+// ---- Elastoplastic FEM scenes (permanent deformation) ---------------------
+
+const femBendSet: SceneDef = {
+  id: 'fem-bend-set',
+  name: 'FEM Bend & Set',
+  description:
+    'Two finite-element beams clamped at one end — one elastic, one elastoplastic — take the same load. Heavy weights roll onto their tips and roll off. The elastic beam springs flat again; the plastic one keeps the bend, just like over-bending a strip of metal. The heatmap shows the permanent plastic strain frozen into the yielded root.',
+  category: 'Plastic',
+  build: (world, rng) => {
+    ground(world, 16, -5);
+    world.addBody(new Body(Polygon.box(0.45, 2.8), { type: BodyType.Static, position: new Vec2(-5.2, 1.6) }));
+    const x0 = -4.9;
+    const elastic = makeFemBeam(new Vec2(x0, 3.0), 5, 0.45, 30, 3, {
+      material: { young: 9e4, poisson: 0.3, density: 1, dampingMass: 1.2, dampingStiff: 0.05 },
+      color: '#6ea8ff',
+      pin: (r) => r.x <= x0 + 1e-3,
+    });
+    const plastic = makeFemBeam(new Vec2(x0, 1.0), 5, 0.45, 30, 3, {
+      material: {
+        young: 9e4, poisson: 0.3, density: 1, dampingMass: 1.2, dampingStiff: 0.05,
+        plastic: true, yieldStress: 150, hardening: 600, creep: 0.5, maxPlasticStrain: 1.2,
+      },
+      pin: (r) => r.x <= x0 + 1e-3,
+    });
+    plastic.render.heatmap = 'plastic';
+    world.addFemBody(elastic);
+    world.addFemBody(plastic);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(-0.6, 1.6), scale: 46 },
+      update: (time) => {
+        if (dropped < 6 && time > dropped * 1.5 + 1.0) {
+          dropped++;
+          const y = dropped % 2 === 0 ? 4.2 : 2.2;
+          world.addBody(
+            new Body(new Circle(0.42), {
+              position: new Vec2(rng.range(1.5, 3.0), y + 3),
+              density: 4, restitution: 0.02, friction: 0.5, color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const femPlasticine: SceneDef = {
+  id: 'fem-plasticine',
+  name: 'FEM Plasticine',
+  description:
+    'A bin of soft, low-yield finite-element blobs — modelling clay. Heavy balls rain down and dent them permanently: each impact squashes the continuum, the plastic flow holds the new shape, and the heatmap glows where the material has yielded. Unlike the elastic jellies, these never spring back.',
+  category: 'Plastic',
+  build: (world, rng) => {
+    ground(world, 8);
+    walls(world, 8, 7);
+    const clay = (x: number, y: number, r: number, color: string): void => {
+      const b = makeFemDisk(new Vec2(x, y), r, 3, 16, {
+        material: {
+          young: 4e4, poisson: 0.34, density: 1, dampingMass: 0.8, dampingStiff: 0.04,
+          plastic: true, yieldStress: 70, hardening: 250, creep: 0.5, maxPlasticStrain: 2.0,
+        },
+        color,
+      });
+      b.render.heatmap = 'plastic';
+      world.addFemBody(b);
+    };
+    clay(-3.0, 2.6, 0.85, '#c792ea');
+    clay(-0.6, 2.4, 0.95, '#7CFFCB');
+    clay(2.0, 2.6, 0.8, '#ffd166');
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 2.5), scale: 42 },
+      update: (time) => {
+        if (dropped < 10 && time > dropped * 0.7 + 0.6) {
+          dropped++;
+          world.addBody(
+            new Body(new Circle(rng.range(0.3, 0.45)), {
+              position: new Vec2(rng.range(-3.2, 2.2), 6.5),
+              density: 5, restitution: 0.0, color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
+const femForge: SceneDef = {
+  id: 'fem-forge',
+  name: 'FEM Forge Press',
+  description:
+    'A scripted hydraulic press hammers a hot finite-element billet against the anvil. Each stroke flattens the metal a little more — the plastic strain (and the spreading width) is permanent, so the slug keeps the forged shape between strokes while the elastic ringing fades. Real continuum plasticity, coupled live to the rigid press.',
+  category: 'Plastic',
+  build: (world) => {
+    ground(world, 10, 0);
+    // A soft, ductile metal billet resting on the anvil.
+    const billet = makeFemBox(new Vec2(0, 0.55), 0.9, 0.55, 12, 7, {
+      material: {
+        young: 1.4e5, poisson: 0.33, density: 2, dampingMass: 1.0, dampingStiff: 0.05,
+        plastic: true, yieldStress: 320, hardening: 1200, creep: 0.6, maxPlasticStrain: 3.0,
+      },
+      color: '#ff9e64',
+    });
+    billet.render.heatmap = 'plastic';
+    billet.friction = 0.7;
+    world.addFemBody(billet);
+    // The press head: a heavy kinematic block scripted up and down.
+    const press = world.addBody(new Body(Polygon.box(1.3, 0.4), {
+      type: BodyType.Kinematic, position: new Vec2(0, 3.0), friction: 0.7,
+    }));
+    // Side guides (cosmetic + keep the billet from squirting out).
+    world.addBody(new Body(Polygon.box(0.3, 1.2), { type: BodyType.Static, position: new Vec2(-1.7, 0.7) }));
+    world.addBody(new Body(Polygon.box(0.3, 1.2), { type: BodyType.Static, position: new Vec2(1.7, 0.7) }));
+    const top = 2.6, bottom = 0.92, period = 2.2;
+    let prevY = top;
+    return {
+      camera: { center: new Vec2(0, 1.4), scale: 90 },
+      update: (time, dt) => {
+        // Triangle wave: descend, strike, retract.
+        const phase = (time % period) / period;
+        const y = phase < 0.5
+          ? top + (bottom - top) * (phase / 0.5)
+          : bottom + (top - bottom) * ((phase - 0.5) / 0.5);
+        const vy = dt > 0 ? (y - prevY) / dt : 0;
+        press.setTransform(new Vec2(0, y), 0);
+        press.linearVelocity = new Vec2(0, vy);
+        prevY = y;
+      },
+    };
+  },
+};
+
+const femDuctileBar: SceneDef = {
+  id: 'fem-ductile-bar',
+  name: 'FEM Ductile Tear',
+  description:
+    'A finite-element bar clamped at both ends is overloaded by a heavy weight at midspan. Plastic strain localises into a neck, ductile damage softens those elements, and the bar necks down and tears — a continuum-damage failure, not a pre-scored crack. The heatmap tracks damage from intact slate to charred black.',
+  category: 'Plastic',
+  build: (world, rng) => {
+    ground(world, 16, -6);
+    world.addBody(new Body(Polygon.box(0.5, 2.2), { type: BodyType.Static, position: new Vec2(-4.6, 1.0) }));
+    world.addBody(new Body(Polygon.box(0.5, 2.2), { type: BodyType.Static, position: new Vec2(4.6, 1.0) }));
+    const bar = makeFemBeam(new Vec2(-4.3, 2.4), 8.6, 0.4, 44, 3, {
+      material: {
+        young: 1.1e5, poisson: 0.3, density: 1, dampingMass: 1.4, dampingStiff: 0.06,
+        plastic: true, yieldStress: 240, hardening: 300, creep: 0.55, maxPlasticStrain: 2.5,
+        damage: true, failStrain: 0.9, minStiffness: 0.03,
+      },
+      pin: (r) => r.x <= -4.3 + 1e-3 || r.x >= 4.3 - 1e-3,
+    });
+    bar.render.heatmap = 'damage';
+    world.addFemBody(bar);
+    let dropped = 0;
+    return {
+      camera: { center: new Vec2(0, 1.6), scale: 46 },
+      update: (time) => {
+        if (dropped < 5 && time > dropped * 1.0 + 0.8) {
+          dropped++;
+          world.addBody(
+            new Body(Polygon.box(0.5, 0.5), {
+              position: new Vec2(rng.range(-0.6, 0.6), 6), density: 6, color: colorFor(dropped),
+            }),
+          );
+        }
+      },
+    };
+  },
+};
+
 // ---- MPM (Material Point Method) scenes ------------------------------------
 
 /**
@@ -2244,6 +2414,10 @@ export const SCENES: SceneDef[] = [
   femBridge,
   femJelly,
   femSpringboard,
+  femBendSet,
+  femPlasticine,
+  femForge,
+  femDuctileBar,
   trampoline,
   waterBalloons,
   ropeSwings,

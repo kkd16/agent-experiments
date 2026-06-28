@@ -27,6 +27,8 @@ import {
   GearJoint,
   gjkDistance,
   Kernels,
+  DEFAULT_FEM_MATERIAL,
+  FemBody,
   makeFemBeam,
   makeFemBox,
   makeFemDisk,
@@ -1169,6 +1171,152 @@ export function runVerification(): CheckResult[] {
     a.ok('FEM body pushes the rigid box (coupling)', minY < 0.4, `box dipped to y=${minY.toFixed(3)}`);
     a.ok('Coupled box never tunnels', boxBody.worldCenter.y > -0.1 && boxBody.worldCenter.isFinite(),
       `y=${boxBody.worldCenter.y.toFixed(3)}`);
+  }
+
+  // ---- Finite elements: elastoplasticity -----------------------------------
+  // Past the yield stress the material flows permanently instead of springing
+  // all the way back. Every claim re-derives a property a correct corotational
+  // J2 (von-Mises) plasticity model must satisfy: the closed-form radial return,
+  // the yield-surface plateau, isochoric (area-preserving) plastic flow, the
+  // hardening law, and — under the full implicit dynamics — a genuine permanent
+  // set that a purely elastic body never keeps.
+  a.section('Finite elements · plasticity');
+
+  // A single right-triangle CST element, for closed-form unit tests of the
+  // return mapping in isolation from the dynamics.
+  const singleTri = (mat: Partial<typeof DEFAULT_FEM_MATERIAL> = {}): FemBody => {
+    const fb = new FemBody(
+      new Float64Array([0, 0, 1, 0, 0, 1]),
+      { ...DEFAULT_FEM_MATERIAL, ...mat },
+      { color: '#fff', stressHeatmap: false },
+    );
+    fb.addElement(0, 1, 2);
+    fb.finalize();
+    return fb;
+  };
+  {
+    // Closed-form radial return. Impose a uniaxial strain εₓ = e on one element;
+    // with creep 1 (rate-independent) and no hardening the plastic strain is
+    // exactly the over-yield part of the deviator: εₚₓ = ((n−n_Y)/n)·(e/2), with
+    // n = e/√2 the deviatoric strain norm and n_Y = σ_Y/(2√2·μ).
+    const E = 1e5, nu = 0.3, sigY = 300, e = 0.02;
+    const mu = E / (2 * (1 + nu));
+    const k = 2 * Math.SQRT2 * mu;
+    const n = e / Math.SQRT2;
+    const nY = sigY / k;
+    const predPx = ((n - nY) / n) * (e / 2);
+    const fb = singleTri({ young: E, poisson: nu, plastic: true, yieldStress: sigY, creep: 1 });
+    for (let i = 0; i < fb.nodeCount; i++) fb.pos[2 * i] = fb.rest[2 * i] * (1 + e);
+    fb.relaxPlasticity();
+    a.close('Radial return: plastic strain matches closed form', fb.plasticStrainOf(0).x, predPx, 1e-9);
+    // After the return the elastic state sits exactly on the yield surface.
+    a.close('Perfect plasticity: residual stress = σ_Y', fb.equivalentStress(0), sigY, sigY * 1e-4);
+    // Plastic flow is deviatoric ⇒ traceless ⇒ area-preserving (εₚₓ + εₚᵧ = 0).
+    const p = fb.plasticStrainOf(0);
+    a.close('Plastic flow is isochoric (εₚₓ + εₚᵧ = 0)', p.x + p.y, 0, 1e-12);
+  }
+  {
+    // Below the yield stress the material is perfectly elastic — no permanent set.
+    const fb = singleTri({ young: 1e5, poisson: 0.3, plastic: true, yieldStress: 1e7, creep: 1 });
+    for (let i = 0; i < fb.nodeCount; i++) fb.pos[2 * i] = fb.rest[2 * i] * 1.01;
+    fb.relaxPlasticity();
+    a.ok('Sub-yield load stays elastic (no plastic strain)', !fb.hasYielded(),
+      `ε̄ₚ = ${fb.equivalentPlasticStrain(0).toExponential(2)}`);
+  }
+  {
+    // Isotropic hardening: ramping the strain expands the yield surface, so the
+    // residual equivalent stress climbs to σ_Y + H·ε̄ₚ (within a one-step lag).
+    const E = 1e5, nu = 0.3, sigY = 200, H = 5e4;
+    const fb = singleTri({ young: E, poisson: nu, plastic: true, yieldStress: sigY, hardening: H, creep: 1 });
+    for (let s = 1; s <= 40; s++) {
+      const e = s * 0.002;
+      for (let i = 0; i < fb.nodeCount; i++) fb.pos[2 * i] = fb.rest[2 * i] * (1 + e);
+      fb.relaxPlasticity();
+    }
+    const sb = fb.equivalentStress(0);
+    const expected = sigY + H * fb.equivalentPlasticStrain(0);
+    a.ok('Hardening lifts the yield surface above σ_Y', sb > sigY * 2, `σ̄ = ${sb.toFixed(0)} ≫ ${sigY}`);
+    a.close('Hardening law: σ̄ ≈ σ_Y + H·ε̄ₚ', sb / expected, 1, 0.05);
+  }
+
+  // A clamped cantilever, loaded hard past yield then unloaded, used to show a
+  // permanent set under the full implicit dynamics (not just the corrector).
+  const residualDroop = (plastic: boolean, hardening = 0): { defl: number; eq: number } => {
+    const w = new World(new Vec2(0, -30));
+    const beam = makeFemBeam(new Vec2(0, 3), 4, 0.3, 24, 2, {
+      material: {
+        young: 6e4, poisson: 0.3, density: 1, dampingMass: 1.5, dampingStiff: 0.05,
+        plastic, yieldStress: 90, hardening, creep: 0.6,
+      },
+      pin: (r) => r.x <= 1e-6,
+    });
+    w.addFemBody(beam);
+    for (let i = 0; i < 300; i++) w.step(1 / 60); // load under gravity
+    beam.gravityScale = 0;                          // remove the load
+    for (let i = 0; i < 600; i++) w.step(1 / 60);  // settle to its unloaded shape
+    let tip = 0, rest0 = 0, n = 0;
+    for (let i = 0; i < beam.nodeCount; i++) {
+      if (Math.abs(beam.rest[2 * i] - 4) < 1e-6) { tip += beam.pos[2 * i + 1]; rest0 += beam.rest[2 * i + 1]; n++; }
+    }
+    return { defl: rest0 / n - tip / n, eq: beam.peakPlasticStrain() };
+  };
+  {
+    const el = residualDroop(false);
+    const pl = residualDroop(true);
+    a.ok('Elastic beam springs back flat after unloading', Math.abs(el.defl) < 0.02,
+      `residual ${el.defl.toFixed(4)} m`);
+    a.ok('Plastic beam keeps a permanent set', Math.abs(pl.defl) > 0.3 && pl.eq > 0.01,
+      `residual ${pl.defl.toFixed(3)} m, ε̄ₚ=${pl.eq.toFixed(3)}`);
+    // Work-hardening resists further flow, so the same load leaves a smaller set.
+    const hard = residualDroop(true, 4000);
+    a.ok('Work-hardening reduces the permanent set', Math.abs(hard.defl) < Math.abs(pl.defl),
+      `${hard.defl.toFixed(3)} m < ${pl.defl.toFixed(3)} m`);
+  }
+  {
+    // Ductile damage: a both-ends-clamped bar overloaded at midspan necks and
+    // tears — damage climbs monotonically to full failure while the solve stays
+    // finite — whereas a gently-loaded bar takes no damage at all.
+    const runBar = (g: number): { maxD: number; mono: boolean; finite: boolean } => {
+      const w = new World(new Vec2(0, -g));
+      const bar = makeFemBeam(new Vec2(-2, 3), 4, 0.3, 24, 2, {
+        material: {
+          young: 8e4, poisson: 0.3, density: 1, dampingMass: 1.4, dampingStiff: 0.06,
+          plastic: true, yieldStress: 80, hardening: 200, creep: 0.6,
+          damage: true, failStrain: 0.5, minStiffness: 0.03,
+        },
+        pin: (r) => r.x <= -2 + 1e-6 || r.x >= 2 - 1e-6,
+      });
+      w.addFemBody(bar);
+      let maxD = 0, prev = 0, mono = true, finite = true;
+      for (let i = 0; i < 400; i++) {
+        w.step(1 / 60);
+        let m = 0;
+        for (const d of bar.computeDamage()) m = Math.max(m, d);
+        if (m < prev - 1e-12) mono = false;
+        prev = m; maxD = Math.max(maxD, m);
+        if (!bar.centroid().isFinite()) finite = false;
+      }
+      return { maxD, mono, finite };
+    };
+    const heavy = runBar(45);
+    const gentle = runBar(0.2);
+    a.ok('Ductile damage reaches full failure under overload', heavy.maxD > 0.99 && heavy.finite,
+      `max d=${heavy.maxD.toFixed(3)}, finite=${heavy.finite}`);
+    a.ok('Damage accumulates monotonically (irreversible)', heavy.mono, 'never decreases');
+    a.ok('A lightly-loaded bar takes no damage', gentle.maxD < 1e-9, `max d=${gentle.maxD.toExponential(2)}`);
+  }
+  {
+    // Backward compatibility: with plasticity disabled (the default) a stepped
+    // body never accumulates any plastic strain — it is exactly the old solid.
+    const w = new World(new Vec2(0, -9.8));
+    const beam = makeFemBeam(new Vec2(0, 2), 3, 0.4, 12, 3, {
+      material: { young: 5e4, dampingMass: 0.5 },
+      pin: (r) => r.x <= 1e-6,
+    });
+    w.addFemBody(beam);
+    for (let i = 0; i < 120; i++) w.step(1 / 60);
+    a.ok('Plasticity off ⇒ zero plastic strain (back-compat)', !beam.hasYielded(),
+      `ε̄ₚ = ${beam.peakPlasticStrain().toExponential(2)}`);
   }
 
   // ---- Fracture: clip + Voronoi geometry -----------------------------------

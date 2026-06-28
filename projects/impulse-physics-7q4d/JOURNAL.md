@@ -67,7 +67,13 @@ the structure of a production engine (Box2D), implemented from first principles 
   field is recovered for a live heatmap; nodes couple two-ways to the rigid world through the same
   `collideParticle` bridge. Builders `makeFemBeam`, `makeFemBox`, `makeFemDisk`. The headline
   validation: a clamped cantilever **converges to the Euler–Bernoulli tip deflection** as the mesh
-  refines.
+  refines. **As of v10 the same elements are elastoplastic**: enable `plastic` on the material and a
+  corotational **J2 (von-Mises) plasticity** corrector (radial return + isotropic hardening +
+  viscoplastic creep, with an isochoric deviatoric flow) relaxes over-yield stress into *permanent*
+  plastic strain — so the body keeps its bent/forged shape instead of springing back — and optional
+  **ductile damage** softens an over-strained element until it necks and tears. Plastic-strain and
+  damage heatmaps (`FemRender.heatmap`) join the stress one. Off by default, so a plain `young`/`ν`
+  material is exactly the old linear-elastic solid.
 - **World** (`world.ts`) — fixed-step orchestration: broadphase → narrowphase (with begin/end
   **contact events**) → fluid forces → island assembly (union-find) → solve → **break overloaded
   joints** → **gather impact loads** → integrate → **CCD sweep of bullet bodies** → **shatter
@@ -202,8 +208,21 @@ the app.
 - [ ] A **multigrid or APIC-PolyPIC** higher-order transfer, and CFL-adaptive MPM substepping
 - [ ] Run the MPM grid sweep off the main thread / typed-array SoA particles for 50k+ points
 - [ ] Self-collision *within* a FEM body (node-vs-node contacts) and FEM↔FEM / FEM↔soft collision
-- [ ] FEM plasticity (a yield surface that permanently deforms past a stress threshold) and
-      brittle FEM fracture (split elements along the maximum-principal-stress direction)
+- [x] **FEM elastoplasticity (v10)** — corotational **J2 (von-Mises) plasticity**: a per-element
+      radial-return corrector relaxes over-yield stress into permanent plastic strain, with
+      **isotropic hardening**, a creep rate (rate-independent ↔ viscoplastic), an isochoric
+      (area-preserving) deviatoric flow, a ductility cap, **ductile damage** that necks and tears,
+      plastic-strain & damage heatmaps, 4 scenes (a new Plastic category) and 13 new verification
+      checks (closed-form return, yield plateau, permanent set, hardening law, monotone damage)
+- [ ] **Brittle FEM fracture** — split elements along the maximum-principal-stress direction (the
+      other half of the old "FEM plasticity *and* fracture" item; plasticity is now done)
+- [ ] **Consistent plane-stress J2 return** — the current yield/flow live in deviatoric-strain
+      space (the standard real-time model, exact for in-plane deviatoric loading); a full
+      plane-stress return map would also yield under in-plane *hydrostatic* stress (σ_zz coupling)
+- [ ] **Plastic-strain–driven Voronoi seeding** — bias brittle fracture toward the most-damaged
+      elements so a ductile tear and a brittle crack can coexist on one body
+- [ ] **Live plasticity controls** — expose yield stress / hardening / damage in the ControlPanel so
+      a running FEM scene can be re-annealed and re-loaded without an edit-rebuild
 - [ ] A larger-deformation **Neo-Hookean / St-Venant–Kirchhoff** energy (the corotational model is
       linear-strain per element; a true hyperelastic energy removes the small-strain assumption)
 - [ ] SVG/JSON scene export and a small scene editor
@@ -218,6 +237,113 @@ the app.
 - [ ] **Debris budget & fade-out**: cull or merge the smallest shards after they settle to keep
       a long demolition session cheap
 - [ ] Run the Voronoi build + shatter off the main thread for very large slabs
+
+## v10 — the elastoplasticity release (corotational J2 plasticity + ductile damage) ✅ shipped
+
+The tenth upgrade grows the **finite-element solver up from linear-elastic to a full elastoplastic
+continuum**. Until now every FEM body was a perfect spring: load it, it deforms; unload it, it
+returns *exactly* to its rest shape. Real materials don't — bend a paperclip and it stays bent.
+v10 adds that permanence: a from-scratch **corotational additive J2 (von-Mises) plasticity** model,
+**isotropic hardening**, and **ductile damage** that lets an overloaded body neck and tear. It is a
+small, surgical change to the solver's force assembly (no new paradigm, no new integrator) but it
+turns the continuum solver from "elastic jelly" into "metal, clay and foam", and — crucially — it is
+**proven correct from the inside** with closed-form unit tests run against the real engine.
+
+### The model (why it slots cleanly into the existing solver)
+
+The existing element already computes the corotational small-strain displacement `u = Rᵀx − X` and
+the linear stiffness `Ke = area·Bᵀ·D·B`. Plasticity is the textbook **additive split**
+`ε = ε_e + ε_p`: stress comes only from the *elastic* part `ε_e = ε − ε_p`, so the internal force
+gains a single **plastic pre-stress** term,
+
+```
+f_local = −Ke·u + area·Bᵀ·D·ε_p          (elastic restoring force + plastic offset)
+```
+
+— i.e. the element's stress-free configuration *shifts* to the permanently-strained shape. The 6×3
+matrix `btd = area·Bᵀ·D` is precomputed once alongside `Ke` (and satisfies `Ke = btd·B`, a nice
+internal consistency check). Because `ε_p = 0` by default, **a non-plastic body is bit-for-bit the
+old elastic solid** — the back-compat test confirms zero plastic strain after stepping.
+
+Each step, after the polar-decomposition frames refresh and **before** the force assembly, a
+**plastic corrector** runs the **radial return**:
+
+1. elastic trial strain `ε_e = ε − ε_p`, take its deviator (tensor, engineering shear γ = 2ε_xy);
+2. equivalent stress `σ̄ = 2√2·μ·‖dev ε_e‖` with `μ = E/(2(1+ν))` — calibrated so a uniaxial
+   stress state yields exactly at `σ̄ = σ_Y`;
+3. if `σ̄ > σ_Y + H·ε̄_p` (the hardened yield surface), relax the excess deviatoric strain into
+   `ε_p` by the `creep` fraction (1 = instant return, < 1 = viscoplastic creep), accumulate the
+   equivalent plastic strain `ε̄_p`, and cap `‖ε_p‖` at the ductility limit.
+
+The tangent stiffness is held fixed across the implicit solve (semi-implicit / elastic-predictor),
+so the existing matrix-free CG is untouched. Plastic flow is **deviatoric ⇒ traceless ⇒
+area-preserving** — exactly how real metal plasticity is isochoric.
+
+**Ductile damage** (continuum-damage mechanics) rides on `ε̄_p`: `d = clamp(ε̄_p / failStrain, 0, 1)`
+softens an element's stiffness, force and read-out stress by `1 − (1−minStiffness)·d`, so plastic
+strain localises into a **neck** that softens, draws in more strain, and finally **tears** — a
+continuum failure, not a pre-scored crack.
+
+### Plan (this session) — all shipped ✅
+
+- [x] Extend `FemMaterial` with `plastic`, `yieldStress`, `hardening`, `creep`, `maxPlasticStrain`,
+      `damage`, `failStrain`, `minStiffness` (all defaulted off → zero behavioural change)
+- [x] Precompute the plastic-coupling matrix `btd = area·Bᵀ·D` per element; store `ε_p`, `ε̄_p`, `d`
+- [x] Add the plastic pre-stress term + damage softening to `internalForce`, `applyStiffness`, and
+      the stress read-outs (`_stress` now uses the *elastic* strain so a yielded region relaxes onto
+      the von-Mises plateau)
+- [x] Add the `updatePlasticity` radial-return corrector and call it once per `step`
+- [x] Public accessors: `computePlasticStrain`, `computeDamage`, `peakPlasticStrain`, `hasYielded`,
+      `plasticStrainOf`, `equivalentPlasticStrain`, `damageOf`, `equivalentStress`,
+      `relaxPlasticity` (single-pass corrector for tests/annealing), `resetPlastic`
+- [x] Renderer: `FemRender.heatmap` enum (`stress` / `plastic` / `damage`) with new colour ramps
+- [x] Four scenes in a new **Plastic** category — **Bend & Set** (elastic vs plastic cantilever),
+      **Plasticine** (dentable clay blobs), **Forge Press** (a scripted kinematic hammer that
+      permanently forges a billet) and **Ductile Tear** (a clamped bar that necks and tears)
+- [x] 13 new verification checks in a `Finite elements · plasticity` section
+
+### Verified — all shipped ✅
+
+Run against the **real engine** headlessly (Node type-stripping + a tiny `.ts` resolver hook), then
+in the in-app suite (now **215 checks, 0 failures**):
+
+- **Radial return matches its closed form** — a single CST element under uniaxial strain returns the
+  exact `ε_p = ((n−n_Y)/n)·(e/2)` (agreement to 1e-9).
+- **Perfect-plasticity plateau** — after the return the element sits *exactly* on the yield surface,
+  `σ̄ = σ_Y` (to 1e-4).
+- **Isochoric flow** — `ε_pₓ + ε_pᵧ = 0` to 1e-12 (plastic deformation preserves area).
+- **Sub-yield stays elastic** — below σ_Y no plastic strain accumulates at all.
+- **Hardening law** — ramping the strain lifts the residual stress to `σ_Y + H·ε̄_p` (within the
+  one-step lag, ratio 0.977) and far above the base σ_Y.
+- **Permanent set under full dynamics** — a plastic cantilever loaded then **unloaded** keeps a 4 m
+  residual droop; the identical elastic beam springs back to 0.006 m; **work-hardening shrinks the
+  set** (3.7 m vs 4.1 m).
+- **Ductile damage** — an overloaded both-ends-clamped bar reaches `d = 1` (full tear), damage is
+  **monotonic** (irreversible), the solve stays finite, and a lightly-loaded bar takes **zero**
+  damage.
+- **Back-compat** — with plasticity off, a stepped body accumulates exactly zero plastic strain.
+
+### The design choice the headless harness pinned down
+
+The yield/flow live in **deviatoric-strain space** (the standard real-time continuum-plasticity
+model, à la O'Brien–Hodgins / Müller), not a full plane-stress return map. The harness made the
+trade-off concrete: I calibrated `σ̄ = 2√2·μ·‖dev ε_e‖` so a *uniaxial stress* state yields at
+`σ̄ = σ_Y` and confirmed the residual lands on the plateau to 1e-4 — but the same model treats an
+in-plane *hydrostatic* state as non-yielding (no σ_zz coupling). That's a documented, deliberate
+limitation (logged as a follow-up), and writing the closed-form test *first* is what forced the
+constant `2√2·μ` to be exactly right instead of approximately right.
+
+### Session log
+
+- 2026-06-28 (claude / claude-opus-4-8): **v10 — corotational J2 plasticity + ductile damage.**
+  Took the FEM solver from linear-elastic to a full **elastoplastic continuum**. Added an additive
+  von-Mises plasticity corrector (radial return, isotropic hardening, viscoplastic creep, isochoric
+  flow, ductility cap) as a plastic pre-stress term `+area·Bᵀ·D·ε_p` on the existing corotational
+  internal force, plus **continuum-damage** softening that necks and tears an overloaded element.
+  New plastic/damage heatmaps, four scenes in a new **Plastic** category (incl. a scripted
+  kinematic **Forge Press**), and a 13-check `plasticity` verification section. Validated against the
+  real engine headlessly with closed-form unit tests before any UI; the full suite is **215/215**.
+  Plasticity is **off by default**, so every existing elastic scene and test is unchanged.
 
 ## v9 — the Material Point Method release (MLS-MPM, four materials, APIC) ✅ shipped
 
