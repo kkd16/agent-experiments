@@ -227,3 +227,290 @@
   overflow-y: auto;
   white-space: pre;
 }
+
+/* ----- mode toggle ----- */
+.lia-modes {
+  display: inline-flex;
+  gap: 0.25rem;
+  background: var(--panel-2, #11161f);
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  padding: 0.2rem;
+}
+.lia-modes button {
+  padding: 0.32rem 0.7rem;
+  background: transparent;
+  color: var(--muted, #8b97a8);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.lia-modes button:hover {
+  color: var(--text, #e6edf6);
+}
+.lia-modes button.active {
+  background: color-mix(in srgb, var(--accent, #4f8cff) 22%, transparent);
+  color: var(--text, #e6edf6);
+}
+
+.status-pill-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ----- optimize ----- */
+.lia-opt {
+  margin-bottom: 0.6rem;
+}
+.lia-opt-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.lia-dir-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.lia-dir-toggle button {
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-2, #11161f);
+  color: var(--muted, #8b97a8);
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.lia-dir-toggle button.active {
+  background: color-mix(in srgb, var(--accent, #4f8cff) 22%, transparent);
+  color: var(--text, #e6edf6);
+}
+.lia-obj-input {
+  flex: 1 1 200px;
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-2, #11161f);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+.lia-obj-input:focus {
+  outline: none;
+  border-color: var(--accent, #4f8cff);
+}
+.lia-opt-result {
+  margin-top: 0.7rem;
+}
+.lia-opt-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-family: ui-monospace, monospace;
+}
+.lia-opt-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #8b97a8);
+}
+.lia-opt-num {
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: #8ff0c0;
+}
+.lia-opt-at {
+  color: var(--muted, #8b97a8);
+}
+.lia-opt-pt {
+  color: var(--accent, #7ab0ff);
+  font-size: 0.95rem;
+}
+.lia-opt-steps {
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--muted, #8b97a8);
+  font-family: ui-monospace, monospace;
+}
+
+/* ----- 2-D shadow plot ----- */
+.lia-plot h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+}
+.shadow-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.shadow-svg {
+  background: var(--panel-2, #0d1117);
+  border: 1px solid var(--border, #283142);
+  border-radius: 10px;
+  max-width: 100%;
+}
+.sp-grid {
+  stroke: color-mix(in srgb, var(--border, #283142) 55%, transparent);
+  stroke-width: 1;
+}
+.sp-axis {
+  stroke: var(--muted, #8b97a8);
+  stroke-width: 1.3;
+}
+.sp-region {
+  fill: color-mix(in srgb, var(--accent, #4f8cff) 16%, transparent);
+  stroke: color-mix(in srgb, var(--accent, #4f8cff) 50%, transparent);
+  stroke-width: 1;
+}
+.sp-line {
+  stroke: color-mix(in srgb, #7ab0ff 70%, transparent);
+  stroke-width: 1.4;
+}
+.sp-line-eq {
+  stroke: #d8a657;
+  stroke-width: 1.6;
+  stroke-dasharray: 5 3;
+}
+.sp-obj {
+  stroke: #2ec27e;
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+}
+.sp-dot-feas {
+  fill: #2ec27e;
+}
+.sp-dot-infeas {
+  fill: color-mix(in srgb, var(--muted, #8b97a8) 45%, transparent);
+}
+.sp-shadow-x {
+  fill: color-mix(in srgb, #2ec27e 70%, transparent);
+}
+.sp-shadow-y {
+  fill: color-mix(in srgb, #2ec27e 70%, transparent);
+}
+.sp-mark-sat {
+  fill: color-mix(in srgb, #7ab0ff 40%, transparent);
+  stroke: #7ab0ff;
+  stroke-width: 1.5;
+}
+.sp-mark-opt {
+  fill: color-mix(in srgb, #ffd166 40%, transparent);
+  stroke: #ffd166;
+  stroke-width: 1.5;
+}
+.sp-mark-core {
+  fill: var(--text, #e6edf6);
+}
+.sp-axis-label {
+  fill: var(--muted, #8b97a8);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+.shadow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  font-size: 0.72rem;
+  color: var(--muted, #8b97a8);
+}
+.shadow-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.shadow-legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.lg-feas { background: #2ec27e; border-radius: 999px; }
+.lg-region { background: color-mix(in srgb, var(--accent, #4f8cff) 40%, transparent); }
+.lg-shadow { background: color-mix(in srgb, #2ec27e 70%, transparent); }
+.lg-opt { background: #ffd166; border-radius: 999px; }
+
+/* ----- presburger ----- */
+.pres-blurb {
+  font-size: 0.82rem;
+  color: var(--muted, #8b97a8);
+  line-height: 1.5;
+  margin: 0 0 0.8rem;
+}
+.pres-examples {
+  margin-top: 0;
+}
+.pres-ex-grid {
+  grid-template-columns: 1fr 1fr;
+}
+.pres-decided {
+  font-size: 0.78rem;
+  color: var(--muted, #8b97a8);
+}
+.pres-qe h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.92rem;
+}
+.pres-formula {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  background: var(--panel-2, #0d1117);
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #b6c2d2;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pres-note {
+  font-size: 0.76rem;
+  color: var(--muted, #8b97a8);
+  line-height: 1.5;
+  margin: 0.55rem 0 0.6rem;
+}
+.pres-tester {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.pres-tester-label {
+  font-size: 0.78rem;
+  color: var(--muted, #8b97a8);
+}
+.pres-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  color: var(--accent, #7ab0ff);
+}
+.pres-input input {
+  width: 54px;
+  padding: 0.25rem 0.4rem;
+  background: var(--panel-2, #11161f);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+}
+.pres-eval {
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+}
+.pres-eval.yes { color: #8ff0c0; background: color-mix(in srgb, #2ec27e 16%, transparent); }
+.pres-eval.no { color: #ffb3bb; background: color-mix(in srgb, #ff5c6c 16%, transparent); }
