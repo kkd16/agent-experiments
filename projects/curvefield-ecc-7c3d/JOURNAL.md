@@ -54,7 +54,7 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   proof (Σin = Σout + fee) wrapped around one aggregated range proof — the Monero/Mimblewimble
   structure, with an inflation attack shown to break it.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **120/120** checks across 26 subsystems).
+  (now **122/122** checks across 26 subsystems).
 
 UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-two labs plus an overview.
 
@@ -213,13 +213,15 @@ scratch on secp256k1, pinned by round-trip + soundness + dual-verifier checks.
       (transparent ≡ optimized verifier, mauled-t̂ soundness), the folding argument drawn round by
       round, and the confidential-transaction demo with a live attack toggle. Wired into nav +
       Overview (cards renumbered, Self-Test → 23).
-- [x] **+14 self-test checks** (generators, IPA round-trip, dual-verifier agreement, range
+- [x] **+16 self-test checks** (generators, IPA round-trip, dual-verifier agreement, range
       round-trip + soundness, 4×16-bit aggregation, logarithmic-size assertion, confidential-tx
-      balance + inflation rejection); suite grew 106 → **120/120** across 26 subsystems.
+      balance + inflation rejection, wire round-trip); suite grew 106 → **122/122** across 26 subsystems.
 - [ ] **Vector-Pedersen / weighted inner product** (WIP) for the tighter BP+ (Bulletproofs+) proof.
 - [ ] **Batch range-proof verification** — fold many proofs' multi-exponentiations into one.
 - [ ] **arithmetic-circuit Bulletproof** (the general R1CS/constraint form, not just ranges).
-- [ ] **proof (de)serialization** to a compact byte string with a wire round-trip test.
+- [x] **proof (de)serialization** — compact fixed-layout wire form (33·points + 32·scalars + a
+      2-byte header), with an exact-size formula and a loss-free, re-verifying round-trip test (a
+      64-bit proof is **723 bytes** on the wire); the real byte length is surfaced in the UI.
 
 ## Session log
 
@@ -234,11 +236,13 @@ scratch on secp256k1, pinned by round-trip + soundness + dual-verifier checks.
   check, and the IPA proving t̂ — m values in one 2·⌈log₂(nm)⌉+4-element proof (a 64-bit proof is
   **721 B vs 14,561 B linear, ~20× smaller**, in 6 rounds). Plus a full **confidential transaction**:
   a homomorphic kernel-excess balance proof around one aggregated range proof (the
-  Monero/Mimblewimble structure), with an output-inflation attack shown to break it. A new
+  Monero/Mimblewimble structure), with an output-inflation attack shown to break it. The proof also
+  (de)serializes to a compact fixed-layout wire form (a 64-bit proof is literally **723 bytes**),
+  with a loss-free, re-verifying round-trip. A new
   **Bulletproofs** lab page visualizes the O(log)-vs-O(n) size gap, an interactive range proof (both
   verifiers + mauled-t̂ soundness), the folding rounds drawn, and the confidential-tx demo with a
   live attack toggle; wired into nav + Overview (Self-Test renumbered to 23). Self-test grew
-  106 → **120/120** across 26 subsystems (+14 Bulletproofs checks: generators, IPA round-trip,
+  106 → **122/122** across 26 subsystems (+16 Bulletproofs checks: generators, IPA round-trip,
   dual-verifier agreement, range round-trip + two soundness checks, 4×16-bit aggregation,
   logarithmic-size assertion, confidential-tx balance + inflation rejection). Validated end-to-end in
   Node via a strip-types harness and a headless-Chromium render check (all panels paint, verdicts

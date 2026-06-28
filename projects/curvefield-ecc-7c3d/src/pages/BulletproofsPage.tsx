@@ -4,6 +4,8 @@ import {
   proveRange,
   verifyRange,
   proofSize,
+  serializedSize,
+  serializeRangeProof,
   buildConfidentialTx,
   verifyConfidentialTx,
   type RangeProof,
@@ -27,9 +29,9 @@ function linearSize(n: number, m: number) {
 
 function bulletproofBytes(n: number, m: number) {
   const { points, scalars } = proofSize(n, m)
-  // proofSize counts the m value commitments as a base "+? "—V is reported separately.
-  const totalPoints = points + m // + the m value commitments
-  return { points: totalPoints, scalars, bytes: totalPoints * POINT_BYTES + scalars * SCALAR_BYTES }
+  const totalPoints = points + m // proofSize omits the m value commitments
+  // serializedSize is the exact on-the-wire length (incl. a 2-byte header).
+  return { points: totalPoints, scalars, bytes: serializedSize(n, m) }
 }
 
 function Seg<T extends string | number>({
@@ -160,7 +162,8 @@ function useRangeProof(value: bigint, bits: number, seed: number) {
     // Soundness demo: maul t̂ and watch the proof collapse.
     const forged: RangeProof = { ...proof, tHat: (proof.tHat + 1n) % N }
     const forgeRejected = !verifyRange(forged)
-    return { gamma, proof, okNaive, okFast, forgeRejected }
+    const wireBytes = serializeRangeProof(proof).length
+    return { gamma, proof, okNaive, okFast, forgeRejected, wireBytes }
   }, [value, bits, seed])
 }
 
@@ -211,6 +214,8 @@ function RangeProofLab({ seed }: { seed: number }) {
         <dd className="hexbox">{hex(r.proof.tHat, 18)}…</dd>
         <dt>inner-product rounds</dt>
         <dd>{r.proof.ipa.L.length} (proof carries {r.proof.ipa.L.length} × L,R)</dd>
+        <dt>serialized wire size</dt>
+        <dd>{r.wireBytes.toLocaleString()} bytes (vs {linearSize(bits, 1).bytes.toLocaleString()} B linear)</dd>
         <dt>range proof valid</dt>
         <dd><Verdict ok={r.okNaive}>{r.okNaive ? `0 ≤ v < 2^${bits} ✓` : 'no'}</Verdict></dd>
         <dt>transparent ≡ optimised verifier</dt>
