@@ -26,6 +26,7 @@ import { Fp2 } from './fp2'
 import { Fp6 } from './fp6'
 import { Fp12 } from './fp12'
 import { sha256, concat, bigToBytes, bytesToBig, bytesToHex } from './sha256'
+import { finalExpFast } from './bls_finalexp'
 
 const P = BLS_P
 
@@ -253,12 +254,23 @@ function miller(Q: Pt12, Pp: Pt12): Fp12 {
 
 // Final exponent split: (p¹² − 1)/r = (p⁶ − 1)·(p² + 1)·(Φ₁₂(p)/r). The first
 // factor is just a conjugate-and-invert; we fold the rest into one BigInt power.
+// This is the textbook (slow) form, kept as the reference the fast path is
+// proven against in the self-test.
 const FINAL_TAIL = (P ** 2n + 1n) * ((P ** 4n - P ** 2n + 1n) / R)
 
-function finalExp(f: Fp12): Fp12 {
+export function finalExpCanonical(f: Fp12): Fp12 {
   // f^{p⁶ − 1} = conj(f) · f⁻¹  (conjugation over F_{p⁶} equals the p⁶ Frobenius).
   const easy = Fp12.mul(Fp12.conj(f), Fp12.inv(f))
   return Fp12.pow(easy, FINAL_TAIL)
+}
+
+// The hot path: the Hayashida–Aranha addition-chain final exponentiation, which
+// replaces the ~2000-bit `Fp12.pow` above with a handful of 64-bit seed powers
+// and Frobenius maps (≈17× faster). It computes e(·)³ rather than the canonical
+// e(·) — a fixed cube, so it stays in G_T and bilinear and every pairing
+// *equality* this lab checks is preserved (both sides are cubed alike).
+function finalExp(f: Fp12): Fp12 {
+  return finalExpFast(f)
 }
 
 /**

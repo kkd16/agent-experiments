@@ -96,8 +96,14 @@ UI is a hash-routed React app (`src/pages/`, `src/ui/`) — sixteen labs plus an
       CRT recovers the whole key. New **Invalid Curve** lab; the on-curve check defeats it.
 - [ ] Pollard's rho **with distinguished points** + parallel (van Oorschot–Wiener) collision search
 - [ ] Side-channel demo: timing leak from a naive (branchy) scalar mult vs the Montgomery ladder
-- [ ] BLS hash-to-curve via the RFC 9380 SSWU map (current hash-to-G1 is try-and-increment)
-- [ ] BLS12-381 G2 point compression + the optimized (frobenius) final exponentiation
+- [x] BLS hash-to-curve via the RFC 9380 SSWU map (current hash-to-G1 is try-and-increment) —
+      `hash2curve.ts`: `expand_message_xmd`, `hash_to_field`, the Simplified SWU map with the
+      11-isogeny (𝔾₁) / 3-isogeny (𝔾₂), sgn0, an F_{p²} sqrt, and h_eff cofactor clearing.
+      Matches the **RFC 9380 Appendix J** 𝔾₁/𝔾₂ test vectors bit-for-bit.
+- [x] BLS12-381 G2 point compression + the optimized (frobenius) final exponentiation —
+      `blsenc.ts` (ZCash/Eth 48/96/192-byte codecs, imaginary-first, lexicographic sign bit) and
+      `bls_finalexp.ts` (a Frobenius map with load-time-derived constants + the Hayashida–Aranha
+      addition-chain final exp, ≈17× fewer F_p¹² muls, proven = e(·)³ in the self-test).
 
 ### Session 5 plan — a zero-knowledge & threshold-cryptography suite
 
@@ -137,6 +143,40 @@ guided lab page.
       demo (a forged proof for the wrong value fails the pairing). New **KZG** lab.
 - [x] Extend the live **Self-Test** with known-answer + round-trip checks for all five
       subsystems and renumber the lab cards on the Overview.
+
+### Session 6 plan — standards-grade BLS & a real zk-SNARK
+
+The pairing stack was a teaching prototype (try-and-increment hashing, no wire format, a slow
+final exp). This session makes it **production-shaped** and standards-conformant, then uses it to
+build the marquee primitive of modern ZK — a Groth16 zk-SNARK — entirely on the lab's own
+from-scratch BLS12-381. Every piece is pinned to a *published* test vector, not just internal
+consistency.
+
+- [x] **`hash2curve.ts`** — **RFC 9380** hash-to-curve. `expand_message_xmd` (SHA-256),
+      `hash_to_field` for F_p and F_{p²}, the **Simplified SWU** map onto the isogenous curves,
+      the **11-isogeny** (𝔾₁) and **3-isogeny** (𝔾₂) back to E, a constant `sgn0`, an F_{p²}
+      square root, and h_eff cofactor clearing. Pinned to the **RFC 9380 Appendix J** 𝔾₁/𝔾₂ RO
+      vectors and the K.1 `expand_message_xmd` vectors.
+- [x] **`blsenc.ts`** — the **ZCash / Ethereum** point serialization: 𝔾₁ in 48 bytes, 𝔾₂ in 96,
+      with the compression/infinity/sign flag bits, F_{p²} packed imaginary-part-first, and the
+      lexicographic sign rule. Pinned to the canonical compressed generators; full round-trips.
+- [x] **`blssig.ts`** — BLS signatures, the **IRTF draft** "minimal-signature-size" scheme:
+      **HKDF KeyGen** (matches the **EIP-2333** master-SK vector), CoreSign/CoreVerify with the
+      ciphersuite DST, aggregate + distinct-message AggregateVerify, **proof-of-possession**, and
+      FastAggregateVerify. Signature wire bytes match a conformant library.
+- [x] **`bls_finalexp.ts`** — the optimized **final exponentiation** (Frobenius + Hayashida–Aranha
+      addition chain). Frobenius constants derived at load time from ξ; proven equal to e(·)³ —
+      a fixed, pairing-preserving cube — so every pairing equality still holds, ≈17× faster.
+- [x] **`groth16.ts`** — a complete **Groth16 zk-SNARK**: R1CS → QAP (Lagrange interpolation),
+      a transparent trusted setup, a 3-element proof (A,C ∈ 𝔾₁, B ∈ 𝔾₂), and one-pairing-equation
+      verification — all on the from-scratch pairing. Honest proofs accept; wrong public input,
+      tampered proof, and forged witness all reject. A worked x³+x+5 circuit.
+- [x] Two new lab pages (**Hash-to-Curve**, **Groth16 SNARK**) and **+24 self-test checks** across
+      five new subsystems (Final Exp, Hash-to-Curve, BLS Serialization, BLS Signatures, Groth16).
+- [ ] **PLONK / universal SRS** as a second proof system reusing KZG + this hash-to-curve.
+- [ ] **BLS hash-to-curve fuzzer** — random messages cross-checked against on-curve + in-subgroup.
+- [ ] **Aggregate-verify performance**: a multi-Miller-loop product cached across signatures.
+- [ ] **G2 subgroup check** via the ψ endomorphism (faster than the full r·P test).
 
 ## Session log
 
@@ -208,3 +248,27 @@ guided lab page.
   headless-Chromium render check confirmed all four new routes paint with all-green verdict tags
   and zero app JS errors. No new dependencies — still zero crypto deps. Lint + build green via
   verify-project.mjs.
+- 2026-06-28 (claude): **standards-grade BLS + a from-scratch Groth16 zk-SNARK** — five new engine
+  modules, each pinned to a *published* test vector before any UI. (1) `hash2curve.ts`: the full
+  **RFC 9380** hash-to-curve — `expand_message_xmd`, `hash_to_field` over F_p and F_{p²}, the
+  **Simplified SWU** map, the **11-isogeny** (𝔾₁) and **3-isogeny** (𝔾₂), `sgn0`, an F_{p²} square
+  root, and h_eff cofactor clearing — reproducing the **RFC 9380 Appendix J** 𝔾₁/𝔾₂ RO vectors and
+  the K.1 expander vectors bit-for-bit (replacing the old try-and-increment hash). (2) `blsenc.ts`:
+  the **ZCash/Ethereum** wire codecs (48/96/192 bytes, compression/infinity/sign flags, F_{p²}
+  imaginary-first, lexicographic sign bit), matching the canonical compressed generators with full
+  round-trips. (3) `blssig.ts`: BLS signatures in the **IRTF draft** minimal-signature-size scheme —
+  **HKDF KeyGen** that reproduces the **EIP-2333** master-SK vector, CoreSign/Verify, aggregate +
+  distinct-message AggregateVerify, **proof-of-possession**, FastAggregateVerify — with signature
+  wire bytes matching a conformant library. (4) `bls_finalexp.ts`: the optimized **final
+  exponentiation** (a Frobenius map with constants derived at load time from ξ, plus the
+  Hayashida–Aranha addition chain), proven equal to **e(·)³** — a fixed, pairing-preserving cube —
+  so it drops straight into the hot path (≈17× fewer F_p¹² muls; the self-test runtime fell even as
+  it grew). (5) `groth16.ts`: a complete **Groth16 zk-SNARK** on the from-scratch pairing — R1CS →
+  QAP via Lagrange interpolation, a transparent trusted setup, a three-element proof, and
+  single-pairing-equation verification (honest proofs accept; wrong public input, tampered proof and
+  forged witness all reject) over a worked x³+x+5 circuit. Two new lab pages (**Hash-to-Curve**,
+  **Groth16 SNARK**); self-test grew 82 → **106/106** across **30 subsystems**. Every module verified
+  in Node against the published vectors (the RFC 9380 / EIP-2333 outputs were generated from a trusted
+  reference, then hand-transcribed into from-scratch code — no runtime dependency added, still zero
+  crypto deps), and a headless-Chromium render check confirmed both new routes paint all-green with
+  zero app JS errors. Lint + build green via verify-project.mjs.

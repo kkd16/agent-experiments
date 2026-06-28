@@ -49,6 +49,10 @@ import {
   blsAggregateVerifyDistinct,
 } from './bls12381'
 import { Fp12 } from './fp12'
+import { Fp2 } from './fp2'
+import { Fp6 } from './fp6'
+import { finalExpCanonical } from './bls12381'
+import { finalExpFast } from './bls_finalexp'
 import {
   adaptorPoint,
   pubkey as adaptorPubkey,
@@ -76,6 +80,20 @@ import { setup as kzgSetup, commit as kzgCommit, open as kzgOpen, verify as kzgV
 import { secp256k1 as secpCurve } from './secp256k1'
 import { R as BLS_SCALAR } from './bls12381'
 import { seedRng } from './rng'
+import { expandMessageXmd, hashToCurveG1, hashToCurveG2 } from './hash2curve'
+import { compressG1, compressG2, decompressG1, decompressG2, toBytesG1, toBytesG2 } from './blsenc'
+import {
+  keyGen,
+  skToPk,
+  sign as blsStdSign,
+  verify as blsStdVerify,
+  popProve,
+  popVerify,
+  aggregate as blsStdAggregate,
+  aggregateVerify as blsStdAggregateVerify,
+  ikmFromLabel,
+} from './blssig'
+import * as groth16 from './groth16'
 
 export interface TestCase {
   name: string
@@ -689,6 +707,226 @@ export function runSelfTest(): TestCase[] {
       { C, op: kzgOpen(srs, f, 17n) },
     ])
     check('KZG', 'batch verification (one multi-pairing)', batch, 'two openings folded into a single pairing equation')
+  }
+
+  // ── 25b. Optimized final exponentiation (the pairing hot path) ──
+  {
+    const f = Fp12.of(
+      Fp6.of(Fp2.of(2n, 3n), Fp2.of(5n, 7n), Fp2.of(11n, 13n)),
+      Fp6.of(Fp2.of(17n, 19n), Fp2.of(23n, 29n), Fp2.of(31n, 37n)),
+    )
+    const fast = finalExpFast(f)
+    const canon = finalExpCanonical(f)
+    check(
+      'Final Exp',
+      'fast addition-chain lands in G_T (eᵣ = 1)',
+      !Fp12.isOne(fast) && Fp12.isOne(Fp12.pow(fast, BLS_R)),
+      'Hayashida–Aranha chain output is an exact r-th root of unity',
+    )
+    check(
+      'Final Exp',
+      'fast = canonical³ (a fixed, pairing-preserving cube)',
+      Fp12.eq(fast, Fp12.pow(canon, 3n)),
+      'every pairing *equality* is preserved; ≈17× fewer F_p¹² muls',
+    )
+  }
+
+  // ── 26. RFC 9380 hash-to-curve (constant-shape, the standard BLS map) ──
+  {
+    const dstX = utf8('QUUX-V01-CS02-with-expander-SHA256-128')
+    check(
+      'Hash-to-Curve',
+      'expand_message_xmd (RFC 9380 K.1)',
+      bytesToHex(expandMessageXmd(utf8('abc'), dstX, 0x20)) ===
+        'd8ccab23b5985ccea865c6c97b6e5b8350e794e603b4b97902f53a8a0d605615',
+      '"abc" → d8ccab23… (32 uniform bytes from SHA-256)',
+    )
+    check(
+      'Hash-to-Curve',
+      'expand_message_xmd long output (128 bytes)',
+      bytesToHex(expandMessageXmd(utf8('abc'), dstX, 0x80)) ===
+        'abba86a6129e366fc877aab32fc4ffc70120d8996c88aee2fe4b32d6c7b6437a647e6c3163d40b76a73cf6a5674ef1d8' +
+          '90f95b664ee0afa5359a5c4e07985635bbecbac65d747d3d2da7ec2b8221b17b0ca9dc8a1ac1c07ea6a1e60583e2cb00' +
+          '058e77b7b72a298425cd1b941ad4ec65e8afc50303a22c0f99b0509b4c895f40',
+      'multi-block b_0/b_i chain matches the RFC',
+    )
+    const dst1 = utf8('QUUX-V01-CS02-with-BLS12381G1_XMD:SHA-256_SSWU_RO_')
+    const p1 = hashToCurveG1(utf8('abc'), dst1)
+    check(
+      'Hash-to-Curve',
+      'hash_to_curve 𝔾₁ "abc" (RFC 9380 J.9.1)',
+      p1 !== null &&
+        p1.x ===
+          0x03567bc5ef9c690c2ab2ecdf6a96ef1c139cc0b2f284dca0a9a7943388a49a3aee664ba5379a7655d3c68900be2f6903n &&
+        p1.y ===
+          0x0b9c15f3fe6e5cf4211f346271d7b01c8f3b28be689c8429c85b67af215533311f0b8dfaaa154fa6b88176c229f2885dn,
+      'SSWU on E′ → 11-isogeny → cofactor clear, bit-for-bit',
+    )
+    check(
+      'Hash-to-Curve',
+      '𝔾₁ image is on-curve and in the r-torsion',
+      g1.isOnCurve(p1) && g1.mulRaw(BLS_R, p1) === null,
+      'the map always lands in the prime-order subgroup',
+    )
+    const dst2 = utf8('QUUX-V01-CS02-with-BLS12381G2_XMD:SHA-256_SSWU_RO_')
+    const p2 = hashToCurveG2(utf8('abc'), dst2)
+    check(
+      'Hash-to-Curve',
+      'hash_to_curve 𝔾₂ "abc" (RFC 9380 J.10.1)',
+      p2 !== null &&
+        p2.x.a ===
+          0x02c2d18e033b960562aae3cab37a27ce00d80ccd5ba4b7fe0e7a210245129dbec7780ccc7954725f4168aff2787776e6n &&
+        p2.x.b ===
+          0x0139cddbccdc5e91b9623efd38c49f81a6f83f175e80b06fc374de9eb4b41dfe4ca3a230ed250fbe3a2acf73a41177fd8n,
+      'SSWU on E2′ → 3-isogeny → cofactor clear matches the RFC',
+    )
+    check(
+      'Hash-to-Curve',
+      '𝔾₂ image is on-curve and in the r-torsion',
+      g2.isOnCurve(p2) && g2.mul(BLS_R, p2) === null,
+      'large-cofactor clearing puts it in 𝔾₂',
+    )
+  }
+
+  // ── 27. ZCash / Ethereum BLS12-381 point serialization ──
+  {
+    check(
+      'BLS Serialization',
+      'compressed 𝔾₁ generator (canonical 48 bytes)',
+      bytesToHex(compressG1(G1_GEN)) ===
+        '97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb',
+      'flag bits + x-only encoding match the ZCash spec',
+    )
+    check(
+      'BLS Serialization',
+      'compressed 𝔾₂ generator (canonical 96 bytes)',
+      bytesToHex(compressG2(G2_GEN)) ===
+        '93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e' +
+          '024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8',
+      'F_{p²} packed imaginary-part-first (c₁‖c₀)',
+    )
+    const P1 = g1.mul(0x1234567n, G1_GEN)
+    const P2 = g2.mul(0x89abcden, G2_GEN)
+    check(
+      'BLS Serialization',
+      '𝔾₁ compress → decompress round-trip (y recovered from sign bit)',
+      g1.eq(decompressG1(compressG1(P1)), P1) && g1.eq(decompressG1(toBytesG1(P1)), P1),
+      'both compressed (48B) and uncompressed (96B) forms',
+    )
+    check(
+      'BLS Serialization',
+      '𝔾₂ compress → decompress round-trip',
+      g2.eq(decompressG2(compressG2(P2)), P2) && g2.eq(decompressG2(toBytesG2(P2)), P2),
+      'lexicographic (c₁,c₀) sign bit picks the right root',
+    )
+    check(
+      'BLS Serialization',
+      'point at infinity round-trips',
+      decompressG1(compressG1(null)) === null && decompressG2(compressG2(null)) === null,
+      'the infinity flag is canonical',
+    )
+  }
+
+  // ── 28. BLS signatures, the IRTF standard scheme (HKDF KeyGen + PoP) ──
+  {
+    // EIP-2333 / draft-irtf-cfrg-bls-signature KeyGen test vector (seed → master SK).
+    const eipSeed = hexToBytes(
+      'c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04',
+    )
+    check(
+      'BLS Signatures',
+      'HKDF KeyGen vs EIP-2333 master SK',
+      keyGen(eipSeed) ===
+        6083874454709270928345386274498605044986640685124978867557563392430687146096n,
+      'salted HKDF_mod_r reproduces the published key',
+    )
+    // Wire-format signature vector (sk = 0x11, "minimal-signature-size" NUL suite).
+    const sk = 0x11n
+    const pk = skToPk(sk)
+    check(
+      'BLS Signatures',
+      'public key wire bytes (sk=0x11)',
+      bytesToHex(compressG2(pk)) ===
+        'ad05ceb0be53d2624a796a7a033aec59d9463c18d672c451ec4f2e679daef882cab7d8dd88789065156a1340ca9d4265' +
+          '0ef786ebdcda12e142a32f091307f2fedf52f6c36beb278b0007a03ad81bf9fee3710a04928e43e541d02c9be44722e8',
+      'pk = sk·G₂, ZCash-compressed',
+    )
+    const sigStd = blsStdSign(sk, utf8('hello curvefield'))
+    check(
+      'BLS Signatures',
+      'signature wire bytes match a conformant library',
+      bytesToHex(compressG1(sigStd)) ===
+        '8582bb4950c64d3a36ead3136e82484e99320696480f04b51475f5175f7913d951910f6804ca6c30fa3106bd81298793',
+      'σ = sk·H(m) with the ciphersuite DST',
+    )
+    check(
+      'BLS Signatures',
+      'verify accepts, rejects tamper',
+      blsStdVerify(pk, utf8('hello curvefield'), sigStd) &&
+        !blsStdVerify(pk, utf8('hello curvefield!'), sigStd),
+      'e(σ,G₂)=e(H(m),pk); one byte flipped → invalid',
+    )
+    // Proof of possession closes the rogue-key hole.
+    const pop = popProve(sk)
+    check(
+      'BLS Signatures',
+      'proof-of-possession verifies (and rejects a foreign key)',
+      popVerify(pk, pop) && !popVerify(skToPk(0x12n), pop),
+      'a self-signature over the public key, under a distinct DST',
+    )
+    // Aggregate over distinct messages, the safe basic-scheme path.
+    const sks = ['alice', 'bob', 'carol'].map((l) => keyGen(ikmFromLabel(l)))
+    const pks = sks.map(skToPk)
+    const msgs = ['vote:A', 'vote:B', 'vote:C'].map(utf8)
+    const agg = blsStdAggregate(sks.map((s, i) => blsStdSign(s, msgs[i])))
+    check(
+      'BLS Signatures',
+      'aggregate (distinct msgs) verifies; duplicate msg rejected',
+      blsStdAggregateVerify(pks, msgs, agg) &&
+        !blsStdAggregateVerify(pks, [utf8('vote:A'), utf8('vote:B'), utf8('vote:A')], agg),
+      '3 signatures → one 48-byte 𝔾₁ element, one pairing product',
+    )
+  }
+
+  // ── 29. Groth16 zk-SNARK over the from-scratch pairing ──
+  {
+    const sys = groth16.cubeCircuit()
+    const { witness, out } = groth16.cubeWitness(3n)
+    check(
+      'Groth16',
+      'R1CS → QAP divisibility for an honest witness',
+      groth16.r1csSatisfied(sys, witness) &&
+        groth16.qapWitnessPolys(groth16.r1csToQap(sys), witness).remainderZero,
+      'x³+x+5=35: A(x)B(x)−C(x) is divisible by the target t(x)',
+    )
+    const st = groth16.setup(sys, 0xc0ffeen)
+    const proof = groth16.prove(st, sys, witness, 0xbeefn)
+    check(
+      'Groth16',
+      'verify accepts the honest proof (3 elements, 1 pairing eq)',
+      groth16.verify(st.vk, [1n, out], proof),
+      'e(A,B)=e(α₁,β₂)·e(Σaᵢ·ICᵢ,γ₂)·e(C,δ₂)',
+    )
+    check(
+      'Groth16',
+      'soundness: wrong public input is rejected',
+      !groth16.verify(st.vk, [1n, (out + 1n) % BLS_SCALAR], proof),
+      'claiming out=36 for a proof of out=35 fails the pairing',
+    )
+    check(
+      'Groth16',
+      'soundness: a tampered proof is rejected',
+      !groth16.verify(st.vk, [1n, out], { ...proof, C: st.pk.alpha1 }),
+      'mauling C breaks the equation',
+    )
+    const w2 = groth16.cubeWitness(4n)
+    const proof2 = groth16.prove(st, sys, w2.witness, 0x1234n)
+    check(
+      'Groth16',
+      'zero-knowledge: a fresh secret (x=4) yields a valid, distinct proof',
+      groth16.verify(st.vk, [1n, w2.out], proof2) && !groth16.verify(st.vk, [1n, out], proof2),
+      'the proof reveals only the public output, never x',
+    )
   }
 
   return t
