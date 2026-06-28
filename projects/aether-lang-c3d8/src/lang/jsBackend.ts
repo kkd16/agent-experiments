@@ -89,7 +89,7 @@ const ge = (a, b) => cmp(a, b) >= 0;
 
 const addI = (a, b) => I(a.n + b.n);
 const subI = (a, b) => I(a.n - b.n);
-const mulI = (a, b) => I(a.n * b.n);
+const mulI = (a, b) => I(Math.imul(a.n, b.n)); // exact low-32-bit, matches VM Op.MUL + WASM i32.mul
 const divI = (a, b) => { if (b.n === 0) throw new AErr('division by zero'); return I(Math.trunc(a.n / b.n)); };
 const modI = (a, b) => { if (b.n === 0) throw new AErr('modulo by zero'); return I(a.n % b.n); };
 const negI = (a) => I(-a.n);

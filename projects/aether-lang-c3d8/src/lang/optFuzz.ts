@@ -136,20 +136,16 @@ function genProgram(rng: Rng): string {
 // and tear it apart with a `match` every iteration.
 // ---------------------------------------------------------------------------
 
-// Updates use only `+`/`-` over small leaves: SpecConstr unpacks the shape
-// regardless of the arithmetic inside, and additive updates keep field values
-// well within Int32 across the loop, so the test isolates SpecConstr's box/unbox
-// rewrite from the unrelated Int-overflow regime where the equality-saturation
-// pass can re-round a reassociated *product* (a separate, documented soundness gap
-// this generator must steer clear of to keep its specialise-≡-naive claim honest).
-const ADD = ['+', '-'] as const
-
-/** an Int update expression over the loop's field variables + the counter `i` */
+/** an Int update expression over the loop's field variables + the counter `i`.
+ *  Full `+ - *` arithmetic, including products that overflow Int32 as the loop runs
+ *  — Aether's `Int` is a true ℤ/2^32 ring (multiplication is `Math.imul` on every
+ *  backend), so SpecConstr's box/unbox rewrite and the equality-saturation pass both
+ *  stay exact there, which this battery re-proves. */
 function genField(rng: Rng, fvars: string[], d: number): string {
   if (d <= 0 || rng() < 0.45) {
     return rng() < 0.7 ? pick(rng, [...fvars, 'i']) : String(1 + int(rng, 5))
   }
-  return `(${genField(rng, fvars, d - 1)} ${pick(rng, ADD)} ${genField(rng, fvars, d - 1)})`
+  return `(${genField(rng, fvars, d - 1)} ${pick(rng, ARITH)} ${genField(rng, fvars, d - 1)})`
 }
 
 /** a self-recursive loop threading a 2/3-field tuple OR single-constructor state,

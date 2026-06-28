@@ -49,16 +49,18 @@
 // trials the chance of admitting a non-identity is negligible. This certifies the
 // rewrite as a genuine **integer identity**.
 //
-// What that does (and does not) guarantee about the running VM: Aether's `Int` is
-// a 64-bit double, so it represents ℤ *exactly only within ±2^53*. Within that
-// range — which every realistic program lives in — an integer identity is also a
-// bit-for-bit VM identity, so the answer never changes. Outside it (a value grown
-// past 2^53), reassociating a product can change the rounding, exactly as it can
-// for the native `int` of a real language. This is the standard assumption a
-// production compiler makes: GCC and LLVM freely reassociate signed-integer
-// arithmetic *because* they treat it as overflow-free ℤ. We make the same
-// assumption, and the cost gate only ever adopts a *strictly cheaper* form, so the
-// pass is "never worse" by construction — like the rest of the optimizer.
+// Why that is also a *runtime* identity at any magnitude: Aether's `Int` is a
+// genuine **ℤ/2^32 ring** — every VM/JS/WASM arithmetic op wraps to signed 32 bits
+// (`vint`/`I` use `| 0`; multiplication uses `Math.imul`, the exact low-32-bit
+// product, matching the WASM `i32.mul`). The canonical ring homomorphism
+// ℤ → ℤ/2^32 carries any integer identity to an identity in that ring, so a rewrite
+// the Schwartz–Zippel check certifies over ℤ holds bit-for-bit on the running VM
+// *regardless of overflow*, and the answer never changes. (This was historically
+// only true within ±2^53: `*` rounded past it — two near-2^31 operands already
+// overflow a double — so the runtime was not a consistent ring and a reassociated
+// product could observably differ. Switching the runtime product to `Math.imul`
+// closed that gap.) The cost gate only ever adopts a *strictly cheaper* form, so
+// the pass is "never worse" by construction — like the rest of the optimizer.
 
 import type { BinaryOp, Expr } from './ast.ts'
 import { cloneExpr } from './ast.ts'
@@ -493,7 +495,10 @@ function applyRules(eg: EGraph, maxNodes: number): void {
           // identity & constant folding
           if (av === 0) eg.merge(cls, b)
           if (bv === 0) eg.merge(cls, a)
-          if (av !== null && bv !== null) eg.merge(cls, C(av + bv))
+          // fold in Int's ℤ/2^32 arithmetic so an emitted literal equals what the VM
+          // (`vint`/`Op.MUL`) and WASM (`i32.mul`) would compute; a fold that wraps is
+          // then a non-identity over ℤ and the Schwartz–Zippel check correctly vetoes it.
+          if (av !== null && bv !== null) eg.merge(cls, C((av + bv) | 0))
           // x + x = 2*x  (bit-exact for IEEE doubles, hence for Aether Int)
           if (a === b) eg.merge(cls, eg.add({ op: '*', args: [C(2), a] }))
           // x + (neg x) = 0
@@ -513,7 +518,7 @@ function applyRules(eg: EGraph, maxNodes: number): void {
           if (av === 1) eg.merge(cls, b)
           if (bv === 1) eg.merge(cls, a)
           if (av === 0 || bv === 0) eg.merge(cls, C(0)) // annihilator (Int leaves are finite)
-          if (av !== null && bv !== null) eg.merge(cls, C(av * bv))
+          if (av !== null && bv !== null) eg.merge(cls, C(Math.imul(av, bv)))
           // associativity of *
           assocTimes(eg, a, b, cls)
           assocTimes(eg, b, a, cls)

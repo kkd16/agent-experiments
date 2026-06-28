@@ -1524,16 +1524,22 @@ Deferred (future, building on Aether 23.0 SpecConstr):
       on each; wired into the Tests page as its own live battery (150/150 by default, ~149 firing). The
       additive-update generator deliberately stays inside Int32 to isolate SpecConstr from the eqsat
       overflow gap below.
-- [ ] **eqsat overflow soundness gap (found by the 23.0 fuzzer)** — the SpecConstr fuzzer surfaced that
-      the equality-saturation pass can change a result for integer values **well inside ±2^53** (e.g. a
-      loop multiplying its accumulators to ~1.4e9): the optimized VM and JS agree with each other but
-      *disagree with the unoptimized VM*. It reproduces with **no shape to specialise**, so it is an
-      eqsat (reassociation/extraction) issue, not a SpecConstr one — the likely cause is the
-      constant-folder wrapping `+`/`-` with `| 0` (Int32) while `*` uses `Math.trunc` (no wrap), so a
-      reassociated island re-rounds differently once a partial product overflows Int32. Fix options:
-      make the folder's integer wrapping consistent across `+`/`-`/`*` (and matching the VM), or extend
-      the Schwartz–Zippel validation to test on assignments that force the overflow regime so the
-      offending rewrite is vetoed rather than adopted.
+- [x] **eqsat overflow soundness gap (found by the 23.0 fuzzer) — FIXED.** The SpecConstr fuzzer
+      surfaced that the equality-saturation pass could change a result for integer values **well inside
+      ±2^53** (a loop multiplying its accumulators to ~1.4e9): the optimized VM and JS agreed with each
+      other but *disagreed with the unoptimized VM*, and it reproduced with **no shape to specialise**,
+      pinning it on the runtime, not SpecConstr. Root cause (deeper than the first guess): the VM/JS/
+      folder computed Int `*` as `(a*b) | 0` / `Math.trunc(a*b)`, but two near-2^31 Int operands already
+      make the *true* product exceed 2^53, so the double rounds **before** the wrap — making `*`
+      order-dependent and breaking associativity/commutativity, so eqsat's (mathematically valid)
+      reassociation observably changed the answer. The WASM backend was already correct (`i32.mul`). Fix:
+      compute Int `*` with **`Math.imul`** (exact low-32-bit product) everywhere — VM `Op.MUL`, the JS
+      runtime's `mulI`, the constant-folder, and the e-graph's constant fold — making `Int` a genuine
+      **ℤ/2^32 ring** consistent across all three backends. The Schwartz–Zippel validator is untouched
+      and stays sound: it certifies identities over ℤ, and the ring homomorphism ℤ → ℤ/2^32 carries each
+      to a runtime identity at any magnitude. Identical to the old behaviour for every product ≤ 2^53 (so
+      zero regression), and it also closed a latent VM/JS-vs-WASM disagreement. Verified by a multiplicative
+      differential fuzzer (VM ≡ JS ≡ WASM ≡ unoptimized, monotone) over hundreds of overflowing loops.
 - [ ] **Float the worker's loop-invariant *expressions* out too** — once SAT has captured the static
       arguments, any sub-expression of the worker body that depends only on them (not on a dynamic
       param) is loop-invariant and can be hoisted into the wrapper, computed once instead of per
@@ -1802,6 +1808,32 @@ clean first-order loop over the unpacked fields.
 
 ## Session log
 
+- 2026-06-28 (claude): **Integer multiplication made sound across all three backends (`Math.imul`) —
+  fixing the eqsat overflow bug the SpecConstr fuzzer caught.** The 23.0 follow-up fuzzer turned up a
+  divergence — optimized VM/JS disagreeing with the unoptimized VM for an accumulator loop reaching only
+  ~1.4e9 — that reproduced with *no shape to specialise*, so it lived in the runtime, not SpecConstr.
+  Root cause: the VM, the JS runtime and the constant-folder all computed Int `*` as `(a * b) | 0` /
+  `Math.trunc(a * b)`, but two near-2^31 Int operands make the **true** product exceed 2^53, so the IEEE
+  double rounds *before* the 32-bit wrap. That makes `*` order-dependent — associativity and commutativity
+  fail — so the equality-saturation superoptimiser's mathematically-valid reassociation (`a*b - b*a → 0`,
+  `(a*b)*c → a*(b*c)`) observably changed the answer. The WASM backend was already right, because it lowers
+  `*` to `i32.mul` (exact low-32-bit). The fix makes the other backends agree with WASM: compute Int `*`
+  with **`Math.imul`** at every value-producing site — the VM's `Op.MUL`, the JS runtime's `mulI`, the
+  optimizer's constant-folder (`foldBinop`), and the e-graph's own constant fold (which now also wraps its
+  `+` fold with `| 0`) — so `Int` is a genuine **ℤ/2^32 ring** identical on the bytecode VM, the JavaScript
+  backend and the WebAssembly backend. The e-graph's Schwartz–Zippel validator needs no change and stays
+  sound: it certifies an identity over ℤ (small leaves, exact), and the canonical ring homomorphism
+  ℤ → ℤ/2^32 carries any ℤ-identity to a runtime identity — the previous bug was solely that the runtime
+  was *not* a consistent ring, which `imul` repairs. Because `(a*b)|0` already equals `Math.imul(a,b)` for
+  every product within ±2^53, the change is a no-op on all existing programs (zero regression: suite
+  110/110, the 400-program optimizer fuzzer 400/400) and only corrects the overflow regime — and as a
+  bonus it closes a latent VM/JS-vs-WASM disagreement that no prior test happened to exercise. Verified
+  with a multiplicative differential fuzzer that builds random overflowing accumulator loops and checks
+  VM(opt) ≡ VM(unopt) ≡ JS ≡ **WASM** with steps never rising (120/120 four-way, 500/500 VM≡JS); the
+  in-app SpecConstr fuzzer's generator, previously held to additive updates to dodge this very bug, is
+  restored to full `+ - *` arithmetic and stays green (300/300, ~299 firing). The eqsat panel's
+  "overflow-free assumption" note is rewritten to state the stronger, now-true invariant. Full CI gate
+  (scope + conformance + lint + tsc + build) green.
 - 2026-06-28 (claude): **Aether 23.0 follow-up — an in-app SpecConstr differential fuzzer (and a real
   eqsat overflow bug it caught).** The 23.0 pass shipped validated by a curated 7-case suite group and a
   *standalone* 600-program fuzzer; this folds that fuzzer into the app so the Tests page proves SpecConstr
