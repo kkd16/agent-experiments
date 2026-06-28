@@ -19,6 +19,22 @@ import {
 } from './secp256k1'
 import { modSqrt, modInv } from './field'
 import { babyStepGiantStep, bruteForce, pollardRho } from './dlog'
+import { ripemd160 } from './ripemd160'
+import { sha512 } from './sha512'
+import {
+  wifEncode,
+  wifDecode,
+  p2pkhAddress,
+  segwitAddress,
+  pointCompress,
+  pointDecode,
+  derEncode,
+  derDecode,
+} from './encoding'
+import { pohligHellman, findSmoothCurve } from './pohlig'
+import { musigSign, verifyPartial } from './musig'
+import { x25519, x25519Public, ed25519Public, ed25519Sign, ed25519Verify } from './ed25519'
+import { runEdgeCases } from './wycheproof'
 
 export interface TestCase {
   name: string
@@ -186,6 +202,182 @@ export function runSelfTest(): TestCase[] {
     check('ECDLP', 'brute force finds k', bf.k === k, `k=${bf.k} in ${bf.steps} steps`)
     check('ECDLP', 'BSGS finds k', bsgs.k === k, `k=${bsgs.k} in ${bsgs.steps} steps`)
     check('ECDLP', "Pollard's rho finds k", rho.k === k, `k=${rho.k} in ${rho.steps} steps`)
+  }
+
+  // ── 9. RIPEMD-160 + SHA-512 (the address & Ed25519 hashes) ──
+  check(
+    'RIPEMD-160',
+    'reference "abc" digest',
+    bytesToHex(ripemd160(utf8('abc'))) === '8eb208f7e05d987a9b044a8e98c6b087f15a0bfc',
+    '"abc" → 8eb208f7… (matches OpenSSL)',
+  )
+  check(
+    'RIPEMD-160',
+    'empty-string digest',
+    bytesToHex(ripemd160(utf8(''))) === '9c1185a5c5e9fc54612808977ee8f548b2258d31',
+    '"" → 9c1185a5…',
+  )
+  check(
+    'SHA-512',
+    'FIPS 180-4 "abc"',
+    bytesToHex(sha512(utf8('abc'))) ===
+      'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a' +
+        '2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f',
+    '"abc" → ddaf35a1…',
+  )
+
+  // ── 10. Encodings: WIF, addresses, SEC compression, strict DER ──
+  {
+    const d = 0x0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1dn
+    check(
+      'Encoding',
+      'WIF (Bitcoin wiki vector)',
+      wifEncode(d, false) === '5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ',
+      'uncompressed WIF 5HueCGU8…',
+    )
+    check(
+      'Encoding',
+      'WIF round-trip',
+      wifDecode(wifEncode(d, true)).d === d,
+      'compressed WIF decodes back to d',
+    )
+    const pub = hexToBytes(
+      '0450863ad64a87ae8a2fe83c1af1a8403cb53f53e486d8511dad8a04887e5b235' +
+        '22cd470243453a299fa9e77237716103abc11a1df38855ed6f2ee187e9c582ba6',
+    )
+    check(
+      'Encoding',
+      'P2PKH address vector',
+      p2pkhAddress(pub) === '16UwLL9Risc3QfPqBUvKofHmBQ7wMtjvM',
+      'canonical Bitcoin-wiki address',
+    )
+    check(
+      'Encoding',
+      'Bech32 P2WPKH (BIP-173)',
+      segwitAddress('bc', 0, hexToBytes('751e76e8199196d454941c45d1b3a323f1433bd6')) ===
+        'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
+      'witness-v0 program → bc1qw508…',
+    )
+    const Q = publicKey(0x1234567890abcdefn)
+    check(
+      'Encoding',
+      'SEC compress → decompress',
+      (() => {
+        const back = pointDecode(pointCompress(Q))
+        return back !== null && Q !== null && back.x === Q.x && back.y === Q.y
+      })(),
+      'recovers y from x and parity',
+    )
+    const sig = ecdsaSign(d, utf8('der'))
+    const round = derDecode(derEncode(sig))
+    check('Encoding', 'strict DER round-trip', round.r === sig.r && round.s === sig.s, 'r,s survive DER')
+    let derRejected = false
+    try {
+      derDecode(new Uint8Array([...derEncode(sig), 0x00]))
+    } catch {
+      derRejected = true
+    }
+    check('Encoding', 'strict DER rejects trailing byte', derRejected, 'BIP-66 canonical-form check')
+  }
+
+  // ── 11. Pohlig–Hellman recovers k on a smooth-order curve ──
+  {
+    const weak = findSmoothCurve(13n, 800, 8000)
+    if (weak) {
+      const k = 491n % weak.order
+      const target = weak.curve.multiply(k, weak.G)
+      const res = pohligHellman(weak.curve, weak.G, target, weak.order)
+      check(
+        'Pohlig–Hellman',
+        'CRT recovers k on smooth order',
+        res.k === k,
+        `order ${weak.order} = ${weak.factors.map((f) => f.prime + '^' + f.exp).join('·')} → k=${res.k}`,
+      )
+    } else {
+      check('Pohlig–Hellman', 'smooth curve found', false, 'no smooth curve in range')
+    }
+  }
+
+  // ── 12. MuSig2: aggregate signature verifies under BIP-340 ──
+  {
+    const secrets = [0xa11ce0n, 0xb0bn, 0xca201n]
+    const msg = utf8('three signers, one signature')
+    const res = musigSign(secrets, msg)
+    check(
+      'MuSig2',
+      'aggregate verifies under BIP-340',
+      schnorrVerify(res.keyagg.xonly, msg, res.sig),
+      `${secrets.length} keys → one 64-byte sig`,
+    )
+    check(
+      'MuSig2',
+      'every partial signature checks',
+      secrets.every((_, i) => verifyPartial(res, i, msg)),
+      'no rogue partial can hide',
+    )
+    const mauled = res.sig.slice()
+    mauled[63] ^= 0x01
+    check('MuSig2', 'rejects mauled aggregate', !schnorrVerify(res.keyagg.xonly, msg, mauled), 'flipped bit → invalid')
+  }
+
+  // ── 13. Curve25519: X25519 (RFC 7748) + Ed25519 (RFC 8032) ──
+  {
+    const k = hexToBytes('a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4')
+    const u = hexToBytes('e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c')
+    check(
+      'X25519',
+      'RFC 7748 test vector',
+      bytesToHex(x25519(k, u)) ===
+        'c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552',
+      'ladder output matches the RFC',
+    )
+    const aPriv = hexToBytes('77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a')
+    const bPriv = hexToBytes('5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb')
+    check(
+      'X25519',
+      'ECDH shared secret matches',
+      bytesToHex(x25519(aPriv, x25519Public(bPriv))) ===
+        bytesToHex(x25519(bPriv, x25519Public(aPriv))),
+      'both sides derive 4a5d9d5b…',
+    )
+    const seed = hexToBytes('4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb')
+    check(
+      'Ed25519',
+      'RFC 8032 public key',
+      bytesToHex(ed25519Public(seed)) ===
+        '3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c',
+      'seed → A = 3d4017c3…',
+    )
+    const edSig = ed25519Sign(seed, hexToBytes('72'))
+    check(
+      'Ed25519',
+      'RFC 8032 signature',
+      bytesToHex(edSig) ===
+        '92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da' +
+          '085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00',
+      'deterministic 64-byte signature',
+    )
+    check(
+      'Ed25519',
+      'verify + reject tamper',
+      ed25519Verify(ed25519Public(seed), hexToBytes('72'), edSig) &&
+        !ed25519Verify(ed25519Public(seed), hexToBytes('73'), edSig),
+      'accepts honest, rejects altered',
+    )
+  }
+
+  // ── 14. Wycheproof-style ECDSA verifier battery ──
+  {
+    const edge = runEdgeCases()
+    const failed = edge.filter((c) => !c.pass)
+    check(
+      'Wycheproof',
+      `verifier battery (${edge.length} cases)`,
+      failed.length === 0,
+      failed.length === 0
+        ? 'every adversarial input handled correctly'
+        : `failing: ${failed.map((f) => f.name).join(', ')}`,
+    )
   }
 
   return t

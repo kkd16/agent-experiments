@@ -23,11 +23,13 @@ export function SelfTestPage() {
 
   return (
     <main className="page">
-      <PageHead eyebrow="Lab 06 — provenance" title="Self-Test & Known-Answer Vectors">
+      <PageHead eyebrow="Lab 12 — provenance" title="Self-Test & Known-Answer Vectors">
         Pretty math is worthless if it’s wrong. This page runs the entire engine against published
-        standards — FIPS 180-4 for SHA-256, RFC 4231 for HMAC, the canonical secp256k1 point
-        multiples, and a BIP-340 test-vector key — plus full sign→verify→tamper round-trips. It runs
-        live, in your browser, every time you open it.
+        standards — FIPS 180-4 (SHA-256/512), RFC 4231 (HMAC), the canonical secp256k1 point
+        multiples, BIP-340 Schnorr, RIPEMD-160 + Bitcoin WIF/address/Bech32 vectors, RFC 7748
+        (X25519) and RFC 8032 (Ed25519), a MuSig2 aggregate, a Pohlig–Hellman recovery, and a
+        Wycheproof-style adversarial verifier battery — plus full sign→verify→tamper round-trips. It
+        runs live, in your browser, every time you open it.
       </PageHead>
 
       <div className="statline" style={{ marginBottom: '1.4rem' }}>
