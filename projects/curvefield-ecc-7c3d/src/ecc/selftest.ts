@@ -732,6 +732,12 @@ export function runSelfTest(): TestCase[] {
     const sz = bp.proofSize(16, 4)
     check('Bulletproofs', 'proof size is logarithmic', sz.points === 2 * Math.log2(64) + 4 && agg.ipa.L.length === Math.log2(64), `${sz.points} points + ${sz.scalars} scalars vs. ~64 for the linear form`)
 
+    // Wire (de)serialization round-trip.
+    const wire = bp.serializeRangeProof(agg)
+    const reparsed = bp.deserializeRangeProof(wire)
+    check('Bulletproofs', 'proof serializes to its compact wire form', wire.length === bp.serializedSize(16, 4), `${wire.length} bytes = 33·points + 32·scalars`)
+    check('Bulletproofs', 'deserialized proof still verifies', bp.verifyRange(reparsed) && bp.serializeRangeProof(reparsed).length === wire.length, 'round-trip is loss-free and re-verifies')
+
     // Confidential transaction: amounts hidden, balance + non-negativity proven.
     const inB = [randomScalar(N) || 1n, randomScalar(N) || 1n]
     const tx = bp.buildConfidentialTx([100n, 50n], inB, [90n, 55n], 5n, 16)

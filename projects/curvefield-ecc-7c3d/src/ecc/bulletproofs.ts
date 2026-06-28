@@ -554,6 +554,58 @@ export function verifyConfidentialTx(tx: ConfidentialTx): {
   return { rangeOk, balanceOk, ok: rangeOk && balanceOk }
 }
 
+// ── wire serialization ───────────────────────────────────────────────────────
+// A range proof is just points (33 bytes compressed) and scalars (32 bytes), so
+// it serializes to a compact, fixed-layout byte string: this is the literal
+// object that would travel on a wire, and its length is the "proof size" headline
+// made concrete. Layout: [n][m] · m·V · A·S·T₁·T₂ · τₓ·μ·t̂ · k·(L,R) · a · b.
+const deserPoint = (b: Uint8Array): Point => {
+  if (b.every((x) => x === 0)) return null
+  const x = bytesToBig(b.slice(1, 33))
+  const ys = secp256k1.liftX(x)
+  if (ys.length === 0) throw new Error('point decompression failed')
+  const wantOdd = b[0] === 0x03
+  const y = (ys[0] % 2n === 1n) === wantOdd ? ys[0] : ys[1] ?? mod(-ys[0], secp256k1.p)
+  return { x, y }
+}
+
+/** Serialize a range proof to its compact wire form. */
+export function serializeRangeProof(p: RangeProof): Uint8Array {
+  const parts: Uint8Array[] = [Uint8Array.of(p.n, p.m)]
+  for (const Vj of p.V) parts.push(ser(Vj))
+  parts.push(ser(p.A), ser(p.S), ser(p.T1), ser(p.T2))
+  parts.push(bigToBytes(p.taux, 32), bigToBytes(p.mu, 32), bigToBytes(p.tHat, 32))
+  for (let i = 0; i < p.ipa.L.length; i++) parts.push(ser(p.ipa.L[i]), ser(p.ipa.R[i]))
+  parts.push(bigToBytes(p.ipa.a, 32), bigToBytes(p.ipa.b, 32))
+  return concat(...parts)
+}
+
+/** Parse a range proof back from its wire form (the inverse of the above). */
+export function deserializeRangeProof(bytes: Uint8Array): RangeProof {
+  let o = 0
+  const n = bytes[o++], m = bytes[o++]
+  const pt = () => deserPoint(bytes.slice(o, (o += 33)))
+  const sc = () => bytesToBig(bytes.slice(o, (o += 32)))
+  const V: Point[] = []
+  for (let j = 0; j < m; j++) V.push(pt())
+  const A = pt(), S = pt(), T1 = pt(), T2 = pt()
+  const taux = sc(), mu = sc(), tHat = sc()
+  const k = Math.log2(n * m)
+  const L: Point[] = [], R: Point[] = []
+  for (let i = 0; i < k; i++) {
+    L.push(pt())
+    R.push(pt())
+  }
+  const a = sc(), b = sc()
+  return { V, A, S, T1, T2, taux, mu, tHat, ipa: { L, R, a, b }, n, m }
+}
+
+/** Exact serialized size in bytes (33·points + 32·scalars + 2-byte header). */
+export function serializedSize(n: number, m: number): number {
+  const k = Math.log2(n * m)
+  return 2 + (m + 4 + 2 * k) * 33 + 5 * 32
+}
+
 // ── small helpers ────────────────────────────────────────────────────────────
 import { randomScalar } from './rng'
 const rand = (): bigint => randomScalar(N) || 1n
