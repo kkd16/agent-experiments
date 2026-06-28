@@ -113,11 +113,14 @@ function renderFp(d: DecodedInstruction): string {
     case 'sqrt':
       return `${m} ${freg(d.rd)}, ${freg(d.rs1)}${rmSuffix(d)}`;
     case 'sgnj':
-      // fsgnj.s rd, rs, rs disassembles to the friendly pseudo.
+      // fsgnj rd, rs, rs disassembles to the friendly fmv/fneg/fabs pseudo.
       if (d.rs1 === d.rs2) {
         if (m === 'fsgnj.s') return `fmv.s ${freg(d.rd)}, ${freg(d.rs1)}`;
         if (m === 'fsgnjn.s') return `fneg.s ${freg(d.rd)}, ${freg(d.rs1)}`;
         if (m === 'fsgnjx.s') return `fabs.s ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnj.d') return `fmv.d ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnjn.d') return `fneg.d ${freg(d.rd)}, ${freg(d.rs1)}`;
+        if (m === 'fsgnjx.d') return `fabs.d ${freg(d.rd)}, ${freg(d.rs1)}`;
       }
       return `${m} ${freg(d.rd)}, ${freg(d.rs1)}, ${freg(d.rs2)}`;
     case 'minmax':
@@ -128,6 +131,8 @@ function renderFp(d: DecodedInstruction): string {
       return `${m} ${reg(d.rd)}, ${freg(d.rs1)}${rmSuffix(d)}`;
     case 'cvt.s':
       return `${m} ${freg(d.rd)}, ${reg(d.rs1)}${rmSuffix(d)}`;
+    case 'cvt.ff':
+      return `${m} ${freg(d.rd)}, ${freg(d.rs1)}${rmSuffix(d)}`;
     case 'mv.x':
     case 'fclass':
       return `${m} ${reg(d.rd)}, ${freg(d.rs1)}`;

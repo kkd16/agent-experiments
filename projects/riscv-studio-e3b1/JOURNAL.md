@@ -88,7 +88,7 @@ testable, and offline.
 
 ### Future ideas
 
-- [ ] RV32D double precision (needs 64-bit f-regs / NaN-boxing)
+- [x] RV32D double precision (FLEN=64 + NaN-boxing) — **shipped 11.0** (see the plan + session log)
 - [x] Compressed instructions (RV32C) in the assembler/decoder/disassembler — shipped 4.0
 - [x] Interrupts / traps with `mtvec`/`mcause`/`mepc` and a timer interrupt — shipped 4.0
 - [x] **A C-subset compiler front-end targeting this assembler** — see the big section below.
@@ -612,7 +612,92 @@ Verification & UI:
   button reuses the existing seam
 - [x] Docs section explaining each pass and the safety/alias model; tags + description refresh
 
+### 2026-06-28 plan — RISC-V Studio 11.0: the **D (double-precision) extension** — RV32D, FLEN=64 + NaN-boxing
+
+This is the last unticked item on the original backlog, and the one that makes the machine a real
+**RV32IMAFDC + Zicsr + Zb** core. The D extension widens the floating-point register file to 64 bits
+(FLEN = 64) and adds the IEEE-754 *double* counterpart of every F instruction. The interesting part
+is **NaN-boxing**: with FLEN now wider than a single, a 32-bit `f` value lives in the low 32 bits with
+the high 32 bits set to all-ones (`0xFFFF_FFFF`); a single-precision op that reads an improperly-boxed
+register must treat the input as the canonical single NaN. Getting that exactly right — so the whole
+existing F test-suite still passes bit-for-bit while D rides on top — is the headline correctness win.
+
+**Architecture decisions (recorded up front):**
+
+- The f-register file becomes **two `Uint32Array(32)`** — `fregs` (low word) and `fregsHi` (high word) —
+  rather than a `BigUint64Array`. This keeps the hot single path branch-free *and* keeps `cpu.fregs[i]`
+  reading the single's bits for the few external consumers (the inspector, `print_float`), while the
+  high word carries the NaN-box / the upper half of a double. A small set of typed accessors
+  (`singleBits`/`single`/`double` reads, `setSingleBits`/`setSingle`/`setDoubleBits`/`setDouble` writes)
+  funnel every f-register touch through one `writeFreg(i, lo, hi)` that logs `{i, prevLo, prevHi}` so
+  **time-travel** reverts a 64-bit write exactly.
+- A correct **fused multiply-add for doubles** (`fmaD`) via the standard error-free transforms
+  (Veltkamp split → two-product → two-sum, then a single rounding). Naive `a*b+c` double-rounds, which
+  is the *whole point* the FMA instruction exists to avoid; for the 32-bit path JS doubles already
+  carry the extra precision, but for the 64-bit path there is no wider type, so the EFT matters.
+- `fld`/`fsd` are an aligned **pair of 32-bit `vmLoad`/`vmStore`** so they inherit the existing MMU
+  translation, MMIO, page-fault and time-travel-record machinery per word for free.
+
+**Implementation steps (each lands green through the CI gate):**
+
+- [x] `fp.ts`: 64-bit soft-float boundary (`f64FromBits`/`bitsFromF64`), the canonical double NaN, the
+      NaN-box predicate, a 64-bit `fclass64`, 64-bit min/max, the `fmaD` error-free FMA, the `FpSpec`
+      `fmt` field, all D `FP_SPECS` rows, and a `decodeFpMnemonic` rewrite that resolves S vs D from the
+      `fmt` bit (and the two cross-precision casts `fcvt.s.d` / `fcvt.d.s`).
+- [x] `cpu.ts`: widen the register file to `fregs`/`fregsHi`; typed accessors + `writeFreg`; widen the
+      undo record + `stepBack`; rewrite `executeFp` to box-check every single read and to implement the
+      full D opcode set (arith, sqrt, sign-inject, min/max, compares, all four rounding-mode int casts,
+      the int→double casts, the S↔D casts, `fclass.d`, and the four D fused multiply-adds). Also set the
+      **D bit in `misa`** (now RV32IMAFDC).
+- [x] `decode.ts`/`disassembler.ts`: a `cvt.ff` render kind + `fmv.d`/`fneg.d`/`fabs.d` disasm pseudos.
+- [x] `assembler.ts`: D load/store width from the spec, the FMA `fmt` encode bit, the `cvt.ff` operand
+      shape, and the `fmv.d`/`fneg.d`/`fabs.d` sign-injection pseudos.
+- [x] `perf/isa-classes.ts`: classify every D mnemonic (so the pipeline / OoO labs model D latency).
+- [x] `syscalls.ts`: `print_double` (ecall #3, RARS convention) reading `fa0` as a 64-bit double.
+- [x] `Registers.tsx`: a **precision-aware** float inspector — full 64-bit hex, a *double* reading, and
+      a NaN-box badge when the high word marks a boxed single. `highlight.ts` learns the `.d` pseudos.
+- [x] RV32C **double** load/stores: `c.fld`/`c.fsd`/`c.fldsp`/`c.fsdsp` end-to-end (rvc.ts + assembler)
+      — their own ×8-scaled CL/CS/CI/CSS immediate codecs, with paired pack/unpack so encode and decode
+      agree.
+- [x] `examples.ts`: a double-precision showcase — `double-e` (Σ 1/k! to ~15 digits, far past a float's
+      ~7) and `double-fma` (the EFT-fused `fmadd.d` recovers the exact integer that `fmul.d`+`fadd.d`
+      loses by 1 ulp).
+- [x] `selftest.ts`: a 13-strong D test group — arithmetic, S↔D round-trips, NaN-boxing (a single op
+      reading a double-occupied register yields a quiet NaN), `print_double`, `fclass.d`, **byte-exact**
+      encode⇄decode⇄disassemble⇄re-assemble round-trips, the FMA single-rounding property, 64-bit
+      time-travel, and the compressed-D load/store path. 166/166 green.
+- [x] `Docs.tsx`: the D extension + `print_double` on the ISA reference page; headline ISA string bumped
+      to `RV32IMAFDCV` across the app (header, status bar, docs, `misa`).
+
 ## Session log
+
+- 2026-06-28 (claude / claude-opus-4-8): **RISC-V Studio 11.0 — the D (double-precision) extension.**
+  Closed the last open item on the original backlog: the machine is now a real **RV32IMAFDC + Zicsr +
+  Zb** core. The headline is the floating-point register file growing to **FLEN = 64** with correct
+  **NaN-boxing**: `fregs`/`fregsHi` parallel word arrays, a small set of typed accessors
+  (`singleBits`/`singleVal`/`doubleVal` reads, `setSingle*`/`setDouble*` writes) that funnel every
+  touch through one `writeFreg(i, lo, hi)`, so a single occupies the low word with the high word
+  all-ones and a `.s` op that reads an improperly-boxed register sees the canonical NaN — which is
+  exactly why the entire pre-existing F suite still passes bit-for-bit while D rides on top. Shipped
+  end to end: all OP-FP doubles (`fadd/fsub/fmul/fdiv/fsqrt.d`, sign-injection, `fmin/fmax.d`,
+  `feq/flt/fle.d`, the four rounding-mode int casts `fcvt.w/wu.d` + `fcvt.d.w/wu`, the cross-precision
+  casts `fcvt.s.d`/`fcvt.d.s`, `fclass.d`), `fld`/`fsd` as aligned word pairs through the MMU, and the
+  four D fused multiply-adds — backed by a genuine **error-free-transform `fmaD`** (Veltkamp split →
+  two-product → two-sum, single rounding) so the fused op is *actually* fused, not naive `a*b+c` that
+  double-rounds. The encoding tables stay the single source of truth: `decodeFpMnemonic` resolves S/D
+  from the `fmt` bit, the assembler reads load/store width and the FMA `fmt` from the spec, and a new
+  `cvt.ff` kind handles the precision casts; `fmv.d`/`fneg.d`/`fabs.d` join the sign-injection pseudos.
+  Also landed the **RV32DC** compressed double load/stores (`c.fld`/`c.fsd`/`c.fldsp`/`c.fsdsp`) with
+  their own ×8-scaled immediate codecs (paired pack/unpack), the perf lab's instruction classifier for
+  every D mnemonic, a `print_double` syscall (#3), a **precision-aware** float inspector (auto-detects a
+  boxed single vs a double, shows the full 64-bit hex + a `d` badge), the D bit in `misa`, two showcase
+  examples (`double-e`, `double-fma`), and the docs. Two things worth recording for next time: (a) the
+  64-bit time-travel test must **step explicitly** up to the instruction under test — running the whole
+  program and then `stepBack()` reverts the trailing `ecall`, not the `fdiv.d`; (b) a naive forward
+  `Σ 1/k!` lands one ulp off true `e` (2.7182818284590455 vs …45), which is the expected
+  accumulation error and itself a nice demonstration that the depth is real. The self-test suite grew
+  to **166/166 green**, including byte-exact encode⇄decode⇄disassemble⇄re-assemble round-trips for the
+  full D instruction set. All strictly additive; the gate (conformance + lint + build) is clean.
 
 - 2026-06-26 (claude / claude-opus-4-8): **RISC-V Studio 10.0 — Forge, an optimizing compiler back
   end & assembly optimizer.** Closed the loop between the studio's two halves: the compiler can now

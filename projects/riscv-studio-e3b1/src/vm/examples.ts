@@ -362,6 +362,83 @@ done:
         ecall
 `;
 
+const DOUBLE_E = `# Euler's number e = Σ 1/k!  in IEEE-754 *double* precision (RV32D, FLEN=64).
+# Single precision tops out near 7 digits; the double here is correct to all ~16.
+.text
+main:
+        li   t0, 1
+        fcvt.d.w fs0, t0         # sum  = 1.0   (the k=0 term)
+        fcvt.d.w fs1, t0         # term = 1.0
+        li   s2, 1               # k = 1
+        li   s3, 20              # terms (20! already exhausts double precision)
+loop:
+        bgt  s2, s3, done
+        fcvt.d.w ft0, s2         # (double) k
+        fdiv.d fs1, fs1, ft0     # term /= k     ->  1/k!
+        fadd.d fs0, fs0, fs1     # sum  += term
+        addi s2, s2, 1
+        j    loop
+done:
+        li   a7, 3               # print_double(fa0)  ->  2.718281828459045
+        fmv.d fa0, fs0
+        ecall
+        li   a7, 10
+        ecall
+`;
+
+const DOUBLE_FMA = `# Fused multiply-add precision: a*a + c computed two ways.
+# With a = 94906267 the exact a*a needs 54 bits, so it does NOT fit a double — the product
+# rounds.  The naive 'fmul.d then fadd.d' rounds twice and loses the last unit; the single
+# rounding of fmadd.d recovers the exact integer answer (one larger).
+.data
+lbl_naive: .string "naive  a*a+c = "
+lbl_fused: .string "fused  a*a+c = "
+nl:        .string "\\n"
+.text
+main:
+        # a = 94906267  (just above 2^26.5, so a*a overflows the 53-bit significand)
+        li   t0, 94906267
+        fcvt.d.w fs0, t0          # fs0 = a (double)
+
+        # Build c = -(2^53) = -(2^23 * 2^30) exactly in double precision.
+        li   t0, 0x800000         # 2^23
+        fcvt.d.w ft0, t0
+        li   t0, 0x40000000       # 2^30
+        fcvt.d.w ft1, t0
+        fmul.d ft2, ft0, ft1      # 2^53
+        fneg.d fs1, ft2           # c = -2^53
+
+        # Naive: round the product first, then add c.
+        fmul.d ft3, fs0, fs0      # fl(a*a)
+        fadd.d ft3, ft3, fs1      # + c           (two roundings)
+
+        # Fused: one rounding for the whole a*a + c.
+        fmadd.d ft4, fs0, fs0, fs1
+
+        la   a0, lbl_naive
+        li   a7, 4
+        ecall
+        fmv.d fa0, ft3
+        li   a7, 3
+        ecall
+        la   a0, nl
+        li   a7, 4
+        ecall
+
+        la   a0, lbl_fused
+        li   a7, 4
+        ecall
+        fmv.d fa0, ft4
+        li   a7, 3
+        ecall
+        la   a0, nl
+        li   a7, 4
+        ecall
+
+        li   a7, 10
+        ecall
+`;
+
 const MANDEL_FLOAT = `# Mandelbrot set in real RV32F floating point → the 128x128 framebuffer.
 .equ FB, 0x20000000
 .text
@@ -815,6 +892,8 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'newton', title: 'Newton √2 (float)', blurb: 'RV32F: fdiv/fadd/fmul + print_float', focus: 'console', code: FLOAT_NEWTON },
   { id: 'leibniz', title: 'Leibniz π (float)', blurb: 'RV32F series accumulation', focus: 'console', code: LEIBNIZ },
   { id: 'dotprod', title: 'Float dot product', blurb: 'flw + fused multiply-add (fmadd.s)', focus: 'console', code: DOTPROD },
+  { id: 'double-e', title: "Euler's e (double)", blurb: 'RV32D: Σ 1/k! to full 64-bit precision + print_double', focus: 'console', code: DOUBLE_E },
+  { id: 'double-fma', title: 'Fused multiply-add (double)', blurb: 'RV32D: fmadd.d single-rounding beats fmul.d+fadd.d', focus: 'console', code: DOUBLE_FMA },
   { id: 'atomic', title: 'Atomic counter', blurb: 'RV32A amoadd.w read-modify-write', focus: 'console', code: ATOMIC },
   { id: 'counters', title: 'Cycle counter', blurb: 'Zicsr rdcycle hardware counter', focus: 'console', code: COUNTERS },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },

@@ -11,7 +11,7 @@
 // IEEE-754 single <-> raw bits (a tiny "soft float" boundary)
 // ---------------------------------------------------------------------------
 
-const cvt = new DataView(new ArrayBuffer(4));
+const cvt = new DataView(new ArrayBuffer(8));
 
 /** Reinterpret a 32-bit pattern as the float it encodes. */
 export function f32FromBits(bits: number): number {
@@ -25,8 +25,34 @@ export function bitsFromF32(x: number): number {
   return cvt.getUint32(0, true);
 }
 
-/** The canonical quiet NaN RISC-V produces for invalid float results. */
+/** Reinterpret a 64-bit pattern (low + high words) as the double it encodes. */
+export function f64FromBits(lo: number, hi: number): number {
+  cvt.setUint32(0, lo >>> 0, true);
+  cvt.setUint32(4, hi >>> 0, true);
+  return cvt.getFloat64(0, true);
+}
+
+/** Decompose a double into its raw 64-bit pattern as `{ lo, hi }` little-endian words. */
+export function bitsFromF64(x: number): { lo: number; hi: number } {
+  cvt.setFloat64(0, x, true);
+  return { lo: cvt.getUint32(0, true), hi: cvt.getUint32(4, true) };
+}
+
+/** The canonical quiet NaN RISC-V produces for invalid single-precision results. */
 export const CANONICAL_NAN = 0x7fc0_0000;
+
+/** The canonical quiet NaN for invalid double-precision results (0x7FF8_0000_0000_0000). */
+export const CANONICAL_NAN_D = { lo: 0x0000_0000, hi: 0x7ff8_0000 } as const;
+
+/**
+ * NaN-boxing (FLEN = 64): a single-precision value occupies the low 32 bits with the high 32 bits
+ * set to all-ones. A single-precision op that reads a register whose high word is *not* all-ones
+ * must treat the input as the canonical single NaN — these helpers express that rule.
+ */
+export const NANBOX_HI = 0xffff_ffff;
+export function isNanBoxed(hi: number): boolean {
+  return (hi >>> 0) === NANBOX_HI;
+}
 
 // ---------------------------------------------------------------------------
 // fcsr / rounding modes / accrued exception flags
@@ -139,6 +165,88 @@ export function fmaxBits(ab: number, bb: number): { bits: number; invalid: boole
 }
 
 // ---------------------------------------------------------------------------
+// Double-precision (FLEN = 64) bit helpers — the 64-bit counterparts of the above.
+// Operands and results are carried as `{ lo, hi }` raw little-endian word pairs.
+// ---------------------------------------------------------------------------
+
+export interface D64 {
+  lo: number;
+  hi: number;
+}
+
+/** The 10-bit classification mask returned by `fclass.d`. */
+export function fclass64(lo: number, hi: number): number {
+  const h = hi >>> 0;
+  const sign = (h >>> 31) & 1;
+  const exp = (h >>> 20) & 0x7ff;
+  const fracHi = h & 0xf_ffff;
+  const fracZero = fracHi === 0 && (lo >>> 0) === 0;
+  if (exp === 0x7ff) {
+    if (fracZero) return sign ? 1 << 0 : 1 << 7; // ±inf
+    return fracHi & 0x8_0000 ? 1 << 9 : 1 << 8; // quiet : signaling NaN (top frac bit)
+  }
+  if (exp === 0) {
+    if (fracZero) return sign ? 1 << 3 : 1 << 4; // ±0
+    return sign ? 1 << 2 : 1 << 5; // ±subnormal
+  }
+  return sign ? 1 << 1 : 1 << 6; // ±normal
+}
+
+function minmaxD(a: D64, b: D64, isMax: boolean): { bits: D64; invalid: boolean } {
+  const av = f64FromBits(a.lo, a.hi);
+  const bv = f64FromBits(b.lo, b.hi);
+  const an = Number.isNaN(av);
+  const bn = Number.isNaN(bv);
+  if (an && bn) return { bits: { ...CANONICAL_NAN_D }, invalid: true };
+  if (an) return { bits: b, invalid: true };
+  if (bn) return { bits: a, invalid: true };
+  if (av === 0 && bv === 0) {
+    // ±0 ties: fmin returns −0 when either is −0; fmax returns +0 when either is +0.
+    const negative = isMax ? (a.hi & b.hi & 0x8000_0000) !== 0 : ((a.hi | b.hi) & 0x8000_0000) !== 0;
+    return { bits: negative ? { lo: 0, hi: 0x8000_0000 } : { lo: 0, hi: 0 }, invalid: false };
+  }
+  const pick = isMax ? av > bv : av < bv;
+  return { bits: pick ? a : b, invalid: false };
+}
+
+export function fminBits64(a: D64, b: D64): { bits: D64; invalid: boolean } {
+  return minmaxD(a, b, false);
+}
+export function fmaxBits64(a: D64, b: D64): { bits: D64; invalid: boolean } {
+  return minmaxD(a, b, true);
+}
+
+/**
+ * A correctly-fused double-precision multiply-add `a*b + c` with a *single* rounding.
+ *
+ * JavaScript has no `Math.fma`, and the naive `a*b + c` rounds twice (once for the product, once
+ * for the sum) — which is exactly the error the hardware FMA instruction exists to eliminate. This
+ * recovers the fused result with the standard error-free transforms: a Veltkamp split feeds a
+ * two-product (the exact product as an unevaluated `p + pe` pair), a two-sum adds `c` exactly, and
+ * the residuals are folded back before the one final rounding. For the finite, non-overflowing
+ * domain this matches an IEEE-754 fused multiply-add; non-finite or overflow-prone inputs fall back
+ * to the plain expression (where double-rounding is immaterial).
+ */
+export function fmaD(a: number, b: number, c: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return a * b + c;
+  const p = a * b;
+  // Bail out if the product or its split would overflow the EFT's headroom.
+  if (!Number.isFinite(p) || Math.abs(a) > 1e150 || Math.abs(b) > 1e150) return p + c;
+  const SPLIT = 134217729; // 2^27 + 1
+  const ca = SPLIT * a;
+  const ah = ca - (ca - a);
+  const al = a - ah;
+  const cb = SPLIT * b;
+  const bh = cb - (cb - b);
+  const bl = b - bh;
+  const pe = al * bl - (((p - ah * bh) - al * bh) - ah * bl); // exact: p + pe === a*b
+  const s = p + c;
+  const bb = s - p;
+  const se = (p - (s - bb)) + (c - bb); // exact: s + se === p + c
+  return s + (pe + se);
+}
+
+// ---------------------------------------------------------------------------
 // Instruction table
 // ---------------------------------------------------------------------------
 
@@ -166,6 +274,7 @@ export type FpKind =
   | 'mv.x' // fmv.x.w   rd(x), rs1(f)
   | 'fclass' // fclass.s  rd(x), rs1(f)
   | 'mv.f' // fmv.w.x   rd(f), rs1(x)
+  | 'cvt.ff' // fcvt.s.d / fcvt.d.s   rd(f), rs1(f) [, rm]   (cross-precision cast)
   | 'fma'; // fmadd/fmsub/fnmadd/fnmsub   rd(f), rs1(f), rs2(f), rs3(f) [, rm]
 
 export interface FpSpec {
@@ -179,6 +288,8 @@ export interface FpSpec {
   readonly rs2?: number;
   /** True if funct3 carries a rounding mode (rather than a fixed selector). */
   readonly hasRm?: boolean;
+  /** Precision format (funct2, bits [26:25]): 0 = single (`.s`), 1 = double (`.d`). */
+  readonly fmt?: number;
 }
 
 function fp(name: string, kind: FpKind, opcode: number, extra: Partial<FpSpec> = {}): FpSpec {
@@ -217,10 +328,48 @@ export const FP_SPECS: Record<string, FpSpec> = {
   'fclass.s': fp('fclass.s', 'fclass', O.OP_FP, { funct7: 0x70, funct3: 1, rs2: 0 }),
   'fmv.w.x': fp('fmv.w.x', 'mv.f', O.OP_FP, { funct7: 0x78, funct3: 0, rs2: 0 }),
 
-  'fmadd.s': fp('fmadd.s', 'fma', O.MADD, { hasRm: true }),
-  'fmsub.s': fp('fmsub.s', 'fma', O.MSUB, { hasRm: true }),
-  'fnmsub.s': fp('fnmsub.s', 'fma', O.NMSUB, { hasRm: true }),
-  'fnmadd.s': fp('fnmadd.s', 'fma', O.NMADD, { hasRm: true }),
+  'fmadd.s': fp('fmadd.s', 'fma', O.MADD, { hasRm: true, fmt: 0 }),
+  'fmsub.s': fp('fmsub.s', 'fma', O.MSUB, { hasRm: true, fmt: 0 }),
+  'fnmsub.s': fp('fnmsub.s', 'fma', O.NMSUB, { hasRm: true, fmt: 0 }),
+  'fnmadd.s': fp('fnmadd.s', 'fma', O.NMADD, { hasRm: true, fmt: 0 }),
+
+  // ---- RV32D (FLEN = 64): the double-precision counterparts -------------------
+  // OP-FP doubles share each single op's funct7 with the format (fmt) bit set: `.s | 0x01`.
+  'fld': fp('fld', 'load', O.LOAD_FP, { funct3: 3 }),
+  'fsd': fp('fsd', 'store', O.STORE_FP, { funct3: 3 }),
+
+  'fadd.d': fp('fadd.d', 'r-rm', O.OP_FP, { funct7: 0x01, hasRm: true }),
+  'fsub.d': fp('fsub.d', 'r-rm', O.OP_FP, { funct7: 0x05, hasRm: true }),
+  'fmul.d': fp('fmul.d', 'r-rm', O.OP_FP, { funct7: 0x09, hasRm: true }),
+  'fdiv.d': fp('fdiv.d', 'r-rm', O.OP_FP, { funct7: 0x0d, hasRm: true }),
+  'fsqrt.d': fp('fsqrt.d', 'sqrt', O.OP_FP, { funct7: 0x2d, rs2: 0, hasRm: true }),
+
+  'fsgnj.d': fp('fsgnj.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 0 }),
+  'fsgnjn.d': fp('fsgnjn.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 1 }),
+  'fsgnjx.d': fp('fsgnjx.d', 'sgnj', O.OP_FP, { funct7: 0x11, funct3: 2 }),
+
+  'fmin.d': fp('fmin.d', 'minmax', O.OP_FP, { funct7: 0x15, funct3: 0 }),
+  'fmax.d': fp('fmax.d', 'minmax', O.OP_FP, { funct7: 0x15, funct3: 1 }),
+
+  'feq.d': fp('feq.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 2 }),
+  'flt.d': fp('flt.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 1 }),
+  'fle.d': fp('fle.d', 'cmp', O.OP_FP, { funct7: 0x51, funct3: 0 }),
+
+  'fcvt.w.d': fp('fcvt.w.d', 'cvt.w', O.OP_FP, { funct7: 0x61, rs2: 0, hasRm: true }),
+  'fcvt.wu.d': fp('fcvt.wu.d', 'cvt.w', O.OP_FP, { funct7: 0x61, rs2: 1, hasRm: true }),
+  'fcvt.d.w': fp('fcvt.d.w', 'cvt.s', O.OP_FP, { funct7: 0x69, rs2: 0, hasRm: true }),
+  'fcvt.d.wu': fp('fcvt.d.wu', 'cvt.s', O.OP_FP, { funct7: 0x69, rs2: 1, hasRm: true }),
+
+  // Cross-precision casts: fcvt.s.d narrows (funct7 0x20, rs2=1), fcvt.d.s widens (0x21, rs2=0).
+  'fcvt.s.d': fp('fcvt.s.d', 'cvt.ff', O.OP_FP, { funct7: 0x20, rs2: 1, hasRm: true }),
+  'fcvt.d.s': fp('fcvt.d.s', 'cvt.ff', O.OP_FP, { funct7: 0x21, rs2: 0, hasRm: true }),
+
+  'fclass.d': fp('fclass.d', 'fclass', O.OP_FP, { funct7: 0x71, funct3: 1, rs2: 0 }),
+
+  'fmadd.d': fp('fmadd.d', 'fma', O.MADD, { hasRm: true, fmt: 1 }),
+  'fmsub.d': fp('fmsub.d', 'fma', O.MSUB, { hasRm: true, fmt: 1 }),
+  'fnmsub.d': fp('fnmsub.d', 'fma', O.NMSUB, { hasRm: true, fmt: 1 }),
+  'fnmadd.d': fp('fnmadd.d', 'fma', O.NMADD, { hasRm: true, fmt: 1 }),
 };
 
 export const FP_MNEMONICS: ReadonlySet<string> = new Set(Object.keys(FP_SPECS));
@@ -245,19 +394,21 @@ export function decodeFpMnemonic(
   funct3: number,
   rs2: number,
 ): string {
+  // For the R4-type fused multiply-adds the precision (fmt) sits in funct7's low two bits.
+  const fmaD = (funct7 & 0x3) === 1;
   switch (opcode) {
     case O.LOAD_FP:
-      return funct3 === 2 ? 'flw' : '?';
+      return funct3 === 2 ? 'flw' : funct3 === 3 ? 'fld' : '?';
     case O.STORE_FP:
-      return funct3 === 2 ? 'fsw' : '?';
+      return funct3 === 2 ? 'fsw' : funct3 === 3 ? 'fsd' : '?';
     case O.MADD:
-      return 'fmadd.s';
+      return fmaD ? 'fmadd.d' : 'fmadd.s';
     case O.MSUB:
-      return 'fmsub.s';
+      return fmaD ? 'fmsub.d' : 'fmsub.s';
     case O.NMSUB:
-      return 'fnmsub.s';
+      return fmaD ? 'fnmsub.d' : 'fnmsub.s';
     case O.NMADD:
-      return 'fnmadd.s';
+      return fmaD ? 'fnmadd.d' : 'fnmadd.s';
     case O.OP_FP:
       switch (funct7) {
         case 0x00:
@@ -284,6 +435,33 @@ export function decodeFpMnemonic(
           return funct3 === 0 ? 'fmv.x.w' : 'fclass.s';
         case 0x78:
           return 'fmv.w.x';
+        // ---- RV32D ----
+        case 0x01:
+          return 'fadd.d';
+        case 0x05:
+          return 'fsub.d';
+        case 0x09:
+          return 'fmul.d';
+        case 0x0d:
+          return 'fdiv.d';
+        case 0x2d:
+          return 'fsqrt.d';
+        case 0x11:
+          return ['fsgnj.d', 'fsgnjn.d', 'fsgnjx.d'][funct3] ?? '?';
+        case 0x15:
+          return ['fmin.d', 'fmax.d'][funct3] ?? '?';
+        case 0x51:
+          return { 0: 'fle.d', 1: 'flt.d', 2: 'feq.d' }[funct3] ?? '?';
+        case 0x61:
+          return rs2 === 0 ? 'fcvt.w.d' : 'fcvt.wu.d';
+        case 0x69:
+          return rs2 === 0 ? 'fcvt.d.w' : 'fcvt.d.wu';
+        case 0x20:
+          return 'fcvt.s.d';
+        case 0x21:
+          return 'fcvt.d.s';
+        case 0x71:
+          return 'fclass.d';
         default:
           return '?';
       }

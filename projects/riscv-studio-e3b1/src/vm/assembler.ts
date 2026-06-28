@@ -407,6 +407,15 @@ function expand(
     case 'fabs.s':
       NEED(op, ops, 2);
       return [fpMicro('fsgnjx.s', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fmv.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnj.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fneg.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjn.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
+    case 'fabs.d':
+      NEED(op, ops, 2);
+      return [fpMicro('fsgnjx.d', { rd: parseFReg(ops[0]), rs1: parseFReg(ops[1]), rs2: parseFReg(ops[1]) }, line, source)];
 
     // ---- Zicsr counter / convenience pseudos ----------------------------
     case 'rdcycle':
@@ -661,6 +670,10 @@ function expandFp(op: string, ops: string[], consts: Map<string, number>, line: 
     case 'cvt.s':
       NEED(op, list, 2);
       return mk({ rd: parseFReg(list[0]), rs1: parseReg(list[1]) });
+    case 'cvt.ff':
+      // fcvt.s.d / fcvt.d.s — both operands are float registers.
+      NEED(op, list, 2);
+      return mk({ rd: parseFReg(list[0]), rs1: parseFReg(list[1]) });
     case 'mv.x':
     case 'fclass':
       NEED(op, list, 2);
@@ -788,6 +801,30 @@ function expandRvc(op: string, ops: string[], consts: Map<string, number>, line:
       return C({ rd: parseFReg(ops[0]), imm: mem.imm });
     }
     case 'c.fswsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rs2: parseFReg(ops[0]), imm: mem.imm });
+    }
+
+    // RV32DC — compressed double-precision float load/store
+    case 'c.fld': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rd: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.fsd': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      return C({ rs2: parseFReg(ops[0]), rs1: mem.reg, imm: mem.imm });
+    }
+    case 'c.fldsp': {
+      NEED(op, ops, 2);
+      const mem = parseMem(ops[1], consts);
+      parseSp(`x${mem.reg}`);
+      return C({ rd: parseFReg(ops[0]), imm: mem.imm });
+    }
+    case 'c.fsdsp': {
       NEED(op, ops, 2);
       const mem = parseMem(ops[1], consts);
       parseSp(`x${mem.reg}`);
@@ -1106,14 +1143,16 @@ function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): nu
 
   switch (spec.kind) {
     case 'load': {
+      const width = (spec.funct3 ?? 2) & 7; // 2 = .w (single), 3 = .d (double)
       const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'load offset');
-      return u32(((imm & 0xfff) << 20) | (rs1 << 15) | (2 << 12) | (rd << 7) | opc);
+      return u32(((imm & 0xfff) << 20) | (rs1 << 15) | (width << 12) | (rd << 7) | opc);
     }
     case 'store': {
+      const width = (spec.funct3 ?? 2) & 7;
       const imm = checkRange(resolveImm(m.imm, addr, symbols), -2048, 2047, 'store offset');
       const lo = imm & 0x1f;
       const hi = (imm >> 5) & 0x7f;
-      return u32((hi << 25) | (rs2 << 20) | (rs1 << 15) | (2 << 12) | (lo << 7) | opc);
+      return u32((hi << 25) | (rs2 << 20) | (rs1 << 15) | (width << 12) | (lo << 7) | opc);
     }
     case 'r-rm':
       return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
@@ -1125,6 +1164,7 @@ function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): nu
       return u32((f7 << 25) | (rs2 << 20) | (rs1 << 15) | ((spec.funct3 ?? 0) << 12) | (rd << 7) | opc);
     case 'cvt.w':
     case 'cvt.s':
+    case 'cvt.ff':
       return u32((f7 << 25) | ((spec.rs2 ?? 0) << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc);
     case 'mv.x':
     case 'fclass':
@@ -1132,7 +1172,12 @@ function encodeFp(m: MicroInstr, addr: number, symbols: Map<string, number>): nu
     case 'mv.f':
       return u32((f7 << 25) | (rs1 << 15) | (rd << 7) | opc);
     case 'fma':
-      return u32(((m.rs3 ?? 0) & 0x1f) * 0x800_0000 + ((rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc));
+      // The R4-type format carries the precision (fmt) in funct2 = bits [26:25].
+      return u32(
+        ((m.rs3 ?? 0) & 0x1f) * 0x800_0000 +
+          (((spec.fmt ?? 0) & 3) << 25) +
+          ((rs2 << 20) | (rs1 << 15) | (rm << 12) | (rd << 7) | opc),
+      );
   }
 }
 
