@@ -12,6 +12,14 @@ import {
   type WeightedSite,
 } from '../geometry/power'
 import { farthestCells, farthestEdges, farthestOwners } from '../geometry/farthest'
+import {
+  yaoGraph,
+  thetaGraph,
+  greedySpanner,
+  dilation,
+  thetaBound,
+  type Dilation,
+} from '../geometry/spanner'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { alphaShape, alphaForSlider, circumRadii } from '../geometry/alphaShape'
 import { refineDelaunay, type RefineResult } from '../geometry/refine'
@@ -32,6 +40,11 @@ const PAD = 14
 const DIAG = Math.SQRT2 // normalize lengths so the frame diagonal reads as 1.0
 
 type Distribution = 'poisson' | 'uniform' | 'grid'
+type SpannerType = 'yao' | 'theta' | 'greedy'
+
+// Greedy spanner is O(n³)-ish (a Dijkstra per candidate pair), so cap it; Yao/Θ
+// are O(n²) and run on the full set without trouble.
+const GREEDY_CAP = 120
 
 const DEFAULT_LAYERS: LayerToggles = {
   voronoiFill: true,
@@ -45,6 +58,7 @@ const DEFAULT_LAYERS: LayerToggles = {
   urquhart: false,
   beta: false,
   knn: false,
+  spanner: false,
   alpha: false,
   convexLayers: false,
   mst: false,
@@ -98,6 +112,9 @@ export default function Studio() {
   const [betaVal, setBetaVal] = usePersistentState<number>('betaVal', 1.5)
   const [kVal, setKVal] = usePersistentState<number>('kVal', 3)
   const [angleBound, setAngleBound] = usePersistentState<number>('angleBound', 20)
+  const [spannerType, setSpannerType] = usePersistentState<SpannerType>('spannerType', 'theta')
+  const [spannerCones, setSpannerCones] = usePersistentState<number>('spannerCones', 8)
+  const [spannerT, setSpannerT] = usePersistentState<number>('spannerT', 2)
   const [schemeId, setSchemeId] = usePersistentState<string>('scheme', 'aurora')
   const [cellAlpha, setCellAlpha] = usePersistentState<number>('alpha', 0.92)
   const [dist, setDist] = usePersistentState<Distribution>('dist', 'poisson')
@@ -193,6 +210,22 @@ export default function Studio() {
     }
   }, [needPower, weightedSites, layers.regular, layers.radical, points.length])
 
+  // Geometric spanner over the sites (Yao / Θ / greedy) with its realized dilation.
+  const spannerData = useMemo(() => {
+    if (!layers.spanner || points.length < 2) return null
+    let edges: Edge[]
+    let capped = false
+    if (spannerType === 'greedy') {
+      if (points.length > GREEDY_CAP) {
+        capped = true
+        edges = []
+      } else edges = greedySpanner(points, spannerT)
+    } else if (spannerType === 'yao') edges = yaoGraph(points, spannerCones)
+    else edges = thetaGraph(points, spannerCones)
+    const dil: Dilation | null = edges.length ? dilation(points, edges) : null
+    return { edges, dilation: dil, capped }
+  }, [layers.spanner, points, spannerType, spannerCones, spannerT])
+
   // Farthest-point Voronoi diagram (the inside-out twin), with the MEC link.
   const farthestData = useMemo(() => {
     if (!layers.farthest || points.length < 3) return null
@@ -222,6 +255,7 @@ export default function Studio() {
         urquhart: geometry.urquhart,
         beta: geometry.beta,
         knn: geometry.knn,
+        spanner: spannerData ? spannerData.edges : [],
         layers: geometry.layers,
         alpha: alphaResult,
         refine:
@@ -245,7 +279,7 @@ export default function Studio() {
       },
       { width: size.width, height: size.height, dpr: size.dpr, pad: PAD, scheme, layers, measure, cellAlpha },
     )
-  }, [ref, size, points, geometry, alphaResult, refineResult, cdtResult, powerData, farthestData, needPower, hover, selected, scheme, layers, measure, cellAlpha])
+  }, [ref, size, points, geometry, alphaResult, refineResult, cdtResult, powerData, farthestData, spannerData, needPower, hover, selected, scheme, layers, measure, cellAlpha])
 
   // ── Alpha-shape sweep: grow the eraser radius 0→1 so holes visibly close ────
   useEffect(() => {
@@ -908,6 +942,62 @@ export default function Studio() {
             <Stat label="cells (= hull)" value={farthestData ? farthestData.owners.length : '—'} />
             <Stat label="MEC r" value={geometry.mec ? fmt(geometry.mec.r) : '—'} />
           </div>
+        </Panel>
+
+        <Panel title="Spanners" hint="t-spanners">
+          <p className="muted">
+            Sparse graphs that still approximate every distance. A <strong>t-spanner</strong> keeps each
+            pair's shortest path within t× the straight line; the realized <em>dilation</em> is measured
+            by all-pairs shortest path. Θ and Yao split directions into cones; greedy adds edges
+            shortest-first only where the graph can't already get within t.
+          </p>
+          <Toggle
+            label="Show spanner"
+            swatch="rgba(255,176,32,0.9)"
+            checked={layers.spanner}
+            onChange={(v) => setLayer('spanner', v)}
+          />
+          <Segmented<SpannerType>
+            options={[
+              { id: 'theta', label: 'Θ-graph' },
+              { id: 'yao', label: 'Yao' },
+              { id: 'greedy', label: 'Greedy' },
+            ]}
+            value={spannerType}
+            onChange={setSpannerType}
+          />
+          {spannerType === 'greedy' ? (
+            <Slider
+              label="t  (target stretch)"
+              value={spannerT}
+              min={1.1}
+              max={4}
+              step={0.1}
+              onChange={(v) => setSpannerT(v)}
+              format={(v) => `${v.toFixed(1)}×`}
+            />
+          ) : (
+            <Slider label="cones (k)" value={spannerCones} min={4} max={16} step={1} onChange={(v) => setSpannerCones(v)} />
+          )}
+          <div className="metrics">
+            <Stat label="edges" value={spannerData ? spannerData.edges.length : '—'} />
+            <Stat label="dilation" value={spannerData?.dilation ? spannerData.dilation.stretch.toFixed(3) : '—'} />
+            <Stat
+              label={spannerType === 'theta' ? 'Θ bound' : 'connected'}
+              value={
+                spannerType === 'theta'
+                  ? thetaBound(spannerCones).toFixed(2)
+                  : spannerData?.dilation
+                    ? spannerData.dilation.connected
+                      ? 'yes'
+                      : 'no'
+                    : '—'
+              }
+            />
+          </div>
+          {spannerData?.capped && (
+            <p className="muted">Greedy is limited to ≤{GREEDY_CAP} points (it's O(n³)); lower the count to build it.</p>
+          )}
         </Panel>
 
         <Panel title="Appearance">

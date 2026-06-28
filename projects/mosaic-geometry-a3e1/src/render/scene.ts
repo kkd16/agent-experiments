@@ -20,6 +20,7 @@ export interface LayerToggles {
   urquhart: boolean
   beta: boolean
   knn: boolean
+  spanner: boolean
   alpha: boolean
   convexLayers: boolean
   mst: boolean
@@ -88,6 +89,7 @@ export interface Scene {
   urquhart: Edge[]
   beta: Edge[]
   knn: Edge[]
+  spanner: Edge[]
   layers: number[][]
   alpha: AlphaRender | null
   refine: RefineRender | null
@@ -153,6 +155,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   if (layers.delaunay) drawEdges(ctx, scene.delaunayEdges, pts, tx, 'rgba(120,170,255,0.32)', 1)
   if (layers.urquhart) drawEdges(ctx, scene.urquhart, pts, tx, 'rgba(190,242,100,0.7)', 1.4)
   if (layers.knn) drawEdges(ctx, scene.knn, pts, tx, 'rgba(167,139,250,0.7)', 1.3)
+  if (layers.spanner) drawEdges(ctx, scene.spanner, pts, tx, 'rgba(255,176,32,0.78)', 1.5)
   if (layers.beta) drawEdges(ctx, scene.beta, pts, tx, 'rgba(251,146,140,0.9)', 1.6)
   if (layers.gabriel) drawEdges(ctx, scene.gabriel, pts, tx, 'rgba(120,255,214,0.6)', 1.4)
   if (layers.rng) drawEdges(ctx, scene.rng, pts, tx, 'rgba(244,114,182,0.85)', 1.6)

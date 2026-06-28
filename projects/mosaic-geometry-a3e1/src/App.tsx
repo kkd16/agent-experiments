@@ -1,11 +1,13 @@
 import { useHashRoute } from './hooks/useHashRoute'
 import Studio from './pages/Studio'
 import Algorithms from './pages/Algorithms'
+import Search from './pages/Search'
 import About from './pages/About'
 import './App.css'
 
 const TABS = [
   { route: '/studio', label: 'Studio' },
+  { route: '/search', label: 'Search' },
   { route: '/algorithms', label: 'Algorithms' },
   { route: '/about', label: 'About' },
 ]
@@ -39,6 +41,7 @@ export default function App() {
 
       <main className="content">
         {active === '/studio' && <Studio />}
+        {active === '/search' && <Search />}
         {active === '/algorithms' && <Algorithms />}
         {active === '/about' && <About />}
       </main>

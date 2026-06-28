@@ -134,6 +134,41 @@ export default function About() {
           </li>
         </ul>
 
+        <h2>Spatial search &amp; hierarchies</h2>
+        <p>
+          A third axis: not <em>constructing</em> a structure but <em>querying</em> one. The{' '}
+          <strong>Search</strong> tab is an interactive playground — overlay a partition, move the
+          probe, and every answer is checked live against an O(n) brute-force scan, with the
+          nodes-touched count showing the speed-up.
+        </p>
+        <ul>
+          <li>
+            <strong>k-d tree</strong> — a balanced binary tree that splits the points at the median
+            along an axis that alternates with depth. Each node owns a slab of the plane, so{' '}
+            <em>nearest-neighbour</em>, <em>k-nearest</em> and <em>orthogonal range</em> queries can
+            prune any subtree that can't beat the best-so-far (or misses the window) — touching only a
+            handful of the n points instead of all of them.
+          </li>
+          <li>
+            <strong>Point-region quadtree</strong> — where the k-d tree splits at the data, the
+            quadtree splits at <em>space</em>: a cell that overflows divides into four equal
+            quadrants. The grid is fine where points cluster and coarse where they're sparse.
+          </li>
+          <li>
+            <strong>Point location</strong> — "which triangle contains this point?" answered by the{' '}
+            <em>jump-and-walk</em>: start at a triangle and step across whichever edge the query lies
+            outside of, until one contains it. On a Delaunay mesh the oriented walk always terminates,
+            and the dashed trail shows the path it took.
+          </li>
+          <li>
+            <strong>Geometric spanners</strong> — sparse graphs that still approximate every distance.
+            A <em>t-spanner</em> keeps each pair's shortest path within t× the straight line. The{' '}
+            <em>Yao</em> and <em>Θ</em> graphs keep one edge per direction-cone; the <em>greedy</em>{' '}
+            spanner adds edges shortest-first only where the graph can't already get within t. The
+            realized <em>dilation</em> is measured by all-pairs shortest path and shown live.
+          </li>
+        </ul>
+
         <h2>The predicates</h2>
         <p>
           Everything rests on two determinants. The <em>orientation</em> test tells whether three
@@ -177,12 +212,13 @@ export default function About() {
           <li>In the <strong>Mesh</strong> panel, pick an angle bound and hit <em>Refine mesh</em> to watch Ruppert clean up the slivers.</li>
           <li>Turn on <strong>Power cells</strong>, hit <em>Randomize weights</em>, and add the regular triangulation to see Voronoi's weighted cousin and its dual.</li>
           <li>Enable the <strong>Farthest-point</strong> diagram to see the hull-vertex tree and the enclosing-circle centre that rides on it.</li>
-          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Quickhull, Delaunay, enclosing-circle, Fortune sweep, and power-cell builds.</li>
+          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Quickhull, Delaunay, enclosing-circle, Fortune sweep, power-cell, k-d tree, and quadtree builds.</li>
+          <li>Open the <strong>Search</strong> tab, turn on the k-d partition, and move the probe to watch nearest-neighbour search prune — then drag a window for a range query.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 67 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 91 checks.
         </p>
       </article>
     </div>
