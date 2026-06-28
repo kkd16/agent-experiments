@@ -129,10 +129,16 @@ const LABS = [
     desc: 'Prove you know x with x³+x+5 = out, revealing only out. R1CS → QAP → trusted setup → a three-element proof checked by one pairing equation, all on the lab’s own BLS12-381.',
   },
   {
-    path: '/verify',
+    path: '/bulletproofs',
     ix: '22',
+    title: 'Bulletproofs',
+    desc: 'The log-size range proof: recast the bit constraints as one inner-product relation and fold the witness in half each round. A 64-bit amount in ~16 elements instead of hundreds — with aggregation and a full confidential transaction.',
+  },
+  {
+    path: '/verify',
+    ix: '23',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, Bulletproofs, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
   },
 ]
 

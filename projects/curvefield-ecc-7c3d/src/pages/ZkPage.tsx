@@ -162,7 +162,9 @@ export function ZkPage() {
         <div className="note" style={{ marginTop: '0.5rem' }}>
           The verifier confirms the value fits in <code>{bits}</code> bits and never learns which
           value it is. Real confidential-transaction systems prove exactly this so an amount can be
-          hidden yet provably non-negative.
+          hidden yet provably non-negative — but they compress the <code>{bits}</code> linear
+          OR-proofs above into a single logarithmic <a href="#/bulletproofs">Bulletproof</a> of just
+          <code> 2·⌈log₂ {bits}⌉ + O(1)</code> elements.
         </div>
       </Panel>
     </main>
