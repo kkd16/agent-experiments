@@ -451,6 +451,39 @@ export function About() {
           fluid’s mass is conserved separately to round-off. Four solvers now, four universes.
         </p>
 
+        <h2>When the fluid can be squeezed — compressible gas dynamics (the Gas lab)</h2>
+        <p>
+          Every solver above holds the fluid <strong>incompressible</strong>: a pressure projection pins the
+          velocity divergence-free, which is the same as saying the speed of sound is infinite — no sound waves,
+          and crucially <em>no shocks</em>. The <a href="#/gas">Gas lab</a> is the opposite physics. It marches
+          the <strong>compressible Euler equations</strong> for the conserved density, momentum and energy,
+        </p>
+        <pre>{`∂U/∂t + ∂F(U)/∂x + ∂G(U)/∂y = 0,   U = [ρ, ρu, ρv, E],   p = (γ−1)(E − ½ρ|u|²)`}</pre>
+        <p>
+          whose solutions form genuine <strong>discontinuities</strong> in finite time — a smooth flow steepens
+          into a <strong>shock wave</strong>. You cannot reach a shock with a smooth central-difference scheme;
+          it builds Gibbs oscillations and blows up. The fix, due to Godunov, is to treat every cell interface
+          as a tiny <strong>Riemann problem</strong> and take the upwind flux its wave structure dictates. So
+          each step <strong>reconstructs</strong> a second-order, slope-limited (<strong>minmod MUSCL-Hancock</strong>)
+          state on either side of every face — a half-step predictor evolves it by its own flux for second order
+          in time too — then resolves the face with an <strong>HLLC</strong> three-wave Riemann flux that keeps
+          the <em>contact</em> and shear waves sharp where a cruder flux would smear them. A CFL condition on the
+          signal speed <code>|u|+a</code> sets the step, and 2-D is handled by Strang-splitting the 1-D sweeps.
+        </p>
+        <p>
+          The beautiful thing about 1-D gas dynamics is that the Riemann problem has an <strong>exact analytic
+          solution</strong> — iterate the pressure function <code>f_L(p)+f_R(p)+Δu = 0</code> for the star-region
+          pressure, then sample the self-similar wave fan. The lab draws that exact answer as a pale line under
+          the computed <strong>Sod</strong> and <strong>Lax</strong> shock-tube profiles, so you watch a
+          second-order scheme settle onto the truth; the <a href="#/verify">Verify</a> page measures the gap and
+          confirms it shrinks as the mesh refines. The other scenes are the canonical gallery: a Sedov point
+          <strong> blast</strong>, the four-shock <strong>2-D Riemann</strong> problem, a compressible{' '}
+          <strong>Kelvin–Helmholtz</strong> roll-up, <strong>Rayleigh–Taylor</strong> under gravity, the
+          Liska–Wendroff <strong>implosion</strong>, and a Mach-1.5 shock shredding a light gas{' '}
+          <strong>bubble</strong>. Switch to the <strong>Schlieren</strong> view to shadowgraph <code>|∇ρ|</code>{' '}
+          and the shock fronts read exactly as they would in a wind-tunnel photograph.
+        </p>
+
         <h2>Does it actually work? The verification page</h2>
         <p>
           A solver you can’t check is a solver you can’t trust. The <a href="#/verify">Verify</a> page
@@ -494,8 +527,13 @@ export function About() {
           temperature wave, the exact conduction limit (a linear profile and Nusselt number{' '}
           <code>Nu = 1</code>), adiabatic walls that leak no heat, the recovery of the textbook{' '}
           <strong>critical Rayleigh number</strong> <code>Ra_c ≈ 1708</code> for the onset of convection, and
-          the <strong>de Vahl Davis</strong> heated-cavity Nusselt number reproduced to a few percent. Each
-          check reports the number it measured — <strong>73 checks across 18 groups</strong>.
+          the <strong>de Vahl Davis</strong> heated-cavity Nusselt number reproduced to a few percent. The{' '}
+          <strong>compressible gas dynamics</strong> group rounds it out with an <em>analytic</em> yardstick the
+          incompressible solvers don’t have: the exact Sod star state (<code>p* = 0.30313</code>,{' '}
+          <code>u* = 0.92745</code>), the HLLC flux’s consistency, the captured shock obeying all three{' '}
+          <strong>Rankine–Hugoniot</strong> jump conditions, the Sod tube’s <strong>L1 convergence</strong> to
+          the exact Riemann solution, round-off conservation of mass/momentum/energy, and blast positivity. Each
+          check reports the number it measured — <strong>82 checks across 19 groups</strong>.
         </p>
 
         <h2>Rendering</h2>
