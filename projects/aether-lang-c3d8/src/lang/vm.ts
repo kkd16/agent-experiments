@@ -237,7 +237,12 @@ export class VM {
       case Op.SUB:
         return this.intBin((a, b) => vint(a - b))
       case Op.MUL:
-        return this.intBin((a, b) => vint(a * b))
+        // `Math.imul` is the *exact* low-32-bit product, matching the WASM backend's
+        // `i32.mul`. Plain `a * b` rounds once the true product exceeds 2^53 (two
+        // near-2^31 Int operands already do), which breaks associativity/commutativity
+        // and lets the equality-saturation pass observably change a result; `imul`
+        // keeps Int a true ℤ/2^32 ring so every reassociation is sound at run time.
+        return this.intBin((a, b) => vint(Math.imul(a, b)))
       case Op.DIV:
         return this.intBin((a, b) => {
           if (b === 0) throw new AetherRuntimeError('division by zero')

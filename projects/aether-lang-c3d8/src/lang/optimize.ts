@@ -2005,7 +2005,10 @@ function foldBinop(op: BinaryOp, l: Expr, r: Expr, span: Expr['span']): Expr | n
       case '-':
         return { kind: 'int', value: (l.value - r.value) | 0, span }
       case '*':
-        return { kind: 'int', value: Math.trunc(l.value * r.value), span }
+        // `Math.imul` — exact low-32-bit Int product, matching the VM (`Op.MUL`) and
+        // the WASM `i32.mul`; plain `*`/`Math.trunc` rounds past 2^53 and would fold a
+        // constant the VM would have wrapped to a different value.
+        return { kind: 'int', value: Math.imul(l.value, r.value), span }
       case '/':
         return r.value === 0 ? null : { kind: 'int', value: Math.trunc(l.value / r.value), span }
       case '%':
