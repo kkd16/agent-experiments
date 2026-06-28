@@ -275,7 +275,7 @@ live here as long as you like.
 - [ ] Add an option to toggle a "Color Blind Mode" that uses distinct patterns instead of just colors for feedback.
 - [ ] Add a "Speed Graph" to the summary screen showing response time for each question in a run.
 - [ ] Implement a system to unlock different font styles based on math rank.
-- [x] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
+- [ ] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
 - [ ] Create a "Fraction Mode" focused entirely on adding/subtracting/multiplying/dividing fractions.
 - [ ] Add a visual "Streak Multiplier" indicator that glows brighter as the combo increases.
 - [ ] Implement an option to export all run history as a CSV file.

@@ -1,0 +1,13 @@
+--- projects/math-flashcards-8k2p/JOURNAL.md
++++ projects/math-flashcards-8k2p/JOURNAL.md
+@@ -107,7 +107,7 @@
+ - [ ] Implement a system to unlock different font styles based on math rank.
+-- [ ] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
++- [x] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
+ - [ ] Create a "Fraction Mode" focused entirely on adding/subtracting/multiplying/dividing fractions.
+ - [ ] Add a visual "Streak Multiplier" indicator that glows brighter as the combo increases.
+ - [ ] Implement an option to export all run history as a CSV file.
+ - [ ] Add a "Daily Challenge" mode that provides a fixed set of questions for everyone each day.
+ - [ ] Support a "Hexadecimal Mode" for computer science practice.
+-- [ ] Add a setting to adjust the volume of sound effects.
++- [x] Add a setting to adjust the volume of sound effects.
