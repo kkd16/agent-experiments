@@ -405,17 +405,33 @@ export class Renderer {
     for (let i = 0; i < fb.nodeCount; i++) {
       screen[i] = camera.worldToScreen(new Vec2(fb.pos[2 * i], fb.pos[2 * i + 1]));
     }
-    const heat = fb.render.stressHeatmap;
-    const stresses = heat ? fb.computeStresses() : null;
-    let peak = 1e-6;
-    if (stresses) for (const s of stresses) if (s > peak) peak = s;
+    // Resolve which field (if any) to shade. `heatmap` wins; otherwise the legacy
+    // `stressHeatmap` boolean selects stress-vs-flat.
+    const mode = fb.render.heatmap ?? (fb.render.stressHeatmap ? 'stress' : 'none');
+    let field: Float64Array | null = null;
+    let ramp: [number, number, number][] = STRESS_RAMP;
+    let norm = 1;
+    if (mode === 'stress') {
+      field = fb.computeStresses();
+      ramp = STRESS_RAMP;
+      for (const s of field) if (s > norm) norm = s;
+    } else if (mode === 'plastic') {
+      field = fb.computePlasticStrain();
+      ramp = PLASTIC_RAMP;
+      norm = Math.max(fb.peakPlasticStrain(), 1e-4);
+    } else if (mode === 'damage') {
+      field = fb.computeDamage();
+      ramp = DAMAGE_RAMP;
+      norm = 1; // damage is already 0..1
+    }
+    const heat = field !== null;
 
     if (opts.fill) {
-      if (heat && stresses) {
+      if (heat && field) {
         for (let k = 0; k < fb.elements.length; k++) {
           const e = fb.elements[k];
-          const t = clamp01(stresses[k] / peak);
-          ctx.fillStyle = stressColor(t);
+          const t = clamp01(field[k] / norm);
+          ctx.fillStyle = rampColor(ramp, t);
           ctx.beginPath();
           ctx.moveTo(screen[e.a].x, screen[e.a].y);
           ctx.lineTo(screen[e.b].x, screen[e.b].y);
@@ -918,16 +934,31 @@ const STRESS_RAMP: [number, number, number][] = [
   [240, 200, 90],
   [235, 70, 60],
 ];
-function stressColor(t: number): string {
-  const u = clamp01(t) * (STRESS_RAMP.length - 1);
-  const i = Math.min(STRESS_RAMP.length - 2, Math.floor(u));
+/** Plastic-strain ramp: cool slate → green → gold → magenta (permanent set). */
+const PLASTIC_RAMP: [number, number, number][] = [
+  [40, 50, 70],
+  [70, 190, 120],
+  [240, 210, 80],
+  [220, 70, 200],
+];
+/** Damage ramp: intact slate → hot orange → charred near-black (torn). */
+const DAMAGE_RAMP: [number, number, number][] = [
+  [70, 90, 110],
+  [235, 120, 50],
+  [120, 25, 25],
+  [25, 18, 22],
+];
+
+function rampColor(ramp: [number, number, number][], t: number, alpha = 0.92): string {
+  const u = clamp01(t) * (ramp.length - 1);
+  const i = Math.min(ramp.length - 2, Math.floor(u));
   const f = u - i;
-  const a = STRESS_RAMP[i];
-  const b = STRESS_RAMP[i + 1];
+  const a = ramp[i];
+  const b = ramp[i + 1];
   const r = Math.round(a[0] + (b[0] - a[0]) * f);
   const g = Math.round(a[1] + (b[1] - a[1]) * f);
   const bl = Math.round(a[2] + (b[2] - a[2]) * f);
-  return `rgba(${r},${g},${bl},0.92)`;
+  return `rgba(${r},${g},${bl},${alpha})`;
 }
 
 function shade(color: string, factor: number): string {
