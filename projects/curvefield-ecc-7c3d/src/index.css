@@ -1,0 +1,76 @@
+:root {
+  --bg: #0a0e16;
+  --bg-2: #0f1421;
+  --panel: #121a2b;
+  --panel-2: #16203450;
+  --line: #233149;
+  --line-soft: #1b2740;
+  --ink: #e6edf7;
+  --ink-dim: #9fb0c9;
+  --ink-faint: #64769a;
+  --accent: #5eead4;
+  --accent-2: #a78bfa;
+  --accent-3: #f0abfc;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+  --good: #4ade80;
+  --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, 'Cascadia Code', monospace;
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1100px 700px at 78% -8%, #1b2546 0%, transparent 55%),
+    radial-gradient(900px 600px at 8% 102%, #16243a 0%, transparent 55%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.55;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.18;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.4em;
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+}
+
+::selection {
+  background: var(--accent-2);
+  color: #0a0e16;
+}
+
+.scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+}
