@@ -68,6 +68,14 @@ import {
   targetCurve,
   targetG,
 } from './invalid'
+import { evaluate as polyEval, divmod as polyDivmod, mul as polyMul } from './polynomial'
+import { split as shamirSplit, reconstruct as shamirReconstruct, verifyShare, corruptShare } from './shamir'
+import { keygen as frostKeygen, commitNonces, sign as frostSign, verifyPartial as frostVerifyPartial } from './frost'
+import { provePoK, verifyPoK, proveDleq, verifyDleq, proveBit, verifyBit, proveRange, verifyRange, hashToCurve, H as PedersenH } from './sigma'
+import { setup as kzgSetup, commit as kzgCommit, open as kzgOpen, verify as kzgVerify, batchVerify as kzgBatchVerify } from './kzg'
+import { secp256k1 as secpCurve } from './secp256k1'
+import { R as BLS_SCALAR } from './bls12381'
+import { seedRng } from './rng'
 
 export interface TestCase {
   name: string
@@ -558,6 +566,129 @@ export function runSelfTest(): TestCase[] {
       attack.hits.every((h) => safe(h.point) === 'rejected'),
       'every malicious point is rejected before scalar mult',
     )
+  }
+
+  // ── 21. Polynomial algebra (the substrate under Shamir + KZG) ──
+  {
+    const m = N
+    const a = [3n, 1n, 4n, 1n, 5n]
+    const b = [2n, 7n, 1n]
+    const prod = polyMul(a, b, m)
+    const { q, r } = polyDivmod(prod, b, m)
+    check(
+      'Polynomial',
+      'multiply then divide is exact',
+      r.length === 0 && q.length === a.length && q.every((c, i) => c === a[i]),
+      '(a·b)/b = a with zero remainder over F_n',
+    )
+    // Division with remainder satisfies p = q·d + r.
+    const p2 = [5n, 4n, 3n, 2n, 1n]
+    const d2 = [1n, 1n]
+    const { q: q2, r: r2 } = polyDivmod(p2, d2, m)
+    const recon = (() => {
+      const t1 = polyMul(q2, d2, m)
+      const out: bigint[] = []
+      for (let i = 0; i < Math.max(t1.length, r2.length); i++)
+        out.push(((((t1[i] ?? 0n) + (r2[i] ?? 0n)) % m) + m) % m)
+      while (out.length && out[out.length - 1] === 0n) out.pop()
+      return out
+    })()
+    check(
+      'Polynomial',
+      'Euclidean identity p = q·d + r',
+      recon.length === p2.length && recon.every((c, i) => c === p2[i]),
+      'long division reconstructs the dividend',
+    )
+  }
+
+  // ── 22. Shamir secret sharing + Feldman VSS ──
+  {
+    seedRng(1234)
+    const secret = 0xdecaf_c0ffeen
+    const sharing = shamirSplit(secret, 3, 5)
+    const fromFirst3 = shamirReconstruct(sharing.shares.slice(0, 3))
+    const fromLast3 = shamirReconstruct(sharing.shares.slice(2, 5))
+    check(
+      'Shamir',
+      'any 3-of-5 subset recovers the secret',
+      fromFirst3 === sharing.secret && fromLast3 === sharing.secret,
+      `two disjoint quorums both yield ${hex(sharing.secret).slice(0, 14)}…`,
+    )
+    const tooFew = shamirReconstruct(sharing.shares.slice(0, 2))
+    check('Shamir', '2 shares do not recover it', tooFew !== sharing.secret, 'below threshold ⇒ wrong value')
+    check(
+      'Shamir',
+      'Feldman VSS verifies every honest share',
+      sharing.shares.every((s) => verifyShare(s, sharing.commitments)),
+      'yᵢ·G = Σⱼ Cⱼ·iʲ for all i',
+    )
+    const bad = corruptShare(sharing.shares[0])
+    check('Shamir', 'Feldman VSS catches a corrupted share', !verifyShare(bad, sharing.commitments), 'tampered share rejected')
+  }
+
+  // ── 23. FROST threshold Schnorr ──
+  {
+    seedRng(99)
+    const keys = frostKeygen(3, 5)
+    const pick = [0, 2, 4]
+    const signers = pick.map((i) => ({ commit: commitNonces(keys.shares[i].i), share: keys.shares[i] }))
+    const msg = utf8('frost threshold message')
+    const sig = frostSign(keys, signers, msg)
+    check(
+      'FROST',
+      '3-of-5 aggregate verifies under BIP-340',
+      schnorrVerify(keys.groupPubXonly, msg, sig.sig),
+      'unmodified Schnorr verify accepts the threshold signature',
+    )
+    check(
+      'FROST',
+      'every partial signature verifies',
+      sig.partials.every((p, k) => frostVerifyPartial(keys, sig, signers[k], p)),
+      'zᵢ·G = gr·(Dᵢ+ρᵢ·Eᵢ) + c·λᵢ·gx·Xᵢ',
+    )
+    check('FROST', 'rejects a tampered message', !schnorrVerify(keys.groupPubXonly, utf8('other'), sig.sig), 'changed msg → invalid')
+    // A second, different quorum produces another valid signature under the same key.
+    const pick2 = [1, 2, 3]
+    const signers2 = pick2.map((i) => ({ commit: commitNonces(keys.shares[i].i), share: keys.shares[i] }))
+    const sig2 = frostSign(keys, signers2, msg)
+    check('FROST', 'a different quorum also verifies', schnorrVerify(keys.groupPubXonly, msg, sig2.sig), 'threshold property: any t suffice')
+    // Under threshold: a 2-of-5 set fails.
+    const few = [0, 1].map((i) => ({ commit: commitNonces(keys.shares[i].i), share: keys.shares[i] }))
+    const sigFew = frostSign(keys, few, msg)
+    check('FROST', 'fewer than t signers cannot sign', !schnorrVerify(keys.groupPubXonly, msg, sigFew.sig), 'under-threshold signature is invalid')
+  }
+
+  // ── 24. Zero-knowledge Σ-protocols ──
+  {
+    seedRng(2024)
+    check('Sigma', 'Pedersen base H is on the curve', secpCurve.isOnCurve(PedersenH), 'NUMS second generator lifted by hash-to-curve')
+    const pok = provePoK(0xa11ce_5ec_e7n)
+    check('Sigma', 'Schnorr PoK verifies', verifyPoK(pok.P, pok.proof), 's·G = T + c·P')
+    check('Sigma', 'Schnorr PoK rejects a different statement', !verifyPoK(secpCurve.multiply(3n, pok.P), pok.proof), 'proof is bound to its P')
+    const base2 = hashToCurve('selftest/dleq')
+    const dl = proveDleq(0x1337n, base2)
+    check('Sigma', 'Chaum–Pedersen DLEQ verifies', verifyDleq(dl.P, dl.Q, base2, dl.proof), 'log_G P = log_H₂ Q proven')
+    check('Sigma', 'DLEQ rejects a false equality', !verifyDleq(dl.P, secpCurve.add(dl.Q, base2), base2, dl.proof), 'mismatched Q rejected')
+    check('Sigma', 'bit OR-proof (0) verifies', verifyBit(proveBit(0, 0x55n)), 'commitment to 0 proven a bit')
+    check('Sigma', 'bit OR-proof (1) verifies', verifyBit(proveBit(1, 0x66n)), 'commitment to 1 proven a bit')
+    const rp = proveRange(0b1011010n, 8)
+    check('Sigma', 'range proof verifies (v ∈ [0,2⁸))', verifyRange(rp), '8 bit-proofs + V = Σ 2ⁱ·Bᵢ')
+  }
+
+  // ── 25. KZG polynomial commitments (BLS12-381 pairing) ──
+  {
+    const srs = kzgSetup(6, 0x9f3c2a1b77e4d5c6n)
+    const f = [3n, 1n, 4n, 1n, 5n, 9n]
+    const C = kzgCommit(srs, f)
+    const op = kzgOpen(srs, f, 11n)
+    check('KZG', 'claimed value equals f(z)', op.y === polyEval(f, 11n, BLS_SCALAR), 'y = f(z) over F_r')
+    check('KZG', 'opening verifies by pairing', kzgVerify(srs, C, op), 'e(C−[y],[1]) = e(W,[τ]−[z])')
+    check('KZG', 'soundness: a forged value is rejected', !kzgVerify(srs, C, { ...op, y: (op.y + 1n) % BLS_SCALAR }), 'wrong y fails the pairing check')
+    const batch = kzgBatchVerify(srs, [
+      { C, op },
+      { C, op: kzgOpen(srs, f, 17n) },
+    ])
+    check('KZG', 'batch verification (one multi-pairing)', batch, 'two openings folded into a single pairing equation')
   }
 
   return t

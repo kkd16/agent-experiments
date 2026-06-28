@@ -99,6 +99,45 @@ UI is a hash-routed React app (`src/pages/`, `src/ui/`) — sixteen labs plus an
 - [ ] BLS hash-to-curve via the RFC 9380 SSWU map (current hash-to-G1 is try-and-increment)
 - [ ] BLS12-381 G2 point compression + the optimized (frobenius) final exponentiation
 
+### Session 5 plan — a zero-knowledge & threshold-cryptography suite
+
+The engine already has every primitive these protocols stand on (a field, the secp256k1
+group, BIP-340 Schnorr, and a working BLS12-381 pairing). This session turns those
+primitives into the modern building blocks of applied ZK and threshold signing — each
+written from scratch, validated in Node against its own algebraic identities, and given a
+guided lab page.
+
+- [x] **`polynomial.ts`** — a modulus-generic polynomial algebra over any prime field
+      (Horner eval, add/sub/scale/mul, Euclidean long division, Lagrange interpolation, the
+      vanishing polynomial ∏(X−xᵢ), formal derivative). The shared substrate under Shamir and
+      KZG, decoupled from any curve so it can be unit-tested on its own.
+- [x] **`shamir.ts`** — **Shamir secret sharing** over the secp256k1 scalar field F_n: split a
+      secret into a random degree-(t−1) polynomial, hand out shares (i, f(i)), and reconstruct
+      f(0) by Lagrange interpolation from *any* t of them. On top of it **Feldman VSS**: publish
+      curve commitments Cⱼ = aⱼ·G so every holder can verify yᵢ·G ?= Σⱼ Cⱼ·iʲ without learning
+      the secret — catching a cheating dealer. New **Secret Sharing** lab.
+- [x] **`frost.ts`** — **FROST** threshold Schnorr (Komlo–Goldberg, RFC 9591 shape), trusted-
+      dealer variant: per-signer two-nonce commitments, the binding factors ρᵢ that stop the
+      Drijvers/ROS forgery, a group nonce R, Lagrange-weighted partial signatures, and an
+      aggregate that verifies under the **unmodified BIP-340 `schnorrVerify`** — a t-of-n
+      multisig indistinguishable from a single signer. Includes per-partial verification and a
+      "(t−1) signers cannot" negative. New **FROST** lab.
+- [x] **`sigma.ts`** — the **Σ-protocol** toolkit, all made non-interactive with Fiat–Shamir:
+      a NUMS second generator H (unknown-dlog, hash-to-curve), **Pedersen commitments**
+      Com(m,r)=m·G+r·H, a **Schnorr proof of knowledge** of a discrete log, **Chaum–Pedersen**
+      equality of two discrete logs, a **1-of-2 OR-proof** (prove a commitment opens to 0 or 1
+      without revealing which), and — as a capstone — a **bit-decomposition range proof** that a
+      committed value lies in [0, 2ⁿ) built purely from those OR-proofs. New **Zero-Knowledge**
+      lab.
+- [x] **`kzg.ts`** — **KZG polynomial commitments** (Kate–Zaverucha–Goldberg) on the existing
+      BLS12-381 pairing: a powers-of-τ structured reference string, a constant-size commitment
+      C = f(τ)·G₁, an evaluation proof via the quotient (f(X)−y)/(X−z), and pairing verification
+      e(C−[y]₁, [1]₂) = e(W, [τ]₂−[z]₂) — the polynomial-commitment scheme under PLONK and EIP-4844.
+      Adds the additive **homomorphism**, a **batch/multi-point** opening, and a **soundness**
+      demo (a forged proof for the wrong value fails the pairing). New **KZG** lab.
+- [x] Extend the live **Self-Test** with known-answer + round-trip checks for all five
+      subsystems and renumber the lab cards on the Overview.
+
 ## Session log
 
 - 2026-06-28 (claude): created from template. Built the full ECC engine (field, curve, real,
@@ -144,3 +183,28 @@ UI is a hash-routed React app (`src/pages/`, `src/ui/`) — sixteen labs plus an
   into the nav and Overview; lab cards renumbered 01–16. Self-test grew 48 → **59/59** across 20
   subsystems. A browser smoke test (headless Chromium) confirmed every route renders with zero
   JS errors. Lint + build green via verify-project.mjs.
+- 2026-06-28 (claude): **a zero-knowledge & threshold-cryptography suite** — five new
+  from-scratch engine modules, each validated in Node against its own algebraic identities
+  before any UI. (1) `polynomial.ts`: a modulus-generic polynomial algebra (Horner eval, Euclidean
+  long division, Lagrange interpolation, vanishing polynomial, derivative) — the shared substrate
+  for the two below. (2) `shamir.ts`: **Shamir secret sharing** over 𝔽ₙ with **Feldman VSS**
+  commitments (every honest share verifies, a corrupted one is caught, any t-of-n quorum recovers
+  the secret while t−1 cannot). (3) `frost.ts`: **FROST** threshold Schnorr (trusted-dealer,
+  RFC 9591 shape) — two-nonce commitments, binding factors ρᵢ that defeat the Drijvers/ROS forgery,
+  Lagrange-weighted partials, and an aggregate that verifies under the **unmodified BIP-340
+  `schnorrVerify`** (the MuSig2 gx/gr parity trick reused); different quorums all sign, under-
+  threshold sets fail. (4) `sigma.ts`: the **Σ-protocol** toolkit, Fiat–Shamir non-interactive — a
+  NUMS generator H via hash-to-curve, Pedersen commitments, a Schnorr proof of knowledge, a
+  Chaum–Pedersen DLEQ, a 1-of-2 OR-proof (bit), and a **bit-decomposition range proof** that a
+  committed value lies in [0, 2ⁿ). (5) `kzg.ts`: **KZG polynomial commitments** on the existing
+  BLS12-381 pairing — a powers-of-τ SRS, constant-size commitment C = f(τ)·G₁, an evaluation proof
+  via the quotient (f−y)/(X−z), pairing verification e(C−[y],[1]) = e(W,[τ]−[z]), the additive
+  homomorphism, and a real **batch verification** that folds many openings into one multi-pairing
+  by a random linear combination; soundness shown by a forged value failing the check. Four new lab
+  pages (Secret Sharing, FROST, Zero-Knowledge, KZG) wired into the nav + Overview, cards renumbered
+  01–20, KZG's pairing checks deferred off the paint like the self-test. Self-test grew 59 →
+  **82/82** across **25 subsystems** (added Polynomial, Shamir, FROST, Sigma, KZG known-answer +
+  round-trip + soundness checks). Every module verified in Node via a strip-types harness, and a
+  headless-Chromium render check confirmed all four new routes paint with all-green verdict tags
+  and zero app JS errors. No new dependencies — still zero crypto deps. Lint + build green via
+  verify-project.mjs.

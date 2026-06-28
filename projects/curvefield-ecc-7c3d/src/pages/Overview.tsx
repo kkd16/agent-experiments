@@ -93,10 +93,34 @@ const LABS = [
     desc: 'An adversarial battery against the ECDSA verifier — zero scalars, malleable twins, off-curve keys, non-canonical DER — each rejected on cue.',
   },
   {
-    path: '/verify',
+    path: '/shamir',
     ix: '16',
+    title: 'Shamir Secret Sharing',
+    desc: 'Hide a secret as a polynomial’s constant term, hand out points, recover it from any t of them — with Feldman VSS commitments that catch a cheating dealer.',
+  },
+  {
+    path: '/frost',
+    ix: '17',
+    title: 'FROST Threshold Schnorr',
+    desc: 'A shared key no one holds whole: any t-of-n signers produce one 64-byte BIP-340 signature, with binding factors that defeat the Drijvers/ROS forgery.',
+  },
+  {
+    path: '/zk',
+    ix: '18',
+    title: 'Zero-Knowledge Σ-Protocols',
+    desc: 'Pedersen commitments, a Schnorr proof of knowledge, Chaum–Pedersen DLEQ, and a bit-decomposition range proof — Fiat–Shamir making each non-interactive.',
+  },
+  {
+    path: '/kzg',
+    ix: '19',
+    title: 'KZG Polynomial Commitments',
+    desc: 'Commit to a whole polynomial in one group element and prove any evaluation with a constant-size pairing check — the scheme under PLONK and EIP-4844.',
+  },
+  {
+    path: '/verify',
+    ix: '20',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, adaptor, BIP-32 and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
   },
 ]
 
