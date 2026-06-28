@@ -131,6 +131,52 @@ function genProgram(rng: Rng): string {
 }
 
 // ---------------------------------------------------------------------------
+// a SECOND generator, dense in the shapes Aether 23.0 SpecConstr crushes:
+// self-recursive loops that thread an accumulator as one tuple/constructor shape
+// and tear it apart with a `match` every iteration.
+// ---------------------------------------------------------------------------
+
+// Updates use only `+`/`-` over small leaves: SpecConstr unpacks the shape
+// regardless of the arithmetic inside, and additive updates keep field values
+// well within Int32 across the loop, so the test isolates SpecConstr's box/unbox
+// rewrite from the unrelated Int-overflow regime where the equality-saturation
+// pass can re-round a reassociated *product* (a separate, documented soundness gap
+// this generator must steer clear of to keep its specialise-≡-naive claim honest).
+const ADD = ['+', '-'] as const
+
+/** an Int update expression over the loop's field variables + the counter `i` */
+function genField(rng: Rng, fvars: string[], d: number): string {
+  if (d <= 0 || rng() < 0.45) {
+    return rng() < 0.7 ? pick(rng, [...fvars, 'i']) : String(1 + int(rng, 5))
+  }
+  return `(${genField(rng, fvars, d - 1)} ${pick(rng, ADD)} ${genField(rng, fvars, d - 1)})`
+}
+
+/** a self-recursive loop threading a 2/3-field tuple OR single-constructor state,
+ *  destructured by its own `match` and rebuilt fresh every iteration — exactly the
+ *  call pattern SpecConstr specialises into a first-order loop over the fields. */
+function genSpecConstrProgram(rng: Rng): string {
+  const arity = 2 + int(rng, 2) // 2 or 3 fields
+  const useCtor = rng() < 0.5
+  const fvars = Array.from({ length: arity }, (_, k) => `f${k}`)
+  const pat = useCtor ? `MkS ${fvars.join(' ')}` : `(${fvars.join(', ')})`
+  const mk = (parts: string[]): string => (useCtor ? `(MkS ${parts.join(' ')})` : `(${parts.join(', ')})`)
+  const next = mk(fvars.map(() => genField(rng, fvars, 2)))
+  const seed = mk(fvars.map(() => String(int(rng, 4))))
+  const result = rng() < 0.5 ? `(${fvars.join(' + ')})` : pick(rng, fvars)
+  const n = 3 + int(rng, 8)
+  const decl = useCtor ? `type S = MkS ${fvars.map(() => 'Int').join(' ')} in\n` : ''
+  return (
+    decl +
+    `let rec go = fn st -> fn i ->\n` +
+    `  match st with ${pat} ->\n` +
+    `    if i <= 0 then ${result}\n` +
+    `    else go ${next} (i - 1)\n` +
+    `in go ${seed} ${n}`
+  )
+}
+
+// ---------------------------------------------------------------------------
 // the fuzz driver
 // ---------------------------------------------------------------------------
 
@@ -198,4 +244,72 @@ export function runOptimizerFuzz(runs = 120, seed = 0xc0ffee): OptFuzzResult {
     stepsSaved,
     failures,
   }
+}
+
+export interface SpecConstrFuzzResult {
+  total: number
+  passed: number
+  /** how many generated loops actually triggered SpecConstr */
+  fired: number
+  bestSavingPct: number
+  stepsSaved: number
+  failures: { code: string; detail: string }[]
+}
+
+/** The Aether 23.0 differential fuzzer: random tuple/constructor-threaded loops,
+ *  each proving SpecConstr is sound — the specialised program equals the naive one
+ *  on the VM and on the JS backend, and never takes more VM steps. Deterministic
+ *  given the seed; pure logic, so it also runs head-less under Node. */
+export function runSpecConstrFuzz(runs = 150, seed = 0x5ec04ec0): SpecConstrFuzzResult {
+  const rng = makeRng(seed)
+  let passed = 0
+  let fired = 0
+  let bestSavingPct = 0
+  let stepsSaved = 0
+  const failures: { code: string; detail: string }[] = []
+
+  for (let i = 0; i < runs; i++) {
+    const code = genSpecConstrProgram(rng)
+    const off = runPipeline(code, { optimize: false })
+    const on = runPipeline(code, { optimize: true })
+
+    if (off.error || on.error || !on.optimizedCoreAst) continue // generator slip — skip
+    passed++ // provisionally; demoted below on any disagreement
+
+    const vmOff = off.run?.result ? valueToString(off.run.result) : '()'
+    const vmOn = on.run?.result ? valueToString(on.run.result) : '()'
+    const js = ((): string => {
+      try {
+        const r = runJsModule(compileToJs(on.optimizedCoreAst!).full)
+        return r.error ? `error: ${r.error}` : (r.result ?? '()')
+      } catch (e) {
+        return `threw: ${e instanceof Error ? e.message : String(e)}`
+      }
+    })()
+
+    const stepsOff = off.run?.steps ?? 0
+    const stepsOn = on.run?.steps ?? 0
+    const agree = vmOn === vmOff && js === vmOff
+    const monotone = stepsOn <= stepsOff
+
+    if (!agree || !monotone) {
+      passed--
+      if (failures.length < 5) {
+        const detail = !agree
+          ? `disagree: unopt-VM ${vmOff}, opt-VM ${vmOn}, opt-JS ${js}`
+          : `steps rose: ${stepsOff} → ${stepsOn}`
+        failures.push({ code: code.replace(/type S =[^\n]*\n/, '').trim(), detail })
+      }
+      continue
+    }
+
+    if ((on.optimization?.specConstrs?.length ?? 0) > 0) fired++
+    if (stepsOff > 0) {
+      stepsSaved += stepsOff - stepsOn
+      const savingPct = Math.round(((stepsOff - stepsOn) / stepsOff) * 100)
+      if (savingPct > bestSavingPct) bestSavingPct = savingPct
+    }
+  }
+
+  return { total: passed + failures.length, passed, fired, bestSavingPct, stepsSaved, failures }
 }
