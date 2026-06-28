@@ -117,10 +117,22 @@ const LABS = [
     desc: 'Commit to a whole polynomial in one group element and prove any evaluation with a constant-size pairing check — the scheme under PLONK and EIP-4844.',
   },
   {
-    path: '/verify',
+    path: '/h2c',
     ix: '20',
+    title: 'Hash-to-Curve (RFC 9380)',
+    desc: 'Turn any message into a curve point the standard way: expand_message_xmd, the Simplified SWU map with the 11-/3-isogenies and cofactor clearing — pinned to the RFC’s own G1/G2 vectors — then a real BLS signature on it.',
+  },
+  {
+    path: '/groth16',
+    ix: '21',
+    title: 'Groth16 zk-SNARK',
+    desc: 'Prove you know x with x³+x+5 = out, revealing only out. R1CS → QAP → trusted setup → a three-element proof checked by one pairing equation, all on the lab’s own BLS12-381.',
+  },
+  {
+    path: '/verify',
+    ix: '22',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
   },
 ]
 

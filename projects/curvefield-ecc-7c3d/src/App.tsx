@@ -20,6 +20,8 @@ import { ShamirPage } from './pages/ShamirPage'
 import { FrostPage } from './pages/FrostPage'
 import { ZkPage } from './pages/ZkPage'
 import { KzgPage } from './pages/KzgPage'
+import { HashToCurvePage } from './pages/HashToCurvePage'
+import { Groth16Page } from './pages/Groth16Page'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -43,6 +45,8 @@ const ROUTES = [
   { path: '/frost', label: 'FROST' },
   { path: '/zk', label: 'Zero-Knowledge' },
   { path: '/kzg', label: 'KZG' },
+  { path: '/h2c', label: 'Hash-to-Curve' },
+  { path: '/groth16', label: 'Groth16 SNARK' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -89,6 +93,8 @@ export default function App() {
       {base === '/frost' && <FrostPage />}
       {base === '/zk' && <ZkPage />}
       {base === '/kzg' && <KzgPage />}
+      {base === '/h2c' && <HashToCurvePage />}
+      {base === '/groth16' && <Groth16Page />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
