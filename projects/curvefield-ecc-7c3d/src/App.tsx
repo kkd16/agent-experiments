@@ -8,6 +8,7 @@ import { Secp256k1Page } from './pages/Secp256k1Page'
 import { Encodings } from './pages/Encodings'
 import { MuSigPage } from './pages/MuSigPage'
 import { Curve25519Page } from './pages/Curve25519Page'
+import { BlsPage } from './pages/BlsPage'
 import { Attacks } from './pages/Attacks'
 import { RhoWalk } from './pages/RhoWalk'
 import { PohligHellman } from './pages/PohligHellman'
@@ -23,6 +24,7 @@ const ROUTES = [
   { path: '/encode', label: 'Encodings' },
   { path: '/musig', label: 'MuSig' },
   { path: '/ed25519', label: 'Curve25519' },
+  { path: '/bls', label: 'BLS Pairing' },
   { path: '/attacks', label: 'ECDLP Attacks' },
   { path: '/rho', label: "Pollard's ρ" },
   { path: '/pohlig', label: 'Pohlig–Hellman' },
@@ -61,6 +63,7 @@ export default function App() {
       {base === '/encode' && <Encodings />}
       {base === '/musig' && <MuSigPage />}
       {base === '/ed25519' && <Curve25519Page />}
+      {base === '/bls' && <BlsPage />}
       {base === '/attacks' && <Attacks />}
       {base === '/rho' && <RhoWalk />}
       {base === '/pohlig' && <PohligHellman />}
@@ -70,7 +73,8 @@ export default function App() {
       <footer className="foot">
         Curvefield — every key, signature, and curve here is computed in your browser by a
         from-scratch engine: BigInt field arithmetic, hand-written SHA-256 / SHA-512 / RIPEMD-160,
-        RFC 6979, BIP-340, MuSig2, X25519 &amp; Ed25519 — zero crypto dependencies.
+        RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, and a BLS12-381 pairing — zero crypto
+        dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>

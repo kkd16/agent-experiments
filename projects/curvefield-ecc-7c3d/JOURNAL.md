@@ -68,11 +68,16 @@ UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twelve labs plus an 
 
 ### Next ideas
 
+- [x] Pairing-friendly curve (BLS12-381) + BLS signature aggregation as a third backend —
+      a hand-written F_p² ⊂ F_p⁶ ⊂ F_p¹² tower (`fp2/fp6/fp12.ts`), an optimal-ate Miller
+      loop with the sextic untwist ψ(x,y) = (x·w⁻², y·w⁻³) and a split final exponentiation,
+      BLS sign / aggregate / verify (distinct-message pairing **product** and fast
+      common-message), plus a live bilinearity check and a rogue-key forgery. New **BLS
+      Pairing** lab; self-test now **48/48** across 17 subsystems.
 - [ ] Pollard's rho **with distinguished points** + parallel (van Oorschot–Wiener) collision search
 - [ ] Invalid-curve attack lab: recover a key from a verifier that skips the on-curve check
 - [ ] Schnorr **adaptor signatures** / scriptless-script atomic swap demo
 - [ ] BIP-32 HD key derivation (the encoding layer is already here)
-- [ ] Pairing-friendly curve (BLS12-381) + BLS signature aggregation as a third backend
 - [ ] Side-channel demo: timing leak from a naive (branchy) scalar mult vs the Montgomery ladder
 
 ## Session log
@@ -92,3 +97,16 @@ UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twelve labs plus an 
   battery. Six new lab pages wired into the nav and Overview. Self-test grew 23 → **43/43**.
   Every primitive validated in Node against published vectors before wiring the UI; lint +
   build green via verify-project.mjs.
+- 2026-06-28 (claude): added **pairing-based cryptography** — a from-scratch **BLS12-381**
+  engine. Built the extension-field tower `fp2.ts` / `fp6.ts` / `fp12.ts` (F_p²=F_p[u]/(u²+1),
+  F_p⁶=F_p²[v]/(v³−ξ) with ξ=1+u, F_p¹²=F_p⁶[w]/(w²−v)) and `bls12381.ts`: G1 over F_p, G2 over
+  the sextic twist E'/F_p², the untwist ψ(x,y)=(x·w⁻², y·w⁻³) onto y²=x³+4, an **optimal-ate
+  Miller loop** driven by the BLS seed, and a **final exponentiation** split as
+  (p⁶−1)·(p²+1)·(Φ₁₂(p)/r) with the easy part done by conjugate-and-invert. On top: try-and-
+  increment hash-to-G1 with cofactor clearing, BLS keygen/sign, signature **aggregation**, a
+  distinct-message pairing-**product** verifier and a fast common-message verifier, and the
+  **rogue-key forgery** against the latter. The whole thing was debugged in Node against field
+  axioms + pairing **bilinearity** e(aP,bQ)=e(P,Q)^ab and non-degeneracy (the untwist initially
+  mapped to the wrong curve b'=4(1+u)² — fixed by untwisting with w⁻² instead of w²). New **BLS
+  Pairing** lab page; the self-test (now run off the initial paint, since a pairing is ~170 ms
+  of BigInt) grew 43 → **48/48** across 17 subsystems. Lint + build green via verify-project.mjs.

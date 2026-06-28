@@ -1,5 +1,4 @@
-import { useMemo } from 'react'
-import { runSelfTest } from '../ecc/selftest'
+import { useSelfTest } from '../hooks/useSelfTest'
 import { N, P } from '../ecc/secp256k1'
 
 const LABS = [
@@ -70,15 +69,21 @@ const LABS = [
     desc: 'An adversarial battery against the ECDSA verifier — zero scalars, malleable twins, off-curve keys, non-canonical DER — each rejected on cue.',
   },
   {
-    path: '/verify',
+    path: '/bls',
     ix: '12',
+    title: 'BLS12-381 & the Pairing',
+    desc: 'A hand-written optimal-ate pairing over an F_p² ⊂ F_p⁶ ⊂ F_p¹² tower — bilinearity checked live, then BLS signature aggregation and the rogue-key attack on it.',
+  },
+  {
+    path: '/verify',
+    ix: '13',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2 and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381 and Wycheproof vectors.',
   },
 ]
 
 export function Overview() {
-  const test = useMemo(() => runSelfTest(), [])
+  const { tests: test, ready } = useSelfTest()
   const passed = test.filter((t) => t.pass).length
 
   return (
@@ -111,7 +116,7 @@ export function Overview() {
 
       <div className="statline" style={{ marginBottom: '2rem' }}>
         <div className="stat">
-          <b>{passed}/{test.length}</b>
+          <b>{ready ? `${passed}/${test.length}` : '…'}</b>
           <span>vectors passing</span>
         </div>
         <div className="stat">

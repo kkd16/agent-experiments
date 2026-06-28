@@ -35,6 +35,20 @@ import { pohligHellman, findSmoothCurve } from './pohlig'
 import { musigSign, verifyPartial } from './musig'
 import { x25519, x25519Public, ed25519Public, ed25519Sign, ed25519Verify } from './ed25519'
 import { runEdgeCases } from './wycheproof'
+import {
+  G1_GEN,
+  G2_GEN,
+  R as BLS_R,
+  g1,
+  g2,
+  pairing,
+  blsKeygen,
+  blsSign,
+  blsVerify,
+  aggregateSigs,
+  blsAggregateVerifyDistinct,
+} from './bls12381'
+import { Fp12 } from './fp12'
 
 export interface TestCase {
   name: string
@@ -377,6 +391,51 @@ export function runSelfTest(): TestCase[] {
       failed.length === 0
         ? 'every adversarial input handled correctly'
         : `failing: ${failed.map((f) => f.name).join(', ')}`,
+    )
+  }
+
+  // ── 15. BLS12-381: pairing bilinearity + signature aggregation ──
+  {
+    check(
+      'BLS12-381',
+      'generators in r-torsion',
+      g1.mulRaw(BLS_R, G1_GEN) === null && g2.mul(BLS_R, G2_GEN) === null,
+      'r·G₁ = r·G₂ = O on the published generators',
+    )
+    const e = pairing(G1_GEN, G2_GEN)
+    check(
+      'BLS12-381',
+      'pairing non-degenerate, e^r = 1',
+      !Fp12.isOne(e) && Fp12.isOne(Fp12.pow(e, BLS_R)),
+      'e(G₁,G₂) ≠ 1 and has exact order r (lands in G_T)',
+    )
+    const a = 9n
+    const b = 7n
+    const lhs = pairing(g1.mul(a, G1_GEN), g2.mul(b, G2_GEN))
+    const rhs = Fp12.pow(e, a * b)
+    check(
+      'BLS12-381',
+      'bilinearity e(aP,bQ)=e(P,Q)^ab',
+      Fp12.eq(lhs, rhs),
+      'two independent routes to the same G_T element',
+    )
+    const key = blsKeygen(0xc0ffeen)
+    const msg = utf8('BLS over a hand-written pairing')
+    const sig = blsSign(key.sk, msg)
+    check(
+      'BLS12-381',
+      'sign → verify, reject tamper',
+      blsVerify(key.pk, msg, sig) && !blsVerify(key.pk, utf8('tampered'), sig),
+      'e(σ,G₂)=e(H(m),pk); altered message fails',
+    )
+    const ks = [3n, 14n, 159n].map((s) => blsKeygen(s * 26535n))
+    const msgs = ['a', 'b', 'c'].map(utf8)
+    const agg = aggregateSigs(ks.map((k, i) => blsSign(k.sk, msgs[i])))
+    check(
+      'BLS12-381',
+      'aggregate (distinct msgs) verifies',
+      blsAggregateVerifyDistinct(ks.map((k) => k.pk), msgs, agg),
+      '3 signatures → one 96-byte element, one pairing product',
     )
   }
 
