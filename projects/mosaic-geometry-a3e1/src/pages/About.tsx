@@ -28,8 +28,11 @@ export default function About() {
             on the Algorithms tab; its Delaunay dual is verified to match Bowyer-Watson edge-for-edge.
           </li>
           <li>
-            <strong>Convex hull</strong> — the tightest convex boundary, via Andrew's monotone chain
-            in O(n log n).
+            <strong>Convex hull</strong> — the tightest convex boundary, by two independent
+            algorithms: Andrew's monotone chain (sort + left-turn sweep) and{' '}
+            <strong>Quickhull</strong> (divide-and-conquer on the farthest point from each edge). The
+            two are verified to agree on every scene; step through Quickhull's recursion on the
+            Algorithms tab.
           </li>
           <li>
             <strong>Proximity-graph family</strong> — a tidy nesting that all lives inside the
@@ -73,6 +76,36 @@ export default function About() {
           <li>
             <strong>Lloyd relaxation</strong> — iteratively move each site to its cell's centroid to
             reach a centroidal Voronoi tessellation: the even, organic "soap-film" pattern.
+          </li>
+        </ul>
+
+        <h2>Weighted &amp; farthest geometry</h2>
+        <p>
+          A second axis: drop the assumption that every site counts the same, or flip "nearest" to
+          "farthest". Both are still built from the one robust half-plane-intersection routine — only
+          the line that splits two sites changes.
+        </p>
+        <ul>
+          <li>
+            <strong>Power (Laguerre) diagram</strong> — give each site a weight <em>w</em> and measure
+            distance by the <em>power</em> |x − s|² − w. The wall between two sites is their{' '}
+            <em>radical axis</em> (still straight, just shifted toward the lighter site), so the cells
+            stay convex. Heavy sites swell, light ones shrink, and an out-weighted site can vanish
+            entirely — a <em>hidden</em> site, drawn as a hollow ring. With equal weights it collapses
+            back to the ordinary Voronoi diagram. Watch one cell get clipped against each radical axis
+            on the Algorithms tab, or run <em>Power-Lloyd</em> to relax toward a centroidal power
+            tessellation.
+          </li>
+          <li>
+            <strong>Regular (weighted Delaunay) triangulation</strong> — the straight-line dual of the
+            power diagram, read off the cell adjacencies. It reduces to the Delaunay triangulation
+            exactly when all weights are equal.
+          </li>
+          <li>
+            <strong>Farthest-point Voronoi diagram</strong> — the inside-out twin: each region is keyed
+            to its <em>farthest</em> site. Only convex-hull vertices own a (non-empty) cell, and the
+            diagram has no bounded faces — it is a tree. A lovely consequence is highlighted live: the
+            centre of the smallest enclosing circle sits on this diagram.
           </li>
         </ul>
 
@@ -142,12 +175,14 @@ export default function About() {
           <li>Generate blue noise, then hit <em>Animate</em> to relax it into a honeycomb.</li>
           <li>Slide β from 1 to 2 to morph the Gabriel graph into the relative-neighborhood graph.</li>
           <li>In the <strong>Mesh</strong> panel, pick an angle bound and hit <em>Refine mesh</em> to watch Ruppert clean up the slivers.</li>
-          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Delaunay, enclosing-circle, and Fortune sweep builds.</li>
+          <li>Turn on <strong>Power cells</strong>, hit <em>Randomize weights</em>, and add the regular triangulation to see Voronoi's weighted cousin and its dual.</li>
+          <li>Enable the <strong>Farthest-point</strong> diagram to see the hull-vertex tree and the enclosing-circle centre that rides on it.</li>
+          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Quickhull, Delaunay, enclosing-circle, Fortune sweep, and power-cell builds.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 54 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 67 checks.
         </p>
       </article>
     </div>

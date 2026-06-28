@@ -26,6 +26,14 @@ import { diameter, minWidth, convexLayers } from './hullMetrics'
 import { minimumEnclosingCircle } from './enclosingCircle'
 import { largestEmptyCircle } from './emptyCircle'
 import { alphaShape, circumRadii } from './alphaShape'
+import {
+  powerCells,
+  powerDistance,
+  regularTriangulationEdges,
+  hiddenSites,
+} from './power'
+import { farthestCells, farthestOwners } from './farthest'
+import { quickHull, quickHullSteps } from './quickhull'
 import { encodePoints, decodePoints, parsePointsText } from './pointset'
 import { dist } from './vector'
 import type { Rect } from './types'
@@ -493,6 +501,213 @@ const RECT: Rect = { minX: 0, minY: 0, maxX: 100, maxY: 100 }
   check('CDT enforces every kept constraint as an edge', constraintsMissing === 0, `(${constraintsMissing})`)
   check('CDT is Delaunay off the constraints', cdtViolations === 0, `(${cdtViolations})`)
   check('CDT actually forces non-Delaunay segments', totalForced > 20, `(${totalForced} forced)`)
+}
+
+// ── Power (Laguerre) diagrams + regular triangulation ────────────────────────
+{
+  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`)
+  const rng = mulberry32(11)
+  const pts = uniformPoints(40, RECT, rng)
+
+  // Equal weights ⇒ power diagram == Voronoi diagram (cell areas match).
+  {
+    const zero = pts.map((p) => ({ x: p.x, y: p.y, w: 0 }))
+    const pc = powerCells(zero, RECT)
+    const vc = voronoiCells(pts, RECT)
+    let maxDiff = 0
+    for (let i = 0; i < pts.length; i++) {
+      maxDiff = Math.max(maxDiff, Math.abs(area(pc[i].polygon) - area(vc[i].polygon)))
+    }
+    check('power diagram with w=0 equals Voronoi (cell areas)', maxDiff < 1e-6, `(maxΔ=${maxDiff})`)
+
+    // …and the regular triangulation reduces to Delaunay. Computed over a frame
+    // large enough to contain every Voronoi vertex, so no adjacency is clipped
+    // away (the dual over the whole plane *is* the regular triangulation).
+    const BIG: Rect = { minX: -1000, minY: -1000, maxX: 1100, maxY: 1100 }
+    const regKeys = new Set(
+      regularTriangulationEdges(zero, powerCells(zero, BIG)).map((e) => key(e.a, e.b)),
+    )
+    const delKeys = new Set(triangulationEdges(delaunay(pts)).map((e) => key(e.a, e.b)))
+    let same = regKeys.size === delKeys.size
+    for (const k of delKeys) if (!regKeys.has(k)) same = false
+    check('regular triangulation with w=0 equals Delaunay edges', same,
+      `(reg ${regKeys.size} vs del ${delKeys.size})`)
+  }
+
+  // Weighted: cells are convex, tile the frame, and obey the power-distance rule.
+  {
+    const wsites = pts.map((p) => ({ x: p.x, y: p.y, w: rng() * 200 }))
+    const cells = powerCells(wsites, RECT)
+
+    let totalArea = 0
+    let nonConvex = 0
+    for (const cell of cells) {
+      if (cell.polygon.length < 3) continue
+      totalArea += area(cell.polygon)
+      // Convexity: every consecutive triple turns the same way.
+      const poly = cell.polygon
+      let pos = 0
+      let neg = 0
+      for (let i = 0, n = poly.length; i < n; i++) {
+        const o = orient(poly[i], poly[(i + 1) % n], poly[(i + 2) % n])
+        if (o > 1e-9) pos++
+        else if (o < -1e-9) neg++
+      }
+      if (pos > 0 && neg > 0) nonConvex++
+    }
+    check('power cells are convex', nonConvex === 0, `(${nonConvex} non-convex)`)
+    check('power cells tile the frame (area = 100²)', Math.abs(totalArea - 10000) < 1e-3,
+      `(area=${totalArea.toFixed(3)})`)
+
+    // Power-distance rule: a random interior query's owning cell is the one
+    // minimizing the power distance over all sites.
+    let wrongOwner = 0
+    let samples = 0
+    for (let s = 0; s < 200; s++) {
+      const qx = rng() * 100
+      const qy = rng() * 100
+      let owner = -1
+      for (const cell of cells) {
+        if (pointInPolygon({ x: qx, y: qy }, cell.polygon)) {
+          owner = cell.site
+          break
+        }
+      }
+      if (owner < 0) continue
+      samples++
+      let best = -1
+      let bestD = Infinity
+      for (let i = 0; i < wsites.length; i++) {
+        const d = powerDistance(qx, qy, wsites[i])
+        if (d < bestD) {
+          bestD = d
+          best = i
+        }
+      }
+      if (best !== owner) wrongOwner++
+    }
+    check('power-cell owner minimizes power distance', wrongOwner === 0,
+      `(${wrongOwner}/${samples} wrong)`)
+  }
+
+  // A dramatically over-weighted site swallows neighbours (some get hidden).
+  {
+    const wsites = pts.map((p, i) => ({ x: p.x, y: p.y, w: i === 0 ? 9000 : 0 }))
+    const cells = powerCells(wsites, RECT)
+    const hidden = hiddenSites(cells)
+    check('a heavy site hides at least one neighbour', hidden.length > 0,
+      `(${hidden.length} hidden)`)
+    check('the heavy site itself is not hidden', !hidden.includes(0))
+  }
+}
+
+// ── Farthest-point Voronoi diagram ───────────────────────────────────────────
+{
+  const rng = mulberry32(7)
+  const pts = uniformPoints(30, RECT, rng)
+  // The farthest diagram is unbounded; a generous frame reveals all h cells.
+  const BIG: Rect = { minX: -400, minY: -400, maxX: 500, maxY: 500 }
+  const cells = farthestCells(pts, BIG)
+  const owners = new Set(farthestOwners(cells))
+  const hull = new Set(convexHull(pts))
+
+  // Only convex-hull vertices own a non-empty farthest cell, and every hull
+  // vertex owns one — so the owner set is exactly the hull.
+  let mismatch = owners.size !== hull.size
+  for (const o of owners) if (!hull.has(o)) mismatch = true
+  for (const h of hull) if (!owners.has(h)) mismatch = true
+  check('farthest cells are owned by exactly the hull vertices', !mismatch,
+    `(owners ${owners.size} vs hull ${hull.size})`)
+
+  // The cells tile the frame (BIG is 900 × 900).
+  let totalArea = 0
+  for (const cell of cells) if (cell.polygon.length >= 3) totalArea += area(cell.polygon)
+  check('farthest cells tile the frame', Math.abs(totalArea - 900 * 900) < 1e-2,
+    `(area=${totalArea.toFixed(3)})`)
+
+  // Brute force: a query's owning cell really is its farthest site.
+  let wrong = 0
+  let samples = 0
+  for (let s = 0; s < 300; s++) {
+    const qx = rng() * 100
+    const qy = rng() * 100
+    let owner = -1
+    for (const cell of cells) {
+      if (cell.polygon.length >= 3 && pointInPolygon({ x: qx, y: qy }, cell.polygon)) {
+        owner = cell.site
+        break
+      }
+    }
+    if (owner < 0) continue
+    samples++
+    let far = -1
+    let farD = -1
+    for (let i = 0; i < pts.length; i++) {
+      const dx = qx - pts[i].x
+      const dy = qy - pts[i].y
+      const d = dx * dx + dy * dy
+      if (d > farD) {
+        farD = d
+        far = i
+      }
+    }
+    if (far !== owner) wrong++
+  }
+  check('farthest-cell owner is the actual farthest site', wrong === 0, `(${wrong}/${samples})`)
+}
+
+// ── Quickhull ≡ monotone chain ───────────────────────────────────────────────
+{
+  let disagree = 0
+  for (let seed = 1; seed <= 40; seed++) {
+    const rng = mulberry32(seed * 31 + 5)
+    const pts = uniformPoints(4 + (seed % 30), RECT, rng)
+    const mc = canonicalHull(convexHull(pts))
+    const qh = canonicalHull(quickHull(pts))
+    if (mc.join(',') !== qh.join(',')) disagree++
+  }
+  check('Quickhull matches the monotone-chain hull on 40 scenes', disagree === 0,
+    `(${disagree} disagree)`)
+
+  // Quickhull returns CCW (positive signed area), like convexHull.
+  const rng = mulberry32(99)
+  const pts = uniformPoints(50, RECT, rng)
+  const qh = quickHull(pts)
+  let a2 = 0
+  for (let i = 0; i < qh.length; i++) {
+    const a = pts[qh[i]]
+    const b = pts[qh[(i + 1) % qh.length]]
+    a2 += a.x * b.y - b.x * a.y
+  }
+  check('Quickhull winds counter-clockwise', a2 > 0)
+
+  // The final boundary of the step trace contains exactly the hull vertices.
+  const steps = quickHullSteps(pts)
+  const last = steps[steps.length - 1].boundary
+  check('Quickhull step trace ends on the full hull',
+    [...last].sort((a, b) => a - b).join(',') === [...qh].sort((a, b) => a - b).join(','))
+}
+
+// Even-odd point-in-polygon for the diagram self-tests.
+function pointInPolygon(p: Point, poly: Point[]): boolean {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]
+    const b = poly[j]
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+// Rotate a hull index loop to start at its smallest index, for order-insensitive
+// comparison of two hull algorithms.
+function canonicalHull(hull: number[]): number[] {
+  if (hull.length === 0) return hull
+  let m = 0
+  for (let i = 1; i < hull.length; i++) if (hull[i] < hull[m]) m = i
+  return [...hull.slice(m), ...hull.slice(0, m)]
 }
 
 export const result = { failures }

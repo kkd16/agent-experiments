@@ -151,6 +151,10 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  /* Keep full height inside the flex-column sidebar: without this, panels shrink
+     to force-fit the viewport and clip their own bodies instead of letting the
+     sidebar scroll. */
+  flex-shrink: 0;
 }
 .panel__head {
   display: flex;

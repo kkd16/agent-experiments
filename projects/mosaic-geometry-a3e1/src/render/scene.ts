@@ -25,6 +25,10 @@ export interface LayerToggles {
   mst: boolean
   refine: boolean
   cdt: boolean
+  power: boolean
+  regular: boolean
+  radical: boolean
+  farthest: boolean
   centroids: boolean
   points: boolean
 }
@@ -55,6 +59,21 @@ export interface CdtRender {
   edges: { edge: Edge; constrained: boolean }[]
 }
 
+/** The weighted (power / Laguerre) geometry bundle. */
+export interface PowerRender {
+  cells: VoronoiCell[] // power cells (convex, possibly empty for hidden sites)
+  regular: Edge[] // regular (weighted Delaunay) triangulation edges
+  radical: Circle[] // radical circles (centre = site, r = √w) for positive weights
+  hidden: number[] // indices of hidden (outweighed) sites
+}
+
+/** The farthest-point Voronoi diagram bundle. */
+export interface FarthestRender {
+  edges: [Point, Point][] // the diagram's tree skeleton
+  owners: number[] // hull vertices that own a non-empty cell
+  mec: Circle | null // smallest enclosing circle — its centre lives on the diagram
+}
+
 export interface Scene {
   points: Point[]
   hull: number[]
@@ -73,6 +92,8 @@ export interface Scene {
   alpha: AlphaRender | null
   refine: RefineRender | null
   cdt: CdtRender | null
+  power: PowerRender | null
+  farthest: FarthestRender | null
   closest: ClosestPair | null
   diameter: FarthestPair | null
   width: MinWidth | null
@@ -124,6 +145,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   const pts = scene.points
 
   if (layers.voronoiFill || layers.voronoiEdges) drawVoronoi(ctx, scene.cells, pts, tx, o)
+  if (layers.power && scene.power) drawPowerCells(ctx, scene.power, pts, tx, o)
   if (layers.alpha && scene.alpha) drawAlphaShape(ctx, scene.alpha, pts, tx)
   if (layers.circumcircles) drawCircumcircles(ctx, scene.circumcircles, tx, o)
   if (layers.refine && scene.refine) drawRefineMesh(ctx, scene.refine, tx)
@@ -136,6 +158,9 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   if (layers.rng) drawEdges(ctx, scene.rng, pts, tx, 'rgba(244,114,182,0.85)', 1.6)
   if (layers.nng) drawEdges(ctx, scene.nng, pts, tx, 'rgba(96,205,255,0.95)', 1.6)
   if (layers.convexLayers) drawConvexLayers(ctx, scene.layers, pts, tx)
+  if (layers.radical && scene.power) drawRadicalCircles(ctx, scene.power.radical, tx)
+  if (layers.regular && scene.power) drawEdges(ctx, scene.power.regular, pts, tx, 'rgba(255,170,90,0.8)', 1.5)
+  if (layers.farthest && scene.farthest) drawFarthest(ctx, scene.farthest, tx)
   if (layers.hull) drawHull(ctx, scene.hull, pts, tx)
   if (layers.mst) drawEdges(ctx, scene.mst, pts, tx, 'rgba(255,209,102,0.95)', 2.2)
 
@@ -147,7 +172,10 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   if (measure.closest && scene.closest) drawClosestPair(ctx, scene.closest, pts, tx)
 
   if (layers.centroids) drawCentroids(ctx, scene.centroids, tx)
-  if (layers.points) drawPoints(ctx, scene, tx)
+  if (layers.points) {
+    const hidden = layers.power && scene.power ? new Set(scene.power.hidden) : null
+    drawPoints(ctx, scene, tx, hidden)
+  }
 }
 
 function drawVoronoi(
@@ -448,11 +476,12 @@ function drawCentroids(ctx: CanvasRenderingContext2D, centroids: Point[], tx: Tx
   }
 }
 
-function drawPoints(ctx: CanvasRenderingContext2D, scene: Scene, tx: Tx): void {
+function drawPoints(ctx: CanvasRenderingContext2D, scene: Scene, tx: Tx, hidden: Set<number> | null): void {
   for (let i = 0; i < scene.points.length; i++) {
     const q = tx.toPx(scene.points[i])
     const isHover = i === scene.hover
     const isSel = i === scene.selected
+    const isHidden = hidden ? hidden.has(i) : false
     const r = isSel ? 6 : isHover ? 5 : 3.2
     if (isHover || isSel) {
       ctx.beginPath()
@@ -461,12 +490,79 @@ function drawPoints(ctx: CanvasRenderingContext2D, scene: Scene, tx: Tx): void {
       ctx.fill()
     }
     ctx.beginPath()
-    ctx.arc(q.x, q.y, r, 0, Math.PI * 2)
-    ctx.fillStyle = isSel ? '#ffd166' : '#f4f7ff'
+    ctx.arc(q.x, q.y, isHidden ? 2.4 : r, 0, Math.PI * 2)
+    // Hidden (outweighed) sites read as hollow grey rings — present but face-less.
+    ctx.fillStyle = isHidden ? 'rgba(120,130,160,0.5)' : isSel ? '#ffd166' : '#f4f7ff'
     ctx.fill()
     ctx.lineWidth = 1
-    ctx.strokeStyle = 'rgba(8,12,22,0.7)'
+    ctx.strokeStyle = isHidden ? 'rgba(150,160,200,0.7)' : 'rgba(8,12,22,0.7)'
     ctx.stroke()
+  }
+}
+
+// ── Weighted geometry: power diagrams + farthest-point Voronoi ───────────────
+
+function drawPowerCells(
+  ctx: CanvasRenderingContext2D,
+  power: PowerRender,
+  pts: Point[],
+  tx: Tx,
+  o: DrawOptions,
+): void {
+  for (const cell of power.cells) {
+    if (cell.polygon.length < 3) continue
+    ctx.beginPath()
+    for (let i = 0; i < cell.polygon.length; i++) {
+      const q = tx.toPx(cell.polygon[i])
+      if (i === 0) ctx.moveTo(q.x, q.y)
+      else ctx.lineTo(q.x, q.y)
+    }
+    ctx.closePath()
+    ctx.fillStyle = cellFill(o.scheme, pts[cell.site], o.cellAlpha)
+    ctx.fill()
+    ctx.lineWidth = 1
+    ctx.strokeStyle = 'rgba(8,12,22,0.55)'
+    ctx.stroke()
+  }
+}
+
+function drawRadicalCircles(ctx: CanvasRenderingContext2D, circles: Circle[], tx: Tx): void {
+  ctx.lineWidth = 1
+  ctx.strokeStyle = 'rgba(255,180,90,0.4)'
+  for (const c of circles) {
+    const center = tx.toPx({ x: c.x, y: c.y })
+    const r = c.r * tx.scale
+    if (r < 0.5) continue
+    ctx.beginPath()
+    ctx.arc(center.x, center.y, r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+}
+
+function drawFarthest(ctx: CanvasRenderingContext2D, far: FarthestRender, tx: Tx): void {
+  // The diagram skeleton (a tree) in cyan.
+  ctx.strokeStyle = 'rgba(96,205,255,0.85)'
+  ctx.lineWidth = 1.6
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (const [p, q] of far.edges) {
+    const a = tx.toPx(p)
+    const b = tx.toPx(q)
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+  }
+  ctx.stroke()
+  // The smallest-enclosing-circle centre — a vertex of this diagram.
+  if (far.mec) {
+    const c = tx.toPx({ x: far.mec.x, y: far.mec.y })
+    ctx.beginPath()
+    ctx.arc(c.x, c.y, far.mec.r * tx.scale, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(124,246,192,0.45)'
+    ctx.lineWidth = 1.4
+    ctx.setLineDash([5, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+    marker(ctx, c, 'rgba(124,246,192,0.95)', 3.5)
   }
 }
 

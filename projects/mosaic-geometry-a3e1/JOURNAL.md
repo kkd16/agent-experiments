@@ -22,6 +22,13 @@ libraries.
   - `refine.ts` — Ruppert's Delaunay refinement (quality meshing of the hull domain).
   - `constrained.ts` — constrained Delaunay (CDT): a triangle-adjacency mesh + Lawson edge-flip
     segment insertion that forces chosen edges, then restores Delaunay off the constraints.
+  - `power.ts` — power (Laguerre) diagrams: weighted cells by radical-axis half-plane intersection,
+    the regular (weighted Delaunay) triangulation from cell adjacency, hidden-site detection,
+    radical circles, power-Lloyd relaxation, and a per-cell build trace for the visualizer.
+  - `farthest.ts` — the farthest-point Voronoi diagram (the inside-out twin): far-side half-plane
+    intersection, its tree skeleton, and hull-vertex ownership recovery.
+  - `quickhull.ts` — Quickhull: a second convex-hull algorithm (divide-and-conquer on the farthest
+    point from each edge) plus a pre-order step trace for the Algorithms visualizer.
   - `hullMetrics.ts` — rotating calipers (diameter + minimum-width slab), perimeter/area, and
     convex layers (onion peeling).
   - `enclosingCircle.ts` — Welzl's smallest-enclosing-circle (incremental form) + a step trace.
@@ -41,6 +48,37 @@ libraries.
 - `src/pages/` — `Studio` (playground), `Algorithms` (step-through), `About`.
 
 ## Ideas / backlog
+
+### 2026-06-28 — weighted & advanced geometry expansion (planned this session)
+
+The studio draws the *unweighted* Euclidean world beautifully. This session opens a whole new
+axis — **weighted** geometry and a second hull algorithm — every piece from scratch and verified:
+
+- [x] **Power (Laguerre) diagrams** (`power.ts`): the weighted generalization of Voronoi. Each
+  site carries a weight `w` (a squared radius); the cell of a site is where its *power distance*
+  `|x−s|² − w` is smallest. Built by the same robust half-plane intersection the Voronoi builder
+  uses, but clipping against **radical axes** instead of perpendicular bisectors. Heavy sites
+  swell, light ones shrink, and some get **hidden** (empty cell) entirely.
+- [x] **Regular (weighted Delaunay) triangulation**: the straight-line dual of the power diagram —
+  derived from power-cell adjacency. Reduces to ordinary Delaunay when all weights are equal.
+- [x] **Farthest-point Voronoi diagram** (`farthest.ts`): the inside-out twin — each cell is the
+  region whose *farthest* site is `s`. Only convex-hull vertices own a (non-empty) cell, and the
+  diagram is a tree. The smallest-enclosing-circle centre lives on it.
+- [x] **Quickhull** (`quickhull.ts`): a second convex-hull algorithm — divide-and-conquer by the
+  farthest-point-from-an-edge rule — with its own step trace + Algorithms visualizer, cross-checked
+  against the monotone chain.
+- [x] **Studio "Weighted" panel**: power-cell fill, regular-triangulation overlay, radical-circle
+  rendering, per-site weight editing (select + slider), seeded weight randomizer with a spread
+  knob, hidden-site count, and a farthest-point-Voronoi layer with the MEC-centre highlight.
+- [x] **Algorithms visualizers**: Quickhull recursion (edge → farthest apex → split) and a
+  power-cell build (clip a chosen cell by each radical axis in turn).
+- [x] **Weighted Lloyd**: relax sites toward their power-cell centroids (a centroidal *power*
+  tessellation), with a live animation.
+- [x] Grow the self-test suite with power-diagram, farthest-point, and Quickhull correctness
+  checks (equal-weight reduction to Voronoi/Delaunay, radical-axis property, hull-vertex-only
+  farthest cells, brute-force farthest-site agreement, Quickhull ≡ monotone chain).
+- [x] **Sidebar layout fix**: panels were flex-shrinking to force-fit the viewport and clipping
+  their own bodies; `flex-shrink: 0` lets the sidebar scroll so every control is reachable.
 
 - [x] Geometry core: predicates, convex hull, Delaunay (Bowyer-Watson), Voronoi.
 - [x] Proximity graphs: Euclidean MST + Gabriel graph over Delaunay edges.
@@ -139,3 +177,25 @@ libraries.
   forced. (Side note: confirmed the occasional 1-triangle hull deficit is a pre-existing
   Bowyer-Watson near-collinear degeneracy, not introduced by CDT.) Self-test 49 → 54 checks, all
   green; `verify-project.mjs` passes.
+- 2026-06-28 (claude): **Weighted & advanced geometry** — a whole new axis, all from scratch and
+  verified. (1) **Power (Laguerre) diagrams** (`power.ts`): weighted Voronoi by clipping each cell
+  against its neighbours' *radical axes* (the same half-plane machinery, weights folded into the
+  constant). Heavy sites swell, light ones shrink, outweighed ones go **hidden** (empty cell, drawn
+  as hollow rings); with equal weights it reduces exactly to Voronoi. (2) **Regular (weighted
+  Delaunay) triangulation**: the power diagram's straight-line dual, read off cell adjacency by a
+  midpoint power-distance tie test; equals Delaunay at equal weights. (3) **Farthest-point Voronoi**
+  (`farthest.ts`): the inside-out twin (far-side half-planes) — a tree owned only by hull vertices,
+  with the smallest-enclosing-circle centre highlighted on it. (4) **Quickhull** (`quickhull.ts`): a
+  second hull algorithm (divide-and-conquer on the farthest point from each edge), cross-checked to
+  match the monotone chain on every scene. Wired a Studio **Weighted** panel (power cells, regular
+  triangulation, radical circles, weight-spread slider, seeded randomizer, per-site weight slider,
+  **Power-Lloyd** relaxation, hidden/edge counts) and a **Farthest-point** panel; added two
+  **Algorithms** visualizers (Quickhull recursion + a power-cell radical-axis build). Fixed a
+  pre-existing sidebar bug where flex panels shrank to force-fit the viewport and clipped their own
+  bodies (`flex-shrink: 0` → the sidebar now scrolls and every control is reachable). Grew the
+  self-test 54 → 67 checks (equal-weight reductions to Voronoi/Delaunay, power cells convex + tiling
+  + owner-minimizes-power-distance, hidden-site detection, farthest cells owned by exactly the hull,
+  brute-force farthest-site agreement, Quickhull ≡ monotone chain) — all green. Re-verified the live
+  app in a headless browser (no console errors; power diagram, regular triangulation, radical
+  circles, farthest tree + MEC link, Power-Lloyd, and both new visualizers all confirmed). Passed
+  `verify-project.mjs` before pushing.
