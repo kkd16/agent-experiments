@@ -2612,6 +2612,14 @@ body {
 .ivm-view-blurb { font: 12px var(--sans); color: var(--txt-dim); margin-bottom: 6px; }
 .ivm-view-sql { display: block; font: 11.5px var(--mono); color: var(--txt-dim); background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.45; }
 .ivm-view-stats { font: 11.5px var(--mono); color: var(--txt-faint); margin-top: 7px; }
+.ivm-explain-btn { margin-top: 8px; font: 11px var(--mono); color: var(--accent-2); background: none; border: none; padding: 2px 0; cursor: pointer; }
+.ivm-explain-btn:hover { color: var(--accent); text-decoration: underline; }
+.ivm-plan { margin-top: 7px; padding: 9px 11px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 7px; }
+.ivm-plan-node { border-left: 1px solid var(--line-2); padding-left: 9px; margin-top: 3px; }
+.ivm-plan-op { font: 11.5px var(--mono); }
+.ivm-plan-name { color: var(--accent); font-weight: 600; }
+.ivm-plan-detail { color: var(--txt-dim); }
+.ivm-plan-extra { font: 10.5px var(--mono); color: var(--txt-faint); padding-left: 4px; line-height: 1.5; }
 .ivm-plus { color: var(--green); font-weight: 600; }
 .ivm-minus { color: var(--red); font-weight: 600; }
 .ivm-log { margin-top: 22px; }

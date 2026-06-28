@@ -19,6 +19,7 @@
 //     (COUNT, MIN, MAX, and SUM/AVG over INTEGER) — see `parseAggregate`.
 
 import { SqlError } from '../types'
+import { exprKey } from '../eval'
 import { isAggregate, type Expr, type SelectStmt, type SelectItem, type FuncExpr } from '../ast'
 import type { Schema } from '../schema'
 
@@ -30,26 +31,55 @@ export interface IvmRelation {
   alias: string
 }
 
-/** One aggregate output column, normalized to the maintainable kinds. */
+/** One aggregate, normalized to the maintainable kinds. Identified by the
+ *  `key` (the `exprKey` of its source `FuncExpr`), so an output or HAVING
+ *  expression that mentions the same aggregate reads its single running slot. */
 export interface IvmAggregate {
   func: 'COUNT_STAR' | 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX'
-  /** The single column argument (absent for COUNT(*)). */
+  /** The single column/expression argument (absent for COUNT(*)). */
   arg?: Expr
+  /** `COUNT(DISTINCT x)` — maintained via a per-group value-multiplicity map. */
+  distinct: boolean
+  /** `agg(x) FILTER (WHERE p)` — a row contributes only when `p` is truthy. */
+  filter?: Expr
+  /** Canonical identity of the source aggregate call (`exprKey`). */
+  key: string
+  /** A human label for introspection / EXPLAIN. */
+  label: string
 }
 
-/** One output column of an aggregated view: either a grouping column (an index
- *  into the GROUP BY list) or an aggregate. */
-export type GroupedOutput =
-  | { kind: 'key'; keyIndex: number; label: string }
-  | { kind: 'agg'; agg: IvmAggregate; label: string }
+/** One materialized output column of a grouped view: an arbitrary scalar
+ *  expression over the grouping keys and the aggregate results. */
+export interface GroupedOutput {
+  expr: Expr
+  label: string
+}
 
 export type IvmShape =
   | { mode: 'bag'; distinct: boolean }
-  | { mode: 'grouped'; groupBy: Expr[]; outputs: GroupedOutput[] }
+  | {
+      mode: 'grouped'
+      /** The GROUP BY expressions (plain columns); the key, in order. */
+      groupBy: Expr[]
+      /** The distinct aggregates the view computes (from the SELECT + HAVING). */
+      aggs: IvmAggregate[]
+      /** The output projection — one expression per materialized column. */
+      outputs: GroupedOutput[]
+      /** The post-aggregation HAVING predicate, if any. */
+      having?: Expr
+    }
+
+/** A single two-table outer join the view preserves. INNER/CROSS joins leave
+ *  this undefined and take the linear N-way path. */
+export interface IvmOuterJoin {
+  type: 'LEFT' | 'RIGHT' | 'FULL'
+}
 
 export interface IvmAnalysis {
   relations: IvmRelation[]
   shape: IvmShape
+  /** Present iff the view is built on one maintainable LEFT/RIGHT/FULL join. */
+  outer?: IvmOuterJoin
 }
 
 function reject(reason: string): never {
@@ -208,23 +238,6 @@ function walkAssertScalar(e: Expr, where: string): void {
   }
 }
 
-/** Does any output column contain an aggregate call? (Determines bag vs grouped.) */
-function hasAggregate(items: SelectItem[]): boolean {
-  let found = false
-  const scan = (e: Expr): void => {
-    if (found) return
-    if (e.kind === 'func' && isAggregate(e.name)) {
-      found = true
-      return
-    }
-    const kids: Expr[] = []
-    collectChildExprs(e, kids)
-    for (const k of kids) scan(k)
-  }
-  for (const it of items) scan(it.expr)
-  return found
-}
-
 /** Immediate sub-expressions of a node (shallow), for generic scanning. */
 function collectChildExprs(e: Expr, out: Expr[]): void {
   switch (e.kind) {
@@ -272,19 +285,68 @@ function collectChildExprs(e: Expr, out: Expr[]): void {
 /** Normalize a `FuncExpr` aggregate to a maintainable `IvmAggregate`, or reject. */
 function parseAggregate(f: FuncExpr): IvmAggregate {
   const name = f.name.toUpperCase()
-  if (f.distinct) reject(`a DISTINCT aggregate (${name}) is not yet incrementally maintained`)
-  if (f.filter) reject(`an aggregate FILTER clause is not yet incrementally maintained`)
   if (f.withinGroup) reject(`an ordered-set aggregate (${name}) is not yet incrementally maintained`)
+  if (f.filter) assertScalar(f.filter, `an aggregate FILTER (WHERE …) predicate`)
+  const base = { filter: f.filter, key: exprKey(f), label: name.toLowerCase() }
   if (name === 'COUNT') {
-    if (f.star) return { func: 'COUNT_STAR' }
+    if (f.star) return { func: 'COUNT_STAR', distinct: false, ...base }
     if (f.args.length !== 1) reject('COUNT takes exactly one argument (or *)')
-    return { func: 'COUNT', arg: f.args[0] }
+    return { func: 'COUNT', arg: f.args[0], distinct: f.distinct, ...base }
   }
   if (name === 'SUM' || name === 'AVG' || name === 'MIN' || name === 'MAX') {
     if (f.args.length !== 1) reject(`${name} takes exactly one argument`)
-    return { func: name, arg: f.args[0] }
+    if (f.distinct) reject(`a DISTINCT ${name} is not yet incrementally maintained (only COUNT(DISTINCT …) is)`)
+    return { func: name, arg: f.args[0], distinct: false, ...base }
   }
   reject(`the aggregate ${name}() is not in the incrementally-maintained set (COUNT/SUM/AVG/MIN/MAX)`)
+}
+
+/** Collect every distinct aggregate call inside an expression into `out`, keyed
+ *  by `exprKey` so one running slot serves an aggregate mentioned several times.
+ *  Does not descend into an aggregate's own arguments (no nested aggregates). */
+function findAggregates(e: Expr, out: Map<string, IvmAggregate>): void {
+  if (e.kind === 'func' && isAggregate(e.name)) {
+    const k = exprKey(e)
+    if (!out.has(k)) out.set(k, parseAggregate(e))
+    return
+  }
+  const kids: Expr[] = []
+  collectChildExprs(e, kids)
+  for (const k of kids) findAggregates(k, out)
+}
+
+/** Validate an output / HAVING expression of a grouped view: aggregate calls are
+ *  allowed (their result is read from a slot), but every *bare* column outside an
+ *  aggregate must be one of the grouping keys. Rejects subqueries / windows. */
+function assertGroupedExpr(e: Expr, groupKeys: Set<string>, where: string): void {
+  switch (e.kind) {
+    case 'subquery':
+    case 'exists':
+    case 'in_subquery':
+    case 'quantified':
+      reject(`a subquery in ${where}`)
+      break
+    case 'window':
+      reject(`a window function in ${where}`)
+      break
+    case 'func':
+      if (isAggregate(e.name)) return // its result is materialized in a slot
+      for (const a of e.args) assertGroupedExpr(a, groupKeys, where)
+      break
+    case 'column':
+      if (!groupKeys.has(exprKey(e))) {
+        reject(`column "${e.table ? `${e.table}.${e.name}` : e.name}" in ${where} must appear in GROUP BY or inside an aggregate`)
+      }
+      break
+    case 'literal':
+    case 'star':
+      break
+    default: {
+      const kids: Expr[] = []
+      collectChildExprs(e, kids)
+      for (const k of kids) assertGroupedExpr(k, groupKeys, where)
+    }
+  }
 }
 
 /** Full structural analysis of a candidate materialized-view query. Throws a
@@ -296,7 +358,6 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
   if (select.windows && select.windows.length) reject('a WINDOW clause')
   if (select.qualify) reject('a QUALIFY clause')
   if (select.limit !== undefined || select.offset !== undefined) reject('LIMIT/OFFSET (a top-N is not linear)')
-  if (select.having) reject('a HAVING clause is not yet supported')
   if (select.groupingSets) reject('GROUPING SETS / ROLLUP / CUBE')
   if (!select.from || !select.from.table) reject('the FROM clause must be a base table (no subqueries or table functions)')
 
@@ -312,8 +373,19 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
     relations.push({ table, alias: alias ?? table })
   }
   addRel(select.from.table, select.from.alias)
+  let outer: IvmOuterJoin | undefined
   for (const j of select.joins) {
-    if (j.type !== 'INNER' && j.type !== 'CROSS') reject(`a ${j.type} JOIN (only INNER and CROSS are maintainable)`)
+    if (j.type === 'LEFT' || j.type === 'RIGHT' || j.type === 'FULL') {
+      // One preserved outer join over exactly two base tables is maintainable
+      // by tracking each preserved-side row's live match count (analyze records
+      // only the shape; dataflow owns the per-row state). More than one join, or
+      // an ON-less outer join, would need the general bilinear machinery.
+      if (select.joins.length !== 1) reject(`a ${j.type} JOIN is only maintainable as the single join of a two-table view`)
+      if (!j.on) reject(`a ${j.type} JOIN needs an ON predicate to be incrementally maintained`)
+      outer = { type: j.type }
+    } else if (j.type !== 'INNER' && j.type !== 'CROSS') {
+      reject(`a ${j.type} JOIN`)
+    }
     if (j.lateral) reject('a LATERAL join')
     if (!j.table) reject('a derived table / subquery / table function in a JOIN')
     addRel(j.table, j.alias)
@@ -321,45 +393,36 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
   }
   if (select.where) assertScalar(select.where, 'the WHERE clause')
 
-  // Shape: grouped (GROUP BY and/or aggregates) vs a plain bag/distinct projection.
-  const grouped = (select.groupBy && select.groupBy.length > 0) || hasAggregate(select.columns)
+  // Shape: grouped (GROUP BY / aggregates / HAVING) vs a plain bag/distinct
+  // projection. Collect every aggregate that appears in the SELECT list or the
+  // HAVING — each becomes one running slot — and let that, the GROUP BY and a
+  // HAVING decide whether this is a grouped view.
+  const aggMap = new Map<string, IvmAggregate>()
+  for (const it of select.columns) if (it.expr.kind !== 'star') findAggregates(it.expr, aggMap)
+  if (select.having) findAggregates(select.having, aggMap)
+  const grouped = (select.groupBy && select.groupBy.length > 0) || aggMap.size > 0 || !!select.having
+
   if (!grouped) {
     for (const it of select.columns) {
       if (it.expr.kind !== 'star') assertScalar(it.expr, 'the SELECT list')
     }
-    return { relations, shape: { mode: 'bag', distinct: select.distinct } }
+    return { relations, shape: { mode: 'bag', distinct: select.distinct }, outer }
   }
 
-  // Grouped: GROUP BY must be plain columns; each output is a grouping column or
-  // an aggregate over a column.
+  // Grouped: GROUP BY must be plain columns. Outputs and HAVING may be arbitrary
+  // scalar expressions over the grouping keys and the aggregate results.
   const groupBy = select.groupBy
   for (const g of groupBy) {
     if (g.kind !== 'column') reject('GROUP BY must list plain columns for an incremental view')
   }
-  const keyOf = (e: Expr): number => {
-    if (e.kind !== 'column') return -1
-    return groupBy.findIndex(
-      (g) => g.kind === 'column' && g.name.toLowerCase() === e.name.toLowerCase() && (e.table ?? g.table ?? '').toLowerCase() === (g.table ?? e.table ?? '').toLowerCase(),
-    )
-  }
-  const outputs: GroupedOutput[] = []
-  select.columns.forEach((it, i) => {
-    const label = it.alias ?? defaultLabel(it, i)
-    if (it.expr.kind === 'func' && isAggregate(it.expr.name)) {
-      outputs.push({ kind: 'agg', agg: parseAggregate(it.expr), label })
-      return
-    }
-    if (it.expr.kind === 'column') {
-      const ki = keyOf(it.expr)
-      if (ki >= 0) {
-        outputs.push({ kind: 'key', keyIndex: ki, label })
-        return
-      }
-      reject(`column "${it.expr.name}" is neither grouped nor aggregated`)
-    }
-    reject('a grouped view may only project its GROUP BY columns and aggregates')
+  const groupKeys = new Set(groupBy.map((g) => exprKey(g)))
+  const outputs: GroupedOutput[] = select.columns.map((it, i) => {
+    if (it.expr.kind === 'star') reject('SELECT * is not supported in a grouped incremental view — list the columns')
+    assertGroupedExpr(it.expr, groupKeys, 'the SELECT list')
+    return { expr: it.expr, label: it.alias ?? defaultLabel(it, i) }
   })
-  return { relations, shape: { mode: 'grouped', groupBy, outputs } }
+  if (select.having) assertGroupedExpr(select.having, groupKeys, 'the HAVING clause')
+  return { relations, shape: { mode: 'grouped', groupBy, aggs: [...aggMap.values()], outputs, having: select.having }, outer }
 }
 
 /** A reasonable default output-column label when none was aliased. */

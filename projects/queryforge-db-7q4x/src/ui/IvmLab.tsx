@@ -15,6 +15,7 @@ import { Engine } from '../db/engine'
 import { formatValue, type SqlValue } from '../db/types'
 import type { Row } from '../db/catalog'
 import { bagDiff } from '../db/ivm/zset'
+import type { IvmPlanNode } from '../db/ivm/dataflow'
 
 interface ViewSpec {
   name: string
@@ -32,9 +33,24 @@ const VIEWS: ViewSpec[] = [
   {
     name: 'by_region',
     query:
-      'SELECT c.region, COUNT(*) AS orders, SUM(o.amt) AS revenue, MAX(o.amt) AS biggest ' +
-      'FROM cust c JOIN ord o ON o.cid = c.cid GROUP BY c.region',
-    blurb: 'join + group-by aggregate: revenue per region across a two-table join',
+      'SELECT c.region, COUNT(o.id) AS orders, SUM(o.amt) AS revenue, AVG(o.price) AS avg_price, ' +
+      'COUNT(*) FILTER (WHERE o.amt >= 50) AS big_orders ' +
+      'FROM cust c LEFT JOIN ord o ON o.cid = c.cid GROUP BY c.region',
+    blurb:
+      'LEFT JOIN + group-by: a region whose customers have no orders still appears (NULL-extended); ' +
+      'exact DECIMAL AVG and an aggregate FILTER',
+  },
+  {
+    name: 'top_regions',
+    query:
+      'SELECT c.region, SUM(o.amt) AS revenue FROM cust c JOIN ord o ON o.cid = c.cid ' +
+      'GROUP BY c.region HAVING SUM(o.amt) >= 100',
+    blurb: 'HAVING: only regions whose revenue clears a threshold — a group flips in/out as its sum crosses it',
+  },
+  {
+    name: 'distinct_amounts',
+    query: 'SELECT cid, COUNT(DISTINCT amt) AS distinct_amts FROM ord GROUP BY cid',
+    blurb: 'COUNT(DISTINCT): a value leaves a group’s count only when its very last copy does',
   },
 ]
 
@@ -44,9 +60,13 @@ const NAMES = ['Ada', 'Babbage', 'Codd', 'Dijkstra', 'Euler', 'Floyd', 'Gray', '
 function seed(): Engine {
   const e = new Engine()
   e.execute('CREATE TABLE cust (cid INTEGER PRIMARY KEY, name TEXT, region TEXT)')
-  e.execute('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER REFERENCES cust(cid) ON DELETE CASCADE, amt INTEGER)')
-  for (let c = 1; c <= 4; c++) e.execute(`INSERT INTO cust VALUES (${c}, '${NAMES[c - 1]}', '${REGIONS[(c - 1) % REGIONS.length]}')`)
-  e.execute('INSERT INTO ord VALUES (1,1,30),(2,1,80),(3,2,55),(4,3,12),(5,4,95),(6,2,40)')
+  e.execute(
+    'CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER REFERENCES cust(cid) ON DELETE CASCADE, amt INTEGER, price DECIMAL)',
+  )
+  // Five customers across four regions — customer 5 starts with NO orders, so the
+  // LEFT-JOIN view shows a NULL-extended (unmatched) row from the very first frame.
+  for (let c = 1; c <= 5; c++) e.execute(`INSERT INTO cust VALUES (${c}, '${NAMES[c - 1]}', '${REGIONS[(c - 1) % REGIONS.length]}')`)
+  e.execute('INSERT INTO ord VALUES (1,1,30,9.99),(2,1,80,12.50),(3,2,55,3.005),(4,3,12,100),(5,4,95,8.40),(6,2,40,40)')
   for (const v of VIEWS) e.execute(`CREATE MATERIALIZED VIEW ${v.name} AS ${v.query}`)
   return e
 }
@@ -109,13 +129,34 @@ function DataGrid({ grid, highlight }: { grid: Grid; highlight?: Set<string> }) 
   )
 }
 
+/** Renders a view's incremental dataflow (from `MaterializedView.explain()`). */
+function PlanTree({ node, depth = 0 }: { node: IvmPlanNode; depth?: number }) {
+  return (
+    <div className="ivm-plan-node" style={{ marginLeft: depth ? 14 : 0 }}>
+      <div className="ivm-plan-op">
+        <span className="ivm-plan-name">{node.op}</span>
+        {node.detail && <span className="ivm-plan-detail"> {node.detail}</span>}
+      </div>
+      {node.extra.map((x, i) => (
+        <div className="ivm-plan-extra" key={i}>
+          ↳ {x}
+        </div>
+      ))}
+      {node.children.map((c, i) => (
+        <PlanTree node={c} depth={depth + 1} key={i} />
+      ))}
+    </div>
+  )
+}
+
 export function IvmLab() {
   const engineRef = useRef<Engine | null>(null)
   if (engineRef.current === null) engineRef.current = seed()
   const [version, setVersion] = useState(0)
   const [log, setLog] = useState<LogEntry[]>([])
   const [nextOrd, setNextOrd] = useState(7)
-  const [nextCust, setNextCust] = useState(5)
+  const [nextCust, setNextCust] = useState(6)
+  const [explained, setExplained] = useState<Set<string>>(new Set())
 
   const engine = engineRef.current
 
@@ -124,7 +165,7 @@ export function IvmLab() {
     void version
     const e = engine
     const cust = readGrid(e, 'SELECT cid, name, region FROM cust ORDER BY cid')
-    const ord = readGrid(e, 'SELECT id, cid, amt FROM ord ORDER BY id')
+    const ord = readGrid(e, 'SELECT id, cid, amt, price FROM ord ORDER BY id')
     const info = e.db.matviews.info()
     const views = VIEWS.map((spec) => {
       const stored = readGrid(e, `SELECT * FROM ${spec.name}`)
@@ -210,7 +251,11 @@ export function IvmLab() {
     setNextOrd((n) => n + 1)
     const cid = custs[ri(0, custs.length - 1)]
     const amt = big ? ri(80, 130) : ri(5, 60)
-    apply(`INSERT INTO ord VALUES (${id}, ${cid}, ${amt})`, big ? `Add a big order (#${id}, $${amt})` : `Add an order (#${id}, $${amt})`)
+    const price = `${ri(1, 99)}.${String(ri(0, 999)).padStart(3, '0')}` // varied scale, exercises DECIMAL AVG
+    apply(
+      `INSERT INTO ord VALUES (${id}, ${cid}, ${amt}, ${price})`,
+      big ? `Add a big order (#${id}, $${amt})` : `Add an order (#${id}, $${amt})`,
+    )
   }
   const deleteOrder = () => {
     const ids = liveOrderIds()
@@ -241,9 +286,17 @@ export function IvmLab() {
   const reset = () => {
     engineRef.current = seed()
     setNextOrd(7)
-    setNextCust(5)
+    setNextCust(6)
     setLog([])
     setVersion((v) => v + 1)
+  }
+  const toggleExplain = (name: string) => {
+    setExplained((s) => {
+      const next = new Set(s)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
   }
 
   const allOk = view.views.every((v) => v.ok)
@@ -254,8 +307,11 @@ export function IvmLab() {
         <h2>IVM Lab — incremental view maintenance</h2>
         <p className="lab-sub">
           A <em>materialized view</em> stores a query's result. Change a base table and watch each view update by just the{' '}
-          <em>delta</em> — never a full recompute — using the DBSP / Z-set model. A live oracle re-runs each query from scratch
-          and proves the maintained contents are <strong>byte-for-byte identical</strong>.
+          <em>delta</em> — never a full recompute — using the DBSP / Z-set model. These views span a{' '}
+          <strong>LEFT JOIN</strong> (unmatched rows NULL-extended), exact <strong>DECIMAL</strong> AVG, an aggregate{' '}
+          <strong>FILTER</strong>, a <strong>HAVING</strong> threshold and <strong>COUNT(DISTINCT)</strong>. A live oracle
+          re-runs each query from scratch and proves the maintained contents are <strong>byte-for-byte identical</strong>;
+          “explain dataflow” shows how each base Δ flows to the view.
         </p>
       </div>
 
@@ -308,6 +364,18 @@ export function IvmLab() {
                   )}
                 </div>
               )}
+              <button className="ivm-explain-btn" onClick={() => toggleExplain(v.spec.name)}>
+                {explained.has(v.spec.name) ? '▾ hide dataflow' : '▸ explain dataflow'}
+              </button>
+              {explained.has(v.spec.name) &&
+                (() => {
+                  const plan = engine.db.matviews.explain(v.spec.name)
+                  return plan ? (
+                    <div className="ivm-plan">
+                      <PlanTree node={plan} />
+                    </div>
+                  ) : null
+                })()}
             </div>
           ))}
         </div>

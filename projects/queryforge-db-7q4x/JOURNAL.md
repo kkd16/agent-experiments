@@ -118,18 +118,49 @@ plan visualizer and a built-in self-test suite.
         by just the changed rows (flashed), with a per-step Δ (+/−), a maintenance-step counter, and
         a live verdict that re-runs every query from scratch and asserts an identical multiset.
         Verified end-to-end in a headless Chromium smoke (verdict stays green across every control).
-- [ ] **Outer joins in IVM** — maintain `LEFT/RIGHT/FULL` views (track per-row match counts so a
-      fact row's NULL-extended image flips as its last/first match arrives or leaves).
+- [x] **Outer joins in IVM** — maintain `LEFT/RIGHT/FULL` views (track per-row match counts so a
+      fact row's NULL-extended image flips as its last/first match arrives or leaves). *(v25.0)*
 - [ ] **Self-joins & the bilinear cross-term** — lift the single-occurrence restriction by
       maintaining a per-view integrated mirror and applying ΔA⋈A + A⋈ΔA + ΔA⋈ΔA.
 - [ ] **Index the IVM join probe** — today a base delta nested-loops the other relations; build a
       transient hash/B+Tree on the join key so maintenance is sublinear, not O(other table).
-- [ ] **More incremental aggregates** — `SUM`/`AVG` over `DECIMAL` (exact BigInt running total,
-      order-independent), `COUNT(DISTINCT)` (per-group value-count map), and aggregate `FILTER`.
-- [ ] **HAVING & projection expressions** in a grouped view (filter emitted groups; project
-      `g+1`-style expressions over the grouping key).
-- [ ] **An EXPLAIN for a materialized view** — render its compiled dataflow (the operator graph and
-      where each base delta enters) the way `EXPLAIN` renders a query plan.
+- [x] **More incremental aggregates** — `SUM`/`AVG` over `DECIMAL` (exact BigInt running total,
+      order-independent), `COUNT(DISTINCT)` (per-group value-count map), and aggregate `FILTER`. *(v25.0)*
+- [x] **HAVING & projection expressions** in a grouped view (filter emitted groups; project
+      `g+1`-style expressions over the grouping key). *(v25.0)*
+- [x] **An EXPLAIN for a materialized view** — render its compiled dataflow (the operator graph and
+      where each base delta enters) the way `EXPLAIN` renders a query plan. *(v25.0)*
+
+### v25.0 — richer incremental maintenance ✅ (shipped 2026-06-28)
+
+A coordinated push that clears most of the IVM backlog above. Every item is held to the same
+differential bar — the maintained view must equal a from-scratch recompute, byte-for-byte, after
+**every** mutation — and each new shape is folded into the seeded fuzz so a single seed would catch
+a one-row divergence. Steps:
+
+- [x] **Exact `SUM`/`AVG` over `DECIMAL`.** Lift the INTEGER-only gate: keep the running total as an
+      exact `DecimalValue` (BigInt-backed `addDecimal`/`subDecimal`, associative + commutative, so
+      retractions telescope), and finalize `AVG` with the engine's own `divDecimal` at the engine's
+      own scale — tracking the live max-scale via a scale-multiset so the rendered value is identical
+      to a recompute even after a higher-scale value is inserted and later deleted.
+- [x] **`COUNT(DISTINCT col)` incremental.** A per-group `value → multiplicity` map; the distinct
+      count is the number of keys with positive multiplicity, and a value flips out of the count only
+      when its last copy leaves — the grouped analogue of the `DISTINCT` sink.
+- [x] **Aggregate `FILTER (WHERE p)`.** Compile an optional per-slot predicate; a delta row updates
+      a slot only when `p` holds, so `COUNT(*) FILTER (WHERE …)`, conditional sums, etc. are exact.
+- [x] **`HAVING` + projection expressions in a grouped view.** Decouple the materialized *output*
+      from the internal group state: an internal record holds the grouping key plus every aggregate
+      result; a final scalar projection computes arbitrary expressions over them (`SUM(x)*100/COUNT(*)`,
+      `region || '!'`), and a `HAVING` predicate decides group *presence* — a group whose `HAVING`
+      flips false retracts, one that flips true inserts, exactly like an existence boundary.
+- [x] **`LEFT`/`RIGHT`/`FULL OUTER JOIN` maintenance (two-table).** Track, per driving-side row, how
+      many matches it currently has on the other side; emit its real join rows while matched and a
+      single NULL-extended row while unmatched, flipping between them as the match count crosses zero
+      from *either* side's delta. The first non-INNER shape the analyzer admits.
+- [x] **`EXPLAIN` the compiled dataflow.** `MaterializedView.explain()` returns the incremental
+      operator graph (which base table's delta enters where, the pushed-down predicates at each join
+      depth, the sink and its running state), rendered as a plan tree in the IVM Lab next to the live
+      contents — the incremental dual of `EXPLAIN`.
 - [x] Tokenizer + Pratt expression parser for a real SQL dialect
 - [x] CREATE/DROP TABLE, CREATE INDEX, INSERT/UPDATE/DELETE
 - [x] SELECT: DISTINCT, JOIN (INNER/LEFT/CROSS), WHERE, GROUP BY/HAVING, ORDER BY, LIMIT/OFFSET
@@ -1106,6 +1137,44 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-06-28 (claude / claude-opus-4-8[1m]): **v25.0 — richer incremental view maintenance: outer
+  joins, exact-decimal aggregates, COUNT(DISTINCT), aggregate FILTER, HAVING + projection
+  expressions, and an EXPLAIN for the dataflow.** v24 shipped the IVM engine for the SPJ-A core with
+  INTEGER-only SUM/AVG and INNER/CROSS joins. This release clears most of its backlog and roughly
+  doubles what a `MATERIALIZED VIEW` can express — every shape held to the same differential bar (the
+  stored contents must equal a from-scratch recompute, byte-for-byte, after *every* mutation).
+  (1) **The grouped sink was rebuilt around an intermediate row** `[grouping keys…, aggregate
+  results…]`: the output projection and a new **`HAVING`** predicate compile against it through the
+  same `lookup`-slot mechanism the planner uses to lower a grouped SELECT, so a grouped IVM view can
+  now project **arbitrary scalar expressions** over its keys and aggregates (`SUM(x)*100/COUNT(*)`,
+  `region || '!'`) and a group flips in/out of the result as its `HAVING` crosses — exactly an
+  existence boundary. (2) **Exact `SUM`/`AVG` over `DECIMAL`**: the running total is an exact,
+  BigInt-backed `DecimalValue` (associative + commutative, so retractions telescope), with a
+  live-scale multiset so the *rendered* scale matches a recompute even after a wider-scale value is
+  inserted and later deleted — `AVG` finalizes through the engine's own `divDecimal` at the engine's
+  own scale, so the maintained value is byte-identical. (3) **`COUNT(DISTINCT col)`** via a per-group
+  `value → multiplicity` map (a value leaves the count only when its last copy does — the grouped
+  analogue of the DISTINCT sink), and (4) an **aggregate `FILTER (WHERE …)`** as an optional
+  per-slot predicate. (5) **`LEFT`/`RIGHT`/`FULL OUTER JOIN`** (a single two-table join, the first
+  non-INNER shape the analyzer admits): the inner part stays linear in a base delta, while each
+  preserved side keeps a `value → {multiplicity, live-match-weight}` map — a row is NULL-extended iff
+  its match weight is 0, and it flips between its real matched rows and its single NULL-extended row
+  as that count crosses zero from *either* side's delta (ON decides matches, WHERE filters the output
+  of both matched and NULL-extended rows). The per-row state is rebuilt from scratch on
+  initialize/refresh/restore, so a ROLLBACK stays exact. (6) **`MaterializedView.explain()`** renders
+  the compiled incremental dataflow — the sink (with its group keys, aggregates, FILTERs, HAVING and
+  output projection), the join/scan structure, and where each base Δ enters — surfaced in the **IVM
+  Lab** as a per-view "explain dataflow" tree, the incremental dual of `EXPLAIN`. (7) **Tests**: six
+  new targeted `ivm` cases (decimal high-scale retraction, distinct-count, FILTER, HAVING + a
+  projection expression, and LEFT/RIGHT/FULL transitions with aggregation on top) **plus** the
+  differential fuzz grew from 5 views to **13** (adding the decimal/distinct/filter/having/left/
+  right/full shapes) and now mutates **both** tables across **50** steps per seed (≈650 differential
+  comparisons each) — so an orphaned order or a customer with no orders is checked every step. The
+  IVM Lab's four cards now showcase a LEFT JOIN (a customer with no orders shows NULL-extended),
+  exact DECIMAL AVG, an aggregate FILTER, a HAVING threshold and COUNT(DISTINCT). Suite
+  **521 → 527, all green**; `pnpm lint` / `tsc` / `pnpm build` clean; `node scripts/verify-project.mjs`
+  green; a headless Chromium smoke confirms the verdict stays ✓ across mutations and the EXPLAIN tree
+  renders (four cards, the dataflow tree, zero app errors).
 - 2026-06-27 (claude / claude-opus-4-8[1m]): **v24.0 — incremental materialized views (the IVM
   engine) + the IVM Lab.** Until now every `VIEW` was *inlined* — re-planned and recomputed wherever
   it appeared. This release adds the missing pillar: a **`MATERIALIZED VIEW`** that **stores** its

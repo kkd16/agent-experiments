@@ -231,10 +231,116 @@ test('non-maintainable queries are rejected with a clear reason', () => {
   throws(e, 'CREATE MATERIALIZED VIEW a AS SELECT id FROM t ORDER BY v LIMIT 3', 'LIMIT')
   throws(e, 'CREATE MATERIALIZED VIEW b AS SELECT v FROM t UNION SELECT v FROM u', 'set operation')
   throws(e, 'CREATE MATERIALIZED VIEW c AS SELECT t1.id FROM t t1 JOIN t t2 ON t1.id=t2.id', 'more than once')
-  throws(e, 'CREATE MATERIALIZED VIEW d AS SELECT id FROM t LEFT JOIN u ON t.id=u.id', 'LEFT JOIN')
-  // SUM/AVG over a non-integer column is rejected (would risk float-order drift).
+  // A LEFT/RIGHT/FULL join is maintainable only as the single join of a two-table
+  // view; chaining a second join past it is not.
+  e.execute('CREATE TABLE w (id INTEGER PRIMARY KEY, v INTEGER)')
+  throws(e, 'CREATE MATERIALIZED VIEW d AS SELECT t.id FROM t JOIN u ON t.id=u.id LEFT JOIN w ON w.id=t.id', 'single join')
+  // SUM/AVG over a column that is neither INTEGER nor DECIMAL is rejected (a
+  // REAL running total could drift from a recompute under reordering).
   e.execute('CREATE TABLE r (id INTEGER PRIMARY KEY, x REAL)')
-  throws(e, 'CREATE MATERIALIZED VIEW f AS SELECT SUM(x) FROM r', 'INTEGER')
+  throws(e, 'CREATE MATERIALIZED VIEW f AS SELECT SUM(x) FROM r', 'INTEGER or DECIMAL')
+  // A DISTINCT SUM/AVG is not yet incrementally maintained (only COUNT(DISTINCT)).
+  throws(e, 'CREATE MATERIALIZED VIEW g AS SELECT SUM(DISTINCT v) FROM t', 'DISTINCT')
+})
+
+// ---------------------------------------------------------------------------
+// v25.0 — richer aggregation & outer joins
+// ---------------------------------------------------------------------------
+
+test('SUM/AVG over DECIMAL stay byte-exact through high-scale retraction', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, g TEXT, p DECIMAL)')
+  e.execute("INSERT INTO t VALUES (1,'a',10.50),(2,'a',2.005),(3,'b',100)")
+  e.execute('CREATE MATERIALIZED VIEW dv AS SELECT g, SUM(p) AS s, AVG(p) AS a, COUNT(*) AS c FROM t GROUP BY g')
+  const q = 'SELECT g, SUM(p) AS s, AVG(p) AS a, COUNT(*) AS c FROM t GROUP BY g'
+  assertMatches(e, 'dv', q, 'init')
+  e.execute("INSERT INTO t VALUES (4,'a',0.001),(5,'b',3.3333)")
+  assertMatches(e, 'dv', q, 'mixed-scale inserts')
+  e.execute('UPDATE t SET p = 999.99 WHERE id = 3')
+  assertMatches(e, 'dv', q, 'decimal update')
+  // Retract the widest-scale value: the rendered SUM/AVG scale must fall back to
+  // the live max-scale, matching a recompute exactly.
+  e.execute('DELETE FROM t WHERE id = 2')
+  assertMatches(e, 'dv', q, 'high-scale value retracted')
+  e.execute('DELETE FROM t WHERE id = 4')
+  assertMatches(e, 'dv', q, 'another retraction')
+})
+
+test('COUNT(DISTINCT) flips a value out only when its last copy leaves', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, g TEXT, v INTEGER)')
+  e.execute("INSERT INTO t VALUES (1,'a',5),(2,'a',5),(3,'a',9),(4,'b',1)")
+  e.execute('CREATE MATERIALIZED VIEW cd AS SELECT g, COUNT(DISTINCT v) AS dc, COUNT(v) AS c FROM t GROUP BY g')
+  const q = 'SELECT g, COUNT(DISTINCT v) AS dc, COUNT(v) AS c FROM t GROUP BY g'
+  assertMatches(e, 'cd', q, 'init')
+  e.execute('DELETE FROM t WHERE id = 1') // one 5 remains → distinct count unchanged
+  assertMatches(e, 'cd', q, 'one duplicate copy remains')
+  e.execute('DELETE FROM t WHERE id = 2') // last 5 gone → distinct count drops
+  assertMatches(e, 'cd', q, 'last copy of a value leaves')
+})
+
+test('aggregate FILTER (WHERE …) is maintained per slot', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, g TEXT, v INTEGER)')
+  e.execute("INSERT INTO t VALUES (1,'a',5),(2,'a',50),(3,'a',9),(4,'b',100)")
+  e.execute(
+    "CREATE MATERIALIZED VIEW fv AS SELECT g, COUNT(*) FILTER (WHERE v >= 10) AS big, " +
+      'SUM(v) FILTER (WHERE v < 10) AS small FROM t GROUP BY g',
+  )
+  const q =
+    "SELECT g, COUNT(*) FILTER (WHERE v >= 10) AS big, SUM(v) FILTER (WHERE v < 10) AS small FROM t GROUP BY g"
+  assertMatches(e, 'fv', q, 'init')
+  e.execute('UPDATE t SET v = 8 WHERE id = 2') // crosses both filters
+  assertMatches(e, 'fv', q, 'a row crosses the filter boundary')
+})
+
+test('HAVING + projection expressions over keys and aggregates', () => {
+  const e = fresh('CREATE TABLE t (id INTEGER PRIMARY KEY, g TEXT, v INTEGER)')
+  e.execute("INSERT INTO t VALUES (1,'a',5),(2,'a',7),(3,'b',1),(4,'c',100)")
+  e.execute(
+    "CREATE MATERIALIZED VIEW hv AS SELECT g || '!' AS gx, SUM(v) * 10 AS s10, COUNT(*) AS c " +
+      'FROM t GROUP BY g HAVING SUM(v) > 10',
+  )
+  const q = "SELECT g || '!' AS gx, SUM(v) * 10 AS s10, COUNT(*) AS c FROM t GROUP BY g HAVING SUM(v) > 10"
+  assertMatches(e, 'hv', q, 'init') // only 'a' (12) and 'c' (100) pass
+  e.execute("INSERT INTO t VALUES (5,'b',20)") // 'b' crosses into HAVING
+  assertMatches(e, 'hv', q, 'a group crosses into HAVING')
+  e.execute('DELETE FROM t WHERE id = 1') // 'a' falls to 7 → crosses out
+  assertMatches(e, 'hv', q, 'a group crosses out of HAVING')
+})
+
+test('LEFT JOIN flips a row between matched and NULL-extended', () => {
+  const e = fresh('CREATE TABLE a (aid INTEGER PRIMARY KEY, k INTEGER, lbl TEXT)')
+  e.execute('CREATE TABLE b (bid INTEGER PRIMARY KEY, k INTEGER, amt INTEGER)')
+  e.execute("INSERT INTO a VALUES (1,10,'x'),(2,20,'y'),(3,30,'z')")
+  e.execute('INSERT INTO b VALUES (100,10,5),(101,20,9)')
+  e.execute('CREATE MATERIALIZED VIEW lv AS SELECT a.aid, a.lbl, b.amt FROM a LEFT JOIN b ON a.k = b.k')
+  const q = 'SELECT a.aid, a.lbl, b.amt FROM a LEFT JOIN b ON a.k = b.k'
+  assertMatches(e, 'lv', q, 'init') // a(3) is NULL-extended
+  e.execute('INSERT INTO b VALUES (102,30,7)') // a(3) gains its first match
+  assertMatches(e, 'lv', q, 'unmatched row gains a match')
+  e.execute('INSERT INTO b VALUES (103,10,8)') // a(1) gets a second match
+  assertMatches(e, 'lv', q, 'a second match adds a row, no NULL flip')
+  e.execute('DELETE FROM b WHERE k = 10') // a(1) loses all matches → NULL-extended
+  assertMatches(e, 'lv', q, 'losing the last match restores the NULL row')
+  e.execute("INSERT INTO a VALUES (4,99,'w')") // a brand-new unmatched row
+  assertMatches(e, 'lv', q, 'a fresh unmatched row appears NULL-extended')
+})
+
+test('RIGHT and FULL outer joins maintained with aggregation on top', () => {
+  const e = fresh('CREATE TABLE a (aid INTEGER PRIMARY KEY, k INTEGER)')
+  e.execute('CREATE TABLE b (bid INTEGER PRIMARY KEY, k INTEGER, amt INTEGER)')
+  e.execute('INSERT INTO a VALUES (1,10),(2,20)')
+  e.execute('INSERT INTO b VALUES (100,10,5),(101,30,9)')
+  e.execute('CREATE MATERIALIZED VIEW rv AS SELECT a.k AS ak, COUNT(b.amt) AS cb FROM a RIGHT JOIN b ON a.k=b.k GROUP BY a.k')
+  const rq = 'SELECT a.k AS ak, COUNT(b.amt) AS cb FROM a RIGHT JOIN b ON a.k=b.k GROUP BY a.k'
+  assertMatches(e, 'rv', rq, 'right init') // b(101) has no a → NULL a.k group
+  e.execute('CREATE MATERIALIZED VIEW fv2 AS SELECT a.k AS ak, b.k AS bk FROM a FULL JOIN b ON a.k=b.k')
+  const fq = 'SELECT a.k AS ak, b.k AS bk FROM a FULL JOIN b ON a.k=b.k'
+  assertMatches(e, 'fv2', fq, 'full init') // a(2) and b(101) both unmatched
+  e.execute('INSERT INTO a VALUES (3,30)') // now matches b(101); also gives b(101) a match
+  assertMatches(e, 'rv', rq, 'right after a-insert')
+  assertMatches(e, 'fv2', fq, 'full after a-insert')
+  e.execute('DELETE FROM b WHERE bid=100') // a(1) becomes unmatched (FULL), and the k=10 group changes
+  assertMatches(e, 'rv', rq, 'right after b-delete')
+  assertMatches(e, 'fv2', fq, 'full after b-delete')
 })
 
 // ---------------------------------------------------------------------------
@@ -242,37 +348,82 @@ test('non-maintainable queries are rejected with a clear reason', () => {
 // ---------------------------------------------------------------------------
 
 const FUZZ_VIEWS: { name: string; def: string }[] = [
+  // Original shapes (filter, group-by, inner join, join+group-by, DISTINCT).
   { name: 'fz_filter', def: 'SELECT id, cid, amt FROM ord WHERE amt > 10' },
   { name: 'fz_grp', def: 'SELECT cid, COUNT(*), SUM(amt), MIN(amt), MAX(amt) FROM ord GROUP BY cid' },
   { name: 'fz_join', def: 'SELECT c.region, o.amt FROM cust c JOIN ord o ON o.cid=c.cid WHERE o.amt < 50' },
   { name: 'fz_joingrp', def: 'SELECT c.region, COUNT(*), SUM(o.amt), MAX(o.amt) FROM cust c JOIN ord o ON o.cid=c.cid GROUP BY c.region' },
   { name: 'fz_dist', def: 'SELECT DISTINCT cid FROM ord' },
+  // v25.0 shapes — exact decimal SUM/AVG, COUNT(DISTINCT), aggregate FILTER,
+  // HAVING + projection expressions, and the three outer joins (each also with
+  // aggregation on top), stressed by mutations on *both* tables.
+  { name: 'fz_dec', def: 'SELECT cid, SUM(price) AS s, AVG(price) AS a, COUNT(price) AS n FROM ord GROUP BY cid' },
+  { name: 'fz_cdist', def: 'SELECT cid, COUNT(DISTINCT amt) AS d FROM ord GROUP BY cid' },
+  { name: 'fz_filt', def: 'SELECT cid, COUNT(*) FILTER (WHERE amt > 100) AS big, SUM(amt) FILTER (WHERE amt <= 100) AS small FROM ord GROUP BY cid' },
+  { name: 'fz_having', def: 'SELECT cid, SUM(amt) * 2 AS s2 FROM ord GROUP BY cid HAVING SUM(amt) > 100 AND COUNT(*) >= 2' },
+  { name: 'fz_left', def: 'SELECT c.cid AS ck, o.amt FROM cust c LEFT JOIN ord o ON o.cid = c.cid' },
+  { name: 'fz_leftgrp', def: 'SELECT c.region, COUNT(o.id) AS n, SUM(o.amt) AS s FROM cust c LEFT JOIN ord o ON o.cid = c.cid GROUP BY c.region' },
+  { name: 'fz_right', def: 'SELECT c.cid AS ck, o.id AS oid FROM cust c RIGHT JOIN ord o ON o.cid = c.cid' },
+  { name: 'fz_full', def: 'SELECT c.cid AS ck, o.id AS oid FROM cust c FULL JOIN ord o ON o.cid = c.cid' },
 ]
+
+/** A decimal literal of a random magnitude *and a random scale* (0–3 fractional
+ *  digits), so the fuzz exercises the live-max-scale tracking of SUM/AVG. */
+function randPrice(rng: Rng): string {
+  const whole = rng.int(0, 200)
+  const scale = rng.int(0, 3)
+  if (scale === 0) return String(whole)
+  const frac = String(rng.int(0, 10 ** scale - 1)).padStart(scale, '0')
+  return `${whole}.${frac}`
+}
 
 function fuzzSeed(seed: number, steps: number): void {
   const rng = new Rng(seed)
   const regions = ['n', 's', 'e', 'w']
   const e = new Engine()
   e.execute('CREATE TABLE cust (cid INTEGER PRIMARY KEY, region TEXT)')
-  e.execute('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER)')
-  for (let c = 1; c <= 4; c++) e.execute(`INSERT INTO cust VALUES (${c}, '${rng.pick(regions)}')`)
+  e.execute('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER, price DECIMAL)')
+  const liveCust: number[] = []
+  for (let c = 1; c <= 4; c++) {
+    e.execute(`INSERT INTO cust VALUES (${c}, '${rng.pick(regions)}')`)
+    liveCust.push(c)
+  }
+  let nextCid = 5
   for (const v of FUZZ_VIEWS) e.execute(`CREATE MATERIALIZED VIEW ${v.name} AS ${v.def}`)
   let nextId = 1
   const live: number[] = []
+  // cid range spans live customers plus one "dangling" id (5 max+1) so outer
+  // joins regularly see orphan order rows with no parent customer.
+  const someCid = (): number => rng.int(1, nextCid)
   for (let step = 0; step < steps; step++) {
-    const op = live.length === 0 ? 0 : rng.int(0, 2)
-    if (op === 0) {
+    const op = rng.int(0, 9)
+    if (op <= 3 || live.length === 0) {
+      // insert an order
       const id = nextId++
-      e.execute(`INSERT INTO ord VALUES (${id}, ${rng.int(1, 4)}, ${rng.int(0, 80)})`)
+      e.execute(`INSERT INTO ord VALUES (${id}, ${someCid()}, ${rng.int(0, 200)}, ${randPrice(rng)})`)
       live.push(id)
-    } else if (op === 1) {
+    } else if (op <= 5) {
+      // update an order (amt, cid, price all move)
       const id = rng.pick(live)
-      e.execute(`UPDATE ord SET amt = ${rng.int(0, 80)}, cid = ${rng.int(1, 4)} WHERE id = ${id}`)
-    } else {
+      e.execute(`UPDATE ord SET amt = ${rng.int(0, 200)}, cid = ${someCid()}, price = ${randPrice(rng)} WHERE id = ${id}`)
+    } else if (op <= 6) {
+      // delete an order
       const idx = rng.int(0, live.length - 1)
-      const id = live[idx]
+      e.execute(`DELETE FROM ord WHERE id = ${live[idx]}`)
       live.splice(idx, 1)
-      e.execute(`DELETE FROM ord WHERE id = ${id}`)
+    } else if (op <= 7) {
+      // insert a new customer
+      const cid = nextCid++
+      e.execute(`INSERT INTO cust VALUES (${cid}, '${rng.pick(regions)}')`)
+      liveCust.push(cid)
+    } else if (op <= 8) {
+      // move a customer to a new region
+      e.execute(`UPDATE cust SET region = '${rng.pick(regions)}' WHERE cid = ${rng.pick(liveCust)}`)
+    } else if (liveCust.length > 1) {
+      // delete a customer (its orders become orphans → outer-join NULL rows)
+      const idx = rng.int(0, liveCust.length - 1)
+      e.execute(`DELETE FROM cust WHERE cid = ${liveCust[idx]}`)
+      liveCust.splice(idx, 1)
     }
     for (const v of FUZZ_VIEWS) {
       assertMatches(e, v.name, v.def, `fuzz seed=${seed} step=${step} view=${v.name}`)
@@ -280,10 +431,10 @@ function fuzzSeed(seed: number, steps: number): void {
   }
 }
 
-// A handful of fixed seeds, each re-checking all five views after every one of
-// 40 random mutations (≈200 differential comparisons per seed).
+// A handful of fixed seeds, each re-checking all 13 views after every one of 50
+// random mutations on both tables (≈650 differential comparisons per seed).
 for (const seed of [1, 7, 42, 101, 256, 1009]) {
-  test(`differential fuzz — seed ${seed} (5 views × 40 random mutations)`, () => fuzzSeed(seed, 40))
+  test(`differential fuzz — seed ${seed} (13 views × 50 random mutations on two tables)`, () => fuzzSeed(seed, 50))
 }
 
 export const ivmCases = cases
