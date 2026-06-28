@@ -537,6 +537,46 @@ export default function OptimizerPanel({ code }: Props) {
         </div>
       )}
 
+      {stats.sroaRecords.length > 0 && (
+        <div className="opt-passes">
+          <h4>Scalar replacement of aggregates — dictionary devirtualization (Aether 24.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            A <em>multi-use</em> <code>let</code>-bound record is a value but not an atom, so the value
+            inliner leaves it alone — every <code>r.f</code> stays a load plus a projection and the cell
+            stays allocated. This pass rewrites each projection to the field&rsquo;s value directly
+            (&ldquo;replacing the aggregate with scalars&rdquo;), and drops the allocation once every use
+            is gone. Its headline is <strong>dictionary specialisation</strong>: a constrained
+            function&rsquo;s shared dictionary <code>{'{ disp = show }'}</code> collapses so{' '}
+            <code>d.disp x</code> becomes the direct call <code>show x</code>, even across many call
+            sites. Eligible fields are atoms (any number of projections) and single-use function fields
+            of a fully-dissolved record, so a field is built no more often than before and the VM step
+            count can only fall:
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.sroaRecords.map((r, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-name">
+                    <code>{r.record}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    {r.sites} projection{r.sites === 1 ? '' : 's'} of{' '}
+                    {r.fields.map((f, j) => (
+                      <span key={f}>
+                        {j > 0 ? ', ' : ''}
+                        <code>.{f}</code>
+                      </span>
+                    ))}{' '}
+                    devirtualized
+                    {r.eliminated ? ' — record fully dissolved (no allocation)' : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {stats.decisionTrees.length > 0 && <DecisionTrees trees={stats.decisionTrees} />}
 
       {stats.pureFns.length > 0 && (

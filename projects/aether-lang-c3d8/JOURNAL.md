@@ -30,9 +30,11 @@ compile the same optimized core — and the equivalence checks prove it preserve
   `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
   (available-expressions CSE across binders, Aether 14.0), its dual **float-in** (sinking a pure binding
   past a conditional into the one branch that uses it, Aether 19.0), **dead-argument elimination**
-  (dropping a parameter whose value never reaches the result, Aether 20.0), and **case-of-case**
+  (dropping a parameter whose value never reaches the result, Aether 20.0), **case-of-case**
   (commuting a strict eliminator inward through an `if`/`match` producer so the intermediate value is never
-  built, Aether 21.0) — whose output every backend compiles.
+  built, Aether 21.0), and **scalar replacement of aggregates** (devirtualizing a multi-use record's field
+  projections to the field values — so a shared type-class dictionary's `d.disp x` becomes the direct call
+  `show x` and the cell is dropped, Aether 24.0) — whose output every backend compiles.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -1423,9 +1425,14 @@ Plan / steps:
 
 Deferred (future, Aether 10.x+):
 
-- [ ] **Multi-use dictionary specialization** — a value binding used more than once is not inlined
-      (to avoid code blow-up), so a dictionary threaded to several call sites stays a record lookup;
-      a targeted "duplicate-then-collapse" or per-instance method specialization would melt those too.
+- [x] **Multi-use dictionary specialization** — **shipped in Aether 24.0** as *scalar replacement of
+      aggregates* (record-field SROA). A multi-use `let`-bound record (the exact shape a dictionary
+      takes after elaboration) is a value but not an atom, so the inliner declines it and its `r.field`
+      projections stay live; SROA rewrites each projection to the field's *value* directly and drops the
+      cell once it is dead, so `d.disp x` devirtualizes to the direct call `show x` even across many
+      shared call sites — the "duplicate-then-collapse" the deferred note wanted, done without
+      duplicating (atoms substitute freely; a function field only moves, never multiplies). See
+      Aether 24.0 below.
 - [ ] **Inlining across `let`-bound non-values** when a single use is in strict, effect-free position
       (today only syntactic values are inlined), and **common-subexpression elimination**.
 - [ ] **Type-directed optimization** — the optimizer is untyped; feeding inferred types in would
@@ -1600,6 +1607,35 @@ Deferred (future, building on Aether 20.0 dead-argument elimination):
 - [ ] **A measured step-delta per dead parameter** — record entry-count × per-call slot cost saved and
       surface it next to each dropped parameter, the same fuel accounting the GVN/float-in/SAT cost-model
       gate above would share.
+
+Deferred (future, building on Aether 24.0 scalar replacement of aggregates):
+
+- [ ] **SROA through a `let rec` (self-referential) record** — a recursive dictionary (`instance Disp a
+      => Disp (List a)`, whose method closes over the dictionary itself) stays a `let rec` record and so
+      is skipped by the pass; the `derec` rule only demotes non-self-referential ones. The projection
+      `d.disp` could still be devirtualized to the method lambda (which keeps its recursive reference to
+      `d`), since the binding survives — extend `scalarReplaceRecord` to the recursive branch.
+- [ ] **Cost-gated substitution of non-capturing function fields used more than once** — today a
+      function field is inlined only when projected ≤ once (so its closure *moves* rather than
+      multiplying). A method whose body builds *no* closure (a η-reduced var like `show`, already an
+      atom, or a small allocation-free lambda) could be duplicated across many sites with a measured
+      cost gate, devirtualizing instances like `Disp Bool` (`fn b -> if b then "T" else "F"`) that are
+      not atoms but are still cheaper inline than a projection-then-apply.
+- [ ] **Tuple/cons scalar replacement** — the pass handles `record` aggregates; the same "replace the
+      box with its scalars" applies to a multi-use `let`-bound tuple or cons cell projected by `match`
+      (`let p = (a, b) in … match p with (x, y) -> …` across several uses). SpecConstr already covers
+      the *loop-threaded* single-use case; this is its non-recursive, multi-use sibling.
+- [ ] **`recordUpdate` scalar replacement** — `{ r with f = v }` builds a fresh record copying every
+      other field; when the base `r` is a known record literal the update could be folded to one literal
+      (`{ …r's fields…, f = v }`), then SROA'd, so a functional-update chain never allocates an
+      intermediate.
+- [ ] **Record-field deadness** — a `let`-bound record where some field is *never* projected (and the
+      record never escapes whole) is building that field for nothing; drop the dead field from the
+      literal (its value kept only as a `seq` if effectful), the record analogue of dead-argument
+      elimination. Pairs with the constructor-field-deadness item above.
+- [ ] **A measured step-delta + an "eliminated" badge per scalarised record** in the Optimizer core
+      view — record the actual VM-step delta each SROA saved and whether the allocation was dropped, the
+      same fuel accounting the other passes' cost-model gate would share.
 
 ### Aether 11.0 — common-subexpression elimination + a from-scratch effect-&-totality analysis (planned + shipping this session)
 
@@ -2473,3 +2509,56 @@ clean first-order loop over the unpacked fields.
   when the function also escapes, avoids capture, respects the size budget, and declines on recursive /
   match-bodied functions), plus a 5-case in-app self-test group. Full CI gate (scope + conformance +
   lint + tsc + build) green.
+
+- 2026-06-28 (claude): **Aether 24.0 — scalar replacement of aggregates: devirtualizing dictionaries.**
+  Every prior optimizer session attacked *control* abstraction (inlining, SAT, SpecConstr, case-of-case,
+  float-in) or shared *computation* (CSE, GVN, fusion, eqsat). One source of *data* abstraction had
+  survived untouched: a record bound by `let` and used **more than once**. It is a value — it never
+  repeats work or diverges — so the inliner is willing to move it, but it is not an **atom**, so copying
+  it into each use would duplicate the heap allocation. The single-use value rule therefore declines it
+  (`isValue && (isAtom || uses === 1)` is false for a multi-use record), and every `r.field` stays a
+  *load plus a projection* at run time with the cell kept live. The case that makes this matter is
+  **dictionary passing**: a constrained `let twice = fn x -> disp x ^ disp x` elaborates to a function
+  taking a dictionary record `{ disp = show }`, and when the *same* dictionary feeds several call sites
+  it is shared in one `let` — so `d.disp x` never devirtualizes and the type-class call stays an
+  indirect projection-then-apply, the overhead real compilers spend a whole pass to remove. 24.0 is that
+  pass: **record-field SROA** (`scalarReplaceRecord` in `optimize.ts`). At a `let x = { f₁ = v₁, … } in
+  body` it classifies every use of `x` (per-label projection counts + whole-uses, shadow-aware), rewrites
+  each eligible `x.fᵢ` straight to the field value `vᵢ`, and — once no use of `x` remains and the record
+  is pure — drops the allocation outright. So a shared `{ disp = show }` collapses and `d.disp x` becomes
+  the **direct call `show x`** across all six of the gallery example's sites, with the dictionary gone
+  from the optimized core entirely; a plain `{ x = 3, y = 4 }` projected four times folds to the constant
+  `25` with nothing allocated; and a config record read every loop iteration scalarises so `cfg.k`/`cfg.b`
+  become literals inside the worker. **Monotonicity** (the standing "VM steps never rise" invariant) holds
+  by construction from a two-case eligibility rule. An **atom** field (variable/literal) is free to
+  duplicate and effect-free, and a single load never costs more than a load-then-project, so rewriting any
+  number of its projections is a strict (weak) win whether or not the record survives. A **non-atom value**
+  field (a small method lambda) is eligible only when `x` is used *solely* through projections (so
+  substituting them all leaves the record dead and it is dropped) **and** that field is projected at most
+  once (so its single closure **moves** to the call site rather than being built both in the record and
+  inline) — either way the field is built no more often than before, minus a projection. The substitution
+  (`substProjections`) is **capture-safe**: it stops descending into any binder that re-binds `x` (an inner
+  `x` denotes a different value there) or that re-binds a free variable of the field it would substitute
+  (which would steal it) — proven by a row that binds `let s = 7 in r.f` *inside* which `r.f` reads an
+  outer `s = 100` and is correctly left as a projection, yielding `(100, 100)` rather than `(7, 100)`. The
+  fix that made the first cut work was adding the missing `app` case to both the use-classifier and the
+  substituter — projections living inside application arguments (`go (n-1) (acc + cfg.k * n)`) were
+  otherwise invisible. Because it emits ordinary core, the bytecode VM, the JavaScript backend **and** the
+  WebAssembly backend all run the scalarised program and the byte-for-byte VM ≡ JS ≡ WASM equivalence
+  checks re-prove the answer never changed. The **Optimizer panel** gained a `sroa` rewrite row and a
+  "Scalar replacement of aggregates — dictionary devirtualization" section naming each record, the
+  projections it devirtualized, and whether the allocation was dropped; a new **`sroa` gallery example**
+  shares one `Disp` dictionary across three `tag` calls and reads a `cfg` record in a hot loop and watches
+  **both vanish** (cfg 2 sites + dict 6 sites, both fully eliminated, ~18% fewer VM steps). **Verification:**
+  a new 150-program **SROA differential fuzzer** (`runSroaFuzz`) generates random `let`-bound records —
+  atoms and small functions, the exact shape a dictionary takes — projected from many sites, half across a
+  hot loop, and proves each sound three ways (scalarised VM ≡ naive VM ≡ JS backend) and **monotone** (no
+  program took more steps): **150/150, 137 fired, 125 left the record dead, ~15k VM steps erased, best
+  single program 80% fewer, zero failures**. A focused **8-case in-app `sroa` battery** covers the constant
+  fold, a shared-dictionary devirtualization on real `class`/`instance` syntax, a config record read in a
+  loop, a record used whole *and* projected, the capture-avoidance row, an effectful field whose effect is
+  preserved (output `["x"]` re-checked), a function field projected twice that is correctly *not*
+  duplicated, and a dictionary threaded through a recursive fold. The in-app suite grew 110 → **118**
+  cases, all green, plus the new fuzzer badge on the Tests page; the existing 120-program optimizer fuzzer
+  and 150-program SpecConstr fuzzer still pass unchanged (no regression). Full CI gate (scope + conformance
+  + lint + tsc + build) green.
