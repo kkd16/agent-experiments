@@ -28,8 +28,9 @@ const PSEUDO = new Set([
   'li', 'la', 'mv', 'not', 'neg', 'nop', 'j', 'jr', 'ret', 'call', 'tail',
   'seqz', 'snez', 'sltz', 'sgtz',
   'beqz', 'bnez', 'blez', 'bgez', 'bltz', 'bgtz', 'bgt', 'ble', 'bgtu', 'bleu',
-  // RV32F / Zicsr pseudos
+  // RV32F / RV32D / Zicsr pseudos
   'fmv.s', 'fneg.s', 'fabs.s',
+  'fmv.d', 'fneg.d', 'fabs.d',
   'rdcycle', 'rdtime', 'rdinstret', 'rdcycleh', 'rdtimeh', 'rdinstreth',
   'csrr', 'csrw', 'csrs', 'csrc', 'csrwi', 'csrsi', 'csrci',
   'frcsr', 'fscsr', 'frrm', 'fsrm', 'frflags', 'fsflags',

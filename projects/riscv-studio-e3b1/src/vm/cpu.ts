@@ -24,11 +24,20 @@ import type { AssembleResult } from './assembler';
 import {
   f32FromBits,
   bitsFromF32,
+  f64FromBits,
+  bitsFromF64,
   fclass,
+  fclass64,
   toI32,
   toU32,
   fminBits,
   fmaxBits,
+  fminBits64,
+  fmaxBits64,
+  fmaD,
+  isNanBoxed,
+  NANBOX_HI,
+  CANONICAL_NAN,
   FFLAG,
 } from './fp';
 import {
@@ -109,7 +118,7 @@ interface UndoStep {
   /** Snapshot of the privileged trap + CLINT + paging state (changes most steps via mtime). */
   priv: number[];
   reg?: { i: number; prev: number };
-  freg?: { i: number; prev: number };
+  freg?: { i: number; prevLo: number; prevHi: number };
   /**
    * Bytes overwritten this step, oldest first. A single instruction can now touch memory more
    * than once — a paged store updates the datum *and* the PTE's A/D bits — so this is a list.
@@ -164,11 +173,12 @@ const MIDELEG_WMASK = S_INTS;
 const EXC_ILLEGAL = 2;
 const EXC_BREAKPOINT = 3;
 
-// RV32IMAFC + S + U misa: MXL=1 (bits 31:30) + extension bits A,C,F,I,M,S,U.
+// RV32IMAFDC + S + U misa: MXL=1 (bits 31:30) + extension bits A,C,D,F,I,M,S,U.
 const MISA_RV32 =
   0x4000_0000 |
   (1 << 0) | // A
   (1 << 2) | // C
+  (1 << 3) | // D (double-precision float)
   (1 << 5) | // F
   (1 << 8) | // I
   (1 << 12) | // M
@@ -258,8 +268,15 @@ function clmulr(a: number, b: number): number {
 
 export class Cpu {
   readonly regs = new Int32Array(32);
-  /** RV32F float registers, stored as raw 32-bit patterns (FLEN = 32, no NaN-boxing). */
+  /**
+   * Floating-point register file (FLEN = 64, RV32D). Each register is a raw 64-bit pattern split
+   * across two parallel word arrays: `fregs` holds bits [31:0], `fregsHi` holds bits [63:32]. A
+   * single-precision value is **NaN-boxed** — its 32 bits live in `fregs[i]` with `fregsHi[i]` set
+   * to all-ones — so `fregs[i]` still reads a single's pattern for external consumers, while a
+   * double occupies both words. Every write goes through `writeFreg` for time-travel.
+   */
   readonly fregs = new Uint32Array(32);
+  readonly fregsHi = new Uint32Array(32);
   /** Floating-point control & status register: frm = [7:5], fflags = [4:0]. */
   fcsr = 0;
   /** RV32V vector register file: 32 registers × VLENB bytes, stored as a flat little-endian heap. */
@@ -356,6 +373,7 @@ export class Cpu {
   resetState(): void {
     this.regs.fill(0);
     this.fregs.fill(0);
+    this.fregsHi.fill(0);
     this.fcsr = 0;
     this.vregs.fill(0);
     this.vtype = VTYPE_VILL;
@@ -432,10 +450,43 @@ export class Cpu {
     this.regs[i] = v | 0;
   }
 
-  /** Write a float register (by raw bits), logging the prior value for time-travel. */
-  private setF(i: number, bits: number): void {
-    if (this.rec) this.rec.freg = { i, prev: this.fregs[i] };
-    this.fregs[i] = bits >>> 0;
+  /** Write a 64-bit float register (low + high word), logging the prior value for time-travel. */
+  private writeFreg(i: number, lo: number, hi: number): void {
+    if (this.rec) this.rec.freg = { i, prevLo: this.fregs[i], prevHi: this.fregsHi[i] };
+    this.fregs[i] = lo >>> 0;
+    this.fregsHi[i] = hi >>> 0;
+  }
+
+  // --- Typed f-register accessors. Single reads are NaN-box checked; single writes re-box. ---
+
+  /** Raw single-precision bits of `f[i]`, or the canonical NaN when the value isn't NaN-boxed. */
+  private singleBits(i: number): number {
+    return isNanBoxed(this.fregsHi[i]) ? this.fregs[i] >>> 0 : CANONICAL_NAN;
+  }
+  /** `f[i]` as a single-precision JS number (NaN when improperly boxed). */
+  private singleVal(i: number): number {
+    return f32FromBits(this.singleBits(i));
+  }
+  /** `f[i]` as a double-precision JS number. */
+  private doubleVal(i: number): number {
+    return f64FromBits(this.fregs[i], this.fregsHi[i]);
+  }
+  /** Write a NaN-boxed single (raw bits). */
+  private setSingleBits(i: number, bits: number): void {
+    this.writeFreg(i, bits >>> 0, NANBOX_HI);
+  }
+  /** Write a single from a JS number (rounds to single, then NaN-boxes). */
+  private setSingle(i: number, x: number): void {
+    this.setSingleBits(i, bitsFromF32(x));
+  }
+  /** Write a raw 64-bit double pattern. */
+  private setDoubleBits(i: number, lo: number, hi: number): void {
+    this.writeFreg(i, lo, hi);
+  }
+  /** Write a double from a JS number. */
+  private setDouble(i: number, x: number): void {
+    const { lo, hi } = bitsFromF64(x);
+    this.writeFreg(i, lo, hi);
   }
 
   /** Snapshot the bytes a store is about to overwrite, then write the word/half/byte. */
@@ -922,7 +973,10 @@ export class Cpu {
     this.undoCount--;
 
     if (u.reg) this.regs[u.reg.i] = u.reg.prev | 0;
-    if (u.freg) this.fregs[u.freg.i] = u.freg.prev >>> 0;
+    if (u.freg) {
+      this.fregs[u.freg.i] = u.freg.prevLo >>> 0;
+      this.fregsHi[u.freg.i] = u.freg.prevHi >>> 0;
+    }
     // Undo writes newest-first so overlapping ranges restore to the exact prior bytes.
     for (let m = u.mem.length - 1; m >= 0; m--) {
       const w = u.mem[m];
@@ -1382,57 +1436,74 @@ export class Cpu {
   }
 
   private executeFp(d: DecodedInstruction): boolean {
-    const fa = this.fregs[d.rs1];
-    const fb = this.fregs[d.rs2];
+    // Single-precision operands are NaN-box checked; an improperly-boxed register reads as NaN.
+    const fa = this.singleBits(d.rs1);
+    const fb = this.singleBits(d.rs2);
     const a = f32FromBits(fa);
     const b = f32FromBits(fb);
 
     switch (d.mnemonic) {
+      // ---- loads / stores --------------------------------------------------
       case 'flw':
-        this.setF(d.rd, this.vmLoad((this.get(d.rs1) + d.imm) >>> 0, 4));
+        this.setSingleBits(d.rd, this.vmLoad((this.get(d.rs1) + d.imm) >>> 0, 4));
         return false;
       case 'fsw':
         this.vmStore((this.get(d.rs1) + d.imm) >>> 0, 4, this.fregs[d.rs2]);
         return false;
+      case 'fld': {
+        // A 64-bit load is an aligned pair of word loads (low word first, little-endian).
+        const addr = (this.get(d.rs1) + d.imm) >>> 0;
+        const lo = this.vmLoad(addr, 4);
+        const hi = this.vmLoad((addr + 4) >>> 0, 4);
+        this.setDoubleBits(d.rd, lo, hi);
+        return false;
+      }
+      case 'fsd': {
+        const addr = (this.get(d.rs1) + d.imm) >>> 0;
+        this.vmStore(addr, 4, this.fregs[d.rs2]);
+        this.vmStore((addr + 4) >>> 0, 4, this.fregsHi[d.rs2]);
+        return false;
+      }
 
+      // ---- single-precision arithmetic ------------------------------------
       case 'fadd.s':
-        this.setF(d.rd, bitsFromF32(a + b));
+        this.setSingle(d.rd, a + b);
         return false;
       case 'fsub.s':
-        this.setF(d.rd, bitsFromF32(a - b));
+        this.setSingle(d.rd, a - b);
         return false;
       case 'fmul.s':
-        this.setF(d.rd, bitsFromF32(a * b));
+        this.setSingle(d.rd, a * b);
         return false;
       case 'fdiv.s':
         if (b === 0 && !Number.isNaN(a)) this.flag(FFLAG.DZ);
-        this.setF(d.rd, bitsFromF32(a / b));
+        this.setSingle(d.rd, a / b);
         return false;
       case 'fsqrt.s':
         if (a < 0) this.flag(FFLAG.NV);
-        this.setF(d.rd, bitsFromF32(Math.sqrt(a)));
+        this.setSingle(d.rd, Math.sqrt(a));
         return false;
 
       case 'fsgnj.s':
-        this.setF(d.rd, (fa & 0x7fff_ffff) | (fb & 0x8000_0000));
+        this.setSingleBits(d.rd, (fa & 0x7fff_ffff) | (fb & 0x8000_0000));
         return false;
       case 'fsgnjn.s':
-        this.setF(d.rd, (fa & 0x7fff_ffff) | (~fb & 0x8000_0000));
+        this.setSingleBits(d.rd, (fa & 0x7fff_ffff) | (~fb & 0x8000_0000));
         return false;
       case 'fsgnjx.s':
-        this.setF(d.rd, fa ^ (fb & 0x8000_0000));
+        this.setSingleBits(d.rd, fa ^ (fb & 0x8000_0000));
         return false;
 
       case 'fmin.s': {
         const r = fminBits(fa, fb);
         if (r.invalid) this.flag(FFLAG.NV);
-        this.setF(d.rd, r.bits);
+        this.setSingleBits(d.rd, r.bits);
         return false;
       }
       case 'fmax.s': {
         const r = fmaxBits(fa, fb);
         if (r.invalid) this.flag(FFLAG.NV);
-        this.setF(d.rd, r.bits);
+        this.setSingleBits(d.rd, r.bits);
         return false;
       }
 
@@ -1461,33 +1532,144 @@ export class Cpu {
         return false;
       }
       case 'fcvt.s.w':
-        this.setF(d.rd, bitsFromF32(this.get(d.rs1) | 0));
+        this.setSingle(d.rd, this.get(d.rs1) | 0);
         return false;
       case 'fcvt.s.wu':
-        this.setF(d.rd, bitsFromF32(this.get(d.rs1) >>> 0));
+        this.setSingle(d.rd, this.get(d.rs1) >>> 0);
         return false;
 
       case 'fmv.x.w':
-        this.set(d.rd, fa | 0);
+        // Moves the low 32 bits verbatim — no NaN-box interpretation.
+        this.set(d.rd, this.fregs[d.rs1] | 0);
         return false;
       case 'fmv.w.x':
-        this.setF(d.rd, this.get(d.rs1) >>> 0);
+        this.setSingleBits(d.rd, this.get(d.rs1) >>> 0);
         return false;
       case 'fclass.s':
         this.set(d.rd, fclass(fa));
         return false;
 
       case 'fmadd.s':
-        this.setF(d.rd, bitsFromF32(a * b + f32FromBits(this.fregs[d.rs3])));
+        this.setSingle(d.rd, a * b + this.singleVal(d.rs3));
         return false;
       case 'fmsub.s':
-        this.setF(d.rd, bitsFromF32(a * b - f32FromBits(this.fregs[d.rs3])));
+        this.setSingle(d.rd, a * b - this.singleVal(d.rs3));
         return false;
       case 'fnmsub.s':
-        this.setF(d.rd, bitsFromF32(-(a * b) + f32FromBits(this.fregs[d.rs3])));
+        this.setSingle(d.rd, -(a * b) + this.singleVal(d.rs3));
         return false;
       case 'fnmadd.s':
-        this.setF(d.rd, bitsFromF32(-(a * b) - f32FromBits(this.fregs[d.rs3])));
+        this.setSingle(d.rd, -(a * b) - this.singleVal(d.rs3));
+        return false;
+
+      // ---- RV32D: double-precision ----------------------------------------
+      default:
+        return this.executeFpD(d);
+    }
+  }
+
+  /** The double-precision (RV32D) opcode set. Split out to keep `executeFp` readable. */
+  private executeFpD(d: DecodedInstruction): boolean {
+    const da = this.doubleVal(d.rs1);
+    const db = this.doubleVal(d.rs2);
+
+    switch (d.mnemonic) {
+      case 'fadd.d':
+        this.setDouble(d.rd, da + db);
+        return false;
+      case 'fsub.d':
+        this.setDouble(d.rd, da - db);
+        return false;
+      case 'fmul.d':
+        this.setDouble(d.rd, da * db);
+        return false;
+      case 'fdiv.d':
+        if (db === 0 && !Number.isNaN(da)) this.flag(FFLAG.DZ);
+        this.setDouble(d.rd, da / db);
+        return false;
+      case 'fsqrt.d':
+        if (da < 0) this.flag(FFLAG.NV);
+        this.setDouble(d.rd, Math.sqrt(da));
+        return false;
+
+      case 'fsgnj.d':
+        this.setDoubleBits(d.rd, this.fregs[d.rs1], (this.fregsHi[d.rs1] & 0x7fff_ffff) | (this.fregsHi[d.rs2] & 0x8000_0000));
+        return false;
+      case 'fsgnjn.d':
+        this.setDoubleBits(d.rd, this.fregs[d.rs1], (this.fregsHi[d.rs1] & 0x7fff_ffff) | (~this.fregsHi[d.rs2] & 0x8000_0000));
+        return false;
+      case 'fsgnjx.d':
+        this.setDoubleBits(d.rd, this.fregs[d.rs1], this.fregsHi[d.rs1] ^ (this.fregsHi[d.rs2] & 0x8000_0000));
+        return false;
+
+      case 'fmin.d': {
+        const r = fminBits64({ lo: this.fregs[d.rs1], hi: this.fregsHi[d.rs1] }, { lo: this.fregs[d.rs2], hi: this.fregsHi[d.rs2] });
+        if (r.invalid) this.flag(FFLAG.NV);
+        this.setDoubleBits(d.rd, r.bits.lo, r.bits.hi);
+        return false;
+      }
+      case 'fmax.d': {
+        const r = fmaxBits64({ lo: this.fregs[d.rs1], hi: this.fregsHi[d.rs1] }, { lo: this.fregs[d.rs2], hi: this.fregsHi[d.rs2] });
+        if (r.invalid) this.flag(FFLAG.NV);
+        this.setDoubleBits(d.rd, r.bits.lo, r.bits.hi);
+        return false;
+      }
+
+      case 'feq.d':
+        this.set(d.rd, da === db ? 1 : 0);
+        return false;
+      case 'flt.d':
+        if (Number.isNaN(da) || Number.isNaN(db)) this.flag(FFLAG.NV);
+        this.set(d.rd, da < db ? 1 : 0);
+        return false;
+      case 'fle.d':
+        if (Number.isNaN(da) || Number.isNaN(db)) this.flag(FFLAG.NV);
+        this.set(d.rd, da <= db ? 1 : 0);
+        return false;
+
+      case 'fcvt.w.d': {
+        const r = toI32(da, this.rmOf(d));
+        if (r.invalid) this.flag(FFLAG.NV);
+        this.set(d.rd, r.value);
+        return false;
+      }
+      case 'fcvt.wu.d': {
+        const r = toU32(da, this.rmOf(d));
+        if (r.invalid) this.flag(FFLAG.NV);
+        this.set(d.rd, r.value);
+        return false;
+      }
+      case 'fcvt.d.w':
+        this.setDouble(d.rd, this.get(d.rs1) | 0);
+        return false;
+      case 'fcvt.d.wu':
+        this.setDouble(d.rd, this.get(d.rs1) >>> 0);
+        return false;
+
+      case 'fcvt.s.d':
+        // Narrow double → single (rounds), then NaN-box the single result.
+        this.setSingle(d.rd, da);
+        return false;
+      case 'fcvt.d.s':
+        // Widen single → double (exact); reads rs1 with NaN-box checking.
+        this.setDouble(d.rd, this.singleVal(d.rs1));
+        return false;
+
+      case 'fclass.d':
+        this.set(d.rd, fclass64(this.fregs[d.rs1], this.fregsHi[d.rs1]));
+        return false;
+
+      case 'fmadd.d':
+        this.setDouble(d.rd, fmaD(da, db, this.doubleVal(d.rs3)));
+        return false;
+      case 'fmsub.d':
+        this.setDouble(d.rd, fmaD(da, db, -this.doubleVal(d.rs3)));
+        return false;
+      case 'fnmsub.d':
+        this.setDouble(d.rd, fmaD(-da, db, this.doubleVal(d.rs3)));
+        return false;
+      case 'fnmadd.d':
+        this.setDouble(d.rd, fmaD(-da, db, -this.doubleVal(d.rs3)));
         return false;
 
       default:

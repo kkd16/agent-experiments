@@ -59,6 +59,8 @@ function f(index: number): RegRef {
 const FP_RR_FLOAT_SRC = new Set([
   'fadd.s', 'fsub.s', 'fmul.s', 'fdiv.s', 'fmin.s', 'fmax.s',
   'fsgnj.s', 'fsgnjn.s', 'fsgnjx.s', 'feq.s', 'flt.s', 'fle.s',
+  'fadd.d', 'fsub.d', 'fmul.d', 'fdiv.d', 'fmin.d', 'fmax.d',
+  'fsgnj.d', 'fsgnjn.d', 'fsgnjx.d', 'feq.d', 'flt.d', 'fle.d',
 ]);
 
 /**
@@ -260,6 +262,45 @@ export function classify(
     case 'fsgnj.s':
     case 'fsgnjn.s':
     case 'fsgnjx.s':
+      return base('fpadd', [f(rs1), f(rs2)], f(rd));
+
+    // ---- D extension (double precision) ----
+    case 'fld':
+      return base('load', [x(rs1)], f(rd));
+    case 'fsd':
+      return base('store', [x(rs1), f(rs2)], null);
+    case 'fmul.d':
+      return base('fpmul', [f(rs1), f(rs2)], f(rd));
+    case 'fdiv.d':
+      return base('fpdiv', [f(rs1), f(rs2)], f(rd));
+    case 'fsqrt.d':
+      return base('fpdiv', [f(rs1)], f(rd));
+    case 'fmadd.d':
+    case 'fmsub.d':
+    case 'fnmadd.d':
+    case 'fnmsub.d':
+      return base('fpmul', [f(rs1), f(rs2), f(rs3)], f(rd));
+    case 'feq.d':
+    case 'flt.d':
+    case 'fle.d':
+      return base('fpadd', [f(rs1), f(rs2)], x(rd)); // writes an integer register
+    case 'fcvt.w.d':
+    case 'fcvt.wu.d':
+    case 'fclass.d':
+      return base('fpadd', [f(rs1)], x(rd));
+    case 'fcvt.d.w':
+    case 'fcvt.d.wu':
+      return base('fpadd', [x(rs1)], f(rd));
+    case 'fcvt.s.d':
+    case 'fcvt.d.s':
+      return base('fpadd', [f(rs1)], f(rd)); // cross-precision cast: one float source
+    case 'fadd.d':
+    case 'fsub.d':
+    case 'fmin.d':
+    case 'fmax.d':
+    case 'fsgnj.d':
+    case 'fsgnjn.d':
+    case 'fsgnjx.d':
       return base('fpadd', [f(rs1), f(rs2)], f(rd));
 
     // ---- Zicsr ----

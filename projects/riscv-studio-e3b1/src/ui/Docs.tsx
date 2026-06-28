@@ -115,6 +115,23 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
     ],
   },
   {
+    title: 'D extension — double-precision float (RV32D, FLEN = 64)',
+    items: [
+      { m: 'fld / fsd', desc: 'load / store a 64-bit double — fld fd, off(rs1)' },
+      { m: 'fadd / fsub / fmul / fdiv .d', desc: 'IEEE-754 double arithmetic on the 64-bit f-registers' },
+      { m: 'fsqrt.d', desc: 'double-precision square root (full 16-digit accuracy)' },
+      { m: 'fmadd / fmsub / fnmadd / fnmsub .d', desc: 'true fused multiply-add — one rounding, not two' },
+      { m: 'fmin / fmax .d', desc: 'minimum / maximum (NaN- and ±0-aware)' },
+      { m: 'fsgnj / fsgnjn / fsgnjx .d', desc: 'sign-injection (basis of fmv/fneg/fabs.d)' },
+      { m: 'feq / flt / fle .d', desc: 'double compares → an integer 0/1 in rd' },
+      { m: 'fcvt.w.d / fcvt.wu.d', desc: 'double → signed / unsigned int (saturating)' },
+      { m: 'fcvt.d.w / fcvt.d.wu', desc: 'signed / unsigned int → double (exact)' },
+      { m: 'fcvt.s.d / fcvt.d.s', desc: 'narrow double → single (rounds) / widen single → double' },
+      { m: 'fclass.d', desc: 'classify rs1 → a 10-bit mask in rd' },
+      { m: 'NaN-boxing', desc: 'a single in a 64-bit reg is boxed (high word all-ones); a .s op reads an unboxed reg as NaN' },
+    ],
+  },
+  {
     title: 'A extension — atomics (RV32A)',
     items: [
       { m: 'lr.w / sc.w', desc: 'load-reserved / store-conditional (sc → 0 on success)' },
@@ -141,6 +158,7 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'c.andi / c.slli / c.srli / c.srai', desc: 'immediate logic & shifts' },
       { m: 'c.lw / c.sw / c.lwsp / c.swsp', desc: 'word load/store (compact regs, or sp-relative)' },
       { m: 'c.flw / c.fsw / c.flwsp / c.fswsp', desc: 'compressed single-precision float load/store (RV32FC)' },
+      { m: 'c.fld / c.fsd / c.fldsp / c.fsdsp', desc: 'compressed double-precision float load/store (RV32DC)' },
       { m: 'c.j / c.jal / c.jr / c.jalr', desc: 'compressed jumps (link writes pc+2)' },
       { m: 'c.beqz / c.bnez', desc: 'compare a compact register against zero & branch' },
       { m: 'c.nop / c.ebreak / c.unimp', desc: 'compressed no-op / breakpoint / trap' },
@@ -153,7 +171,7 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'wfi', desc: 'wait-for-interrupt (advances; the timer keeps ticking)' },
       { m: 'mstatus / mie / mip', desc: 'global & per-source interrupt enable / pending bits' },
       { m: 'mtvec / mepc / mcause / mtval', desc: 'trap vector, return pc, cause code, faulting value' },
-      { m: 'mscratch / mhartid / misa', desc: 'scratch word, hart id (0), ISA string (RV32IMAFCSU)' },
+      { m: 'mscratch / mhartid / misa', desc: 'scratch word, hart id (0), ISA string (RV32IMAFDCSU)' },
       { m: 'medeleg / mideleg', desc: 'delegate exceptions / interrupts down to supervisor mode' },
     ],
   },
@@ -189,6 +207,7 @@ const PSEUDO: InsDoc[] = [
   { m: 'beqz / bnez / blez / bgez / bltz / bgtz', desc: 'branch comparing rs against zero' },
   { m: 'bgt / ble / bgtu / bleu', desc: 'branches with swapped operands' },
   { m: 'fmv.s / fneg.s / fabs.s', desc: 'float copy / negate / absolute (via fsgnj*.s)' },
+  { m: 'fmv.d / fneg.d / fabs.d', desc: 'double copy / negate / absolute (via fsgnj*.d)' },
   { m: 'rdcycle / rdtime / rdinstret', desc: 'read a hardware counter into rd' },
   { m: 'csrr / csrw / csrs / csrc', desc: 'read / write / set / clear a CSR' },
   { m: 'frcsr / fscsr / frrm / fsrm / frflags / fsflags', desc: 'float CSR read/write shorthands' },
@@ -210,13 +229,14 @@ export default function Docs() {
   return (
     <div className="panel docs">
       <div className="panel-head">
-        <h2>RV32IMAFCV + Zicsr + Zb reference</h2>
+        <h2>RV32IMAFDCV + Zicsr + Zb reference</h2>
       </div>
       <div className="docs-scroll">
         <p className="docs-intro">
           This studio implements the <strong>RV32I</strong> base integer ISA plus the{' '}
           <strong>M</strong> (multiply/divide), <strong>A</strong> (atomics),{' '}
-          <strong>F</strong> (single-precision float), <strong>C</strong> (compressed 16-bit),{' '}
+          <strong>F</strong> (single-precision float), <strong>D</strong> (double-precision float,
+          FLEN = 64 with NaN-boxing), <strong>C</strong> (compressed 16-bit),{' '}
           <strong>B</strong> (bit manipulation: <code>Zba/Zbb/Zbc/Zbs</code>) and <strong>V</strong>{' '}
           (the vector / SIMD extension, RVV 1.0) extensions, together
           with <strong>Zicsr</strong>, the hardware counters, and a machine-mode{' '}
@@ -546,7 +566,7 @@ export default function Docs() {
         </section>
 
         <section>
-          <h3>Float register ABI (RV32F)</h3>
+          <h3>Float register ABI (RV32F/D · FLEN = 64)</h3>
           <table className="doc-table reg-doc">
             <tbody>
               {FREG_ABI_NAMES.map((name, i) => (

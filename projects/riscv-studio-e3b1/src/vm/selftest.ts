@@ -10,6 +10,7 @@ import { EXAMPLES } from './examples';
 import { FB_BASE, FB_W } from './constants';
 import { decode } from './decode';
 import { disassemble } from './disassembler';
+import { fmaD } from './fp';
 import {
   ACCESS_FETCH,
   ACCESS_LOAD,
@@ -525,6 +526,270 @@ const TESTS: Test[] = [
           ecall
       `);
       eq(cpu.output, '1 16', 'compare + fclass');
+    },
+  },
+  // --- RV32D double precision ------------------------------------------------
+  {
+    name: 'RV32D: integer→double→arithmetic→int (3*4+3 = 15)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.d.w fa0, t0
+          li t1, 4
+          fcvt.d.w fa1, t1
+          fmul.d fa2, fa0, fa1
+          fadd.d fa2, fa2, fa0
+          fcvt.w.d a0, fa2
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '15', 'double arithmetic');
+    },
+  },
+  {
+    name: 'RV32D: print_double renders 1/3 to full 64-bit precision',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 1
+          fcvt.d.w fa0, t0
+          li t1, 3
+          fcvt.d.w fa1, t1
+          fdiv.d fa0, fa0, fa1
+          li a7, 3              # print_double
+          ecall
+          li a7, 10
+          ecall
+      `);
+      // A single-precision 1/3 prints ~0.33333334; a double carries ~16 digits.
+      eq(cpu.output, '0.3333333333333333', 'double precision 1/3');
+    },
+  },
+  {
+    name: 'RV32D: fsqrt.d gives sqrt(2) to full double precision',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 2
+          fcvt.d.w fa0, t0
+          fsqrt.d fa0, fa0
+          li a7, 3
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '1.4142135623730951', 'sqrt(2) double');
+    },
+  },
+  {
+    name: 'RV32D: S↔D round-trip (fcvt.d.s then fcvt.s.d preserves a single)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.s.w fa0, t0      # single 3.0
+          fcvt.d.s fa1, fa0     # widen → double 3.0
+          fcvt.s.d fa2, fa1     # narrow → single 3.0
+          feq.s a0, fa0, fa2
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '1', 'cross-precision round-trip');
+    },
+  },
+  {
+    name: 'RV32D: NaN-boxing — a single op reading a double-occupied reg reads NaN',
+    fn: () => {
+      // fa0 holds the double 1.5 (high word 0x3FF80000 ≠ all-ones, so it is *not* NaN-boxed).
+      // fclass.s must therefore see a (quiet) NaN: bit 9 = 512.
+      const cpu = run(`
+        main:
+          li t0, 3
+          fcvt.d.w fa0, t0
+          li t1, 2
+          fcvt.d.w fa1, t1
+          fdiv.d fa0, fa0, fa1   # fa0 = 1.5 (double)
+          fclass.s a0, fa0
+          li a7, 1
+          ecall
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '512', 'unboxed double reads as quiet NaN to a .s op');
+    },
+  },
+  {
+    name: 'RV32D: fmv.w.x NaN-boxes a single (the high word becomes all-ones)',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t0, 0x40490fdb
+          fmv.w.x fa0, t0
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.fregsHi[10] >>> 0, 0xffff_ffff, 'fa0 high word NaN-boxed');
+      eq(cpu.fregs[10] >>> 0, 0x40490fdb, 'fa0 low word = the single');
+    },
+  },
+  {
+    name: 'RV32D: fmadd.d is a true fused multiply-add (single rounding)',
+    fn: () => {
+      // a*b is exactly 1 − 2^-104; it rounds to 1.0, so the naive expression yields 0, while a
+      // genuine fused multiply-add keeps the residual and returns −2^-104.
+      const u = Math.pow(2, -52);
+      const a = 1 + u;
+      const b = 1 - u;
+      const naive = a * b + -1;
+      const fused = fmaD(a, b, -1);
+      eq(naive, 0, 'naive a*b+c double-rounds to 0');
+      eq(fused, -Math.pow(2, -104), 'fused keeps the residual');
+    },
+  },
+  {
+    name: 'RV32D: encode ⇄ decode ⇄ disassemble round-trips for D instructions',
+    fn: () => {
+      const prog = `
+        main:
+          fld   fa0, 0(sp)
+          fadd.d fa2, fa0, fa1
+          fmul.d fa3, fa0, fa1
+          fdiv.d fa4, fa0, fa1
+          fsqrt.d fa5, fa0
+          fmadd.d fa6, fa0, fa1, fa2
+          fcvt.d.w fa0, t0
+          fcvt.w.d a0, fa0
+          fcvt.s.d fa1, fa0
+          fcvt.d.s fa0, fa1
+          fmin.d fa7, fa0, fa1
+          feq.d a0, fa0, fa1
+          fsgnj.d fa0, fa1, fa2
+          fclass.d a0, fa0
+          fsd   fa0, 8(sp)
+      `;
+      const result = assemble(prog);
+      assert(result.ok, `D program assembles: ${result.errors.map((e) => e.message).join('; ')}`);
+      for (const ins of result.instrs) {
+        const d = decode(ins.word);
+        assert(d.mnemonic !== 'unknown' && d.mnemonic !== '?', `decoded 0x${ins.word.toString(16)} as ${d.mnemonic}`);
+        const text = disassemble(ins.word, ins.addr);
+        assert(text.length > 0, 'disassembly empty');
+        // Byte-exact round-trip: re-assembling the disassembly reproduces the same word.
+        const re = assemble(`main:\n  ${text}\n`);
+        assert(re.ok, `re-assemble "${text}": ${re.errors.map((e) => e.message).join('; ')}`);
+        eq(re.instrs[0].word >>> 0, ins.word >>> 0, `round-trip "${text}"`);
+      }
+    },
+  },
+  {
+    name: 'RV32DC: compressed double load/store round-trips through the stack',
+    fn: () => {
+      const cpu = run(`
+        main:
+          addi sp, sp, -16
+          li   t0, 2
+          fcvt.d.w fa0, t0
+          li   t1, 3
+          fcvt.d.w fa1, t1
+          fdiv.d fa0, fa0, fa1   # fa0 = 0.666… (double)
+          c.fsdsp fa0, 0(sp)     # compressed double store
+          c.fldsp fa1, 0(sp)     # compressed double load
+          feq.d a0, fa0, fa1     # bit-exact round-trip
+          li   a7, 1
+          ecall
+          li   a7, 10
+          ecall
+      `);
+      eq(cpu.output, '1', 'compressed double store/load is bit-exact');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'RV32DC: c.fld / c.fsd (register-form) round-trip a double',
+    fn: () => {
+      // c.fld/c.fsd require a compact base (x8..x15) and compact float data (f8..f15): s0=x8,
+      // fa2=f12, fa4=f14 all qualify.
+      const prog = `
+        main:
+          addi sp, sp, -16
+          mv   s0, sp
+          li   t0, 7
+          fcvt.d.w fa2, t0
+          li   t1, 4
+          fcvt.d.w fa3, t1
+          fdiv.d fa2, fa2, fa3   # 1.75 (double)
+          c.fsd fa2, 8(s0)
+          c.fld fa4, 8(s0)
+          feq.d a0, fa2, fa4
+          li   a7, 1
+          ecall
+          li   a7, 10
+          ecall`;
+      const cpu = run(prog);
+      eq(cpu.output, '1', 'c.fld/c.fsd round-trip is bit-exact');
+      const r = assemble(prog, { compress: false });
+      assert(r.ok, `assembles: ${r.errors.map((e) => e.message).join('; ')}`);
+      // With auto-compression off, the only 2-byte instructions are the explicit c.fsd + c.fld.
+      eq(r.instrs.filter((i) => i.size === 2).length, 2, 'c.fld + c.fsd are 2 bytes each');
+    },
+  },
+  {
+    name: 'RV32D: time-travel reverts a 64-bit f-register write exactly',
+    fn: () => {
+      const result = assemble(`
+        main:
+          li t0, 5
+          fcvt.d.w fa0, t0       # fa0 = 5.0 (double)
+          li t1, 2
+          fcvt.d.w fa1, t1
+          fdiv.d fa0, fa0, fa1   # fa0 = 2.5
+          li a7, 10
+          ecall
+      `);
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.step(); // li t0, 5
+      cpu.step(); // fcvt.d.w fa0, t0  -> 5.0
+      cpu.step(); // li t1, 2
+      cpu.step(); // fcvt.d.w fa1, t1  -> 2.0
+      cpu.step(); // fdiv.d fa0,fa0,fa1 -> 2.5
+      const lo = cpu.fregs[10] >>> 0;
+      const hi = cpu.fregsHi[10] >>> 0;
+      eq(hi, 0x4004_0000, 'fa0 = 2.5 after fdiv.d'); // 2.5 = 0x4004000000000000
+      assert(cpu.stepBack(), 'step back over fdiv.d');
+      // fa0 must return to 5.0 (0x4014000000000000): hi 0x40140000, lo 0.
+      eq(cpu.fregsHi[10] >>> 0, 0x4014_0000, 'high word reverted to 5.0');
+      eq(cpu.fregs[10] >>> 0, 0x0000_0000, 'low word reverted');
+      // Stepping forward again must reproduce the 2.5 pattern bit-for-bit.
+      cpu.step();
+      eq(cpu.fregs[10] >>> 0, lo, 'low word reproduced');
+      eq(cpu.fregsHi[10] >>> 0, hi, 'high word reproduced');
+    },
+  },
+  {
+    name: "example: Euler's e (double) == 2.718281828459045",
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'double-e')!.code);
+      // ~15 correct digits — far past single precision's ~7 (a float would print 2.7182817).
+      assert(cpu.output.startsWith('2.71828182845904'), `double e: got ${cpu.output}`);
+    },
+  },
+  {
+    name: 'example: fused multiply-add (double) — fmadd.d beats fmul.d+fadd.d by 1 ulp',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'double-fma')!.code);
+      // The fused result must be exactly one larger than the twice-rounded naive result.
+      const m = cpu.output.match(/naive\s+a\*a\+c = (\d+)[\s\S]*fused\s+a\*a\+c = (\d+)/);
+      assert(!!m, `unexpected output: ${cpu.output}`);
+      const naive = Number(m![1]);
+      const fused = Number(m![2]);
+      eq(fused - naive, 1, `fused ${fused} should be naive ${naive} + 1`);
     },
   },
   {

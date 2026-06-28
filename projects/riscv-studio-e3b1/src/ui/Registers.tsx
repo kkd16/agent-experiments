@@ -7,7 +7,7 @@ import type { Cpu } from '../vm/cpu';
 import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
-import { f32FromBits } from '../vm/fp';
+import { f32FromBits, f64FromBits } from '../vm/fp';
 import { ACCESS_FETCH } from '../vm/mmu';
 import type { TranslationTrace } from '../vm/mmu';
 import { decodeVtype, describeVtype, VLEN, VLENB, VTYPE_VILL } from '../vm/vector';
@@ -125,6 +125,29 @@ function fmtFloat(bits: number): string {
   return String(Number(x.toPrecision(7)));
 }
 
+/** Compact double-precision rendering (RV32D): integers keep a `.0`, others shortest round-trip. */
+function fmtDouble(x: number): string {
+  if (Number.isNaN(x)) return 'NaN';
+  if (x === Infinity) return '∞';
+  if (x === -Infinity) return '-∞';
+  if (x === 0) return Object.is(x, -0) ? '-0.0' : '0.0';
+  if (Number.isInteger(x) && Math.abs(x) < 1e15) return `${x}.0`;
+  // Cap the width so the grid cell stays tidy; 12 sig-figs reads cleanly for a double.
+  const s = String(x);
+  return s.length > 14 ? String(Number(x.toPrecision(12))) : s;
+}
+
+/**
+ * Render one 64-bit f-register: a NaN-boxed value (high word all-ones) reads as a single; anything
+ * else reads as a double. Returns the display text, whether it's a boxed single, and the raw hex.
+ */
+function fmtFreg(lo: number, hi: number): { text: string; boxed: boolean; hex: string } {
+  const boxed = (hi >>> 0) === 0xffff_ffff;
+  const hex = `0x${(hi >>> 0).toString(16).padStart(8, '0')}_${(lo >>> 0).toString(16).padStart(8, '0')}`;
+  const text = boxed ? fmtFloat(lo) : fmtDouble(f64FromBits(lo, hi));
+  return { text, boxed, hex };
+}
+
 export default function Registers({ cpu, prevRegs }: Props) {
   const [radix, setRadix] = useState<Radix>('hex');
   const [showFloat, setShowFloat] = useState(true);
@@ -169,22 +192,28 @@ export default function Registers({ cpu, prevRegs }: Props) {
       {showFloat && (
         <>
           <div className="reg-subhead">
-            <span>float registers (RV32F)</span>
+            <span>float registers (RV32F/D · FLEN=64)</span>
             <span className="reg-fcsr">
               fcsr=0x{cpu.fcsr.toString(16).padStart(2, '0')} · frm={frm} · fflags=
               {fflags.toString(2).padStart(5, '0')}
             </span>
           </div>
           <div className="reg-grid freg-grid">
-            {Array.from({ length: 32 }, (_, i) => (
-              <div key={i} className="reg-cell" title={FREG_ROLES[i]}>
-                <span className="reg-name">
-                  {FREG_ABI_NAMES[i]}
-                  <span className="reg-x">f{i}</span>
-                </span>
-                <span className="reg-val">{fmtFloat(cpu.fregs[i])}</span>
-              </div>
-            ))}
+            {Array.from({ length: 32 }, (_, i) => {
+              const fr = fmtFreg(cpu.fregs[i], cpu.fregsHi[i]);
+              return (
+                <div key={i} className="reg-cell" title={`${FREG_ROLES[i]} · ${fr.hex}`}>
+                  <span className="reg-name">
+                    {FREG_ABI_NAMES[i]}
+                    <span className="reg-x">f{i}</span>
+                  </span>
+                  <span className="reg-val">
+                    {!fr.boxed && <span className="reg-x">d</span>}
+                    {fr.text}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
