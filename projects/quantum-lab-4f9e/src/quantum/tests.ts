@@ -1,5 +1,9 @@
 import { Complex, C } from './Complex';
 import { hermitianEig, vonNeumannEntropy } from './Hermitian';
+import {
+  dtwRun, coinMatrix, classicalLineWalk, positionStats, buildGraph, ctqwEngine,
+  ctqwLimiting, classicalCTRW, laplacian, spatialSearch,
+} from './walks';
 import { matMul, dagger } from './Matrix';
 import { QuantumState } from './QuantumState';
 import { DensityMatrix, simulateDensity } from './DensityMatrix';
@@ -1794,6 +1798,98 @@ export function runTests(): TestResult[] {
       const eT = estimateEnergy(snaps, tfim, 10).median, xT = exactEnergy(st, tfim);
       const eH = estimateEnergy(snaps, heis, 10).median, xH = exactEnergy(st, heis);
       add('Classical shadows', 'Hamiltonian energy ⟨H⟩ from one shadow ≈ exact (TFIM and Heisenberg, n=4)', Math.abs(eT - xT) < 0.4 && Math.abs(eH - xH) < 0.5, `TFIM ${eT.toFixed(2)}/${xT.toFixed(2)}, Heis ${eH.toFixed(2)}/${xH.toFixed(2)}`);
+    }
+  }
+
+  // --- Quantum walks (19.0) ---------------------------------------------------------------
+  {
+    // (1) The coined-walk step is unitary: probability is conserved after many steps.
+    {
+      const run = dtwRun(60, coinMatrix('hadamard'), 'symmetric');
+      const norm = run.finalProb.reduce((a, b) => a + b, 0);
+      add('Quantum walks', 'Discrete-time coined walk conserves probability over 60 steps', Math.abs(norm - 1) < 1e-9, `Σp = ${norm.toFixed(10)}`);
+    }
+    // (2) The Hadamard walk is ballistic: σ_q ≈ 0.5412·t, the √(1−1/√2) constant.
+    {
+      const run = dtwRun(80, coinMatrix('hadamard'), 'symmetric');
+      const k = run.stdev / 80;
+      const want = Math.sqrt(1 - Math.SQRT1_2);
+      add('Quantum walks', 'Hadamard walk spreads ballistically: σ_q ≈ √(1−1/√2)·t ≈ 0.5412 t', Math.abs(k - want) < 0.02, `σ_q/t = ${k.toFixed(4)} vs ${want.toFixed(4)}`);
+    }
+    // (3) Quantum is quadratically faster than classical: σ_q ≫ σ_c = √t.
+    {
+      const run = dtwRun(80, coinMatrix('hadamard'), 'symmetric');
+      const cl = classicalLineWalk(80, run.N, run.center);
+      const sc = positionStats(cl, run.center).stdev;
+      add('Quantum walks', 'Quantum spreading beats classical diffusion: σ_q/σ_c ≫ 1 (σ_c = √t exactly)', Math.abs(sc - Math.sqrt(80)) < 1e-6 && run.stdev / sc > 4, `σ_q=${run.stdev.toFixed(2)}, σ_c=${sc.toFixed(2)}, ratio=${(run.stdev / sc).toFixed(2)}`);
+    }
+    // (4) The symmetric coin start gives a left/right-symmetric distribution.
+    {
+      const run = dtwRun(50, coinMatrix('hadamard'), 'symmetric');
+      let worst = 0;
+      for (let x = 0; x < run.N; x++) worst = Math.max(worst, Math.abs(run.finalProb[x] - (run.finalProb[2 * run.center - x] ?? 0)));
+      add('Quantum walks', 'Symmetric coin start ⇒ left/right-symmetric distribution', worst < 1e-12, `max asymmetry ${worst.toExponential(1)}`);
+    }
+    // (5) CTQW conserves probability.
+    {
+      const eng = ctqwEngine(buildGraph('cycle', 9).adjacency);
+      const p = eng.prob(0, 1.37);
+      const norm = p.reduce((a, b) => a + b, 0);
+      add('Quantum walks', 'Continuous-time walk e^{−iAt} conserves probability', Math.abs(norm - 1) < 1e-9, `Σp = ${norm.toFixed(10)}`);
+    }
+    // (6) CTQW on P2 is a single σ_x rotation: transfer probability = sin²t exactly.
+    {
+      const eng = ctqwEngine(buildGraph('path', 2).adjacency);
+      let worst = 0;
+      for (const t of [0.3, 0.7, 1.1, Math.PI / 2]) worst = Math.max(worst, Math.abs(eng.transport(0, 1, t) - Math.sin(t) ** 2));
+      add('Quantum walks', 'CTQW on P₂ = e^{−iσ_x t}: transfer probability = sin²t', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+    // (7) CTQW on the complete graph matches the closed form 4·sin²(Nt/2)/N².
+    {
+      let worst = 0;
+      for (const N of [5, 8]) {
+        const eng = ctqwEngine(buildGraph('complete', N).adjacency);
+        for (const t of [0.4, 1.1, 2.3]) worst = Math.max(worst, Math.abs(eng.transport(0, 1, t) - 4 * Math.sin(N * t / 2) ** 2 / (N * N)));
+      }
+      add('Quantum walks', 'CTQW on Kₙ matches closed form |a→b|² = 4·sin²(Nt/2)/N²', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+    // (8) Perfect state transfer on the hypercube: antipodal |amp|² = 1 at t = π/2.
+    {
+      let worst = 0;
+      for (const d of [2, 3, 4]) {
+        const g = buildGraph('hypercube', d);
+        const eng = ctqwEngine(g.adjacency);
+        worst = Math.max(worst, Math.abs(eng.transport(0, g.antipode!(0), Math.PI / 2) - 1));
+      }
+      add('Quantum walks', 'Hypercube Q_d has perfect state transfer to the antipode at t = π/2', worst < 1e-9, `max |1−|amp|²| ${worst.toExponential(1)}`);
+    }
+    // (9) Spatial search (Childs–Goldstone) on Kₙ at γ=1/N reaches success ≈ 1 at t ≈ (π/2)√N.
+    {
+      let ok = true; const details: string[] = [];
+      for (const N of [16, 32]) {
+        const adj = buildGraph('complete', N).adjacency;
+        const tStar = Math.PI / 2 * Math.sqrt(N);
+        const times = Array.from({ length: 300 }, (_, i) => (i * 2 * tStar) / 300);
+        const r = spatialSearch(adj, 0, 1 / N, times);
+        ok = ok && r.optSuccess > 0.98 && Math.abs(r.optTime - tStar) / tStar < 0.1;
+        details.push(`K${N}: ${r.optSuccess.toFixed(3)}@${r.optTime.toFixed(2)} (t*≈${tStar.toFixed(2)})`);
+      }
+      add('Quantum walks', 'Quantum spatial search on Kₙ: success → 1 at t ≈ (π/2)√N (the O(√N) speedup)', ok, details.join('; '));
+    }
+    // (10) The classical heat kernel e^{−Lt} stays a probability distribution (nonneg, sums to 1).
+    {
+      const L = laplacian(buildGraph('grid', 3).adjacency);
+      const p = classicalCTRW(L, 0, 0.85);
+      const sum = p.reduce((a, b) => a + b, 0);
+      const minp = Math.min(...p);
+      add('Quantum walks', 'Classical CTRW e^{−Lt} stays a probability distribution (Σ=1, p≥0)', Math.abs(sum - 1) < 1e-9 && minp >= -1e-12, `Σp=${sum.toFixed(8)}, min=${minp.toExponential(1)}`);
+    }
+    // (11) The CTQW time-averaged limiting distribution is normalised.
+    {
+      const eng = ctqwEngine(buildGraph('cycle', 7).adjacency);
+      const lim = ctqwLimiting(eng, 0);
+      const sum = lim.reduce((a, b) => a + b, 0);
+      add('Quantum walks', 'CTQW limiting (time-averaged) distribution is normalised', Math.abs(sum - 1) < 1e-9, `Σ P∞ = ${sum.toFixed(8)}`);
     }
   }
 

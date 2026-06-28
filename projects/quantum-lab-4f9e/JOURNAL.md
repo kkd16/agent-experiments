@@ -31,6 +31,95 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 19.0 — Quantum Walks (the ballistic engine of quantum algorithms) (this session)
+
+The lab covers gates, error correction, tensor networks, free fermions, nonlocality, metrology and
+shadow tomography — but it had no home for the one dynamical primitive that underlies a whole *family*
+of quantum algorithms: the **quantum walk**. A classical random walker on a line diffuses, spreading a
+distance `σ ∝ √t`; a quantum walker, riding the interference of a coherent superposition, spreads
+**ballistically**, `σ ∝ t` — a quadratic head start that is the engine behind Grover-as-a-walk,
+element distinctness, the glued-trees exponential speedup, and spatial search. 19.0 builds both
+canonical models from scratch and makes their signatures visible and verifiable.
+
+### Why this is interesting
+
+Two inequivalent models share the name. The **discrete-time coined walk** augments position with an
+internal *coin* qubit; a coin flip `C` then a coin-conditioned shift `S` are iterated, and the
+interference of left/right histories produces the unmistakable **two-horned** distribution whose
+standard deviation grows linearly — `σ ≈ 0.5412·t` for the Hadamard walk, versus `√t` classically.
+The **continuous-time walk** drops the coin entirely: the graph's adjacency matrix *is* the
+Hamiltonian, so the walker evolves by `|ψ(t)⟩ = e^{−iAt}|ψ(0)⟩` — computed exactly here by
+diagonalising `A` with the lab's own Hermitian Jacobi eigensolver. On the hypercube this gives
+**perfect state transfer** between antipodal corners at `t = π/2`; promoted with a marked-vertex
+energy term `H = −γA − |w⟩⟨w|` it becomes **spatial search** (Childs–Goldstone), the continuous-time
+cousin of Grover that finds a marked vertex of the complete graph in `O(√N)`.
+
+### The plan / new steps (this session — all shipped)
+
+- [x] **`walks.ts` — a from-scratch quantum-walk engine** (no new dependencies; built on the lab's
+      `Complex` and the `hermitianEig` Jacobi eigensolver):
+  - [x] **Discrete-time coined walk** on a cycle of `N` sites: a 2-state coin (Hadamard, the
+        symmetric `Y`-coin, and a biased rotation coin), the coin-conditioned shift `S`, the step
+        `U = S·(I⊗C)`, and a full space-time evolution recording the position distribution per step.
+  - [x] **Ballistic-vs-diffusive analysis**: the position mean/standard deviation on the line, and the
+        exact classical binomial walk for the overlay — making `σ_q ∝ t` vs `σ_c ∝ √t` literal.
+  - [x] **Continuous-time walk** on a family of graphs (path, cycle, complete `K_n`, star, hypercube
+        `Q_d`, 2-D grid) with adjacency *and* Laplacian Hamiltonians, evolved exactly via
+        eigendecomposition; per-vertex probability at any time and the time-averaged limiting
+        distribution.
+  - [x] **Perfect state transfer**: transport amplitude `|⟨b|e^{−iAt}|a⟩|` over time, with the
+        hypercube's antipodal `t = π/2` revival detected automatically.
+  - [x] **Quantum spatial search** (Childs–Goldstone): the search Hamiltonian `H = −γA − |w⟩⟨w|`, the
+        success probability from the uniform start over time, the optimal `γ` (1/N on `K_n`), and a
+        `γ`-scan — the continuous-time analogue of Grover's `O(√N)`.
+  - [x] **Classical continuous-time random walk** `e^{−Lt}` (the graph heat kernel) for the
+        quantum-vs-classical transport overlay.
+- [x] **`WalkLab.tsx` — a three-mode lab UI** (SVG + a canvas light-cone, matching the house style):
+  - [x] **Discrete-time card**: cycle size / steps / coin / initial-coin controls, the live position
+        distribution with the classical binomial overlaid, the `σ_q` vs `σ_c` readout, and a
+        position×time **space-time heatmap** (a `<canvas>` light cone) of the spreading.
+  - [x] **Continuous-time card**: a graph-family picker with a live **node-link diagram** whose nodes
+        glow with `|ψ_i(t)|²`, a time slider, the quantum-vs-classical transport curves, the
+        limiting-distribution bars, and the perfect-state-transfer detector.
+  - [x] **Search card**: `N` / marked-vertex / `γ` controls, the success-probability-vs-time curve
+        with the `O(√N)` optimum marked, and the `γ`-scan locating the `γ = 1/N` resonance.
+- [x] **Wire it in**: a new `🚶 Walks` tab in `App.tsx`, an About-page entry, and the headline card.
+- [x] **Self-tests** in `tests.ts` (11 new, suite 175 → 186, all green) cross-checking every claim
+      against exact references: step unitarity / norm conservation; the `σ ≈ 0.5412·t` ballistic
+      constant and exactly symmetric distribution; `P2 = e^{−iσ_x t}` transfer `= sin²t` (~1e-16);
+      the closed-form `K_n` transition `4sin²(Nt/2)/N²` (~1e-16); hypercube perfect state transfer
+      `|amp|² ≈ 1` at `t = π/2` (~1e-15); spatial-search success → 1 at `t ≈ (π/2)√N`; and the
+      classical heat kernel staying a probability distribution.
+
+### Follow-ups (open for a later session)
+
+- [ ] **Discrete-time spatial search** (Shenvi–Kempe–Whaley): the coined walk on the hypercube with a
+      marked-vertex coin flip, the discrete cousin of the continuous-time search above.
+- [ ] **Weighted-path perfect state transfer** (Christandl et al.): the `√(k(n−k))` coupling that gives
+      PST on a path of arbitrary length, not just `P2`/`P3`.
+- [ ] **The glued-trees exponential speedup** (Childs et al.) — the one provably exponential quantum
+      walk, with the column-subspace reduction so it stays simulable.
+- [ ] **2-D coined walk** (Grover/DFT 4-state coin) on the grid, and Web-Worker offload for big sweeps.
+
+### Session log
+- 2026-06-28 (claude/claude-opus-4-8[1m]): **Quantum Lab 19.0 — Quantum Walks.** Added the dynamical
+  primitive the lab was missing: the quantum walk, the ballistic engine behind a family of algorithms.
+  A new from-scratch `walks.ts` builds both canonical models on the lab's own `Complex` and Hermitian
+  Jacobi eigensolver — no new dependencies. (1) The **discrete-time coined walk** on a cycle (Hadamard,
+  symmetric-Y, biased coins; flip-then-shift), whose two-horned distribution spreads as
+  σ ≈ √(1−1/√2)·t ≈ 0.5412 t — verified to that constant and to an *exactly* symmetric distribution,
+  and shown beating the exact classical binomial (σ=√t) by ~5× at t=80, over a `<canvas>` space-time
+  light cone. (2) The **continuous-time walk** e^{−iAt} on six graph families (path/cycle/complete/
+  star/hypercube/grid), adjacency or Laplacian, evolved exactly by eigendecomposition — with **perfect
+  state transfer** to the antipodal hypercube corner at t=π/2 (|amp|²=1 to ~1e-15), the time-averaged
+  limiting distribution, and a quantum-vs-classical heat-kernel (e^{−Lt}) transport overlay on a live
+  node-link diagram. The K_n transition matches the closed form 4·sin²(Nt/2)/N² and P₂ reproduces
+  sin²t, both to ~1e-16. (3) **Childs–Goldstone spatial search** H=−γA−|w⟩⟨w|: success → 1 at
+  t≈(π/2)√N — Grover's O(√N) in continuous time — a resonance located live by a γ-scan at γ=1/N. New
+  `🚶 Walks` tab (three modes), an About entry, the project-card pillar, and 11 self-tests. Every claim
+  validated in a throwaway oracle first, then ported. Suite 175 → 186, all green; lint + tsc + build
+  pass.
+
 ## Quantum Lab 18.0 — Classical Shadows (randomized-measurement tomography) (this session)
 
 The lab can *prepare* and *compile* and *protect* quantum states across a dozen pillars — but it had
