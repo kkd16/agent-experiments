@@ -3,8 +3,8 @@ import { TEST_CASES, runSuite } from '../lang/testSuite.ts'
 import type { TestResult } from '../lang/testSuite.ts'
 import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
-import { runOptimizerFuzz } from '../lang/optFuzz.ts'
-import type { OptFuzzResult } from '../lang/optFuzz.ts'
+import { runOptimizerFuzz, runSpecConstrFuzz } from '../lang/optFuzz.ts'
+import type { OptFuzzResult, SpecConstrFuzzResult } from '../lang/optFuzz.ts'
 import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
 import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
@@ -12,6 +12,7 @@ export default function Tests() {
   const [results, setResults] = useState<TestResult[] | null>(null)
   const [propResults, setPropResults] = useState<PropSelfResult[] | null>(null)
   const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
+  const [scFuzz, setScFuzz] = useState<SpecConstrFuzzResult | null>(null)
   const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
@@ -22,6 +23,7 @@ export default function Tests() {
       setResults(runSuite())
       setPropResults(runPropertySuite())
       setOptFuzz(runOptimizerFuzz())
+      setScFuzz(runSpecConstrFuzz())
       setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
@@ -185,6 +187,46 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {optFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {scFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              SpecConstr fuzz — call-pattern specialisation soundness{' '}
+              <span className={`tests-group-count ${scFuzz.passed === scFuzz.total ? '' : 'bad'}`}>
+                {scFuzz.passed}/{scFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {scFuzz.total} <em>randomly generated</em> self-recursive loops, each threading a 2- or
+              3-field <strong>tuple or single-constructor</strong> accumulator it destructures every
+              iteration — the exact call pattern Aether 23.0 <strong>SpecConstr</strong> unpacks into a
+              first-order loop over the fields. {scFuzz.fired} of them triggered the pass, and each
+              proves it sound three ways: the <strong>specialised VM result equals the naive VM
+              result</strong>, that value <strong>re-appears on the JavaScript backend</strong>, and the
+              specialised program took <strong>no more VM steps</strong> than the naive one — so the box
+              and its projection vanish with the answer untouched. Across the batch it erased{' '}
+              <strong>{scFuzz.stepsSaved.toLocaleString()} VM steps</strong> (best single loop:{' '}
+              {scFuzz.bestSavingPct}% fewer). Deterministic, so this badge is stable.
+            </p>
+            {scFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {scFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">

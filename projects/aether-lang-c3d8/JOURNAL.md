@@ -1518,10 +1518,22 @@ Deferred (future, building on Aether 23.0 SpecConstr):
       (a streaming `(sum, count)` mean, a parser state) is exactly the shape SpecConstr unpacks; wire the
       18.0 fusion output through SpecConstr so a fused pipeline's residual accumulator loop is also
       first-order, closing the gap between deforestation and unboxing.
-- [ ] **A `specConstr` differential-fuzzer battery in `optFuzz.ts`** — fold the standalone 600-program
-      shape-threaded-loop generator used to validate 23.0 into the in-app optimizer fuzzer, so every
-      Tests run re-proves specialised ≡ naive (VM + JS) and steps-never-rise on freshly generated
-      constructor/tuple loops, not just the curated suite rows.
+- [x] **A `specConstr` differential-fuzzer battery in `optFuzz.ts`** — **shipped (23.0 follow-up).**
+      `runSpecConstrFuzz` generates random self-recursive loops threading a 2/3-field tuple or
+      single-constructor accumulator and re-proves specialised ≡ naive (VM + JS) with steps-never-rise
+      on each; wired into the Tests page as its own live battery (150/150 by default, ~149 firing). The
+      additive-update generator deliberately stays inside Int32 to isolate SpecConstr from the eqsat
+      overflow gap below.
+- [ ] **eqsat overflow soundness gap (found by the 23.0 fuzzer)** — the SpecConstr fuzzer surfaced that
+      the equality-saturation pass can change a result for integer values **well inside ±2^53** (e.g. a
+      loop multiplying its accumulators to ~1.4e9): the optimized VM and JS agree with each other but
+      *disagree with the unoptimized VM*. It reproduces with **no shape to specialise**, so it is an
+      eqsat (reassociation/extraction) issue, not a SpecConstr one — the likely cause is the
+      constant-folder wrapping `+`/`-` with `| 0` (Int32) while `*` uses `Math.trunc` (no wrap), so a
+      reassociated island re-rounds differently once a partial product overflows Int32. Fix options:
+      make the folder's integer wrapping consistent across `+`/`-`/`*` (and matching the VM), or extend
+      the Schwartz–Zippel validation to test on assignments that force the overflow regime so the
+      offending rewrite is vetoed rather than adopted.
 - [ ] **Float the worker's loop-invariant *expressions* out too** — once SAT has captured the static
       arguments, any sub-expression of the worker body that depends only on them (not on a dynamic
       param) is loop-invariant and can be hoisted into the wrapper, computed once instead of per
@@ -1790,6 +1802,27 @@ clean first-order loop over the unpacked fields.
 
 ## Session log
 
+- 2026-06-28 (claude): **Aether 23.0 follow-up — an in-app SpecConstr differential fuzzer (and a real
+  eqsat overflow bug it caught).** The 23.0 pass shipped validated by a curated 7-case suite group and a
+  *standalone* 600-program fuzzer; this folds that fuzzer into the app so the Tests page proves SpecConstr
+  soundness live. `runSpecConstrFuzz` (in `optFuzz.ts`) generates random self-recursive loops threading a
+  2/3-field tuple or single-constructor accumulator they destructure each iteration — the exact call
+  pattern SpecConstr unpacks — and for each proves the specialised program equals the naive one on the VM,
+  re-equals it on the JavaScript backend, and never takes more VM steps; the Tests page renders it as its
+  own "SpecConstr fuzz" battery (150/150, ~149 firing, best ~−74%, deterministic badge). Writing it caught
+  something worth recording: an early version with multiplicative updates went **red** — but the divergence
+  reproduced with *no shape to specialise at all* (a scalar version of the same recurrence, SpecConstr
+  never firing), pinning it on the **equality-saturation** pass, not SpecConstr. The eqsat superoptimiser
+  reassociates an integer-arithmetic island and re-rounds the result for values **well inside ±2^53**
+  (~1.4e9) — the optimised VM and JS agree with each other but disagree with the unoptimised VM — most
+  likely because the constant-folder wraps `+`/`-` with `| 0` (Int32) while `*` uses `Math.trunc` (no
+  wrap), so a reassociated island whose partial product overflows Int32 lands on a different value than the
+  left-to-right original. That is a genuine soundness gap relative to eqsat's stated "exact within ±2^53"
+  guarantee; it is logged in the backlog with two fix options (consistent integer wrapping across the
+  folder + VM, or a Schwartz–Zippel validation that samples the overflow regime so the rewrite is vetoed).
+  The fuzzer's generator uses additive, bounded updates to stay inside Int32 and isolate the SpecConstr
+  rewrite from that unrelated eqsat regime, so its specialise-≡-naive badge is honest. Full CI gate (scope
+  + conformance + lint + tsc + build) green; the existing 400-program optimizer fuzzer stays 400/400.
 - 2026-06-28 (claude): **Aether 23.0 — call-pattern specialisation (SpecConstr): recursing on the
   fields, not the box.** The 17.0 static-argument transform lifts a loop-*invariant* argument out of a
   recursive loop; its dual waste went untouched until now — a loop-*varying* argument that is rebuilt as
