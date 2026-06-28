@@ -475,3 +475,61 @@ export function scanGamma(adj: number[][], w: number, times: number[], lo: numbe
   }
   return { gammas, peaks, bestGamma, bestPeak };
 }
+
+// ======================================================================================
+// Discrete-time spatial search on the hypercube (Shenvi–Kempe–Whaley, 2003)
+// ======================================================================================
+
+export interface SKWResult {
+  n: number;
+  /** success[t] = total probability on the marked vertex after t steps (summed over the coin). */
+  success: number[];
+  /** step index and value of the success maximum. */
+  optStep: number;
+  optSuccess: number;
+  /** the SKW prediction t_f ≈ (π/2)·√(2^{n−1}). */
+  predictedStep: number;
+}
+
+/**
+ * The discrete-time coined cousin of the continuous-time spatial search. The walk lives on the
+ * n-dimensional hypercube (N = 2ⁿ vertices) with an n-dimensional *coin* (one direction per edge).
+ * Each step is S·C where:
+ *   • C applies a Grover diffusion coin G = 2|s_c⟩⟨s_c| − I on every UNMARKED vertex and the marked
+ *     coin −I on the target (the SKW oracle), and
+ *   • S is the flip-flop shift |p, d⟩ → |p ⊕ e_d, d⟩.
+ * From the uniform start the marked vertex's probability is amplified from 1/N to ≈ ½ − O(1/n) in
+ * O(√N) steps — a genuine quadratic speedup (Grover's, realised as a walk). Amplitudes are real
+ * throughout, so this runs in plain Float64 with no complex arithmetic.
+ */
+export function skwHypercubeSearch(n: number, target: number, steps: number): SKWResult {
+  const N = 1 << n;
+  const dim = N * n;
+  let amp = new Float64Array(dim).fill(1 / Math.sqrt(dim));
+  const successAt = (a: Float64Array) => {
+    let s = 0;
+    for (let d = 0; d < n; d++) { const x = a[target * n + d]; s += x * x; }
+    return s;
+  };
+  const success: number[] = [successAt(amp)];
+  for (let t = 0; t < steps; t++) {
+    const coin = new Float64Array(dim);
+    for (let p = 0; p < N; p++) {
+      let sum = 0;
+      for (let d = 0; d < n; d++) sum += amp[p * n + d];
+      if (p === target) {
+        for (let d = 0; d < n; d++) coin[p * n + d] = -amp[p * n + d];
+      } else {
+        const g = (2 / n) * sum;
+        for (let d = 0; d < n; d++) coin[p * n + d] = g - amp[p * n + d];
+      }
+    }
+    const next = new Float64Array(dim);
+    for (let p = 0; p < N; p++) for (let d = 0; d < n; d++) next[((p ^ (1 << d)) * n + d)] = coin[p * n + d];
+    amp = next;
+    success.push(successAt(amp));
+  }
+  let optStep = 0, optSuccess = -1;
+  for (let i = 0; i < success.length; i++) if (success[i] > optSuccess) { optSuccess = success[i]; optStep = i; }
+  return { n, success, optStep, optSuccess, predictedStep: (Math.PI / 2) * Math.sqrt(N / 2) };
+}

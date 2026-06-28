@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   dtwRun, coinMatrix, classicalLineWalk, positionStats,
   buildGraph, ctqwEngine, ctqwLimiting, classicalCTRW, laplacian,
-  spatialSearch, scanGamma,
+  spatialSearch, scanGamma, skwHypercubeSearch,
   type CoinType, type CoinStart, type GraphFamily,
 } from '../quantum/walks';
 
@@ -339,6 +339,19 @@ function MiniBars({ values, highlight }: { values: number[]; highlight: number }
 
 // ======================================================================================== Search
 function SearchCard() {
+  const [sub, setSub] = useState<'cont' | 'skw'>('cont');
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <Seg label="model" value={sub} onChange={(v) => setSub(v as 'cont' | 'skw')}
+          options={[['cont', 'Continuous-time (K_N)'], ['skw', 'Discrete-time (n-cube SKW)']]} />
+      </div>
+      {sub === 'cont' ? <ContinuousSearch /> : <SkwSearch />}
+    </div>
+  );
+}
+
+function ContinuousSearch() {
   const [N, setN] = useState(32);
   const [gammaScale, setGammaScale] = useState(1); // gamma = gammaScale / N
   const [w, setW] = useState(0);
@@ -396,6 +409,50 @@ function SearchCard() {
         continuous-time analogue of running Grover with the wrong rotation angle. The complete graph is
         the cleanest case; the same construction searches the hypercube and lattices above their
         critical dimension.
+      </p>
+    </Card>
+  );
+}
+
+function SkwSearch() {
+  const [dim, setDim] = useState(8);
+  const data = useMemo(() => {
+    const steps = Math.max(8, Math.round(2.2 * (Math.PI / 2) * Math.sqrt((1 << dim) / 2)));
+    const r = skwHypercubeSearch(dim, 0, steps);
+    return { r, steps, N: 1 << dim };
+  }, [dim]);
+  const { r, steps, N } = data;
+  const stepAxis = Array.from({ length: r.success.length }, (_, i) => i);
+
+  return (
+    <Card title="Discrete-time spatial search on the n-cube (Shenvi–Kempe–Whaley)" accent="#34d399">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        The coined cousin of the continuous search. The walk lives on the n-cube (N = 2ⁿ vertices) with
+        an n-dimensional coin; each step applies a <b style={{ color: '#34d399' }}>Grover diffusion
+        coin</b> on every unmarked vertex and a <b style={{ color: '#fbbf24' }}>−I oracle coin</b> on the
+        target, then a flip-flop shift. From the uniform start the marked vertex is amplified from{' '}
+        <code style={{ color: '#67e8f9' }}>1/N</code> to <b style={{ color: '#34d399' }}>≈ ½</b> in{' '}
+        <code style={{ color: '#67e8f9' }}>O(√N)</code> steps — Grover's quadratic speedup, realised as a
+        walk. (The ½ ceiling, not 1, is the famous SKW signature; an amplitude-amplification wrapper
+        lifts it to 1.)
+      </p>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <Slider label="cube dim n" min={3} max={11} step={1} value={dim} onChange={setDim} color="#059669" accent="#6ee7b7" fmt={(v) => `${v}`} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Metric label="N = 2ⁿ" value={`${N}`} color="#67e8f9" />
+        <Metric label="peak success" value={r.optSuccess.toFixed(4)} color="#34d399" />
+        <Metric label="at step" value={`${r.optStep}`} color="#6ee7b7" />
+        <Metric label="predicted (π/2)√(N/2)" value={r.predictedStep.toFixed(1)} color="#94a3b8" />
+        <Metric label="uniform 1/N" value={(1 / N).toFixed(5)} color="#475569" />
+        <Metric label="amplification" value={`${Math.round(r.optSuccess * N)}×`} color="#a78bfa" />
+      </div>
+      <Label>Marked-vertex probability vs walk step (predicted optimum dashed)</Label>
+      <SuccessPlot times={stepAxis} success={r.success} tStar={r.predictedStep} tMax={steps} />
+      <p style={{ fontSize: 10, color: '#475569', margin: '8px 0 0', lineHeight: 1.5 }}>
+        Classically, finding one marked vertex out of N by random probing needs Θ(N) queries; the
+        quantum walk peaks in Θ(√N) — the same quadratic edge as Grover. The success then oscillates
+        back down and revives, so you measure at the first peak.
       </p>
     </Card>
   );

@@ -2,7 +2,7 @@ import { Complex, C } from './Complex';
 import { hermitianEig, vonNeumannEntropy } from './Hermitian';
 import {
   dtwRun, coinMatrix, classicalLineWalk, positionStats, buildGraph, ctqwEngine,
-  ctqwLimiting, classicalCTRW, laplacian, spatialSearch,
+  ctqwLimiting, classicalCTRW, laplacian, spatialSearch, skwHypercubeSearch,
 } from './walks';
 import { matMul, dagger } from './Matrix';
 import { QuantumState } from './QuantumState';
@@ -1885,6 +1885,15 @@ export function runTests(): TestResult[] {
         details.push(`K${N}: ${r.optSuccess.toFixed(3)}@${r.optTime.toFixed(2)} (t*≈${tStar.toFixed(2)})`);
       }
       add('Quantum walks', 'Quantum spatial search on Kₙ: success → 1 at t ≈ (π/2)√N (the O(√N) speedup)', ok, details.join('; '));
+    }
+    // (9b) Discrete-time SKW search on the n-cube: 1/N → ≈½ in O(√N) steps near t ≈ (π/2)√(N/2).
+    {
+      const r = skwHypercubeSearch(8, 0, 40);
+      const N = 1 << 8;
+      const normOK = Math.abs(r.success[0] - 1 / N) < 1e-12; // uniform start mass on the target
+      const amplified = r.optSuccess > 0.35 && r.optSuccess < 0.5; // ½ − O(1/n)
+      const fast = r.optStep > 0 && r.optStep < 1.6 * r.predictedStep;
+      add('Quantum walks', 'Discrete-time SKW search on the n-cube amplifies 1/N → ≈½ in O(√N) steps', normOK && amplified && fast, `peak ${r.optSuccess.toFixed(3)} @ step ${r.optStep} (predict ${r.predictedStep.toFixed(1)}), from 1/N=${(1 / N).toFixed(4)}`);
     }
     // (10) The classical heat kernel e^{−Lt} stays a probability distribution (nonneg, sums to 1).
     {
