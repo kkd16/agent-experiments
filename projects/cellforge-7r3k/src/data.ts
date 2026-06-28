@@ -576,7 +576,172 @@ function integerLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// A single-sheet showcase of v7: the new statistics & linear-algebra engine. The headline
+// is a **live multiple regression** — `LINEST` spills the full Excel statistics block
+// (coefficients, standard errors, R², F, residual df and sums of squares) straight into the
+// grid, with `TREND` forecasting beyond the data. A second block runs a real **one-sample
+// t-test** (t statistic → two-tailed p via `T.DIST.2T`, plus a 95% CI via `CONFIDENCE.T`),
+// and a third **solves a 3×3 linear system** Ax = b with `MINVERSE`/`MMULT` and checks it
+// against the textbook answer. A scatter chart sits over the regression data.
+function statisticsLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Statistics Lab')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+  const box = (a1: string, a2: string): RangeBox => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    return { top: f.row, left: f.col, bottom: t.row, right: t.col }
+  }
+
+  // ---- Live multiple regression: ice-cream sales vs temperature & weekend ----
+  set('A1', 'Statistics Lab — a live regression (LINEST), a t-test, and a solved linear system')
+  fmt('A1', 'A1', { bold: true })
+  set('A2', 'Predict daily sales from the day’s temperature and whether it’s a weekend. LINEST spills the full stats block →')
+  fmt('A2', 'A2', { color: '#97a0b8' })
+
+  set('A3', 'Temp °C (x₁)')
+  set('B3', 'Weekend (x₂)')
+  set('C3', 'Sales $ (y)')
+  fmt('A3', 'C3', { bold: true, align: 'center' })
+  const data: Array<[number, number, number]> = [
+    [17, 0, 182],
+    [21, 0, 215],
+    [24, 1, 312],
+    [28, 0, 264],
+    [30, 1, 372],
+    [22, 0, 221],
+    [26, 1, 330],
+    [19, 0, 196],
+    [31, 0, 289],
+    [27, 1, 341],
+  ]
+  data.forEach(([t, w, s], i) => {
+    const row = 4 + i
+    set(`A${row}`, String(t))
+    set(`B${row}`, String(w))
+    set(`C${row}`, String(s))
+  })
+  fmt('A4', 'C13', { align: 'center' })
+  fmt('C4', 'C13', { nf: 'currency', decimals: 0 })
+
+  // The marquee: one formula spills the 5×3 LINEST statistics block.
+  set('E3', 'LINEST(C4:C13, A4:B13, TRUE, TRUE) — spills →')
+  fmt('E3', 'E3', { color: '#97a0b8' })
+  set('E4', '=LINEST(C4:C13,A4:B13,TRUE,TRUE)')
+  // Annotate what each spilled row means.
+  set('I4', '← m₂(weekend), m₁(temp), intercept')
+  set('I5', '← standard errors')
+  set('I6', '← R² · std error of estimate')
+  set('I7', '← F statistic · residual df')
+  set('I8', '← SSregression · SSresidual')
+  fmt('I4', 'I8', { color: '#97a0b8' })
+  fmt('E4', 'G8', { decimals: 3 })
+
+  set('E10', 'Read-offs')
+  fmt('E10', 'E10', { bold: true })
+  set('E11', 'R² (fit quality)')
+  set('G11', '=INDEX(E4#,3,1)')
+  set('E12', 'Temp coefficient ($/°C)')
+  set('G12', '=INDEX(E4#,1,2)')
+  set('E13', 'Weekend premium ($)')
+  set('G13', '=INDEX(E4#,1,1)')
+  fmt('G11', 'G13', { decimals: 2 })
+
+  // TREND: forecast sales for two new scenarios beyond the data. The scenario inputs
+  // (temp, weekend) live in A18:B19; TREND predicts y for both rows at once.
+  set('A15', 'Forecast (TREND) — predict beyond the data')
+  fmt('A15', 'A15', { bold: true })
+  set('A18', '33')
+  set('B18', '0')
+  set('A19', '33')
+  set('B19', '1')
+  fmt('A18', 'B19', { color: '#5b6480' })
+  set('A16', 'Weekday @33°C')
+  set('C16', '=ROUND(INDEX(TREND(C4:C13,A4:B13,A18:B19),1,1),0)')
+  set('A17', 'Weekend @33°C')
+  set('C17', '=ROUND(INDEX(TREND(C4:C13,A4:B13,A18:B19),2,1),0)')
+  fmt('C16', 'C17', { nf: 'currency', decimals: 0 })
+
+  // ---- One-sample t-test: is mean sales different from $250? ----
+  set('E15', 'One-sample t-test — is mean daily sales ≠ $250?')
+  fmt('E15', 'E15', { bold: true })
+  set('E16', 'n')
+  set('G16', '=COUNT(C4:C13)')
+  set('E17', 'sample mean')
+  set('G17', '=AVERAGE(C4:C13)')
+  set('E18', 'sample sd')
+  set('G18', '=STDEV(C4:C13)')
+  set('E19', 'hypothesised µ₀')
+  set('G19', '250')
+  set('E20', 't = (x̄−µ₀)/(s/√n)')
+  set('G20', '=(G17-G19)/(G18/SQRT(G16))')
+  set('E21', 'two-tailed p')
+  set('G21', '=ROUND(T.DIST.2T(ABS(G20),G16-1),4)')
+  set('E22', '95% CI half-width')
+  set('G22', '=ROUND(CONFIDENCE.T(0.05,G18,G16),1)')
+  set('E23', 'verdict')
+  set('G23', '=IF(G21<0.05,"reject H₀","cannot reject H₀")')
+  fmt('E16', 'E23', { color: '#cdd3e6' })
+  fmt('G17', 'G18', { nf: 'currency', decimals: 1 })
+  fmt('G20', 'G20', { decimals: 3 })
+
+  // ---- Solve a 3×3 linear system Ax = b with MINVERSE / MMULT ----
+  set('A25', 'Solve a 3×3 system  A·x = b  (x = A⁻¹·b) — matrix algebra from scratch')
+  fmt('A25', 'A25', { bold: true })
+  set('A26', 'A =')
+  set('E26', 'b =')
+  fmt('A26', 'A28', { bold: true })
+  fmt('E26', 'E28', { bold: true })
+  // A well-conditioned system whose exact solution is x = (1, 2, 3).
+  const A = [
+    [2, 1, 1],
+    [1, 3, 2],
+    [1, 0, 2],
+  ]
+  const xExact = [1, 2, 3]
+  A.forEach((rowVals, i) => {
+    rowVals.forEach((v, j) => set(`${String.fromCharCode(66 + j)}${26 + i}`, String(v))) // B..D, rows 26..28
+    const b = rowVals.reduce((s, v, j) => s + v * xExact[j], 0)
+    set(`F${26 + i}`, String(b)) // b vector in F26:F28
+  })
+  set('A30', 'x = MINVERSE(A)·b →')
+  set('B30', '=INDEX(MMULT(MINVERSE(B26:D28),F26:F28),1,1)')
+  set('C30', '=INDEX(MMULT(MINVERSE(B26:D28),F26:F28),2,1)')
+  set('D30', '=INDEX(MMULT(MINVERSE(B26:D28),F26:F28),3,1)')
+  fmt('B30', 'D30', { bold: true, decimals: 0 })
+  set('A31', 'det(A) =')
+  set('B31', '=MDETERM(B26:D28)')
+  set('A32', 'x should read 1, 2, 3 — exactly.')
+  fmt('A32', 'A32', { color: '#97a0b8' })
+
+  // A scatter of sales vs temperature with the data the regression fits.
+  set('K3', 'Temp')
+  set('L3', 'Sales')
+  data.forEach(([t, , s], i) => {
+    set(`K${4 + i}`, String(t))
+    set(`L${4 + i}`, String(s))
+  })
+  fmt('K3', 'L3', { bold: true })
+  wb.addChart(
+    { type: 'scatter', range: box('K3', 'L13'), title: 'Sales vs temperature', x: 720, y: 30, w: 360, h: 260, headers: true, labels: true },
+    id,
+  )
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'stats', name: 'Statistics Lab', blurb: 'A live multiple regression (LINEST full stats block), a one-sample t-test, and a 3×3 linear system solved with MINVERSE/MMULT', snapshot: statisticsLab },
   { id: 'integer', name: 'Integer Programming Lab', blurb: 'A 0/1 capital-budgeting knapsack solved by branch & bound, plus an LP with a shadow-price sensitivity report', snapshot: integerLab },
   { id: 'optimize', name: 'Optimization Lab', blurb: 'A linear program + a nonlinear fit, both solved by the ⚖ Solver (exact simplex & Nelder–Mead)', snapshot: optimizationLab },
   { id: 'analysis', name: 'Analysis Lab', blurb: 'GROUPBY/PIVOTBY pivots, spill-range refs (A1#), recursive lambdas & a Data-Table model', snapshot: analysisLab },

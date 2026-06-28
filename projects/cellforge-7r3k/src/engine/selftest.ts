@@ -246,6 +246,65 @@ export function runSelfTests(): TestResult[] {
   eq('array2', 'WRAPCOLS column count', ev('COLUMNS(WRAPCOLS(SEQUENCE(5),2))'), '3')
   eq('array2', 'eta-reduced SUM in BYROW', ev('SUM(BYROW(SEQUENCE(3,3),SUM))'), '45')
 
+  // --- v7: linear algebra (MMULT / MINVERSE / MDETERM / MUNIT) ---
+  // A 2×2 matrix seeded in H1:I2 = [[1,2],[3,4]].
+  const mat = { H1: '1', I1: '2', H2: '3', I2: '4' }
+  eq('linalg', 'MDETERM([[1,2],[3,4]]) = -2', ev('MDETERM(H1:I2)', mat), '-2')
+  eq('linalg', 'MINVERSE bottom-left = 1.5', ev('INDEX(MINVERSE(H1:I2),2,1)', mat), '1.5')
+  eq('linalg', 'M·M⁻¹ = I (top-left 1)', ev('INDEX(MMULT(H1:I2,MINVERSE(H1:I2)),1,1)', mat), '1')
+  eq('linalg', 'M·M⁻¹ off-diagonal = 0', ev('ROUND(INDEX(MMULT(H1:I2,MINVERSE(H1:I2)),1,2),9)', mat), '0')
+  eq('linalg', 'MUNIT(3) diagonal = 1', ev('INDEX(MUNIT(3),2,2)'), '1')
+  eq('linalg', 'MUNIT(3) off-diagonal = 0', ev('INDEX(MUNIT(3),2,3)'), '0')
+  eq('linalg', 'MMULT 2×2·2×1 (row 2) = 15', ev('INDEX(MMULT(H1:I2,H1:H2),2,1)', mat), '15')
+  eq('linalg', 'MMULT dimension clash → #VALUE!', ev('MMULT(H1:I2,H1:I1)', mat), '#VALUE!')
+  eq('linalg', 'MINVERSE of non-square → #VALUE!', ev('INDEX(MINVERSE(H1:I1),1,1)', mat), '#VALUE!')
+  eq('linalg', 'MDETERM of singular = 0', ev('MDETERM(H1:I2)', { H1: '1', I1: '2', H2: '2', I2: '4' }), '0')
+
+  // --- v7: regression (LINEST / TREND / FORECAST / SLOPE …) ---
+  // Five points (A=x, B=y) whose OLS line is y = 1.93x + 0.27, R² = 0.996709.
+  const reg = { A1: '1', A2: '2', A3: '3', A4: '4', A5: '5', B1: '2.1', B2: '4.3', B3: '5.9', B4: '8.2', B5: '9.8' }
+  eq('regression', 'SLOPE = 1.93', ev('ROUND(SLOPE(B1:B5,A1:A5),4)', reg), '1.93')
+  eq('regression', 'INTERCEPT = 0.27', ev('ROUND(INTERCEPT(B1:B5,A1:A5),4)', reg), '0.27')
+  eq('regression', 'RSQ = 0.996709', ev('ROUND(RSQ(B1:B5,A1:A5),6)', reg), '0.996709')
+  eq('regression', 'CORREL = √RSQ', ev('ROUND(CORREL(A1:A5,B1:B5),6)', reg), '0.998353')
+  eq('regression', 'STEYX = 0.20248', ev('ROUND(STEYX(B1:B5,A1:A5),5)', reg), '0.20248')
+  eq('regression', 'FORECAST at x=6 = 11.85', ev('ROUND(FORECAST(6,B1:B5,A1:A5),4)', reg), '11.85')
+  eq('regression', 'TREND at x=6 = FORECAST', ev('ROUND(INDEX(TREND(B1:B5,A1:A5,6),1,1),4)', reg), '11.85')
+  eq('regression', 'LINEST slope (row 1, col 1)', ev('ROUND(INDEX(LINEST(B1:B5,A1:A5),1,1),4)', reg), '1.93')
+  eq('regression', 'LINEST intercept (row 1, col 2)', ev('ROUND(INDEX(LINEST(B1:B5,A1:A5),1,2),4)', reg), '0.27')
+  eq('regression', 'LINEST R² (stats block, row 3)', ev('ROUND(INDEX(LINEST(B1:B5,A1:A5,TRUE,TRUE),3,1),6)', reg), '0.996709')
+  eq('regression', 'LINEST F statistic (row 4)', ev('ROUND(INDEX(LINEST(B1:B5,A1:A5,TRUE,TRUE),4,1),4)', reg), '908.5122')
+  eq('regression', 'LINEST residual df = 3 (row 4, col 2)', ev('INDEX(LINEST(B1:B5,A1:A5,TRUE,TRUE),4,2)', reg), '3')
+  eq('regression', 'LINEST SE of slope (row 2)', ev('ROUND(INDEX(LINEST(B1:B5,A1:A5,TRUE,TRUE),2,1),5)', reg), '0.06403')
+  eq('regression', 'DEVSQ(1..5) = 10', ev('DEVSQ(A1:A5)', reg), '10')
+  eq('regression', 'COVARIANCE.P', ev('ROUND(COVARIANCE.P(A1:A5,B1:B5),4)', reg), '3.86')
+  // Multiple regression: y = 1 + 2·x1 + 3·x2 recovered exactly (Excel reverses the m order).
+  const mreg = {
+    D1: '1', E1: '1', F1: '6', D2: '2', E2: '1', F2: '8', D3: '1', E3: '2', F3: '9',
+    D4: '3', E4: '2', F4: '13', D5: '2', E5: '3', F5: '14', D6: '4', E6: '4', F6: '21',
+  }
+  eq('regression', 'LINEST multiple: m₁(x2)=3', ev('ROUND(INDEX(LINEST(F1:F6,D1:E6),1,1),4)', mreg), '3')
+  eq('regression', 'LINEST multiple: m₂(x1)=2', ev('ROUND(INDEX(LINEST(F1:F6,D1:E6),1,2),4)', mreg), '2')
+  eq('regression', 'LINEST multiple: intercept=1', ev('ROUND(INDEX(LINEST(F1:F6,D1:E6),1,3),4)', mreg), '1')
+
+  // --- v7: statistical distributions (Normal / t / χ² / F + special fns) ---
+  eq('dist', 'NORM.S.DIST(1.96) CDF', ev('ROUND(NORM.S.DIST(1.96,TRUE),7)'), '0.9750021')
+  eq('dist', 'NORM.S.INV(0.975) = 1.95996', ev('ROUND(NORM.S.INV(0.975),5)'), '1.95996')
+  eq('dist', 'NORM.DIST pdf at 0 = 1/√2π', ev('ROUND(NORM.DIST(0,0,1,FALSE),6)'), '0.398942')
+  eq('dist', 'NORM.INV round-trips NORM.DIST', ev('ROUND(NORM.INV(NORM.DIST(1.5,2,3,TRUE),2,3),6)'), '1.5')
+  eq('dist', 'T.DIST(2,10) CDF', ev('ROUND(T.DIST(2,10,TRUE),6)'), '0.963306')
+  eq('dist', 'T.INV.2T(0.05,10) = 2.22814', ev('ROUND(T.INV.2T(0.05,10),5)'), '2.22814')
+  eq('dist', 'CHISQ.DIST.RT(3,2)', ev('ROUND(CHISQ.DIST.RT(3,2),6)'), '0.22313')
+  eq('dist', 'CHISQ.INV.RT(0.05,10) = 18.307', ev('ROUND(CHISQ.INV.RT(0.05,10),4)'), '18.307')
+  eq('dist', 'F.INV.RT(0.05,5,10) = 3.32583', ev('ROUND(F.INV.RT(0.05,5,10),5)'), '3.32583')
+  eq('dist', 'F.DIST round-trips F.INV.RT', ev('ROUND(F.DIST(F.INV.RT(0.05,5,10),5,10,TRUE),4)'), '0.95')
+  eq('dist', 'GAMMA(0.5) = √π', ev('ROUND(GAMMA(0.5),6)'), '1.772454')
+  eq('dist', 'GAMMALN(10) = ln(9!)', ev('ROUND(GAMMALN(10),5)'), '12.80183')
+  eq('dist', 'ERF(1) = 0.8427008', ev('ROUND(ERF(1),7)'), '0.8427008')
+  eq('dist', 'FISHER(0.5)', ev('ROUND(FISHER(0.5),6)'), '0.549306')
+  eq('dist', 'FISHERINV inverts FISHER', ev('ROUND(FISHERINV(FISHER(0.5)),6)'), '0.5')
+  eq('dist', 'CONFIDENCE.NORM(0.05,2.5,50)', ev('ROUND(CONFIDENCE.NORM(0.05,2.5,50),5)'), '0.69295')
+
   // --- v4: engine internals (spill-range refs, recursive lambdas) ---
   r.push(spillRefTests())
   r.push(recursiveLambdaTests())
