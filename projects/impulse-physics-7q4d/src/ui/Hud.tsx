@@ -43,6 +43,11 @@ export default function Hud({ stats }: { stats: StepStats | null }) {
     rows.push(['Fluid density', `${stats.fluidDensity.toFixed(3)} ρ₀`]);
   }
 
+  // MPM telemetry only when a Material Point Method system is live.
+  if (stats && stats.mpmParticles > 0) {
+    rows.push(['MPM points', `${stats.mpmParticles}`]);
+  }
+
   return (
     <div className="hud">
       {rows.map(([label, value]) => (

@@ -1,4 +1,20 @@
-import { Body, Capsule, Circle, FluidSystem, fractureMaterial, Polygon, Rng, Vec2, World, type Shape } from '../engine';
+import {
+  AABB,
+  Body,
+  Capsule,
+  Circle,
+  FluidSystem,
+  fractureMaterial,
+  material as mpmMaterial,
+  MpmSystem,
+  mpmParams,
+  Polygon,
+  Rng,
+  Vec2,
+  World,
+  type MpmMaterial,
+  type Shape,
+} from '../engine';
 
 export type SpawnKind =
   | 'circle'
@@ -9,7 +25,11 @@ export type SpawnKind =
   | 'pentagon'
   | 'random'
   | 'shatter'
-  | 'water';
+  | 'water'
+  | 'sand'
+  | 'snow'
+  | 'jelly'
+  | 'mpm-water';
 
 export const SPAWN_KINDS: SpawnKind[] = [
   'circle',
@@ -21,7 +41,27 @@ export const SPAWN_KINDS: SpawnKind[] = [
   'random',
   'shatter',
   'water',
+  'sand',
+  'snow',
+  'jelly',
+  'mpm-water',
 ];
+
+/** The MPM material a paint tool pours, or null for non-MPM kinds. */
+export function mpmKindMaterial(kind: SpawnKind): MpmMaterial | null {
+  switch (kind) {
+    case 'sand':
+      return mpmMaterial('sand');
+    case 'snow':
+      return mpmMaterial('snow');
+    case 'jelly':
+      return mpmMaterial('jelly');
+    case 'mpm-water':
+      return mpmMaterial('water');
+    default:
+      return null;
+  }
+}
 
 const COLORS = ['#6ea8ff', '#7CFFCB', '#ffd166', '#ff6b6b', '#c792ea', '#4dd2ff', '#ff9e64', '#9ece6a'];
 
@@ -44,8 +84,12 @@ export function spawnShape(kind: SpawnKind, size: number, rng: Rng): Shape {
       // A brittle slab — drop a few, then click them with the Shatter tool.
       return Polygon.box(size * 1.6, size * 1.1);
     case 'water':
-      // The water tool sprays particles (see sprayFluid); this fallback shape is
-      // only here for exhaustiveness and is never actually spawned as a body.
+    case 'sand':
+    case 'snow':
+    case 'jelly':
+    case 'mpm-water':
+      // Particle tools (see sprayFluid / paintMpm); this fallback shape is only
+      // here for exhaustiveness and is never actually spawned as a body.
       return new Circle(size);
     case 'random': {
       const pick = rng.int(0, 4);
@@ -72,6 +116,29 @@ export function sprayFluid(world: World, at: Vec2, rng: Rng): void {
     if (fs.particles.length >= fs.params.maxParticles) break;
     const off = new Vec2(rng.range(-spread, spread), rng.range(-spread, spread));
     fs.add(at.add(off), new Vec2(rng.range(-0.6, 0.6), rng.range(-1.5, -0.3)));
+  }
+}
+
+/**
+ * Pour a clump of MPM material at a world point. If the scene has no MPM system
+ * one is created on the fly over a generous default grid (so any scene can be
+ * sanded/snowed), and particles are added at the paint point with a small
+ * downward velocity. The `kind` selects the constitutive material.
+ */
+export function paintMpm(world: World, at: Vec2, rng: Rng, mat: MpmMaterial): void {
+  let sys = world.mpm;
+  if (!sys) {
+    const region = new AABB(new Vec2(-16, 0), new Vec2(16, 24));
+    sys = new MpmSystem(mpmParams(region, { dx: 0.25, substeps: 8, maxParticles: 16000 }));
+    world.setMpm(sys);
+  }
+  const s = sys.params.dx * 0.5;
+  for (let k = 0; k < 10; k++) {
+    sys.add(
+      at.add(new Vec2(rng.range(-2, 2) * s, rng.range(-2, 2) * s)),
+      mat,
+      new Vec2(rng.range(-0.4, 0.4), rng.range(-1.2, -0.2)),
+    );
   }
 }
 
