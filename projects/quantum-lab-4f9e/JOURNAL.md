@@ -100,10 +100,21 @@ cousin of Grover that finds a marked vertex of the complete graph in `O(√N)`.
       (the quantum-wire result), not just `P2`/`P3`. Wired into the continuous-time graph picker
       (`Wgt-path (PST)`) and verified to `|1−|amp|²| ≈ 1.8e-15` for n = 2,3,5,8. Suite 186 → 187.
 
+### 19.2 increment (also this session)
+
+- [x] **Discrete-time spatial search** (Shenvi–Kempe–Whaley, 2003): the coined cousin of the
+      continuous-time search, on the n-cube (N = 2ⁿ vertices, n-dimensional coin). Each step applies a
+      **Grover diffusion coin** `G = 2|s_c⟩⟨s_c| − I` on every unmarked vertex and a **−I oracle coin**
+      on the target, then a flip-flop shift `|p,d⟩ → |p⊕e_d, d⟩`. From the uniform start the marked
+      vertex is amplified from `1/N` to the famous SKW ceiling `≈ ½ − O(1/n)` in `O(√N)` steps — a
+      genuine quadratic (Grover) speedup, realised as a walk. Real-valued throughout (no complex
+      arithmetic). Added as a `Discrete-time (n-cube SKW)` sub-mode of the Search card (success-vs-step
+      curve, the (π/2)√(N/2) predicted optimum, the amplification factor). Verified: peak success 0.434
+      at step 18 for n = 8 (predicted 17.8), a 111× amplification over the uniform `1/256`, with exact
+      norm conservation. Suite 187 → 188.
+
 ### Follow-ups (open for a later session)
 
-- [ ] **Discrete-time spatial search** (Shenvi–Kempe–Whaley): the coined walk on the hypercube with a
-      marked-vertex coin flip, the discrete cousin of the continuous-time search above.
 - [ ] **The glued-trees exponential speedup** (Childs et al.) — the one provably exponential quantum
       walk, with the column-subspace reduction so it stays simulable.
 - [ ] **2-D coined walk** (Grover/DFT 4-state coin) on the grid, and Web-Worker offload for big sweeps.
@@ -126,8 +137,10 @@ cousin of Grover that finds a marked vertex of the complete graph in `O(√N)`.
   `🚶 Walks` tab (three modes), an About entry, the project-card pillar, and 11 self-tests. Every claim
   validated in a throwaway oracle first, then ported. A 19.1 increment then added Christandl
   **weighted-path perfect state transfer** (the `J_x`-of-a-spin construction giving end-to-end PST on a
-  chain of any length at `t = π`, ≈1.8e-15) as a graph family. Suite 175 → 187, all green; lint + tsc +
-  build pass.
+  chain of any length at `t = π`, ≈1.8e-15) as a graph family, and a 19.2 increment added the
+  **Shenvi–Kempe–Whaley** discrete-time coined search on the n-cube (Grover-diffusion coin + −I oracle
+  + flip-flop shift), amplifying a marked vertex from `1/N` to the ≈½ SKW ceiling in `O(√N)` steps
+  (n=8: 0.434 at step 18, 111×). Suite 175 → 188, all green; lint + tsc + build pass.
 
 ## Quantum Lab 18.0 — Classical Shadows (randomized-measurement tomography) (this session)
 
