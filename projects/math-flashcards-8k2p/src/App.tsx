@@ -272,15 +272,7 @@ function getInitialCustomTimer(): number {
   }
 }
 
-function getInitialZenMode(): boolean {
-  try {
-    const item = window.localStorage.getItem('mathFlashcardsZenMode');
-    return item ? item === 'true' : false;
-  } catch (e) {
-    console.error(e);
-    return false;
-  }
-}
+
 
 
 function getInitialMaxCombo(): number {
@@ -436,6 +428,14 @@ function getInitialNumpadLayout(): 'phone' | 'calculator' {
 
 
 
+function getInitialSoundVolume(): number {
+  if (typeof window !== 'undefined') {
+    const stored = window.localStorage.getItem('mathFlashcardsSoundVolume');
+    if (stored !== null) return parseFloat(stored);
+  }
+  return 0.1;
+}
+
 function getInitialHapticEnabled(): boolean {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsHapticEnabled');
@@ -536,22 +536,24 @@ function getInitialTotalDigitsAnswered(): number {
 }
 
 
-function playSound(type: 'correct' | 'incorrect') {
+function playSound(type: 'correct' | 'incorrect', volume: number = 0.1) {
   try {
     const AudioContextClass = window.AudioContext || ((window as unknown) as { webkitAudioContext: typeof window.AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
-    const osc = ctx.createOscillator();
     const gainNode = ctx.createGain();
+    gainNode.gain.value = volume;
+    gainNode.connect(ctx.destination);
+
+    const osc = ctx.createOscillator();
 
     osc.connect(gainNode);
-    gainNode.connect(ctx.destination);
 
     if (type === 'correct') {
       osc.type = 'sine';
       osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
       osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1);
-      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.setValueAtTime(volume, ctx.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
       osc.start();
       osc.stop(ctx.currentTime + 0.1);
@@ -560,7 +562,7 @@ function playSound(type: 'correct' | 'incorrect') {
       osc.type = 'sawtooth';
       osc.frequency.setValueAtTime(150, ctx.currentTime);
       osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.2);
-      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.setValueAtTime(volume, ctx.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
       osc.start();
       osc.stop(ctx.currentTime + 0.2);
@@ -621,7 +623,7 @@ function App() {
     return () => clearInterval(interval);
   }, [autoDarkMode]);
 
-  const [zenMode, setZenMode] = useState<boolean>(getInitialZenMode());
+
 
   const [fontFamily, setFontFamily] = useState<string>(getInitialFontFamily());
   const [strictMode, setStrictMode] = useState<boolean>(getInitialStrictMode());
@@ -696,13 +698,7 @@ function App() {
 
 
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem('mathFlashcardsZenMode', zenMode.toString());
-    } catch (e) {
-      console.error(e);
-    }
-  }, [zenMode]);
+
 
   const [allowedOperations, setAllowedOperations] = useState<Operation[]>(['+', '-', '*', '/']);
   const [difficulty, setDifficulty] = useState<Difficulty>('easy');
@@ -751,7 +747,7 @@ function App() {
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack'>('time');
+  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen'>('time');
   const [maxComboMultiplier, setMaxComboMultiplier] = useState<number>(getInitialMaxCombo());
 
   useEffect(() => {
@@ -854,6 +850,7 @@ function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [fullHistory, setFullHistory] = useState<HistoryItem[]>(getInitialFullHistory());
   const [hapticEnabled, setHapticEnabled] = useState(getInitialHapticEnabled());
+  const [soundVolume, setSoundVolume] = useState<number>(getInitialSoundVolume());
 
   useEffect(() => {
     try {
@@ -914,7 +911,7 @@ function App() {
       setEnableScreenShake(true);
       setAllowNegatives(false);
       setCustomTimerDuration(45);
-      setZenMode(false);
+
       setMaxComboMultiplier(3);
       setAccessibilityFontSize('normal');
       setAutoDarkMode(false);
@@ -1000,7 +997,7 @@ function App() {
     setHistory(prev => [newHistoryItem, ...prev].slice(0, 100));
     setStreak(0);
     setTodayStreak(0);
-    if (soundEnabled) playSound('incorrect');
+    if (soundEnabled) playSound('incorrect', soundVolume);
     setMessage(`Skipped! Answer was ${correctAns}`);
     setAnswerStatus('incorrect');
     setTimeout(() => { generateProblem(); setAnswerStatus(null); }, 1000);
@@ -1226,7 +1223,7 @@ function App() {
 
     if (isCorrect) {
       setMessage("Correct!");
-      if (soundEnabled) playSound('correct');
+      if (soundEnabled) playSound('correct', soundVolume);
       if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([50, 50, 50]);
       setAnswerStatus('correct');
       setTimeout(() => setAnswerStatus(null), 500);
@@ -1301,7 +1298,7 @@ function App() {
     } else {
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
-        if (soundEnabled) playSound('incorrect');
+        if (soundEnabled) playSound('incorrect', soundVolume);
       if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([200, 100, 200]);
       setAnswerStatus('incorrect');
       setTimeout(() => setAnswerStatus(null), 500);
@@ -1406,7 +1403,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1428,9 +1425,7 @@ function App() {
             {soundEnabled ? '🔊 Sound On' : '🔇 Sound Off'}
           </button>
 
-          <button onClick={() => setZenMode(!zenMode)} className="theme-toggle">
-            {zenMode ? '🌿 Zen On' : '🌿 Zen Off'}
-          </button>
+
 
         </div>
       </div>
@@ -1481,8 +1476,8 @@ function App() {
       </>)}
 
 
-      {!(isSpeedRunActive && focusMode) && !zenMode && (
-      <div className="header-stats-container" style={{ display: hideStats ? 'none' : 'flex' }}>
+      {!(isSpeedRunActive && focusMode) && (
+      <div className="header-stats-container" style={{ display: (hideStats || gameMode === 'zen') ? 'none' : 'flex' }}>
 
         {!hideStats && <div className="daily-goal-container" style={{ width: '100%', marginBottom: '0.5rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#7f8c8d' }}>
@@ -1704,6 +1699,9 @@ function App() {
             <input type="checkbox" checked={hapticEnabled} onChange={(e) => setHapticEnabled(e.target.checked)} />
             Haptic Feedback
           </label>
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem'}}>
+            Sound Volume: <input type="range" min="0" max="1" step="0.1" value={soundVolume} onChange={(e) => setSoundVolume(parseFloat(e.target.value))} />
+          </label>
           <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
             <input type="checkbox" checked={graphPaper} onChange={(e) => setGraphPaper(e.target.checked)} />
             Graph Paper
@@ -1733,7 +1731,7 @@ function App() {
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
-            !zenMode && (
+            gameMode !== 'zen' && (
               (gameMode === 'time' || gameMode === 'timeAttack') ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
                   <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
@@ -1770,11 +1768,12 @@ function App() {
                 />
                 Hardcore
               </label>
-              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless')} className="timer-select">
+              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless' | 'timeAttack' | 'zen')} className="timer-select">
                 <option value="time">Time Limit</option>
                 <option value="questions">Question Limit</option>
                 <option value="endless">Endless</option>
                 <option value="timeAttack">Time Attack</option>
+                <option value="zen">Zen Mode</option>
               </select>
               {(gameMode === 'time' || gameMode === 'timeAttack') ? (
                 <>
@@ -1815,7 +1814,7 @@ function App() {
                   )}
                 </>
               ) : null}
-              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start Challenge</button>
+              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start {gameMode === 'zen' ? 'Zen Mode' : gameMode === 'time' || gameMode === 'timeAttack' ? 'Speed Run' : gameMode === 'questions' ? 'Challenge' : 'Endless Mode'}</button>
             </div>
           )}
         </div>
@@ -1858,9 +1857,9 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder="?"
-            disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
           />
-          <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
+          <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
         </form>
 
         <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
@@ -1869,7 +1868,7 @@ function App() {
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+              disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -1878,7 +1877,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -1886,7 +1885,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -1894,7 +1893,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -1922,7 +1921,7 @@ function App() {
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
 
-      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
+      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
       {isSpeedRunActive && <button type="button" onClick={() => setIsPaused(!isPaused)} className="next-button" style={{marginLeft: '0.5rem'}}>{isPaused ? 'Resume (P)' : 'Pause (P)'}</button>}
 
       {showSummary && (

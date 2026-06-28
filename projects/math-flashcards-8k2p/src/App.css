@@ -760,3 +760,16 @@ h1 {
 .numpad.row-layout button.zero-btn {
   grid-column: auto;
 }
+
+.app-wrapper.zen {
+  animation: zen-breathe 10s ease-in-out infinite alternate;
+}
+
+@keyframes zen-breathe {
+  0% {
+    background-color: #f0f4f8;
+  }
+  100% {
+    background-color: #e0e8f0;
+  }
+}
