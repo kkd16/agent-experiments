@@ -87,13 +87,17 @@ observables. The two canonical ensembles trade locality against generality, and 
   - [x] a **log–log convergence plot** (error vs snapshots against the 1/√M law) and a **shadow-norm
         bar chart** (single-shot variance `3ᵏ` by Pauli weight);
   - [x] a **global-Clifford view** showing locality-independent fidelity/purity for n≤2.
-- [x] **Self-tests** (new "Classical shadows" group, 10 cases): exact channel inversion `E[ρ̂]=ρ` for
+- [x] **The killer app — Hamiltonian energy `⟨H⟩` from one shadow** (`estimateEnergy`/`exactEnergy`
+      over `tfimTerms`/`heisenbergTerms`): every local term of `H = Σ cⱼ Pⱼ` read off the *same*
+      snapshots with a median-of-means confidence interval — exactly the VQE / quantum-chemistry
+      workload — with a live TFIM/Heisenberg card in the tab.
+- [x] **Self-tests** (new "Classical shadows" group, 11 cases): exact channel inversion `E[ρ̂]=ρ` for
       *both* ensembles, the unbiased single-shot estimator, the `3ᵏ` shadow norm, the enumerated
-      Clifford orders (24, 11520), and seeded statistical convergence of the many-observable,
-      purity, Rényi-2 and fidelity estimators.
+      Clifford orders (24, 11520), seeded statistical convergence of the many-observable,
+      purity, Rényi-2 and fidelity estimators, and TFIM/Heisenberg energy estimation.
 - [x] **About-page pillar** + `project.json` description/tags refreshed.
 
-### Verified (all green — suite now 174/174)
+### Verified (all green — suite now 175/175)
 
 - **Channel inversion (the headline), to machine precision**: `E[ρ̂]=ρ` over the full 3ⁿ-basis Pauli
   ensemble (max err ~6e-16, n=2,3) and over the entire enumerated Clifford group (max err ~3e-13,

@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react';
 import { QuantumState } from '../quantum/QuantumState';
 import {
   type Pauli, type PauliString, type ObservableEstimate,
+  type HamModel,
   shadowRng, collectPauliShadows, estimateObservables, estimatePurity, estimateRenyi2,
   estimateFidelity, exactPauli, exactReducedPurity, pauliLabel,
   collectCliffordShadows, estimateCliffordFidelity, estimateCliffordPurity,
+  hamiltonianTerms, estimateEnergy, exactEnergy,
 } from '../quantum/shadows';
 
 // ─────────────────────────────── state presets ───────────────────────────────
@@ -168,8 +170,15 @@ function PauliView({ preset, n, snapshots, seed }: { preset: PresetId; n: number
       return { m, err: Math.max(1e-4, Math.abs(est.estimate - probeExact)) };
     });
 
-    return { estimates, purity, renyi, renyiExact, fidelity, half, probe, conv };
+    return { estimates, purity, renyi, renyiExact, fidelity, half, probe, conv, state, snaps };
   }, [preset, n, snapshots, seed]);
+
+  const [model, setModel] = useState<HamModel>('tfim');
+  const [param, setParam] = useState(1);
+  const energy = useMemo(() => {
+    const terms = hamiltonianTerms(model, n, param);
+    return { est: estimateEnergy(data.snaps, terms, 10), exact: exactEnergy(data.state, terms), nTerms: terms.length };
+  }, [data, model, param, n]);
 
   const maxAbs = Math.max(1, ...data.estimates.map((e) => Math.max(Math.abs(e.exact), Math.abs(e.estimate))));
 
@@ -197,6 +206,35 @@ function PauliView({ preset, n, snapshots, seed }: { preset: PresetId; n: number
           to a subsystem gives <code>Tr(ρ_A²)</code> and hence the 2-Rényi entanglement entropy — entropy from
           randomized measurements, never reconstructing the state.
         </p>
+      </Card>
+
+      <Card title="The killer app — Hamiltonian energy from one shadow" accent="#a78bfa">
+        <p style={{ color: '#475569', fontSize: 11, margin: '0 0 12px', lineHeight: 1.55 }}>
+          Estimating <code>⟨H⟩</code> for a local Hamiltonian <code>H = Σ cⱼ Pⱼ</code> is exactly what
+          variational quantum eigensolvers and quantum chemistry need — and classical shadows do it from a
+          single dataset, every term read off the same snapshots with no per-term re-measurement.
+        </p>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <label style={lab}>Hamiltonian
+            <select value={model} onChange={(e) => setModel(e.target.value as HamModel)} style={sel}>
+              <option value="tfim">TFIM −ΣZZ − h·ΣX</option>
+              <option value="heisenberg">Heisenberg ΣXX+YY+Δ·ZZ</option>
+            </select>
+          </label>
+          <label style={{ ...lab, flex: 1, minWidth: 200 }}>
+            <span style={{ whiteSpace: 'nowrap' }}>{model === 'tfim' ? `field h = ${param.toFixed(2)}` : `Δ = ${param.toFixed(2)}`}</span>
+            <input type="range" min={0} max={2} step={0.05} value={param}
+              onChange={(e) => setParam(parseFloat(e.target.value))} style={{ flex: 1, accentColor: '#7c3aed' }} />
+          </label>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Compare label={`⟨H⟩ shadow (${energy.nTerms} terms)`} est={energy.est.median} exact={energy.exact} hint="energy" />
+          <div style={{ padding: '8px 12px', background: 'rgba(2,6,23,0.5)', border: '1px solid #1e293b', borderRadius: 8, minWidth: 150 }}>
+            <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>median-of-means CI</div>
+            <div style={{ fontSize: 17, fontFamily: 'monospace', fontWeight: 700, color: '#67e8f9' }}>±{(2 * energy.est.stderr).toFixed(3)}</div>
+            <div style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>mean {energy.est.mean.toFixed(3)}</div>
+          </div>
+        </div>
       </Card>
 
       <Card title="Convergence & the shadow norm" accent="#67e8f9">
