@@ -1754,11 +1754,114 @@ Planned and shipped this session:
       the two the way the Solver Lab races CDCL heuristics.
 - [ ] **Omega-test UNSAT certificates** — emit the chain of sound projections (a Farkas-style integer
       witness) and re-check it independently, the way DRAT re-checks SAT refutations.
-- [ ] **Integer optimization** — minimize/maximize a linear objective over the feasible lattice
-      (branch-and-bound on top of the decision procedure), with the optimum cross-checked by brute force.
-- [ ] **Visualize the shadows in 2-D** — draw the polytope, the real shadow's interval, the dark
-      shadow's tightening and the splinter lines for a two-variable system.
+- [x] **Integer optimization** — minimize/maximize a linear objective over the feasible lattice
+      (a linear SAT–UNSAT descent on top of the decision procedure, with exact unboundedness detection),
+      with the optimum cross-checked by brute force. → **shipped in Session 22.**
+- [x] **Visualize the shadows in 2-D** — draw the polytope, the real shadow's interval, and the
+      integer lattice for a two-variable system. → **shipped in Session 22** (lattice + rational region
+      + constraint lines + integer shadow projections + the optimum and its objective level line).
 - [ ] **Bridge to the SMT layer** — expose Omega as an alternative QF_LIA theory solver inside DPLL(T)
       and check it against the existing simplex branch-and-bound on the SMT example suite.
-- [ ] **Presburger quantifier elimination** — extend from the existential/quantifier-free fragment to
-      full Presburger arithmetic (∀/∃ alternation) by the Omega test's `gist`/elimination machinery.
+- [x] **Presburger quantifier elimination** — extend from the existential/quantifier-free fragment to
+      full Presburger arithmetic (∀/∃ alternation). → **shipped in Session 22** via a from-scratch
+      **Cooper's algorithm** (the cleaner route than Omega's `gist`); cross-checked against the Omega
+      test and an exhaustive bounded evaluator.
+
+### Session 22 — the LIA Studio grows up: optimization, the 2-D shadow, and full Presburger
+
+Session 21 shipped the Omega test as a *decision* procedure for quantifier-free integer linear
+arithmetic. This session takes its three most ambitious open ideas and lands all three, turning the
+LIA Studio from a yes/no oracle into a small integer-reasoning workbench. Everything stays
+**BigInt-exact** and everything is **cross-checked against an independent oracle** — the house style.
+
+**1. Integer linear optimization (`src/lia/optimize.ts`).** The Omega test only answers feasibility,
+so optimization is lifted on top of it the same way the MaxSAT engine lifts SAT — a **linear
+SAT–UNSAT descent**: decide feasibility for an incumbent, then repeatedly assert `f ≤ incumbent − 1`
+and re-solve; each SAT tightens the incumbent (possibly far past −1, since we re-anchor to the new
+point's true value), each UNSAT certifies the incumbent optimal. The subtle part is **deciding
+boundedness exactly** before descending, so we never loop forever on an unbounded objective: the
+objective is unbounded toward the optimization sense iff the region is nonempty *and* its recession
+cone holds an integer ray `d` with `A·d ▷₀ 0` and `c·d ≤ −1` — and *that* is itself a QF_LIA
+feasibility query (the homogeneous system plus `c·d ≤ −1`), so it is answered by a **second Omega
+call**. On unbounded we return a concrete improving ray `d` and a feasible anchor; on bounded we
+return the optimum, its witness model, and the full descent of improving values. Maximization is
+minimization of `−f`, flipped back at the boundary. An independent `bruteOptimum` enumerates a box
+and shares no code with any of it.
+
+**2. The 2-D shadow view (`src/lia/geometry.ts`, `components/ShadowPlot.tsx`).** For a two-variable
+system the studio now *draws* the integer/rational gap that the dark shadow is all about: the
+**integer lattice** classified feasible (filled green) / infeasible (faint), the **rational feasible
+polygon** — the real shadow over ℚ — obtained by Sutherland–Hodgman clipping of the viewport against
+each `≥` half-plane, every **constraint line** clipped to the box, the **integer shadow** of the
+region projected as ticks on each axis, and (in Optimize mode) the **optimum** with its objective
+**level line**. The lattice classification is exact BigInt and is the part the self-check pins down;
+the polygon and lines are presentation-only floating point and never feed an assertion.
+
+**3. Full Presburger arithmetic by Cooper's algorithm (`src/lia/presburger.ts`, `pparse.ts`,
+`pexamples.ts`, `components/PresburgerPanel.tsx`).** The headline. The Omega studio decided the
+*quantifier-free* fragment; this adds the whole first-order theory — arbitrary **∀/∃ alternation** —
+a strictly larger language (*"∀x ∃y. 2y = x ∨ 2y = x+1"*, every integer is even or odd, is a
+Presburger truth no QF_LIA query can even *state*). It is decided by a from-scratch **Cooper's
+algorithm** (1972): to remove `∃x` from a quantifier-free body it normalizes `x`'s coefficient to
+±1 (re-variabling `x ↦ ℓ·x`, which **manufactures a divisibility** `ℓ | x`), forms the **−∞
+formula** `F₋∞` (lower bounds fail, upper bounds hold, divisibilities stay periodic), and returns
+`⋁_{j=1..δ} ( F₋∞[j] ∨ ⋁_{b∈B} F[b+j] )` over the lower-bound set `B` and the divisor lcm `δ`;
+`∀x.φ` is `¬∃x.¬φ`. **Divisibility predicates are first-class** (Cooper creates them), the formula
+is kept in NNF throughout, closed sentences collapse to ⊤/⊥, and **open formulas come back as an
+equivalent quantifier-free divisibility condition** the studio prints and lets you test against a
+value (e.g. eliminating `∃y. x = 2y` returns exactly `2 | x`). A tolerant parser handles
+`forall/exists` (and `∀/∃`), `∧ ∨ ¬ → ↔`, and `d | term`; a gallery covers even-or-odd, "no greatest
+integer", residues mod *k*, quantified Chicken-McNuggets, and Frobenius-as-an-open-formula.
+
+**Verification (`src/lia/selfcheck.ts`, wired into the in-app badge *and* the headless harness).**
+The LIA self-test grew from ~900 to **~4,560 assertions** (the whole project's headless harness now
+reports **5,062 passed, 0 failed**, since this session also wired `runLiaChecks` into `selftest.ts`
+for the first time):
+- **Optimization** — 320 random *boxed* systems × {min, max}, where exhaustive `bruteOptimum` is the
+  *true* integer optimum, must match the engine's value exactly (model re-validated, value
+  re-evaluated), plus hand-built finite optima over *unbounded* regions and a battery of
+  unboundedness cases whose **recession ray is re-derived** (point + k·ray stays feasible and
+  strictly improves for k = 1..4).
+- **Presburger** — two fully independent oracles. (a) Existential conjunctions decided by **Cooper
+  vs. the Omega test** on the *same* constraints (the unbounded regime, 260 trials). (b) **Cooper vs.
+  an exhaustive bounded evaluator** on box-guarded ∀/∃ sentences (360 trials) and open-formula
+  eliminations (220 trials) — every quantifier is confined to `[−R, R]`, which makes brute force a
+  *complete* oracle for the true ℤ semantics. Plus parser-driven landmarks with truths known a
+  priori and the `∃y. x=2y ≡ 2|x` elimination checked against parity.
+- **Geometry** — the 2-D lattice's feasibility agrees with both brute force and the Omega verdict on
+  200 random two-variable systems.
+
+Shipped this session:
+- [x] **`src/lia/optimize.ts`** — `optimize(min|max)` by linear SAT–UNSAT descent, exact
+      unboundedness via the recession cone (a second Omega call) with a returned ray, and the
+      independent `bruteOptimum` oracle.
+- [x] **`src/lia/presburger.ts`** — Presburger AST, NNF, **Cooper's `∃`-elimination** (coefficient
+      normalization, −∞ formula, B-set / δ disjunction), `∀ = ¬∃¬`, simplification/constant-folding,
+      a bounded evaluator, pretty-printing and free-variable analysis, under a node budget.
+- [x] **`src/lia/pparse.ts`** — a tolerant Presburger parser (quantifiers, `∧∨¬→↔`, `d | term`
+      divisibility, unicode, scoped binders) and **`src/lia/pexamples.ts`** (10 sentences/formulas).
+- [x] **`src/lia/geometry.ts`** — exact lattice classification + rational region (Sutherland–Hodgman)
+      + clipped constraint lines for the 2-D view.
+- [x] **UI** — `LiaStudio` gained a **Decide / Optimize / Presburger** mode switch; an Optimize panel
+      (min/max toggle, objective input, the optimum + descent or the unbounded ray, a brute-force
+      cross-check row); the **`ShadowPlot`** SVG; and the **`PresburgerPanel`** (verdict pill for
+      closed sentences, the quantifier-free equivalent + a free-variable tester for open formulas).
+- [x] **Self-test** grew ~900 → ~4,560 LIA assertions (5,062 in the headless harness, all green) and
+      `runLiaChecks` is now part of the Node `selftest.ts` harness, not just the browser badge.
+- [x] Refreshed `project.json` (description + 13 new tags) and verified `node scripts/verify-project.mjs
+      satforge-cdcl-x7k2` (scope + conformance + lint + tsc + build) green; the live app drives clean
+      in headless Chromium across all three modes (decide plot, optimize + cross-check, Presburger QE
+      `2 | x`) with the in-app self-test passing and no functional console errors.
+
+**Ideas for next time (open):**
+- [ ] **Omega-test UNSAT certificates** — emit a checkable refutation (a rational Farkas witness for
+      the real-shadow cases, a Gomory/cutting-plane chain for genuinely-integer infeasibility) and
+      re-verify it independently, the way DRAT re-checks SAT refutations.
+- [ ] **Lexicographic / multi-objective integer optimization** — optimize a vector objective by the
+      descent, racing it against the SMT layer's simplex branch-and-bound.
+- [ ] **Bridge to the SMT layer** — expose Omega (and now Cooper) as alternative QF_LIA / Presburger
+      theory solvers inside DPLL(T) and cross-check on the SMT example suite.
+- [ ] **A Cooper elimination trace** in the Presburger panel (the −∞ formula, the B-set, the δ
+      disjunction) the way the Omega studio shows its projection trace.
+- [ ] **Quantifier-elimination–driven simplification** — use Cooper to simplify open formulas to a
+      canonical union-of-congruence-classes form and visualize the residue classes on a number line.

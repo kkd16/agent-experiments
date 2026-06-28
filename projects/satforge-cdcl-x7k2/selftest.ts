@@ -66,6 +66,7 @@ import { runBddChecks } from './src/bdd/selfcheck'
 import { runPbChecks } from './src/pb/selfcheck'
 import { runSlsChecks } from './src/sls/selfcheck'
 import { runPreprocessChecks } from './src/preprocess/selfcheck'
+import { runLiaChecks } from './src/lia/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1364,6 +1365,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of ppr.messages) console.error(m)
   pass += ppr.pass
   fail += ppr.fail
+}
+
+// ---- LIA / Omega test: integer feasibility, optimization, Presburger ---------
+{
+  const liar = runLiaChecks()
+  for (const m of liar.messages) console.error(m)
+  pass += liar.pass
+  fail += liar.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

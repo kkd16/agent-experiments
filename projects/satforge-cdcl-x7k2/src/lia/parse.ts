@@ -148,6 +148,43 @@ function buildCons(rel: Rel, L: Lin, R: Lin): Cons {
   }
 }
 
+export interface ObjectiveOk {
+  ok: true
+  lin: Lin
+}
+export interface ObjectiveErr {
+  ok: false
+  error: string
+}
+export type ObjectiveResult = ObjectiveOk | ObjectiveErr
+
+/**
+ * Parse a linear objective expression against an *existing* variable order (the
+ * names already collected from the constraints). Unknown variables are rejected
+ * — an objective may only score variables the system constrains — so a stray
+ * identifier is a friendly error rather than a silently-unbounded column.
+ */
+export function parseObjective(text: string, names: string[]): ObjectiveResult {
+  const trimmed = text.trim()
+  if (!trimmed) return { ok: false, error: 'empty objective' }
+  const reg = new Map<string, number>()
+  names.forEach((n, i) => reg.set(n, i))
+  const before = names.length
+  // Clone the names array so parseExpr can append, then detect new entries.
+  const scratch = [...names]
+  let lin: Lin
+  try {
+    lin = parseExpr(trimmed, reg, scratch)
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'parse error' }
+  }
+  if (scratch.length > before) {
+    const extra = scratch.slice(before).join(', ')
+    return { ok: false, error: `objective references unknown variable(s): ${extra}` }
+  }
+  return { ok: true, lin }
+}
+
 export function parseLia(text: string): ParseResult {
   const reg = new Map<string, number>()
   const names: string[] = []
