@@ -21,8 +21,11 @@ export {
 export { omegaTest, verifyModel, OmegaBudgetError } from './omega'
 export type { Cons, OmegaResult, OmegaOptions } from './omega'
 
-export { parseLia } from './parse'
-export type { ParseResult, ParseOk, ParseErr } from './parse'
+export { parseLia, parseObjective } from './parse'
+export type { ParseResult, ParseOk, ParseErr, ObjectiveResult, ObjectiveOk, ObjectiveErr } from './parse'
+
+export { optimize, objectiveValue, bruteOptimum } from './optimize'
+export type { Dir, OptimizeResult, OptimizeOptions, OptStep } from './optimize'
 
 export { bruteForce } from './brute'
 export type { BruteResult } from './brute'
