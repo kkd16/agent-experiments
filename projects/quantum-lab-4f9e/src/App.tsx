@@ -27,14 +27,15 @@ import NonlocalityLab from './components/NonlocalityLab';
 import DeviceIndependentLab from './components/DeviceIndependentLab';
 import MetrologyLab from './components/MetrologyLab';
 import ShadowsLab from './components/ShadowsLab';
+import WalkLab from './components/WalkLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'metrology' | 'shadows' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'metrology' | 'shadows' | 'walks' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'shadows', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'shadows', 'walks', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -146,7 +147,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'shadows', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'metrology', 'shadows', 'walks', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -173,6 +174,7 @@ export default function App() {
                 : tab === 'deviceindep' ? '🛡️ Device-Indep'
                 : tab === 'metrology' ? '📡 Metrology'
                 : tab === 'shadows' ? '🃏 Shadows'
+                : tab === 'walks' ? '🚶 Walks'
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
@@ -242,6 +244,7 @@ export default function App() {
               {activeTab === 'deviceindep' && <DeviceIndependentLab />}
               {activeTab === 'metrology' && <MetrologyLab />}
               {activeTab === 'shadows' && <ShadowsLab />}
+              {activeTab === 'walks' && <WalkLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
@@ -678,8 +681,12 @@ function AboutPage() {
           content: "A wholly different model of computation, built from scratch and cross-checked against the circuit model. Instead of applying gates, you prepare one large, fixed, entangled cluster state and compute purely by measuring its qubits one at a time in adaptively chosen single-qubit bases — the entanglement is the resource and (irreversible, random) measurement drives the computation. The lab implements the measurement calculus (Danos–Kashefi–Panangaden): patterns of N (prepare |+⟩), E (entangle with CZ), and M (measure at plane-angle φ = (−1)^{sX}·α + sZ·π, fed forward from earlier outcomes), with a universal {J(α), CZ} compiler that turns any single-qubit unitary (via its Euler angles) and CNOT into a cluster + a measurement schedule, propagating the Pauli byproduct operators symbolically. A dynamic state-vector engine frees each qubit the moment it is measured, so a computation of any depth keeps a live register no bigger than the number of logical wires — the MBQC memory advantage made concrete (a depth-deep two-wire circuit spreads over dozens of physical qubits but never holds more than three at once). The headline is determinism from randomness: every run records different measurement outcomes, yet undoing the known byproduct frame yields a byte-for-byte identical logical state — verified to machine precision against an independent dense circuit oracle over hundreds of random inputs and outcome strings. Cluster states are shown to be graph states, the +1 eigenstates of the generators K_v = X_v ∏_{w∼v} Z_w.",
         },
         {
+          title: 'Quantum Walks — the Ballistic Engine of Quantum Algorithms',
+          content: 'A classical random walker diffuses (σ ∝ √t); a quantum walker, riding coherent interference, spreads ballistically (σ ∝ t) — the quadratic head start behind Grover-as-a-walk and element distinctness. The Walks tab builds both canonical models from scratch. The discrete-time COINED walk pairs a position register with a coin qubit; flip-then-shift iterates into the unmistakable two-horned distribution whose width grows as σ ≈ √(1−1/√2)·t ≈ 0.5412 t, drawn over a space-time light cone and against the exact classical binomial. The CONTINUOUS-TIME walk drops the coin: the graph adjacency matrix IS the Hamiltonian, so the walker evolves by e^{−iAt}, computed exactly by diagonalising it with the lab\'s own Hermitian eigensolver — giving PERFECT STATE TRANSFER between antipodal hypercube corners at t = π/2, the time-averaged limiting distribution, and a quantum-vs-classical (heat-kernel e^{−Lt}) transport overlay on paths, cycles, complete/star graphs, hypercubes and grids. Promoted with a marked-vertex well, H = −γA − |w⟩⟨w| becomes Childs–Goldstone SPATIAL SEARCH: from the uniform start the amplitude rushes onto the marked vertex of K_N, hitting success ≈ 1 at t ≈ (π/2)√N — Grover\'s O(√N) in continuous time — a resonance that only fires near the critical γ = 1/N, shown by a live γ-scan.',
+        },
+        {
           title: 'Phase Estimation & Tooling',
-          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 175-case in-browser self-test suite proving the engine correct against exact references — including the Quantum Shannon Decomposition synthesising arbitrary n-qubit gates to machine precision at the textbook ¾·4ⁿ CNOT count, the Solovay–Kitaev compiler reproducing arbitrary gates up to global phase and magic-state distillation\'s 35 p³ law, the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
+          content: 'Quantum Phase Estimation recovers eigenphases via phase kickback + inverse QFT. Circuits export to OpenQASM 2.0 (Qiskit/IBM-compatible) and JSON, with shareable URLs, depth/gate metrics, and a 186-case in-browser self-test suite proving the engine correct against exact references — including the Quantum Shannon Decomposition synthesising arbitrary n-qubit gates to machine precision at the textbook ¾·4ⁿ CNOT count, the Solovay–Kitaev compiler reproducing arbitrary gates up to global phase and magic-state distillation\'s 35 p³ law, the measurement-based one-way computer reproducing the circuit model to machine precision — including Shor\'s order-finding distribution vs an exact analytic comb and the end-to-end factoring of 15/21/33/35, the free-fermion TFIM vs exact diagonalisation and the Pfeuty thermodynamic limit, the recovered central charge c=½, the quench vs exact dense evolution, the anisotropic-XY ground energy and the dynamical phase transition (Loschmidt rate + topological order parameter) vs exact dense time evolution, DMRG vs exact diagonalisation, the surface-code MWPM decoder vs brute-force matching, the Union-Find decoder vs MWPM, and both the code-capacity and phenomenological QEC threshold crossings.',
         },
       ].map(({ title, content }, i) => (
         <motion.div
