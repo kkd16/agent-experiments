@@ -113,7 +113,7 @@ the structure of a production engine (Box2D), implemented from first principles 
 `src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
 capsules, rounded polygons, animated water, dashed sensors, pulley ropes, conveyor flow
 arrows, **fracture impact sparks**, a **speed-shaded SPH metaball fluid** and a **per-material MPM
-point cloud**), 58 demo scenes, and a React UI with live solver controls (incl. CCD and
+point cloud**), 60 demo scenes, and a React UI with live solver controls (incl. CCD and
 block-solver toggles), **Shatter**, **💧 water** &amp; **🏖 sand / ❄ snow / 🟢 jelly** pointer
 tools, debug overlays, a live fluid + MPM telemetry HUD, and a verification modal.
 
@@ -194,7 +194,7 @@ the app.
       interface (**fixed-corotated** elastic, **Stomakhin snow**, **Drucker–Prager sand**,
       weakly-compressible **fluid**), the angular-momentum-conserving **APIC** transfer, two-way
       rigid coupling through `collideParticle`, a per-material point renderer, a 🏖/❄/🟢/💧 paint
-      tool, 8 scenes (a new MPM category) and 20 new verification checks (incl. APIC angular-momentum
+      tool, 10 scenes (a new MPM category) and 20 new verification checks (incl. APIC angular-momentum
       conservation to 1e-14 and a Drucker–Prager angle of repose)
 - [ ] **MPM plasticity dial-up**: a volume-correction / cohesion term so the realised sand angle of
       repose tracks the friction angle φ more tightly (it currently settles a touch below)
@@ -268,11 +268,14 @@ solvers use — so a heavy boulder punches a crater into a sand bed and the ejec
 verifier confirms total (MPM + rigid) momentum is conserved to **1e-14** in a zero-gravity collision.
 
 Shipped `src/engine/mpm/` (`mat2.ts`, `material.ts`, `mpm.ts`), wired the system into the world
-step (after the SPH fluid), a per-material point renderer, a new **MPM** scene category with eight
+step (after the SPH fluid), a per-material point renderer, a new **MPM** scene category with ten
 scenes (Sand Pile, Hourglass, Snow Splat, Jelly Blocks, Impact Crater, Sand Dam Break, Material
-Garden, MPM Sandbox), 🏖/❄/🟢/💧 paint tools, and an MPM telemetry HUD line. Grew the verification
-suite **182 → 202 checks** (all green). Whole thing developed against a headless Vite-lib harness
-so every claim was measured before shipping. Lint + tsc + build + the exact CI gate all green.
+Garden, Sinking Crates, Sand Seesaw, MPM Sandbox), 🏖/❄/🟢/💧 paint tools, and an MPM telemetry HUD
+line. Grew the verification suite **182 → 202 checks** (all green). Whole thing developed against a
+headless Vite-lib harness so every claim was measured before shipping — which also caught the stiff
+`rubber` preset blowing past the explicit CFL limit at fine grids (cured by raising that scene's
+substeps) and two over-dense sand beds (>6k points, ~220 ms/step) trimmed to a smooth 60 fps. Lint
++ tsc + build + the exact CI gate all green.
 
 ## v8 — the finite-element release (co-rotational FEM, implicit, two-way coupled) ✅ shipped
 
@@ -789,17 +792,21 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
   fixed-corotated elastic, Stomakhin snow, Drucker–Prager sand, weakly-compressible fluid), and the
   `MpmSystem` (`mpm.ts`) — quadratic-B-spline **APIC** P2G/G2P, separating/frictional grid walls,
   and two-way rigid coupling through the engine's own `collideParticle`. Wired it into the world
-  step, added a per-material point renderer, a new **MPM** scene category (8 scenes), 🏖/❄/🟢/💧
-  paint tools and an MPM HUD line. Developed against a headless Vite-lib harness, which caught two
-  real bugs before they shipped: the first 2×2 SVD (textbook `E,F,G,H` phase formula) reconstructed
+  step, added a per-material point renderer, a new **MPM** scene category (10 scenes), 🏖/❄/🟢/💧
+  paint tools and an MPM HUD line. Developed against a headless Vite-lib harness (plus a per-scene
+  smoke test), which caught three real issues before they shipped: the first 2×2 SVD (textbook
+  `E,F,G,H` phase formula) reconstructed
   `Aᵀ` for ~half the inputs — replaced with an analytic `AᵀA` diagonalisation that reconstructs to
   1e-15; and the APIC angular-momentum check failed by exactly the affine-spin term until I added
   `apicAngularMomentum` (the grid conserves orbital **plus** `Σm·(dx²/4)(C₂₁−C₁₂)`, matched to
   1e-14). Calibrated the Drucker–Prager sand to a stable ~21° angle of repose (explicit cohesionless
-  DP-MPM characteristically settles a little below φ). Grew the suite **182 → 202 checks** (all 202
-  green, incl. APIC linear+angular momentum to 1e-14 and MPM↔rigid momentum conservation to 1e-14).
-  Caught one lint failure (a zero-width space in a doc comment) and fixed it. Lint + tsc + build +
-  the exact CI gate all green.
+  DP-MPM characteristically settles a little below φ), and the per-scene smoke test then flagged the
+  stiff `rubber` preset exploding past the CFL limit at dx=0.2 (cured by raising that scene's
+  substeps 10→18) and two over-dense sand beds (>6k points, ~220 ms/step) trimmed to ≤43 ms (≈60 fps
+  in the production build). Grew the suite **182 → 202 checks** (all 202 green, incl. APIC
+  linear+angular momentum to 1e-14 and MPM↔rigid momentum conservation to 1e-14). Caught one lint
+  failure (a zero-width space in a doc comment) and fixed it. Lint + tsc + build + the exact CI gate
+  all green.
 - 2026-06-21 (claude): Shipped **v6 — the fracture release** (`src/engine/fracture/`). Added a
   from-scratch convex half-plane clip + signed-area + point-in-convex (`clip.ts`), a power-free
   **Voronoi** partition that tiles a convex hull exactly (`voronoi.ts`, with three seed patterns
