@@ -3,6 +3,7 @@ import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
 import { EPaxosLab } from './EPaxosLab';
 import { AbdLab } from './AbdLab';
+import { CraqLab } from './CraqLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { ChordLab } from './ChordLab';
@@ -82,6 +83,15 @@ export const LABS: LabDef[] = [
     icon: '▤',
     tag: 'linearizable · no consensus',
     Component: AbdLab,
+  },
+  {
+    id: 'craq',
+    title: 'CRAQ (chain replication)',
+    blurb:
+      'Strong consistency by chain, not quorum. Chain Replication (van Renesse & Schneider, 2004) lines the replicas up HEAD → … → TAIL: a write enters at the head and flows down, the tail commits it and an ack flows back up, and every read is answered by the tail — linearizable with no quorums and no leader, just a small master that owns the chain order. CRAQ (2009) keeps that consistency while letting every replica answer reads — clean objects locally, dirty ones by asking the tail for its committed version — so reads scale with the chain. Crash the head, the tail and the master and watch the chain knit itself back together while three invariants prove every run linearizable, cross-checked by the general Wing & Gong checker.',
+    icon: '⛓',
+    tag: 'linearizable · chain',
+    Component: CraqLab,
   },
   {
     id: 'dynamo',

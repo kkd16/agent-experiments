@@ -1246,3 +1246,104 @@ input[type='text'] {
   color: var(--bad);
   font-weight: 600;
 }
+
+/* ---- CRAQ chain strip ---- */
+.craq-strip-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
+  margin: 10px 0;
+  overflow: hidden;
+}
+.craq-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 12px;
+  overflow-x: auto;
+}
+.craq-link {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.craq-node {
+  min-width: 116px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2, #12161d);
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.craq-node.down {
+  opacity: 0.45;
+  filter: grayscale(0.7);
+}
+.craq-node.role-head {
+  border-color: #7c9cff;
+  box-shadow: inset 0 2px 0 0 #7c9cff;
+}
+.craq-node.role-tail {
+  border-color: #73e08a;
+  box-shadow: inset 0 2px 0 0 #73e08a;
+}
+.craq-node.role-passive {
+  border-style: dashed;
+  opacity: 0.6;
+}
+.craq-node-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.craq-node-id {
+  font: 700 13px ui-monospace, monospace;
+  color: var(--tx, #e8eaf0);
+}
+.craq-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tx-dim);
+}
+.craq-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3px;
+  min-height: 22px;
+}
+.craq-ver {
+  font: 600 10.5px ui-monospace, monospace;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.craq-ver.clean {
+  background: rgba(115, 224, 138, 0.16);
+  color: #9ff0b3;
+  border: 1px solid rgba(115, 224, 138, 0.4);
+}
+.craq-ver.dirty {
+  background: rgba(224, 163, 74, 0.16);
+  color: #f2c281;
+  border: 1px solid rgba(224, 163, 74, 0.45);
+}
+.craq-empty {
+  color: #5b6472;
+  font: 600 12px ui-monospace, monospace;
+}
+.craq-arrow {
+  color: #7c9cff;
+  font-size: 14px;
+  padding: 0 7px;
+  align-self: center;
+}
+.craq-passive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 12px 12px;
+}

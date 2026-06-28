@@ -22,6 +22,12 @@ The headline is that the hard algorithms are implemented for real, not faked:
   happened-before or concurrent, drawn as a space-time diagram.
 - **2PC / 3PC** — atomic-commit protocols, including the coordinator-crash window that makes
   2PC block and how 3PC dodges it.
+- **CRAQ / chain replication** — linearizable storage by *topology* instead of quorums: a
+  HEAD → … → TAIL chain where writes flow down and commit at the tail, and *every* replica
+  serves reads (clean locally, dirty via a tail version-query). A master repairs the chain on
+  failure; config leases, a chain-currency heartbeat and lease-based reconfiguration keep reads
+  linearizable through crashes, restarts, master loss and partitions — proven live and
+  cross-checked by the general Wing & Gong checker.
 
 Everything shares the same kernel: a seeded PRNG, a priority event queue, a network model
 (per-link latency, jitter, drop rate, partitions), named per-node timers with cancellation,
@@ -450,6 +456,77 @@ round trips, with no leader and no log. Built from scratch on the same kernel: t
 - [ ] **Linearization-point overlay** — draw the chosen serialization point inside each operation's bar so
       the equivalent sequential history is explicit.
 - [ ] **Fast reads (quorum-leases / 1-phase reads when safe)** and an "ABD vs Raft read latency" panel.
+
+### CRAQ lab (chain replication with apportioned reads) — NEW
+The strongly-consistent counterpart to the ABD lab, reached a completely different way. Where ABD is
+linearizable by **quorum intersection**, **Chain Replication** (van Renesse & Schneider, OSDI 2004) is
+linearizable by **topology**: the replicas form a line HEAD → … → TAIL, every update flows down and the
+tail commits it, and every read is answered by the tail — no quorums, no leader, just a small **master**
+that owns the chain order. **CRAQ** (Terrace & Freedman, USENIX ATC 2009) then lets *every* replica answer
+reads (clean objects locally, dirty ones by a version query to the tail) so reads scale with the chain.
+Built from scratch on the same kernel: three new files (`protocols/craq/{types,craq,invariants}.ts`),
+`labs/CraqLab.tsx`, a `runCraqHistory` bridge into the general linearizability checker, and 9 self-tests.
+
+- [x] **Versioned multi-object store** (`types.ts`) — each replica keeps a per-key version list with a
+      `committed` watermark; clean ⇔ `ver ≤ committed`, dirty above. Versions are **epoch-striped**
+      (`epoch · 1e6 + n`) so two heads in two configurations can never assign the same committed version —
+      committed history stays globally unique across head changes (no fork). A committed watermark may never
+      point past a version the node actually holds, so a clean read always has a value to return.
+- [x] **Update path** — a write enters at the head, which stamps the next version (dirty) and forwards it
+      down the chain; the tail commits it (the commit point — it *records* the completed write, carrying the
+      originating write's metadata with the version), then an ack flows back up, marking each node clean and
+      pruning superseded versions. A non-FIFO network is handled by version-numbered, idempotent apply
+      (upstream always wins on value).
+- [x] **CRAQ read path** — any replica answers. A **clean** latest version is returned locally (the
+      apportioned read that makes reads scale); a **dirty** one triggers a **version query** to the tail,
+      which returns its committed (version, value) so the read is never stale. The lab counts the
+      clean/dirty split live.
+- [x] **Master-driven membership + reconfiguration** — a dedicated master pings the replicas, removes ones
+      that stop answering, appends recovered ones at the tail, and hands out epoch-numbered configs. On
+      reconfiguration the chain knits itself back together: a fresh tail commits its in-flight backlog, a
+      predecessor state-transfers (`Sync`) to its successor, and a recovered node re-syncs at the tail
+      before it serves.
+- [x] **Linearizability under faults — the hard part.** Four cooperating safety mechanisms keep reads
+      linearizable as the cluster churns: (1) a **config lease** — a replica that loses the master goes
+      passive; (2) a **chain-currency beat** — the head heartbeats its committed frontier down the chain, so
+      a node that falls behind or stops hearing beats stops serving and re-syncs; (3) **lease-based
+      reconfiguration** — a new config only commits *new* writes after the previous config's leases have
+      provably expired (`activeAt`), while inherited (already-durable) backlog commits immediately to
+      preserve it; (4) a new head **pulls the committed frontier** from the chain before serving, since
+      committed data otherwise only flows downward. A **continuity rule** stops the master forming a chain
+      with no carrier of the committed prefix.
+- [x] **A live linearizability proof** (`invariants.ts`) — using the per-key committed **version number**
+      as the register tag, the same Lamport atomic-register conditions the ABD lab checks: **Real-time
+      atomicity** (non-overlapping ops respect version order, strict for writes), **Read integrity** (a read
+      returns the value committed at its version), and **Chain consistency / no fork** (every replica agrees
+      on the value of every committed version).
+- [x] **Independent cross-check via the general checker** — `runCraqHistory` drives a real CRAQ cluster on
+      the kernel, harvests the operation history it actually produced, and hands it to the spec-agnostic
+      Wing & Gong checker (the same one that certifies ABD). Two independent methods agreeing is the
+      strongest evidence both are right.
+- [x] **CRAQ lab UI** (`labs/CraqLab.tsx`) — the signature **chain strip** (HEAD … TAIL with each node's
+      clean/dirty version stack for the selected object), the network canvas tinted by role + dirtiness, a
+      Jepsen-style **linearizability history** distinguishing clean vs tail-confirmed reads, a CRAQ
+      read-split gauge, per-replica object table, scenario presets, deep links, and buttons for write / read
+      / read-everywhere / write+read-all / crash head / crash tail / crash master.
+- [x] **Self-tests** (9) — write-then-read across replicas; the clean/dirty read split; a committed value
+      surviving a tail crash; a new head writing after a head crash; the master loss forcing passivity; a
+      recovered replica re-syncing before serving; determinism; a **1,200-fault chaos run** (crashes,
+      restarts, master loss, single-node partitions, drops) asserting all three invariants throughout; and
+      the general checker certifying five real runs incl. lossy. Full suite **130/130**.
+- [ ] **CRAQ vs Raft vs ABD read-latency panel** — a side-by-side of a chain read (local clean / one
+      tail hop dirty) against ABD's two round trips and Raft's leader read, on the same `(seed, network)`.
+- [ ] **Read-mostly throughput meter** — count reads-served-per-second as the chain grows, to *show*
+      apportioned reads scaling linearly with chain length where a single-tail design would plateau.
+- [ ] **Animate one update's march** down the chain and its ack back up, block-by-block, like the HotStuff
+      chain view — “watch a write commit.”
+- [ ] **A divergence / split-brain demo** — a toggle that disables lease-based reconfiguration and shows
+      the invariant go red under an adversarial partition, then holds again when re-enabled (the teaching
+      foil for *why* the leases exist).
+- [ ] **Paxos-replicated master** — wire the existing Paxos lab in as the master's config store, so the
+      single-point-of-control becomes fault-tolerant (the production architecture) instead of a SPOF.
+- [ ] **Apportioned writes / multi-key transactions** — explore the chain's behaviour for cross-object
+      atomicity, the open research edge beyond single-object linearizability.
 
 ### Snow / Avalanche lab (metastable consensus) — NEW
 The first **leaderless, quorum-free, *probabilistic*** consensus here — a deliberate counterpoint to
@@ -1015,3 +1092,25 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
   green) and the live build driven in headless Chromium (curated / random / ABD all decide with zero
   console errors). Full gate green (scope + conformance + lint + build) via
   `node scripts/verify-project.mjs quorum-distsys-k7r2`.
+- 2026-06-28 (claude / claude-opus-4-8): **New flagship lab — CRAQ / chain replication.** Built a
+  complete Chain Replication + CRAQ implementation from scratch on the kernel: a versioned
+  multi-object store, the head→tail update path with tail-commit + ack-back-up, the CRAQ
+  apportioned read path (clean served locally, dirty resolved by a tail version-query), and a
+  master that owns membership and repairs the chain on failure. Making it *actually* linearizable
+  under faults was the work: an adversarial test harness drove the design through a sequence of
+  real bugs — a cross-epoch committed-version fork (fixed by epoch-striped version numbers), a
+  read of a committed-but-unrecorded value (fixed by recording the write at its commit point with
+  metadata carried on the version), a committed watermark pointing past an unheld version, a
+  partitioned-but-leased node serving stale reads (config leases), a node cut off from its chain
+  predecessor serving stale reads (a head **chain-currency beat** that makes a behind node stop
+  serving and re-sync), a new chain committing before old leases expired (**lease-based
+  reconfiguration** via `activeAt`), a new head lacking committed data that lived downstream (the
+  head **pulls the committed frontier** before serving), and committed-data loss on reconfiguration
+  (a **continuity rule** keeping a carrier of the committed prefix). The result holds linearizability
+  through a 1,200-fault chaos run (crashes, restarts, master loss, single-node partitions, drops)
+  and is independently certified on five real runs (incl. lossy) by the spec-agnostic Wing & Gong
+  checker — two independent proofs agreeing. Shipped the lab UI (chain strip with clean/dirty
+  version stacks, network canvas, Jepsen-style history, read-split gauge, crash head/tail/master),
+  three live invariants, the `runCraqHistory` bridge, honest "limits" notes (the master SPOF and
+  the CAP wall a catastrophic partition hits), and 9 self-tests. Suite **121 → 130/130**; full gate
+  green (scope + conformance + lint + build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`.
