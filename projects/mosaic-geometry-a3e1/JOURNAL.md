@@ -35,19 +35,84 @@ libraries.
   - `emptyCircle.ts` — largest empty circle (fattest Delaunay circumcircle centred inside the hull).
   - `alphaShape.ts` — alpha-complex concave hull: retain triangles with circumradius ≤ α, return
     the boundary; a slider maps a normalized position to a useful α range.
+  - `kdtree.ts` — a balanced 2-D **k-d tree** (median split, alternating axis) with per-node region
+    rects, branch-and-bound **nearest-neighbour** and **k-nearest** search, an **orthogonal range**
+    query, and build + NN-descent step traces. Queries report nodes-visited, so the pruning win shows.
+  - `quadtree.ts` — a **point-region quadtree** (capacity/maxDepth subdivision) with leaf cells, a
+    range query, stats, and a build step trace.
+  - `pointLocation.ts` — planar **point location** by the jump-and-walk (Lawson) oriented walk on the
+    Delaunay mesh: triangle adjacency, a walk returning the containing triangle + its path, plus
+    brute-force oracles (triangle scan, nearest site) for verification.
+  - `spanner.ts` — geometric **t-spanners**: the **Yao** and **Θ** cone graphs and the **greedy**
+    spanner, with a Dijkstra-based **dilation** (realized spanning ratio) and the Θ dilation bound.
   - `pointset.ts` — text + compact base64url codecs for import/export and shareable URLs.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 54 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 91 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
-    CDT area/count conservation + constraint enforcement + constrained-Delaunay property, …).
-- `src/render/` — `palette.ts` (color schemes) and `scene.ts` (the canvas renderer).
+    CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
+    vs brute force + pruning + balance, quadtree bucketing + range, jump-and-walk containment + path
+    length, spanner connectivity + Θ-bound + greedy realizes its target t**, …).
+- `src/render/` — `palette.ts` (color schemes) and `scene.ts` (the canvas renderer; includes the
+  spanner layer).
 - `src/hooks/` — `useCanvas` (DPR + ResizeObserver), `useHashRoute`, `usePersistentState`.
-- `src/pages/` — `Studio` (playground), `Algorithms` (step-through), `About`.
+- `src/pages/` — `Studio` (playground), `Search` (interactive spatial-search explorer: k-d /
+  quadtree partitions + live NN / k-NN / range / point-location queries, each verified vs brute
+  force), `Algorithms` (step-through), `About`.
 
 ## Ideas / backlog
+
+### 2026-06-28 — spatial search & hierarchies expansion (planned this session)
+
+A whole new axis for the studio. Until now Mosaic *constructed* structures (diagrams, hulls,
+graphs); this session adds the machinery that *queries* them — the space-partitioning trees and
+the dilation-bounded graphs that make geometric search fast — plus a dedicated interactive page
+where every answer is cross-checked against an O(n) brute-force scan and the speed-up is shown.
+
+Shipped this session:
+
+- [x] **k-d tree** (`kdtree.ts`): balanced 2-D tree, median split on an axis that alternates with
+  depth, each node owning a region of the plane. Branch-and-bound **nearest-neighbour** and
+  **k-nearest** with region pruning; an **orthogonal range** query; a build trace and an
+  NN-descent trace for the visualizer. Verified: NN/kNN/range all match brute force, the tree is
+  balanced (depth ≤ ⌈log₂n⌉+2), and queries touch far fewer than n nodes.
+- [x] **Point-region quadtree** (`quadtree.ts`): space-driven 4-way subdivision (capacity + depth
+  cap), leaf-cell grid, range query, stats, build trace. Verified: every point lands in exactly
+  one bucket and the range query matches brute force.
+- [x] **Point location** (`pointLocation.ts`): jump-and-walk (Lawson's oriented walk) on the
+  Delaunay mesh — triangle adjacency + a walk that returns the containing triangle and its path.
+  Verified: the walk lands in the triangle that actually contains the query, with a short path.
+- [x] **Geometric spanners** (`spanner.ts`): the **Yao** and **Θ** cone graphs and the **greedy**
+  t-spanner, with a Dijkstra all-pairs **dilation** (realized spanning ratio). Verified: graphs are
+  connected, Θ meets its 1/(1−2 sin(π/k)) bound, and the greedy graph realizes dilation ≤ its target t.
+- [x] **Search page** (`pages/Search.tsx`): an interactive query explorer. Overlay the k-d
+  partition and/or the quadtree grid; move a probe to run NN / k-NN / point-location live, or drag
+  a window for a range query. A live correctness badge confirms each answer against brute force and
+  shows nodes-visited vs n.
+- [x] **Studio spanner layer**: a Spanners panel (Θ / Yao / greedy, cone or t slider) with a live
+  dilation readout, rendered as a gold graph over the sites.
+- [x] **Algorithms visualizers**: step-through **k-d tree** build (recursive median cuts) and
+  **quadtree** build (a cell flashing red as it subdivides).
+- [x] Grew the self-test 67 → 91 checks for all of the above; re-verified the live app headless.
+
+Next (open — natural follow-ups on this axis):
+
+- [ ] **k-d tree visualizer for the NN *query*** (animate the descend-then-unwind with the pruned
+  far subtree greying out) — the `kdNearestSteps` trace already exists; wire it into Algorithms.
+- [ ] **Range trees / fractional cascading** for faster orthogonal range reporting, side-by-side
+  with the k-d tree's range query (a node-count race).
+- [ ] **Well-separated pair decomposition (WSPD)** off the quadtree, and the linear-size spanner it
+  yields — a fourth spanner to compare against Yao/Θ/greedy.
+- [ ] **Approximate nearest neighbour** (a priority-queue best-bin-first k-d search with an ε knob)
+  showing the accuracy/speed trade-off against exact NN.
+- [ ] **k-d tree on a non-axis split (PCA / BSP)** and a comparison of cell shapes.
+- [ ] **Dynamic point location** (Kirkpatrick hierarchy or a trapezoidal map) as an O(log n) rival
+  to the jump-and-walk, with the search path animated.
+- [ ] **Morton / Hilbert curve order** overlay (the space-filling-curve linearization a quadtree
+  induces) and a "sort by Z-order" animation.
+- [ ] **A `compute`-level cache** so the Studio spanner's dilation isn't recomputed every Lloyd frame.
 
 ### 2026-06-28 — weighted & advanced geometry expansion (planned this session)
 
@@ -199,3 +264,23 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   app in a headless browser (no console errors; power diagram, regular triangulation, radical
   circles, farthest tree + MEC link, Power-Lloyd, and both new visualizers all confirmed). Passed
   `verify-project.mjs` before pushing.
+- 2026-06-28 (claude): **Spatial search & hierarchies** — a third axis, taking Mosaic from a
+  structure *builder* to a query *engine*, all from scratch and verified. (1) A balanced 2-D
+  **k-d tree** (`kdtree.ts`) with region-pruned **nearest-neighbour**, **k-nearest** and
+  **orthogonal range** search, reporting nodes-visited so the win over the O(n) scan is visible.
+  (2) A **point-region quadtree** (`quadtree.ts`) — space-driven 4-way subdivision with a range
+  query. (3) **Point location** (`pointLocation.ts`) by the **jump-and-walk** oriented walk on the
+  Delaunay mesh, returning the containing triangle and the path it stepped through. (4) Geometric
+  **t-spanners** (`spanner.ts`): the **Yao** and **Θ** cone graphs and the **greedy** spanner, with
+  a Dijkstra all-pairs **dilation** that measures the realized spanning ratio. Built a new **Search**
+  page — overlay the k-d partition and/or quadtree grid, move a probe to run NN / k-NN / locate live,
+  or drag a window for a range query; every answer carries a ✓/✗ badge cross-checking it against
+  brute force and a nodes-visited count. Added a Studio **Spanners** panel (Θ / Yao / greedy + a
+  cone-or-t slider + a live dilation readout, drawn as a gold graph) and two **Algorithms**
+  visualizers (k-d tree recursive median cuts; quadtree cells flashing as they subdivide). Grew the
+  self-test 67 → 91 checks — k-d NN/kNN/range vs brute force + pruning + balance, quadtree bucketing
+  + range, jump-and-walk containment + short paths + symmetric adjacency, spanner connectivity +
+  Θ-bound + greedy realizing its target t — all green. Re-verified the live app headless across all
+  four tabs (no React errors; the k-d partition, quadtree grid, all four query modes with verified
+  badges, both new steppers, and the Studio spanner layer all confirmed). Passed `verify-project.mjs`
+  (scope + conformance + lint + build) before pushing.

@@ -5,6 +5,8 @@ import { delaunaySteps, type DelaunaySnapshot } from '../geometry/delaunay'
 import { mecSteps, type MecSnapshot } from '../geometry/enclosingCircle'
 import { fortune, beachIntervals, parabolaY, type FortuneSnapshot } from '../geometry/fortune'
 import { quickHullSteps, type QuickHullStep } from '../geometry/quickhull'
+import { buildKdTree, kdBuildSteps, type KdBuildStep } from '../geometry/kdtree'
+import { quadBuildSteps, type QuadBuildStep } from '../geometry/quadtree'
 import {
   powerCellSteps,
   radicalCircle,
@@ -15,7 +17,7 @@ import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power'
+type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power' | 'kdtree' | 'quadtree'
 const PAD = 28
 const CLIP: Rect = { minX: 0, minY: 0, maxX: 1, maxY: 1 }
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
@@ -27,6 +29,8 @@ function makePoints(algo: Algo, seed: number): Point[] {
   if (algo === 'fortune') return uniformPoints(11, GEN_RECT, rng)
   if (algo === 'power') return uniformPoints(9, GEN_RECT, rng)
   if (algo === 'quickhull') return uniformPoints(16, GEN_RECT, rng)
+  if (algo === 'kdtree') return uniformPoints(20, GEN_RECT, rng)
+  if (algo === 'quadtree') return uniformPoints(24, GEN_RECT, rng)
   return poissonDisk(algo === 'hull' ? 14 : 18, GEN_RECT, rng)
 }
 
@@ -89,6 +93,14 @@ export default function Algorithms() {
     () => (algo === 'power' ? powerCellSteps(weighted.sites, CLIP, weighted.target) : []),
     [algo, weighted],
   )
+  const kdSteps = useMemo<KdBuildStep[]>(
+    () => (algo === 'kdtree' ? kdBuildSteps(buildKdTree(points, CLIP), points) : []),
+    [algo, points],
+  )
+  const quadSteps = useMemo<QuadBuildStep[]>(
+    () => (algo === 'quadtree' ? quadBuildSteps(points, CLIP) : []),
+    [algo, points],
+  )
   const total =
     algo === 'hull'
       ? hullSteps.length
@@ -100,7 +112,11 @@ export default function Algorithms() {
             ? mecStepList.length
             : algo === 'power'
               ? powerSteps.length
-              : fortuneSteps.length
+              : algo === 'kdtree'
+                ? kdSteps.length
+                : algo === 'quadtree'
+                  ? quadSteps.length
+                  : fortuneSteps.length
   const clamped = Math.min(step, Math.max(0, total - 1))
 
   // Playback timer.
@@ -141,8 +157,10 @@ export default function Algorithms() {
     else if (algo === 'delaunay') drawDelaunayStep(ctx, delSteps[clamped], toPx)
     else if (algo === 'mec') drawMecStep(ctx, mecStepList[clamped], toPx, w)
     else if (algo === 'power') drawPowerStep(ctx, powerSteps[clamped], weighted.sites, weighted.target, toPx, w)
+    else if (algo === 'kdtree') drawKdBuildStep(ctx, kdSteps[clamped], points, toPx)
+    else if (algo === 'quadtree') drawQuadBuildStep(ctx, quadSteps[clamped], points, toPx)
     else drawFortuneStep(ctx, fortuneSteps[clamped], points, PAD, w, h)
-  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, fortuneSteps, clamped, points])
+  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, kdSteps, quadSteps, fortuneSteps, clamped, points])
 
   const note =
     algo === 'hull'
@@ -155,7 +173,11 @@ export default function Algorithms() {
             ? mecStepList[clamped]?.note
             : algo === 'power'
               ? powerSteps[clamped]?.note
-              : fortuneSteps[clamped]?.note
+              : algo === 'kdtree'
+                ? kdSteps[clamped]?.note
+                : algo === 'quadtree'
+                  ? quadSteps[clamped]?.note
+                  : fortuneSteps[clamped]?.note
   const phase = algo === 'hull' ? hullSteps[clamped]?.phase : undefined
   const changeAlgo = (a: Algo) => {
     setAlgo(a)
@@ -194,6 +216,8 @@ export default function Algorithms() {
               { id: 'mec', label: 'Enclosing circle' },
               { id: 'fortune', label: 'Fortune sweep' },
               { id: 'power', label: 'Power cell' },
+              { id: 'kdtree', label: 'k-d tree' },
+              { id: 'quadtree', label: 'Quadtree' },
             ]}
             value={algo}
             onChange={changeAlgo}
@@ -209,7 +233,11 @@ export default function Algorithms() {
                     ? "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."
                     : algo === 'power'
                       ? 'Power (Laguerre) cell: each weighted site’s cell is the intersection of half-planes across its radical axes. Watch one cell get clipped by each neighbour in turn, nearest first.'
-                      : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
+                      : algo === 'kdtree'
+                        ? 'k-d tree: recursively split the points at the median along an axis that alternates with depth (x, then y, then x…). Each cut halves a region; the result is a balanced tree whose every node owns a slab of the plane — the structure that makes nearest-neighbour and range queries prune.'
+                        : algo === 'quadtree'
+                          ? 'Point-region quadtree: insert points one at a time; whenever a cell holds more than its capacity, it divides into four equal quadrants. Space (not the data) drives the split, so the grid is fine where points cluster and coarse where they are sparse.'
+                          : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
           </p>
           <Button variant="ghost" onClick={regen}>
             New points
@@ -269,6 +297,18 @@ export default function Algorithms() {
                 <li><i className="dot dot--mesh" /> current enclosing circle</li>
                 <li><i className="dot dot--active" /> point being tested</li>
                 <li><i className="dot dot--hull" /> boundary support points</li>
+              </>
+            ) : algo === 'kdtree' ? (
+              <>
+                <li><i className="dot dot--mesh" /> cuts committed so far</li>
+                <li><i className="dot dot--active" /> median point at this split</li>
+                <li><i className="dot dot--hull" /> region being divided</li>
+              </>
+            ) : algo === 'quadtree' ? (
+              <>
+                <li><i className="dot dot--mesh" /> quadtree cells</li>
+                <li><i className="dot dot--active" /> point just inserted</li>
+                <li><i className="dot dot--cavity" /> cell that just subdivided</li>
               </>
             ) : (
               <>
@@ -640,5 +680,83 @@ function drawPowerStep(
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
+  }
+}
+
+function drawKdBuildStep(
+  ctx: CanvasRenderingContext2D,
+  s: KdBuildStep | undefined,
+  pts: Point[],
+  toPx: (p: Point) => Point,
+) {
+  if (!s) return
+  // The region this node is about to divide — a soft highlight.
+  const a = toPx({ x: s.region.minX, y: s.region.minY })
+  const b = toPx({ x: s.region.maxX, y: s.region.maxY })
+  ctx.fillStyle = 'rgba(150,190,255,0.07)'
+  ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y)
+  ctx.strokeStyle = 'rgba(150,190,255,0.5)'
+  ctx.lineWidth = 1.2
+  ctx.setLineDash([4, 4])
+  ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y)
+  ctx.setLineDash([])
+
+  // Every cut committed so far (cumulative), coloured by depth.
+  ctx.lineCap = 'round'
+  for (const cut of s.placed) {
+    const p0 = toPx(cut.p0)
+    const p1 = toPx(cut.p1)
+    const isNew = s.split && cut === s.split
+    const hue = cut.axis === 0 ? 200 : 150
+    ctx.strokeStyle = isNew ? '#7cf6c0' : `hsla(${hue},80%,${Math.min(80, 50 + cut.depth * 6)}%,0.55)`
+    ctx.lineWidth = isNew ? 2.6 : Math.max(0.8, 2 - cut.depth * 0.2)
+    ctx.beginPath()
+    ctx.moveTo(p0.x, p0.y)
+    ctx.lineTo(p1.x, p1.y)
+    ctx.stroke()
+  }
+
+  // Points, with the median pivot for this step highlighted.
+  for (let i = 0; i < pts.length; i++) {
+    const q = toPx(pts[i])
+    const isPivot = i === s.pivot
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, isPivot ? 6.5 : 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = isPivot ? '#7cf6c0' : '#f4f7ff'
+    ctx.fill()
+  }
+}
+
+function drawQuadBuildStep(
+  ctx: CanvasRenderingContext2D,
+  s: QuadBuildStep | undefined,
+  pts: Point[],
+  toPx: (p: Point) => Point,
+) {
+  if (!s) return
+  // The quadtree grid so far, cell borders tinted by depth.
+  for (const c of s.cells) {
+    const a = toPx({ x: c.bounds.minX, y: c.bounds.minY })
+    const b = toPx({ x: c.bounds.maxX, y: c.bounds.maxY })
+    ctx.strokeStyle = `rgba(167,139,250,${(0.18 + c.depth * 0.06).toFixed(3)})`
+    ctx.lineWidth = 1
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y)
+  }
+  // The cell that just split, flashed in red.
+  if (s.subdivided) {
+    const a = toPx({ x: s.subdivided.minX, y: s.subdivided.minY })
+    const b = toPx({ x: s.subdivided.maxX, y: s.subdivided.maxY })
+    ctx.strokeStyle = 'rgba(255,107,107,0.8)'
+    ctx.lineWidth = 2
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y)
+  }
+  // Points inserted up to (and including) this step; the newest highlighted.
+  for (let i = 0; i <= s.inserted && i < pts.length; i++) {
+    const q = toPx(pts[i])
+    const isNew = i === s.inserted
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, isNew ? 6.5 : 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = isNew ? '#7cf6c0' : '#f4f7ff'
+    ctx.fill()
   }
 }

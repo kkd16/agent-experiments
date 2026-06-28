@@ -35,6 +35,31 @@ import {
 import { farthestCells, farthestOwners } from './farthest'
 import { quickHull, quickHullSteps } from './quickhull'
 import { encodePoints, decodePoints, parsePointsText } from './pointset'
+import {
+  buildKdTree,
+  kdNearest,
+  kdKNearest,
+  kdRange,
+  kdDepth,
+  kdSize,
+  kdSplits,
+  kdBuildSteps,
+} from './kdtree'
+import {
+  buildQuadtree,
+  quadLeaves,
+  quadRange,
+  quadStats,
+  quadBuildSteps,
+} from './quadtree'
+import {
+  buildMesh,
+  locate,
+  locateBruteForce,
+  nearestSite,
+  pointInTriangle,
+} from './pointLocation'
+import { yaoGraph, thetaGraph, greedySpanner, dilation, thetaBound } from './spanner'
 import { dist } from './vector'
 import type { Rect } from './types'
 
@@ -708,6 +733,190 @@ function canonicalHull(hull: number[]): number[] {
   let m = 0
   for (let i = 1; i < hull.length; i++) if (hull[i] < hull[m]) m = i
   return [...hull.slice(m), ...hull.slice(0, m)]
+}
+
+// ── k-d tree: balance, NN / kNN / range all match brute force, pruning works ──
+{
+  const rng = mulberry32(20260628)
+  const pts = uniformPoints(200, RECT, rng)
+  const tree = buildKdTree(pts, RECT)
+  check('k-d tree stores every point', kdSize(tree) === pts.length, `(${kdSize(tree)})`)
+  check('k-d tree is balanced (depth ≤ ⌈log₂n⌉+2)', kdDepth(tree) <= Math.ceil(Math.log2(pts.length)) + 2,
+    `(depth ${kdDepth(tree)})`)
+
+  let nnWrong = 0
+  let totalVisited = 0
+  const Q = 200
+  for (let s = 0; s < Q; s++) {
+    const q = { x: rng() * 100, y: rng() * 100 }
+    const got = kdNearest(tree, pts, q)
+    let bd = Infinity
+    for (const p of pts) bd = Math.min(bd, dist(p, q))
+    if (Math.abs(got.dist - bd) > 1e-9) nnWrong++
+    totalVisited += got.visited
+  }
+  check('k-d nearest-neighbour matches brute force', nnWrong === 0, `(${nnWrong}/${Q} wrong)`)
+  check('k-d NN prunes (avg nodes visited < n)', totalVisited / Q < pts.length,
+    `(avg ${(totalVisited / Q).toFixed(1)} of ${pts.length})`)
+
+  let knnWrong = 0
+  const K = 5
+  for (let s = 0; s < 60; s++) {
+    const q = { x: rng() * 100, y: rng() * 100 }
+    const got = kdKNearest(tree, pts, q, K)
+      .map((h) => h.dist)
+      .sort((a, b) => a - b)
+    const brute = pts
+      .map((p) => dist(p, q))
+      .sort((a, b) => a - b)
+      .slice(0, K)
+    if (got.length !== K) knnWrong++
+    else for (let i = 0; i < K; i++) if (Math.abs(got[i] - brute[i]) > 1e-9) knnWrong++
+  }
+  check('k-d k-nearest (k=5) matches brute force', knnWrong === 0, `(${knnWrong})`)
+
+  let rangeMism = 0
+  for (let s = 0; s < 60; s++) {
+    const x0 = rng() * 100
+    const y0 = rng() * 100
+    const x1 = rng() * 100
+    const y1 = rng() * 100
+    const win: Rect = { minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) }
+    const got = kdRange(tree, pts, win).indices.slice().sort((a, b) => a - b)
+    const brute: number[] = []
+    for (let i = 0; i < pts.length; i++)
+      if (pts[i].x >= win.minX && pts[i].x <= win.maxX && pts[i].y >= win.minY && pts[i].y <= win.maxY) brute.push(i)
+    brute.sort((a, b) => a - b)
+    if (got.join(',') !== brute.join(',')) rangeMism++
+  }
+  check('k-d orthogonal range query matches brute force', rangeMism === 0, `(${rangeMism})`)
+  check('k-d build trace has one step per node', kdBuildSteps(tree, pts).length === pts.length)
+  const splits = kdSplits(tree, pts)
+  check('k-d partition has fewer cuts than points', splits.length > 0 && splits.length < pts.length,
+    `(${splits.length})`)
+}
+
+// ── Quadtree: one bucket per point, range query exact, build trace per point ──
+{
+  const rng = mulberry32(909090)
+  const pts = poissonDisk(160, RECT, rng) // well-separated ⇒ distinct cells
+  const qt = buildQuadtree(pts, RECT)
+  const leaves = quadLeaves(qt)
+  const stored = leaves.reduce((s, c) => s + c.count, 0)
+  check('quadtree stores every point exactly once', stored === pts.length, `(${stored}/${pts.length})`)
+  const st = quadStats(qt)
+  check('quadtree leaves hold ≤ capacity (distinct points)', st.maxBucket <= 1, `(maxBucket ${st.maxBucket})`)
+
+  let mism = 0
+  for (let s = 0; s < 60; s++) {
+    const x0 = rng() * 100
+    const y0 = rng() * 100
+    const x1 = rng() * 100
+    const y1 = rng() * 100
+    const win: Rect = { minX: Math.min(x0, x1), minY: Math.min(y0, y1), maxX: Math.max(x0, x1), maxY: Math.max(y0, y1) }
+    const got = quadRange(qt, pts, win).indices.slice().sort((a, b) => a - b)
+    const brute: number[] = []
+    for (let i = 0; i < pts.length; i++)
+      if (pts[i].x >= win.minX && pts[i].x <= win.maxX && pts[i].y >= win.minY && pts[i].y <= win.maxY) brute.push(i)
+    brute.sort((a, b) => a - b)
+    if (got.join(',') !== brute.join(',')) mism++
+  }
+  check('quadtree range query matches brute force', mism === 0, `(${mism})`)
+  check('quadtree build trace has one step per point', quadBuildSteps(pts, RECT).length === pts.length)
+}
+
+// ── Point location: symmetric adjacency, walk lands in the containing triangle ─
+{
+  const rng = mulberry32(2468100)
+  const pts = uniformPoints(120, RECT, rng)
+  const tris = delaunay(pts)
+  const mesh = buildMesh(pts, tris)
+
+  let asym = 0
+  for (let t = 0; t < tris.length; t++)
+    for (const e of [0, 1, 2]) {
+      const nb = mesh.neighbour[t][e]
+      if (nb >= 0 && !mesh.neighbour[nb].includes(t)) asym++
+    }
+  check('mesh triangle adjacency is symmetric', asym === 0, `(${asym})`)
+
+  let wrong = 0
+  let inside = 0
+  let located = 0
+  let totalPath = 0
+  let start = 0
+  for (let s = 0; s < 300; s++) {
+    const q = { x: rng() * 100, y: rng() * 100 }
+    const brute = locateBruteForce(pts, tris, q)
+    const res = locate(mesh, q, start)
+    if (res.triangle >= 0) start = res.triangle
+    if (brute >= 0) {
+      inside++
+      if (res.triangle < 0) wrong++
+      else {
+        const tt = tris[res.triangle]
+        if (!pointInTriangle(pts[tt.a], pts[tt.b], pts[tt.c], q)) wrong++
+        else {
+          located++
+          totalPath += res.path.length
+        }
+      }
+    }
+  }
+  check('jump-and-walk lands in the containing triangle', wrong === 0, `(${wrong}/${inside})`)
+  check('jump-and-walk path stays short (avg < T)', located > 0 && totalPath / located < tris.length,
+    `(avg ${(totalPath / Math.max(1, located)).toFixed(1)} of ${tris.length})`)
+
+  let nsBad = 0
+  for (let s = 0; s < 60; s++) {
+    const q = { x: rng() * 100, y: rng() * 100 }
+    const ns = nearestSite(pts, q)
+    let bi = -1
+    let bd = Infinity
+    for (let i = 0; i < pts.length; i++) {
+      const d = dist(pts[i], q)
+      if (d < bd) {
+        bd = d
+        bi = i
+      }
+    }
+    if (ns !== bi) nsBad++
+  }
+  check('nearest-site (Voronoi owner) matches brute force', nsBad === 0, `(${nsBad})`)
+}
+
+// ── Geometric spanners: connectivity, Θ-bound, greedy realizes its target t ───
+{
+  const rng = mulberry32(5152530)
+  const pts = uniformPoints(60, RECT, rng)
+  const yao = yaoGraph(pts, 6)
+  const theta = thetaGraph(pts, 8)
+  const dy = dilation(pts, yao)
+  const dt = dilation(pts, theta)
+  check('Yao graph (6 cones) is connected', dy.connected)
+  check('Θ-graph (8 cones) is connected', dt.connected)
+  check('Θ-graph realizes its dilation bound', dt.stretch <= thetaBound(8) + 1e-6,
+    `(${dt.stretch.toFixed(3)} ≤ ${thetaBound(8).toFixed(3)})`)
+
+  for (const t of [1.5, 2, 3]) {
+    const g = greedySpanner(pts, t)
+    const dg = dilation(pts, g)
+    check(`greedy ${t}-spanner realizes dilation ≤ ${t}`, dg.connected && dg.stretch <= t + 1e-9,
+      `(${dg.stretch.toFixed(4)})`)
+  }
+  const e15 = greedySpanner(pts, 1.5).length
+  const e30 = greedySpanner(pts, 3).length
+  check('greedy spanner sparsifies as t grows', e15 >= e30, `(${e15} ≥ ${e30})`)
+
+  let bad = 0
+  const seen = new Set<string>()
+  for (const e of theta) {
+    if (e.a >= e.b) bad++
+    const k = `${e.a}_${e.b}`
+    if (seen.has(k)) bad++
+    seen.add(k)
+  }
+  check('Θ-graph edges are canonical and unique', bad === 0, `(${bad})`)
 }
 
 export const result = { failures }
