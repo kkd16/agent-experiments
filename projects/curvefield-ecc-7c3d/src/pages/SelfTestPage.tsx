@@ -20,7 +20,7 @@ export function SelfTestPage() {
 
   return (
     <main className="page">
-      <PageHead eyebrow="Lab 13 — provenance" title="Self-Test & Known-Answer Vectors">
+      <PageHead eyebrow="Lab 16 — provenance" title="Self-Test & Known-Answer Vectors">
         Pretty math is worthless if it’s wrong. This page runs the entire engine against published
         standards — FIPS 180-4 (SHA-256/512), RFC 4231 (HMAC), the canonical secp256k1 point
         multiples, BIP-340 Schnorr, RIPEMD-160 + Bitcoin WIF/address/Bech32 vectors, RFC 7748

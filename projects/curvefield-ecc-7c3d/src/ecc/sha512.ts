@@ -92,3 +92,30 @@ export function sha512(msg: Uint8Array): Uint8Array {
   }
   return out
 }
+
+/**
+ * HMAC-SHA512 (RFC 2104), the PRF behind BIP-32 key derivation. SHA-512's block
+ * size is 128 bytes, so keys longer than that are hashed down first.
+ */
+export function hmacSha512(key: Uint8Array, msg: Uint8Array): Uint8Array {
+  const BLOCK = 128
+  let k = key
+  if (k.length > BLOCK) k = sha512(k)
+  const padded = new Uint8Array(BLOCK)
+  padded.set(k)
+  const ipad = new Uint8Array(BLOCK)
+  const opad = new Uint8Array(BLOCK)
+  for (let i = 0; i < BLOCK; i++) {
+    ipad[i] = padded[i] ^ 0x36
+    opad[i] = padded[i] ^ 0x5c
+  }
+  const inner = sha512(concat(ipad, msg))
+  return sha512(concat(opad, inner))
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}

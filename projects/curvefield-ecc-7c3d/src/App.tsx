@@ -9,9 +9,12 @@ import { Encodings } from './pages/Encodings'
 import { MuSigPage } from './pages/MuSigPage'
 import { Curve25519Page } from './pages/Curve25519Page'
 import { BlsPage } from './pages/BlsPage'
+import { AdaptorPage } from './pages/AdaptorPage'
+import { Bip32Page } from './pages/Bip32Page'
 import { Attacks } from './pages/Attacks'
 import { RhoWalk } from './pages/RhoWalk'
 import { PohligHellman } from './pages/PohligHellman'
+import { InvalidCurvePage } from './pages/InvalidCurvePage'
 import { EdgeCases } from './pages/EdgeCases'
 import { SelfTestPage } from './pages/SelfTestPage'
 
@@ -25,9 +28,12 @@ const ROUTES = [
   { path: '/musig', label: 'MuSig' },
   { path: '/ed25519', label: 'Curve25519' },
   { path: '/bls', label: 'BLS Pairing' },
+  { path: '/adaptor', label: 'Adaptor Sigs' },
+  { path: '/bip32', label: 'HD Wallets' },
   { path: '/attacks', label: 'ECDLP Attacks' },
   { path: '/rho', label: "Pollard's ρ" },
   { path: '/pohlig', label: 'Pohlig–Hellman' },
+  { path: '/invalid', label: 'Invalid Curve' },
   { path: '/edge', label: 'Edge Cases' },
   { path: '/verify', label: 'Self-Test' },
 ]
@@ -64,9 +70,12 @@ export default function App() {
       {base === '/musig' && <MuSigPage />}
       {base === '/ed25519' && <Curve25519Page />}
       {base === '/bls' && <BlsPage />}
+      {base === '/adaptor' && <AdaptorPage />}
+      {base === '/bip32' && <Bip32Page />}
       {base === '/attacks' && <Attacks />}
       {base === '/rho' && <RhoWalk />}
       {base === '/pohlig' && <PohligHellman />}
+      {base === '/invalid' && <InvalidCurvePage />}
       {base === '/edge' && <EdgeCases />}
       {base === '/verify' && <SelfTestPage />}
 
