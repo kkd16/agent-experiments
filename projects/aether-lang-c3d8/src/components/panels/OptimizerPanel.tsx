@@ -30,6 +30,8 @@ const PASS_LABELS: Record<string, string> = {
   gvn: 'global value numbering (share work across `let` / `λ` / `match` binders)',
   dt: 'pattern matching compiled to a decision tree (test each position once)',
   sat: 'static-argument transformation (lift a loop-invariant argument into a wrapper)',
+  specconstr:
+    'call-pattern specialisation / SpecConstr (recurse on a tuple/constructor argument’s fields so the per-iteration box + match vanish)',
   'float-in': 'float-in (sink a pure binding past a conditional into the one branch that uses it)',
   'dead-param': 'dead-argument elimination (drop a parameter whose value never reaches the result)',
   eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
@@ -401,6 +403,39 @@ export default function OptimizerPanel({ code }: Props) {
                         <code>{p}</code>
                       </span>
                     ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.specConstrs.length > 0 && (
+        <div className="opt-passes">
+          <h4>Call-pattern specialisation — SpecConstr (Aether 23.0)</h4>
+          <p className="panel-note" style={{ marginTop: 0 }}>
+            The other half of GHC&rsquo;s loop-specialisation toolkit (Peyton Jones,{' '}
+            <em>Call-pattern specialisation</em>, ICFP 2007). Where the 17.0 transform lifts a
+            loop-<em>invariant</em> argument out, this attacks a loop-<em>varying</em> one that is rebuilt
+            as the <em>same</em> tuple/constructor shape every iteration only to be torn straight back
+            apart by the function&rsquo;s own <code>match</code> — pure box-then-project churn. SpecConstr{' '}
+            <strong>recurses on the shape&rsquo;s fields directly</strong>, reconstructing the whole value
+            only where it is genuinely used (single-use, so the inliner copies it onto the{' '}
+            <code>match</code> and the 11.0 known-constructor rule deletes the cell <em>and</em> the test):
+          </p>
+          <table className="opt-table">
+            <tbody>
+              {stats.specConstrs.map((s, i) => (
+                <tr key={i}>
+                  <td className="opt-pass-count">{s.calls}×</td>
+                  <td className="opt-pass-name">
+                    <code>{s.name}</code>
+                  </td>
+                  <td className="opt-pass-desc">
+                    specialised on <code>{s.param}</code> <code>{s.shape}</code> — recurses on its{' '}
+                    {s.arity} unpacked field{s.arity === 1 ? '' : 's'}; no per-iteration box or{' '}
+                    <code>match</code>
                   </td>
                 </tr>
               ))}

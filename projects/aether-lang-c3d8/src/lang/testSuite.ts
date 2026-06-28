@@ -434,6 +434,55 @@ type Color = Red | Green | Blue deriving (Eq, Show) in
     expected: '4',
   },
 
+  // ---- call-pattern specialisation / SpecConstr (Aether 23.0) ----
+  // A loop-varying argument rebuilt as the same tuple/constructor shape every
+  // iteration is specialised so the loop recurses on its *fields* — the cell is
+  // never boxed and the destructuring `match` never runs. Each row runs the whole
+  // pipeline (so the specialised core ships to the VM) and is re-run unoptimized on
+  // the JS backend: a green row proves VM(specialised) ≡ JS(naive) ≡ expected.
+  {
+    group: 'specconstr',
+    name: 'tuple accumulator is unpacked (sum, product)',
+    code: 'let rec go = fn st -> fn i -> match st with (s, p) -> if i == 0 then (s, p) else go (s + i, p * i) (i - 1) in go (0, 1) 6',
+    expected: '(21, 720)',
+  },
+  {
+    group: 'specconstr',
+    name: 'named-state ADT threaded through the loop',
+    code: 'type Acc = Acc Int Int Int in let rec loop = fn s -> match s with Acc i sum sumsq -> if i == 0 then (sum, sumsq) else loop (Acc (i - 1) (sum + i) (sumsq + i * i)) in loop (Acc 6 0 0)',
+    expected: '(21, 91)',
+  },
+  {
+    group: 'specconstr',
+    name: 'three-field tuple state',
+    code: 'let rec go = fn st -> fn i -> match st with (a, b, c) -> if i == 0 then a + b + c else go (a + i, b + i * i, c + 1) (i - 1) in go (0, 0, 0) 5',
+    expected: '75',
+  },
+  {
+    group: 'specconstr',
+    name: 'single-constructor countdown (MkPair state)',
+    code: 'type Pair = MkPair Int Int in let rec go = fn st -> match st with MkPair a b -> if a == 0 then b else go (MkPair (a - 1) (b + a)) in go (MkPair 10 0)',
+    expected: '55',
+  },
+  {
+    group: 'specconstr',
+    name: 'composes with the static-argument transform',
+    code: 'let rec go = fn g -> fn st -> fn i -> match st with (s, p) -> if i == 0 then (s, p) else go g (g s + i, p * i) (i - 1) in go (fn x -> x + 1) (0, 1) 5',
+    expected: '(20, 120)',
+  },
+  {
+    group: 'specconstr',
+    name: 'two different constructors per call: left untouched, still correct',
+    code: 'type Box = A Int | B Int in let rec go = fn st -> fn i -> match st with A x -> if i == 0 then x else go (B (x + 1)) (i - 1) | B x -> if i == 0 then x else go (A (x + 1)) (i - 1) in go (A 0) 6',
+    expected: '6',
+  },
+  {
+    group: 'specconstr',
+    name: 'a state also kept whole is not specialised, still correct',
+    code: 'let rec go = fn st -> fn i -> match st with (s, p) -> if i == 0 then (st, s + p) else go (s + i, p + i) (i - 1) in go (0, 0) 4',
+    expected: '((10, 10), 20)',
+  },
+
   // ---- decision-tree pattern compilation (Aether 12.0) ----
   // Each runs through the whole pipeline (so the decision-tree lowering ships)
   // and is also run on the JavaScript backend — a green row proves DT ≡ naive.

@@ -1401,6 +1401,51 @@ let rec go = fn audit -> fn tag -> fn n ->
 go 0 "trace" 60
 `,
   },
+  {
+    id: 'specconstr',
+    title: 'Call-pattern specialisation',
+    blurb: 'Open the Optimizer tab: a state threaded as one ADT stops being boxed and unboxed each turn.',
+    visual: false,
+    code: `// Aether 23.0 — CALL-PATTERN SPECIALISATION / SpecConstr (open the "Optimizer" tab).
+//
+// The 17.0 static-argument transform lifts a loop-INVARIANT argument out of a
+// recursive loop. SpecConstr (Peyton Jones, "Call-pattern specialisation for
+// Haskell programs", ICFP 2007) attacks the dual waste: a loop-VARYING argument
+// that is rebuilt as the SAME constructor (or tuple) shape on every iteration,
+// only to be torn straight back apart by the function's own 'match'.
+//
+// Below, the whole state — a countdown 'i' and two running totals — is threaded
+// as one 'Acc i sum sumsq' value. Each turn boxes a fresh 'Acc' on the heap and
+// the next call's 'match' immediately unboxes it: pure box-then-project churn.
+//
+// SpecConstr SPECIALISES the loop for that call pattern — it recurses on the
+// three FIELDS directly, so no 'Acc' cell is ever built and the 'match' never
+// runs. The trick is gentle: it fires only when the value is used exactly once
+// (as that 'match' scrutinee), reconstructing it as 'let s = Acc i sum sumsq in
+// …'; because that binding is single-use, the inliner copies the literal onto the
+// 'match' and the 11.0 known-constructor rule deletes the cell AND the test.
+//
+// It only emits ordinary core and leans on machinery already proven correct, so
+// the bytecode VM, the JavaScript backend AND the WebAssembly backend run the
+// specialised program and the VM ≡ JS ≡ WASM checks re-prove the answer is the
+// same. The per-iteration allocation is removed and nothing is duplicated or
+// moved, so VM steps can only fall — by construction.
+//
+// Open the "Optimizer" tab: the rewrite table lists 'specconstr', a "Call-pattern
+// specialisation" section names the loop and its shape, and "Measure VM steps"
+// shows the work it saves (~30%). Flip "show before" to watch the 'Acc' vanish.
+
+type Acc = Acc Int Int Int in
+
+// Sum and sum-of-squares of 1..600, carried as one boxed state value.
+let rec loop = fn s ->
+  match s with Acc i sum sumsq ->
+    if i == 0 then (sum, sumsq)
+    else loop (Acc (i - 1) (sum + i) (sumsq + i * i)) in
+
+loop (Acc 600 0 0)
+`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

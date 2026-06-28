@@ -89,6 +89,9 @@ export interface OptimizeStats {
   /** one entry per pure, non-value `let` binding the float-in pass sank past a
    *  conditional into the one branch that uses it (Aether 19.0) — for the panel. */
   floatIns: { name: string; value: string; into: string }[]
+  /** one entry per recursive function the call-pattern specialisation (SpecConstr)
+   *  pass unpacked a constructor/tuple-shaped argument out of (Aether 23.0). */
+  specConstrs: { name: string; shape: string; arity: number; param: string; calls: number }[]
   /** one entry per function the dead-argument-elimination pass dropped a parameter
    *  from — one whose value never reaches the result (Aether 20.0). */
   deadParams: { name: string; dropped: string[]; recursive: boolean }[]
@@ -187,6 +190,12 @@ let SATS: { name: string; arity: number; static: string[]; dynamic: string[]; ca
 // the Optimizer panel. Reset per run.
 let FLOATINS: { name: string; value: string; into: string }[] = []
 
+// One entry per recursive function the call-pattern specialisation (SpecConstr)
+// pass unpacked a constructor/tuple-shaped argument out of this run (Aether 23.0).
+// Module-level for the same reason as `freshCounter` — optimization is synchronous
+// and single-shot — and surfaced in the Optimizer panel. Reset per run.
+let SPECCONSTRS: { name: string; shape: string; arity: number; param: string; calls: number }[] = []
+
 // One entry per function the dead-argument-elimination pass dropped a parameter
 // from this run (Aether 20.0). Module-level for the same reason as `freshCounter`
 // — optimization is synchronous and single-shot — and surfaced in the Optimizer
@@ -228,6 +237,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   INLINES = []
   SATS = []
   FLOATINS = []
+  SPECCONSTRS = []
   DEADPARAMS = []
   COMMUTES = []
   ALLOW_FN_INLINE = true
@@ -334,6 +344,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       inlinedFns: INLINES,
       satTransforms: SATS,
       floatIns: FLOATINS,
+      specConstrs: SPECCONSTRS,
       deadParams: DEADPARAMS,
       commutes: COMMUTES,
       dt,
@@ -537,6 +548,11 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
     // parameter out of the recursive loop, leaving it captured as a free var.
     const sat = staticArgumentTransform(e, bump)
     if (sat) return sat
+    // call-pattern specialisation (Aether 23.0): unpack a loop-*varying* argument
+    // that is rebuilt as the same constructor/tuple shape every iteration and torn
+    // straight back apart, so the cell is never boxed and the `match` never runs.
+    const sc = specConstr(e, bump)
+    if (sc) return sc
     return null
   }
 
@@ -961,6 +977,257 @@ function staticArgumentTransform(
   })
   // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
   return cloneExpr({ ...e, recursive: false, value: wrapper, body: e.body })
+}
+
+// ---------------------------------------------------------------------------
+// Call-pattern specialisation — SpecConstr (Aether 23.0)
+// ---------------------------------------------------------------------------
+//
+// The other half of GHC's loop-specialisation toolkit (Peyton Jones, "Call-
+// pattern specialisation for Haskell programs", ICFP 2007). The 17.0 static-
+// argument transform lifts a loop-invariant *argument* out of a recursive loop;
+// SpecConstr attacks the dual waste — a loop-*varying* argument that is rebuilt
+// as the *same constructor / tuple shape* on every iteration only to be taken
+// straight back apart by the function's own `match`:
+//
+//     let rec go = fn st -> fn i ->                 -- threads a 2-tuple accumulator
+//       match st with (s, p) ->
+//         if i == 0 then (s, p)
+//         else go (s + i, p * i) (i - 1)            -- ALLOCATES a fresh (·,·) each turn…
+//     in go (0, 1) 10                               -- …only for `match st` to rip it apart
+//
+// Every iteration boxes `(s + i, p * i)` into a heap tuple and the next call's
+// `match` immediately unboxes it: pure alloc-then-project churn. SpecConstr
+// *specialises `go` for that call pattern* — it recurses on the tuple's two
+// *fields* directly, so the cell is never built and the `match` never runs:
+//
+//     let rec go' = fn s -> fn p -> fn i ->         -- worker over the unpacked fields
+//       let st = (s, p) in                          -- the whole value, rebuilt at most once…
+//       match st with (s, p) -> …                   -- …and only where `go` used `st` *whole*
+//     in go' 0 1 10                                 -- seed unpacked too: no entry tuple
+//
+// The reconstruction `let st = (s, p) in …` is the load-bearing trick: because we
+// only fire when `st` is used *exactly once* — as that `match` scrutinee — the
+// single-use value inliner copies the literal tuple onto the `match`, the 11.0
+// known-constructor rule fires (`match (s, p) with (s, p) -> …` ⇒ the body, no
+// cell, no test), and the whole box/unbox pair evaporates. We emit only ordinary
+// core and lean on machinery the middle-end already proves correct, exactly as
+// SAT does, so the VM, JS and WASM backends compile the result unchanged and the
+// byte-for-byte equivalence checks re-prove the answer never moved.
+//
+// Soundness & the never-increase-steps invariant (all conservative):
+//   • `f` is a genuinely self-recursive `let rec f = fn p0 … p_{k-1} -> body`,
+//     *immediately driven* by its own `in`-expression — a single saturated call
+//     `f s0 … s_{k-1}` (the SAT-style seed). A use of `f` anywhere else, or a
+//     non-call driver, is out of scope (we decline) — this keeps the rewrite a
+//     whole-loop replacement that needs no fallback wrapper;
+//   • EVERY free occurrence of `f` in `body` is a *saturated* call (a bare or
+//     partial `f` escapes — we decline), mirroring SAT's escape analysis;
+//   • some slot `j` carries the SAME shape (a tuple of fixed arity, or one fixed
+//     constructor) at the seed AND at every recursive call — so `p_j` is *always*
+//     that shape at run time and rebuilding it from its fields is exactly equal;
+//   • `p_j` is consumed *exactly once*, as that shape's destructuring `match`
+//     scrutinee — so the rebuilt cell is single-use (inlined, then the match
+//     folds away) and is rebuilt **no more often than it was allocated before**.
+//     A value used twice, or kept whole, is left for a future worker/wrapper pass.
+// Hence steps(optimized) ≤ steps(unoptimized) by construction: the per-iteration
+// allocation and projection are removed and nothing is ever duplicated or moved.
+
+type ScShape =
+  | { kind: 'tuple'; arity: number }
+  | { kind: 'con'; name: string; arity: number }
+
+/** Read `e` as a fixed-shape construction (a tuple, or a saturated constructor
+ *  application), returning the shape and its field expressions — else null. */
+function scShapeOf(e: Expr): { shape: ScShape; fields: Expr[] } | null {
+  if (e.kind === 'tuple' && e.elements.length >= 1) {
+    return { shape: { kind: 'tuple', arity: e.elements.length }, fields: e.elements }
+  }
+  const c = ctorAppHead(e)
+  if (c && c.args.length >= 1) {
+    return { shape: { kind: 'con', name: c.name, arity: c.args.length }, fields: c.args }
+  }
+  return null
+}
+
+function scSameShape(a: ScShape, b: ScShape): boolean {
+  if (a.kind === 'tuple' && b.kind === 'tuple') return a.arity === b.arity
+  if (a.kind === 'con' && b.kind === 'con') return a.name === b.name && a.arity === b.arity
+  return false
+}
+
+/** Does `name`'s sole free occurrence in `body` sit as the scrutinee of a `match`
+ *  whose arms actually *destructure* `shape` (a `ptuple`/`pcon` of the right
+ *  arity / constructor)? That is the case SpecConstr can melt: unpacking the
+ *  fields lets the rebuilt cell inline onto the match and the projection vanish.
+ *  A bare `pvar`/`pwild` scrutinee would only rebind the whole value — no win —
+ *  so it is rejected. Shadowing binders cut the search. */
+function scSoleDestructure(name: string, body: Expr, shape: ScShape): boolean {
+  let ok = false
+  const destructures = (p: Pattern): boolean =>
+    shape.kind === 'tuple'
+      ? p.kind === 'ptuple' && p.elements.length === shape.arity
+      : p.kind === 'pcon' && p.name === shape.name && p.args.length === shape.arity
+  const go = (x: Expr, scope: Set<string>): void => {
+    if (scope.has(name)) return
+    if (
+      x.kind === 'match' &&
+      x.scrutinee.kind === 'var' &&
+      x.scrutinee.name === name &&
+      x.cases.some((c) => destructures(c.pattern))
+    ) {
+      ok = true
+    }
+    for (const c of scopedChildren(x, true, scope)) go(c.child, c.bound)
+  }
+  go(body, new Set())
+  return ok
+}
+
+function scBuildApp(head: Expr, args: Expr[], span: Expr['span']): Expr {
+  let out = head
+  for (const a of args) out = { kind: 'app', fn: out, arg: a, span }
+  return out
+}
+
+function specConstr(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
+  const f = e.name
+
+  // The driver: `in <body>` must be a single saturated self-call `f s0 … s_{k-1}`
+  // (the immediately-driven loop — the same shape SAT seeds). A non-call driver,
+  // an over-application, or a second use of `f` here is out of scope for v1.
+  const drive = spineHead(e.body)
+  if (!drive || drive.name !== f) return null
+  if (countUses(f, e.body) !== 1) return null
+
+  // Peel the curried parameters off the recursive value.
+  const params: string[] = []
+  let cur: Expr = e.value
+  while (cur.kind === 'lambda') {
+    params.push(cur.param)
+    cur = cur.body
+  }
+  const body0 = cur
+  const k = params.length
+  if (k === 0) return null
+  if (new Set(params).size !== k) return null // duplicate params: bail (rare)
+  if (drive.args.length !== k) return null // driver must saturate `f` exactly
+  if (!freeVars(body0).has(f)) return null // not actually recursive in the body
+
+  // Pass 1 — collect, per slot, the argument every recursive call passes, and
+  // verify each occurrence of `f` is a saturated call (otherwise it escapes).
+  let eligible = true
+  let calls = 0
+  const argsBySlot: Expr[][] = params.map(() => [])
+  const scan = (node: Expr, scope: Set<string>): void => {
+    if (!eligible) return
+    if (node.kind === 'var') {
+      if (node.name === f && !scope.has(f)) eligible = false // bare escape
+      return
+    }
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        if (sp.args.length < k) {
+          eligible = false // partial application — `f` escapes under-saturated
+          return
+        }
+        calls++
+        for (let i = 0; i < k; i++) argsBySlot[i].push(sp.args[i])
+        for (const a of sp.args) scan(a, scope) // arguments only; head chain is `f`
+        return
+      }
+    }
+    for (const c of scopedChildren(node, true, scope)) scan(c.child, c.bound)
+  }
+  scan(body0, new Set())
+  if (!eligible || calls === 0) return null
+
+  // Pass 2 — pick a slot whose seed and every recursive argument share one shape,
+  // and whose parameter is consumed by exactly that one destructuring `match`.
+  let chosen: { j: number; shape: ScShape } | null = null
+  for (let j = 0; j < k; j++) {
+    const seed = scShapeOf(drive.args[j])
+    if (!seed) continue
+    let uniform = true
+    for (const a of argsBySlot[j]) {
+      const s = scShapeOf(a)
+      if (!s || !scSameShape(s.shape, seed.shape)) {
+        uniform = false
+        break
+      }
+    }
+    if (!uniform) continue
+    if (countUses(params[j], body0) !== 1) continue
+    if (!scSoleDestructure(params[j], body0, seed.shape)) continue
+    chosen = { j, shape: seed.shape }
+    break
+  }
+  if (!chosen) return null
+  const { j, shape } = chosen
+  const m = shape.arity
+  const span = e.span
+
+  // Pass 3 — rewrite. The specialised worker `g` takes the `m` unpacked fields
+  // (fresh names, so they can never collide with anything in `body0`) in slot
+  // `j`'s place, followed by the surviving parameters in their original order.
+  const g = gensym('spec')
+  const fieldVars = Array.from({ length: m }, () => gensym('scf'))
+  const others = params.filter((_, i) => i !== j)
+  const rebuild = (): Expr => {
+    const vs: Expr[] = fieldVars.map((n) => ({ kind: 'var', name: n, span }))
+    return shape.kind === 'tuple'
+      ? { kind: 'tuple', elements: vs, span }
+      : scBuildApp({ kind: 'var', name: shape.name, span }, vs, span)
+  }
+
+  // Redirect every saturated recursive call to `g`, passing slot `j`'s shape
+  // *fields* in place of the boxed cell and the surviving arguments after them.
+  const rw = (node: Expr, scope: Set<string>): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && sp.name === f && !scope.has(f)) {
+        const sh = scShapeOf(sp.args[j])! // uniform check above guarantees a shape
+        const passed: Expr[] = []
+        for (const h of sh.fields) passed.push(rw(h, scope))
+        for (let i = 0; i < k; i++) if (i !== j) passed.push(rw(sp.args[i], scope))
+        for (let i = k; i < sp.args.length; i++) passed.push(rw(sp.args[i], scope)) // tail
+        return scBuildApp({ kind: 'var', name: g, span: node.span }, passed, node.span)
+      }
+    }
+    return mapChildrenScoped(node, scope, rw)
+  }
+  const body0rw = rw(body0, new Set())
+
+  // Reconstruct `p_j` from its fields at the worker's head — used exactly once,
+  // so the single-use value inliner copies it onto the `match` and the 11.0
+  // known-constructor rule then deletes both the cell and the projection.
+  const inner: Expr = { kind: 'let', name: params[j], value: rebuild(), body: body0rw, recursive: false, span }
+  let lam: Expr = inner
+  const gParams = [...fieldVars, ...others]
+  for (let p = gParams.length - 1; p >= 0; p--) {
+    lam = { kind: 'lambda', param: gParams[p], body: lam, span }
+  }
+
+  // Seed the worker with the entry shape unpacked too — no tuple is built to enter.
+  const seedShape = scShapeOf(drive.args[j])!
+  const seedArgs: Expr[] = []
+  for (const h of seedShape.fields) seedArgs.push(h)
+  for (let i = 0; i < k; i++) if (i !== j) seedArgs.push(drive.args[i])
+  for (let i = k; i < drive.args.length; i++) seedArgs.push(drive.args[i])
+  const driver = scBuildApp({ kind: 'var', name: g, span }, seedArgs, span)
+
+  bump('specconstr')
+  SPECCONSTRS.push({
+    name: f,
+    shape:
+      shape.kind === 'tuple' ? `(${Array.from({ length: m }, () => '·').join(', ')})` : shape.name,
+    arity: m,
+    param: params[j],
+    calls,
+  })
+  // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
+  return cloneExpr({ kind: 'let', name: g, value: lam, body: driver, recursive: true, span })
 }
 
 // ---------------------------------------------------------------------------
