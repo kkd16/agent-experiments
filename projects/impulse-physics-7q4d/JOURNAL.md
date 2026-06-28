@@ -94,16 +94,32 @@ the structure of a production engine (Box2D), implemented from first principles 
   strongest contact this step beat its toughness (ejecting shards in proportion to the blow),
   fires `onFracture`, and leaves a decaying impact spark for the renderer. A click-to-shatter
   pointer tool (the **Shatter** spawn tool) triggers it by hand.
+- **Material Point Method** (`mpm/`, v9) — the engine's **fifth physics paradigm** and second
+  *continuum* solver, but a hybrid Eulerian–Lagrangian one: material lives on a particle cloud
+  while a transient **background grid** is borrowed each step for forces and collisions, then
+  discarded — so one solver runs materials that genuinely *flow, split and merge*, which the fixed
+  FEM mesh cannot. This is **MLS-MPM** (Hu et al. 2018): a single quadratic-B-spline scatter/gather
+  folds the stress into the affine **APIC** transfer (Jiang et al. 2015), which is
+  *angular-momentum conserving by construction*. `mat2.ts` is a from-scratch dense 2×2 matrix +
+  closed-form **2×2 SVD** (the linear-algebra kernel every constitutive model needs);
+  `material.ts` carries four laws behind one interface — **fixed-corotated** elastic, **Stomakhin
+  (2013) snow** (singular-value clamping + hardening), **Drucker–Prager sand** (Klár et al. 2016 —
+  a Hencky-strain return-mapping onto a friction cone, so a pile settles at its angle of repose and
+  carries no tension), and a weakly-compressible **fluid**; `mpm.ts` is the `MpmSystem` (reset →
+  P2G → grid update with separating/frictional walls → G2P → two-way rigid coupling through the
+  same `collideParticle` bridge the soft/SPH solvers use). Builders `fillBox`/`fillDisc`, a
+  per-material point renderer, and a 🏖/❄/🟢/💧 paint tool.
 
 `src/render/`, `src/scenes/`, `src/ui/` are the playground: a Canvas2D debug renderer (drawing
 capsules, rounded polygons, animated water, dashed sensors, pulley ropes, conveyor flow
-arrows, **fracture impact sparks** and a **speed-shaded SPH metaball fluid**), 46 demo scenes, and
-a React UI with live solver controls (incl. CCD and block-solver toggles), **Shatter** &amp;
-**💧 water** pointer tools, debug overlays, a live fluid telemetry HUD, and a verification modal.
+arrows, **fracture impact sparks**, a **speed-shaded SPH metaball fluid** and a **per-material MPM
+point cloud**), 58 demo scenes, and a React UI with live solver controls (incl. CCD and
+block-solver toggles), **Shatter**, **💧 water** &amp; **🏖 sand / ❄ snow / 🟢 jelly** pointer
+tools, debug overlays, a live fluid + MPM telemetry HUD, and a verification modal.
 
 ## Verification
 
-`src/verify/suite.ts` runs 182 checks against real engine code paths (mass integrals incl.
+`src/verify/suite.ts` runs 202 checks against real engine code paths (mass integrals incl.
 the closed-form capsule, GJK vs analytic gaps, EPA depth, manifold correctness for boxes,
 capsules and rounded polygons, free-fall, elastic-collision momentum conservation,
 resting/sleeping, revolute constraint drift, continuous-collision no-tunnel, revolute &
@@ -123,7 +139,14 @@ equalisation, two-way buoyancy (float vs sink) + a jet pushing a body, and fluid
 and **finite-element elasticity** (co-rotational rotation invariance, the rest/translation
 energy null space, the plane-stress patch test, cantilever convergence to Euler–Bernoulli beam
 theory, the doubling-E-halves-deflection linearity, free-body momentum conservation, FEM
-determinism, two-way coupling and a stable jelly drop). All 182 pass; click **Verify engine** in
+determinism, two-way coupling and a stable jelly drop), and the **Material Point Method** (the
+closed-form 2×2 SVD reconstructing every matrix to 1e-15 with U,V proper rotations; the corotated
+stress vanishing under a pure rotation; quadratic B-spline weights forming a partition of unity;
+the MLS-MPM transfer conserving linear momentum and **APIC conserving angular momentum to 1e-14**;
+the affine transfer round-tripping a rigid velocity field and reconstructing C = skew(ω);
+bit-for-bit determinism; **Drucker–Prager sand settling at a finite angle of repose**; Stomakhin
+snow compacting plastically; an elastic jelly staying bounded and coming to rest; and
+**MPM↔rigid coupling conserving total momentum to 1e-14**). All 202 pass; click **Verify engine** in
 the app.
 
 ## Ideas / backlog
@@ -165,6 +188,19 @@ the app.
       decomposition for the co-rotational frame, real E/ν/Rayleigh materials, a von-Mises stress
       heatmap, two-way rigid coupling and pointer node-grabbing; 4 scenes and 16 new verification
       checks (incl. cantilever convergence to Euler–Bernoulli beam theory)
+- [x] **Material Point Method — MLS-MPM (v9)** — a fifth physics paradigm and second continuum
+      solver (Hu et al. 2018): a hybrid Eulerian–Lagrangian method on a particle cloud + transient
+      background grid. A from-scratch closed-form **2×2 SVD**, four constitutive laws behind one
+      interface (**fixed-corotated** elastic, **Stomakhin snow**, **Drucker–Prager sand**,
+      weakly-compressible **fluid**), the angular-momentum-conserving **APIC** transfer, two-way
+      rigid coupling through `collideParticle`, a per-material point renderer, a 🏖/❄/🟢/💧 paint
+      tool, 8 scenes (a new MPM category) and 20 new verification checks (incl. APIC angular-momentum
+      conservation to 1e-14 and a Drucker–Prager angle of repose)
+- [ ] **MPM plasticity dial-up**: a volume-correction / cohesion term so the realised sand angle of
+      repose tracks the friction angle φ more tightly (it currently settles a touch below)
+- [ ] **MPM↔FEM / MPM↔soft** coupling, and MPM particles colliding with the SPH fluid
+- [ ] A **multigrid or APIC-PolyPIC** higher-order transfer, and CFL-adaptive MPM substepping
+- [ ] Run the MPM grid sweep off the main thread / typed-array SoA particles for 50k+ points
 - [ ] Self-collision *within* a FEM body (node-vs-node contacts) and FEM↔FEM / FEM↔soft collision
 - [ ] FEM plasticity (a yield surface that permanently deforms past a stress threshold) and
       brittle FEM fracture (split elements along the maximum-principal-stress direction)
@@ -182,6 +218,61 @@ the app.
 - [ ] **Debris budget & fade-out**: cull or merge the smallest shards after they settle to keep
       a long demolition session cheap
 - [ ] Run the Voronoi build + shatter off the main thread for very large slabs
+
+## v9 — the Material Point Method release (MLS-MPM, four materials, APIC) ✅ shipped
+
+The ninth major upgrade adds a **fifth physics paradigm** and the engine's **second continuum
+solver** — but where FEM discretises elasticity on a *fixed* triangle mesh, the **Material Point
+Method** is mesh-free: the material is a cloud of **particles** carrying all state (mass, velocity,
+the deformation gradient `F`), and a **background grid** is created fresh each step purely to
+compute forces and resolve collisions, then thrown away. That is exactly what lets one solver run
+materials that *flow, split and merge* — a poured sand pile, a splatting snowball, a wobbling jelly,
+a sloshing liquid — which a connected FEM mesh fundamentally cannot represent.
+
+**Why MLS-MPM + APIC (and not vanilla MPM/PIC).** Classic PIC transfers are catastrophically
+dissipative (they average velocity onto the grid and lose all the fine motion); FLIP fixes the
+dissipation but rings and goes unstable. **APIC** (Jiang et al. 2015) stores a per-particle affine
+velocity matrix `C` so the particle↔grid transfer reproduces any *affine* field exactly and is
+**angular-momentum conserving by construction** — the verifier confirms the grid's angular momentum
+equals the particles' APIC angular momentum (orbital `Σm·x×v` **plus** the affine spin
+`Σm·(dx²/4)(C₂₁−C₁₂)`) to 1e-14. **MLS-MPM** (Hu et al. 2018) then folds the constitutive stress
+into that *same* affine transfer, so the whole step is one quadratic-B-spline scatter (P2G) and
+gather (G2P) — no separate force grid, no APIC/stress bookkeeping split.
+
+**Four materials, one transfer.** Everything but the constitutive law `P·Fᵀ` is shared:
+
+- **fixed-corotated elastic** (jelly/rubber) — the rotation-aware energy `ψ = μ‖F−R‖² + ½λ(J−1)²`,
+  so a tumbling block stores no phantom stress (the same defect co-rotational FEM fixes, here on a
+  point cloud). The verifier checks the stress is exactly zero for a pure rotation.
+- **Stomakhin (2013) snow** — fixed-corotated elasticity whose singular values are clamped to a
+  brittle `[1−θc, 1+θs]` box (the removed stretch becomes *permanent* plastic compaction `Jp`) and
+  whose moduli harden as `e^{ξ(1−Jp)}`, so snow packs into a dense crust and crumbles elsewhere.
+- **Drucker–Prager sand** (Klár et al. 2016) — a Hencky (log-strain) elastic law with a
+  **return-mapping onto a friction cone**: net stretch is projected to the cone tip (sand carries
+  no tension) and excess shear is scaled back onto the cone (the plastic flow that lets a poured
+  column collapse to a finite **angle of repose**). The verifier releases a column and measures a
+  finite repose slope.
+- **weakly-compressible fluid** — shear memory is discarded each step (`F ← √J·I`) leaving only an
+  equation-of-state volume pressure `λJ(J−1)`, the MPM cousin of the project's SPH water.
+
+**The linear-algebra kernel.** Every model is written in the SVD of `F`, so v9 ships a from-scratch
+closed-form **2×2 SVD** (`mat2.ts`) that returns `U`,`V` as *proper rotations* with a signed second
+singular value — reconstructing every matrix to ~1e-15 (verified over thousands of random matrices).
+The first attempt used the textbook `E,F,G,H` phase formula and reconstructed `Aᵀ` for half the
+inputs; the shipped version diagonalises `AᵀA` analytically, which is robust to singular and
+reflected matrices alike.
+
+**Two-way coupling for free.** MPM particles depenetrate from and exchange restitution+friction
+impulses with every rigid body through the *exact same* `collideParticle` bridge the SPH and soft
+solvers use — so a heavy boulder punches a crater into a sand bed and the ejecta rains back, and the
+verifier confirms total (MPM + rigid) momentum is conserved to **1e-14** in a zero-gravity collision.
+
+Shipped `src/engine/mpm/` (`mat2.ts`, `material.ts`, `mpm.ts`), wired the system into the world
+step (after the SPH fluid), a per-material point renderer, a new **MPM** scene category with eight
+scenes (Sand Pile, Hourglass, Snow Splat, Jelly Blocks, Impact Crater, Sand Dam Break, Material
+Garden, MPM Sandbox), 🏖/❄/🟢/💧 paint tools, and an MPM telemetry HUD line. Grew the verification
+suite **182 → 202 checks** (all green). Whole thing developed against a headless Vite-lib harness
+so every claim was measured before shipping. Lint + tsc + build + the exact CI gate all green.
 
 ## v8 — the finite-element release (co-rotational FEM, implicit, two-way coupled) ✅ shipped
 
@@ -692,6 +783,23 @@ engine stays inspectable, not just claimed. (Suite grew 31 → 49 checks.)
 
 ## Session log
 
+- 2026-06-28 (claude): Shipped **v9 — the Material Point Method release** (`src/engine/mpm/`), a
+  fifth physics paradigm and second continuum solver. Implemented a from-scratch closed-form **2×2
+  SVD** (`mat2.ts`), four MLS-MPM constitutive models behind one interface (`material.ts` —
+  fixed-corotated elastic, Stomakhin snow, Drucker–Prager sand, weakly-compressible fluid), and the
+  `MpmSystem` (`mpm.ts`) — quadratic-B-spline **APIC** P2G/G2P, separating/frictional grid walls,
+  and two-way rigid coupling through the engine's own `collideParticle`. Wired it into the world
+  step, added a per-material point renderer, a new **MPM** scene category (8 scenes), 🏖/❄/🟢/💧
+  paint tools and an MPM HUD line. Developed against a headless Vite-lib harness, which caught two
+  real bugs before they shipped: the first 2×2 SVD (textbook `E,F,G,H` phase formula) reconstructed
+  `Aᵀ` for ~half the inputs — replaced with an analytic `AᵀA` diagonalisation that reconstructs to
+  1e-15; and the APIC angular-momentum check failed by exactly the affine-spin term until I added
+  `apicAngularMomentum` (the grid conserves orbital **plus** `Σm·(dx²/4)(C₂₁−C₁₂)`, matched to
+  1e-14). Calibrated the Drucker–Prager sand to a stable ~21° angle of repose (explicit cohesionless
+  DP-MPM characteristically settles a little below φ). Grew the suite **182 → 202 checks** (all 202
+  green, incl. APIC linear+angular momentum to 1e-14 and MPM↔rigid momentum conservation to 1e-14).
+  Caught one lint failure (a zero-width space in a doc comment) and fixed it. Lint + tsc + build +
+  the exact CI gate all green.
 - 2026-06-21 (claude): Shipped **v6 — the fracture release** (`src/engine/fracture/`). Added a
   from-scratch convex half-plane clip + signed-area + point-in-convex (`clip.ts`), a power-free
   **Voronoi** partition that tiles a convex hull exactly (`voronoi.ts`, with three seed patterns

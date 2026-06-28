@@ -35,6 +35,12 @@ import {
   makeCloth,
   makeRope,
   Mat22,
+  Mat2,
+  svd2,
+  evaluate,
+  MpmSystem,
+  mpmParams,
+  material as mpmMaterial,
   MotorJoint,
   pointInConvex,
   Polygon,
@@ -1501,6 +1507,182 @@ export function runVerification(): CheckResult[] {
       drift += fa.particles[i].pos.sub(fb.particles[i].pos).length();
     }
     a.close('Fluid simulation is deterministic', drift, 0, 1e-12);
+  }
+
+  // ---- MPM: linear algebra -------------------------------------------------
+  a.section('MPM · linear algebra');
+  {
+    // Closed-form 2×2 SVD reconstructs every matrix; U,V are pure rotations.
+    let maxErr = 0;
+    let maxOrtho = 0;
+    let minDet = 2;
+    for (let i = 0; i < 4000; i++) {
+      const M = new Mat2(
+        Math.sin(i * 1.3) * 3,
+        Math.cos(i * 2.1) * 2,
+        Math.sin(i * 0.7) - 1,
+        Math.cos(i * 1.9) * 1.5,
+      );
+      const { u, s1, s2, v } = svd2(M);
+      const R = u.mul(Mat2.diag(s1, s2)).mul(v.transpose());
+      maxErr = Math.max(maxErr, R.sub(M).norm());
+      maxOrtho = Math.max(
+        maxOrtho,
+        u.mul(u.transpose()).sub(Mat2.I).norm(),
+        v.mul(v.transpose()).sub(Mat2.I).norm(),
+      );
+      minDet = Math.min(minDet, u.det(), v.det());
+    }
+    a.ok('2×2 SVD reconstructs A = UΣVᵀ', maxErr < 1e-12, `maxErr=${maxErr.toExponential(2)}`);
+    a.ok('SVD U,V orthonormal', maxOrtho < 1e-12, `‖UUᵀ−I‖=${maxOrtho.toExponential(2)}`);
+    a.ok('SVD U,V are proper rotations (det +1)', minDet > 0.999999, `min det=${minDet.toFixed(9)}`);
+  }
+  {
+    // Fixed-corotated stress vanishes for a pure rotation (F = R, J = 1).
+    const F = Mat2.rotation(0.6);
+    const res = evaluate(F, 1, mpmMaterial('jelly'));
+    a.ok('Corotated stress = 0 under pure rotation', res.pf.norm() < 1e-9, `‖PFᵀ‖=${res.pf.norm().toExponential(2)}`);
+  }
+
+  // ---- MPM: MLS-MPM / APIC transfer ----------------------------------------
+  a.section('MPM · transfer (APIC)');
+  {
+    // Quadratic B-spline weights are a partition of unity with zero first moment:
+    // a single particle's mass scatters whole, and its momentum is reproduced.
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-3, -3), new Vec2(3, 3)), { dx: 0.5 }));
+    const p = sys.add(new Vec2(0.137, -0.291), mpmMaterial('jelly'), new Vec2(1.7, -0.9))!;
+    sys.resetGrid();
+    sys.p2g(0.01, false);
+    const gMass = sys.gridMass();
+    sys.normalizeGrid(Vec2.ZERO, 0.01, false);
+    const gm = sys.gridLinearMomentum();
+    a.close('Quadratic weights are a partition of unity (Σmᵢ = mₚ)', gMass, p.mass, 1e-12);
+    a.ok('P2G reproduces a single particle momentum', gm.sub(p.vel.mul(p.mass)).length() < 1e-12, `d=${gm.sub(p.vel.mul(p.mass)).length().toExponential(2)}`);
+  }
+  {
+    // A rigid velocity field v(x) = v₀ + ω×(x−c) with the matching affine
+    // C = skew(ω). The force-free APIC transfer must conserve linear AND angular
+    // momentum and round-trip the field exactly (the angular-momentum-preserving
+    // property of APIC, the reason it replaced PIC/FLIP).
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-4, -4), new Vec2(4, 4)), { dx: 0.5 }));
+    const omega = 0.8;
+    const v0 = new Vec2(1.3, -0.7);
+    const c = new Vec2(0.2, 0.1);
+    const skew = new Mat2(0, -omega, omega, 0);
+    const pts: Vec2[] = [];
+    for (let y = -1.5; y <= 1.5; y += 0.25) for (let x = -1.5; x <= 1.5; x += 0.25) pts.push(new Vec2(x, y));
+    for (const q of pts) {
+      const rel = q.sub(c);
+      const part = sys.add(q, mpmMaterial('jelly'), v0.add(new Vec2(-omega * rel.y, omega * rel.x)))!;
+      part.C = skew;
+    }
+    const p0 = sys.linearMomentum();
+    const l0 = sys.apicAngularMomentum(c);
+    sys.resetGrid();
+    sys.p2g(0.01, false);
+    sys.normalizeGrid(Vec2.ZERO, 0.01, false);
+    const gp = sys.gridLinearMomentum();
+    const gl = sys.gridAngularMomentum(c);
+    a.ok('P2G conserves linear momentum', gp.sub(p0).length() < 1e-9, `d=${gp.sub(p0).length().toExponential(2)}`);
+    a.ok('APIC conserves angular momentum', Math.abs(gl - l0) < 1e-9, `grid=${gl.toFixed(5)} apic=${l0.toFixed(5)}`);
+    sys.g2p(0.01);
+    let maxV = 0;
+    let maxC = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const rel = pts[i].sub(c);
+      const v = v0.add(new Vec2(-omega * rel.y, omega * rel.x));
+      maxV = Math.max(maxV, sys.particles[i].vel.sub(v).length());
+      maxC = Math.max(maxC, sys.particles[i].C.sub(skew).norm());
+    }
+    a.ok('APIC round-trips a rigid velocity field', maxV < 1e-9, `maxΔv=${maxV.toExponential(2)}`);
+    a.ok('APIC reconstructs C = skew(ω)', maxC < 1e-9, `maxΔC=${maxC.toExponential(2)}`);
+  }
+
+  // ---- MPM: materials, plasticity & coupling -------------------------------
+  a.section('MPM · materials');
+  {
+    // Bit-for-bit determinism of a full sand simulation.
+    const mk = (): MpmSystem => {
+      const w = new World(new Vec2(0, -9.8));
+      const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-5, 0), new Vec2(5, 8)), { dx: 0.4 }));
+      sys.fillBox(new Vec2(-2, 2), new Vec2(2, 5), mpmMaterial('sand'));
+      w.setMpm(sys);
+      for (let i = 0; i < 80; i++) sys.step(w.bodies, w.gravity, 1 / 60);
+      return sys;
+    };
+    const fa = mk();
+    const fb = mk();
+    let drift = 0;
+    for (let i = 0; i < fa.particles.length; i++) drift += fa.particles[i].pos.sub(fb.particles[i].pos).length();
+    a.close('MPM simulation is deterministic', drift, 0, 1e-12);
+  }
+  {
+    // Drucker–Prager sand: a released column collapses and settles into a heap at
+    // a finite angle of repose (held up by inter-grain friction, not cohesion).
+    const w = new World(new Vec2(0, -9.8));
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-9, 0), new Vec2(9, 10)), { dx: 0.3, substeps: 10, boundaryFriction: 0.9 }));
+    sys.fillBox(new Vec2(-1.1, 0.1), new Vec2(1.1, 4.2), mpmMaterial('sand', { frictionAngle: 40, young: 2e4 }));
+    for (let i = 0; i < 480; i++) sys.step(w.bodies, w.gravity, 1 / 60);
+    const xs = sys.particles.map((p) => p.pos.x).sort((u, v) => u - v);
+    const lo = xs[Math.floor(xs.length * 0.04)];
+    const hi = xs[Math.floor(xs.length * 0.96)];
+    const halfW = (hi - lo) / 2;
+    let floorY = Infinity;
+    for (const p of sys.particles) floorY = Math.min(floorY, p.pos.y);
+    const cx = (lo + hi) / 2;
+    const cy = sys.particles.filter((p) => Math.abs(p.pos.x - cx) < Math.max(0.6, halfW * 0.3)).map((p) => p.pos.y).sort((u, v) => u - v);
+    const top = cy.length ? cy[Math.floor(cy.length * 0.92)] : floorY;
+    const angle = (Math.atan2(top - floorY, halfW) * 180) / Math.PI;
+    a.ok('Sand column collapses (spreads wider than the column)', halfW > 1.1, `half-width=${halfW.toFixed(2)} m`);
+    a.ok('Sand settles at a finite angle of repose (18–45°)', angle > 18 && angle < 45, `repose ≈ ${angle.toFixed(1)}°`);
+    a.ok('Sand comes to rest (low kinetic energy)', sys.stats().kineticEnergy < 5, `KE=${sys.stats().kineticEnergy.toFixed(3)} J`);
+  }
+  {
+    // Stomakhin snow: an impacted snowball compacts plastically — Jp drops below 1
+    // and stays there (irreversible), the mechanism behind packable snow.
+    const w = new World(new Vec2(0, -20));
+    w.addBody(new Body(Polygon.box(6, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-6, 0), new Vec2(6, 12)), { dx: 0.4 }));
+    sys.fillDisc(new Vec2(0, 6), 1.5, mpmMaterial('snow'), new Vec2(0, -8));
+    w.setMpm(sys);
+    for (let i = 0; i < 200; i++) w.step(1 / 60);
+    a.ok('Snow compacts plastically (mean Jp < 1)', sys.stats().meanJp < 0.999, `⟨Jp⟩=${sys.stats().meanJp.toFixed(4)}`);
+  }
+  {
+    // Elastic jelly: a dropped hyperelastic block stays bounded (no phantom-energy
+    // blow-up) and comes to rest on the floor.
+    const w = new World(new Vec2(0, -9.8));
+    w.addBody(new Body(Polygon.box(6, 0.5), { type: BodyType.Static, position: new Vec2(0, -0.5) }));
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-6, 0), new Vec2(6, 10)), { dx: 0.4 }));
+    sys.fillBox(new Vec2(-1.2, 2), new Vec2(1.2, 4.4), mpmMaterial('jelly'));
+    w.setMpm(sys);
+    for (let i = 0; i < 300; i++) w.step(1 / 60);
+    let exploded = false;
+    for (const p of sys.particles) if (!p.pos.isFinite() || Math.abs(p.pos.x) > 20) exploded = true;
+    a.ok('Elastic jelly stays bounded (no energy blow-up)', !exploded, `KE=${sys.stats().kineticEnergy.toFixed(3)} J`);
+    a.ok('Elastic jelly settles on the floor', sys.maxHeight() < 4.4, `top y=${sys.maxHeight().toFixed(2)} m`);
+  }
+  {
+    // Two-way coupling momentum conservation: in zero gravity, a moving slab of
+    // sand strikes a free rigid box; with no gravity and no contact with the
+    // grid's separating walls (the only external forces), the total (MPM + rigid)
+    // momentum is conserved as the impulse is exchanged through collideParticle.
+    // The domain is sized so neither body reaches a wall within the window — a
+    // precondition the test asserts so a wall loss can't masquerade as a pass.
+    const w = new World(new Vec2(0, 0));
+    const box = w.addBody(new Body(Polygon.box(0.8, 1.2), { position: new Vec2(2, 0), density: 1.2, gravityScale: 0 }));
+    const sys = new MpmSystem(mpmParams(new AABB(new Vec2(-6, -4), new Vec2(40, 4)), { dx: 0.3, gravityScale: 0 }));
+    sys.fillBox(new Vec2(-2, -1), new Vec2(0, 1), mpmMaterial('sand'), new Vec2(5, 0));
+    w.setMpm(sys);
+    const p0 = sys.linearMomentum().add(box.linearVelocity.mul(box.mass));
+    for (let i = 0; i < 90; i++) w.step(1 / 60);
+    const p1 = sys.linearMomentum().add(box.linearVelocity.mul(box.mass));
+    const interior = sys.params.origin.x + (sys.params.nx - 4) * sys.params.dx;
+    let maxX = -Infinity;
+    for (const p of sys.particles) maxX = Math.max(maxX, p.pos.x);
+    a.ok('Coupling test stays clear of the domain wall', maxX < interior - 0.5, `max sand x=${maxX.toFixed(1)} < ${interior.toFixed(1)}`);
+    a.ok('MPM↔rigid coupling conserves total momentum', p1.sub(p0).length() < 0.02 * p0.length(), `|Δp|=${p1.sub(p0).length().toExponential(2)} of ${p0.length().toFixed(2)}`);
+    a.ok('Sand pushes the free body downstream', box.linearVelocity.x > 0 && box.worldCenter.x > 2, `vx=${box.linearVelocity.x.toFixed(2)} x=${box.worldCenter.x.toFixed(2)}`);
   }
 
   return a.results;

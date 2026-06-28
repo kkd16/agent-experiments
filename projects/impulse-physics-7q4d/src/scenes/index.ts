@@ -11,6 +11,9 @@ import {
   GearJoint,
   MotorJoint,
   MouseJoint,
+  MpmSystem,
+  mpmParams,
+  material as mpmMaterial,
   Polygon,
   PrismaticJoint,
   PulleyJoint,
@@ -30,6 +33,7 @@ import {
   makeSoftBox,
   type FluidParams,
   type Joint,
+  type MpmParams,
   type Shape,
 } from '../engine';
 
@@ -48,7 +52,16 @@ export interface SceneDef {
   id: string;
   name: string;
   description: string;
-  category: 'Stacking' | 'Joints' | 'Soft' | 'Fluid' | 'Fracture' | 'Showcase' | 'Materials' | 'Stress';
+  category:
+    | 'Stacking'
+    | 'Joints'
+    | 'Soft'
+    | 'Fluid'
+    | 'MPM'
+    | 'Fracture'
+    | 'Showcase'
+    | 'Materials'
+    | 'Stress';
   build: (world: World, rng: Rng) => BuildResult;
 }
 
@@ -2001,6 +2014,161 @@ const femSpringboard: SceneDef = {
   },
 };
 
+// ---- MPM (Material Point Method) scenes ------------------------------------
+
+/**
+ * A rigid box arena (floor + two walls) with a Material Point Method system
+ * attached, its background grid sized to cover the interior. Rigid bodies rest
+ * on the floor; MPM material is contained by the same walls and the grid's own
+ * separating boundary.
+ */
+function mpmArena(world: World, hw: number, height: number, opts: Partial<MpmParams> = {}): MpmSystem {
+  const t = 0.4;
+  world.addBody(new Body(Polygon.box(hw + t, t), {
+    type: BodyType.Static,
+    position: new Vec2(0, -t),
+    friction: 0.9,
+  }));
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(-hw - t, height - t),
+    friction: 0.6,
+  }));
+  world.addBody(new Body(Polygon.box(t, height), {
+    type: BodyType.Static,
+    position: new Vec2(hw + t, height - t),
+    friction: 0.6,
+  }));
+  const region = new AABB(new Vec2(-hw, 0), new Vec2(hw, height));
+  const sys = new MpmSystem(mpmParams(region, opts));
+  world.setMpm(sys);
+  return sys;
+}
+
+const sandPile: SceneDef = {
+  id: 'mpm-sand-pile',
+  name: 'Sand Pile',
+  description:
+    'The granular headline: a tall column of dry sand is released and collapses into a heap that settles at its natural angle of repose — a slope held up by nothing but inter-grain friction. Modelled with Drucker–Prager elastoplasticity (Klár et al. 2016): each material point yields when its shear exceeds a friction cone and carries no tension, so the pile flows, then locks. Paint more with the 🏖 sand tool.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 8, 11, { dx: 0.2, substeps: 10, boundaryFriction: 0.9 });
+    sys.fillBox(new Vec2(-1.3, 0.15), new Vec2(1.3, 7.5), mpmMaterial('sand'), Vec2.ZERO, 0.4);
+    return { camera: { center: new Vec2(0, 4), scale: 26 } };
+  },
+};
+
+const sandHourglass: SceneDef = {
+  id: 'mpm-hourglass',
+  name: 'Hourglass',
+  description:
+    'Sand streams through the neck of a rigid hourglass, the upper chamber draining into a growing cone below while the surface above dimples and slumps. The flow rate is emergent — set by the neck width and the sand’s friction, not scripted. Two-way coupled: tilt the glass (drag a wall) and the stream follows.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 7, 13, { dx: 0.2, substeps: 10 });
+    const t = 0.3;
+    const neck = 0.9;
+    // Upper funnel (two angled walls converging to the neck).
+    const mk = (x: number, y: number, ang: number) =>
+      world.addBody(new Body(Polygon.box(4.2, t), { type: BodyType.Static, position: new Vec2(x, y), angle: ang, friction: 0.3 }));
+    mk(-3.0, 7.4, -0.62);
+    mk(3.0, 7.4, 0.62);
+    // Lower funnel (diverging).
+    mk(-3.0, 4.2, 0.62);
+    mk(3.0, 4.2, -0.62);
+    void neck;
+    sys.fillBox(new Vec2(-3.6, 7.7), new Vec2(3.6, 11.5), mpmMaterial('sand', { frictionAngle: 36 }), Vec2.ZERO, 0.4);
+    return { camera: { center: new Vec2(0, 6.5), scale: 22 } };
+  },
+};
+
+const snowDrop: SceneDef = {
+  id: 'mpm-snow-drop',
+  name: 'Snow Splat',
+  description:
+    'A fast snowball slams into the ground and splats: the windward side compacts into a dense, bright crust while the rest crumbles and sprays. Stomakhin et al.’s (2013) elastoplastic snow — fixed-corotated elasticity, singular-value clamping for brittle fracture, and hardening that stiffens packed snow — the model from Disney’s *Frozen*. Compaction (Jp) darkens where the snow has yielded.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 9, 11, { dx: 0.2, substeps: 12 });
+    sys.fillDisc(new Vec2(-3, 7.5), 1.6, mpmMaterial('snow'), new Vec2(7, -9));
+    return { camera: { center: new Vec2(0, 4), scale: 26 } };
+  },
+};
+
+const jellyDrop: SceneDef = {
+  id: 'mpm-jelly-drop',
+  name: 'Jelly Blocks',
+  description:
+    'Two soft elastic blocks drop and wobble, squashing on impact and springing back without ever losing their shape — a fixed-corotated hyperelastic solid whose rotation-aware energy means a tumbling block stores no phantom stress (the same defect co-rotational FEM fixes, here on a mesh-free point cloud that can splash and reform). Drop rigid shapes on them to dent and jiggle them.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 8, 11, { dx: 0.2, substeps: 10 });
+    sys.fillBox(new Vec2(-3.4, 1.0), new Vec2(-1.0, 3.4), mpmMaterial('jelly'), new Vec2(0, 0), 0.2);
+    sys.fillBox(new Vec2(1.0, 3.5), new Vec2(3.4, 5.9), mpmMaterial('rubber'), new Vec2(0, 0), 0.2);
+    return { camera: { center: new Vec2(0, 3.5), scale: 28 } };
+  },
+};
+
+const impactCrater: SceneDef = {
+  id: 'mpm-impact-crater',
+  name: 'Impact Crater',
+  description:
+    'A heavy rigid boulder is dropped into a deep bed of sand and punches a crater, throwing up a symmetric curtain of ejecta before settling half-buried. A direct demonstration of two-way coupling: the sand decelerates the rigid body through thousands of frictional micro-contacts (the same particle↔shape bridge the SPH and soft solvers use), and the body’s momentum carves the grains.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 9, 12, { dx: 0.2, substeps: 12 });
+    sys.fillBox(new Vec2(-8.4, 0.15), new Vec2(8.4, 4.0), mpmMaterial('sand', { frictionAngle: 34 }), Vec2.ZERO, 0.4);
+    world.addBody(new Body(new Circle(1.1), {
+      position: new Vec2(0, 9.5),
+      density: 6,
+      friction: 0.6,
+      color: '#9aa7b8',
+    }));
+    return { camera: { center: new Vec2(0, 4), scale: 24 } };
+  },
+};
+
+const sandDam: SceneDef = {
+  id: 'mpm-sand-dam',
+  name: 'Sand Dam Break',
+  description:
+    'The granular cousin of the SPH dam break: a tall column of sand is released into an empty trough and runs out across the floor in a self-similar flowing front, climbing the far wall before arresting. Unlike water it doesn’t find a level — friction freezes it mid-slump into a long, gently-sloping wedge.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 11, 9, { dx: 0.2, substeps: 10, boundaryFriction: 0.8 });
+    sys.fillBox(new Vec2(-10.4, 0.15), new Vec2(-5.5, 8), mpmMaterial('sand', { frictionAngle: 36 }), Vec2.ZERO, 0.4);
+    return { camera: { center: new Vec2(0, 3.5), scale: 20 } };
+  },
+};
+
+const materialMix: SceneDef = {
+  id: 'mpm-material-garden',
+  name: 'Material Garden',
+  description:
+    'Four materials, one solver: a sand pile, a snow heap, a wobbling jelly cube and a puddle of weakly-compressible MPM water are dropped side by side so their utterly different behaviours — frictional, cohesive-brittle, elastic and inviscid — stand out against a single MLS-MPM transfer. Nothing changes between them but the constitutive law each point obeys.',
+  category: 'MPM',
+  build: (world) => {
+    const sys = mpmArena(world, 12, 10, { dx: 0.22, substeps: 10 });
+    sys.fillBox(new Vec2(-10.5, 0.15), new Vec2(-7.5, 4.5), mpmMaterial('sand'), Vec2.ZERO, 0.4);
+    sys.fillDisc(new Vec2(-3.5, 4), 1.6, mpmMaterial('snow'));
+    sys.fillBox(new Vec2(1.5, 0.2), new Vec2(4.5, 3.2), mpmMaterial('jelly'), Vec2.ZERO, 0.2);
+    sys.fillBox(new Vec2(7.5, 0.15), new Vec2(10.5, 3.5), mpmMaterial('water'), Vec2.ZERO, 0.3);
+    return { camera: { center: new Vec2(0, 3.5), scale: 18 } };
+  },
+};
+
+const mpmSandbox: SceneDef = {
+  id: 'mpm-sandbox',
+  name: 'MPM Sandbox',
+  description:
+    'An empty walled arena and an MPM grid ready to paint. Pick a material in the toolbar — 🏖 sand, ❄ snow, 🟢 jelly or 💧 MPM water — and drag to pour it; drop rigid shapes in to bury, dam and stir. A blank canvas for the Material Point Method.',
+  category: 'MPM',
+  build: (world) => {
+    mpmArena(world, 11, 12, { dx: 0.2, substeps: 10, maxParticles: 16000 });
+    return { camera: { center: new Vec2(0, 5), scale: 22 } };
+  },
+};
+
 export const SCENES: SceneDef[] = [
   pyramid,
   stacks,
@@ -2035,6 +2203,14 @@ export const SCENES: SceneDef[] = [
   waterwheel,
   funnel,
   waterSandbox,
+  sandPile,
+  sandHourglass,
+  snowDrop,
+  jellyDrop,
+  impactCrater,
+  sandDam,
+  materialMix,
+  mpmSandbox,
   glassPane,
   shatterWall,
   shatterTower,

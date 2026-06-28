@@ -14,6 +14,7 @@ import { DEFAULT_SOFT_CONFIG, stepSoftBodies, type SoftConfig } from './soft/sol
 import { FemBody } from './fem/fembody';
 import { DEFAULT_FEM_CONFIG, stepFemBodies, type FemConfig } from './fem/solver';
 import { FluidSystem } from './sph/fluid';
+import { MpmSystem } from './mpm/mpm';
 
 /** Per-step statistics surfaced to the UI HUD. */
 export interface StepStats {
@@ -30,6 +31,8 @@ export interface StepStats {
   fluidParticles: number;
   /** Mean SPH density relative to rest (1.0 = incompressible), 0 when no fluid. */
   fluidDensity: number;
+  /** Live MPM material-point count (0 when no MPM system is present). */
+  mpmParticles: number;
 }
 
 /** A transient impact spark left behind when a body shatters (render-only). */
@@ -100,6 +103,8 @@ export class World {
   femConfig: FemConfig = { ...DEFAULT_FEM_CONFIG };
   /** Optional Position-Based-Fluids system, stepped after the soft bodies. */
   fluid: FluidSystem | null = null;
+  /** Optional Material Point Method system, stepped after the SPH fluid. */
+  mpm: MpmSystem | null = null;
   private broadphase = new BroadPhase<Body>();
   private contacts = new Map<number, Contact>();
   /** Body-pair keys for which collision is disabled (jointed bodies). */
@@ -127,6 +132,7 @@ export class World {
     stepMs: 0,
     fluidParticles: 0,
     fluidDensity: 0,
+    mpmParticles: 0,
   };
 
   constructor(gravity = new Vec2(0, -9.8), config: SolverConfig = { ...DEFAULT_CONFIG }) {
@@ -189,6 +195,12 @@ export class World {
     return fluid;
   }
 
+  /** Attach (or replace) the world's Material Point Method system. */
+  setMpm(mpm: MpmSystem | null): MpmSystem | null {
+    this.mpm = mpm;
+    return mpm;
+  }
+
   addJoint(joint: Joint, collideConnected = false): Joint {
     this.joints.push(joint);
     if (!collideConnected && joint.bodyA !== joint.bodyB) {
@@ -210,6 +222,7 @@ export class World {
     this.softBodies.length = 0;
     this.femBodies.length = 0;
     this.fluid = null;
+    this.mpm = null;
     this.flashes.length = 0;
     this.contacts.clear();
     this.nonColliding.clear();
@@ -335,6 +348,10 @@ export class World {
     // freshly-integrated rigid poses, feeding its reaction impulses back in.
     if (this.fluid) this.fluid.step(this.bodies, this.gravity, dt);
 
+    // 6c‴. MPM material: advance the Material Point Method system (sand/snow/
+    // jelly/water continuum) against the same poses, feeding reactions back in.
+    if (this.mpm) this.mpm.step(this.bodies, this.gravity, dt);
+
     // 6d. Shatter any body whose strongest contact this step beat its toughness.
     if (fractures.length > 0) this.applyFractures(fractures);
 
@@ -361,6 +378,7 @@ export class World {
       stepMs: now() - t0,
       fluidParticles: this.fluid ? this.fluid.particles.length : 0,
       fluidDensity: this.fluid ? this.fluid.stats().averageDensity / this.fluid.params.restDensity : 0,
+      mpmParticles: this.mpm ? this.mpm.particles.length : 0,
     };
   }
 

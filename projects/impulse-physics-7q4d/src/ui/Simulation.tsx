@@ -15,7 +15,7 @@ import {
 import { Camera } from '../render/camera';
 import { Renderer, type DebugOptions, type RenderExtras } from '../render/renderer';
 import { sceneById } from '../scenes';
-import { spawnBody, sprayFluid, type SpawnKind } from './spawn';
+import { mpmKindMaterial, paintMpm, spawnBody, sprayFluid, type SpawnKind } from './spawn';
 
 const FIXED_DT = 1 / 60;
 const MAX_STEPS_PER_FRAME = 5;
@@ -251,11 +251,16 @@ export default function Simulation(props: SimulationProps) {
     const world = worldRef.current;
     const wp = toWorld(e);
     pointerWorldRef.current = wp;
-    // The water tool: press-and-drag to paint fluid into the world.
-    if (propsRef.current.controls.spawnKind === 'water') {
-      sprayFluid(world, wp, rngRef.current);
-      interactionRef.current = { mode: 'spray', startX: e.clientX, startY: e.clientY };
-      return;
+    // The particle tools: press-and-drag to paint SPH water or MPM material.
+    {
+      const kind = propsRef.current.controls.spawnKind;
+      const mpmMat = mpmKindMaterial(kind);
+      if (kind === 'water' || mpmMat) {
+        if (mpmMat) paintMpm(world, wp, rngRef.current, mpmMat);
+        else sprayFluid(world, wp, rngRef.current);
+        interactionRef.current = { mode: 'spray', startX: e.clientX, startY: e.clientY };
+        return;
+      }
     }
     const body = world.queryPoint(wp);
     // The Shatter tool: clicking a brittle body splinters it on the spot.
@@ -314,7 +319,10 @@ export default function Simulation(props: SimulationProps) {
       return;
     }
     if (it.mode === 'spray') {
-      sprayFluid(world, wp, rngRef.current);
+      const kind = propsRef.current.controls.spawnKind;
+      const mpmMat = mpmKindMaterial(kind);
+      if (mpmMat) paintMpm(world, wp, rngRef.current, mpmMat);
+      else sprayFluid(world, wp, rngRef.current);
       return;
     }
     if (it.mode === 'softgrab') {

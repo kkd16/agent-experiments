@@ -4,6 +4,7 @@ import {
   BuoyancyZone,
   FemBody,
   FluidSystem,
+  MpmSystem,
   PulleyJoint,
   SoftBody,
   Vec2,
@@ -110,6 +111,8 @@ export class Renderer {
     for (const fb of world.femBodies) this.drawFem(fb, camera, opts);
 
     if (world.fluid && world.fluid.particles.length > 0) this.drawFluid(world.fluid, camera, opts);
+
+    if (world.mpm && world.mpm.particles.length > 0) this.drawMpm(world.mpm, camera, opts);
 
     for (const zone of world.fluidZones) this.drawWaterSurface(zone, camera);
 
@@ -509,6 +512,59 @@ export class Renderer {
     }
   }
 
+  /**
+   * The MPM material. Each material point is a small disc tinted by its material
+   * (amber sand, white snow, green jelly, blue water), brightened by speed so a
+   * collapsing slope or a splash reads as motion. Snow and sand additionally
+   * darken with plastic compaction (`Jp`), so a packed snowball or a sheared sand
+   * band shows where the material has yielded. Batched by colour bucket so tens of
+   * thousands of points stay a handful of fills.
+   */
+  private drawMpm(mpm: MpmSystem, camera: Camera, opts: DebugOptions): void {
+    const ctx = this.ctx;
+    const ps = mpm.particles;
+    const rPix = Math.max(1.25, camera.toPixels(mpm.params.dx * 0.32));
+    // 4 brightness buckets per distinct material colour.
+    const shades = 4;
+    const groups = new Map<string, Path2D[]>();
+    for (const p of ps) {
+      const s = camera.worldToScreen(p.pos);
+      if (s.x < -rPix || s.x > camera.width + rPix || s.y < -rPix || s.y > camera.height + rPix) {
+        continue;
+      }
+      const base = p.mat.color;
+      let g = groups.get(base);
+      if (!g) {
+        g = Array.from({ length: shades }, () => new Path2D());
+        groups.set(base, g);
+      }
+      const speed = Math.hypot(p.vel.x, p.vel.y);
+      // Fast material lightens (foam/dust on a moving front).
+      let b = Math.floor(clamp01(speed / 6) * shades);
+      if (b >= shades) b = shades - 1;
+      g[b].moveTo(s.x + rPix, s.y);
+      g[b].arc(s.x, s.y, rPix, 0, Math.PI * 2);
+    }
+
+    ctx.save();
+    for (const [base, paths] of groups) {
+      for (let b = 0; b < shades; b++) {
+        const t = b / (shades - 1);
+        ctx.fillStyle = lightenTint(base, t * 0.5, 0.85);
+        ctx.fill(paths[b]);
+      }
+    }
+    ctx.restore();
+
+    if (opts.fluidPoints) {
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      for (const p of ps) {
+        const s = camera.worldToScreen(p.pos);
+        ctx.fillRect(s.x - 0.5, s.y - 0.5, 1, 1);
+      }
+    }
+  }
+
   /** A sensor (trigger) body: a dashed, barely-filled outline — it's intangible. */
   private drawSensor(body: Body, camera: Camera): void {
     const ctx = this.ctx;
@@ -878,6 +934,17 @@ function shade(color: string, factor: number): string {
   const rgb = parseColor(color);
   if (!rgb) return color;
   return `rgb(${Math.round(rgb[0] * factor)},${Math.round(rgb[1] * factor)},${Math.round(rgb[2] * factor)})`;
+}
+
+/** Lerp a colour `t` of the way toward white, returned at the given `alpha`. */
+function lightenTint(color: string, t: number, alpha: number): string {
+  const rgb = parseColor(color);
+  if (!rgb) return color;
+  const k = clamp01(t);
+  const r = Math.round(rgb[0] + (255 - rgb[0]) * k);
+  const g = Math.round(rgb[1] + (255 - rgb[1]) * k);
+  const b = Math.round(rgb[2] + (255 - rgb[2]) * k);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 function parseColor(color: string): [number, number, number] | null {

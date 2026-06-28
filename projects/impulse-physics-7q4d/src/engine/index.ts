@@ -104,6 +104,27 @@ export {
   type FluidStats,
 } from './sph';
 
+export {
+  Mat2,
+  svd2,
+  polarR,
+  MATERIALS,
+  material,
+  corotatedPF,
+  evaluate,
+  MpmSystem,
+  MpmParticle,
+  mpmParams,
+  lame as mpmLame,
+  type Svd2,
+  type MpmModel,
+  type MpmMaterial,
+  type Lame,
+  type StressResult,
+  type MpmParams,
+  type MpmStats,
+} from './mpm';
+
 export { type Joint, type JointContext } from './joints/joint';
 export { RevoluteJoint } from './joints/revolute';
 export { DistanceJoint } from './joints/distance';
