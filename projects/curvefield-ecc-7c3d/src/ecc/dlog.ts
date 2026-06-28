@@ -124,6 +124,100 @@ export function pollardRho(curve: Curve, P: Point, Q: Point, order: bigint): Dlo
   return { k: null, steps: totalSteps, method: "Pollard's rho" }
 }
 
+// ── Instrumented single-step rho walk (for the ρ-shaped visualization) ───────
+// Floyd's two-pointer rho is memory-optimal but invisible: you never see the
+// shape it is named for. This variant remembers every point it visits, so the
+// moment the walk re-enters a point it has seen before we can split the path
+// into its straight "tail" and its closed "cycle" — the literal ρ. The collision
+// of x_i and x_j (i in the tail, j on the cycle, same point) yields the same
+// linear relation a_iP+b_iQ = a_jP+b_jQ, and hence k = (a_i−a_j)/(b_j−b_i).
+
+export interface RhoNode {
+  X: Point
+  a: bigint
+  b: bigint
+  partition: number
+}
+
+export interface RhoWalk {
+  path: RhoNode[] // the full visited sequence, tail then cycle then the repeat
+  tailLen: number // steps before the cycle starts (ρ's straight stroke)
+  cycleLen: number // length of the closed loop (ρ's bowl)
+  collisionIndex: number // index in `path` whose X first repeats an earlier X
+  matchIndex: number // the earlier index it collides with
+  k: bigint | null
+  method: string
+}
+
+/** Walk a·P + b·Q under the same three-way partition map used by Pollard's rho,
+ *  recording every node, until a point repeats. Returns the ρ decomposition and
+ *  the recovered logarithm. `order` is the order of ⟨P⟩. */
+export function pollardRhoWalk(
+  curve: Curve,
+  P: Point,
+  Q: Point,
+  order: bigint,
+  maxNodes = 4096,
+): RhoWalk {
+  const partition = (X: Point): number => (X === null ? 0 : Number(mod(X.x, 3n)))
+  const step = ({ X, a, b }: { X: Point; a: bigint; b: bigint }) => {
+    switch (partition(X)) {
+      case 0:
+        return { X: curve.add(X, Q), a, b: mod(b + 1n, order) }
+      case 1:
+        return { X: curve.add(X, X), a: mod(2n * a, order), b: mod(2n * b, order) }
+      default:
+        return { X: curve.add(X, P), a: mod(a + 1n, order), b }
+    }
+  }
+  const key = (X: Point) => (X === null ? 'O' : `${X.x},${X.y}`)
+
+  // Start at 1·P (a=1, b=0) so the tail is non-trivial and easy to read.
+  let cur = { X: P, a: 1n % order, b: 0n }
+  const path: RhoNode[] = []
+  const seen = new Map<string, number>()
+
+  for (let i = 0; i < maxNodes; i++) {
+    const node: RhoNode = { X: cur.X, a: cur.a, b: cur.b, partition: partition(cur.X) }
+    const id = key(cur.X)
+    const prev = seen.get(id)
+    if (prev !== undefined) {
+      // Collision: path[prev].X === node.X with different (a,b).
+      const A = path[prev]
+      const bDiff = mod(node.b - A.b, order)
+      let k: bigint | null = null
+      if (bDiff !== 0n) {
+        const inv = modInvOrder(bDiff, order)
+        if (inv !== null) {
+          const cand = mod((A.a - node.a) * inv, order)
+          if (eq(curve.multiply(cand, P), Q)) k = cand
+        }
+      }
+      return {
+        path,
+        tailLen: prev,
+        cycleLen: path.length - prev,
+        collisionIndex: path.length,
+        matchIndex: prev,
+        k,
+        method: "Pollard's rho (single-step)",
+      }
+    }
+    seen.set(id, i)
+    path.push(node)
+    cur = step(cur)
+  }
+  return {
+    path,
+    tailLen: path.length,
+    cycleLen: 0,
+    collisionIndex: -1,
+    matchIndex: -1,
+    k: null,
+    method: "Pollard's rho (single-step)",
+  }
+}
+
 // Inverse modulo the (possibly composite) group order; null if not invertible.
 function modInvOrder(a: bigint, m: bigint): bigint | null {
   let [oldR, r] = [mod(a, m), m]

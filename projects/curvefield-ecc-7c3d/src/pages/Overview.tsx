@@ -28,16 +28,52 @@ const LABS = [
     desc: 'Real 256-bit keys, ECDH, deterministic ECDSA (RFC 6979), and BIP-340 Schnorr — signed and verified live.',
   },
   {
-    path: '/attacks',
+    path: '/encode',
     ix: '05',
+    title: 'Encodings & Addresses',
+    desc: 'SEC point compression, strict DER, Base58Check, Bech32/Bech32m, WIF, and Bitcoin P2PKH / P2WPKH addresses — built from scratch (RIPEMD-160 and all).',
+  },
+  {
+    path: '/musig',
+    ix: '06',
+    title: 'MuSig2 Aggregation',
+    desc: 'n signers fold into one aggregate key and one 64-byte BIP-340 signature, with rogue-key-resistant coefficients — the heart of Taproot multisig.',
+  },
+  {
+    path: '/ed25519',
+    ix: '07',
+    title: 'Curve25519 · X25519 & Ed25519',
+    desc: 'A second backend: the Montgomery ladder (RFC 7748) for key exchange and twisted-Edwards EdDSA (RFC 8032) for signatures, with SHA-512.',
+  },
+  {
+    path: '/attacks',
+    ix: '08',
     title: 'Breaking the ECDLP',
     desc: 'Brute force vs. baby-step giant-step vs. Pollard’s rho, with step counts that show √n beating n.',
   },
   {
+    path: '/rho',
+    ix: '09',
+    title: "Pollard's ρ, Drawn",
+    desc: 'The named shape, animated: a random walk that runs into itself, splitting into tail and cycle, and the collision that leaks the key.',
+  },
+  {
+    path: '/pohlig',
+    ix: '10',
+    title: 'Pohlig–Hellman',
+    desc: 'Why the order must be prime: a smooth order shatters the discrete log into tiny per-prime pieces, glued back with the CRT.',
+  },
+  {
+    path: '/edge',
+    ix: '11',
+    title: 'Wycheproof Edge Cases',
+    desc: 'An adversarial battery against the ECDSA verifier — zero scalars, malleable twins, off-curve keys, non-canonical DER — each rejected on cue.',
+  },
+  {
     path: '/verify',
-    ix: '06',
+    ix: '12',
     title: 'Self-Test & Vectors',
-    desc: 'The engine checked against published SHA-256, HMAC, secp256k1, and BIP-340 known-answer vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2 and Wycheproof vectors.',
   },
 ]
 

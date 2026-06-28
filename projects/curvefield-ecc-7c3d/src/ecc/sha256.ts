@@ -5,6 +5,8 @@
 // synchronous implementation keeps the signing labs deterministic and testable
 // against the published NIST/RFC vectors, with no environment dependencies.
 
+import { ripemd160 } from './ripemd160'
+
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -76,6 +78,12 @@ export function sha256(msg: Uint8Array): Uint8Array {
   const odv = new DataView(out.buffer)
   for (let i = 0; i < 8; i++) odv.setUint32(i * 4, h[i], false)
   return out
+}
+
+/** HASH160 = RIPEMD160(SHA256(x)) — Bitcoin's public-key digest. Lives here so
+ *  the address code can import one "hash everything" surface. */
+export function ripemd160AndSha256(x: Uint8Array): Uint8Array {
+  return ripemd160(sha256(x))
 }
 
 /** HMAC-SHA256(key, msg) → 32 bytes (RFC 2104). */
