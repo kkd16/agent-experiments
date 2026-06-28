@@ -75,8 +75,10 @@ plan visualizer and a built-in self-test suite.
 - `src/db/ivm/*` — the **incremental view-maintenance engine**, standalone from the SQL core:
   `zset.ts` (Z-sets — weighted bags, the DBSP substrate), `analyze.ts` (the SPJ-A eligibility gate),
   `dataflow.ts` (the compiled view: σ/π/⋈ + a bag/DISTINCT/grouped sink kept in lock-step with the
-  base via deltas), `manager.ts` (the per-`Database` `MatViewManager` the catalog mutators poke),
-  `tests.ts` (the `ivm` differential self-test group)
+  base via deltas, over a per-view **integrated mirror** of each base table — so a **self-joined**
+  table is maintained by the bilinear cross-term, and every equijoin slot carries a **hash index**
+  the delta-driven planner **probes** for O(matches) maintenance), `manager.ts` (the per-`Database`
+  `MatViewManager` the catalog mutators poke), `tests.ts` (the `ivm` differential self-test group)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
   (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **IVM** / Concurrency / Recovery)
@@ -120,16 +122,89 @@ plan visualizer and a built-in self-test suite.
         Verified end-to-end in a headless Chromium smoke (verdict stays green across every control).
 - [x] **Outer joins in IVM** — maintain `LEFT/RIGHT/FULL` views (track per-row match counts so a
       fact row's NULL-extended image flips as its last/first match arrives or leaves). *(v25.0)*
-- [ ] **Self-joins & the bilinear cross-term** — lift the single-occurrence restriction by
-      maintaining a per-view integrated mirror and applying ΔA⋈A + A⋈ΔA + ΔA⋈ΔA.
-- [ ] **Index the IVM join probe** — today a base delta nested-loops the other relations; build a
-      transient hash/B+Tree on the join key so maintenance is sublinear, not O(other table).
+- [x] **Self-joins & the bilinear cross-term** — lift the single-occurrence restriction by
+      maintaining a per-view integrated mirror and applying ΔA⋈A + A⋈ΔA + ΔA⋈ΔA (generalized to
+      any multiplicity k via the binomial subset expansion). *(v26.0)*
+- [x] **Index the IVM join probe** — a base delta no longer nested-loops the other relations; each
+      slot carries a hash index on its join key, maintained in lock-step, so maintenance is
+      sublinear (O(matches), not O(other table)). *(v26.0)*
 - [x] **More incremental aggregates** — `SUM`/`AVG` over `DECIMAL` (exact BigInt running total,
       order-independent), `COUNT(DISTINCT)` (per-group value-count map), and aggregate `FILTER`. *(v25.0)*
 - [x] **HAVING & projection expressions** in a grouped view (filter emitted groups; project
       `g+1`-style expressions over the grouping key). *(v25.0)*
 - [x] **An EXPLAIN for a materialized view** — render its compiled dataflow (the operator graph and
       where each base delta enters) the way `EXPLAIN` renders a query plan. *(v25.0)*
+
+### v26.0 — self-joins & a sublinear, index-probed dataflow ✅ (shipped 2026-06-28)
+
+The last two structural gaps in the IVM engine, cleared together: a materialized view could not
+join a table **to itself**, and a base delta **nested-loop-scanned** every other relation to find
+its join partners. v26.0 closes both, and — crucially — every byte is held to the same differential
+bar as the rest of the engine: a maintained view must equal a from-scratch recompute *after every
+mutation*, now re-checked across **sixteen** fuzzed view shapes plus tens of thousands of extra
+seeded comparisons on the new self-join paths (composite keys, NULL keys, k = 2/3/4 occurrences).
+Suite **527 → 531**, all green; `verify-project.mjs` (scope + conformance + lint + build) green.
+
+**A. Inner self-joins — the bilinear cross-term.** A relational join is *multilinear*: when a base
+table **T** that occupies the slots `P` of a view changes by ΔT, the view delta is the binomial
+expansion `Δ(⋈) = Σ_{∅ ≠ S ⊆ P} [ ΔT at the slots in S, T_old at the slots in P∖S ]`, with every
+non-T relation held at its current contents. For a single occurrence (`|P| = 1`) the sum collapses
+to the old linear push-down `ΔT ⋈ others`; for a self-join (`|P| = 2`) it is exactly the textbook
+three terms **ΔT⋈T_old + T_old⋈ΔT + ΔT⋈ΔT**; for `|P| = k` it is the `2ᵏ − 1` nonempty subsets,
+all driven off one delta.
+
+- [x] **Per-view integrated mirror (the DBSP `I` operator).** The inner path now reads its join
+      inputs from a per-view `ZSet` mirror of each base table, updated in lock-step with deltas
+      *after* the view delta is computed — so the mirror holds the pre-delta state `T_old` exactly
+      when the cross-terms need it. Reading mirrors (not the live catalog) also makes the join input
+      independent of the heap-vs-deliver mutation order, which differs between insert/update (heap
+      mutated first) and a cascading delete (the view is notified *before* the row leaves the heap) —
+      a latent sharp edge the old "read the other tables live" path only dodged because the changed
+      table was never itself read.
+- [x] **Analyzer lifts the single-occurrence restriction** for INNER/CROSS joins (each occurrence
+      still needs a distinct correlation name); a **self _outer_-join** stays rejected (its
+      side-keyed match-count state would alias) with a precise reason.
+- [x] **Exhaustive differential proof.** Three targeted tests (a self-join pair view, a self-join
+      `GROUP BY` aggregate, and a 3-way join mixing a self-joined table with a third table) plus
+      three new fuzz shapes (`fz_selfpair`, `fz_selfgrp`, `fz_self3`); and out-of-suite stress of
+      **58,500** byte-for-byte comparisons (k = 2/3/4 self-joins, composite multi-column join keys,
+      and nullable join keys) — zero divergence.
+
+**B. The sublinear, delta-driven indexed probe.** Maintenance used to start the join at slot 0 and
+nested-loop outward, so a Δ on a non-leading table re-scanned the leading one — O(other table). Now
+each `col = col` equijoin (same-typed columns only, so the canonical hash key is a faithful proxy
+for `=`) becomes a graph **edge**, and every slot carries a hash index on its join key, maintained
+in lock-step with its mirror.
+
+- [x] **Delta-driven join order.** For each maintenance term the planner puts the *delta* slots
+      first (scanned — they are tiny), then attaches each remaining slot to an already-visited
+      neighbour by an equijoin edge and **probes** it by its index (O(matches)); a slot with no such
+      edge is a cross-product scan. Plans are compiled once and cached per driver-set.
+- [x] **Correct by construction.** The probe only ever *narrows* candidates — every conjunct is
+      still applied as a residual, so a missing, coarse, or cross-type index can never change the
+      answer, only the speed. NULL keys are excluded from both index and probe (a NULL never
+      equijoins), matching the engine's hash-join three-valued semantics.
+- [x] **Measured sublinearity.** With a star view `fact ⋈ dim`, the *maintenance* cost of a fact
+      insert (with-view minus no-view, to subtract the engine's per-statement snapshot) stays flat
+      at ≈0 ms while `|dim|` grows **250 → 16 000** (64×) — i.e. O(matches), not O(|dim|). The same
+      hash index gives the cold path a left-deep hash-join materialization, so even a self-join
+      builds in O(n·matches) rather than O(n²).
+- [x] **Surfaced in `EXPLAIN`.** `MaterializedView.explain()` now annotates each join with its
+      `Δ-probe: hash index on alias(cols) — O(matches), not O(alias)` and labels a repeated table's
+      `DeltaScan` with `occurs k× → bilinear cross-term`; the IVM Lab gains an `order_pairs`
+      self-join showcase. A regression test pins the EXPLAIN wording.
+
+#### Next on the IVM backlog (after v26.0)
+- [ ] **Index-nested-loop vs hash for the Δ-probe** — when a base table also has a real B+Tree on
+      the join key, probe *that* instead of the per-view hash mirror, so the view borrows the
+      catalog's index instead of duplicating it.
+- [ ] **Shared mirrors across views** — two views over the same base table keep two mirror copies;
+      intern one integrated copy per (table, database) and let views subscribe.
+- [ ] **Recursive / multi-level IVM** — maintain a materialized view *defined over another
+      materialized view* by chaining their dataflows (a view's output delta becomes the next's
+      input delta).
+- [ ] **θ-join (range/inequality) acceleration** — the index only helps equijoins; add an
+      interval-tree probe so a band/inequality join (`a.t BETWEEN b.lo AND b.hi`) is sublinear too.
 
 ### v25.0 — richer incremental maintenance ✅ (shipped 2026-06-28)
 

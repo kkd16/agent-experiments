@@ -52,6 +52,15 @@ const VIEWS: ViewSpec[] = [
     query: 'SELECT cid, COUNT(DISTINCT amt) AS distinct_amts FROM ord GROUP BY cid',
     blurb: 'COUNT(DISTINCT): a value leaves a group’s count only when its very last copy does',
   },
+  {
+    name: 'order_pairs',
+    query:
+      'SELECT o1.cid AS cid, o1.id AS order_a, o2.id AS order_b, o1.amt + o2.amt AS combined ' +
+      'FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id',
+    blurb:
+      'self-join (a table joined to itself): every pair of one customer’s orders — maintained by the ' +
+      'bilinear cross-term ΔO⋈O + O⋈ΔO + ΔO⋈ΔO, with the second occurrence index-probed on its join key',
+  },
 ]
 
 const REGIONS = ['north', 'south', 'east', 'west']

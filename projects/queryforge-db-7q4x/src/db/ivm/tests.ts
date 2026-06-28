@@ -4,15 +4,18 @@
 // materialized view *stores* must always equal a from-scratch recompute of the
 // same query — the engine's own SELECT, an independent implementation. We assert
 // that invariant after targeted edge cases (group-key moves, min/max retraction,
-// FK cascades, rollback) and after **every** step of thousands of seeded random
-// insert/update/delete sequences across five different view shapes (filter,
-// group-by aggregate, join, join+group-by, and DISTINCT). If incremental
-// maintenance ever diverged from a recompute by a single row, a seed would catch
-// it and print a replayable counterexample.
+// FK cascades, rollback, self-joins) and after **every** step of thousands of
+// seeded random insert/update/delete sequences across sixteen different view
+// shapes — filter, group-by aggregate, inner/outer joins, join+group-by,
+// DISTINCT, exact-decimal aggregates, and *self-joins* (a table joined to itself,
+// maintained by the bilinear cross-term). If incremental maintenance ever
+// diverged from a recompute by a single row, a seed would catch it and print a
+// replayable counterexample.
 
 import { Engine, type RowsResult } from '../engine'
 import { Database, type Row } from '../catalog'
 import { bagEqual, bagDiff } from './zset'
+import type { IvmPlanNode } from './dataflow'
 import { Rng } from '../fuzz/rng'
 
 export interface IvmCase {
@@ -230,7 +233,12 @@ test('non-maintainable queries are rejected with a clear reason', () => {
   e.execute('CREATE TABLE u (id INTEGER PRIMARY KEY, v INTEGER)')
   throws(e, 'CREATE MATERIALIZED VIEW a AS SELECT id FROM t ORDER BY v LIMIT 3', 'LIMIT')
   throws(e, 'CREATE MATERIALIZED VIEW b AS SELECT v FROM t UNION SELECT v FROM u', 'set operation')
-  throws(e, 'CREATE MATERIALIZED VIEW c AS SELECT t1.id FROM t t1 JOIN t t2 ON t1.id=t2.id', 'more than once')
+  // An *inner* self-join is now maintainable (the bilinear cross-term), but each
+  // occurrence still needs a distinct correlation name to resolve its columns.
+  throws(e, 'CREATE MATERIALIZED VIEW c AS SELECT t1.id FROM t t1 JOIN t t1 ON t1.id=t1.id', 'more than once')
+  // A *self outer-join* (same base table preserved on both sides) is not yet
+  // incrementally maintained.
+  throws(e, 'CREATE MATERIALIZED VIEW so AS SELECT a.id FROM t a LEFT JOIN t b ON a.v=b.v', 'self outer-join')
   // A LEFT/RIGHT/FULL join is maintainable only as the single join of a two-table
   // view; chaining a second join past it is not.
   e.execute('CREATE TABLE w (id INTEGER PRIMARY KEY, v INTEGER)')
@@ -344,6 +352,80 @@ test('RIGHT and FULL outer joins maintained with aggregation on top', () => {
 })
 
 // ---------------------------------------------------------------------------
+// v26.0 — inner self-joins (the bilinear cross-term)
+// ---------------------------------------------------------------------------
+
+test('inner self-join is maintained by the bilinear cross-term', () => {
+  const e = fresh('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER)')
+  e.execute('INSERT INTO ord VALUES (1,1,10),(2,1,20),(3,2,5)')
+  // Pairs of distinct orders that share a customer — `ord` appears twice, so a
+  // single Δord drives all of ΔO⋈O + O⋈ΔO + ΔO⋈ΔO.
+  const def =
+    'SELECT o1.id AS a, o2.id AS b, o1.amt + o2.amt AS tot FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id'
+  e.execute(`CREATE MATERIALIZED VIEW pairs AS ${def}`)
+  assertMatches(e, 'pairs', def, 'init') // only (1,2)
+  e.execute('INSERT INTO ord VALUES (4,1,1)') // → new pairs (1,4),(2,4)
+  assertMatches(e, 'pairs', def, 'one insert creates several pairs')
+  e.execute('UPDATE ord SET cid = 2 WHERE id = 2') // re-points one side of many pairs at once
+  assertMatches(e, 'pairs', def, 'a self-joined key move rewires both occurrences')
+  e.execute('DELETE FROM ord WHERE id = 1')
+  assertMatches(e, 'pairs', def, 'a delete retracts every pair it was in')
+  e.execute('DELETE FROM ord') // drain to empty — the cross-term must net to zero
+  assertMatches(e, 'pairs', def, 'drained to empty')
+})
+
+test('self-join with GROUP BY aggregate maintained incrementally', () => {
+  const e = fresh('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER)')
+  e.execute('INSERT INTO ord VALUES (1,1,10),(2,1,20),(3,1,5),(4,2,7)')
+  const def =
+    'SELECT o1.cid AS cid, COUNT(*) AS pairs, SUM(o2.amt) AS s, MAX(o1.amt) AS mx ' +
+    'FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id GROUP BY o1.cid'
+  e.execute(`CREATE MATERIALIZED VIEW pc AS ${def}`)
+  assertMatches(e, 'pc', def, 'init') // cid 1 has 3 pairs; cid 2 has none → no row
+  e.execute('DELETE FROM ord WHERE id = 2')
+  assertMatches(e, 'pc', def, 'a delete shrinks the pair count and aggregates')
+  e.execute('INSERT INTO ord VALUES (5,2,3)') // cid 2 now forms its first pair → new group
+  assertMatches(e, 'pc', def, 'a self-join pair makes a brand-new group appear')
+})
+
+test('multi-occurrence in a 3-way join (self-join beside a third table)', () => {
+  const e = fresh('CREATE TABLE cust (cid INTEGER PRIMARY KEY, region TEXT)')
+  e.execute('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER)')
+  e.execute("INSERT INTO cust VALUES (1,'n'),(2,'s')")
+  e.execute('INSERT INTO ord VALUES (10,1,5),(11,1,6),(12,2,7)')
+  // `ord` occupies two of the three slots; `cust` one. A Δord uses the bilinear
+  // expansion over the two ord-slots, a Δcust the ordinary single-term path.
+  const def =
+    'SELECT c.region, o1.id AS a, o2.id AS b FROM cust c JOIN ord o1 ON o1.cid = c.cid ' +
+    'JOIN ord o2 ON o2.cid = c.cid WHERE o1.id < o2.id'
+  e.execute(`CREATE MATERIALIZED VIEW co AS ${def}`)
+  assertMatches(e, 'co', def, 'init')
+  e.execute('INSERT INTO ord VALUES (13,1,1)')
+  assertMatches(e, 'co', def, 'insert adds pairs within a region')
+  e.execute("UPDATE cust SET region = 'n' WHERE cid = 2") // a single-occurrence Δ
+  assertMatches(e, 'co', def, 'a dimension move recolours its pairs')
+  e.execute('DELETE FROM ord WHERE id = 11') // a multi-occurrence Δ
+  assertMatches(e, 'co', def, 'a delete removes every pair it was in')
+})
+
+test('EXPLAIN surfaces the bilinear self-join and the indexed Δ-probe', () => {
+  const e = fresh('CREATE TABLE ord (id INTEGER PRIMARY KEY, cid INTEGER, amt INTEGER)')
+  e.execute('CREATE MATERIALIZED VIEW pj AS SELECT o1.id AS a, o2.id AS b FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id')
+  const node = e.db.matviews.explain('pj')
+  assert(!!node, 'explain returns a plan')
+  const text: string[] = []
+  const walk = (n: IvmPlanNode): void => {
+    text.push(n.op, n.detail, ...n.extra)
+    n.children.forEach(walk)
+  }
+  walk(node!)
+  const all = text.join(' | ')
+  assert(all.includes('bilinear self-join'), 'explain notes the bilinear self-join expansion')
+  assert(all.includes('Δ-probe') && all.includes('hash index on o2(cid)'), 'explain names the indexed Δ-probe key')
+  assert(all.includes('occurs 2×'), 'explain notes the repeated base table')
+})
+
+// ---------------------------------------------------------------------------
 // Differential fuzz — incremental maintenance == recompute, after every step
 // ---------------------------------------------------------------------------
 
@@ -365,6 +447,13 @@ const FUZZ_VIEWS: { name: string; def: string }[] = [
   { name: 'fz_leftgrp', def: 'SELECT c.region, COUNT(o.id) AS n, SUM(o.amt) AS s FROM cust c LEFT JOIN ord o ON o.cid = c.cid GROUP BY c.region' },
   { name: 'fz_right', def: 'SELECT c.cid AS ck, o.id AS oid FROM cust c RIGHT JOIN ord o ON o.cid = c.cid' },
   { name: 'fz_full', def: 'SELECT c.cid AS ck, o.id AS oid FROM cust c FULL JOIN ord o ON o.cid = c.cid' },
+  // v26.0 — inner self-joins (the bilinear cross-term). `ord` is the most-mutated
+  // table, so a single Δord constantly drives ΔO⋈O + O⋈ΔO + ΔO⋈ΔO — and the
+  // update case (a {old:−1, new:+1} batch on a *self-joined* table) is the
+  // sharpest test of the expansion. fz_self3 also mixes a single-occurrence Δcust.
+  { name: 'fz_selfpair', def: 'SELECT o1.id AS a, o2.id AS b FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id' },
+  { name: 'fz_selfgrp', def: 'SELECT o1.cid AS cid, COUNT(*) AS pairs, MAX(o2.amt) AS mx, SUM(o1.amt) AS s FROM ord o1 JOIN ord o2 ON o1.cid = o2.cid AND o1.id < o2.id GROUP BY o1.cid' },
+  { name: 'fz_self3', def: 'SELECT c.region, o1.amt AS x, o2.amt AS y FROM cust c JOIN ord o1 ON o1.cid = c.cid JOIN ord o2 ON o2.cid = c.cid WHERE o1.id < o2.id' },
 ]
 
 /** A decimal literal of a random magnitude *and a random scale* (0–3 fractional
@@ -431,10 +520,10 @@ function fuzzSeed(seed: number, steps: number): void {
   }
 }
 
-// A handful of fixed seeds, each re-checking all 13 views after every one of 50
-// random mutations on both tables (≈650 differential comparisons per seed).
+// A handful of fixed seeds, each re-checking all 16 views after every one of 50
+// random mutations on both tables (≈800 differential comparisons per seed).
 for (const seed of [1, 7, 42, 101, 256, 1009]) {
-  test(`differential fuzz — seed ${seed} (13 views × 50 random mutations on two tables)`, () => fuzzSeed(seed, 50))
+  test(`differential fuzz — seed ${seed} (16 views × 50 random mutations on two tables)`, () => fuzzSeed(seed, 50))
 }
 
 export const ivmCases = cases
