@@ -20,14 +20,15 @@ export function SelfTestPage() {
 
   return (
     <main className="page">
-      <PageHead eyebrow="Lab 16 — provenance" title="Self-Test & Known-Answer Vectors">
+      <PageHead eyebrow="Lab 20 — provenance" title="Self-Test & Known-Answer Vectors">
         Pretty math is worthless if it’s wrong. This page runs the entire engine against published
         standards — FIPS 180-4 (SHA-256/512), RFC 4231 (HMAC), the canonical secp256k1 point
         multiples, BIP-340 Schnorr, RIPEMD-160 + Bitcoin WIF/address/Bech32 vectors, RFC 7748
         (X25519) and RFC 8032 (Ed25519), a MuSig2 aggregate, a Pohlig–Hellman recovery, a BLS12-381
         pairing with bilinearity and aggregate-signature checks, and a Wycheproof-style adversarial
-        verifier battery — plus full sign→verify→tamper round-trips. It runs live, in your browser,
-        every time you open it.
+        verifier battery — plus Shamir/Feldman sharing, a FROST threshold signature, the
+        zero-knowledge Σ-protocols, KZG opening proofs, and full sign→verify→tamper round-trips. It
+        runs live, in your browser, every time you open it.
       </PageHead>
 
       <div className="statline" style={{ marginBottom: '1.4rem' }}>

@@ -16,6 +16,10 @@ import { RhoWalk } from './pages/RhoWalk'
 import { PohligHellman } from './pages/PohligHellman'
 import { InvalidCurvePage } from './pages/InvalidCurvePage'
 import { EdgeCases } from './pages/EdgeCases'
+import { ShamirPage } from './pages/ShamirPage'
+import { FrostPage } from './pages/FrostPage'
+import { ZkPage } from './pages/ZkPage'
+import { KzgPage } from './pages/KzgPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -35,6 +39,10 @@ const ROUTES = [
   { path: '/pohlig', label: 'Pohlig–Hellman' },
   { path: '/invalid', label: 'Invalid Curve' },
   { path: '/edge', label: 'Edge Cases' },
+  { path: '/shamir', label: 'Secret Sharing' },
+  { path: '/frost', label: 'FROST' },
+  { path: '/zk', label: 'Zero-Knowledge' },
+  { path: '/kzg', label: 'KZG' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -77,12 +85,17 @@ export default function App() {
       {base === '/pohlig' && <PohligHellman />}
       {base === '/invalid' && <InvalidCurvePage />}
       {base === '/edge' && <EdgeCases />}
+      {base === '/shamir' && <ShamirPage />}
+      {base === '/frost' && <FrostPage />}
+      {base === '/zk' && <ZkPage />}
+      {base === '/kzg' && <KzgPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
         Curvefield — every key, signature, and curve here is computed in your browser by a
         from-scratch engine: BigInt field arithmetic, hand-written SHA-256 / SHA-512 / RIPEMD-160,
-        RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, and a BLS12-381 pairing — zero crypto
+        RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
+        signing, zero-knowledge Σ-protocols, and KZG polynomial commitments — zero crypto
         dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
