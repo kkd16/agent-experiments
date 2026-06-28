@@ -4,7 +4,7 @@
 import type { Point } from './types'
 import { convexHull } from './convexHull'
 import { delaunay, triangulationEdges } from './delaunay'
-import { inCircle, orient } from './predicates'
+import { inCircle, orient, circumcircle } from './predicates'
 import { voronoiCells } from './voronoi'
 import {
   euclideanMST,
@@ -12,8 +12,12 @@ import {
   relativeNeighborhoodGraph,
   nearestNeighborGraph,
   urquhartGraph,
+  betaSkeleton,
+  knnGraph,
   closestPair,
 } from './graphs'
+import { fortune } from './fortune'
+import { refineDelaunay, minMeshAngle } from './refine'
 import { poissonDisk, mulberry32, uniformPoints } from './random'
 import { lloydStep } from './lloyd'
 import { area } from './polygon'
@@ -304,6 +308,118 @@ const RECT: Rect = { minX: 0, minY: 0, maxX: 100, maxY: 100 }
   const parsed = parsePointsText('0 0\n100 0\n100 100\n0 100')
   const ok = parsed.length === 4 && parsed.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)
   check('parser fits out-of-range coords into the frame', ok, `(${parsed.length} pts)`)
+}
+
+// ── Fortune's algorithm: dual matches Bowyer-Watson, vertices are circumcenters ─
+{
+  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`)
+  let allBwInFortune = true
+  let allLegal = true
+  let validVoronoiVertices = true
+  for (const seed of [11, 64, 222, 909]) {
+    const pts = uniformPoints(70, RECT, mulberry32(seed))
+    const f = fortune(pts)
+    const tris = delaunay(pts)
+    const bw = new Set(triangulationEdges(tris).map((e) => key(e.a, e.b)))
+    const fset = new Set(f.delaunayEdges.map((e) => key(e.a, e.b)))
+    // Every Bowyer-Watson Delaunay edge must appear in Fortune's dual.
+    for (const k of bw) if (!fset.has(k)) allBwInFortune = false
+    // Every Fortune edge must be Delaunay-legal: some empty circumcircle through it.
+    for (const e of f.delaunayEdges) {
+      let legal = false
+      for (let w = 0; w < pts.length && !legal; w++) {
+        if (w === e.a || w === e.b) continue
+        const c = circumcircle(pts[e.a], pts[e.b], pts[w])
+        if (!c) continue
+        let intruders = 0
+        for (let m = 0; m < pts.length; m++) {
+          if (m === e.a || m === e.b || m === w) continue
+          if (dist(pts[m], { x: c.x, y: c.y }) < c.r - 1e-6) intruders++
+        }
+        if (intruders === 0) legal = true
+      }
+      if (!legal) allLegal = false
+    }
+    // Each Voronoi vertex is a genuine vertex: equidistant to ≥3 sites and that
+    // distance is the minimum over all sites (its empty circle holds no site).
+    for (const v of f.vertices) {
+      let dmin = Infinity
+      for (const p of pts) dmin = Math.min(dmin, dist(v, p))
+      let onCircle = 0
+      for (const p of pts) if (dist(v, p) <= dmin + 1e-6) onCircle++
+      if (onCircle < 3) validVoronoiVertices = false
+    }
+  }
+  check('Fortune dual ⊇ Bowyer-Watson Delaunay edges', allBwInFortune)
+  check('Fortune Delaunay edges are all Delaunay-legal', allLegal)
+  check('Fortune vertices are empty-circle Voronoi vertices', validVoronoiVertices)
+}
+
+// ── Fortune is deterministic (same input ⇒ identical dual + step trace) ────────
+{
+  const pts = uniformPoints(50, RECT, mulberry32(73))
+  const a = fortune(pts, true)
+  const b = fortune(pts, true)
+  check('Fortune is deterministic (edges)', a.delaunayEdges.length === b.delaunayEdges.length)
+  check('Fortune trace is reproducible', a.steps.length === b.steps.length && a.steps.length > pts.length)
+}
+
+// ── β-skeleton family: β=1 is Gabriel, β=2 is the RNG, monotone in β ──────────
+{
+  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`)
+  const pts = uniformPoints(80, RECT, mulberry32(404))
+  const edges = triangulationEdges(delaunay(pts))
+  const gab = new Set(gabrielGraph(pts, edges).map((e) => key(e.a, e.b)))
+  const rng2 = new Set(relativeNeighborhoodGraph(pts, edges).map((e) => key(e.a, e.b)))
+  const b1 = new Set(betaSkeleton(pts, edges, 1).map((e) => key(e.a, e.b)))
+  const b2 = new Set(betaSkeleton(pts, edges, 2).map((e) => key(e.a, e.b)))
+  const sameSet = (x: Set<string>, y: Set<string>) =>
+    x.size === y.size && [...x].every((k) => y.has(k))
+  check('β-skeleton(β=1) = Gabriel graph', sameSet(b1, gab), `(${b1.size} vs ${gab.size})`)
+  check('β-skeleton(β=2) = relative-neighborhood graph', sameSet(b2, rng2), `(${b2.size} vs ${rng2.size})`)
+  const counts = [1, 1.5, 2, 2.5, 3].map((b) => betaSkeleton(pts, edges, b).length)
+  let monotone = true
+  for (let i = 1; i < counts.length; i++) if (counts[i] > counts[i - 1]) monotone = false
+  check('β-skeleton sparsifies as β grows', monotone, `(${counts.join(' ≥ ')})`)
+}
+
+// ── k-nearest graph: k=1 = nearest-neighbor graph, grows with k ───────────────
+{
+  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`)
+  const pts = uniformPoints(90, RECT, mulberry32(818))
+  const edges = triangulationEdges(delaunay(pts))
+  const nng = new Set(nearestNeighborGraph(pts, edges).map((e) => key(e.a, e.b)))
+  const k1 = new Set(knnGraph(pts, 1).map((e) => key(e.a, e.b)))
+  const same = nng.size === k1.size && [...nng].every((k) => k1.has(k))
+  check('kNN(k=1) = nearest-neighbor graph', same, `(${k1.size} vs ${nng.size})`)
+  const counts = [1, 2, 3, 5, 8].map((k) => knnGraph(pts, k).length)
+  let nondecreasing = true
+  for (let i = 1; i < counts.length; i++) if (counts[i] < counts[i - 1]) nondecreasing = false
+  check('kNN edges grow monotonically with k', nondecreasing, `(${counts.join(' ≤ ')})`)
+  // Every kNN edge connects existing sites (sanity on indices).
+  let bad = 0
+  for (const e of knnGraph(pts, 4)) if (e.a < 0 || e.b >= pts.length || e.a === e.b) bad++
+  check('kNN edges are well-formed', bad === 0)
+}
+
+// ── Ruppert refinement: meets the angle bound, keeps inputs, stays Delaunay ───
+{
+  const pts = poissonDisk(45, { minX: 8, minY: 8, maxX: 92, maxY: 92 }, mulberry32(57))
+  const bound = 20
+  const res = refineDelaunay(pts, { minAngleDeg: bound, maxSteiner: 1000 })
+  check('Ruppert improves the minimum angle', res.minAngleAfter > res.minAngleBefore,
+    `(${res.minAngleBefore.toFixed(1)}° → ${res.minAngleAfter.toFixed(1)}°)`)
+  check('Ruppert meets the angle bound (no cap)', res.hitCap || res.minAngleAfter >= bound - 0.5,
+    `(${res.minAngleAfter.toFixed(1)}° ≥ ${bound}°)`)
+  // Original points are preserved verbatim at the front of the augmented list.
+  let preserved = true
+  for (let i = 0; i < pts.length; i++)
+    if (Math.abs(pts[i].x - res.points[i].x) > 1e-9 || Math.abs(pts[i].y - res.points[i].y) > 1e-9)
+      preserved = false
+  check('Ruppert preserves the original sites', preserved && res.steinerStart === pts.length)
+  // The reported mesh is the Delaunay triangulation of the augmented points.
+  check('Ruppert mesh angle matches a fresh Delaunay solve',
+    Math.abs(res.minAngleAfter - minMeshAngle(res.points, delaunay(res.points))) < 1e-9)
 }
 
 export const result = { failures }

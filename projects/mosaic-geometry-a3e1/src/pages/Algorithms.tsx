@@ -3,11 +3,12 @@ import type { Point, Rect } from '../geometry/types'
 import { convexHullSteps, type HullStep } from '../geometry/convexHull'
 import { delaunaySteps, type DelaunaySnapshot } from '../geometry/delaunay'
 import { mecSteps, type MecSnapshot } from '../geometry/enclosingCircle'
+import { fortune, beachIntervals, parabolaY, type FortuneSnapshot } from '../geometry/fortune'
 import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'delaunay' | 'mec'
+type Algo = 'hull' | 'delaunay' | 'mec' | 'fortune'
 const PAD = 28
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
 
@@ -15,6 +16,7 @@ function makePoints(algo: Algo, seed: number): Point[] {
   const rng = mulberry32(seed)
   // The enclosing-circle trace reads best on a loose scatter; the others on blue noise.
   if (algo === 'mec') return uniformPoints(12, GEN_RECT, rng)
+  if (algo === 'fortune') return uniformPoints(11, GEN_RECT, rng)
   return poissonDisk(algo === 'hull' ? 14 : 18, GEN_RECT, rng)
 }
 
@@ -36,7 +38,18 @@ export default function Algorithms() {
     () => (algo === 'mec' ? mecSteps(points, seed) : []),
     [algo, points, seed],
   )
-  const total = algo === 'hull' ? hullSteps.length : algo === 'delaunay' ? delSteps.length : mecStepList.length
+  const fortuneSteps = useMemo<FortuneSnapshot[]>(
+    () => (algo === 'fortune' ? fortune(points, true).steps : []),
+    [algo, points],
+  )
+  const total =
+    algo === 'hull'
+      ? hullSteps.length
+      : algo === 'delaunay'
+        ? delSteps.length
+        : algo === 'mec'
+          ? mecStepList.length
+          : fortuneSteps.length
   const clamped = Math.min(step, Math.max(0, total - 1))
 
   // Playback timer.
@@ -74,11 +87,18 @@ export default function Algorithms() {
 
     if (algo === 'hull') drawHullStep(ctx, hullSteps[clamped], points, toPx)
     else if (algo === 'delaunay') drawDelaunayStep(ctx, delSteps[clamped], toPx)
-    else drawMecStep(ctx, mecStepList[clamped], toPx, w)
-  }, [ref, size, algo, hullSteps, delSteps, mecStepList, clamped, points])
+    else if (algo === 'mec') drawMecStep(ctx, mecStepList[clamped], toPx, w)
+    else drawFortuneStep(ctx, fortuneSteps[clamped], points, PAD, w, h)
+  }, [ref, size, algo, hullSteps, delSteps, mecStepList, fortuneSteps, clamped, points])
 
   const note =
-    algo === 'hull' ? hullSteps[clamped]?.note : algo === 'delaunay' ? delSteps[clamped]?.note : mecStepList[clamped]?.note
+    algo === 'hull'
+      ? hullSteps[clamped]?.note
+      : algo === 'delaunay'
+        ? delSteps[clamped]?.note
+        : algo === 'mec'
+          ? mecStepList[clamped]?.note
+          : fortuneSteps[clamped]?.note
   const phase = algo === 'hull' ? hullSteps[clamped]?.phase : undefined
   const changeAlgo = (a: Algo) => {
     setAlgo(a)
@@ -114,6 +134,7 @@ export default function Algorithms() {
               { id: 'hull', label: 'Convex hull' },
               { id: 'delaunay', label: 'Delaunay' },
               { id: 'mec', label: 'Enclosing circle' },
+              { id: 'fortune', label: 'Fortune sweep' },
             ]}
             value={algo}
             onChange={changeAlgo}
@@ -123,7 +144,9 @@ export default function Algorithms() {
               ? "Andrew's monotone chain: sort by x, then sweep building lower and upper hulls, popping any point that would make a right turn."
               : algo === 'delaunay'
                 ? 'Bowyer-Watson: insert points into a super-triangle one by one, carve out the triangles whose circumcircle is violated, and retriangulate the cavity.'
-                : "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."}
+                : algo === 'mec'
+                  ? "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."
+                  : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
           </p>
           <Button variant="ghost" onClick={regen}>
             New points
@@ -166,11 +189,18 @@ export default function Algorithms() {
                 <li><i className="dot dot--active" /> inserted point</li>
                 <li><i className="dot dot--cavity" /> cavity (circumcircle violated)</li>
               </>
-            ) : (
+            ) : algo === 'mec' ? (
               <>
                 <li><i className="dot dot--mesh" /> current enclosing circle</li>
                 <li><i className="dot dot--active" /> point being tested</li>
                 <li><i className="dot dot--hull" /> boundary support points</li>
+              </>
+            ) : (
+              <>
+                <li><i className="dot dot--hull" /> beach line (parabolic arcs)</li>
+                <li><i className="dot dot--active" /> event site</li>
+                <li><i className="dot dot--cavity" /> pending circle event</li>
+                <li><i className="dot dot--mesh" /> Voronoi vertex found</li>
               </>
             )}
           </ul>
@@ -312,4 +342,90 @@ function drawMecStep(
   ctx.arc(center.x, center.y, 2.5, 0, Math.PI * 2)
   ctx.fillStyle = 'rgba(255,255,255,0.85)'
   ctx.fill()
+}
+
+function drawFortuneStep(
+  ctx: CanvasRenderingContext2D,
+  s: FortuneSnapshot | undefined,
+  pts: Point[],
+  pad: number,
+  w: number,
+  h: number,
+) {
+  if (!s) return
+  // Flip y so larger world-y is higher on screen — the canonical Fortune picture,
+  // with the sweep descending and parabolas opening upward off their sites.
+  const toPx = (p: Point) => ({ x: pad + p.x * w, y: pad + (1 - p.y) * h })
+  const sweepScreenY = pad + (1 - s.sweepY) * h
+
+  // Pending circle events: faint circumcircles with their bottom (event) point.
+  for (const c of s.circles) {
+    const ctr = toPx({ x: c.x, y: c.y })
+    ctx.beginPath()
+    ctx.arc(ctr.x, ctr.y, Math.max(0, c.r * w), 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255,107,107,0.25)'
+    ctx.lineWidth = 1
+    ctx.stroke()
+    const bottom = toPx({ x: c.x, y: c.y - c.r })
+    ctx.beginPath()
+    ctx.arc(bottom.x, bottom.y, 2.5, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255,107,107,0.7)'
+    ctx.fill()
+  }
+
+  // Beach line: each arc's parabola over the stretch where it is the lowest.
+  if (s.arcSites.length > 0 && Number.isFinite(s.sweepY)) {
+    const intervals = beachIntervals(pts, s.arcSites, s.sweepY, 0, 1)
+    ctx.strokeStyle = 'rgba(156,192,255,0.9)'
+    ctx.lineWidth = 2
+    for (const iv of intervals) {
+      if (iv.hi - iv.lo < 1e-4) continue
+      ctx.beginPath()
+      const steps = 64
+      let started = false
+      for (let k = 0; k <= steps; k++) {
+        const x = iv.lo + ((iv.hi - iv.lo) * k) / steps
+        let wy = parabolaY(pts[iv.site], s.sweepY, x)
+        wy = Math.max(-1, Math.min(2, wy)) // clamp degenerate blow-ups
+        const q = toPx({ x, y: wy })
+        if (!started) {
+          ctx.moveTo(q.x, q.y)
+          started = true
+        } else ctx.lineTo(q.x, q.y)
+      }
+      ctx.stroke()
+    }
+  }
+
+  // The sweep line.
+  if (Number.isFinite(s.sweepY)) {
+    ctx.beginPath()
+    ctx.moveTo(pad, sweepScreenY)
+    ctx.lineTo(pad + w, sweepScreenY)
+    ctx.strokeStyle = 'rgba(124,246,192,0.7)'
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  // Voronoi vertices fixed so far.
+  ctx.fillStyle = 'rgba(255,209,102,0.95)'
+  for (const v of s.vertices) {
+    const q = toPx(v)
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, 2.6, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // Sites: faint until the sweep has passed them, bright once processed.
+  for (let i = 0; i < pts.length; i++) {
+    const q = toPx(pts[i])
+    const processed = !Number.isFinite(s.sweepY) || pts[i].y >= s.sweepY - 1e-9
+    const active = i === s.active
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, active ? 7 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = active ? '#7cf6c0' : processed ? '#f4f7ff' : 'rgba(150,160,200,0.4)'
+    ctx.fill()
+  }
 }

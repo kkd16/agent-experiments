@@ -9,6 +9,8 @@ import {
   relativeNeighborhoodGraph,
   nearestNeighborGraph,
   urquhartGraph,
+  betaSkeleton,
+  knnGraph,
   closestPair,
   totalLength,
   type ClosestPair,
@@ -37,6 +39,10 @@ export interface ComputeOpts {
   gabriel: boolean
   proximity: boolean // relative-neighborhood + nearest-neighbor + Urquhart graphs
   layers: boolean // convex layers (onion peeling)
+  beta: boolean // β-skeleton family
+  betaValue: number // β parameter (≥ 1)
+  knn: boolean // k-nearest-neighbor graph
+  k: number // k parameter
 }
 
 export interface GeometryResult {
@@ -52,6 +58,8 @@ export interface GeometryResult {
   rng: Edge[]
   nng: Edge[]
   urquhart: Edge[]
+  beta: Edge[]
+  knn: Edge[]
   layers: number[][]
   mstLength: number
   // Single-shot measurements (always computed; drawn only when their toggle is on).
@@ -78,6 +86,8 @@ const EMPTY: GeometryResult = {
   rng: [],
   nng: [],
   urquhart: [],
+  beta: [],
+  knn: [],
   layers: [],
   mstLength: 0,
   closest: null,
@@ -122,6 +132,8 @@ export function computeGeometry(points: Point[], clip: Rect, opts: ComputeOpts):
   const rng = opts.proximity ? relativeNeighborhoodGraph(points, delaunayEdges) : []
   const nng = opts.proximity ? nearestNeighborGraph(points, delaunayEdges) : []
   const urquhart = opts.proximity ? urquhartGraph(points, tris) : []
+  const beta = opts.beta ? betaSkeleton(points, delaunayEdges, opts.betaValue) : []
+  const knn = opts.knn ? knnGraph(points, opts.k) : []
   const layers = opts.layers ? convexLayers(points) : []
 
   return {
@@ -137,6 +149,8 @@ export function computeGeometry(points: Point[], clip: Rect, opts: ComputeOpts):
     rng,
     nng,
     urquhart,
+    beta,
+    knn,
     layers,
     mstLength: totalLength(points, mst),
     closest: closestPair(points, delaunayEdges),

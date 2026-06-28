@@ -22,6 +22,12 @@ export default function About() {
             Bowyer-Watson algorithm and the in-circle predicate.
           </li>
           <li>
+            <strong>Fortune's sweep-line Voronoi</strong> — the same diagram by a wholly different
+            route: a line sweeps the plane while a <em>beach line</em> of parabolas tracks the
+            emerging cells, processing site and circle events out of a binary heap. Watch it animate
+            on the Algorithms tab; its Delaunay dual is verified to match Bowyer-Watson edge-for-edge.
+          </li>
+          <li>
             <strong>Convex hull</strong> — the tightest convex boundary, via Andrew's monotone chain
             in O(n log n).
           </li>
@@ -32,10 +38,27 @@ export default function About() {
             Delaunay. Toggle them together to watch each one thin the last.
           </li>
           <li>
+            <strong>β-skeleton family</strong> — one knob that sweeps a whole family of proximity
+            graphs. The lune-based β-skeleton keeps edge (a,b) when the intersection of two disks
+            sized by β is empty; β = 1 reproduces the Gabriel graph and β = 2 the
+            relative-neighborhood graph, with a continuum in between.
+          </li>
+          <li>
+            <strong>k-nearest-neighbor graph</strong> — connect each site to its k closest
+            neighbours and take the undirected union. Slide k from 1 (the nearest-neighbor graph)
+            upward to watch the connectivity thicken.
+          </li>
+          <li>
             <strong>Alpha shapes</strong> — a one-parameter "concave hull". Picture an eraser disk of
             radius α rolling over the points; drop the Delaunay triangles it can swallow and the
             boundary that's left hugs the cloud, opening up concavities and holes. Slide α from a
-            tight outline up to the full convex hull.
+            tight outline up to the full convex hull — or hit <em>Sweep α</em> to animate it.
+          </li>
+          <li>
+            <strong>Ruppert's quality mesh</strong> — Delaunay <em>refinement</em>: split encroached
+            boundary edges and insert circumcenters of skinny triangles until every angle clears a
+            bound you choose. A raw cloud with 1° slivers becomes a clean mesh with a guaranteed
+            minimum angle; the inserted Steiner points show as amber dots.
           </li>
           <li>
             <strong>Convex layers</strong> — peel the hull, recurse on what's inside, repeat. The
@@ -111,12 +134,14 @@ export default function About() {
           <li>Stack the proximity graphs (NNG → MST → RNG → Urquhart → Gabriel) to see each refine the last.</li>
           <li>Enable the alpha shape and sweep its slider to morph a concave hull into the convex one.</li>
           <li>Generate blue noise, then hit <em>Animate</em> to relax it into a honeycomb.</li>
-          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Delaunay, and enclosing-circle builds.</li>
+          <li>Slide β from 1 to 2 to morph the Gabriel graph into the relative-neighborhood graph.</li>
+          <li>In the <strong>Mesh</strong> panel, pick an angle bound and hit <em>Refine mesh</em> to watch Ruppert clean up the slivers.</li>
+          <li>Open the <strong>Algorithms</strong> tab to step through the hull, Delaunay, enclosing-circle, and Fortune sweep builds.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 33 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 49 checks.
         </p>
       </article>
     </div>

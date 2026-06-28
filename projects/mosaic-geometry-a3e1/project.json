@@ -1,8 +1,8 @@
 {
   "title": "Mosaic",
-  "description": "An interactive computational-geometry studio: Voronoi, Delaunay, convex hulls, the full proximity-graph family, alpha shapes, rotating-calipers metrics, Welzl's enclosing circle, largest empty circle, Lloyd relaxation, and shareable point sets — every algorithm built from scratch.",
+  "description": "An interactive computational-geometry studio: Voronoi by both half-plane intersection and Fortune's sweep-line (with a live beach-line animation), Delaunay, convex hulls, the β-skeleton family (Gabriel↔RNG) and k-nearest graph alongside the full proximity-graph nesting, alpha shapes with an animated α sweep, Ruppert quality meshing, rotating-calipers metrics, Welzl's enclosing circle, largest empty circle, Lloyd relaxation, and shareable point sets — every algorithm built from scratch, with a 49-check test suite.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["geometry", "voronoi", "delaunay", "alpha-shapes", "algorithms", "visualization", "canvas", "react"],
+  "tags": ["geometry", "voronoi", "fortune", "delaunay", "beta-skeleton", "ruppert", "alpha-shapes", "algorithms", "visualization", "canvas", "react"],
   "createdAt": "2026-06-27"
 }
