@@ -1,13 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { PageHead, Panel } from '../ui/components'
-import { runSelfTest, type TestCase } from '../ecc/selftest'
+import { type TestCase } from '../ecc/selftest'
+import { useSelfTest } from '../hooks/useSelfTest'
 
 export function SelfTestPage() {
-  const [nonce, setNonce] = useState(0)
-  const tests = useMemo(() => runSelfTest(), [])
-  // `nonce` lets the user force a re-run; the engine is deterministic so results
-  // are stable, which is itself the point.
-  void nonce
+  const { tests, ready, rerun } = useSelfTest()
 
   const groups = useMemo(() => {
     const m = new Map<string, TestCase[]>()
@@ -19,31 +16,36 @@ export function SelfTestPage() {
   }, [tests])
 
   const passed = tests.filter((t) => t.pass).length
-  const allPass = passed === tests.length
+  const allPass = ready && passed === tests.length
 
   return (
     <main className="page">
-      <PageHead eyebrow="Lab 12 — provenance" title="Self-Test & Known-Answer Vectors">
+      <PageHead eyebrow="Lab 16 — provenance" title="Self-Test & Known-Answer Vectors">
         Pretty math is worthless if it’s wrong. This page runs the entire engine against published
         standards — FIPS 180-4 (SHA-256/512), RFC 4231 (HMAC), the canonical secp256k1 point
         multiples, BIP-340 Schnorr, RIPEMD-160 + Bitcoin WIF/address/Bech32 vectors, RFC 7748
-        (X25519) and RFC 8032 (Ed25519), a MuSig2 aggregate, a Pohlig–Hellman recovery, and a
-        Wycheproof-style adversarial verifier battery — plus full sign→verify→tamper round-trips. It
-        runs live, in your browser, every time you open it.
+        (X25519) and RFC 8032 (Ed25519), a MuSig2 aggregate, a Pohlig–Hellman recovery, a BLS12-381
+        pairing with bilinearity and aggregate-signature checks, and a Wycheproof-style adversarial
+        verifier battery — plus full sign→verify→tamper round-trips. It runs live, in your browser,
+        every time you open it.
       </PageHead>
 
       <div className="statline" style={{ marginBottom: '1.4rem' }}>
         <div className="stat">
-          <b style={{ color: allPass ? 'var(--good)' : 'var(--bad)' }}>{passed}/{tests.length}</b>
+          <b style={{ color: !ready ? 'var(--ink-dim)' : allPass ? 'var(--good)' : 'var(--bad)' }}>
+            {ready ? `${passed}/${tests.length}` : '…'}
+          </b>
           <span>checks passing</span>
         </div>
-        <div className="stat"><b>{groups.length}</b><span>subsystems</span></div>
+        <div className="stat"><b>{ready ? groups.length : '…'}</b><span>subsystems</span></div>
         <div className="stat">
-          <b style={{ color: allPass ? 'var(--good)' : 'var(--bad)' }}>{allPass ? 'GREEN' : 'RED'}</b>
+          <b style={{ color: !ready ? 'var(--ink-dim)' : allPass ? 'var(--good)' : 'var(--bad)' }}>
+            {ready ? (allPass ? 'GREEN' : 'RED') : 'RUN…'}
+          </b>
           <span>engine status</span>
         </div>
         <div className="stat" style={{ justifyContent: 'center' }}>
-          <button className="btn" onClick={() => setNonce((n) => n + 1)}>↻ re-run</button>
+          <button className="btn" onClick={rerun}>↻ re-run</button>
         </div>
       </div>
 

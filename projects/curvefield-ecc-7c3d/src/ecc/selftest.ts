@@ -35,6 +35,39 @@ import { pohligHellman, findSmoothCurve } from './pohlig'
 import { musigSign, verifyPartial } from './musig'
 import { x25519, x25519Public, ed25519Public, ed25519Sign, ed25519Verify } from './ed25519'
 import { runEdgeCases } from './wycheproof'
+import {
+  G1_GEN,
+  G2_GEN,
+  R as BLS_R,
+  g1,
+  g2,
+  pairing,
+  blsKeygen,
+  blsSign,
+  blsVerify,
+  aggregateSigs,
+  blsAggregateVerifyDistinct,
+} from './bls12381'
+import { Fp12 } from './fp12'
+import {
+  adaptorPoint,
+  pubkey as adaptorPubkey,
+  preSign,
+  preVerify,
+  adapt,
+  verifyFull,
+  extract,
+  runAtomicSwap,
+} from './adaptor'
+import { masterFromSeed, derivePath, deriveChildPub, xprv, xpub } from './bip32'
+import {
+  makeBrokenOracle,
+  makeSafeOracle,
+  invalidCurveAttack,
+  targetPubkey,
+  targetCurve,
+  targetG,
+} from './invalid'
 
 export interface TestCase {
   name: string
@@ -377,6 +410,153 @@ export function runSelfTest(): TestCase[] {
       failed.length === 0
         ? 'every adversarial input handled correctly'
         : `failing: ${failed.map((f) => f.name).join(', ')}`,
+    )
+  }
+
+  // ── 15. BLS12-381: pairing bilinearity + signature aggregation ──
+  {
+    check(
+      'BLS12-381',
+      'generators in r-torsion',
+      g1.mulRaw(BLS_R, G1_GEN) === null && g2.mul(BLS_R, G2_GEN) === null,
+      'r·G₁ = r·G₂ = O on the published generators',
+    )
+    const e = pairing(G1_GEN, G2_GEN)
+    check(
+      'BLS12-381',
+      'pairing non-degenerate, e^r = 1',
+      !Fp12.isOne(e) && Fp12.isOne(Fp12.pow(e, BLS_R)),
+      'e(G₁,G₂) ≠ 1 and has exact order r (lands in G_T)',
+    )
+    const a = 9n
+    const b = 7n
+    const lhs = pairing(g1.mul(a, G1_GEN), g2.mul(b, G2_GEN))
+    const rhs = Fp12.pow(e, a * b)
+    check(
+      'BLS12-381',
+      'bilinearity e(aP,bQ)=e(P,Q)^ab',
+      Fp12.eq(lhs, rhs),
+      'two independent routes to the same G_T element',
+    )
+    const key = blsKeygen(0xc0ffeen)
+    const msg = utf8('BLS over a hand-written pairing')
+    const sig = blsSign(key.sk, msg)
+    check(
+      'BLS12-381',
+      'sign → verify, reject tamper',
+      blsVerify(key.pk, msg, sig) && !blsVerify(key.pk, utf8('tampered'), sig),
+      'e(σ,G₂)=e(H(m),pk); altered message fails',
+    )
+    const ks = [3n, 14n, 159n].map((s) => blsKeygen(s * 26535n))
+    const msgs = ['a', 'b', 'c'].map(utf8)
+    const agg = aggregateSigs(ks.map((k, i) => blsSign(k.sk, msgs[i])))
+    check(
+      'BLS12-381',
+      'aggregate (distinct msgs) verifies',
+      blsAggregateVerifyDistinct(ks.map((k) => k.pk), msgs, agg),
+      '3 signatures → one 96-byte element, one pairing product',
+    )
+  }
+
+  // ── 16. Schnorr adaptor signatures + atomic swap ──
+  {
+    const d = 0xa5ec5e7n
+    const tSecret = 0xfeed1234n
+    const T = adaptorPoint(tSecret)
+    const P = adaptorPubkey(d)
+    const msg = utf8('adaptor pre-signature')
+    const pre = preSign(d, msg, T, 0x1357n)
+    check(
+      'Adaptor',
+      'pre-signature verifies (no secret needed)',
+      preVerify(P, msg, pre),
+      'ŝ·G = R + e·P holds before adapting',
+    )
+    const sig = adapt(pre, tSecret)
+    check(
+      'Adaptor',
+      'adapt → full Schnorr signature',
+      verifyFull(P, msg, sig) && sig.s !== pre.shat,
+      's = ŝ + t verifies as an ordinary signature',
+    )
+    check(
+      'Adaptor',
+      'extract recovers the secret t',
+      extract(pre, sig) === tSecret,
+      't = s − ŝ leaks once both are public',
+    )
+    const swap = runAtomicSwap(0x5ec7n, 0xa11ce0n, 0xb0b00n, utf8('A→B'), utf8('B→A'), 0x111n, 0x222n)
+    check(
+      'Adaptor',
+      'end-to-end atomic swap settles',
+      swap.atomic,
+      'one secret links both legs; claiming one reveals it',
+    )
+  }
+
+  // ── 17. BIP-32 HD wallets vs the published test vectors (vector 1) ──
+  {
+    const seed = hexToBytes('000102030405060708090a0b0c0d0e0f')
+    const master = masterFromSeed(seed)
+    check(
+      'BIP-32',
+      'master xprv (vector 1)',
+      xprv(master) ===
+        'xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi',
+      'HMAC-SHA512 master → xprv9s21Z…',
+    )
+    const steps = derivePath(seed, "m/0'/1")
+    check(
+      'BIP-32',
+      "m/0'/1 xprv (hardened then normal)",
+      xprv(steps[2].node) ===
+        'xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs',
+      'CKDpriv chain matches the spec',
+    )
+    check(
+      'BIP-32',
+      "m/0'/1 xpub (vector 1)",
+      xpub(steps[2].node) ===
+        'xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ',
+      'serialized extended public key matches',
+    )
+    const pubParent = { ...steps[1].node, priv: null }
+    check(
+      'BIP-32',
+      'watch-only CKDpub = CKDpriv',
+      xpub(deriveChildPub(pubParent, 1)) === xpub(steps[2].node),
+      'xpub-only derivation reproduces the public child',
+    )
+  }
+
+  // ── 18. Invalid-curve attack recovers a private key from a broken oracle ──
+  {
+    const d = 0x1f3dn % 10039n
+    const attack = invalidCurveAttack(makeBrokenOracle(d))
+    const recovered = attack.recovered
+    const pub = targetPubkey(d)
+    check(
+      'Invalid-Curve',
+      'recovers d from off-curve queries',
+      recovered === d && attack.pinned,
+      `${attack.queries} oracle queries, primes ${attack.hits.map((h) => h.prime).join('·')} → d=${recovered}`,
+    )
+    check(
+      'Invalid-Curve',
+      'recovered key reproduces the public key',
+      recovered !== null &&
+        (() => {
+          const Q = targetCurve.multiply(recovered, targetG)
+          return Q !== null && pub !== null && Q.x === pub.x && Q.y === pub.y
+        })(),
+      'full key compromise confirmed against Q = d·G',
+    )
+    const safe = makeSafeOracle(d)
+    check(
+      'Invalid-Curve',
+      'on-curve check defeats the attack',
+      attack.hits.every((h) => safe(h.point) === 'rejected'),
+      'every malicious point is rejected before scalar mult',
     )
   }
 

@@ -1,5 +1,4 @@
-import { useMemo } from 'react'
-import { runSelfTest } from '../ecc/selftest'
+import { useSelfTest } from '../hooks/useSelfTest'
 import { N, P } from '../ecc/secp256k1'
 
 const LABS = [
@@ -46,39 +45,63 @@ const LABS = [
     desc: 'A second backend: the Montgomery ladder (RFC 7748) for key exchange and twisted-Edwards EdDSA (RFC 8032) for signatures, with SHA-512.',
   },
   {
-    path: '/attacks',
+    path: '/bls',
     ix: '08',
+    title: 'BLS12-381 & the Pairing',
+    desc: 'A hand-written optimal-ate pairing over an F_p² ⊂ F_p⁶ ⊂ F_p¹² tower — bilinearity checked live, then BLS signature aggregation and the rogue-key attack on it.',
+  },
+  {
+    path: '/adaptor',
+    ix: '09',
+    title: 'Schnorr Adaptor Signatures',
+    desc: 'Scriptless scripts: a pre-signature locked to a point T, completed only by knowing t — and a full atomic swap where claiming one leg leaks the secret that unlocks the other.',
+  },
+  {
+    path: '/bip32',
+    ix: '10',
+    title: 'BIP-32 HD Wallets',
+    desc: 'One seed, a whole tree of keys. Additive child derivation via HMAC-SHA512, hardened vs. watch-only (xpub) derivation, checked against the BIP-32 vectors.',
+  },
+  {
+    path: '/attacks',
+    ix: '11',
     title: 'Breaking the ECDLP',
     desc: 'Brute force vs. baby-step giant-step vs. Pollard’s rho, with step counts that show √n beating n.',
   },
   {
     path: '/rho',
-    ix: '09',
+    ix: '12',
     title: "Pollard's ρ, Drawn",
     desc: 'The named shape, animated: a random walk that runs into itself, splitting into tail and cycle, and the collision that leaks the key.',
   },
   {
     path: '/pohlig',
-    ix: '10',
+    ix: '13',
     title: 'Pohlig–Hellman',
     desc: 'Why the order must be prime: a smooth order shatters the discrete log into tiny per-prime pieces, glued back with the CRT.',
   },
   {
+    path: '/invalid',
+    ix: '14',
+    title: 'The Invalid-Curve Attack',
+    desc: 'One missing on-curve check recovers a full private key: feed a verifier small-order points on weak twins, read d mod ℓ from each reply, and CRT them together.',
+  },
+  {
     path: '/edge',
-    ix: '11',
+    ix: '15',
     title: 'Wycheproof Edge Cases',
     desc: 'An adversarial battery against the ECDSA verifier — zero scalars, malleable twins, off-curve keys, non-canonical DER — each rejected on cue.',
   },
   {
     path: '/verify',
-    ix: '12',
+    ix: '16',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2 and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, adaptor, BIP-32 and Wycheproof vectors.',
   },
 ]
 
 export function Overview() {
-  const test = useMemo(() => runSelfTest(), [])
+  const { tests: test, ready } = useSelfTest()
   const passed = test.filter((t) => t.pass).length
 
   return (
@@ -111,7 +134,7 @@ export function Overview() {
 
       <div className="statline" style={{ marginBottom: '2rem' }}>
         <div className="stat">
-          <b>{passed}/{test.length}</b>
+          <b>{ready ? `${passed}/${test.length}` : '…'}</b>
           <span>vectors passing</span>
         </div>
         <div className="stat">

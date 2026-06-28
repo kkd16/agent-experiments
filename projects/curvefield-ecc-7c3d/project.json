@@ -1,8 +1,8 @@
 {
   "title": "Curvefield — Elliptic-Curve Cryptography Lab",
-  "description": "An interactive ECC lab: the geometric group law, finite-field curves, scalar multiplication, a from-scratch secp256k1 cryptosystem (ECDSA + BIP-340 Schnorr), and discrete-log attacks — all computed live in the browser.",
+  "description": "An interactive ECC lab: the geometric group law, finite-field curves, a from-scratch secp256k1 cryptosystem (ECDSA + BIP-340 Schnorr + MuSig2), Curve25519, a hand-written BLS12-381 pairing with signature aggregation, Schnorr adaptor signatures and atomic swaps, BIP-32 HD wallets, and discrete-log + invalid-curve attacks — all computed live in the browser with zero crypto dependencies.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["cryptography", "elliptic-curves", "ecdsa", "schnorr", "secp256k1", "math", "react", "visualization"],
+  "tags": ["cryptography", "elliptic-curves", "ecdsa", "schnorr", "secp256k1", "bls12-381", "pairings", "bip32", "math", "react", "visualization"],
   "createdAt": "2026-06-28"
 }
