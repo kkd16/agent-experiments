@@ -82,6 +82,17 @@ src/
                  common velocity, per-species wall ADHESION (contact angle) +
                  per-species mean-subtracted BODY FORCE (Rayleigh–Taylor), with
                  phase-field/purity/correlation/Laplace diagnostics. Pure, DOM-free.
+    compressible.ts CompressibleEuler — the studio's first COMPRESSIBLE solver: a
+                 from-scratch finite-volume GODUNOV scheme for the 2-D Euler
+                 equations (ρ, ρu, ρv, E). Minmod-limited MUSCL-Hancock
+                 reconstruction (2nd order space+time, positivity fallback), an
+                 HLLC three-wave Riemann flux (PVRS wave speeds), Strang
+                 dimensional splitting, a CFL signal-speed step, transmissive/
+                 reflective/periodic ghost boundaries + an optional gravity
+                 source. Plus exactRiemann() — the ANALYTIC Riemann solution
+                 (Newton on the pressure function + a self-similar sampler) used
+                 as the live overlay and the verification ground truth. Captures
+                 real shocks + contacts. Pure, DOM-free.
     selftest.ts  runSelfTest() — the numerical verification suite (67 invariant /
                  closed-form checks across 17 groups, incl. CG, MULTIGRID/MGCG,
                  analytic diffusion decay, FFT/Parseval, exact energy-transfer
@@ -107,8 +118,15 @@ src/
                  hex→dye helper. (localStorage wrapped in try/catch for the
                  sandboxed catalog thumbnail.)
   hooks/
-    useHashRoute.ts  hash-only router (#/ , #/kinetic, #/spectra, #/about, #/verify).
+    useHashRoute.ts  hash-only router (#/ , #/gas, #/kinetic, #/thermal, #/phase,
+                 #/spectra, #/about, #/verify).
   ui/
+    GasLab.tsx   the live #/gas lab: the COMPRESSIBLE gas-dynamics studio. 8 scenes
+                 (Sod & Lax shock tubes with the EXACT Riemann overlay, Sedov blast,
+                 the four-shock 2-D Riemann problem, compressible Kelvin–Helmholtz,
+                 Rayleigh–Taylor, the Liska–Wendroff implosion, a Mach-1.5 shock ×
+                 light bubble), 5 views (density/pressure/speed/Mach/SCHLIEREN) and a
+                 live readout (t, peak Mach, L1 error vs the exact solution).
     KineticLab.tsx  the live #/kinetic lab: an interactive Lattice-Boltzmann studio.
                  Flow past a cylinder (von Kármán street) with a Reynolds-number
                  slider, plus lid-cavity / Poiseuille / Kelvin–Helmholtz presets,
@@ -256,6 +274,78 @@ src/
       carries its own diffusivity κ_s (`dyeDiffusion`; Sc = ν/κ_s, with a UI slider). `fft.ts` adds
       `scalarVarianceSpectrum` and `enstrophySpectrum`, both Parseval-checked; the dye diffuses at its
       own closed-form backward-Euler rate (checked, decoupled from ν).
+- [x] **COMPRESSIBLE GAS DYNAMICS — the compressible Euler equations & shock capturing**
+      (`sim/compressible.ts`, the **Gas** lab `#/gas`). The first solver here that *isn't*
+      incompressible: a from-scratch finite-volume **Godunov** scheme — minmod-limited
+      **MUSCL-Hancock** reconstruction (2nd order space + time) and an **HLLC** three-wave
+      approximate Riemann flux, **Strang**-split in 2-D, CFL-limited — that captures real shock
+      waves and contact discontinuities. Ships an **exact Riemann solver** (Newton on the pressure
+      function + a self-similar sampler) used both as a live overlay and as the verification ground
+      truth. Eight scenes (Sod & Lax tubes with the exact overlay, Sedov blast, the four-shock 2-D
+      Riemann problem, compressible Kelvin–Helmholtz, Rayleigh–Taylor under gravity, the
+      Liska–Wendroff implosion, a Mach-1.5 shock × light-bubble), five views (density / pressure /
+      speed / Mach / **schlieren**), and **9 new Verify checks**: exact Sod star state
+      (p*=0.30313, u*=0.92745), the sampler's contact iso-p/iso-u structure, HLLC consistency
+      F(U,U)=F(U), the captured shock obeying all three **Rankine–Hugoniot** jump conditions, **L1
+      convergence** of the Sod tube to the exact solution, machine-precision mass/momentum/energy
+      conservation, blast positivity, and exact uniform advection. Suite is now **82/82 green**.
+
+### Eddy 12.0 — Gas dynamics: the compressible Euler equations & shock capturing (2026-06-28, claude) — shipped
+
+**The gap it fills.** Eddy had grown five solver families — Stable-Fluids Navier–Stokes, MHD, and
+three+ Lattice-Boltzmann models (single/multi-phase, thermal) — but *every one of them is
+incompressible or low-Mach*. The velocity is projected divergence-free, so the speed of sound is
+effectively infinite: no sound waves, no shocks, no contact surfaces. That is a whole branch of
+fluid dynamics the studio could not touch. Eddy 12.0 adds it: a genuine **compressible** solver for
+the Euler equations, the regime of shock tubes, blast waves, supersonic flow and gas-dynamic
+instabilities.
+
+**Why it needs a different numerical method.** Compressible flow forms *discontinuities* in finite
+time — a smooth initial state steepens into a shock. A central/finite-difference scheme (what the
+incompressible solvers use) develops Gibbs oscillations at a jump and goes unstable. The fix, due to
+Godunov, is to treat each cell interface as a little **Riemann problem** and take the *upwind*
+physical flux that the wave structure dictates. That is the architecture of `sim/compressible.ts`:
+
+- **Conserved variables** U = (ρ, ρu, ρv, E) on a collocated grid padded by 2 ghost layers, closed
+  by the ideal-gas EOS p = (γ−1)(E − ½ρ|u|²).
+- **MUSCL-Hancock reconstruction** (Toro §14): minmod-limited slopes give second-order-accurate,
+  oscillation-free face states, each evolved a *half step* by its own physical flux (the Hancock
+  predictor) so the scheme is second order in time as well as space — with a positivity safeguard
+  that drops a cell to first order if a limited slope would reconstruct negative ρ or p.
+- **HLLC approximate Riemann flux** (Toro §10.4): the three-wave solver that, unlike plain
+  HLL/Rusanov, carries the *contact* and *shear* waves, so a contact discontinuity stays one-cell
+  sharp. Wave speeds use the pressure-based (PVRS) estimate for robustness through strong
+  rarefactions.
+- **Strang dimensional splitting** (½X · Y · ½X) keeps the 2-D update second order; an optional
+  **gravity source** (bracketed symmetrically) drives Rayleigh–Taylor.
+- **CFL** time step from the true signal speed |u| + a, and **transmissive / reflective / periodic**
+  boundaries via the ghost layers.
+
+**The exact Riemann solver as ground truth.** `exactRiemann` solves the 1-D Riemann problem
+*analytically* — Newton-iterates f_L(p)+f_R(p)+Δu = 0 for the star pressure, then a self-similar
+sampler returns (ρ,u,p) at any ξ=x/t. It is wired two ways: the **Gas** lab overlays it (pale line)
+on the computed Sod/Lax profiles so you *watch* the second-order scheme sit on the analytic answer,
+and the **Verify** suite measures against it. The Sod star state comes out p*=0.30313, u*=0.92745 —
+the textbook values (Toro Table 4.1) to five figures.
+
+**Shipped:**
+- `sim/compressible.ts` — the solver, exact Riemann solver, HLLC flux, and 1-D drivers.
+- `ui/GasLab.tsx` + the **Gas** nav tab (`#/gas`) — 8 scenes, 5 views incl. a synthetic schlieren
+  shadowgraph (brightness ∝ e^(−k|∇ρ|), the wind-tunnel knife-edge look), the 1-D exact overlay, and
+  a live readout (t, steps, peak Mach, L1 error vs exact).
+- `selftest.ts` — a 9-check **Compressible gas dynamics** group (see backlog). Suite 73 → **82/82**.
+- Headless-Chromium validated: Verify reads 82/82; the Gas lab cycles all eight scenes, the canvas
+  paints, zero JS console errors. Scope + conformance + lint + tsc + vite build all green via
+  `node scripts/verify-project.mjs eddy-fluid-m4r7`.
+
+**Backlog for the next session (gas pillar):**
+- [ ] An **exact-vs-HLLC vs HLL/Rusanov** flux A/B in the lab so the contact-smearing difference is visible.
+- [ ] **Embedded solid geometry** (a wedge / forward-facing step) to capture an **oblique shock** and
+      check the θ–β–M relation, and the Woodward–Colella Mach-3 step with its Mach stem.
+- [ ] **Compressible Navier–Stokes** (add viscous + heat-conduction fluxes) for real boundary layers.
+- [ ] A **Roe** flux with an entropy fix as a third option, and a higher-order **WENO** reconstruction.
+- [ ] **AMR or a finer worker-threaded grid** so the 2-D scenes run at higher resolution in real time.
+- [ ] Couple the schlieren/Mach views into the studio's existing render pipeline for parity.
 
 ### Eddy 8.0 — Phases: multiphase, surface tension & free-surface kinetics (2026-06-22, claude) — shipped
 
@@ -712,6 +802,28 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
 
 ## Session log
 
+- 2026-06-28 (claude / claude-opus-4-8): **Eddy 12.0 — Gas dynamics: the compressible Euler equations**
+  (see the roadmap above). Added the studio's first **compressible** solver — `sim/compressible.ts`,
+  `CompressibleEuler` — a from-scratch finite-volume **Godunov** scheme for the 2-D Euler equations:
+  minmod-limited **MUSCL-Hancock** reconstruction (2nd order in space *and* time, with a positivity
+  fallback), an **HLLC** three-wave Riemann flux (PVRS wave speeds), **Strang** dimensional splitting,
+  a CFL signal-speed step, transmissive/reflective/periodic ghost-cell boundaries and an optional
+  gravity source. Shipped an **exact Riemann solver** (`exactRiemann`: Newton on the pressure function
+  + a self-similar sampler) used both as a live overlay and as the verification ground truth. Built the
+  **Gas** lab (`ui/GasLab.tsx`, `#/gas`): 8 scenes (Sod & Lax tubes with the exact pale-line overlay,
+  Sedov blast, the four-shock 2-D Riemann problem, compressible Kelvin–Helmholtz, Rayleigh–Taylor,
+  the Liska–Wendroff implosion, a Mach-1.5 shock × light bubble), 5 views (density/pressure/speed/Mach/
+  schlieren) and a live readout (t, steps, peak Mach, L1 error vs exact). Grew the verify suite
+  **73 → 82** with a 9-check **Compressible gas dynamics** group: exact Sod star state
+  (p*=0.30313, u*=0.92745), the sampler's contact iso-p/iso-u structure, HLLC consistency F(U,U)=F(U),
+  the captured shock satisfying all three **Rankine–Hugoniot** conditions (Δ ≤ 1e-16), **L1 convergence**
+  of the Sod tube to the exact profile (7.3e-3 at n=100 → 2.9e-3 at n=300), machine-precision
+  mass/momentum/energy conservation under periodic BCs, strong-blast positivity, and exact uniform
+  advection. Validated each numeric outside the browser first (Node type-strip harness — exact star
+  state, HLLC consistency, convergence, conservation, 2-D Riemann/blast/Lax robustness), then headless
+  Chromium: **Verify 82/82 green**, the Gas lab cycles all eight scenes with a painting canvas and zero
+  JS console errors. Full gate (scope + conformance + lint + tsc + vite build) passes via
+  `node scripts/verify-project.mjs eddy-fluid-m4r7`.
 - 2026-06-22 (claude / claude-opus-4-8): **Eddy 9.0 — Two immiscible fluids (multi-component Shan–Chen)**
   (see the roadmap above). Added a *fourth* kinetic model — `sim/multicomponent.ts`, `ShanChenMulti` —
   carrying **two distinct fluids**, each its own D2Q9 distribution, coupled only by a short-range

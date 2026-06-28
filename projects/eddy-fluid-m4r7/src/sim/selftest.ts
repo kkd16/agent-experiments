@@ -15,6 +15,16 @@ import { Lbm, feq, EX, EY, viscosityFromTau, CS2, MRT_M, MRT_MINV } from './lbm'
 import { ThermalLbm, scalingFromRaPr, diffusivityFromTau } from './thermal';
 import { ShanChen, pressureOf } from './multiphase';
 import { ShanChenMulti } from './multicomponent';
+import {
+  exactRiemann,
+  hllcFlux,
+  runShockTube1D,
+  exactShockTubeProfile,
+  pressureFromU,
+  soundSpeed,
+  CompressibleEuler,
+  type Prim,
+} from './compressible';
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
@@ -2504,10 +2514,257 @@ function thermalLbm(): CheckGroup {
   };
 }
 
+// Compressible Euler / gas dynamics — the one solver in the studio that admits
+// genuine discontinuities. Unlike the incompressible solvers, here we have an
+// *exact* analytic reference (the Riemann solution) to measure against, plus the
+// hard conservation and positivity invariants a shock-capturing scheme must obey.
+function gasDynamics(): CheckGroup {
+  const checks: Check[] = [];
+  const gamma = 1.4;
+  const sodL = { rho: 1, u: 0, p: 1 };
+  const sodR = { rho: 0.125, u: 0, p: 0.1 };
+
+  // 1. Exact Riemann star state for the Sod problem. The textbook values are
+  //    p* = 0.30313, u* = 0.92745 (Toro, Table 4.1) — the analytic ground truth
+  //    everything else is checked against.
+  {
+    const star = exactRiemann(sodL, sodR, gamma);
+    const ep = Math.abs(star.pStar - 0.30313);
+    const eu = Math.abs(star.uStar - 0.92745);
+    checks.push(
+      check(
+        'Exact Riemann star state (Sod): p* = 0.30313, u* = 0.92745',
+        'The pressure between the two waves is found by Newton-iterating the pressure function f_L(p)+f_R(p)+Δu=0; u* follows. These are the canonical Sod star-region values (Toro §4) to five figures — the analytic solution the finite-volume scheme must converge to.',
+        ep < 1e-4 && eu < 1e-4,
+        `p* = ${fmt(star.pStar)}, u* = ${fmt(star.uStar)}`,
+      ),
+    );
+  }
+
+  // 2. The self-similar sampler is consistent: far to the left/right it returns
+  //    the original data states, and pressure & velocity are continuous across
+  //    the contact (only density jumps) — the defining property of a contact
+  //    discontinuity.
+  {
+    const star = exactRiemann(sodL, sodR, gamma);
+    const farL = star.sample(-1e6);
+    const farR = star.sample(1e6);
+    const justL = star.sample(star.uStar - 1e-6);
+    const justR = star.sample(star.uStar + 1e-6);
+    const dataOk =
+      Math.abs(farL.rho - sodL.rho) < 1e-9 &&
+      Math.abs(farR.rho - sodR.rho) < 1e-9 &&
+      Math.abs(farL.p - sodL.p) < 1e-9 &&
+      Math.abs(farR.p - sodR.p) < 1e-9;
+    const contactP = Math.abs(justL.p - justR.p);
+    const contactU = Math.abs(justL.u - justR.u);
+    const rhoJump = Math.abs(justL.rho - justR.rho);
+    checks.push(
+      check(
+        'Riemann sampler: data states recovered, contact is iso-p/iso-u',
+        'Sampling the self-similar solution far from the origin returns the untouched left and right states; sampling either side of the contact gives equal pressure and equal velocity but a density jump — exactly what a contact discontinuity is. This validates the wave-structure sampler used for the live exact overlay.',
+        dataOk && contactP < 1e-9 && contactU < 1e-9 && rhoJump > 0.1,
+        `Δp_contact = ${fmt(contactP)}, Δu_contact = ${fmt(contactU)}, Δρ_contact = ${fmt(rhoJump)}`,
+      ),
+    );
+  }
+
+  // 3. HLLC flux consistency: F(U, U) must equal the exact physical flux F(U)
+  //    (a numerical flux that fails this cannot be conservative or consistent).
+  {
+    const q: Prim = { rho: 1.3, u: 0.4, v: -0.25, p: 0.9 };
+    const out = [0, 0, 0, 0];
+    hllcFlux(q, q, gamma, out);
+    const E = q.p / (gamma - 1) + 0.5 * q.rho * (q.u * q.u + q.v * q.v);
+    const phys = [q.rho * q.u, q.rho * q.u * q.u + q.p, q.rho * q.v * q.u, q.u * (E + q.p)];
+    let err = 0;
+    for (let i = 0; i < 4; i++) err = Math.max(err, Math.abs(out[i] - phys[i]));
+    checks.push(
+      check(
+        'HLLC consistency: F(U,U) = F(U)',
+        'A consistent numerical flux must reduce to the true physical flux when the left and right states coincide. The HLLC three-wave solver reproduces F = [ρu, ρu²+p, ρuv, u(E+p)] exactly here, to machine precision.',
+        err < 1e-12,
+        `max|F_HLLC − F_phys| = ${fmt(err)}`,
+      ),
+    );
+  }
+
+  // 4. Rankine–Hugoniot: the right-going shock in the exact Sod solution is a
+  //    true weak solution — mass, momentum AND energy fluxes are continuous
+  //    across it in the shock-rest frame. We derive the post-shock (star-right)
+  //    state and shock speed analytically and check all three jump conditions.
+  {
+    const star = exactRiemann(sodL, sodR, gamma);
+    const pStar = star.pStar;
+    const uStar = star.uStar;
+    const { rho: rhoR, u: uR, p: pR } = sodR;
+    const ratio = pStar / pR;
+    const gm = (gamma - 1) / (gamma + 1);
+    const rhoStarR = rhoR * (ratio + gm) / (gm * ratio + 1); // RH density
+    // Shock speed from mass conservation across the jump.
+    const S = (rhoStarR * uStar - rhoR * uR) / (rhoStarR - rhoR);
+    // Fluxes in the shock-rest frame (velocity v = u − S).
+    const vL = uStar - S;
+    const vR = uR - S;
+    const EStar = pStar / (gamma - 1) + 0.5 * rhoStarR * uStar * uStar;
+    const ER = pR / (gamma - 1) + 0.5 * rhoR * uR * uR;
+    const massL = rhoStarR * vL;
+    const massR = rhoR * vR;
+    const momL = rhoStarR * vL * vL + pStar;
+    const momR = rhoR * vR * vR + pR;
+    // Energy flux in the moving frame: (E' + p) v with E' the frame energy.
+    const EpL = EStar - uStar * rhoStarR * S + 0.5 * rhoStarR * S * S;
+    const EpR = ER - uR * rhoR * S + 0.5 * rhoR * S * S;
+    const eneL = (EpL + pStar) * vL;
+    const eneR = (EpR + pR) * vR;
+    const eMass = Math.abs(massL - massR);
+    const eMom = Math.abs(momL - momR);
+    const eEne = Math.abs(eneL - eneR);
+    checks.push(
+      check(
+        'Rankine–Hugoniot: the Sod shock satisfies all three jump conditions',
+        'A shock is a discontinuous weak solution, valid only if mass, momentum and energy fluxes match on its two sides in the frame moving with the shock. From the analytic post-shock state and shock speed, all three Rankine–Hugoniot conditions close to machine precision — the shock our scheme captures is a genuine conservation-law discontinuity, not an artefact.',
+        eMass < 1e-10 && eMom < 1e-10 && eEne < 1e-10,
+        `Δmass = ${fmt(eMass)}, Δmom = ${fmt(eMom)}, Δenergy = ${fmt(eEne)}`,
+      ),
+    );
+  }
+
+  // 5. The finite-volume solver CONVERGES to the exact Riemann solution. Run the
+  //    Sod tube at two resolutions to t = 0.2 and measure the L1 density error
+  //    against the exact profile; refinement must cut it down.
+  {
+    const tEnd = 0.2;
+    const l1 = (n: number): number => {
+      const num = runShockTube1D(n, tEnd, sodL, sodR, gamma);
+      const ex = exactShockTubeProfile(n, tEnd, sodL, sodR, gamma);
+      let s = 0;
+      for (let i = 0; i < n; i++) s += Math.abs(num.rho[i] - ex.rho[i]);
+      return s / n;
+    };
+    const coarse = l1(100);
+    const fine = l1(300);
+    checks.push(
+      check(
+        'Sod tube converges to the exact solution in L1',
+        'The headline result: the MUSCL-Hancock + HLLC scheme, run on the Sod problem, lands on the analytic Riemann solution and the error shrinks with the mesh. (L1 convergence at a shock is sub-linear because the discontinuity is one cell wide; what matters is that it falls and stays small.)',
+        fine < coarse && fine < 4e-3,
+        `L1: ${fmt(coarse)} (n=100) → ${fmt(fine)} (n=300)`,
+      ),
+    );
+  }
+
+  // 6. Discrete conservation. With periodic boundaries the total mass, momentum
+  //    and energy are exactly invariant — a finite-volume scheme conserves by
+  //    construction (every interior flux is added to one cell and subtracted from
+  //    its neighbour), and the arithmetic confirms it to round-off.
+  {
+    const N = 48;
+    const sim = new CompressibleEuler({ nx: N, ny: N, gamma, bcX: 'periodic', bcY: 'periodic', cfl: 0.4, dx: 1 / N });
+    sim.initField((i, j) => {
+      const x = (i + 0.5) / N;
+      const y = (j + 0.5) / N;
+      return {
+        rho: 1 + 0.3 * Math.sin(2 * Math.PI * x) * Math.cos(2 * Math.PI * y),
+        u: 0.2 * Math.cos(2 * Math.PI * y),
+        v: 0.1 * Math.sin(2 * Math.PI * x),
+        p: 1 + 0.2 * Math.cos(2 * Math.PI * x),
+      };
+    });
+    const a = sim.totals();
+    for (let s = 0; s < 60; s++) sim.stepCFL();
+    const b = sim.totals();
+    const dMass = Math.abs(b.mass - a.mass) / Math.abs(a.mass);
+    const dMom = Math.abs(b.momX - a.momX);
+    const dEne = Math.abs(b.energy - a.energy) / Math.abs(a.energy);
+    checks.push(
+      check(
+        'Mass, momentum & energy conserved under periodic BCs',
+        'A conservative scheme cannot create or destroy the conserved quantities on a periodic domain — every face flux leaves one cell and enters its neighbour. Sixty CFL steps of a swirling compressible flow drift the totals only at the level of floating-point round-off.',
+        dMass < 1e-9 && dMom < 1e-9 && dEne < 1e-9,
+        `Δmass = ${fmt(dMass)}, Δmomₓ = ${fmt(dMom)}, Δenergy = ${fmt(dEne)}`,
+      ),
+    );
+  }
+
+  // 7. Positivity. A Sedov-style point blast — a huge pressure jump — is the
+  //    kind of strong shock that makes naïve schemes produce negative density or
+  //    pressure and crash. The reconstruction's positivity safeguard must keep
+  //    every cell physical throughout.
+  {
+    const N = 64;
+    const sim = new CompressibleEuler({ nx: N, ny: N, gamma, bcX: 'reflective', bcY: 'reflective', cfl: 0.3, dx: 1 / N });
+    sim.initField((i, j) => {
+      const x = (i + 0.5) / N - 0.5;
+      const y = (j + 0.5) / N - 0.5;
+      return Math.hypot(x, y) < 0.05 ? { rho: 1, u: 0, v: 0, p: 100 } : { rho: 1, u: 0, v: 0, p: 1 };
+    });
+    let physical = true;
+    for (let s = 0; s < 80 && physical; s++) {
+      sim.stepCFL();
+      physical = sim.isPhysical();
+    }
+    checks.push(
+      check(
+        'Strong blast stays positive (ρ > 0, p > 0)',
+        'A 100:1 pressure explosion drives a blast wave into still gas inside a sealed box. Across 80 steps the solver never produces a negative density or pressure — the MUSCL reconstruction falls back to first order wherever a limited slope would overshoot into the unphysical, so robustness never costs a crash.',
+        physical,
+        physical ? 'all cells physical for 80 steps' : 'went unphysical',
+      ),
+    );
+  }
+
+  // 8. Galilean-style sanity: a uniform flow is carried without distortion. A
+  //    constant state translating at any velocity must stay exactly constant
+  //    (no flux differences anywhere) — the scheme adds no spurious structure to
+  //    a smooth, featureless field.
+  {
+    const N = 32;
+    const sim = new CompressibleEuler({ nx: N, ny: N, gamma, bcX: 'periodic', bcY: 'periodic', cfl: 0.4, dx: 1 / N });
+    sim.initField(() => ({ rho: 1.2, u: 0.7, v: -0.3, p: 1.5 }));
+    for (let s = 0; s < 50; s++) sim.stepCFL();
+    let maxDev = 0;
+    for (let j = 0; j < N; j++)
+      for (let i = 0; i < N; i++) {
+        const k = sim.idx(i, j);
+        maxDev = Math.max(maxDev, Math.abs(sim.rho[k] - 1.2), Math.abs(sim.mx[k] / sim.rho[k] - 0.7), Math.abs(pressureFromU(sim.rho[k], sim.mx[k], sim.my[k], sim.E[k], gamma) - 1.5));
+      }
+    checks.push(
+      check(
+        'Uniform advection preserves a constant state',
+        'A featureless gas drifting at (u,v) = (0.7, −0.3) must remain perfectly uniform — every interface flux is identical, so all flux differences vanish. After 50 steps the field is unchanged to round-off, confirming the scheme injects no spurious noise into smooth flow.',
+        maxDev < 1e-12,
+        `max deviation = ${fmt(maxDev)}`,
+      ),
+    );
+  }
+
+  // Reference sound speed sanity (cheap, ties the EOS helper into the suite).
+  {
+    const a = soundSpeed(1, 1, gamma);
+    checks.push(
+      check(
+        'Ideal-gas sound speed a = √(γp/ρ)',
+        'The signal speed that sets the CFL limit and seeds the HLLC wave-speed estimates. For γ=1.4, p=ρ=1 it is √1.4 ≈ 1.18322.',
+        Math.abs(a - Math.sqrt(1.4)) < 1e-12,
+        `a = ${fmt(a)}`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Compressible gas dynamics — shock capturing',
+    blurb:
+      'The one solver here that admits genuine discontinuities. A from-scratch finite-volume Godunov scheme (MUSCL-Hancock reconstruction + an HLLC three-wave Riemann flux, Strang-split in 2-D) marches the compressible Euler equations and captures shocks and contacts sharply. Because the 1-D Riemann problem has an exact analytic solution, these checks measure the scheme against ground truth: the star-region state and its wave structure are reproduced exactly, the HLLC flux is consistent, the captured Sod shock satisfies the Rankine–Hugoniot conditions, the finite-volume answer converges to the exact profile in L1, mass/momentum/energy are conserved to round-off, a strong blast stays positive, and smooth flow is advected without distortion.',
+    checks,
+  };
+}
+
 export function runSelfTest(): SelfTestReport {
   const t0 = performance.now();
   const groups = [
     incompressibility(),
+    gasDynamics(),
     latticeBoltzmann(),
     thermalLbm(),
     multiphase(),

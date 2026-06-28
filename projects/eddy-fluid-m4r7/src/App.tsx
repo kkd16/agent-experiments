@@ -6,6 +6,7 @@ import { SpectraLab } from './ui/SpectraLab';
 import { KineticLab } from './ui/KineticLab';
 import { ThermalLab } from './ui/ThermalLab';
 import { PhaseLab } from './ui/PhaseLab';
+import { GasLab } from './ui/GasLab';
 import './App.css';
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
   const onKinetic = route.startsWith('/kinetic');
   const onThermal = route.startsWith('/thermal');
   const onPhase = route.startsWith('/phase');
+  const onGas = route.startsWith('/gas');
 
   return (
     <div className="app">
@@ -29,8 +31,14 @@ export default function App() {
           </span>
         </a>
         <nav>
-          <a className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onThermal && !onPhase ? 'active' : ''} href="#/">
+          <a
+            className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onThermal && !onPhase && !onGas ? 'active' : ''}
+            href="#/"
+          >
             Studio
+          </a>
+          <a className={onGas ? 'active' : ''} href="#/gas">
+            Gas
           </a>
           <a className={onKinetic ? 'active' : ''} href="#/kinetic">
             Kinetic
@@ -65,6 +73,8 @@ export default function App() {
           <ThermalLab />
         ) : onPhase ? (
           <PhaseLab />
+        ) : onGas ? (
+          <GasLab />
         ) : (
           <Studio />
         )}
