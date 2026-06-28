@@ -3,8 +3,8 @@ import { TEST_CASES, runSuite } from '../lang/testSuite.ts'
 import type { TestResult } from '../lang/testSuite.ts'
 import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
-import { runOptimizerFuzz, runSpecConstrFuzz } from '../lang/optFuzz.ts'
-import type { OptFuzzResult, SpecConstrFuzzResult } from '../lang/optFuzz.ts'
+import { runOptimizerFuzz, runSpecConstrFuzz, runSroaFuzz } from '../lang/optFuzz.ts'
+import type { OptFuzzResult, SpecConstrFuzzResult, SroaFuzzResult } from '../lang/optFuzz.ts'
 import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
 import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
@@ -13,6 +13,7 @@ export default function Tests() {
   const [propResults, setPropResults] = useState<PropSelfResult[] | null>(null)
   const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
   const [scFuzz, setScFuzz] = useState<SpecConstrFuzzResult | null>(null)
+  const [sroaFuzz, setSroaFuzz] = useState<SroaFuzzResult | null>(null)
   const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
@@ -24,6 +25,7 @@ export default function Tests() {
       setPropResults(runPropertySuite())
       setOptFuzz(runOptimizerFuzz())
       setScFuzz(runSpecConstrFuzz())
+      setSroaFuzz(runSroaFuzz())
       setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
@@ -227,6 +229,47 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {scFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sroaFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              SROA fuzz — scalar-replacement / dictionary-devirtualization soundness{' '}
+              <span className={`tests-group-count ${sroaFuzz.passed === sroaFuzz.total ? '' : 'bad'}`}>
+                {sroaFuzz.passed}/{sroaFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {sroaFuzz.total} <em>randomly generated</em> programs that bind a 2- or 3-field{' '}
+              <strong>record</strong> — atoms and small functions, the exact shape a type-class{' '}
+              <strong>dictionary</strong> takes after elaboration — and project its fields from many
+              sites, half of them across a hot loop. {sroaFuzz.fired} triggered Aether 24.0{' '}
+              <strong>SROA</strong> ({sroaFuzz.eliminated} left the record entirely dead, so the
+              allocation was dropped), and each proves it sound three ways: the{' '}
+              <strong>devirtualized VM result equals the naive VM result</strong>, that value{' '}
+              <strong>re-appears on the JavaScript backend</strong>, and the rewritten program took{' '}
+              <strong>no more VM steps</strong> than the naive one. Across the batch it erased{' '}
+              <strong>{sroaFuzz.stepsSaved.toLocaleString()} VM steps</strong> (best single program:{' '}
+              {sroaFuzz.bestSavingPct}% fewer). Deterministic, so this badge is stable.
+            </p>
+            {sroaFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {sroaFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">

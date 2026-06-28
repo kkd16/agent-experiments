@@ -309,3 +309,138 @@ export function runSpecConstrFuzz(runs = 150, seed = 0x5ec04ec0): SpecConstrFuzz
 
   return { total: passed + failures.length, passed, fired, bestSavingPct, stepsSaved, failures }
 }
+
+// ---------------------------------------------------------------------------
+// a THIRD generator, dense in the shapes Aether 24.0 SROA crushes: a `let`-bound
+// record (the exact shape a type-class *dictionary* takes after elaboration)
+// whose fields — atoms and small functions — are projected from many sites,
+// often inside a hot loop. SROA devirtualizes each `r.f` to the field value and,
+// when the record is left dead, drops the allocation entirely.
+// ---------------------------------------------------------------------------
+
+/** an Int expression over exactly the variables in `ctx` (never inventing one,
+ *  unlike `genField`, which assumes a loop counter `i`) — so the direct,
+ *  loop-free shapes below stay well-typed. */
+function genIE(rng: Rng, ctx: string[], d: number): string {
+  if (d <= 0 || ctx.length === 0 || rng() < 0.4) {
+    return ctx.length > 0 && rng() < 0.6 ? pick(rng, ctx) : String(1 + int(rng, 6))
+  }
+  return `(${genIE(rng, ctx, d - 1)} ${pick(rng, ARITH)} ${genIE(rng, ctx, d - 1)})`
+}
+
+/** a `let`-bound record projected from several sites — half the time across the
+ *  body of a self-recursive loop (so each field is read every iteration, the
+ *  multi-use case the single-use value inliner can't touch). Fields are a mix of
+ *  atoms (literals / outer variables) and small one-argument functions — exactly
+ *  a dictionary of methods. */
+function genSroaProgram(rng: Rng): string {
+  const useOuter = rng() < 0.5
+  const outerCtx = useOuter ? ['p', 'q'] : []
+  const outer = useOuter ? `let p = ${1 + int(rng, 8)} in let q = ${1 + int(rng, 8)} in\n` : ''
+  const nf = 2 + int(rng, 2) // 2 or 3 fields
+  const labels = ['a', 'b', 'c'].slice(0, nf)
+  const kinds = labels.map(() => (rng() < 0.6 ? 'int' : 'fn'))
+  const defs = labels.map((L, i) => {
+    if (kinds[i] === 'int') {
+      const v = outerCtx.length > 0 && rng() < 0.5 ? pick(rng, outerCtx) : String(1 + int(rng, 5))
+      return `${L} = ${v}`
+    }
+    return `${L} = fn z -> ${genIE(rng, ['z', ...outerCtx], 2)}`
+  })
+  const record = `{ ${defs.join(', ')} }`
+  const use = (i: number, ctx: string[]): string =>
+    kinds[i] === 'int' ? `r.${labels[i]}` : `(r.${labels[i]} ${genIE(rng, ctx, 1)})`
+
+  if (rng() < 0.5) {
+    // a hot loop reading the fields every iteration
+    const uses = labels.map((_, i) => use(i, ['n', ...outerCtx])).join(' + ')
+    const k = 3 + int(rng, 8)
+    return (
+      outer +
+      `let r = ${record} in\n` +
+      `let rec go = fn n -> fn acc ->\n` +
+      `  if n <= 0 then acc else go (n - 1) (acc + ${uses})\n` +
+      `in go ${k} 0`
+    )
+  }
+  // a direct combination of several projections
+  const m = 2 + int(rng, 3)
+  const parts = Array.from({ length: m }, () => use(int(rng, nf), outerCtx))
+  return outer + `let r = ${record} in\n(${parts.join(' + ')})`
+}
+
+export interface SroaFuzzResult {
+  total: number
+  passed: number
+  /** how many generated programs actually triggered SROA */
+  fired: number
+  /** how many of those left the record entirely dead (allocation removed) */
+  eliminated: number
+  bestSavingPct: number
+  stepsSaved: number
+  failures: { code: string; detail: string }[]
+}
+
+/** The Aether 24.0 differential fuzzer: random `let`-bound records (the post-
+ *  elaboration shape of a type-class dictionary) projected from many sites, each
+ *  proving SROA is sound — the devirtualized program equals the naive one on the
+ *  VM and on the JS backend, and never takes more VM steps. Deterministic given
+ *  the seed; pure logic, so it also runs head-less under Node. */
+export function runSroaFuzz(runs = 150, seed = 0x5404eccc): SroaFuzzResult {
+  const rng = makeRng(seed)
+  let passed = 0
+  let fired = 0
+  let eliminated = 0
+  let bestSavingPct = 0
+  let stepsSaved = 0
+  const failures: { code: string; detail: string }[] = []
+
+  for (let i = 0; i < runs; i++) {
+    const code = genSroaProgram(rng)
+    const off = runPipeline(code, { optimize: false })
+    const on = runPipeline(code, { optimize: true })
+
+    if (off.error || on.error || !on.optimizedCoreAst) continue // generator slip — skip
+    passed++ // provisionally; demoted below on any disagreement
+
+    const vmOff = off.run?.result ? valueToString(off.run.result) : '()'
+    const vmOn = on.run?.result ? valueToString(on.run.result) : '()'
+    const js = ((): string => {
+      try {
+        const r = runJsModule(compileToJs(on.optimizedCoreAst!).full)
+        return r.error ? `error: ${r.error}` : (r.result ?? '()')
+      } catch (e) {
+        return `threw: ${e instanceof Error ? e.message : String(e)}`
+      }
+    })()
+
+    const stepsOff = off.run?.steps ?? 0
+    const stepsOn = on.run?.steps ?? 0
+    const agree = vmOn === vmOff && js === vmOff
+    const monotone = stepsOn <= stepsOff
+
+    if (!agree || !monotone) {
+      passed--
+      if (failures.length < 5) {
+        const detail = !agree
+          ? `disagree: unopt-VM ${vmOff}, opt-VM ${vmOn}, opt-JS ${js}`
+          : `steps rose: ${stepsOff} → ${stepsOn}`
+        failures.push({ code: code.trim(), detail })
+      }
+      continue
+    }
+
+    const records = on.optimization?.sroaRecords ?? []
+    if (records.length > 0) {
+      fired++
+      if (records.some((r) => r.eliminated)) eliminated++
+    }
+    if (stepsOff > 0) {
+      stepsSaved += stepsOff - stepsOn
+      const savingPct = Math.round(((stepsOff - stepsOn) / stepsOff) * 100)
+      if (savingPct > bestSavingPct) bestSavingPct = savingPct
+    }
+  }
+
+  return { total: passed + failures.length, passed, fired, eliminated, bestSavingPct, stepsSaved, failures }
+}

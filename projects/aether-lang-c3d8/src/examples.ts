@@ -1446,6 +1446,58 @@ let rec loop = fn s ->
 loop (Acc 600 0 0)
 `,
   },
+  {
+    id: 'sroa',
+    title: 'Scalar replacement / dictionary devirtualization',
+    blurb: 'Open the Optimizer tab: a shared config record and a type-class dictionary both dissolve into direct code.',
+    visual: false,
+    code: `// Aether 24.0 — SCALAR REPLACEMENT OF AGGREGATES (open the "Optimizer" tab).
+//
+// A record bound by 'let' and used MORE THAN ONCE sits in an awkward spot for the
+// optimizer: it is a value, so it never diverges or repeats work — but it is not
+// an ATOM, so copying it into each use would duplicate the allocation. The single-
+// use inliner therefore leaves it alone, and every 'r.field' stays a load PLUS a
+// projection at runtime, with the cell kept live on the heap.
+//
+// SROA (scalar replacement of aggregates) closes that gap: it rewrites each
+// projection 'r.field' straight to the field's VALUE, and once no use of 'r'
+// remains it drops the allocation entirely — the aggregate is replaced by scalars.
+//
+// The headline is DICTIONARY SPECIALISATION. A constrained function elaborates to
+// one that takes a dictionary record of methods; when the SAME dictionary feeds
+// several call sites it is shared in a single 'let', so the inliner declines it and
+// 'd.disp x' never devirtualizes. SROA collapses 'd.disp' to the method itself, so
+// the indirect, dictionary-passing call becomes a DIRECT call — the way real
+// compilers make type classes cost nothing — even across many uses.
+//
+// It is monotone by construction: an atom field is free to duplicate and a single
+// load never costs more than a load-then-project, and a function field only moves
+// (it is never built more often than before), so VM steps can only fall. It emits
+// ordinary core, so the bytecode VM, the JavaScript backend AND the WebAssembly
+// backend all run the scalarised program and the VM ≡ JS ≡ WASM checks re-prove the
+// answer is unchanged.
+//
+// Open the "Optimizer" tab: the rewrite table lists 'sroa', a "Scalar replacement"
+// section names each record and how many projections it devirtualized, and "Measure
+// VM steps" shows the saving (~18% here). Flip "show before" to watch BOTH the 'cfg'
+// record and the 'Disp Int' dictionary disappear — the optimized core has neither.
+
+// A type class whose single dictionary is SHARED across the three 'tag' calls.
+class Disp a where disp : a -> String in
+instance Disp Int where disp = fn n -> show n in
+let tag = fn x -> disp x ^ "/" ^ disp x in
+
+// A plain config record, read on every iteration of a hot loop.
+let cfg = { scale = 3, bias = 7 } in
+let rec ramp = fn n -> fn acc ->
+  if n == 0 then acc
+  else ramp (n - 1) (acc + cfg.scale * n + cfg.bias) in
+
+// 'cfg.scale'/'cfg.bias' fold to 3/7 inside the loop (no record left); 'disp'
+// devirtualizes to 'show' at all six call sites (no dictionary left).
+(ramp 50 0, tag 7, tag 42, tag 99)
+`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

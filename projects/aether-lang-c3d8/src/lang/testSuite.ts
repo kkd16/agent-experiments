@@ -949,6 +949,64 @@ f 5`,
 (g 3, g (0 - 4))`,
     expected: '(33, 18)',
   },
+
+  // ---- scalar replacement of aggregates / dictionary devirtualization (Aether 24.0) ----
+  // A multi-use `let`-bound record's field projections are rewritten to the field
+  // values directly, so the cell devirtualizes (and, once dead, is dropped). Each
+  // row runs the optimized program on the VM and re-runs the *unoptimized* core on
+  // the JS backend; a green row proves SROA preserved the result (and effects).
+  {
+    group: 'sroa',
+    name: 'a record projected many times folds to a constant (no allocation)',
+    code: 'let p = { x = 3, y = 4 } in p.x * p.x + p.y * p.y',
+    expected: '25',
+  },
+  {
+    group: 'sroa',
+    name: 'a shared dictionary devirtualizes to a direct call',
+    code: `class Disp a where disp : a -> String in
+instance Disp Int where disp = fn n -> show n in
+let twice = fn x -> disp x ^ disp x in (twice 7, twice 9)`,
+    expected: '("77", "99")',
+  },
+  {
+    group: 'sroa',
+    name: 'a config record read every loop iteration is scalarised',
+    code: 'let cfg = { k = 2, b = 1 } in let rec go = fn n -> fn acc -> if n == 0 then acc else go (n - 1) (acc + cfg.k * n + cfg.b) in go 10 0',
+    expected: '120',
+  },
+  {
+    group: 'sroa',
+    name: 'a record used whole as well as projected stays correct',
+    code: 'let r = { a = 1, b = 2 } in let pick = fn rr -> rr.a + rr.b in pick r + r.a',
+    expected: '4',
+  },
+  {
+    group: 'sroa',
+    name: 'capture-avoiding: a shadowed field variable is not stolen',
+    code: 'let s = 100 in let r = { f = s } in let g = (let s = 7 in r.f) in (g, r.f)',
+    expected: '(100, 100)',
+  },
+  {
+    group: 'sroa',
+    name: 'an effectful field is built (its effect runs) even if unused',
+    code: 'let r = { a = (print "x"; 1), b = 2 } in r.b + r.b',
+    expected: '4',
+  },
+  {
+    group: 'sroa',
+    name: 'a function field projected twice is not duplicated (still correct)',
+    code: 'let r = { f = fn z -> z * z, k = 3 } in (r.f 4) + (r.f 5) + r.k',
+    expected: '44',
+  },
+  {
+    group: 'sroa',
+    name: 'a dictionary threaded through a recursive fold devirtualizes',
+    code: `class Sz a where sz : a -> Int in
+instance Sz Int where sz = fn n -> n + 1 in
+let rec sm = fn xs -> match xs with [] -> 0 | h :: t -> sz h + sm t in sm [10, 20, 30]`,
+    expected: '63',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

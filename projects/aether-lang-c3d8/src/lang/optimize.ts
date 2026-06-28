@@ -98,6 +98,10 @@ export interface OptimizeStats {
   /** one entry per eliminator the case-of-case pass pushed into an `if`/`match`
    *  producer's branches (Aether 21.0) — for the Optimizer panel. */
   commutes: { frame: string; producer: string; branches: number; exposed: number }[]
+  /** one entry per `let`-bound record whose field projections the scalar-
+   *  replacement-of-aggregates pass devirtualized to the field values themselves
+   *  (Aether 24.0) — the dictionary-specialisation win, for the Optimizer panel. */
+  sroaRecords: { record: string; fields: string[]; sites: number; eliminated: boolean }[]
   /** decision-tree compilation statistics (Aether 12.0) */
   dt: DtStats
   /** one entry per `match` rewritten into a decision tree (for the panel) */
@@ -208,6 +212,12 @@ let DEADPARAMS: { name: string; dropped: string[]; recursive: boolean }[] = []
 // the Optimizer panel. Reset per run.
 let COMMUTES: { frame: string; producer: string; branches: number; exposed: number }[] = []
 
+// One entry per `let`-bound record whose field projections the scalar-replacement-
+// of-aggregates pass devirtualized this run (Aether 24.0). Module-level for the
+// same reason as `freshCounter` — optimization is synchronous and single-shot —
+// and surfaced in the Optimizer panel. Reset per run.
+let SROAS: { record: string; fields: string[]; sites: number; eliminated: boolean }[] = []
+
 // Whether the multi-use call-site inliner is active. It melts *source-level*
 // abstraction, so it runs in the main optimization phase but is switched off for
 // the post-decision-tree cleanup fixpoint — that phase is reserved for copy-
@@ -240,6 +250,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   SPECCONSTRS = []
   DEADPARAMS = []
   COMMUTES = []
+  SROAS = []
   ALLOW_FN_INLINE = true
   const passes: Record<string, number> = {}
   const bump = (name: string): void => {
@@ -347,6 +358,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       specConstrs: SPECCONSTRS,
       deadParams: DEADPARAMS,
       commutes: COMMUTES,
+      sroaRecords: SROAS,
       dt,
       decisionTrees,
       termination: TERMINATION,
@@ -579,6 +591,21 @@ function reduceLet(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
     return subst(e.name, e.value, e.body)
   }
 
+  // Scalar replacement of aggregates (Aether 24.0). A *multi-use* `let`-bound
+  // record literal is never inlined by the value rule above (it is a value but
+  // not an atom, and `uses > 1`), so its field projections `x.f` stay live — a
+  // load + a projection per use — and the cell stays allocated. This pass
+  // devirtualizes each projection to the field's *value* directly, which removes
+  // the projection (and, once every use is gone, the allocation too). Its headline
+  // is dictionary specialisation: a `Disp a => …` function's shared dictionary
+  // `{ disp = show }` collapses so `d.disp x` becomes the direct call `show x`,
+  // even when the dictionary is reused across many call sites. Monotone by
+  // construction (see `scalarReplaceRecord`), so it ships to all three backends.
+  if (e.value.kind === 'record') {
+    const sroa = scalarReplaceRecord(e, bump)
+    if (sroa) return sroa
+  }
+
   // Multi-use call-site inlining (Aether 15.0). A *small, non-recursive* function
   // bound here is worth copying into each of its *saturated call sites* — that
   // removes the closure-application + call overhead the site pays, and exposes the
@@ -700,6 +727,293 @@ function occursUnderLambda(name: string, e: Expr): boolean {
     }
   }
   return go(e, false)
+}
+
+// ---------------------------------------------------------------------------
+// Scalar replacement of aggregates — record-field SROA (Aether 24.0)
+// ---------------------------------------------------------------------------
+//
+// A `let x = { f1 = v1, … } in body` binds an immutable record. Its single-use
+// case is already handled (the value rule copies the whole record into its sole
+// occurrence, then `reduceField` projects it). The MULTI-use case is the gap this
+// pass fills: every `x.fi` then stays a *load + a projection* at runtime and the
+// cell stays allocated. We rewrite `x.fi` to the field's value `vi` directly,
+// "replacing the aggregate with scalars".
+//
+// The motivating instance is DICTIONARY SPECIALISATION. A constrained function
+// `let twice = fn d -> fn x -> d.disp x ^ d.disp x` applied at one type elaborates
+// to `twice {disp = show} 7` — and after the fixpoint inlines `twice`, the body is
+// `({disp=show}.disp 7) ^ …` *only when the dictionary is single-use*. When the
+// same dictionary feeds several call sites it is shared in one `let`, the inliner
+// declines it (a value, multi-use), and `d.disp x` never devirtualizes. This pass
+// closes that: `d.disp` collapses to `show`, so the indirect, dictionary-passing
+// call becomes a direct `show x` even across many uses.
+//
+// MONOTONICITY (the harness's "VM steps never rise" invariant) holds by
+// construction. Two field shapes are eligible:
+//   • an ATOM field (a var or literal) — duplicating it is free and effect-free,
+//     and a single load is never costlier than a load-then-project, so rewriting
+//     any number of `x.fi` is a strict (weak) win whether or not the record
+//     survives afterwards.
+//   • a non-atom VALUE field (e.g. a λ) — eligible only when (a) `x` is used
+//     *solely* through projections (so substituting them all leaves the record
+//     dead and it is dropped) and (b) that field is projected at most once (so its
+//     single closure moves to the call site rather than being built both in the
+//     record and inline). Either way the field is built exactly once, minus a
+//     projection — never more often.
+// Substitution is capture-safe: it stops descending into any binder that re-binds
+// `x` (an inner `x` is a different value there) or that re-binds a free variable
+// of the field it would substitute (which would capture it).
+
+/** Count how `x` is used in `e`: per-label projection counts (`x.label`) and the
+ *  number of *whole* uses (a bare `x` not serving as the record of a projection).
+ *  Respects shadowing — a binder that re-binds `x` cuts the walk. */
+function classifyRecordUses(x: string, e: Expr): { proj: Map<string, number>; whole: number } {
+  const proj = new Map<string, number>()
+  let whole = 0
+  const go = (n: Expr, live: boolean): void => {
+    if (!live) return
+    switch (n.kind) {
+      case 'var':
+        if (n.name === x) whole++
+        return
+      case 'field':
+        if (n.record.kind === 'var' && n.record.name === x) {
+          proj.set(n.label, (proj.get(n.label) ?? 0) + 1)
+          return
+        }
+        go(n.record, live)
+        return
+      case 'app':
+        go(n.fn, live)
+        go(n.arg, live)
+        return
+      case 'lambda':
+        go(n.body, n.param === x ? false : live)
+        return
+      case 'let':
+        go(n.value, n.recursive && n.name === x ? false : live)
+        go(n.body, n.name === x ? false : live)
+        return
+      case 'letrec': {
+        const shadowed = n.bindings.some((b) => b.name === x)
+        for (const b of n.bindings) go(b.value, shadowed ? false : live)
+        go(n.body, shadowed ? false : live)
+        return
+      }
+      case 'if':
+        go(n.cond, live)
+        go(n.then, live)
+        go(n.else, live)
+        return
+      case 'binop':
+        go(n.left, live)
+        go(n.right, live)
+        return
+      case 'unop':
+        go(n.operand, live)
+        return
+      case 'seq':
+        go(n.first, live)
+        go(n.rest, live)
+        return
+      case 'list':
+      case 'tuple':
+        for (const el of n.elements) go(el, live)
+        return
+      case 'record':
+        for (const f of n.fields) go(f.value, live)
+        return
+      case 'recordUpdate':
+        go(n.record, live)
+        for (const f of n.fields) go(f.value, live)
+        return
+      case 'match': {
+        go(n.scrutinee, live)
+        for (const c of n.cases) {
+          const bound = new Set<string>()
+          patternVars(c.pattern, bound)
+          const l2 = bound.has(x) ? false : live
+          if (c.guard) go(c.guard, l2)
+          go(c.body, l2)
+        }
+        return
+      }
+      case 'typedecl':
+        go(n.body, live)
+        return
+      case 'classdecl':
+        go(n.body, live)
+        return
+      case 'instancedecl':
+        for (const m of n.methods) go(m.value, live)
+        go(n.body, live)
+        return
+      default:
+        return // literals
+    }
+  }
+  go(e, true)
+  return { proj, whole }
+}
+
+/** Replace each projection `x.label` (for `label` in `chosen`) with the chosen
+ *  field value, capture-avoiding. `fvByLabel` is the precomputed free-var set of
+ *  each chosen value; substitution of a label stops under any binder that would
+ *  capture one of those vars (or that re-binds `x`). Returns the rewritten body
+ *  and the number of projections actually replaced. */
+function substProjections(
+  x: string,
+  chosen: Map<string, Expr>,
+  fvByLabel: Map<string, Set<string>>,
+  body: Expr,
+): { expr: Expr; n: number } {
+  let n = 0
+  // Narrow `active` when entering a binder: drop `x` entirely if the binder
+  // re-binds it; drop any label whose value's free vars clash with a bound name.
+  const restrict = (active: Map<string, Expr>, bound: Iterable<string>): Map<string, Expr> => {
+    const bset = bound instanceof Set ? bound : new Set(bound)
+    if (bset.has(x)) return new Map()
+    let out = active
+    for (const [label] of active) {
+      const fv = fvByLabel.get(label)!
+      let clash = false
+      for (const b of bset) {
+        if (fv.has(b)) {
+          clash = true
+          break
+        }
+      }
+      if (clash) {
+        if (out === active) out = new Map(active)
+        out.delete(label)
+      }
+    }
+    return out
+  }
+  const go = (e: Expr, active: Map<string, Expr>): Expr => {
+    if (active.size === 0) return e
+    switch (e.kind) {
+      case 'field':
+        if (e.record.kind === 'var' && e.record.name === x && active.has(e.label)) {
+          n++
+          return active.get(e.label)!
+        }
+        return { ...e, record: go(e.record, active) }
+      case 'var':
+      case 'int':
+      case 'float':
+      case 'bool':
+      case 'str':
+      case 'unit':
+        return e
+      case 'app':
+        return { ...e, fn: go(e.fn, active), arg: go(e.arg, active) }
+      case 'lambda':
+        return { ...e, body: go(e.body, restrict(active, [e.param])) }
+      case 'let': {
+        const av = e.recursive ? restrict(active, [e.name]) : active
+        const ab = restrict(active, [e.name])
+        return { ...e, value: go(e.value, av), body: go(e.body, ab) }
+      }
+      case 'letrec': {
+        const a = restrict(active, e.bindings.map((b) => b.name))
+        return {
+          ...e,
+          bindings: e.bindings.map((b) => ({ name: b.name, value: go(b.value, a) })),
+          body: go(e.body, a),
+        }
+      }
+      case 'if':
+        return { ...e, cond: go(e.cond, active), then: go(e.then, active), else: go(e.else, active) }
+      case 'binop':
+        return { ...e, left: go(e.left, active), right: go(e.right, active) }
+      case 'unop':
+        return { ...e, operand: go(e.operand, active) }
+      case 'seq':
+        return { ...e, first: go(e.first, active), rest: go(e.rest, active) }
+      case 'list':
+      case 'tuple':
+        return { ...e, elements: e.elements.map((el) => go(el, active)) }
+      case 'record':
+        return { ...e, fields: e.fields.map((f) => ({ label: f.label, value: go(f.value, active) })) }
+      case 'recordUpdate':
+        return {
+          ...e,
+          record: go(e.record, active),
+          fields: e.fields.map((f) => ({ label: f.label, value: go(f.value, active) })),
+        }
+      case 'match':
+        return {
+          ...e,
+          scrutinee: go(e.scrutinee, active),
+          cases: e.cases.map((c) => {
+            const bound = new Set<string>()
+            patternVars(c.pattern, bound)
+            const a = restrict(active, bound)
+            return {
+              pattern: c.pattern,
+              guard: c.guard ? go(c.guard, a) : undefined,
+              body: go(c.body, a),
+            }
+          }),
+        }
+      case 'typedecl':
+        return { ...e, body: go(e.body, active) }
+      case 'classdecl':
+        return { ...e, body: go(e.body, active) }
+      case 'instancedecl':
+        return {
+          ...e,
+          methods: e.methods.map((m) => ({ ...m, value: go(m.value, active) })),
+          body: go(e.body, active),
+        }
+      default:
+        return e
+    }
+  }
+  return { expr: go(body, chosen), n }
+}
+
+function scalarReplaceRecord(e: Extract<Expr, { kind: 'let' }>, bump: Bump): Expr | null {
+  const rec = e.value
+  if (rec.kind !== 'record' || rec.fields.length === 0) return null
+  const x = e.name
+  const { proj, whole } = classifyRecordUses(x, e.body)
+  if (proj.size === 0) return null // nothing projected — leave it for dead-let/inlining
+
+  // The record can be fully dissolved only when `x` is *never* used whole and every
+  // field is eligible (atom, or a value projected ≤ once) — then substituting all
+  // projections leaves `x` dead and the allocation is dropped. That gate also makes
+  // non-atom field substitution monotone (the closure moves rather than duplicating).
+  const allInlinable = rec.fields.every(
+    (f) => isAtom(f.value) || (isValue(f.value) && (proj.get(f.label) ?? 0) <= 1),
+  )
+  const fullElim = whole === 0 && allInlinable
+
+  const chosen = new Map<string, Expr>()
+  const fvByLabel = new Map<string, Set<string>>()
+  for (const f of rec.fields) {
+    const count = proj.get(f.label) ?? 0
+    if (count === 0) continue
+    const eligible = isAtom(f.value) || (fullElim && isValue(f.value) && count <= 1)
+    if (!eligible) continue
+    chosen.set(f.label, f.value)
+    fvByLabel.set(f.label, freeVars(f.value))
+  }
+  if (chosen.size === 0) return null
+
+  const { expr: newBody, n } = substProjections(x, chosen, fvByLabel, e.body)
+  if (n === 0) return null
+  for (let i = 0; i < n; i++) bump('sroa')
+
+  const remaining = countUses(x, newBody)
+  const eliminated = remaining === 0 && isPure(rec)
+  SROAS.push({ record: x, fields: [...chosen.keys()], sites: n, eliminated })
+  // Record fully dead and pure ⇒ drop the allocation outright; otherwise keep the
+  // binding (it is still used whole, or carries an effect) with its projections
+  // devirtualized. Either way the rewrite has fired and strictly removed work.
+  return eliminated ? newBody : { ...e, body: newBody }
 }
 
 // ---------------------------------------------------------------------------
