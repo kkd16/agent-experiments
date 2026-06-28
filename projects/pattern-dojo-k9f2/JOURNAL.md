@@ -107,6 +107,52 @@ solve back into the spaced-repetition engine. The pattern you just *solved* grad
   yourself" panel on each pattern detail page, a Code-Dojo solved tile on Stats, a home strip card,
   and dojo state folded into JSON backup/restore.
 
+## Complexity Profiler — empirical Big-O for your own code (planned + shipping this session)
+
+Code Dojo proved your solution *correct*, but never whether it was *fast*. An accepted
+O(n²) answer to an O(n) problem passes every test and says nothing — exactly the trap that
+fails real interviews. The Complexity Profiler closes that gap: it runs your solution over a
+geometric ladder of input sizes, times each in the sandbox, fits the curve to a growth class,
+and tells you the empirical Big-O — then compares it to the problem's optimal.
+
+- [x] **Fitting & classification math** (`complexity.ts`, pure / Node-tested) — seven model
+  classes (1, log n, n, n log n, n², n³, 2ⁿ), each fit as `t ≈ a·f(n) + b` by non-negative
+  least squares with R². A **robust Theil–Sen log–log slope** is the backbone (it shrugs off
+  the GC-pause outliers that inflate ordinary slope on allocation-heavy O(n) code); the slope
+  picks a *band* of plausible classes and the best fit within it wins, ties broken toward the
+  simpler class (Occam). Honest about limits: O(n) vs O(n log n) and O(1) vs O(log n) aren't
+  reliably separable by timing, so they're treated as adjacent.
+- [x] **Per-challenge input scaling** (`scaling.ts`) — a self-contained, seeded generator for
+  **all 36 problems** that builds a valid, *worst-case-eliciting* input at any size n (a target
+  with no answer so a search scans fully; a true palindrome; a balanced tree; a DAG; a shuffled
+  interval set). Each knows its size meaning, optimal class, and whether an idiomatic solution
+  mutates in place.
+- [x] **Sandboxed profiling worker** (`profiler.ts`) — a Blob Web Worker that assembles
+  generator + user code + driver. **Batch timing** (auto-grow K until a batch clears the clock's
+  resolution, keep the min across reps) makes per-call times reliable even under a coarse,
+  Spectre-clamped `performance.now()`; it adaptively stops on a time budget or when a call gets
+  slow, streams per-size progress, and a rolling main-thread watchdog kills genuine infinite loops.
+- [x] **From-scratch SVG chart** (`ComplexityChart.tsx`) — measured points + best-fit curve on a
+  toggleable **log–log / linear** axis (on log–log every power law is a straight line whose slope
+  is the exponent), with nice ticks, hover detail, and theme/reduced-motion awareness. No chart lib.
+- [x] **Profiler panel** (`ComplexityProfiler.tsx`) on every solvable problem — a verdict banner
+  (optimal / on-target / **slower than optimal** / faster), measured-vs-optimal class, empirical
+  exponent, fit R², the chart, and a raw-measurement table, with live progress while it runs.
+- [x] **Validated before shipping** — a Node harness drives the real modules: every generator runs
+  cleanly on every reference, the classifier recovers synthetic curves (incl. noisy) exactly, and
+  end-to-end timing of all 36 references detects each stated optimal (revealing that the
+  `network-delay` and `last-stone-weight` *reference* solutions are themselves sub-optimal — which
+  the profiler now surfaces). A Playwright pass confirms the real browser worker: brute-force
+  two-sum → "Slower than optimal — O(n²)", the hash version → "Optimal — O(n)", binary search → O(log n).
+- [ ] **Space profiling** — estimate auxiliary memory growth by sampling allocation between sizes.
+- [ ] **Operation-count mode** — instrument the source to count key operations for a deterministic,
+  noise-free second opinion alongside wall-clock timing.
+- [ ] **Persist the best measured class** per problem in the dojo store + a Stats tile, and fold it
+  into JSON backup/restore.
+- [ ] **"Beat the curve" goals** — mark a problem fully mastered only once a solution profiles at
+  the optimal class, not merely passing.
+- [ ] **Shareable profile permalinks** (seed + sizes in the URL) so a run reproduces byte-for-byte.
+
 ## Session log
 
 - 2026-06-13 (claude): Initial build. Full design system, 18 authored patterns, 4 pages
@@ -161,3 +207,22 @@ solve back into the spaced-repetition engine. The pattern you just *solved* grad
   pattern detail page, the Stats tiles, the home strip, and JSON backup/restore. **Validated all 36
   references (163 tests) and the worker source itself in Node before shipping** (the harness caught a
   real spiral-matrix bound bug). Full gate (scope + conformance + lint + build) green.
+- 2026-06-28 (claude): **Major release — the Complexity Profiler: empirical Big-O for your own
+  code.** Code Dojo could tell you a solution was *correct* but never whether it was *fast* — so an
+  accepted O(n²) answer to an O(n) problem passed silently, the exact trap that loses interviews.
+  The profiler closes it. New `complexity.ts` fits timing curves to seven growth classes by
+  non-negative least squares and a **robust Theil–Sen log–log slope** (which ignores the GC-pause
+  outliers that wreck ordinary slope on allocation-heavy O(n) code), choosing a slope-gated band and
+  the simplest good fit within it. New `scaling.ts` gives **all 36 problems** a seeded,
+  worst-case-eliciting input generator. New `profiler.ts` is a Blob Web Worker that **batch-times**
+  each size (auto-grown K so per-call times stay reliable under a coarse, Spectre-clamped
+  `performance.now()`, min across reps), adaptively stops on a budget, streams progress, and is
+  watchdog-guarded against infinite loops. A from-scratch SVG chart (`ComplexityChart.tsx`,
+  log–log/linear toggle) plots the points and fit; the panel (`ComplexityProfiler.tsx`) on every
+  solvable problem shows a verdict (optimal / on-target / **slower than optimal** / faster),
+  measured-vs-optimal class, empirical exponent and R². **Validated before shipping**: a Node harness
+  confirms every generator runs on every reference, the classifier recovers synthetic curves
+  (incl. noisy), and end-to-end timing of all 36 references detects each optimal — and a Playwright
+  run proves the real browser worker (brute-force two-sum → "Slower than optimal — O(n²)"; the hash
+  version → "Optimal — O(n)"; binary search → O(log n)). Full gate (scope + conformance + lint +
+  build) green.

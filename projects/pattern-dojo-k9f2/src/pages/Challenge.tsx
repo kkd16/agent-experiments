@@ -11,6 +11,7 @@ import { useStreak } from "../lib/streak";
 import CodeBlock from "../components/CodeBlock";
 import { Difficulty } from "../components/ui";
 import CodeEditor from "../components/CodeEditor";
+import ComplexityProfiler from "../components/ComplexityProfiler";
 
 const STATUS_LABEL: Record<CaseResult["status"], string> = {
   pass: "Passed",
@@ -263,6 +264,8 @@ export default function Challenge({ id }: { id: string }) {
               </>
             )}
           </div>
+
+          <ComplexityProfiler ch={ch} code={code} color={pattern?.color} />
         </div>
       </div>
 
