@@ -46,10 +46,17 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   on a from-scratch HMAC-SHA512 (in `sha512.ts`); checked against the BIP-32 vectors.
 - `invalid.ts` — the invalid-curve attack: a broken oracle, small-order points on weak curves,
   and CRT key recovery, with the on-curve check shown to defeat it.
+- `bulletproofs.ts` — **Bulletproofs** (Bünz et al. 2018): a Fiat–Shamir transcript, NUMS
+  generator vectors, the **inner-product argument** (prover + a transparent recursive verifier
+  *and* an optimized single-multi-exponentiation verifier via the s-vector, pinned to agree), and
+  **aggregated logarithmic range proofs** — proving m values in [0,2ⁿ) in only 2·⌈log₂(nm)⌉+O(1)
+  group elements. Plus a full **confidential transaction**: a homomorphic kernel-excess balance
+  proof (Σin = Σout + fee) wrapped around one aggregated range proof — the Monero/Mimblewimble
+  structure, with an inflation attack shown to break it.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **59/59** checks across 20 subsystems).
+  (now **120/120** checks across 26 subsystems).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — sixteen labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-two labs plus an overview.
 
 ## Ideas / backlog
 
@@ -178,7 +185,65 @@ consistency.
 - [ ] **Aggregate-verify performance**: a multi-Miller-loop product cached across signatures.
 - [ ] **G2 subgroup check** via the ψ endomorphism (faster than the full r·P test).
 
+### Session 7 plan — Bulletproofs: from linear to logarithmic
+
+The Σ-protocol range proof in `sigma.ts` is honest but *linear*: one OR-proof per bit, so a 64-bit
+amount costs hundreds of group elements. This session ships the primitive that fixed that — and
+that real confidential-transaction systems (Monero, Mimblewimble) actually deploy — entirely from
+scratch on secp256k1, pinned by round-trip + soundness + dual-verifier checks.
+
+- [x] **`bulletproofs.ts` — Fiat–Shamir transcript.** A domain-separated running-hash transcript
+      (absorb points/scalars, squeeze non-zero F_n challenges, ratchet) so the interactive protocol
+      collapses to one offline-checkable object; prover and verifier walk it in lock-step.
+- [x] **NUMS generator vectors.** Independent `gv`, `hv` (+ `u`) with pairwise-unknown discrete
+      logs from domain-separated try-and-increment hash-to-curve, built once and cached/extended.
+- [x] **The inner-product argument.** Prove P = ⟨a,gv⟩ + ⟨b,hv⟩ + ⟨a,b⟩·u in ⌈log₂ n⌉ rounds by
+      folding the vectors under each challenge (one L, one R per round). Two verifiers — a
+      transparent recursive replay **and** an optimized single multi-exponentiation via the s-vector
+      sᵢ = Π xⱼ^{±1} — and the self-test pins them to agree.
+- [x] **Aggregated range proofs.** Encode "v ∈ [0,2ⁿ)" as the polynomial identity
+      t(X) = ⟨l(X), r(X)⟩ over the bit-vectors; commit to t₁,t₂; prove t̂ via the IPA. Aggregates
+      **m values into one proof** of size 2·⌈log₂(nm)⌉+4 points — a 64-bit proof in 16 elements
+      (≈20× smaller than the linear form), verified by the δ(y,z) commitment check + the IPA.
+- [x] **Confidential transaction.** A homomorphic **kernel-excess** balance proof (E = Σin − Σout
+      − fee·G proven to be Δr·H by a Schnorr PoK with base H) wrapped around one aggregated range
+      proof over the outputs — amounts stay hidden, money is conserved and non-negative. An
+      output-inflation attack is shown to break the balance.
+- [x] New **Bulletproofs** lab page: O(log) vs O(n) size comparison, an interactive range proof
+      (transparent ≡ optimized verifier, mauled-t̂ soundness), the folding argument drawn round by
+      round, and the confidential-transaction demo with a live attack toggle. Wired into nav +
+      Overview (cards renumbered, Self-Test → 23).
+- [x] **+14 self-test checks** (generators, IPA round-trip, dual-verifier agreement, range
+      round-trip + soundness, 4×16-bit aggregation, logarithmic-size assertion, confidential-tx
+      balance + inflation rejection); suite grew 106 → **120/120** across 26 subsystems.
+- [ ] **Vector-Pedersen / weighted inner product** (WIP) for the tighter BP+ (Bulletproofs+) proof.
+- [ ] **Batch range-proof verification** — fold many proofs' multi-exponentiations into one.
+- [ ] **arithmetic-circuit Bulletproof** (the general R1CS/constraint form, not just ranges).
+- [ ] **proof (de)serialization** to a compact byte string with a wire round-trip test.
+
 ## Session log
+
+- 2026-06-28 (claude): **Bulletproofs — logarithmic range proofs, from scratch.** One new engine
+  module, `bulletproofs.ts`, built in three layers on the existing Pedersen commitments. (1) A
+  domain-separated **Fiat–Shamir transcript** (absorb/squeeze/ratchet) and **NUMS generator
+  vectors** from try-and-increment hash-to-curve, cached and extended on demand. (2) The
+  **inner-product argument** — proving P = ⟨a,gv⟩+⟨b,hv⟩+⟨a,b⟩·u by folding the witness in half each
+  round (one L,R per round) — with **two** verifiers, a transparent recursive replay and an
+  optimized single multi-exponentiation via the s-vector, pinned to agree. (3) **Aggregated range
+  proofs**: the t(X)=⟨l(X),r(X)⟩ polynomial encoding of the bit constraints, the δ(y,z) commitment
+  check, and the IPA proving t̂ — m values in one 2·⌈log₂(nm)⌉+4-element proof (a 64-bit proof is
+  **721 B vs 14,561 B linear, ~20× smaller**, in 6 rounds). Plus a full **confidential transaction**:
+  a homomorphic kernel-excess balance proof around one aggregated range proof (the
+  Monero/Mimblewimble structure), with an output-inflation attack shown to break it. A new
+  **Bulletproofs** lab page visualizes the O(log)-vs-O(n) size gap, an interactive range proof (both
+  verifiers + mauled-t̂ soundness), the folding rounds drawn, and the confidential-tx demo with a
+  live attack toggle; wired into nav + Overview (Self-Test renumbered to 23). Self-test grew
+  106 → **120/120** across 26 subsystems (+14 Bulletproofs checks: generators, IPA round-trip,
+  dual-verifier agreement, range round-trip + two soundness checks, 4×16-bit aggregation,
+  logarithmic-size assertion, confidential-tx balance + inflation rejection). Validated end-to-end in
+  Node via a strip-types harness and a headless-Chromium render check (all panels paint, verdicts
+  green, the 64-bit proof shows 20.2× smaller, zero app JS errors). No new dependencies — still zero
+  crypto deps. Lint + build green via `verify-project.mjs`.
 
 - 2026-06-28 (claude): created from template. Built the full ECC engine (field, curve, real,
   sha256/hmac, secp256k1 with RFC 6979 ECDSA + BIP-340 Schnorr, dlog attacks) and verified it

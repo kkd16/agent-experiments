@@ -22,6 +22,7 @@ import { ZkPage } from './pages/ZkPage'
 import { KzgPage } from './pages/KzgPage'
 import { HashToCurvePage } from './pages/HashToCurvePage'
 import { Groth16Page } from './pages/Groth16Page'
+import { BulletproofsPage } from './pages/BulletproofsPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -47,6 +48,7 @@ const ROUTES = [
   { path: '/kzg', label: 'KZG' },
   { path: '/h2c', label: 'Hash-to-Curve' },
   { path: '/groth16', label: 'Groth16 SNARK' },
+  { path: '/bulletproofs', label: 'Bulletproofs' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -95,14 +97,15 @@ export default function App() {
       {base === '/kzg' && <KzgPage />}
       {base === '/h2c' && <HashToCurvePage />}
       {base === '/groth16' && <Groth16Page />}
+      {base === '/bulletproofs' && <BulletproofsPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
         Curvefield — every key, signature, and curve here is computed in your browser by a
         from-scratch engine: BigInt field arithmetic, hand-written SHA-256 / SHA-512 / RIPEMD-160,
         RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
-        signing, zero-knowledge Σ-protocols, and KZG polynomial commitments — zero crypto
-        dependencies.
+        signing, zero-knowledge Σ-protocols, KZG polynomial commitments, and logarithmic-size
+        Bulletproofs range proofs — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>

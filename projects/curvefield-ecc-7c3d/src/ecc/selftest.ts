@@ -94,6 +94,9 @@ import {
   ikmFromLabel,
 } from './blssig'
 import * as groth16 from './groth16'
+import * as bp from './bulletproofs'
+import { commit as pedersenCommit } from './sigma'
+import { randomScalar } from './rng'
 
 export interface TestCase {
   name: string
@@ -691,6 +694,51 @@ export function runSelfTest(): TestCase[] {
     check('Sigma', 'bit OR-proof (1) verifies', verifyBit(proveBit(1, 0x66n)), 'commitment to 1 proven a bit')
     const rp = proveRange(0b1011010n, 8)
     check('Sigma', 'range proof verifies (v ∈ [0,2⁸))', verifyRange(rp), '8 bit-proofs + V = Σ 2ⁱ·Bᵢ')
+  }
+
+  // ── 24b. Bulletproofs: logarithmic range proofs + inner-product argument ──
+  {
+    seedRng(31337)
+    // Independent NUMS generators.
+    const gens = bp.generators(8)
+    check('Bulletproofs', 'NUMS generators are on the curve', gens.gv.every((p) => secpCurve.isOnCurve(p)) && gens.hv.every((p) => secpCurve.isOnCurve(p)), '8+8 hash-to-curve generators')
+    check('Bulletproofs', 'generators g·, h·, u are distinct', gens.gv[0]!.x !== gens.hv[0]!.x && gens.gv[0]!.x !== gens.u!.x, 'pairwise-unknown discrete logs')
+
+    // The inner-product argument in isolation.
+    const a = Array.from({ length: 8 }, () => randomScalar(N) || 1n)
+    const b = Array.from({ length: 8 }, () => randomScalar(N) || 1n)
+    const c = a.reduce((acc, x, i) => (acc + x * b[i]) % N, 0n)
+    const msm = (s: bigint[], pts: typeof gens.gv) => s.reduce<ReturnType<typeof secpCurve.add>>((acc, si, i) => secpCurve.add(acc, secpCurve.multiply(si, pts[i])), null)
+    const Pipa = secpCurve.add(secpCurve.add(msm(a, gens.gv), msm(b, gens.hv)), secpCurve.multiply(c, gens.u))
+    const ip = bp.ipaProve(new bp.Transcript('selftest'), gens.gv, gens.hv, gens.u, a, b)
+    check('Bulletproofs', 'inner-product argument verifies (n=8 → 3 rounds)', bp.ipaVerifyNaive(new bp.Transcript('selftest'), gens.gv, gens.hv, gens.u, Pipa, ip) && ip.L.length === 3, '⟨a,b⟩ proven in ⌈log₂ n⌉ rounds')
+    check('Bulletproofs', 'naive and optimised IPA verifiers agree', bp.ipaVerifyFast(new bp.Transcript('selftest'), gens.gv, gens.hv, gens.u, Pipa, ip), 'recursive fold = single multi-exponentiation')
+    check('Bulletproofs', 'IPA rejects a wrong commitment', !bp.ipaVerifyNaive(new bp.Transcript('selftest'), gens.gv, gens.hv, gens.u, secpCurve.add(Pipa, gens.u), ip), 'soundness of the argument')
+
+    // A single 32-bit range proof.
+    const gamma = randomScalar(N) || 1n
+    const rp = bp.proveRange([1_000_000n], [gamma], 32)
+    check('Bulletproofs', 'range proof verifies (v ∈ [0,2³²))', bp.verifyRange(rp), '17 elements, not 32 OR-proofs')
+    check('Bulletproofs', 'fast verifier agrees with the transparent one', bp.verifyRange(rp, true), 's-vector multi-exp ≡ recursive replay')
+    check('Bulletproofs', 'commitment V opens to (v, γ)', secpCurve.add(rp.V[0], secpCurve.negate(pedersenCommit(1_000_000n, gamma))) === null, 'V = v·G + γ·H')
+    check('Bulletproofs', 'soundness: a tampered t̂ is rejected', !bp.verifyRange({ ...rp, tHat: (rp.tHat + 1n) % N }), 'mauling the inner product breaks the proof')
+    check('Bulletproofs', 'soundness: a forged commitment is rejected', !bp.verifyRange({ ...rp, V: [secpCurve.add(rp.V[0], secpCurve.multiply(1n << 33n, G))] }), 'claiming a value ≥ 2ⁿ fails')
+
+    // Aggregation: four 16-bit values in one proof.
+    const vals = [40_000n, 12n, 65_535n, 1n]
+    const gs = vals.map(() => randomScalar(N) || 1n)
+    const agg = bp.proveRange(vals, gs, 16)
+    check('Bulletproofs', 'aggregate proof (4×16-bit) verifies', bp.verifyRange(agg) && bp.verifyRange(agg, true), '64 bits proven in one 2·log₂(64)+4 = 16-element proof')
+    const sz = bp.proofSize(16, 4)
+    check('Bulletproofs', 'proof size is logarithmic', sz.points === 2 * Math.log2(64) + 4 && agg.ipa.L.length === Math.log2(64), `${sz.points} points + ${sz.scalars} scalars vs. ~64 for the linear form`)
+
+    // Confidential transaction: amounts hidden, balance + non-negativity proven.
+    const inB = [randomScalar(N) || 1n, randomScalar(N) || 1n]
+    const tx = bp.buildConfidentialTx([100n, 50n], inB, [90n, 55n], 5n, 16)
+    const tv = bp.verifyConfidentialTx(tx)
+    check('Bulletproofs', 'confidential tx: balance + range verify', tv.ok, 'Σin = Σout + fee, every output ∈ [0,2ⁿ)')
+    const stolen = { ...tx, outputs: tx.outputs.map((o, i) => (i === 0 ? secpCurve.add(o, secpCurve.multiply(7n, G)) : o)) }
+    check('Bulletproofs', 'confidential tx: inflating an output is caught', !bp.verifyConfidentialTx(stolen).ok, 'minting money breaks the kernel-excess balance')
   }
 
   // ── 25. KZG polynomial commitments (BLS12-381 pairing) ──
