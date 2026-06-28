@@ -31,6 +31,81 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 18.0 — Classical Shadows (randomized-measurement tomography) (this session)
+
+The lab can *prepare* and *compile* and *protect* quantum states across a dozen pillars — but it had
+never asked the most practical question of the NISQ era: given a state on a real device that you can
+only **measure** (one classical bit-string per shot), how do you learn the properties you care about
+without paying the exponential price of full tomography? 18.0 adds the modern answer, one of the most
+cited quantum results of the decade: **classical shadows** (Huang–Kueng–Preskill, *Nature Physics*
+2020), built from scratch on the lab's own state-vector and Clifford machinery and — in keeping with
+the house style — proven *deterministically*, not merely demonstrated.
+
+### Why this is interesting
+
+The measurement of a state through a random unitary `U` is an information-losing quantum channel
+`M(ρ) = E[U†|b⟩⟨b|U]`. Because `M` is a **known, invertible linear map**, a single shot already gives
+an *unbiased* classical estimate of the entire state — the snapshot `ρ̂ = M⁻¹(U†|b⟩⟨b|U)`, with
+`E[ρ̂] = ρ`. Average `tr(O ρ̂)` over a handful of snapshots and you estimate *any* observable you ask
+for **afterwards**: one dataset, many predictions, with rigorous `log(M)/ε²` sample complexity for M
+observables. The two canonical ensembles trade locality against generality, and 18.0 builds both.
+
+### The plan / new steps (this session)
+
+- [x] **`shadows.ts` — a from-scratch classical-shadows engine** (no new dependencies; built on the
+      lab's `Complex`/`Matrix`/`QuantumState` and the `rb.ts` Clifford machinery):
+  - [x] **Random-Pauli (local) ensemble.** Each qubit is rotated into a uniformly random X/Y/Z basis
+        (`R_X=H`, `R_Y=H·S†`, `R_Z=I`) and measured; snapshots store `(basis, bit)` per qubit. The
+        inverse channel factorises, `σ̂_q = 3|s_q⟩⟨s_q| − I`, derived from the single-qubit
+        measurement channel `M(ρ)=⅓(ρ+tr(ρ)I)`.
+  - [x] **Single-shot Pauli estimator** `tr(Qρ̂)=∏_q tr(Q_q σ̂_q)`: a non-identity `Q_q` contributes
+        `3·(±1)` when the measured basis matches and **0** on a basis miss — so a weight-k Pauli is
+        read off in O(k), never storing the exponential ρ̂.
+  - [x] **Many observables from one dataset** + the robust **median-of-means** aggregator (K groups →
+        exponentially-good confidence), with per-observable standard error.
+  - [x] **Second-moment functionals**: purity `Tr(ρ²)` as a U-statistic over snapshot *pairs*
+        (`tr(σ̂ᵢσ̂ⱼ)` per qubit = 5 / −4 / ½), restricted to a subsystem to give `Tr(ρ_A²)` and the
+        **2-Rényi entanglement entropy** `S₂(A)=−log₂Tr(ρ_A²)` — entropy from randomized measurements
+        alone, never reconstructing the state.
+  - [x] **Fidelity** with a pure target via its exact Pauli expansion `|φ⟩⟨φ|=Σ_P (⟨φ|P|φ⟩/2ⁿ)P`.
+  - [x] **Global random-Clifford (3-design) ensemble**, `ρ̂=(2ⁿ+1)U†|b⟩⟨b|U − I` — variance bounded
+        by `3·tr(O₀²)` **independent of locality**. The Clifford group is *fully enumerated* (24 for
+        n=1 via `rb.ts`; 11520 for n=2 by BFS over {H,S,CNOT}, canonicalised mod global phase), so the
+        ensemble is an **exact** 3-design and the estimator is exact. Direct fidelity
+        `(2ⁿ+1)|⟨φ|s⟩|²−1` and purity `(2ⁿ+1)²|⟨sᵢ|sⱼ⟩|²−(2ⁿ+2)`.
+  - [x] **Exact references + deterministic proofs**: `exactPauli`, `exactReducedPurity`, and — the
+        rigorous core — `pauliChannelExpectation` / `cliffordChannelExpectation` (the exact `E[ρ̂]`
+        summed over the *whole* finite ensemble + Born outcomes) and `pauliEstimatorSecondMoment` (the
+        exact `E[X²]=3ᵏ` shadow norm). These make unbiasedness a theorem checked to machine precision,
+        not a statistical hope.
+- [x] **`ShadowsLab.tsx` + a new "🃏 Shadows" tab** — pick a state (GHZ / W / cluster / random
+      product / random entangled), an ensemble, a snapshot budget and a seed, then watch:
+  - [x] a **many-observable chart + table** (shadow vs exact, with error bars) — `Z_q`, `X_q` and
+        nearest-neighbour `ZZ` correlators predicted from one dataset;
+  - [x] **purity, Rényi-2 entropy, and fidelity** cards comparing estimate to the exact state-vector
+        value;
+  - [x] a **log–log convergence plot** (error vs snapshots against the 1/√M law) and a **shadow-norm
+        bar chart** (single-shot variance `3ᵏ` by Pauli weight);
+  - [x] a **global-Clifford view** showing locality-independent fidelity/purity for n≤2.
+- [x] **Self-tests** (new "Classical shadows" group, 10 cases): exact channel inversion `E[ρ̂]=ρ` for
+      *both* ensembles, the unbiased single-shot estimator, the `3ᵏ` shadow norm, the enumerated
+      Clifford orders (24, 11520), and seeded statistical convergence of the many-observable,
+      purity, Rényi-2 and fidelity estimators.
+- [x] **About-page pillar** + `project.json` description/tags refreshed.
+
+### Verified (all green — suite now 174/174)
+
+- **Channel inversion (the headline), to machine precision**: `E[ρ̂]=ρ` over the full 3ⁿ-basis Pauli
+  ensemble (max err ~6e-16, n=2,3) and over the entire enumerated Clifford group (max err ~3e-13,
+  n=1,2). The unbiasedness is a *proof by enumeration*, not a sample average.
+- **Single-shot estimator unbiased** `E[ô]=⟨Q⟩` exactly (max err ~2e-16, weights 1–3); **shadow
+  norm** `E[X²]=3ᵏ` exact (3, 9, 27 for k=1,2,3).
+- **Statistics (seeded)**: 7 observables predicted from one 6k-snapshot dataset to <0.07; pure-state
+  purity ≈1.07; Bell-half `S₂` ≈1.00; fidelity ≈0.98 with itself and ≈exact (0.06) with another;
+  global-Clifford fidelity ≈1.00 and purity ≈0.99.
+- **Enumerated Clifford orders** `|C₁|=24`, `|C₂|=11520` (exact 3-designs).
+- **Build gate green** (scope + conformance + lint + `tsc -b` + `vite build`).
+
 ## Quantum Lab 17.0 — Quantum Metrology & Sensing (this session)
 
 Entanglement powers three great applications: **computing** (the algorithms / Shor / synthesis
