@@ -49,6 +49,9 @@ import { buildRing, preferenceList } from '../protocols/dynamo/ring';
 import { createAbd } from '../protocols/abd/abd';
 import { abdInvariants } from '../protocols/abd/invariants';
 import { DEFAULT_ABD_CONFIG, type AbdCmd, type AbdState } from '../protocols/abd/types';
+import { createCraq } from '../protocols/craq/craq';
+import { craqInvariants, craqGauge } from '../protocols/craq/invariants';
+import { headOf, tailOf, type CraqCmd, type CraqState } from '../protocols/craq/types';
 import { createSnow } from '../protocols/snow/snow';
 import { snowInvariants, snowGauge } from '../protocols/snow/invariants';
 import { DEFAULT_SNOW_CONFIG, type SnowCmd, type SnowState, type Variant, type Colour } from '../protocols/snow/types';
@@ -91,6 +94,7 @@ import { specById, SPECS } from '../linz/specs';
 import { curatedHistories, genLinearizable, genAdversarial, corrupt } from '../linz/histories';
 import { precedes, type History, type Op } from '../linz/history';
 import { runAbdHistory, corruptOneRead, abdOpsToHistory, harvestAbd } from '../linz/fromprotocol';
+import { runCraqHistory } from '../linz/fromprotocol';
 
 export interface TestResult {
   group: string;
@@ -1857,6 +1861,163 @@ export function runSelfTests(): TestResult[] {
     };
     const ok = run() === run();
     return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  // ---- CRAQ (chain replication with apportioned reads) ----
+  const craqKernel = (seed: number, replicas: number, drop = 0) =>
+    new Kernel<CraqState, CraqCmd>({
+      seed,
+      protocol: createCraq({ master: 'M' }),
+      nodeIds: ['M', ...'ABCDE'.split('').slice(0, replicas)],
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const craqReps = (n: number) => 'ABCDE'.split('').slice(0, n);
+  const craqSettle = (k: Kernel<CraqState, CraqCmd>, ticks = 60, dt = 20) => { for (let i = 0; i < ticks; i++) k.advance(dt); };
+  const craqOk = (k: Kernel<CraqState, CraqCmd>) => craqInvariants(k.views()).every((iv) => iv.ok);
+  const craqBad = (k: Kernel<CraqState, CraqCmd>) => { const b = craqInvariants(k.views()).find((iv) => !iv.ok); return b ? `${b.name}: ${b.detail}` : ''; };
+  const craqConfig = (k: Kernel<CraqState, CraqCmd>) => { let best = { epoch: -1, chain: [] as string[] }; for (const v of k.views()) if (v.state.role === 'replica' && v.state.config.epoch > best.epoch) best = v.state.config; return best; };
+  const craqHist = (k: Kernel<CraqState, CraqCmd>) => k.views().flatMap((v) => v.state.history);
+  const craqHead = (k: Kernel<CraqState, CraqCmd>) => headOf(craqConfig(k)) ?? 'A';
+
+  t('CRAQ', 'A write at the head is read back from another replica', () => {
+    const k = craqKernel(1, 4);
+    craqSettle(k, 20);
+    k.command(craqHead(k), { type: 'write', key: 'x', value: 'hello' });
+    craqSettle(k, 40);
+    k.command('C', { type: 'read', key: 'x' });
+    craqSettle(k, 40);
+    const reads = craqHist(k).filter((o) => o.kind === 'read' && o.key === 'x');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'hello' && craqOk(k);
+    return [ok, ok ? 'an apportioned read on a different replica returned the written value' : craqBad(k) || `got ${got}`];
+  });
+
+  t('CRAQ', 'Reads split between clean (local) and dirty (tail-confirmed)', () => {
+    const k = craqKernel(3, 4);
+    craqSettle(k, 20);
+    for (let i = 0; i < 12; i++) {
+      k.command(craqHead(k), { type: 'write', key: 'x', value: 'w' + i });
+      craqReps(4).forEach((r) => k.command(r, { type: 'read', key: 'x' }));
+      craqSettle(k, 8);
+    }
+    craqSettle(k, 60);
+    const g = craqGauge(k.views());
+    const ok = g.cleanReads > 0 && g.dirtyReads > 0 && craqOk(k);
+    return [ok, ok ? `${g.cleanReads} clean + ${g.dirtyReads} dirty reads, all linearizable` : craqBad(k) || `clean=${g.cleanReads} dirty=${g.dirtyReads}`];
+  });
+
+  t('CRAQ', 'A committed value survives the tail crashing (predecessor takes over)', () => {
+    const k = craqKernel(7, 4);
+    craqSettle(k, 20);
+    k.command(craqHead(k), { type: 'write', key: 'x', value: 'durable' });
+    craqSettle(k, 40);
+    const tail = tailOf(craqConfig(k));
+    if (tail) k.crash(tail);
+    craqSettle(k, 90);
+    k.command('A', { type: 'read', key: 'x' });
+    craqSettle(k, 60);
+    const reads = craqHist(k).filter((o) => o.kind === 'read' && o.key === 'x');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'durable' && craqOk(k);
+    return [ok, ok ? 'the predecessor became tail and committed the in-flight write — nothing lost' : craqBad(k) || `got ${got}`];
+  });
+
+  t('CRAQ', 'A new head (after the head crashes) keeps writing consistently', () => {
+    const k = craqKernel(11, 4);
+    craqSettle(k, 20);
+    k.command(craqHead(k), { type: 'write', key: 'x', value: 'a' });
+    craqSettle(k, 40);
+    k.crash(craqHead(k));
+    craqSettle(k, 110); // master reconfigures, new head pulls the frontier
+    k.command(craqHead(k), { type: 'write', key: 'x', value: 'b' });
+    craqSettle(k, 90);
+    const tail = tailOf(craqConfig(k));
+    if (tail) k.command(tail, { type: 'read', key: 'x' });
+    craqSettle(k, 50);
+    const reads = craqHist(k).filter((o) => o.kind === 'read' && o.key === 'x');
+    const got = reads[reads.length - 1]?.value;
+    const ok = got === 'b' && craqOk(k);
+    return [ok, ok ? 'the successor took over as head and wrote on top of the committed state' : craqBad(k) || `got ${got} chain=${craqConfig(k).chain.join('')}`];
+  });
+
+  t('CRAQ', 'Losing the master makes the chain refuse stale reads (safety over liveness)', () => {
+    const k = craqKernel(13, 4);
+    craqSettle(k, 20);
+    k.command(craqHead(k), { type: 'write', key: 'x', value: 'safe' });
+    craqSettle(k, 40);
+    k.crash('M');
+    craqSettle(k, 60); // leases lapse → replicas go passive
+    craqReps(4).forEach((r) => k.command(r, { type: 'read', key: 'x' }));
+    craqSettle(k, 60);
+    const ok = craqOk(k);
+    return [ok, ok ? 'with no master, replicas stop serving rather than risk a stale answer' : craqBad(k)];
+  });
+
+  t('CRAQ', 'A crashed replica rejoins at the tail and catches up before serving', () => {
+    const k = craqKernel(17, 4);
+    craqSettle(k, 20);
+    k.crash('B');
+    craqSettle(k, 80);
+    for (let i = 0; i < 4; i++) { k.command(craqHead(k), { type: 'write', key: 'x', value: 'r' + i }); craqSettle(k, 30); }
+    k.restart('B');
+    craqSettle(k, 170); // master re-admits B at the tail, predecessor syncs it
+    k.command('B', { type: 'read', key: 'x' });
+    craqSettle(k, 60);
+    const reads = craqHist(k).filter((o) => o.coord === 'B' && o.kind === 'read');
+    const got = reads[reads.length - 1]?.value;
+    const ok = craqOk(k) && got === 'r3';
+    return [ok, ok ? 'B re-synced to the committed prefix and read the latest value r3' : craqBad(k) || `B read ${got}`];
+  });
+
+  t('CRAQ', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = craqKernel(99, 4);
+      const chaos = new Rng(55);
+      let n = 0;
+      for (let i = 0; i < 300; i++) {
+        k.advance(20);
+        const r = chaos.next();
+        if (r < 0.25) k.command(craqHead(k), { type: 'write', key: 'k', value: 'v' + n++ });
+        else if (r < 0.4) k.command(chaos.pick(craqReps(4))!, { type: 'read', key: 'k' });
+      }
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('CRAQ', 'Linearizability holds through 1,200 randomized faults (chaos)', () => {
+    const k = craqKernel(2026, 4, 0.05);
+    const chaos = new Rng(424242);
+    const ids = craqReps(4);
+    let n = 0, firstBreak = '';
+    for (let i = 0; i < 1200 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.12) k.crash('M');
+      else if (roll < 0.16) k.restart('M');
+      else if (roll < 0.18) { const one = chaos.pick(ids)!; k.partition([['M', ...ids.filter((x) => x !== one)], [one]]); }
+      else if (roll < 0.21) k.healNetwork();
+      else if (roll < 0.48 && up.length > 0) { k.command(craqHead(k), { type: 'write', key: ['a', 'b'][n % 2], value: 'w' + n }); n++; }
+      else if (roll < 0.64 && up.length > 0) k.command(chaos.pick(up)!, { type: 'read', key: ['a', 'b'][chaos.int(0, 1)] });
+      const b = craqInvariants(k.views()).find((iv) => !iv.ok);
+      if (b) firstBreak = `${b.name}: ${b.detail}`;
+    }
+    return [!firstBreak, firstBreak || `linearizability held through 1,200 faults (crashes, restarts, master loss, single-node partitions, ${n} writes)`];
+  });
+
+  t('CRAQ', 'The general Wing & Gong checker certifies a real CRAQ run linearizable', () => {
+    let okAll = true, detail = '';
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const drop = seed % 2 === 0 ? 0.1 : 0;
+      const h = runCraqHistory({ seed, replicas: 4, ops: 30, keys: ['x', 'y'], dropRate: drop });
+      if (!isLinearizable(h, specById('register'))) { okAll = false; detail = `seed ${seed} (${h.ops.length} ops) not linearizable`; break; }
+    }
+    return [okAll, okAll ? 'five real runs (incl. lossy) certified linearizable by the spec-agnostic checker' : detail];
   });
 
   // ---- Snow* (metastable consensus by random subsampling) ----
