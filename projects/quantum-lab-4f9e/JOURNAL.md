@@ -91,12 +91,19 @@ cousin of Grover that finds a marked vertex of the complete graph in `O(√N)`.
       `|amp|² ≈ 1` at `t = π/2` (~1e-15); spatial-search success → 1 at `t ≈ (π/2)√N`; and the
       classical heat kernel staying a probability distribution.
 
+### 19.1 increment (also this session)
+
+- [x] **Weighted-path perfect state transfer** (Christandl et al.): a `wpath` graph family with the
+      pre-engineered couplings `c_k = ½√((k+1)(n−1−k))` — exactly the `J_x` operator of a spin
+      `S = (n−1)/2`, so `e^{−iπH}` is a π-rotation mapping one end to the other with `|amp| = 1`. This
+      gives **end-to-end perfect state transfer on a chain of ANY length** at the fixed time `t = π`
+      (the quantum-wire result), not just `P2`/`P3`. Wired into the continuous-time graph picker
+      (`Wgt-path (PST)`) and verified to `|1−|amp|²| ≈ 1.8e-15` for n = 2,3,5,8. Suite 186 → 187.
+
 ### Follow-ups (open for a later session)
 
 - [ ] **Discrete-time spatial search** (Shenvi–Kempe–Whaley): the coined walk on the hypercube with a
       marked-vertex coin flip, the discrete cousin of the continuous-time search above.
-- [ ] **Weighted-path perfect state transfer** (Christandl et al.): the `√(k(n−k))` coupling that gives
-      PST on a path of arbitrary length, not just `P2`/`P3`.
 - [ ] **The glued-trees exponential speedup** (Childs et al.) — the one provably exponential quantum
       walk, with the column-subspace reduction so it stays simulable.
 - [ ] **2-D coined walk** (Grover/DFT 4-state coin) on the grid, and Web-Worker offload for big sweeps.
@@ -117,8 +124,10 @@ cousin of Grover that finds a marked vertex of the complete graph in `O(√N)`.
   sin²t, both to ~1e-16. (3) **Childs–Goldstone spatial search** H=−γA−|w⟩⟨w|: success → 1 at
   t≈(π/2)√N — Grover's O(√N) in continuous time — a resonance located live by a γ-scan at γ=1/N. New
   `🚶 Walks` tab (three modes), an About entry, the project-card pillar, and 11 self-tests. Every claim
-  validated in a throwaway oracle first, then ported. Suite 175 → 186, all green; lint + tsc + build
-  pass.
+  validated in a throwaway oracle first, then ported. A 19.1 increment then added Christandl
+  **weighted-path perfect state transfer** (the `J_x`-of-a-spin construction giving end-to-end PST on a
+  chain of any length at `t = π`, ≈1.8e-15) as a graph family. Suite 175 → 187, all green; lint + tsc +
+  build pass.
 
 ## Quantum Lab 18.0 — Classical Shadows (randomized-measurement tomography) (this session)
 

@@ -175,6 +175,7 @@ function ramp(v: number): [number, number, number] {
 // ==================================================================================== Continuous
 const FAMILY_RANGE: Record<GraphFamily, { min: number; max: number; def: number; plabel: string }> = {
   path: { min: 2, max: 18, def: 9, plabel: 'vertices' },
+  wpath: { min: 2, max: 18, def: 8, plabel: 'vertices' },
   cycle: { min: 3, max: 18, def: 10, plabel: 'vertices' },
   complete: { min: 2, max: 12, def: 6, plabel: 'vertices' },
   star: { min: 3, max: 16, def: 8, plabel: 'vertices' },
@@ -222,7 +223,7 @@ function ContinuousCard() {
       </p>
       <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
         <Seg label="graph" value={family} onChange={(v) => { const f = v as GraphFamily; setFamily(f); setParam(FAMILY_RANGE[f].def); }}
-          options={[['path', 'Path'], ['cycle', 'Cycle'], ['complete', 'Complete'], ['star', 'Star'], ['hypercube', 'Hypercube'], ['grid', 'Grid']]} />
+          options={[['path', 'Path'], ['wpath', 'Wgt-path (PST)'], ['cycle', 'Cycle'], ['complete', 'Complete'], ['star', 'Star'], ['hypercube', 'Hypercube'], ['grid', 'Grid']]} />
         <Slider label={range.plabel} min={range.min} max={range.max} step={1} value={p} onChange={setParam} color="#7c3aed" accent="#c4b5fd" fmt={(v) => `${v}`} />
         <Slider label="time t" min={0} max={TMAX} step={0.05} value={t} onChange={setT} color="#7c3aed" accent="#c4b5fd" fmt={(v) => v.toFixed(2)} />
         <Seg label="H =" value={useLap ? 'lap' : 'adj'} onChange={(v) => setUseLap(v === 'lap')} options={[['adj', 'adjacency A'], ['lap', 'Laplacian L']]} />

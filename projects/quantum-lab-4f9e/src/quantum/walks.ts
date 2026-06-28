@@ -159,7 +159,7 @@ export function classicalLineWalk(steps: number, N: number, center: number): num
 // Graphs (for continuous-time walks)
 // ======================================================================================
 
-export type GraphFamily = 'path' | 'cycle' | 'complete' | 'star' | 'hypercube' | 'grid';
+export type GraphFamily = 'path' | 'wpath' | 'cycle' | 'complete' | 'star' | 'hypercube' | 'grid';
 
 export interface WalkGraph {
   family: GraphFamily;
@@ -189,6 +189,7 @@ function edgesToAdj(n: number, edges: [number, number][]): number[][] {
 export function buildGraph(family: GraphFamily, param: number): WalkGraph {
   let n: number, layout: { x: number; y: number }[] = [];
   const edges: [number, number][] = [];
+  let customAdj: number[][] | null = null;
   let antipode: ((v: number) => number) | null = null;
   let label = '';
 
@@ -205,6 +206,23 @@ export function buildGraph(family: GraphFamily, param: number): WalkGraph {
       layout = Array.from({ length: n }, (_, i) => ({ x: n === 1 ? 0.5 : 0.06 + (0.88 * i) / (n - 1), y: 0.5 }));
       antipode = (v) => n - 1 - v;
       label = `Path P${n}`;
+      break;
+    }
+    case 'wpath': {
+      // Christandl et al. weighted path with PRE-ENGINEERED couplings c_k = ½√((k+1)(n−1−k)):
+      // the Hamiltonian is exactly the J_x operator of a spin S=(n−1)/2, so e^{−iπH} is a π-rotation
+      // that maps end |0⟩ → end |n−1⟩ with |amplitude| = 1 — PERFECT STATE TRANSFER on a chain of
+      // ANY length (the quantum-wire result), at the fixed time t = π.
+      n = Math.max(2, param);
+      customAdj = emptyAdj(n);
+      for (let k = 0; k + 1 < n; k++) {
+        const c = 0.5 * Math.sqrt((k + 1) * (n - 1 - k));
+        customAdj[k][k + 1] = c; customAdj[k + 1][k] = c;
+        edges.push([k, k + 1]);
+      }
+      layout = Array.from({ length: n }, (_, i) => ({ x: n === 1 ? 0.5 : 0.06 + (0.88 * i) / (n - 1), y: 0.5 }));
+      antipode = (v) => n - 1 - v;
+      label = `Weighted path W${n}`;
       break;
     }
     case 'cycle': {
@@ -273,7 +291,7 @@ export function buildGraph(family: GraphFamily, param: number): WalkGraph {
       break;
     }
   }
-  return { family, n, param, adjacency: edgesToAdj(n, edges), edges, layout, antipode, label };
+  return { family, n, param, adjacency: customAdj ?? edgesToAdj(n, edges), edges, layout, antipode, label };
 }
 
 /** Degree-diagonal minus adjacency: the combinatorial graph Laplacian L = D − A. */
