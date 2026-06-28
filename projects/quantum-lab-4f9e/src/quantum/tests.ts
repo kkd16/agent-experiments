@@ -93,6 +93,13 @@ import {
 import {
   coherentSpinState, oneAxisTwist, spinStats, squeezingParameter, optimalSqueezing,
 } from './squeezing';
+import {
+  shadowRng, collectPauliShadows, estimateObservables, estimatePurity, estimateRenyi2,
+  estimateFidelity, exactPauli, exactReducedPurity, pauliChannelExpectation,
+  pauliEstimatorExpectation, pauliEstimatorSecondMoment, pauliWeight, parsePauli,
+  collectCliffordShadows, estimateCliffordFidelity, estimateCliffordPurity,
+  cliffordChannelExpectation, cliffordGroup,
+} from './shadows';
 
 export interface TestResult {
   group: string;
@@ -1647,6 +1654,133 @@ export function runTests(): TestResult[] {
       const x3 = optimalSqueezing(3).xi2;
       const x8 = optimalSqueezing(8).xi2;
       add('Metrology', `Squeezing deepens with N (the N^{−2/3} one-axis-twisting law): optimal ξ²_R falls from ${x3.toFixed(3)} at N=3 to ${x8.toFixed(3)} at N=8`, x8 < x3 - 1e-3);
+    }
+  }
+
+  // --- Classical shadows (randomized-measurement tomography) ---
+  {
+    const ghz = (n: number): QuantumState => {
+      const s = new QuantumState(n);
+      s.applyGate({ name: 'H', qubits: [0] });
+      for (let q = 1; q < n; q++) s.applyGate({ name: 'CNOT', qubits: [0, q] });
+      return s;
+    };
+    const randomState = (n: number, seed: number): QuantumState => {
+      const rng = shadowRng(seed);
+      const s = new QuantumState(n);
+      for (let q = 0; q < n; q++) {
+        s.applyGate({ name: 'Ry', qubits: [q], params: [rng() * Math.PI * 2] });
+        s.applyGate({ name: 'Rz', qubits: [q], params: [rng() * Math.PI * 2] });
+      }
+      for (let q = 0; q + 1 < n; q++) s.applyGate({ name: 'CNOT', qubits: [q, q + 1] });
+      for (let q = 0; q < n; q++) s.applyGate({ name: 'Ry', qubits: [q], params: [rng() * Math.PI * 2] });
+      return s;
+    };
+    const rhoOf = (st: QuantumState): Complex[][] => {
+      const d = 1 << st.numQubits;
+      const a = st.amplitudes;
+      return Array.from({ length: d }, (_, i) => Array.from({ length: d }, (_, j) => a[i].mul(a[j].conj())));
+    };
+    const matErr = (a: Complex[][], b: Complex[][]): number => {
+      let m = 0;
+      for (let i = 0; i < a.length; i++) for (let j = 0; j < a.length; j++) m = Math.max(m, a[i][j].sub(b[i][j]).abs());
+      return m;
+    };
+
+    // (1) The headline promise, proven exactly: the random-Pauli measurement channel inverts to
+    // E[ρ̂] = ρ — summed over all 3ⁿ bases and Born outcomes, no sampling.
+    {
+      let worst = 0;
+      for (const st of [ghz(2), randomState(2, 7), randomState(3, 11)]) worst = Math.max(worst, matErr(pauliChannelExpectation(st), rhoOf(st)));
+      add('Classical shadows', 'Random-Pauli channel inverts exactly: E[ρ̂] = ρ over the full 3ⁿ-basis ensemble (n=2,3)', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+
+    // (2) The single-shot Pauli estimator is unbiased — exactly, for arbitrary Pauli strings.
+    {
+      const st = randomState(3, 5);
+      let worst = 0;
+      for (const q of ['ZII', 'XYZ', 'IXX', 'ZZI', 'YIY']) {
+        const Q = parsePauli(q, 3);
+        worst = Math.max(worst, Math.abs(pauliEstimatorExpectation(st, Q) - exactPauli(st, Q)));
+      }
+      add('Classical shadows', 'Single-shot Pauli estimator is unbiased: E[ô] = ⟨Q⟩ exactly (weights 1–3)', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+
+    // (3) The shadow norm: the single-shot variance of a weight-k Pauli is exactly 3ᵏ (E[X²]=3ᵏ),
+    // the constant that fixes the sample complexity 3ᵏ/ε².
+    {
+      const st = randomState(3, 9);
+      let worst = 0;
+      const tally: string[] = [];
+      for (const q of ['ZII', 'IXX', 'XYZ']) {
+        const Q = parsePauli(q, 3);
+        const m2 = pauliEstimatorSecondMoment(st, Q);
+        worst = Math.max(worst, Math.abs(m2 - 3 ** pauliWeight(Q)));
+        tally.push(`k=${pauliWeight(Q)}→${m2.toFixed(2)}`);
+      }
+      add('Classical shadows', 'Shadow norm: single-shot variance of a weight-k Pauli is exactly 3ᵏ (E[X²]=3ᵏ)', worst < 1e-9, tally.join(', '));
+    }
+
+    // (4) One dataset predicts MANY observables at once — the whole point of the method.
+    {
+      const st = randomState(4, 3);
+      const snaps = collectPauliShadows(st, 6000, shadowRng(42));
+      const obs = ['ZIII', 'IZII', 'XIII', 'IIXI', 'ZZII', 'IIZZ', 'XXII'].map((s) => parsePauli(s, 4));
+      const res = estimateObservables(st, snaps, obs, 8);
+      const worst = Math.max(...res.map((e) => e.error));
+      add('Classical shadows', `One shadow dataset predicts ${obs.length} observables simultaneously (worst error < 0.15 at 6k snapshots)`, worst < 0.15, `worst err ${worst.toFixed(3)}`);
+    }
+
+    // (5) The second-moment functional: purity Tr(ρ²) from the snapshot-pair U-statistic.
+    {
+      const st = randomState(3, 13);
+      const snaps = collectPauliShadows(st, 8000, shadowRng(101));
+      const p = estimatePurity(snaps, undefined, shadowRng(7));
+      add('Classical shadows', 'Purity Tr(ρ²) ≈ 1 for a pure state, from the snapshot-pair estimator', Math.abs(p - 1) < 0.12, `Tr(ρ²)=${p.toFixed(3)}`);
+    }
+
+    // (6) The 2-Rényi entanglement entropy of a Bell-pair half is 1 bit — entropy from randomized
+    // measurements alone, never reconstructing the state.
+    {
+      const st = ghz(2);
+      const snaps = collectPauliShadows(st, 8000, shadowRng(202));
+      const s2 = estimateRenyi2(snaps, [0], shadowRng(9));
+      const exact = -Math.log2(exactReducedPurity(st, [0]));
+      add('Classical shadows', 'Rényi-2 entanglement entropy S₂ of a Bell half ≈ 1 bit (from shadows)', Math.abs(s2 - 1) < 0.2, `S₂=${s2.toFixed(3)} vs exact ${exact.toFixed(3)}`);
+    }
+
+    // (7) Fidelity with a pure target via the target's Pauli expansion: ≈1 with itself, ≈ exact
+    // overlap with a different state.
+    {
+      const st = randomState(3, 21);
+      const snaps = collectPauliShadows(st, 9000, shadowRng(303));
+      const fTrue = estimateFidelity(snaps, st);
+      const other = randomState(3, 22);
+      let ov = C(0);
+      for (let i = 0; i < st.amplitudes.length; i++) ov = ov.add(other.amplitudes[i].conj().mul(st.amplitudes[i]));
+      const exactOther = ov.abs2();
+      const fOther = estimateFidelity(snaps, other);
+      add('Classical shadows', 'Fidelity ⟨φ|ρ|φ⟩ ≈ 1 with the true state, and ≈ exact overlap with another', Math.abs(fTrue - 1) < 0.12 && Math.abs(fOther - exactOther) < 0.12, `F_true=${fTrue.toFixed(3)}, F_other=${fOther.toFixed(3)} (exact ${exactOther.toFixed(3)})`);
+    }
+
+    // (8) The second ensemble — uniform global Cliffords (exact 3-designs) — inverts exactly too:
+    // E[(2ⁿ+1)|s⟩⟨s| − I] = ρ over the whole enumerated group.
+    {
+      let worst = 0;
+      for (const st of [randomState(1, 4), ghz(2), randomState(2, 8)]) worst = Math.max(worst, matErr(cliffordChannelExpectation(st), rhoOf(st)));
+      add('Classical shadows', 'Global-Clifford channel inverts exactly: E[ρ̂] = ρ over the full Clifford group (n=1,2)', worst < 1e-9, `max err ${worst.toExponential(1)}`);
+    }
+
+    // (9) The enumerated Clifford groups have the textbook orders (and so are exact 3-designs).
+    add('Classical shadows', 'Enumerated Clifford group orders are exact: |C₁| = 24, |C₂| = 11520', cliffordGroup(1).length === 24 && cliffordGroup(2).length === 11520, `${cliffordGroup(1).length}, ${cliffordGroup(2).length}`);
+
+    // (10) Global-Clifford fidelity and purity converge — the locality-independent regime.
+    {
+      const st = ghz(2);
+      const snaps = collectCliffordShadows(st, 6000, shadowRng(404));
+      const f = estimateCliffordFidelity(snaps, st);
+      const p = estimateCliffordPurity(snaps, 4, shadowRng(5));
+      add('Classical shadows', 'Global-Clifford fidelity ≈ 1 and purity ≈ 1 (variance independent of locality)', Math.abs(f - 1) < 0.12 && Math.abs(p - 1) < 0.12, `F=${f.toFixed(3)}, Tr(ρ²)=${p.toFixed(3)}`);
     }
   }
 
