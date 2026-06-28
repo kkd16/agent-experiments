@@ -412,7 +412,20 @@ back 50.0        clear ()`}</pre>
           longer recursive, a <em>known</em> function flowing into a lifted slot is then inlined and
           β-reduced into the loop: the <strong>static-argument transformation</strong> example shows{' '}
           <code>each (fn x -&gt; x*x) xs</code> collapse to a bare first-order loop with the function
-          parameter gone entirely — the effect SpecConstr is famous for, reached by composition.
+          parameter gone entirely — a SpecConstr-like specialisation reached by composition.
+        </p>
+        <p>
+          23.0 makes that specialisation first-class. Where 17.0 lifts a loop-<em>invariant</em>{' '}
+          argument out, <strong>call-pattern specialisation</strong> (Peyton Jones,{' '}
+          <em>SpecConstr</em>, ICFP 2007) attacks a loop-<em>varying</em> one that is rebuilt as the
+          same tuple or constructor <em>shape</em> every iteration only to be torn straight back apart
+          by the function&rsquo;s own <code>match</code> — pure box-then-project churn. It specialises
+          the loop to recurse on the shape&rsquo;s <em>fields</em> directly, reconstructing the whole
+          value only where it is genuinely used (single-use, so the inliner copies it onto the{' '}
+          <code>match</code> and the known-constructor rule deletes the cell <em>and</em> the test). The{' '}
+          <strong>call-pattern specialisation</strong> example threads a countdown and two running
+          totals as one <code>Acc</code> value; specialised, no <code>Acc</code> is ever boxed and the
+          loop drops ~30% of its VM steps — identical on all three backends.
         </p>
         <p>
           18.0 deletes <em>data</em>, not just code. A list pipeline like{' '}

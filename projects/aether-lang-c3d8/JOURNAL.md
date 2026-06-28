@@ -1447,14 +1447,18 @@ Deferred (future, building on Aether 15.0 call-site inlining):
       *structure* itself: SAT only fires when there is ≥ 1 static **and** ≥ 1 dynamic parameter, so the
       worker is always a genuine loop on a varying argument; and it composes with the 15.0 inliner to
       reach SpecConstr-like specialisation for free (see Aether 17.0 below).
-- [ ] **Call-pattern specialisation** (Peyton Jones, *SpecConstr*, ICFP 2007) — specialise a recursive
-      function for the constructor shape it is repeatedly called with (e.g. a loop always re-matching a
-      `Cons`), removing the redundant scrutiny per iteration; pairs naturally with the decision-tree
-      pass and the 15.0 inliner.
-- [ ] **Worker/wrapper for single-constructor arguments** — a function that immediately destructures a
-      tuple/record argument (`fn p -> match p with (a, b) -> …`) can be split into a worker taking the
-      fields and a wrapper that re-boxes, so a caller passing a literal `(x, y)` skips building the
-      tuple; the wrapper inlines (15.0) and the box vanishes.
+- [x] **Call-pattern specialisation** (Peyton Jones, *SpecConstr*, ICFP 2007) — **shipped in Aether
+      23.0.** A recursive function that is repeatedly called with the *same constructor / tuple shape*
+      in one argument slot — and destructures it with its own `match` — is specialised to recurse on
+      that shape's *fields* directly, so the per-iteration box + projection both vanish (12–41 % fewer
+      VM steps on the canonical shape-threaded loops). It reuses the known-constructor `match` reduction
+      to finish the job and composes downstream of the 17.0 worker form (see Aether 23.0 below).
+- [x] **Worker/wrapper for single-constructor arguments** — **shipped in Aether 23.0** as the
+      tuple/single-constructor case of SpecConstr: a loop that immediately destructures a tuple/ADT
+      argument (`fn p -> match p with (a, b) -> …`) recurses on the unpacked fields, and the rebuilt
+      cell — single-use by the firing gate — inlines onto the `match` so the box never exists. The
+      general non-immediately-driven case (keeping a re-boxing wrapper for unknown callers) is the
+      multi-pattern follow-up below.
 - [ ] **An inlining-budget / cost view in the Optimizer panel** — show, per candidate function, its
       body cost, its call-site count, and the size delta inlining would cost, so the size-budget
       decision is visible (a first cut of the long-deferred "worst-case-cost / fuel view").
@@ -1469,11 +1473,55 @@ Deferred (future, building on Aether 17.0 static-argument transformation):
       self-recursive binding; extend the static/dynamic classification across a whole `letrec` SCC so a
       parameter passed unchanged through *every* call in the group (to itself and its siblings) is
       lifted into one shared wrapper enclosing the group's worker loop.
-- [ ] **Proper SpecConstr (call-pattern specialisation, Peyton Jones ICFP 2007)** — SAT + inlining
-      already specialises a *known function* in a static slot; the next step is to specialise a worker
-      for the *constructor shape* its dynamic argument is repeatedly called with (a loop forever
-      re-matching `Cons`), generating a specialised copy whose recursive calls hit it directly so the
-      per-iteration scrutiny disappears. Pairs with the decision-tree pass and the 17.0 worker form.
+- [x] **Proper SpecConstr (call-pattern specialisation, Peyton Jones ICFP 2007)** — **shipped in Aether
+      23.0** for the immediately-driven, single-call-pattern case: a worker whose dynamic argument is
+      always the same tuple/constructor shape is specialised to recurse on its unpacked fields, the box
+      never built and the scrutiny never run. The multi-pattern / per-constructor generalisation and a
+      re-boxing wrapper for unknown callers are the follow-ups below.
+
+Deferred (future, building on Aether 23.0 SpecConstr):
+
+- [ ] **Multi-pattern SpecConstr (one worker per constructor)** — today the pass fires only when *one*
+      shape flows through the slot. Generalise to a slot carrying several constructors of a sum type
+      (`Leaf`/`Node`, `Nil`/`Cons`) by emitting a `letrec` of mutually-recursive specialised workers —
+      one per call pattern seen at the recursive sites — and routing each recursive call to the worker
+      for the shape it builds, falling back to a generic copy only for shapes never built in the loop.
+- [ ] **Re-boxing wrapper for non-immediately-driven loops** — drop the "the `in`-body is a single
+      saturated self-call" restriction by keeping the original `f` as a thin wrapper that boxes the seed
+      and tail-calls the specialised worker, so a loop called from several sites, or whose seed is an
+      opaque variable, still specialises. Needs the wrapper proven cheap enough not to pessimise a
+      called-once loop (the SAT cost-model gate applies here too).
+- [ ] **Specialise on a *partial* shape (known head, opaque fields)** — a slot always called with
+      `Cons _ _` but with varying head/tail still pays the constructor tag test every iteration; strip
+      just the tag (recurse on the fields, keep them boxed) when the fields themselves are not uniform,
+      a lighter specialisation than the full unpack.
+- [ ] **SpecConstr across the decision-tree lowering** — the 12.0 decision-tree pass may already have
+      turned `match st with (a,b) -> …` into single-column switches by the time SpecConstr looks; teach
+      `scSoleDestructure` to see through a decision-tree/join-point scrutiny so the two passes compose in
+      either order rather than SpecConstr having to run first.
+- [ ] **Lift the single-use restriction with a sharing let** — when the threaded value is used more than
+      once (e.g. matched *and* returned whole in the base case), still specialise but bind the rebuilt
+      cell once at the worker head and let GVN share it, trading one retained box for the deleted
+      per-iteration scrutiny; gate on the retained box costing less than the scrutiny it removes.
+- [ ] **Nested-shape unpacking in one pass** — a slot of shape `(a, (b, c))` is unpacked one level per
+      fixpoint round today (outer tuple first, then the inner on the next round). Detect a fully-static
+      nested shape and unpack all levels at once, so a record-of-tuples accumulator flattens to scalars
+      in a single rewrite.
+- [ ] **Measured step-delta + a "specialised on" badge in the Optimizer core view** — record the actual
+      VM-step delta each SpecConstr produced (per-iteration alloc + projection × entry count) and render
+      the unpacked fields inline on the optimized core, the same way the deferred SAT "wrapper/worker
+      badge" wants to, so the box that vanished is legible at a glance.
+- [ ] **Constructor-argument *strictness*-aware unpacking** — once a demand/strictness analysis exists,
+      only unpack a field the worker actually forces; an unforced field threaded through the loop can stay
+      boxed (or be dropped by dead-argument elimination), avoiding speculative field evaluation.
+- [ ] **SpecConstr ⇄ fusion bridge** — a `foldl`/`foldr` worker that threads its accumulator as a tuple
+      (a streaming `(sum, count)` mean, a parser state) is exactly the shape SpecConstr unpacks; wire the
+      18.0 fusion output through SpecConstr so a fused pipeline's residual accumulator loop is also
+      first-order, closing the gap between deforestation and unboxing.
+- [ ] **A `specConstr` differential-fuzzer battery in `optFuzz.ts`** — fold the standalone 600-program
+      shape-threaded-loop generator used to validate 23.0 into the in-app optimizer fuzzer, so every
+      Tests run re-proves specialised ≡ naive (VM + JS) and steps-never-rise on freshly generated
+      constructor/tuple loops, not just the curated suite rows.
 - [ ] **Float the worker's loop-invariant *expressions* out too** — once SAT has captured the static
       arguments, any sub-expression of the worker body that depends only on them (not on a dynamic
       param) is loop-invariant and can be hoisted into the wrapper, computed once instead of per
@@ -1678,6 +1726,61 @@ Future editor-intelligence ideas:
 - [ ] **Inlay hints for λ-parameters** (their domain type) and for `match` pattern variables.
 - [ ] **Rename across a `deriving`/instance method** with class-aware scoping.
 
+### Aether 23.0 — call-pattern specialisation (SpecConstr): recursing on the fields, not the box (planned + shipped this session)
+
+The 17.0 static-argument transform lifts a loop-*invariant* argument out of a loop. SpecConstr
+(Peyton Jones, *Call-pattern specialisation for Haskell programs*, ICFP 2007) is its dual: it
+attacks a loop-*varying* argument that is rebuilt as the **same constructor / tuple shape** on every
+iteration only to be torn straight back apart by the function's own `match` — pure box-then-project
+churn, an allocation and a projection burned per turn for a cell that never escapes.
+
+```
+let rec loop = fn s ->                          -- a whole state threaded as one Acc
+  match s with Acc i sum sumsq ->
+    if i == 0 then (sum, sumsq)
+    else loop (Acc (i - 1) (sum + i) (sumsq + i * i))   -- boxes a fresh Acc every iteration…
+in loop (Acc 600 0 0)                            -- …only for `match s` to unbox it next turn
+```
+
+SpecConstr specialises the loop for that call pattern — it recurses on the three *fields* directly,
+so no `Acc` is ever built and the seed is unpacked too. The load-bearing trick reuses machinery the
+middle-end already proves correct: the specialised worker reconstructs the value once at its head as
+`let s = Acc i sum sumsq in …`; because the pass fires **only** when `s` is used *exactly once* — as
+that `match`'s destructuring scrutinee — the single-use value inliner copies the literal cell onto
+the `match` and the 11.0 known-constructor rule then deletes the cell **and** the test, leaving a
+clean first-order loop over the unpacked fields.
+
+- [x] **The pass** (`specConstr` in `src/lang/optimize.ts`, wired into `reduceLet` after SAT) —
+      detects a self-recursive, immediately-driven worker (`let rec f = fn p0 … -> body in f s0 …`),
+      finds a slot carrying one fixed tuple/constructor shape at the seed *and* every recursive call,
+      and — when that parameter is consumed exactly once as the destructuring `match` scrutinee —
+      rewrites the loop to recurse on the unpacked fields, reconstructing the cell single-use at the
+      worker head so the inliner + known-constructor rule melt it away.
+- [x] **Soundness, conservative throughout** — reuses SAT's escape analysis (every free `f` must be a
+      saturated call, else it declines); requires uniform shape across seed and all recursive calls
+      (so the parameter is provably that shape at run time and rebuilding from its fields is exactly
+      equal); fresh field/worker names everywhere so capture is impossible.
+- [x] **Monotone by construction** — the per-iteration allocation and projection are removed and the
+      rebuilt cell is single-use (so never built more often than before); nothing is duplicated, moved
+      or made to run on a path it did not run before, so `steps(optimized) ≤ steps(unoptimized)` holds
+      with no speculation gate. Measured **12–41 %** fewer VM steps on the canonical shape-threaded
+      loops; the gallery example drops **~30 %**.
+- [x] **Composition** — runs downstream of the 17.0 worker form, so a loop with *both* a static
+      argument *and* a shape-threaded one has the first lifted into a wrapper and the second unpacked
+      into the worker (verified: both passes fire, −37 % together). Terminates: an unpacked field is a
+      scalar, so the specialised loop offers no uniform-shape slot to re-fire on.
+- [x] **Three backends, re-proved** — emits ordinary core, so the VM, the JavaScript backend **and**
+      the WebAssembly backend (incl. GC-stress mode) all compile the specialised program and the
+      byte-for-byte VM ≡ JS ≡ WASM equivalence checks re-prove the answer is unchanged.
+- [x] **Optimizer panel** — a `specconstr` rewrite row and a "Call-pattern specialisation (SpecConstr)"
+      section naming each specialised loop, the parameter it unpacked and the shape it recognised.
+- [x] **Verification** — a 7-case **`specconstr`** suite group (tuple / named-ADT / three-field /
+      single-constructor countdown / composes-with-SAT, plus two *decline-but-correct* cases:
+      two-different-constructors-per-call and a value kept whole), each proving VM(specialised) ≡
+      JS(naive) ≡ expected; a standalone 600-program differential fuzzer of random tuple/constructor-
+      threaded loops (594 fired, all VM ≡ JS, all monotone). Full CI gate (scope + conformance + lint +
+      tsc + build) green.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -1687,6 +1790,54 @@ Future editor-intelligence ideas:
 
 ## Session log
 
+- 2026-06-28 (claude): **Aether 23.0 — call-pattern specialisation (SpecConstr): recursing on the
+  fields, not the box.** The 17.0 static-argument transform lifts a loop-*invariant* argument out of a
+  recursive loop; its dual waste went untouched until now — a loop-*varying* argument that is rebuilt as
+  the **same constructor / tuple shape** on every iteration only to be torn straight back apart by the
+  function's own `match`. A state machine threaded as one `Acc i sum sumsq` value, an accumulator carried
+  as a `(sum, product)` tuple, a zipper or parser state: every turn boxes a fresh cell on the heap and
+  the next call's `match` immediately unboxes it — an allocation and a projection burned per iteration for
+  a value that never escapes the loop. 23.0 adds the first-class **SpecConstr** pass (Peyton Jones,
+  *Call-pattern specialisation for Haskell programs*, ICFP 2007), the marquee item the 17.0 notes deferred
+  ("SAT + inlining already specialises a *known function*; the next step is to specialise a worker for the
+  *constructor shape* its dynamic argument is repeatedly called with"). `specConstr` (in `optimize.ts`,
+  wired into `reduceLet`'s recursive branch right after SAT) detects a self-recursive, *immediately driven*
+  worker — `let rec f = fn p0 … p_{k-1} -> body in f s0 … s_{k-1}`, the same shape SAT seeds — and looks
+  for a slot `j` that carries **one fixed shape** (a tuple of fixed arity, or one constructor) at the seed
+  *and* at every recursive call. When it finds one whose parameter is consumed **exactly once**, as that
+  shape's destructuring `match` scrutinee, it rewrites the loop to recurse on the shape's *fields* directly
+  (`f (s+i, p*i) (i-1)` ⟶ `g (s+i) (p*i) (i-1)`) — no cell boxed — and reconstructs the whole value once at
+  the worker's head as `let p_j = (s, p) in body`. The reconstruction is the load-bearing trick: because
+  that binding is single-use, the value inliner copies the literal cell straight onto the `match` and the
+  11.0 known-constructor rule then deletes **both** the cell and the test, leaving a clean first-order loop
+  over the unpacked fields — the whole box/unbox pair evaporates by composing rewrites the middle-end
+  already proves correct, exactly the way SAT leans on the existing inliner. Soundness is conservative and
+  reuses SAT's own escape analysis: every free occurrence of `f` must be a saturated call (a bare or
+  partial reference *escapes* and the pass declines); the slot's shape must be uniform across the seed and
+  all recursive calls (so `p_j` is provably that shape at run time and rebuilding it from its fields is
+  *exactly* equal); a value used twice, kept whole, or threaded as two different constructors is left
+  untouched. The pass is **monotone by construction** — the per-iteration allocation and projection are
+  removed and the rebuilt cell is single-use, so it is never built more often than before; nothing is
+  duplicated, moved, or run on a path that did not run it — so `steps(optimized) ≤ steps(unoptimized)`
+  holds with no speculation gate, and it composes *downstream* of SAT (a loop with both a static argument
+  and a shape-threaded one has the first lifted into a wrapper and the second unpacked into the worker —
+  both fire, −37 % together), terminating because an unpacked field is a scalar that offers no uniform-shape
+  slot to re-fire on. Because it emits ordinary core, the bytecode VM, the JavaScript backend **and** the
+  WebAssembly backend (including GC-stress mode, which collects before every allocation) all compile the
+  specialised program and the byte-for-byte VM ≡ JS ≡ WASM equivalence checks re-prove the answer never
+  moved. Measured **12–41 %** fewer VM steps on the canonical shape-threaded loops; a new `specconstr`
+  gallery example — a countdown and two running totals carried as one `Acc` — drops **~30 %** (19 900 →
+  13 845 steps) with the `Acc` gone entirely. The **Optimizer panel** gained a `specconstr` rewrite row and
+  a "Call-pattern specialisation (SpecConstr)" section naming each specialised loop, its parameter and the
+  shape it unpacked; the Tour and About pages gained first-class SpecConstr write-ups (the 17.0 sections,
+  which advertised the effect "reached by composition", now point at the direct pass). Verification: the
+  self-test suite grew **103 → 110** with a focused `specconstr` group — tuple / named-ADT / three-field /
+  single-constructor-countdown / composes-with-SAT, plus two *declines-but-stays-correct* cases (two
+  different constructors per call, and a state also kept whole) — each proving VM(specialised) ≡ JS(naive)
+  ≡ expected; the existing 400-program optimizer fuzzer stays 400/400 monotone; and a standalone
+  600-program differential fuzzer of random tuple/constructor-threaded loops (594 fired SpecConstr) found
+  every one VM ≡ JS and `steps(on) ≤ steps(off)`. Full CI gate (scope + conformance + lint + tsc + build)
+  green.
 - 2026-06-27 (claude): **Aether 22.0 — the editor becomes a language server.** Twenty-one releases
   deepened the compiler; the editor stayed a syntax-highlighted `<textarea>`. 22.0 turns it into an
   IDE without adding a line of type theory — a new pure module `src/lang/semantics.ts` re-reads the
