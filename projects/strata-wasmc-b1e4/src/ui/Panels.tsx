@@ -248,6 +248,7 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         (alias-based store→load forwarding, redundant-load &amp; dead-store elimination, with distinct
         allocations proven disjoint) →
         {comp.level >= 2 ? ' global value numbering (CSE) →' : ''}
+        {comp.level >= 2 ? ' partial-redundancy elimination (GVN-PRE: an expression recomputed after a control-flow merge where only some incoming paths already produced it is inserted on the lacking edges and fused with a φ — turning the recomputation into a reuse, the value-based form of lazy code motion) →' : ''}
         {comp.level >= 2 ? ' operator strength reduction on induction variables (loop `i*stride` → a running add) →' : ''} algebraic simplification →
         {comp.level >= 2 ? ' loop-invariant code motion → code sinking (a value used on only one branch arm pushed into it — partial dead-code elimination) → code hoisting (a value computed in both arms pulled up above the branch — very-busy expressions) →' : ''} dead-code elimination → CFG
         simplification (block coalescing), iterated to a fixed point

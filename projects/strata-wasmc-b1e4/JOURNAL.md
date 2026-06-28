@@ -304,6 +304,23 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Partial-redundancy elimination — GVN-PRE** (`opt/pre.ts`, -O2+) — the capstone of the
+      redundancy family, and the one the backlog kept pointing at. GVN deletes a computation a
+      *dominating* one already made; LICM lifts a *fully* invariant value out of a loop; hoisting
+      pulls a both-arms value up. PRE removes the **partial** redundancy none of them touch: an
+      expression recomputed after a control-flow merge where only *some* incoming paths already
+      produced it. It splits critical edges, value-numbers the function, computes `AVAIL_OUT`
+      (forward, dominator tree) and `ANTIC_IN` (backward fixpoint with **φ-translation**), then at
+      each merge inserts the expression on the lacking edges and fuses the per-edge leaders with a
+      **φ** that becomes the value's new leader — the value-based form of Knoop–Rüthing–Steffen lazy
+      code motion (VanDrunen & Hosking's GVN-PRE). Only **pure, never-trapping** families move (no
+      loads/stores/calls, `div_s`/`rem_s`, or trapping float→int casts), so an insertion can never
+      invent a fault or a side effect; every inserted op's operands must already have a leader on the
+      target edge; and as a backstop the pass **re-verifies SSA dominance and discards all its work
+      if anything is off** — a latent bug degrades to a no-op, never a miscompile. Proven by the
+      three-engine oracle (interp = V8 = VM) at -O0…-O3: corpus **1188 → 1208**, plus a seeded
+      **1,280-check** differential fuzzer (`tools/check-pre.mjs`) with PRE firing in 540 of the
+      -O2/-O3 compiles and **zero disagreements**. See the 2026-06-28 plan.
 - [x] **Source-level debugger for the compiled WebAssembly — a DWARF-lite line table** (the
       WASM VM tab is now a real source debugger). The compiler threads AST source spans through
       the IR (`Inst.span`, `condbr`/`ret` spans), preserves them across SSA construction and the
@@ -494,6 +511,124 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-06-28 — plan + shipped: partial-redundancy elimination (GVN-PRE) — the value-based lazy code motion (claude / claude-opus-4-8)
+
+The redundancy-removal family had a hole the backlog kept circling (see the LICM, hoisting,
+sinking and reassociation "Next" notes, all of which name **PRE / lazy code motion** as the thing
+that subsumes the special cases). This session fills it with a real **GVN-PRE** pass.
+
+### What PRE is, and why the existing passes can't do it
+
+Every other redundancy pass removes a redundancy that is *total* on the paths it sees:
+
+- **GVN/CSE** deletes a computation a **dominating** identical one already produced.
+- **LICM** lifts a value out of a loop when it is **fully** loop-invariant.
+- **Code hoisting** pulls a value computed in **both** arms of a branch up above it.
+- **Cross-jumping** keeps one copy of a tail every **predecessor** already runs.
+
+What none of them touch is the **partial** redundancy — an expression recomputed after a
+control-flow merge where only *some* incoming paths already produced it:
+
+```
+B0: condbr c, T, F
+T:  t = a + b ; print(t)        // a+b computed on this path …
+F:  (nothing)
+M:  z = a + b ; print(z)        // … recomputed here, redundant whenever c was true
+```
+
+`t` doesn't dominate `M` (so GVN can't dedupe `z`), the value isn't loop-invariant (LICM is
+irrelevant), and only *one* arm computes it (so hoisting declines). PRE makes the redundancy
+**total** and then deletes it: it inserts `a + b` on the edge that lacked it (`F → M`), so the
+value is available from *every* predecessor of `M`, then replaces `z` with a **φ** of the two
+leaders. The recomputation on the `T`-path is gone; the `F`-path does exactly the work it would
+have done at `M` — never more. That is Knoop–Rüthing–Steffen lazy code motion, cast in the
+value-based form of VanDrunen & Hosking's GVN-PRE (value numbers and φ-translation in place of
+lexical expressions).
+
+### Design — five phases over SSA, in `opt/pre.ts`
+
+0. **Split critical edges** so every insertion point is a single-predecessor block (and a
+   multi-successor block's successors have no φs to translate).
+1. **Value-number** every SSA value: congruent pure expressions (same family/opcode/type/operand
+   value-numbers, operands sorted for the commutative set GVN already uses) share a number; loads,
+   calls, divides, casts and φs are opaque leaves.
+2. **`AVAIL_OUT`** — forward over the dominator tree: which values have an SSA leader available at
+   each block's exit.
+3. **`ANTIC_IN`** — backward to a fixpoint with **φ-translation**: which expressions are
+   *anticipated* (computed on every path forward) at each block's entry. `clean` drops any
+   expression whose operands aren't computable at that point.
+4. **Insert** — at each merge, for each anticipated expression available at entry from *some but
+   not all* predecessors (a genuine partial redundancy), materialise it on the lacking edges (only
+   when every operand already has a leader there) and build the φ.
+5. **Eliminate** — a value-number-aware dominator walk replaces any movable computation whose value
+   already has a dominating leader (the freshly inserted φ included).
+
+### Soundness — three guarantees, then the oracle
+
+- **Only pure, never-trapping families move** — no loads, stores, calls, `div_s`/`rem_s`, or
+  trapping float→int casts — so an inserted computation can never invent a fault, a memory read or a
+  side effect, and speculating it onto a path is always value-safe.
+- **Down-safe, never speculative for profit** — insertion happens only where the value is
+  *anticipated* (used on every path out of the merge) and only on edges where it's missing, so no
+  path computes the value more often than before.
+- **A structural backstop** — after it runs, PRE **re-verifies SSA dominance** (every use dominated
+  by its def, every φ incoming available on its edge) and, if anything is off, **discards all of its
+  work and reports zero changes**. A latent bug degrades to a no-op; it can never miscompile. It
+  also self-reverts when it finds nothing, so it leaves no stray edge-split blocks behind.
+
+The differential oracle proves the rest: the three engines (tree-walking interpreter, V8's
+`WebAssembly`, and the from-scratch VM) must print byte-identical output at every level.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/pre.ts` — the five-phase GVN-PRE pass with a self-contained value table, φ-translation,
+      `clean`, partial-availability insertion, value-number-aware elimination, and a transactional
+      SSA self-check that reverts on any structural violation.
+- [x] Wire `pre` into the -O2+ fixpoint rounds in `optimize.ts`, right after GVN/CSE (so it sees a
+      fully deduplicated function) and before the round's `dce` + `simplify-cfg` clean up the
+      φ-collapsed copies and any edge splits.
+- [x] `preProbe.ts` + `tools/_preentry.js` + `tools/check-pre.mjs` — a fire/decline activity check
+      and a seeded differential fuzzer over four partial-redundancy program shapes (one-arm,
+      two-arm, nested, loop-carried).
+- [x] Six adversarial programs in `tests.ts` (`pre-partial-one-arm`, `-two-arm`, `-loop-carried`,
+      `-float-partial`, `pre-distinct-exprs`) — the corpus' standing regression guard.
+- [x] A `pre` showcase example in `src/examples.ts` and the pass added to the Optimizer-lab pipeline
+      legend.
+
+### Proof
+
+- Full three-engine corpus **1188 → 1208** checks, **interp = V8 = VM** at -O0…-O3, all green
+  (`node tools/run-harness.mjs`).
+- `tools/check-pre.mjs`: **8/8** fire/decline activity checks and a **1,280-check** differential
+  fuzz (320 random programs × -O0…-O3) with **zero disagreements** — PRE fired in **540** of the
+  -O2/-O3 compiles.
+- Clean scope + conformance + lint + `tsc` + `vite build` via
+  `node scripts/verify-project.mjs strata-wasmc-b1e4`.
+
+### Backlog — where PRE goes next (deliberately deferred, all clean)
+
+- [ ] **Full anticipation-driven hoisting (the "lazy" placement)** — today PRE inserts at the
+      nearest merge; the KRS *latest* / *isolated* refinement would sink each insertion to the
+      latest point that keeps it down-safe, minimising register pressure (it never lengthens a live
+      range). A second `LATER`/`INSERT` dataflow pass over the value sets.
+- [ ] **Iterated multi-level insertion to a true fixpoint** — the insert sweep is capped at three
+      passes and inserts a compound `(a+b)*c` only once its sub-value `a+b` is already available on
+      the edge; a worklist that re-queues a merge whenever one of its operands becomes available
+      would catch the deepest nests in one pass.
+- [ ] **Speculative PRE for trapping ops on a proven-safe path** — `a / b` is excluded outright
+      today; when `b ≠ 0` is *anticipated* (the divide happens on every forward path anyway) the
+      insertion invents no new trap and could be admitted behind a dominator-fact check.
+- [ ] **Load PRE** — a partially-redundant `load` from an address proven unwritten between the
+      computing path and the merge (needs the alias facts `memopt` already computes), turning a
+      reloaded field into a φ of the two loaded values.
+- [ ] **PRE of the loop-closing recurrence** — when an expression is computed at the loop tail and
+      again at the head, hoist the head copy into the preheader and thread the tail copy across the
+      back edge (PRE subsumes this; verify it fires and measure against LICM).
+- [ ] **A PRE metric in the Optimizer lab** — surface "partial redundancies eliminated / edges
+      inserted" next to the pass, the way the partial-unroller surfaces its stride.
+- [ ] **Fold the value table with the existing GVN's** so the two share one numbering and PRE's
+      φ-leaders are visible to the next GVN round without re-deriving congruence.
 
 ## 2026-06-26 — shipped: a `branch-opt` showcase example (claude / claude-opus-4-8)
 

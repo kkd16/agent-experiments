@@ -3056,4 +3056,73 @@ fn main(){ for (let k = 0; k < 9; k = k + 1) { print(fold(k * 2 + 1, k * 777)); 
   print(s); print(q);
 }`,
   },
+  {
+    // PRE — a partial redundancy: `a*b + c` is computed inside the guarded arm
+    // (the `print` blocks if-conversion, and the arm doesn't dominate the merge so
+    // GVN can't dedupe), then recomputed after the merge. PRE inserts it on the
+    // lacking edge and fuses with a φ. The result must match the interpreter,
+    // which is exactly what makes the optimisation observably correct.
+    name: 'pre-partial-one-arm',
+    source: `fn main(){
+  let g = 0; for (let k = 0; k < 90; k = k + 1) { g = g + k * 5 - 2; }
+  let a = (g & 15) - 6; let b = (g & 7) - 3; let c = (g & 31) - 12; let s = 0;
+  if (a > b) { let t = a * b + c; print(t); s = s + 1; }
+  let z = a * b + c;
+  print(z); print(s);
+}`,
+  },
+  {
+    // PRE across a two-armed branch where only one arm computes the expression,
+    // plus a second, nested expression to exercise multi-expression insertion.
+    name: 'pre-partial-two-arm',
+    source: `fn main(){
+  let g = 0; for (let k = 0; k < 70; k = k + 1) { g = g + k * 3 - 1; }
+  let a = (g & 15) - 5; let b = (g & 7) - 2; let c = (g & 31) - 13; let s = 0;
+  if ((a ^ c) > 0) { let t = (a + b) * c; print(t); s = s + a; } else { print(s - 1); s = s - b; }
+  let z = (a + b) * c;
+  let w = (a + b) * c - a;
+  print(z + w + s);
+}`,
+  },
+  {
+    // PRE inside a loop body: the guarded arm computes `e`, the post-merge use
+    // recomputes it; across the back edge the value is partially redundant. The
+    // loop also forces a φ whose translation PRE must get right.
+    name: 'pre-loop-carried',
+    source: `fn main(){
+  let g = 0; for (let k = 0; k < 50; k = k + 1) { g = g + k * 7 - 3; }
+  let a = (g & 15) - 4; let b = (g & 7) - 3; let c = (g & 31) - 11; let s = 0;
+  for (let i = 0; i < 6; i = i + 1) {
+    if (((i ^ a) & 1) == 0) { let t = a * c - b; print(t); s = s + 1; }
+    let z = a * c - b;
+    print(z + i);
+  }
+  print(s);
+}`,
+  },
+  {
+    // PRE on float expressions: moving/reusing a pure f64 product is exact (PRE
+    // never reassociates), so the printed values must be bit-identical to -O0.
+    name: 'pre-float-partial',
+    source: `fn main(){
+  let g = 0; for (let k = 0; k < 40; k = k + 1) { g = g + k - 1; }
+  let x = float(g & 7) + 0.5; let y = float(g & 3) - 1.25; let s = 0.0;
+  if (x > y) { let t = x * y + x; print(t); s = s + 1.0; }
+  let z = x * y + x;
+  print(z); print(s);
+}`,
+  },
+  {
+    // Negative: the post-merge expression (`a + d`) differs from the arm's
+    // (`a + c`), so PRE must NOT fuse them — a guard against over-eager value
+    // numbering. Correctness is identical at every level regardless.
+    name: 'pre-distinct-exprs',
+    source: `fn main(){
+  let g = 0; for (let k = 0; k < 60; k = k + 1) { g = g + k * 2 - 1; }
+  let a = (g & 15) - 6; let c = (g & 31) - 12; let d = (g & 3) + 2; let s = 0;
+  if (a > c) { let t = a + c; print(t); s = s + 1; } else { s = s - 1; }
+  let z = a + d;
+  print(z + s);
+}`,
+  },
 ];

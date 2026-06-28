@@ -16,6 +16,7 @@ import { vectorize } from './vectorize';
 import { memOpt } from './memopt';
 import { sroa } from './sroa';
 import { osr } from './osr';
+import { pre } from './pre';
 import { reassociate } from './reassoc';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
@@ -925,6 +926,15 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('reassociate' + suffix, reassociate);
     if (level >= 2) record('gvn/cse' + suffix, gvn);
+    // Partial-redundancy elimination (GVN-PRE): GVN has just removed the fully
+    // redundant computations, so what's left for PRE is the *partial* ones — an
+    // expression recomputed after a merge where only some incoming paths already
+    // produced it. PRE inserts it on the lacking edges and fuses the results with
+    // a φ, turning the recomputation into a reuse. Runs right after GVN/CSE so it
+    // sees a value-numbered, fully-deduplicated function; the dce + simplify-cfg
+    // at the round's tail then sweep the φ-collapsed copies and any empty edge
+    // splits it leaves behind.
+    if (level >= 2) record('pre' + suffix, pre);
     // Correlated-branch folding decides a branch whose condition a dominating branch
     // already tested (the same SSA value, post-GVN) — a runtime branch SCCP can't fold.
     // Runs right after GVN/CSE has unified the two identical conditions to one value.
