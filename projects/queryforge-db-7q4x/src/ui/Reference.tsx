@@ -30,6 +30,15 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Materialized views (incremental)',
+    entries: [
+      { syntax: 'CREATE MATERIALIZED VIEW mv AS SELECT …', note: 'Unlike a plain VIEW (re-evaluated on every use), a MATERIALIZED VIEW stores its result and keeps it correct incrementally — computing the delta to the view from the delta to the base tables, never recomputing — using the DBSP / Z-set model. SELECT … FROM mv then scans the stored, maintained rows like a real relation. Try it in the IVM Lab, which proves the stored contents equal a from-scratch recompute byte-for-byte after every change.' },
+      { syntax: 'REFRESH MATERIALIZED VIEW mv · DROP MATERIALIZED VIEW [IF EXISTS] mv', note: 'REFRESH recomputes from scratch (the maintenance oracle). A base table cannot be dropped while a materialized view reads it. Snapshot/restore serialize only the definitions and re-derive the contents, so a transaction ROLLBACK restores every view exactly.' },
+      { syntax: 'maintainable subset — σ / π / ⋈ / aggregate', note: 'A single-level SELECT over base tables: WHERE/ON filters, projection, and INNER/CROSS joins (each table once). Aggregates COUNT / COUNT(DISTINCT) / SUM / AVG / MIN / MAX with GROUP BY, an aggregate FILTER (WHERE …), a HAVING predicate, and arbitrary scalar projections over the grouping keys and aggregate results. SUM/AVG are exact over INTEGER and DECIMAL columns (a BigInt-backed running total, so retractions never drift). Anything outside the subset is rejected at CREATE with a precise reason.' },
+      { syntax: 'mv AS SELECT … a LEFT/RIGHT/FULL JOIN b ON …', note: 'A single two-table outer join is maintained by tracking each preserved-side row’s live match count: it shows its matched rows while matched and one NULL-extended row while unmatched, flipping as its last/first match arrives or leaves from either side.' },
+    ],
+  },
+  {
     title: 'Constraints & referential integrity',
     entries: [
       { syntax: 'col TYPE NOT NULL · col TYPE DEFAULT expr', note: 'NOT NULL rejects a NULL; DEFAULT supplies the value when the column is omitted on INSERT (e.g. DEFAULT 0, DEFAULT CURRENT_TIMESTAMP).' },

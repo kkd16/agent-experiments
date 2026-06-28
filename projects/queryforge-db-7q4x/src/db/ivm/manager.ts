@@ -16,7 +16,7 @@
 import { SqlError } from '../types'
 import type { SelectStmt } from '../ast'
 import type { Database, Row, Table } from '../catalog'
-import { MaterializedView } from './dataflow'
+import { MaterializedView, type IvmPlanNode } from './dataflow'
 import type { ZSetEntry } from './zset'
 
 /** The serialized form stored in a database snapshot (definition only). */
@@ -80,6 +80,11 @@ export class MatViewManager {
     if (!view) return
     this.views.delete(lc)
     for (const t of view.baseTables) this.byTable.get(t)?.delete(lc)
+  }
+
+  /** The compiled incremental dataflow of a view, for EXPLAIN-style display. */
+  explain(name: string): IvmPlanNode | undefined {
+    return this.views.get(name.toLowerCase())?.explain()
   }
 
   /** Recompute a view from scratch (the `REFRESH MATERIALIZED VIEW` oracle). */
