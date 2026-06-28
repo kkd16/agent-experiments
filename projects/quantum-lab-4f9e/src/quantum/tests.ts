@@ -1863,6 +1863,16 @@ export function runTests(): TestResult[] {
       }
       add('Quantum walks', 'Hypercube Q_d has perfect state transfer to the antipode at t = π/2', worst < 1e-9, `max |1−|amp|²| ${worst.toExponential(1)}`);
     }
+    // (8b) Engineered weighted path (Christandl): end-to-end perfect state transfer at t = π for any n.
+    {
+      let worst = 0;
+      for (const m of [2, 3, 5, 8]) {
+        const g = buildGraph('wpath', m);
+        const eng = ctqwEngine(g.adjacency);
+        worst = Math.max(worst, Math.abs(eng.transport(0, m - 1, Math.PI) - 1));
+      }
+      add('Quantum walks', 'Weighted path (spin-chain couplings) has end-to-end perfect state transfer at t = π', worst < 1e-9, `max |1−|amp|²| ${worst.toExponential(1)}`);
+    }
     // (9) Spatial search (Childs–Goldstone) on Kₙ at γ=1/N reaches success ≈ 1 at t ≈ (π/2)√N.
     {
       let ok = true; const details: string[] = [];
