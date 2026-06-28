@@ -1687,3 +1687,78 @@ exhaustive brute-force oracle.
 - [x] **Implication-graph view of an arbitrary CNF's binary core** — extract the units + binaries of a
       general formula and show the 2-SAT skeleton the real solver propagates over. *(Done — the
       "decide the binary core" toggle, with sound one-way semantics.)*
+
+### Session 21 — from *rational* to *integer*: the Omega test (a tenth studio)
+
+Linear arithmetic over the **rationals** has lived here since the SMT layer's simplex. Over the
+**integers** it is a different, harder beast — the Diophantine question, decidable but where the
+rational projection of a variable can be perfectly nonempty while *no integer* survives between the
+bounds. The SMT layer already reaches QF_LIA through *simplex + branch-and-bound*; this session adds
+a **second, completely independent route** as a first-class, visual studio: a from-scratch
+implementation of the **Omega test** (William Pugh, 1991), the classic exact variable-elimination
+decision procedure for quantifier-free linear integer arithmetic.
+
+Why a from-scratch Omega test is worth it: it makes the rational↔integer gap *visible*. You can
+watch the **real shadow** (Fourier–Motzkin over ℚ) say "maybe", the **dark shadow** (the tightened
+`β·U − α·L ≥ (α−1)(β−1)` projection, sound for SAT) settle most cases outright, and the
+**gray-shadow splinters** (Pugh's exact-projection theorem) clean up exactly the residue where an
+integer hides in a sub-unit-width interval. It is a genuinely different algorithm from
+branch-and-bound, so it doubles as an oracle on the same theory.
+
+New module `src/lia/` and a tenth studio. Architecture:
+- `src/lia/lin.ts` — exact affine forms `c + Σ tᵢ·xᵢ` on **BigInt** (dark-shadow products multiply
+  coefficients, so they must not overflow): scale/add/sub/substitute, gcd, floor/ceil division, and
+  the **centered remainder** that drives equality reduction.
+- `src/lia/omega.ts` — the decision procedure. Equality elimination by a **Euclid-style reduction**
+  (centered remainders shrink the off-pivot coefficients toward the gcd, with a fast ±1-coefficient
+  substitution), then per-variable projection: **dark shadow → (if empty) real shadow → (if the gap
+  is open) gray-shadow splinters**, recursing to a constant system. Returns a certificate-bearing
+  integer model on SAT; a node budget yields a clean error rather than hanging.
+- `src/lia/parse.ts` — a tolerant constraint parser (`=`, `≤`, `≥`, strict `<`/`>` made exact over
+  the integers, coefficients `3x` / `3*x`, comments, `;`-separated constraints).
+- `src/lia/brute.ts` — an exhaustive integer oracle over a finite box, sharing no code with Omega.
+- `src/lia/examples.ts`, `src/lia/selfcheck.ts`, `src/lia/index.ts`, `components/LiaStudio.{tsx,css}`.
+
+Planned and shipped this session:
+- [x] **Exact BigInt affine algebra** (`lin.ts`) — forms, substitution, gcd tightening, floor/ceil
+      division, centered remainder; no floating point anywhere.
+- [x] **Equality elimination** — fast path when a coefficient is ±1; otherwise a Euclid reduction via
+      a fresh variable and centered remainders, provably integer-preserving and terminating.
+- [x] **Inequality projection** — real shadow (rational Fourier–Motzkin, sound for UNSAT) and the
+      **dark shadow** (tightened, sound for SAT) generated per lower×upper bound pair, with the
+      one-sided/exact cases (`α=1` or `β=1`) short-circuited.
+- [x] **Gray-shadow splinters** — when the dark shadow is empty but the real shadow is not, enumerate
+      `β·z = L + i` for `i ∈ 0..⌊(m·β − m − β)/m⌋` as equality subproblems (Pugh's exact projection),
+      making the test **complete**.
+- [x] **Model reconstruction** — back-substitution lifts the eliminated variables; the projected
+      variable is recovered from `[⌈max L/β⌉, ⌊min U/α⌋]` (guaranteed nonempty by the dark shadow).
+- [x] **Certificate check** — every SAT verdict's model is re-validated against the original
+      constraints (`verifyModel`), in the engine *and* in the UI.
+- [x] **Constraint parser** with strict-inequality lowering and a friendly error/line report.
+- [x] **LIA Studio** — editor, example gallery, verdict pill, the integer model, a collapsible
+      **elimination trace**, and an **independent exhaustive-integer oracle** rendered beside every
+      verdict (confirms SAT outright; corroborates UNSAT inside the searched box).
+- [x] **Self-test** (`runLiaChecks`) — **904 assertions**: 600 randomized *bounded* systems where
+      exhaustive brute force is a *complete* oracle (the box is the whole feasible region) and must
+      match the Omega verdict exactly, every SAT model re-validated, plus hand-derived classics
+      (Frobenius 43/44, parity contradictions, Bézout, dark-shadow gaps, Euclid reduction). A
+      separate 4000-instance stress run agreed with brute force on every verdict and model, **zero
+      mismatches**.
+- [x] Wired the **LIA Studio** tab into `App.tsx`, extended the footer, refreshed `project.json`
+      (description + tags). `verify-project.mjs` (scope + conformance + lint + tsc + build) green;
+      the live app drives clean in headless Chromium with the in-browser self-test passing 904/904
+      and zero console errors.
+
+**Ideas for next time (open):**
+- [ ] **Lexicographic / Gomory cutting-plane mode** — a second integer engine beside Omega, racing
+      the two the way the Solver Lab races CDCL heuristics.
+- [ ] **Omega-test UNSAT certificates** — emit the chain of sound projections (a Farkas-style integer
+      witness) and re-check it independently, the way DRAT re-checks SAT refutations.
+- [ ] **Integer optimization** — minimize/maximize a linear objective over the feasible lattice
+      (branch-and-bound on top of the decision procedure), with the optimum cross-checked by brute force.
+- [ ] **Visualize the shadows in 2-D** — draw the polytope, the real shadow's interval, the dark
+      shadow's tightening and the splinter lines for a two-variable system.
+- [ ] **Bridge to the SMT layer** — expose Omega as an alternative QF_LIA theory solver inside DPLL(T)
+      and check it against the existing simplex branch-and-bound on the SMT example suite.
+- [ ] **Presburger quantifier elimination** — extend from the existential/quantifier-free fragment to
+      full Presburger arithmetic (∀/∃ alternation) by the Omega test's `gist`/elimination machinery.

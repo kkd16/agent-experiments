@@ -23,9 +23,10 @@ import { PbStudio } from './components/PbStudio'
 import { PhysStudio } from './components/PhysStudio'
 import { SimplifyStudio } from './components/SimplifyStudio'
 import { TwoSatStudio } from './components/TwoSatStudio'
+import { LiaStudio } from './components/LiaStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'twosat' | 'lab'
+type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'twosat' | 'lia' | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -107,7 +108,9 @@ export default function App() {
                             ? 'Incomplete SAT by stochastic local search & survey propagation — SAT as statistical physics.'
                             : mode === 'simplify'
                               ? 'CNF preprocessing & inprocessing: equisatisfiable simplification with model reconstruction.'
-                              : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                              : mode === 'lia'
+                                ? 'Quantifier-free integer linear arithmetic (QF_LIA) decided exactly by the Omega test.'
+                                : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -139,6 +142,9 @@ export default function App() {
           <button className={mode === 'twosat' ? 'active' : ''} onClick={() => setMode('twosat')}>
             2-SAT Studio
           </button>
+          <button className={mode === 'lia' ? 'active' : ''} onClick={() => setMode('lia')}>
+            LIA Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -153,6 +159,7 @@ export default function App() {
       {mode === 'phys' && <PhysStudio />}
       {mode === 'simplify' && <SimplifyStudio />}
       {mode === 'twosat' && <TwoSatStudio />}
+      {mode === 'lia' && <LiaStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -272,8 +279,10 @@ export default function App() {
         plus a <b>preprocessing / inprocessing engine</b> — unit &amp; pure-literal elimination, subsumption,
         self-subsuming resolution, <b>bounded variable elimination</b>, equivalent-literal substitution by SCCs of the
         binary implication graph, and blocked-clause elimination — each with a <b>model-reconstruction</b> stack that
-        provably lifts any model of the simplified formula back to the original, cross-checked exhaustively —
-        all hand-written in TypeScript.
+        provably lifts any model of the simplified formula back to the original, cross-checked exhaustively · plus a
+        standalone <b>QF_LIA</b> decision procedure by the <b>Omega test</b> (Pugh 1991) — real / dark / gray-shadow
+        variable elimination with Euclid equality reduction and certificate-checked integer models, every verdict
+        corroborated by an exhaustive integer oracle — all hand-written in TypeScript.
       </footer>
     </div>
   )
