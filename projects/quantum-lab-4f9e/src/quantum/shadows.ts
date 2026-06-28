@@ -741,3 +741,73 @@ export function cliffordChannelExpectation(state: QuantumState): Matrix {
   }
   return out;
 }
+
+// ───────────────────────────── application: Hamiltonian energy ─────────────────────────────
+
+/** A local-Hamiltonian term: a weighted Pauli string with a display label. */
+export interface HamTerm {
+  pauli: PauliString;
+  coeff: number;
+  label: string;
+}
+
+export type HamModel = 'tfim' | 'heisenberg';
+
+/** Transverse-field Ising: H = −Σ Zᵢ Zᵢ₊₁ − h Σ Xᵢ (open boundaries). */
+export function tfimTerms(n: number, h: number): HamTerm[] {
+  const terms: HamTerm[] = [];
+  for (let q = 0; q + 1 < n; q++) {
+    const p: PauliString = Array(n).fill('I');
+    p[q] = 'Z';
+    p[q + 1] = 'Z';
+    terms.push({ pauli: p, coeff: -1, label: `−Z${q}Z${q + 1}` });
+  }
+  for (let q = 0; q < n; q++) {
+    const p: PauliString = Array(n).fill('I');
+    p[q] = 'X';
+    terms.push({ pauli: p, coeff: -h, label: `−h·X${q}` });
+  }
+  return terms;
+}
+
+/** Heisenberg XXZ: H = Σ (XᵢXᵢ₊₁ + YᵢYᵢ₊₁ + Δ ZᵢZᵢ₊₁) (open boundaries). */
+export function heisenbergTerms(n: number, delta: number): HamTerm[] {
+  const terms: HamTerm[] = [];
+  const add = (q: number, p: Pauli, coeff: number) => {
+    const s: PauliString = Array(n).fill('I');
+    s[q] = p;
+    s[q + 1] = p;
+    terms.push({ pauli: s, coeff, label: `${coeff === 1 ? '' : 'Δ·'}${p}${q}${p}${q + 1}` });
+  };
+  for (let q = 0; q + 1 < n; q++) {
+    add(q, 'X', 1);
+    add(q, 'Y', 1);
+    add(q, 'Z', delta);
+  }
+  return terms;
+}
+
+export function hamiltonianTerms(model: HamModel, n: number, param: number): HamTerm[] {
+  return model === 'tfim' ? tfimTerms(n, param) : heisenbergTerms(n, param);
+}
+
+/** Exact ⟨H⟩ = Σ coeff·⟨P⟩ from the state vector. */
+export function exactEnergy(state: QuantumState, terms: HamTerm[]): number {
+  let e = 0;
+  for (const t of terms) e += t.coeff * exactPauli(state, t.pauli);
+  return e;
+}
+
+/**
+ * The headline application: estimate the energy ⟨H⟩ of a local Hamiltonian from a SINGLE Pauli
+ * shadow. Each snapshot yields a one-shot energy Σ coeff·tr(Pρ̂); median-of-means turns the cloud
+ * into a robust point estimate with a confidence proxy — no per-term re-measurement.
+ */
+export function estimateEnergy(snaps: PauliSnapshot[], terms: HamTerm[], K = 10): MoMEstimate {
+  const values = snaps.map((snap) => {
+    let e = 0;
+    for (const t of terms) e += t.coeff * pauliSnapshotEstimate(snap, t.pauli);
+    return e;
+  });
+  return medianOfMeans(values, K);
+}

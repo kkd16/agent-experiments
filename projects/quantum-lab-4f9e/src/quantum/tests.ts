@@ -99,6 +99,7 @@ import {
   pauliEstimatorExpectation, pauliEstimatorSecondMoment, pauliWeight, parsePauli,
   collectCliffordShadows, estimateCliffordFidelity, estimateCliffordPurity,
   cliffordChannelExpectation, cliffordGroup,
+  hamiltonianTerms, estimateEnergy, exactEnergy,
 } from './shadows';
 
 export interface TestResult {
@@ -1781,6 +1782,18 @@ export function runTests(): TestResult[] {
       const f = estimateCliffordFidelity(snaps, st);
       const p = estimateCliffordPurity(snaps, 4, shadowRng(5));
       add('Classical shadows', 'Global-Clifford fidelity ≈ 1 and purity ≈ 1 (variance independent of locality)', Math.abs(f - 1) < 0.12 && Math.abs(p - 1) < 0.12, `F=${f.toFixed(3)}, Tr(ρ²)=${p.toFixed(3)}`);
+    }
+
+    // (11) The headline application: estimating a local Hamiltonian's energy ⟨H⟩ from one shadow
+    // (TFIM and Heisenberg), the workload behind VQE / quantum chemistry.
+    {
+      const st = randomState(4, 31);
+      const snaps = collectPauliShadows(st, 9000, shadowRng(505));
+      const tfim = hamiltonianTerms('tfim', 4, 1);
+      const heis = hamiltonianTerms('heisenberg', 4, 0.5);
+      const eT = estimateEnergy(snaps, tfim, 10).median, xT = exactEnergy(st, tfim);
+      const eH = estimateEnergy(snaps, heis, 10).median, xH = exactEnergy(st, heis);
+      add('Classical shadows', 'Hamiltonian energy ⟨H⟩ from one shadow ≈ exact (TFIM and Heisenberg, n=4)', Math.abs(eT - xT) < 0.4 && Math.abs(eH - xH) < 0.5, `TFIM ${eT.toFixed(2)}/${xT.toFixed(2)}, Heis ${eH.toFixed(2)}/${xH.toFixed(2)}`);
     }
   }
 
