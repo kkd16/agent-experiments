@@ -18,9 +18,12 @@ export interface LayerToggles {
   rng: boolean
   nng: boolean
   urquhart: boolean
+  beta: boolean
+  knn: boolean
   alpha: boolean
   convexLayers: boolean
   mst: boolean
+  refine: boolean
   centroids: boolean
   points: boolean
 }
@@ -38,6 +41,13 @@ export interface AlphaRender {
   triangles: Triangle[]
 }
 
+/** A refined (Ruppert) mesh carries its own augmented point set. */
+export interface RefineRender {
+  points: Point[]
+  triangles: Triangle[]
+  steinerStart: number
+}
+
 export interface Scene {
   points: Point[]
   hull: number[]
@@ -50,8 +60,11 @@ export interface Scene {
   rng: Edge[]
   nng: Edge[]
   urquhart: Edge[]
+  beta: Edge[]
+  knn: Edge[]
   layers: number[][]
   alpha: AlphaRender | null
+  refine: RefineRender | null
   closest: ClosestPair | null
   diameter: FarthestPair | null
   width: MinWidth | null
@@ -105,8 +118,11 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   if (layers.voronoiFill || layers.voronoiEdges) drawVoronoi(ctx, scene.cells, pts, tx, o)
   if (layers.alpha && scene.alpha) drawAlphaShape(ctx, scene.alpha, pts, tx)
   if (layers.circumcircles) drawCircumcircles(ctx, scene.circumcircles, tx, o)
+  if (layers.refine && scene.refine) drawRefineMesh(ctx, scene.refine, tx)
   if (layers.delaunay) drawEdges(ctx, scene.delaunayEdges, pts, tx, 'rgba(120,170,255,0.32)', 1)
   if (layers.urquhart) drawEdges(ctx, scene.urquhart, pts, tx, 'rgba(190,242,100,0.7)', 1.4)
+  if (layers.knn) drawEdges(ctx, scene.knn, pts, tx, 'rgba(167,139,250,0.7)', 1.3)
+  if (layers.beta) drawEdges(ctx, scene.beta, pts, tx, 'rgba(251,146,140,0.9)', 1.6)
   if (layers.gabriel) drawEdges(ctx, scene.gabriel, pts, tx, 'rgba(120,255,214,0.6)', 1.4)
   if (layers.rng) drawEdges(ctx, scene.rng, pts, tx, 'rgba(244,114,182,0.85)', 1.6)
   if (layers.nng) drawEdges(ctx, scene.nng, pts, tx, 'rgba(96,205,255,0.95)', 1.6)
@@ -168,6 +184,45 @@ function drawAlphaShape(ctx: CanvasRenderingContext2D, alpha: AlphaRender, pts: 
     ctx.fill()
   }
   drawEdges(ctx, alpha.boundary, pts, tx, 'rgba(124,246,192,0.95)', 2.4)
+}
+
+function drawRefineMesh(ctx: CanvasRenderingContext2D, mesh: RefineRender, tx: Tx): void {
+  const pts = mesh.points
+  // Translucent triangle fills, brightening with the angle-quality of the mesh.
+  ctx.fillStyle = 'rgba(120,170,255,0.05)'
+  for (const t of mesh.triangles) {
+    const a = tx.toPx(pts[t.a])
+    const b = tx.toPx(pts[t.b])
+    const c = tx.toPx(pts[t.c])
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.lineTo(c.x, c.y)
+    ctx.closePath()
+    ctx.fill()
+  }
+  // Mesh edges.
+  ctx.strokeStyle = 'rgba(124,246,192,0.45)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (const t of mesh.triangles) {
+    const a = tx.toPx(pts[t.a])
+    const b = tx.toPx(pts[t.b])
+    const c = tx.toPx(pts[t.c])
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.lineTo(c.x, c.y)
+    ctx.lineTo(a.x, a.y)
+  }
+  ctx.stroke()
+  // Steiner points (the vertices Ruppert inserted) — small amber dots.
+  ctx.fillStyle = 'rgba(255,180,90,0.9)'
+  for (let i = mesh.steinerStart; i < pts.length; i++) {
+    const q = tx.toPx(pts[i])
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, 2, 0, Math.PI * 2)
+    ctx.fill()
+  }
 }
 
 function drawConvexLayers(ctx: CanvasRenderingContext2D, layers: number[][], pts: Point[], tx: Tx): void {

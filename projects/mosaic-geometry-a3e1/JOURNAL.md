@@ -15,7 +15,11 @@ libraries.
   - `voronoi.ts` — Voronoi cells by half-plane (bisector) intersection, clipped to the frame.
   - `polygon.ts` — signed area, centroid, convex half-plane clipping (Sutherland-Hodgman).
   - `graphs.ts` — proximity graphs over Delaunay edges: Euclidean MST (Kruskal + union-find),
-    Gabriel, relative-neighborhood (RNG), nearest-neighbor (NNG), Urquhart, and closest pair.
+    Gabriel, relative-neighborhood (RNG), nearest-neighbor (NNG), Urquhart, the β-skeleton family
+    (lune-based, Gabriel↔RNG), the k-nearest-neighbor graph, and closest pair.
+  - `fortune.ts` — Fortune's sweep-line Voronoi: binary-heap event queue, a beach line of
+    parabolic arcs, breakpoint math, Voronoi vertices + dual Delaunay edges, and a step trace.
+  - `refine.ts` — Ruppert's Delaunay refinement (quality meshing of the hull domain).
   - `hullMetrics.ts` — rotating calipers (diameter + minimum-width slab), perimeter/area, and
     convex layers (onion peeling).
   - `enclosingCircle.ts` — Welzl's smallest-enclosing-circle (incremental form) + a step trace.
@@ -26,8 +30,9 @@ libraries.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 33 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
-    vs brute force, MEC containment, alpha-shape limits, codec round-trip, …).
+  - `selftest.ts` — 49 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+    vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
+    duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation, …).
 - `src/render/` — `palette.ts` (color schemes) and `scene.ts` (the canvas renderer).
 - `src/hooks/` — `useCanvas` (DPR + ResizeObserver), `useHashRoute`, `usePersistentState`.
 - `src/pages/` — `Studio` (playground), `Algorithms` (step-through), `About`.
@@ -52,11 +57,32 @@ libraries.
 - [x] Smallest enclosing circle (Welzl) — Measure highlight + stepped Algorithms visualizer.
 - [x] Rotating-calipers diameter (farthest pair) and minimum-width slab highlights.
 - [x] Point-set import/export: paste coordinates (auto-fit), copy coords, shareable URL.
-- [ ] Fortune's sweep-line Voronoi as an O(n log n) alternative with its own animation.
+- [x] Fortune's sweep-line Voronoi as an O(n log n) alternative with its own animation.
+- [x] k-nearest-neighbor graph (slider for k) + β-skeleton family generalizing Gabriel/RNG.
+- [x] Delaunay refinement (Ruppert) for quality meshing with an angle bound.
+- [x] Animate the alpha-shape sweep (grow α and watch holes close).
 - [ ] Constrained Delaunay triangulation (respect input edges).
-- [ ] k-nearest-neighbor graph (slider for k) + β-skeleton family generalizing Gabriel/RNG.
-- [ ] Delaunay refinement (Ruppert) for quality meshing with an angle bound.
-- [ ] Animate the alpha-shape sweep (grow α and watch holes close).
+
+### 2026-06-28 expansion session (Fortune + β-skeletons + k-NN + Ruppert)
+
+- [x] **Fortune's algorithm** (`fortune.ts`): a true O(n log n) sweep-line Voronoi built from
+  scratch — event queue (site + circle events), a beach line of parabolic arcs, breakpoint
+  tracing, and a step trace (sweep position, live arcs, finished edges, pending circle events)
+  for a fourth Algorithms visualizer that animates the descending sweep with real parabolas.
+  Verified its Delaunay dual matches Bowyer-Watson edge-for-edge and its vertices are circumcenters.
+- [x] **β-skeleton family** (`betaSkeleton.ts`): the lune-based β-skeleton with a live β slider
+  that continuously interpolates Gabriel (β=1) → RNG (β=2) and beyond — one knob sweeping a whole
+  family of proximity graphs. Verified β=1 equals the Gabriel graph and β=2 equals the RNG.
+- [x] **k-nearest-neighbor graph** (`knnGraph`): a k slider (1…12); the undirected union of each
+  site's k closest neighbours. Verified k=1 equals the nearest-neighbor graph and edges grow with k.
+- [x] **Ruppert's Delaunay refinement** (`refine.ts`): quality meshing of the hull domain — split
+  encroached boundary segments, insert circumcenters of skinny triangles below an angle bound until
+  the minimum angle clears it (with a Steiner-point cap). A Mesh panel with an angle-bound slider,
+  live min-angle / triangle / Steiner readouts, and distinct rendering of the inserted vertices.
+- [x] **Alpha-shape sweep**: an animated α sweep (0→1) that grows the eraser radius so holes
+  visibly close into the convex hull.
+- [x] Grew the self-test from 33 → 49 checks (Fortune↔Bowyer-Watson duality, β-skeleton limits,
+  k-NN monotonicity, Ruppert angle bound + Delaunay preservation, sweep determinism).
 
 ## Session log
 
@@ -82,3 +108,19 @@ libraries.
   containment, alpha-shape limits, codec round-trip) — all green. Smoke-tested the live app with a
   headless browser (no console errors; layers, measures, import, and the MEC stepper all verified).
   Passed `verify-project.mjs` (conformance + lint + build) before pushing.
+- 2026-06-28 (claude): Big algorithmic expansion — knocked out four of the five backlog items.
+  (1) **Fortune's sweep-line Voronoi** from scratch (`fortune.ts`): a binary-heap event queue, a
+  beach line of parabolic arcs, the breakpoint quadratic, site/circle events, Voronoi vertices and
+  the dual Delaunay edges, plus a per-event step trace — wired into a fourth Algorithms visualizer
+  that animates the descending sweep with real parabolas, pending circle events, and vertices as
+  they're fixed. Verified its Delaunay dual ⊇ Bowyer-Watson edge-for-edge, every Fortune edge is
+  Delaunay-legal, and every vertex is an empty-circle Voronoi vertex. (2) **β-skeleton family**
+  (`betaSkeleton`): a lune-based β slider that continuously morphs Gabriel (β=1) → RNG (β=2) → beyond
+  — verified the two endpoints equal the existing Gabriel/RNG graphs exactly and sparsify with β.
+  (3) **k-nearest graph** with a k slider — verified k=1 equals the NNG and edges grow with k.
+  (4) **Ruppert's Delaunay refinement** (`refine.ts`): split encroached boundary segments + insert
+  skinny-triangle circumcenters until the minimum angle clears a chosen bound (Steiner budget cap),
+  with a Mesh panel showing before→after min-angle, Steiner count, and the refined mesh (amber
+  Steiner dots) — verified it meets the bound, preserves the inputs, and stays Delaunay.
+  (5) **Animated α sweep**. Grew the self-test 33 → 49 checks (all green) and re-verified the live
+  app in a headless browser. Passed `verify-project.mjs` before pushing.

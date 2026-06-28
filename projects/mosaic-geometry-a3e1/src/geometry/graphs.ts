@@ -182,6 +182,102 @@ export function urquhartGraph(pts: Point[], tris: Triangle[]): Edge[] {
   return out
 }
 
+/**
+ * Lune-based β-skeleton (β ≥ 1) — the one-parameter family that the Gabriel graph
+ * and the relative-neighborhood graph are both members of. The neighborhood of an
+ * edge (a,b) is the intersection (the "lune") of two disks of radius (β/2)·|ab|,
+ * centered at the two points that sit a fraction β/2 of the way along the segment
+ * from each endpoint toward the other. Keep the edge iff that lune holds no other
+ * site. Sweeping β continuously morphs the graph:
+ *   • β = 1 → both disks coincide on the midpoint ⇒ the Gabriel graph.
+ *   • β = 2 → the disks center on a and b ⇒ the relative-neighborhood graph.
+ *   • β > 2 → sparser still.
+ * For β ≥ 1 the β-skeleton is a subgraph of the Delaunay triangulation, so we
+ * filter the Delaunay candidate edges rather than scanning all O(n²) pairs.
+ */
+export function betaSkeleton(pts: Point[], candidateEdges: Edge[], beta: number): Edge[] {
+  const half = Math.max(0.5, beta / 2)
+  const out: Edge[] = []
+  for (const e of candidateEdges) {
+    const a = pts[e.a]
+    const b = pts[e.b]
+    // Lune disk centers: a + half·(b−a) and b + half·(a−b).
+    const c1 = { x: a.x + half * (b.x - a.x), y: a.y + half * (b.y - a.y) }
+    const c2 = { x: b.x + half * (a.x - b.x), y: b.y + half * (a.y - b.y) }
+    const r2 = half * half * dist2(a, b)
+    let ok = true
+    for (let k = 0; k < pts.length; k++) {
+      if (k === e.a || k === e.b) continue
+      // A site kills the edge only when it lies strictly inside *both* disks.
+      if (dist2(pts[k], c1) < r2 - 1e-9 && dist2(pts[k], c2) < r2 - 1e-9) {
+        ok = false
+        break
+      }
+    }
+    if (ok) out.push(e)
+  }
+  return out
+}
+
+/**
+ * k-nearest-neighbor graph: connect every site to its k closest neighbours, then
+ * take the undirected union (a pair that is mutually among each other's k-nearest
+ * yields a single edge). Unlike the k=1 case, k-nearest edges for k>1 are *not*
+ * all Delaunay edges, so this scans all pairs — O(n²) with a bounded k-best
+ * insertion per row, which is fine for the studio's point budget.
+ */
+export function knnGraph(pts: Point[], k: number): Edge[] {
+  const n = pts.length
+  const kk = Math.max(1, Math.min(k, n - 1))
+  const seen = new Set<string>()
+  const out: Edge[] = []
+  // Reused per row: the kk smallest (distance², index) seen so far, unsorted.
+  const bestD = new Float64Array(kk)
+  const bestI = new Int32Array(kk)
+  for (let i = 0; i < n; i++) {
+    let filled = 0
+    let worst = Infinity
+    let worstSlot = -1
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue
+      const d = dist2(pts[i], pts[j])
+      if (filled < kk) {
+        bestD[filled] = d
+        bestI[filled] = j
+        filled++
+        if (filled === kk) {
+          worst = -Infinity
+          for (let s = 0; s < kk; s++)
+            if (bestD[s] > worst) {
+              worst = bestD[s]
+              worstSlot = s
+            }
+        }
+      } else if (d < worst) {
+        bestD[worstSlot] = d
+        bestI[worstSlot] = j
+        worst = -Infinity
+        for (let s = 0; s < kk; s++)
+          if (bestD[s] > worst) {
+            worst = bestD[s]
+            worstSlot = s
+          }
+      }
+    }
+    for (let s = 0; s < filled; s++) {
+      const j = bestI[s]
+      const lo = Math.min(i, j)
+      const hi = Math.max(i, j)
+      const key = `${lo}_${hi}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push({ a: lo, b: hi })
+      }
+    }
+  }
+  return out
+}
+
 /** Closest pair of sites, and the distance between them. */
 export interface ClosestPair {
   a: number

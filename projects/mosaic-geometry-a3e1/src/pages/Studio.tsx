@@ -4,6 +4,7 @@ import { computeGeometry } from '../geometry/compute'
 import { lloydStep } from '../geometry/lloyd'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { alphaShape, alphaForSlider, circumRadii } from '../geometry/alphaShape'
+import { refineDelaunay, type RefineResult } from '../geometry/refine'
 import {
   buildShareUrl,
   parsePointsText,
@@ -32,9 +33,12 @@ const DEFAULT_LAYERS: LayerToggles = {
   rng: false,
   nng: false,
   urquhart: false,
+  beta: false,
+  knn: false,
   alpha: false,
   convexLayers: false,
   mst: false,
+  refine: false,
   centroids: false,
   points: true,
 }
@@ -76,6 +80,9 @@ export default function Studio() {
   const [layers, setLayers] = usePersistentState<LayerToggles>('layers', DEFAULT_LAYERS)
   const [measure, setMeasure] = usePersistentState<MeasureToggles>('measure', DEFAULT_MEASURE)
   const [alphaT, setAlphaT] = usePersistentState<number>('alphaT', 0.45)
+  const [betaVal, setBetaVal] = usePersistentState<number>('betaVal', 1.5)
+  const [kVal, setKVal] = usePersistentState<number>('kVal', 3)
+  const [angleBound, setAngleBound] = usePersistentState<number>('angleBound', 20)
   const [schemeId, setSchemeId] = usePersistentState<string>('scheme', 'aurora')
   const [cellAlpha, setCellAlpha] = usePersistentState<number>('alpha', 0.92)
   const [dist, setDist] = usePersistentState<Distribution>('dist', 'poisson')
@@ -86,6 +93,12 @@ export default function Studio() {
   const [selected, setSelected] = useState(-1)
   const [animating, setAnimating] = useState(false)
   const [relaxStats, setRelaxStats] = useState({ iterations: 0, movement: 0 })
+  const [alphaSweeping, setAlphaSweeping] = useState(false)
+  // The refined mesh is bound to the exact point array it was built from; since
+  // every site edit produces a new array, reference equality detects staleness.
+  const [refineState, setRefineState] = useState<{ res: RefineResult; for: Point[] } | null>(null)
+  const [refining, setRefining] = useState(false)
+  const refineResult = refineState && refineState.for === points ? refineState.res : null
 
   const [importText, setImportText] = useState('')
   const [flash, setFlash] = useState('')
@@ -104,8 +117,12 @@ export default function Studio() {
         gabriel: layers.gabriel,
         proximity: needProximity,
         layers: layers.convexLayers,
+        beta: layers.beta,
+        betaValue: betaVal,
+        knn: layers.knn,
+        k: kVal,
       }),
-    [points, layers.gabriel, needProximity, layers.convexLayers],
+    [points, layers.gabriel, needProximity, layers.convexLayers, layers.beta, betaVal, layers.knn, kVal],
   )
 
   // Alpha shape is parameterized by the slider, so it recomputes independently of
@@ -140,8 +157,18 @@ export default function Studio() {
         rng: geometry.rng,
         nng: geometry.nng,
         urquhart: geometry.urquhart,
+        beta: geometry.beta,
+        knn: geometry.knn,
         layers: geometry.layers,
         alpha: alphaResult,
+        refine:
+          layers.refine && refineResult
+            ? {
+                points: refineResult.points,
+                triangles: refineResult.triangles,
+                steinerStart: refineResult.steinerStart,
+              }
+            : null,
         closest: geometry.closest,
         diameter: geometry.diameter,
         width: geometry.width,
@@ -152,7 +179,31 @@ export default function Studio() {
       },
       { width: size.width, height: size.height, dpr: size.dpr, pad: PAD, scheme, layers, measure, cellAlpha },
     )
-  }, [ref, size, points, geometry, alphaResult, hover, selected, scheme, layers, measure, cellAlpha])
+  }, [ref, size, points, geometry, alphaResult, refineResult, hover, selected, scheme, layers, measure, cellAlpha])
+
+  // ── Alpha-shape sweep: grow the eraser radius 0→1 so holes visibly close ────
+  useEffect(() => {
+    if (!alphaSweeping) return
+    let raf = 0
+    const tick = () => {
+      let done = false
+      setAlphaT((t) => {
+        const next = t + 0.012
+        if (next >= 1) {
+          done = true
+          return 1
+        }
+        return next
+      })
+      if (done) {
+        setAlphaSweeping(false)
+        return
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [alphaSweeping, setAlphaT])
 
   // ── Lloyd relaxation animation loop ───────────────────────────────────────
   useEffect(() => {
@@ -315,6 +366,23 @@ export default function Studio() {
     setFlash(`Imported ${parsed.length} points`)
   }
 
+  const runRefine = () => {
+    if (points.length < 3) return
+    setRefining(true)
+    // Defer so the "Refining…" label paints before the (synchronous) solve runs.
+    window.setTimeout(() => {
+      const res = refineDelaunay(points, { minAngleDeg: angleBound, maxSteiner: 1500 })
+      setRefineState({ res, for: points })
+      setLayers((p) => ({ ...p, refine: true }))
+      setRefining(false)
+      setFlash(
+        res.hitCap
+          ? `Refined to ${res.minAngleAfter.toFixed(1)}° (budget reached)`
+          : `Refined: ${res.minAngleBefore.toFixed(1)}° → ${res.minAngleAfter.toFixed(1)}°`,
+      )
+    }, 16)
+  }
+
   const setLayer = (key: keyof LayerToggles, v: boolean) => setLayers((p) => ({ ...p, [key]: v }))
   const setMeas = (key: keyof MeasureToggles, v: boolean) => setMeasure((p) => ({ ...p, [key]: v }))
 
@@ -450,6 +518,18 @@ export default function Studio() {
               onChange={(v) => setLayer('urquhart', v)}
             />
             <Toggle
+              label="β-skeleton"
+              swatch="rgba(251,146,140,0.95)"
+              checked={layers.beta}
+              onChange={(v) => setLayer('beta', v)}
+            />
+            <Toggle
+              label="k-nearest graph"
+              swatch="rgba(167,139,250,0.95)"
+              checked={layers.knn}
+              onChange={(v) => setLayer('knn', v)}
+            />
+            <Toggle
               label="Min. spanning tree"
               swatch="rgba(255,209,102,0.95)"
               checked={layers.mst}
@@ -458,16 +538,42 @@ export default function Studio() {
             <Toggle label="Cell centroids" checked={layers.centroids} onChange={(v) => setLayer('centroids', v)} />
             <Toggle label="Sites" checked={layers.points} onChange={(v) => setLayer('points', v)} />
           </div>
-          {layers.alpha && (
+          {layers.beta && (
             <Slider
-              label="Alpha (eraser radius)"
-              value={alphaT}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => setAlphaT(v)}
-              format={(v) => `${Math.round(v * 100)}%`}
+              label="β  (1 = Gabriel · 2 = RNG)"
+              value={betaVal}
+              min={1}
+              max={3}
+              step={0.05}
+              onChange={(v) => setBetaVal(v)}
+              format={(v) => v.toFixed(2)}
             />
+          )}
+          {layers.knn && (
+            <Slider
+              label="k  (neighbours per site)"
+              value={kVal}
+              min={1}
+              max={12}
+              step={1}
+              onChange={(v) => setKVal(v)}
+            />
+          )}
+          {layers.alpha && (
+            <>
+              <Slider
+                label="Alpha (eraser radius)"
+                value={alphaT}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => setAlphaT(v)}
+                format={(v) => `${Math.round(v * 100)}%`}
+              />
+              <Button onClick={() => { setAlphaT(0); setAlphaSweeping(true) }} disabled={alphaSweeping}>
+                {alphaSweeping ? 'Sweeping…' : 'Sweep α'}
+              </Button>
+            </>
           )}
         </Panel>
 
@@ -512,6 +618,36 @@ export default function Studio() {
             <Stat label="LEC r" value={geometry.lec ? fmt(geometry.lec.circle.r) : '—'} />
             <Stat label="hull area" value={geometry.hullArea.toFixed(3)} />
           </div>
+        </Panel>
+
+        <Panel title="Mesh" hint="Ruppert">
+          <p className="muted">
+            Quality meshing by Delaunay refinement: split encroached boundary edges and insert
+            circumcenters of skinny triangles until every angle clears the bound. Inserted
+            (Steiner) points show as amber dots.
+          </p>
+          <Slider
+            label="Min. angle bound"
+            value={angleBound}
+            min={5}
+            max={28}
+            step={1}
+            onChange={(v) => setAngleBound(v)}
+            format={(v) => `${v}°`}
+          />
+          <div className="row">
+            <Button variant="primary" onClick={runRefine} disabled={points.length < 3 || refining}>
+              {refining ? 'Refining…' : 'Refine mesh'}
+            </Button>
+            <Toggle label="Show" checked={layers.refine} onChange={(v) => setLayer('refine', v)} />
+          </div>
+          {refineResult && (
+            <div className="metrics">
+              <Stat label="min angle" value={`${refineResult.minAngleBefore.toFixed(1)}°→${refineResult.minAngleAfter.toFixed(1)}°`} />
+              <Stat label="Steiner" value={refineResult.points.length - refineResult.steinerStart} />
+              <Stat label="triangles" value={refineResult.triangles.length} />
+            </div>
+          )}
         </Panel>
 
         <Panel title="Appearance">
