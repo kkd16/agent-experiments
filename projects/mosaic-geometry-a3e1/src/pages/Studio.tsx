@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Edge, Point, Rect } from '../geometry/types'
+import type { Circle, Edge, Point, Rect } from '../geometry/types'
 import { computeGeometry } from '../geometry/compute'
 import { constrainedDelaunay } from '../geometry/constrained'
 import { lloydStep } from '../geometry/lloyd'
+import {
+  powerCells,
+  powerLloydStep,
+  regularTriangulationEdges,
+  hiddenSites,
+  radicalCircle,
+  type WeightedSite,
+} from '../geometry/power'
+import { farthestCells, farthestEdges, farthestOwners } from '../geometry/farthest'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { alphaShape, alphaForSlider, circumRadii } from '../geometry/alphaShape'
 import { refineDelaunay, type RefineResult } from '../geometry/refine'
@@ -41,6 +50,10 @@ const DEFAULT_LAYERS: LayerToggles = {
   mst: false,
   refine: false,
   cdt: false,
+  power: false,
+  regular: false,
+  radical: false,
+  farthest: false,
   centroids: false,
   points: true,
 }
@@ -106,6 +119,14 @@ export default function Studio() {
   const [constraintMode, setConstraintMode] = useState(false)
   const [anchor, setAnchor] = useState(-1) // first endpoint picked while adding a constraint
 
+  // Per-site weights for the power (Laguerre) diagram, stored as *unit* values in
+  // [0,1]; the effective power weight is unit × spread, so the spread slider
+  // rescales every site live without re-randomizing.
+  const [weights, setWeights] = useState<number[]>([])
+  const [weightSpread, setWeightSpread] = usePersistentState<number>('weightSpread', 0.02)
+  const [weightSeed, setWeightSeed] = useState(1)
+  const [powerAnimating, setPowerAnimating] = useState(false)
+
   const [importText, setImportText] = useState('')
   const [flash, setFlash] = useState('')
 
@@ -150,6 +171,35 @@ export default function Studio() {
     [layers.alpha, points, geometry.triangles, alphaValue],
   )
 
+  // Weighted sites (effective weight = unit × spread) and the power diagram.
+  // Weights are read with a `?? 0` fallback, so the array need not be kept exactly
+  // in step with the point count — new sites simply default to weight 0.
+  const weightedSites = useMemo<WeightedSite[]>(
+    () => points.map((p, i) => ({ x: p.x, y: p.y, w: (weights[i] ?? 0) * weightSpread })),
+    [points, weights, weightSpread],
+  )
+  const needPower = layers.power || layers.regular || layers.radical
+  const powerData = useMemo(() => {
+    if (!needPower || points.length === 0) return null
+    const cells = powerCells(weightedSites, CLIP)
+    const radical = layers.radical
+      ? (weightedSites.map(radicalCircle).filter(Boolean) as Circle[])
+      : []
+    return {
+      cells,
+      regular: layers.regular ? regularTriangulationEdges(weightedSites, cells) : [],
+      radical,
+      hidden: hiddenSites(cells),
+    }
+  }, [needPower, weightedSites, layers.regular, layers.radical, points.length])
+
+  // Farthest-point Voronoi diagram (the inside-out twin), with the MEC link.
+  const farthestData = useMemo(() => {
+    if (!layers.farthest || points.length < 3) return null
+    const cells = farthestCells(points, CLIP)
+    return { edges: farthestEdges(cells), owners: farthestOwners(cells), mec: geometry.mec }
+  }, [layers.farthest, points, geometry.mec])
+
   // ── Draw whenever anything visible changes ────────────────────────────────
   useEffect(() => {
     const canvas = ref.current
@@ -183,6 +233,8 @@ export default function Studio() {
               }
             : null,
         cdt: layers.cdt && cdtResult ? { triangles: cdtResult.triangles, edges: cdtResult.edges } : null,
+        power: needPower ? powerData : null,
+        farthest: layers.farthest ? farthestData : null,
         closest: geometry.closest,
         diameter: geometry.diameter,
         width: geometry.width,
@@ -193,7 +245,7 @@ export default function Studio() {
       },
       { width: size.width, height: size.height, dpr: size.dpr, pad: PAD, scheme, layers, measure, cellAlpha },
     )
-  }, [ref, size, points, geometry, alphaResult, refineResult, cdtResult, hover, selected, scheme, layers, measure, cellAlpha])
+  }, [ref, size, points, geometry, alphaResult, refineResult, cdtResult, powerData, farthestData, needPower, hover, selected, scheme, layers, measure, cellAlpha])
 
   // ── Alpha-shape sweep: grow the eraser radius 0→1 so holes visibly close ────
   useEffect(() => {
@@ -236,6 +288,32 @@ export default function Studio() {
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [animating])
+
+  // ── Power-Lloyd relaxation: settle sites to their power-cell centroids ──────
+  const weightsRef = useRef(weights)
+  useEffect(() => {
+    weightsRef.current = weights
+  }, [weights])
+  useEffect(() => {
+    if (!powerAnimating) return
+    let raf = 0
+    const tick = () => {
+      const sites: WeightedSite[] = pointsRef.current.map((p, i) => ({
+        x: p.x,
+        y: p.y,
+        w: (weightsRef.current[i] ?? 0) * weightSpread,
+      }))
+      const { sites: next, movement } = powerLloydStep(sites, CLIP)
+      setPoints(next.map((s) => ({ x: s.x, y: s.y })))
+      if (movement < 1e-4) {
+        setPowerAnimating(false)
+        return
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [powerAnimating, weightSpread])
 
   // Transient confirmation message for copy actions.
   useEffect(() => {
@@ -352,6 +430,8 @@ export default function Studio() {
   }
   const regenerate = (nextSeed = seed) => {
     setAnimating(false)
+    setPowerAnimating(false)
+    setWeights([])
     setRelaxStats({ iterations: 0, movement: 0 })
     setSelected(-1)
     clearConstraints()
@@ -369,6 +449,8 @@ export default function Studio() {
   }
   const clearAll = () => {
     setAnimating(false)
+    setPowerAnimating(false)
+    setWeights([])
     setPoints([])
     setSelected(-1)
     clearConstraints()
@@ -405,6 +487,8 @@ export default function Studio() {
       return
     }
     setAnimating(false)
+    setPowerAnimating(false)
+    setWeights([])
     setSelected(-1)
     clearConstraints()
     setRelaxStats({ iterations: 0, movement: 0 })
@@ -431,6 +515,23 @@ export default function Studio() {
 
   const setLayer = (key: keyof LayerToggles, v: boolean) => setLayers((p) => ({ ...p, [key]: v }))
   const setMeas = (key: keyof MeasureToggles, v: boolean) => setMeasure((p) => ({ ...p, [key]: v }))
+
+  // ── Weight actions (power diagram) ─────────────────────────────────────────
+  const randomizeWeights = () => {
+    const next = weightSeed + 1
+    setWeightSeed(next)
+    const rng = mulberry32(next)
+    setWeights(points.map(() => rng()))
+    setLayers((p) => ({ ...p, power: true }))
+  }
+  const resetWeights = () => setWeights(points.map(() => 0))
+  const setSiteWeight = (i: number, v: number) =>
+    setWeights((w) => {
+      const next = w.slice()
+      while (next.length < points.length) next.push(0)
+      next[i] = v
+      return next
+    })
 
   return (
     <div className="studio">
@@ -724,6 +825,88 @@ export default function Studio() {
             <Stat label="constraints" value={constraints.length} />
             <Stat label="enforced" value={cdtResult ? `${cdtResult.inserted}/${cdtResult.requested}` : '—'} />
             <Stat label="triangles" value={cdtResult ? cdtResult.triangles.length : '—'} />
+          </div>
+        </Panel>
+
+        <Panel title="Weighted" hint="power / Laguerre">
+          <p className="muted">
+            Give each site a weight and Voronoi becomes a <strong>power (Laguerre) diagram</strong>:
+            cells split by radical axes, heavy sites swelling, outweighed ones vanishing (drawn as
+            hollow rings). The dual is the regular (weighted Delaunay) triangulation.
+          </p>
+          <div className="layers">
+            <Toggle label="Power cells" checked={layers.power} onChange={(v) => setLayer('power', v)} />
+            <Toggle
+              label="Regular triangulation"
+              swatch="rgba(255,170,90,0.9)"
+              checked={layers.regular}
+              onChange={(v) => setLayer('regular', v)}
+            />
+            <Toggle
+              label="Radical circles (√w)"
+              swatch="rgba(255,180,90,0.6)"
+              checked={layers.radical}
+              onChange={(v) => setLayer('radical', v)}
+            />
+          </div>
+          <Slider
+            label="Weight spread"
+            value={weightSpread}
+            min={0}
+            max={0.08}
+            step={0.002}
+            onChange={(v) => setWeightSpread(v)}
+            format={(v) => v.toFixed(3)}
+          />
+          <div className="row">
+            <Button variant="primary" onClick={randomizeWeights} disabled={points.length === 0}>
+              Randomize weights
+            </Button>
+            <Button variant="ghost" onClick={resetWeights} disabled={points.length === 0}>
+              Reset
+            </Button>
+          </div>
+          {selected >= 0 && selected < points.length && (
+            <Slider
+              label={`Weight · site #${selected}`}
+              value={weights[selected] ?? 0}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => setSiteWeight(selected, v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+          )}
+          <div className="row">
+            <Button
+              variant={powerAnimating ? 'primary' : 'default'}
+              onClick={() => setPowerAnimating((a) => !a)}
+              disabled={points.length < 2}
+            >
+              {powerAnimating ? 'Stop' : 'Power-Lloyd'}
+            </Button>
+          </div>
+          <div className="metrics">
+            <Stat label="hidden sites" value={powerData ? powerData.hidden.length : '—'} />
+            <Stat label="regular edges" value={powerData ? powerData.regular.length : '—'} />
+          </div>
+        </Panel>
+
+        <Panel title="Farthest-point" hint="Voronoi twin">
+          <p className="muted">
+            The farthest-point Voronoi diagram — each region keyed to its <em>farthest</em> site.
+            Only convex-hull vertices own a cell, the diagram is a tree, and the smallest-enclosing
+            circle's centre sits on it (shown dashed).
+          </p>
+          <Toggle
+            label="Show diagram"
+            swatch="rgba(96,205,255,0.95)"
+            checked={layers.farthest}
+            onChange={(v) => setLayer('farthest', v)}
+          />
+          <div className="metrics">
+            <Stat label="cells (= hull)" value={farthestData ? farthestData.owners.length : '—'} />
+            <Stat label="MEC r" value={geometry.mec ? fmt(geometry.mec.r) : '—'} />
           </div>
         </Panel>
 

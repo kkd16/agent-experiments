@@ -4,12 +4,20 @@ import { convexHullSteps, type HullStep } from '../geometry/convexHull'
 import { delaunaySteps, type DelaunaySnapshot } from '../geometry/delaunay'
 import { mecSteps, type MecSnapshot } from '../geometry/enclosingCircle'
 import { fortune, beachIntervals, parabolaY, type FortuneSnapshot } from '../geometry/fortune'
+import { quickHullSteps, type QuickHullStep } from '../geometry/quickhull'
+import {
+  powerCellSteps,
+  radicalCircle,
+  type PowerCellStep,
+  type WeightedSite,
+} from '../geometry/power'
 import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'delaunay' | 'mec' | 'fortune'
+type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power'
 const PAD = 28
+const CLIP: Rect = { minX: 0, minY: 0, maxX: 1, maxY: 1 }
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
 
 function makePoints(algo: Algo, seed: number): Point[] {
@@ -17,7 +25,34 @@ function makePoints(algo: Algo, seed: number): Point[] {
   // The enclosing-circle trace reads best on a loose scatter; the others on blue noise.
   if (algo === 'mec') return uniformPoints(12, GEN_RECT, rng)
   if (algo === 'fortune') return uniformPoints(11, GEN_RECT, rng)
+  if (algo === 'power') return uniformPoints(9, GEN_RECT, rng)
+  if (algo === 'quickhull') return uniformPoints(16, GEN_RECT, rng)
   return poissonDisk(algo === 'hull' ? 14 : 18, GEN_RECT, rng)
+}
+
+// Deterministic weighted sites for the power-cell demo, plus the target cell
+// (the site nearest the centroid — most likely to give a nicely bounded cell).
+function makeWeightedSites(points: Point[], seed: number): { sites: WeightedSite[]; target: number } {
+  const rng = mulberry32(seed * 97 + 13)
+  const sites = points.map((p) => ({ x: p.x, y: p.y, w: rng() * 0.02 }))
+  let cx = 0
+  let cy = 0
+  for (const p of points) {
+    cx += p.x
+    cy += p.y
+  }
+  cx /= points.length || 1
+  cy /= points.length || 1
+  let target = 0
+  let best = Infinity
+  for (let i = 0; i < points.length; i++) {
+    const d = (points[i].x - cx) ** 2 + (points[i].y - cy) ** 2
+    if (d < best) {
+      best = d
+      target = i
+    }
+  }
+  return { sites, target }
 }
 
 export default function Algorithms() {
@@ -42,14 +77,30 @@ export default function Algorithms() {
     () => (algo === 'fortune' ? fortune(points, true).steps : []),
     [algo, points],
   )
+  const quickSteps = useMemo<QuickHullStep[]>(
+    () => (algo === 'quickhull' ? quickHullSteps(points) : []),
+    [algo, points],
+  )
+  const weighted = useMemo(
+    () => (algo === 'power' ? makeWeightedSites(points, seed) : { sites: [], target: -1 }),
+    [algo, points, seed],
+  )
+  const powerSteps = useMemo<PowerCellStep[]>(
+    () => (algo === 'power' ? powerCellSteps(weighted.sites, CLIP, weighted.target) : []),
+    [algo, weighted],
+  )
   const total =
     algo === 'hull'
       ? hullSteps.length
-      : algo === 'delaunay'
-        ? delSteps.length
-        : algo === 'mec'
-          ? mecStepList.length
-          : fortuneSteps.length
+      : algo === 'quickhull'
+        ? quickSteps.length
+        : algo === 'delaunay'
+          ? delSteps.length
+          : algo === 'mec'
+            ? mecStepList.length
+            : algo === 'power'
+              ? powerSteps.length
+              : fortuneSteps.length
   const clamped = Math.min(step, Math.max(0, total - 1))
 
   // Playback timer.
@@ -86,19 +137,25 @@ export default function Algorithms() {
     const toPx = (p: Point) => ({ x: PAD + p.x * w, y: PAD + p.y * h })
 
     if (algo === 'hull') drawHullStep(ctx, hullSteps[clamped], points, toPx)
+    else if (algo === 'quickhull') drawQuickHullStep(ctx, quickSteps[clamped], points, toPx)
     else if (algo === 'delaunay') drawDelaunayStep(ctx, delSteps[clamped], toPx)
     else if (algo === 'mec') drawMecStep(ctx, mecStepList[clamped], toPx, w)
+    else if (algo === 'power') drawPowerStep(ctx, powerSteps[clamped], weighted.sites, weighted.target, toPx, w)
     else drawFortuneStep(ctx, fortuneSteps[clamped], points, PAD, w, h)
-  }, [ref, size, algo, hullSteps, delSteps, mecStepList, fortuneSteps, clamped, points])
+  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, fortuneSteps, clamped, points])
 
   const note =
     algo === 'hull'
       ? hullSteps[clamped]?.note
-      : algo === 'delaunay'
-        ? delSteps[clamped]?.note
-        : algo === 'mec'
-          ? mecStepList[clamped]?.note
-          : fortuneSteps[clamped]?.note
+      : algo === 'quickhull'
+        ? quickSteps[clamped]?.note
+        : algo === 'delaunay'
+          ? delSteps[clamped]?.note
+          : algo === 'mec'
+            ? mecStepList[clamped]?.note
+            : algo === 'power'
+              ? powerSteps[clamped]?.note
+              : fortuneSteps[clamped]?.note
   const phase = algo === 'hull' ? hullSteps[clamped]?.phase : undefined
   const changeAlgo = (a: Algo) => {
     setAlgo(a)
@@ -132,9 +189,11 @@ export default function Algorithms() {
           <Segmented<Algo>
             options={[
               { id: 'hull', label: 'Convex hull' },
+              { id: 'quickhull', label: 'Quickhull' },
               { id: 'delaunay', label: 'Delaunay' },
               { id: 'mec', label: 'Enclosing circle' },
               { id: 'fortune', label: 'Fortune sweep' },
+              { id: 'power', label: 'Power cell' },
             ]}
             value={algo}
             onChange={changeAlgo}
@@ -142,11 +201,15 @@ export default function Algorithms() {
           <p className="muted">
             {algo === 'hull'
               ? "Andrew's monotone chain: sort by x, then sweep building lower and upper hulls, popping any point that would make a right turn."
-              : algo === 'delaunay'
-                ? 'Bowyer-Watson: insert points into a super-triangle one by one, carve out the triangles whose circumcircle is violated, and retriangulate the cavity.'
-                : algo === 'mec'
-                  ? "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."
-                  : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
+              : algo === 'quickhull'
+                ? 'Quickhull: anchor on the two extreme-x points, then on each side recurse on the point farthest from the edge — it must be a hull vertex — discarding everything inside the triangle it forms.'
+                : algo === 'delaunay'
+                  ? 'Bowyer-Watson: insert points into a super-triangle one by one, carve out the triangles whose circumcircle is violated, and retriangulate the cavity.'
+                  : algo === 'mec'
+                    ? "Welzl's algorithm: walk the shuffled points keeping the smallest circle seen so far. When a point falls outside, rebuild the circle with that point pinned to its boundary."
+                    : algo === 'power'
+                      ? 'Power (Laguerre) cell: each weighted site’s cell is the intersection of half-planes across its radical axes. Watch one cell get clipped by each neighbour in turn, nearest first.'
+                      : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
           </p>
           <Button variant="ghost" onClick={regen}>
             New points
@@ -182,6 +245,18 @@ export default function Algorithms() {
                 <li><i className="dot dot--hull" /> current hull chain</li>
                 <li><i className="dot dot--active" /> point being considered</li>
                 <li><i className="dot dot--pop" /> point popped (right turn)</li>
+              </>
+            ) : algo === 'quickhull' ? (
+              <>
+                <li><i className="dot dot--hull" /> hull boundary so far</li>
+                <li><i className="dot dot--active" /> farthest point (new apex)</li>
+                <li><i className="dot dot--cavity" /> points outside the current edge</li>
+              </>
+            ) : algo === 'power' ? (
+              <>
+                <li><i className="dot dot--mesh" /> the cell so far</li>
+                <li><i className="dot dot--active" /> the target site</li>
+                <li><i className="dot dot--cavity" /> neighbour being clipped against</li>
               </>
             ) : algo === 'delaunay' ? (
               <>
@@ -427,5 +502,143 @@ function drawFortuneStep(
     ctx.arc(q.x, q.y, active ? 7 : 4, 0, Math.PI * 2)
     ctx.fillStyle = active ? '#7cf6c0' : processed ? '#f4f7ff' : 'rgba(150,160,200,0.4)'
     ctx.fill()
+  }
+}
+
+function drawQuickHullStep(
+  ctx: CanvasRenderingContext2D,
+  s: QuickHullStep | undefined,
+  pts: Point[],
+  toPx: (p: Point) => Point,
+) {
+  if (!s) return
+  const outside = new Set(s.outside)
+  const [pI, qI] = s.edge
+
+  // The active edge being expanded — a bold amber baseline.
+  if (pI >= 0 && qI >= 0) {
+    const a = toPx(pts[pI])
+    const b = toPx(pts[qI])
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.strokeStyle = 'rgba(255,209,102,0.8)'
+    ctx.lineWidth = 1.6
+    ctx.setLineDash([6, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+    // The split into two new edges through the chosen apex.
+    if (s.apex >= 0) {
+      const c = toPx(pts[s.apex])
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(c.x, c.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.strokeStyle = 'rgba(124,246,192,0.7)'
+      ctx.lineWidth = 1.4
+      ctx.stroke()
+    }
+  }
+
+  // The committed hull boundary so far (a growing convex polyline / polygon).
+  if (s.boundary.length >= 2) {
+    ctx.beginPath()
+    s.boundary.forEach((idx, k) => {
+      const v = toPx(pts[idx])
+      if (k === 0) ctx.moveTo(v.x, v.y)
+      else ctx.lineTo(v.x, v.y)
+    })
+    ctx.closePath()
+    ctx.strokeStyle = 'rgba(150,190,255,0.9)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
+
+  const onHull = new Set(s.boundary)
+  for (let i = 0; i < pts.length; i++) {
+    const v = toPx(pts[i])
+    const isApex = i === s.apex
+    const isOut = outside.has(i)
+    ctx.beginPath()
+    ctx.arc(v.x, v.y, isApex ? 7 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = isApex
+      ? '#7cf6c0'
+      : onHull.has(i)
+        ? '#9cc0ff'
+        : isOut
+          ? '#ff8a8a'
+          : 'rgba(150,160,200,0.45)'
+    ctx.fill()
+  }
+}
+
+function drawPowerStep(
+  ctx: CanvasRenderingContext2D,
+  s: PowerCellStep | undefined,
+  sites: WeightedSite[],
+  target: number,
+  toPx: (p: Point) => Point,
+  scale: number,
+) {
+  if (!s) return
+
+  // Faint radical circles (√w) so the weights are visible.
+  ctx.lineWidth = 1
+  for (const site of sites) {
+    const rc = radicalCircle(site)
+    if (!rc) continue
+    const c = toPx({ x: rc.x, y: rc.y })
+    ctx.beginPath()
+    ctx.arc(c.x, c.y, rc.r * scale, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255,180,90,0.22)'
+    ctx.stroke()
+  }
+
+  // The current radical axis being clipped against.
+  if (s.line) {
+    const a = toPx(s.line[0])
+    const b = toPx(s.line[1])
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.strokeStyle = 'rgba(255,107,107,0.7)'
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  // The cell polygon so far.
+  if (s.poly.length >= 3) {
+    ctx.beginPath()
+    s.poly.forEach((p, k) => {
+      const v = toPx(p)
+      if (k === 0) ctx.moveTo(v.x, v.y)
+      else ctx.lineTo(v.x, v.y)
+    })
+    ctx.closePath()
+    ctx.fillStyle = 'rgba(124,246,192,0.12)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(124,246,192,0.85)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
+
+  // Sites: the target bright, the current neighbour red, the rest plain.
+  for (let i = 0; i < sites.length; i++) {
+    const v = toPx({ x: sites[i].x, y: sites[i].y })
+    const isTarget = i === target
+    const isAgainst = i === s.against
+    ctx.beginPath()
+    ctx.arc(v.x, v.y, isTarget ? 7 : isAgainst ? 6 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = isTarget ? '#7cf6c0' : isAgainst ? '#ff8a8a' : '#f4f7ff'
+    ctx.fill()
+    if (isTarget) {
+      ctx.beginPath()
+      ctx.arc(v.x, v.y, 10, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(124,246,192,0.6)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
   }
 }
