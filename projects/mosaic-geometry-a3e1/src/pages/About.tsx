@@ -61,6 +61,12 @@ export default function About() {
             minimum angle; the inserted Steiner points show as amber dots.
           </li>
           <li>
+            <strong>Constrained Delaunay</strong> — force chosen segments to appear as edges. Pick
+            two points to pin a constraint; the triangulation flips edges (Lawson's algorithm) until
+            the segment is present, then restores the Delaunay property everywhere else. The pinned
+            edges stay put even when they cut against what Delaunay would prefer.
+          </li>
+          <li>
             <strong>Convex layers</strong> — peel the hull, recurse on what's inside, repeat. The
             nested rings ("onion peeling") underlie convex-hull depth in robust statistics.
           </li>
@@ -141,7 +147,7 @@ export default function About() {
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 49 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 54 checks.
         </p>
       </article>
     </div>

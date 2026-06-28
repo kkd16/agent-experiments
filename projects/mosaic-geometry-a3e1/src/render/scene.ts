@@ -24,6 +24,7 @@ export interface LayerToggles {
   convexLayers: boolean
   mst: boolean
   refine: boolean
+  cdt: boolean
   centroids: boolean
   points: boolean
 }
@@ -48,6 +49,12 @@ export interface RefineRender {
   steinerStart: number
 }
 
+/** A constrained Delaunay triangulation: triangles + edges flagged as pinned. */
+export interface CdtRender {
+  triangles: Triangle[]
+  edges: { edge: Edge; constrained: boolean }[]
+}
+
 export interface Scene {
   points: Point[]
   hull: number[]
@@ -65,6 +72,7 @@ export interface Scene {
   layers: number[][]
   alpha: AlphaRender | null
   refine: RefineRender | null
+  cdt: CdtRender | null
   closest: ClosestPair | null
   diameter: FarthestPair | null
   width: MinWidth | null
@@ -119,6 +127,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene, o: DrawOp
   if (layers.alpha && scene.alpha) drawAlphaShape(ctx, scene.alpha, pts, tx)
   if (layers.circumcircles) drawCircumcircles(ctx, scene.circumcircles, tx, o)
   if (layers.refine && scene.refine) drawRefineMesh(ctx, scene.refine, tx)
+  if (layers.cdt && scene.cdt) drawCdt(ctx, scene.cdt, pts, tx)
   if (layers.delaunay) drawEdges(ctx, scene.delaunayEdges, pts, tx, 'rgba(120,170,255,0.32)', 1)
   if (layers.urquhart) drawEdges(ctx, scene.urquhart, pts, tx, 'rgba(190,242,100,0.7)', 1.4)
   if (layers.knn) drawEdges(ctx, scene.knn, pts, tx, 'rgba(167,139,250,0.7)', 1.3)
@@ -223,6 +232,15 @@ function drawRefineMesh(ctx: CanvasRenderingContext2D, mesh: RefineRender, tx: T
     ctx.arc(q.x, q.y, 2, 0, Math.PI * 2)
     ctx.fill()
   }
+}
+
+function drawCdt(ctx: CanvasRenderingContext2D, cdt: CdtRender, pts: Point[], tx: Tx): void {
+  // Ordinary mesh edges first, then the pinned constraints on top in bold magenta.
+  const plain: Edge[] = []
+  const pinned: Edge[] = []
+  for (const e of cdt.edges) (e.constrained ? pinned : plain).push(e.edge)
+  drawEdges(ctx, plain, pts, tx, 'rgba(120,170,255,0.30)', 1)
+  drawEdges(ctx, pinned, pts, tx, 'rgba(255,90,140,0.95)', 2.6)
 }
 
 function drawConvexLayers(ctx: CanvasRenderingContext2D, layers: number[][], pts: Point[], tx: Tx): void {

@@ -20,6 +20,8 @@ libraries.
   - `fortune.ts` — Fortune's sweep-line Voronoi: binary-heap event queue, a beach line of
     parabolic arcs, breakpoint math, Voronoi vertices + dual Delaunay edges, and a step trace.
   - `refine.ts` — Ruppert's Delaunay refinement (quality meshing of the hull domain).
+  - `constrained.ts` — constrained Delaunay (CDT): a triangle-adjacency mesh + Lawson edge-flip
+    segment insertion that forces chosen edges, then restores Delaunay off the constraints.
   - `hullMetrics.ts` — rotating calipers (diameter + minimum-width slab), perimeter/area, and
     convex layers (onion peeling).
   - `enclosingCircle.ts` — Welzl's smallest-enclosing-circle (incremental form) + a step trace.
@@ -30,9 +32,10 @@ libraries.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 49 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 54 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
-    duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation, …).
+    duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
+    CDT area/count conservation + constraint enforcement + constrained-Delaunay property, …).
 - `src/render/` — `palette.ts` (color schemes) and `scene.ts` (the canvas renderer).
 - `src/hooks/` — `useCanvas` (DPR + ResizeObserver), `useHashRoute`, `usePersistentState`.
 - `src/pages/` — `Studio` (playground), `Algorithms` (step-through), `About`.
@@ -61,7 +64,7 @@ libraries.
 - [x] k-nearest-neighbor graph (slider for k) + β-skeleton family generalizing Gabriel/RNG.
 - [x] Delaunay refinement (Ruppert) for quality meshing with an angle bound.
 - [x] Animate the alpha-shape sweep (grow α and watch holes close).
-- [ ] Constrained Delaunay triangulation (respect input edges).
+- [x] Constrained Delaunay triangulation (respect input edges).
 
 ### 2026-06-28 expansion session (Fortune + β-skeletons + k-NN + Ruppert)
 
@@ -124,3 +127,15 @@ libraries.
   Steiner dots) — verified it meets the bound, preserves the inputs, and stays Delaunay.
   (5) **Animated α sweep**. Grew the self-test 33 → 49 checks (all green) and re-verified the live
   app in a headless browser. Passed `verify-project.mjs` before pushing.
+- 2026-06-28 (claude): Cleared the last backlog item — **Constrained Delaunay triangulation**
+  (`constrained.ts`). Built a triangle-adjacency mesh over the Delaunay output and force segments
+  to appear as edges by Lawson edge-flips: re-scan for a flippable crossing edge each step (so
+  in-place flips never leave stale slot references), then restore the Delaunay property on every
+  non-constrained edge with the in-circle test. Wired a Studio **Constraints** panel — an "Add
+  constraint" pick-two-points mode, a Show-CDT layer that draws the mesh with pinned edges in
+  magenta, enforced-count readout, and clear. Verified across 40+ random scenes: CDT conserves the
+  triangulated area and triangle count (flips only), keeps CCW winding, enforces every kept
+  constraint, and stays Delaunay off the constraints — with 180+ genuinely non-Delaunay segments
+  forced. (Side note: confirmed the occasional 1-triangle hull deficit is a pre-existing
+  Bowyer-Watson near-collinear degeneracy, not introduced by CDT.) Self-test 49 → 54 checks, all
+  green; `verify-project.mjs` passes.

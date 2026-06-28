@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Point, Rect } from '../geometry/types'
+import type { Edge, Point, Rect } from '../geometry/types'
 import { computeGeometry } from '../geometry/compute'
+import { constrainedDelaunay } from '../geometry/constrained'
 import { lloydStep } from '../geometry/lloyd'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { alphaShape, alphaForSlider, circumRadii } from '../geometry/alphaShape'
@@ -39,6 +40,7 @@ const DEFAULT_LAYERS: LayerToggles = {
   convexLayers: false,
   mst: false,
   refine: false,
+  cdt: false,
   centroids: false,
   points: true,
 }
@@ -99,6 +101,10 @@ export default function Studio() {
   const [refineState, setRefineState] = useState<{ res: RefineResult; for: Point[] } | null>(null)
   const [refining, setRefining] = useState(false)
   const refineResult = refineState && refineState.for === points ? refineState.res : null
+  // Constraint segments (index pairs) for the constrained Delaunay triangulation.
+  const [constraints, setConstraints] = useState<Edge[]>([])
+  const [constraintMode, setConstraintMode] = useState(false)
+  const [anchor, setAnchor] = useState(-1) // first endpoint picked while adding a constraint
 
   const [importText, setImportText] = useState('')
   const [flash, setFlash] = useState('')
@@ -124,6 +130,13 @@ export default function Studio() {
       }),
     [points, layers.gabriel, needProximity, layers.convexLayers, layers.beta, betaVal, layers.knn, kVal],
   )
+
+  // Constrained Delaunay: recomputed only when its layer is on and constraints exist.
+  const cdtResult = useMemo(() => {
+    if (!layers.cdt || constraints.length === 0 || points.length < 3) return null
+    const valid = constraints.filter((c) => c.a < points.length && c.b < points.length && c.a !== c.b)
+    return constrainedDelaunay(points, valid)
+  }, [layers.cdt, constraints, points])
 
   // Alpha shape is parameterized by the slider, so it recomputes independently of
   // the main geometry pass (which is keyed on the point set + heavy-layer flags).
@@ -169,6 +182,7 @@ export default function Studio() {
                 steinerStart: refineResult.steinerStart,
               }
             : null,
+        cdt: layers.cdt && cdtResult ? { triangles: cdtResult.triangles, edges: cdtResult.edges } : null,
         closest: geometry.closest,
         diameter: geometry.diameter,
         width: geometry.width,
@@ -179,7 +193,7 @@ export default function Studio() {
       },
       { width: size.width, height: size.height, dpr: size.dpr, pad: PAD, scheme, layers, measure, cellAlpha },
     )
-  }, [ref, size, points, geometry, alphaResult, refineResult, hover, selected, scheme, layers, measure, cellAlpha])
+  }, [ref, size, points, geometry, alphaResult, refineResult, cdtResult, hover, selected, scheme, layers, measure, cellAlpha])
 
   // ── Alpha-shape sweep: grow the eraser radius 0→1 so holes visibly close ────
   useEffect(() => {
@@ -267,10 +281,35 @@ export default function Studio() {
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const p = toWorld(e.clientX, e.clientY)
     const hit = nearestIndex(p, 14)
+    // Constraint mode: click two existing points to pin a constraint segment.
+    if (constraintMode && !(e.shiftKey || e.altKey || e.button === 2)) {
+      if (hit < 0) {
+        setAnchor(-1)
+        setSelected(-1)
+        return
+      }
+      if (anchor < 0) {
+        setAnchor(hit)
+        setSelected(hit)
+      } else if (hit !== anchor) {
+        const a = Math.min(anchor, hit)
+        const b = Math.max(anchor, hit)
+        setConstraints((prev) =>
+          prev.some((c) => c.a === a && c.b === b) ? prev : [...prev, { a, b }],
+        )
+        setLayers((pl) => ({ ...pl, cdt: true }))
+        setAnchor(-1)
+        setSelected(-1)
+      }
+      return
+    }
     if (e.shiftKey || e.altKey || e.button === 2) {
       if (hit >= 0) {
+        // Removing a point shifts indices, so any constraints are dropped.
         setPoints((prev) => prev.filter((_, i) => i !== hit))
         setSelected(-1)
+        setConstraints([])
+        setAnchor(-1)
       }
       return
     }
@@ -307,10 +346,15 @@ export default function Studio() {
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
+  const clearConstraints = () => {
+    setConstraints([])
+    setAnchor(-1)
+  }
   const regenerate = (nextSeed = seed) => {
     setAnimating(false)
     setRelaxStats({ iterations: 0, movement: 0 })
     setSelected(-1)
+    clearConstraints()
     setPoints(generate(dist, count, nextSeed))
   }
   const reseed = () => {
@@ -327,6 +371,7 @@ export default function Studio() {
     setAnimating(false)
     setPoints([])
     setSelected(-1)
+    clearConstraints()
     setRelaxStats({ iterations: 0, movement: 0 })
   }
   const savePng = () => {
@@ -361,6 +406,7 @@ export default function Studio() {
     }
     setAnimating(false)
     setSelected(-1)
+    clearConstraints()
     setRelaxStats({ iterations: 0, movement: 0 })
     setPoints(parsed)
     setFlash(`Imported ${parsed.length} points`)
@@ -407,7 +453,11 @@ export default function Studio() {
         </div>
         {flash && <div className="stage__flash">{flash}</div>}
         <p className="stage__hint">
-          Click empty space to add a point · drag to move · shift/right-click to delete
+          {constraintMode
+            ? anchor < 0
+              ? 'Constraint mode: click the first endpoint of a segment to pin'
+              : 'Now click the second endpoint to pin the constraint edge'
+            : 'Click empty space to add a point · drag to move · shift/right-click to delete'}
         </p>
       </div>
 
@@ -648,6 +698,33 @@ export default function Studio() {
               <Stat label="triangles" value={refineResult.triangles.length} />
             </div>
           )}
+        </Panel>
+
+        <Panel title="Constraints" hint="CDT">
+          <p className="muted">
+            Constrained Delaunay: force chosen segments to be edges (via Lawson edge-flips), then
+            restore Delaunay everywhere else. Pinned edges show in magenta.
+          </p>
+          <div className="row">
+            <Button
+              variant={constraintMode ? 'primary' : 'default'}
+              onClick={() => { setConstraintMode((m) => !m); setAnchor(-1) }}
+              disabled={points.length < 3}
+            >
+              {constraintMode ? 'Picking…' : 'Add constraint'}
+            </Button>
+            <Toggle label="Show CDT" checked={layers.cdt} onChange={(v) => setLayer('cdt', v)} />
+          </div>
+          <div className="row">
+            <Button variant="ghost" onClick={clearConstraints} disabled={constraints.length === 0}>
+              Clear constraints
+            </Button>
+          </div>
+          <div className="metrics">
+            <Stat label="constraints" value={constraints.length} />
+            <Stat label="enforced" value={cdtResult ? `${cdtResult.inserted}/${cdtResult.requested}` : '—'} />
+            <Stat label="triangles" value={cdtResult ? cdtResult.triangles.length : '—'} />
+          </div>
         </Panel>
 
         <Panel title="Appearance">

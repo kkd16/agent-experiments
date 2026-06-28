@@ -18,6 +18,7 @@ import {
 } from './graphs'
 import { fortune } from './fortune'
 import { refineDelaunay, minMeshAngle } from './refine'
+import { constrainedDelaunay } from './constrained'
 import { poissonDisk, mulberry32, uniformPoints } from './random'
 import { lloydStep } from './lloyd'
 import { area } from './polygon'
@@ -420,6 +421,78 @@ const RECT: Rect = { minX: 0, minY: 0, maxX: 100, maxY: 100 }
   // The reported mesh is the Delaunay triangulation of the augmented points.
   check('Ruppert mesh angle matches a fresh Delaunay solve',
     Math.abs(res.minAngleAfter - minMeshAngle(res.points, delaunay(res.points))) < 1e-9)
+}
+
+// ── Constrained Delaunay: enforces segments, stays a valid triangulation ──────
+{
+  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`)
+  const triArea = (p: Point[], t: { a: number; b: number; c: number }) =>
+    Math.abs(orient(p[t.a], p[t.b], p[t.c])) / 2
+  let badArea = 0
+  let badCount = 0
+  let badCcw = 0
+  let constraintsMissing = 0
+  let cdtViolations = 0
+  let totalForced = 0
+  for (let seed = 1; seed <= 12; seed++) {
+    const rng = mulberry32(seed * 17 + 3)
+    const pts = uniformPoints(55, RECT, rng)
+    const cons: { a: number; b: number }[] = []
+    for (let i = 0; i < 10; i++) {
+      const a = Math.floor(rng() * pts.length)
+      const b = Math.floor(rng() * pts.length)
+      if (a !== b) cons.push({ a, b })
+    }
+    const raw = delaunay(pts)
+    const rawA = raw.reduce((s, t) => s + triArea(pts, t), 0)
+    const rawEdges = new Set<string>()
+    for (const t of raw) {
+      rawEdges.add(key(t.a, t.b))
+      rawEdges.add(key(t.b, t.c))
+      rawEdges.add(key(t.c, t.a))
+    }
+    const r = constrainedDelaunay(pts, cons)
+    // Flips conserve the triangulated region: same area, same triangle count.
+    if (Math.abs(r.triangles.reduce((s, t) => s + triArea(pts, t), 0) - rawA) > 1e-6) badArea++
+    if (r.triangles.length !== raw.length) badCount++
+    for (const t of r.triangles) if (orient(pts[t.a], pts[t.b], pts[t.c]) <= 0) badCcw++
+    // Every constraint the solver kept must actually be present as an edge.
+    const eset = new Set(r.edges.map((e) => key(e.edge.a, e.edge.b)))
+    const flagged = r.edges.filter((e) => e.constrained)
+    for (const e of flagged) if (!eset.has(key(e.edge.a, e.edge.b))) constraintsMissing++
+    totalForced += flagged.filter((e) => !rawEdges.has(key(e.edge.a, e.edge.b))).length
+    // Constrained-Delaunay property: every non-constrained interior edge is legal.
+    const conSet = new Set(flagged.map((e) => key(e.edge.a, e.edge.b)))
+    const em = new Map<string, number[]>()
+    r.triangles.forEach((t, ti) => {
+      for (const [a, b] of [[t.a, t.b], [t.b, t.c], [t.c, t.a]] as const) {
+        const k = key(a, b)
+        const arr = em.get(k)
+        if (arr) arr.push(ti)
+        else em.set(k, [ti])
+      }
+    })
+    for (const [k, ts] of em) {
+      if (ts.length !== 2 || conSet.has(k)) continue
+      const [t1, t2] = ts.map((i) => r.triangles[i])
+      const sh = k.split('_').map(Number)
+      const opp = (t: { a: number; b: number; c: number }) =>
+        [t.a, t.b, t.c].find((x) => x !== sh[0] && x !== sh[1])!
+      const p = opp(t1)
+      const q = opp(t2)
+      const A = pts[sh[0]]
+      const B = pts[sh[1]]
+      const P = pts[p]
+      const o = orient(P, A, B) > 0 ? [P, A, B] : [P, B, A]
+      if (inCircle(o[0], o[1], o[2], pts[q]) > 1e-6) cdtViolations++
+    }
+  }
+  check('CDT conserves area (flips only)', badArea === 0, `(${badArea} seeds off)`)
+  check('CDT conserves triangle count', badCount === 0, `(${badCount} seeds off)`)
+  check('CDT triangles are CCW', badCcw === 0, `(${badCcw})`)
+  check('CDT enforces every kept constraint as an edge', constraintsMissing === 0, `(${constraintsMissing})`)
+  check('CDT is Delaunay off the constraints', cdtViolations === 0, `(${cdtViolations})`)
+  check('CDT actually forces non-Delaunay segments', totalForced > 20, `(${totalForced} forced)`)
 }
 
 export const result = { failures }
