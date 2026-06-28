@@ -361,15 +361,19 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
   if (select.groupingSets) reject('GROUPING SETS / ROLLUP / CUBE')
   if (!select.from || !select.from.table) reject('the FROM clause must be a base table (no subqueries or table functions)')
 
-  // Relations: FROM table, then each join. Base tables only, INNER/CROSS only,
-  // each table referenced at most once.
+  // Relations: FROM table, then each join. Base tables only, INNER/CROSS may
+  // repeat a table (a *self-join* — the dataflow handles it with the bilinear
+  // cross-term, see `MaterializedView.innerDelta`). Each occurrence needs a
+  // distinct correlation name so its columns resolve unambiguously.
   const relations: IvmRelation[] = []
-  const seen = new Set<string>()
+  const aliases = new Set<string>()
   const addRel = (table: string | undefined, alias: string | undefined): void => {
     if (!table) reject('a derived table / subquery / table function in FROM')
-    const lc = table.toLowerCase()
-    if (seen.has(lc)) reject(`the table "${table}" appears more than once (self-joins are not supported)`)
-    seen.add(lc)
+    const a = (alias ?? table).toLowerCase()
+    if (aliases.has(a)) {
+      reject(`the correlation name "${alias ?? table}" is used more than once — give each table occurrence a distinct alias`)
+    }
+    aliases.add(a)
     relations.push({ table, alias: alias ?? table })
   }
   addRel(select.from.table, select.from.alias)
@@ -390,6 +394,13 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
     if (!j.table) reject('a derived table / subquery / table function in a JOIN')
     addRel(j.table, j.alias)
     if (j.on) assertScalar(j.on, 'a JOIN … ON predicate')
+  }
+  // The outer-join runtime keeps a per-row match-count state keyed by side; a
+  // self outer-join (the same base table preserved on both sides) would alias
+  // those states, so it stays outside the maintainable set for now. (Inner
+  // self-joins take the general bilinear path and are fully supported.)
+  if (outer && relations[0].table.toLowerCase() === relations[1].table.toLowerCase()) {
+    reject('a self outer-join (the same base table on both sides) is not yet incrementally maintained')
   }
   if (select.where) assertScalar(select.where, 'the WHERE clause')
 

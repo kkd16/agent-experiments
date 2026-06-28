@@ -34,7 +34,7 @@ import {
   DIV_DEFAULT_SCALE,
   type DecimalValue,
 } from '../decimal'
-import type { Database, Row, Table } from '../catalog'
+import type { Database, Row } from '../catalog'
 import type { Expr, SelectItem, SelectStmt } from '../ast'
 import { analyzeView, collectColumns, type IvmAggregate, type IvmAnalysis } from './analyze'
 import { ZSet, type ZSetEntry } from './zset'
@@ -53,6 +53,25 @@ export interface IvmPlanNode {
   detail: string
   extra: string[]
   children: IvmPlanNode[]
+}
+
+/** One step of a maintenance term's join order. `parent === null` means the slot
+ *  is a *driver* (the small delta, scanned in full) or a cross-product slot with
+ *  no equijoin to anything bound yet; otherwise the slot is *probed* by a hash
+ *  index on its join key, with the key read from `parentCols` (global composite
+ *  indices) — so the slot contributes O(matches) rows instead of O(table). */
+interface TermStep {
+  slot: number
+  parent: number | null
+  parentCols: number[] | null
+}
+
+/** A compiled plan for one maintenance term: the slot visiting order (drivers
+ *  first, then probed/cross slots) and, per position, the conjuncts that become
+ *  evaluable once that slot is bound. Cached per driver-set (a bitmask of slots). */
+interface TermPlan {
+  steps: TermStep[]
+  predAtPos: Evaluator[][]
 }
 
 /** A compact SQL-ish rendering of an expression, for EXPLAIN labels only. */
@@ -585,9 +604,40 @@ export class MaterializedView {
   private readonly relations: { table: string; alias: string }[]
   private readonly offsets: number[]
   private readonly width: number
-  /** Conjuncts grouped by the join depth at which they become evaluable. */
-  private readonly predsAt: Evaluator[][]
-  private readonly slotByTable: Map<string, number>
+  /** Every join/WHERE conjunct, compiled, tagged with the slots it reads — so a
+   *  plan can evaluate it as soon as those slots are bound, in any visiting order. */
+  private readonly allPreds: { ev: Evaluator; slots: number[] }[]
+  /** The equijoin graph: `equiEdges[a][b]` = the (localCol_a, localCol_b) pairs of
+   *  every pure, same-typed cross-slot column equality between slots a and b. */
+  private readonly equiEdges: Map<number, Map<number, [number, number][]>>
+  /** `probeCols[s][t]` = slot s's local columns (edge order) of the s↔t equijoin,
+   *  the key its hash index is built on. Derived from `equiEdges`. */
+  private readonly probeCols = new Map<number, Map<number, number[]>>()
+  /** `slotIndexes[s][t]` = a hash index over slot s's mirror, keyed by
+   *  `probeCols[s][t]`, maintained in lock-step with the mirror. Lets maintenance
+   *  *probe* slot s by its join key instead of scanning it — O(matches), not
+   *  O(table). Purely an optimization: every conjunct is still rechecked as a
+   *  residual, so a missing/coarse index can never change the answer. */
+  private readonly slotIndexes = new Map<number, Map<number, Map<string, ZSet>>>()
+  /** Visiting plans, cached per driver-set (a bitmask of the slots fed the delta). */
+  private readonly planCache = new Map<number, TermPlan>()
+  /** Per-slot local column names (for naming probe keys in EXPLAIN). */
+  private readonly slotColumns: string[][]
+  /** Base-table (lower) → the slot indices it occupies. More than one ⇒ a
+   *  *self-join*, maintained by the bilinear cross-term in `innerDelta`. */
+  private readonly tableSlots: Map<string, number[]>
+  /** The view's integrated mirror of each base table's current contents (inner
+   *  path only). The join reads its inputs from here, and a base delta updates
+   *  the mirror in lock-step *after* the view delta is computed — so the mirror
+   *  always holds the pre-delta state T_old during maintenance. That is exactly
+   *  what the bilinear expansion needs when a table is self-joined: the cross-
+   *  terms ΔT⋈T_old + T_old⋈ΔT + ΔT⋈ΔT are read straight off (ΔT, mirror).
+   *  Reading mirrors (rather than the live catalog) also makes the join input
+   *  independent of the heap-vs-deliver mutation order, which differs between
+   *  insert/update (heap first) and a cascading delete (deliver first). */
+  private readonly mirrors = new Map<string, ZSet>()
+  /** True when some base table occupies more than one slot (a self-join). */
+  private readonly selfJoined: boolean
   private readonly sink: Sink
   /** Present iff this view is built on a single LEFT/RIGHT/FULL outer join. */
   private readonly outer?: OuterJoinRuntime
@@ -600,8 +650,10 @@ export class MaterializedView {
     relations: { table: string; alias: string }[]
     offsets: number[]
     width: number
-    predsAt: Evaluator[][]
-    slotByTable: Map<string, number>
+    allPreds: { ev: Evaluator; slots: number[] }[]
+    equiEdges: Map<number, Map<number, [number, number][]>>
+    slotColumns: string[][]
+    tableSlots: Map<string, number[]>
     sink: Sink
     baseTables: string[]
     shapeLabel: string
@@ -613,12 +665,21 @@ export class MaterializedView {
     this.relations = args.relations
     this.offsets = args.offsets
     this.width = args.width
-    this.predsAt = args.predsAt
-    this.slotByTable = args.slotByTable
+    this.allPreds = args.allPreds
+    this.equiEdges = args.equiEdges
+    this.slotColumns = args.slotColumns
+    this.tableSlots = args.tableSlots
+    this.selfJoined = [...args.tableSlots.values()].some((s) => s.length > 1)
     this.sink = args.sink
     this.baseTables = args.baseTables
     this.shapeLabel = args.shapeLabel
     this.outer = args.outer
+    // Derive the per-slot probe-key columns from the equijoin graph.
+    for (const [a, nbrs] of this.equiEdges) {
+      const m = new Map<number, number[]>()
+      for (const [b, pairs] of nbrs) m.set(b, pairs.map(([ca]) => ca))
+      this.probeCols.set(a, m)
+    }
   }
 
   /** Compile a maintainable SELECT into a view (throws `SqlError` if ineligible). */
@@ -629,12 +690,15 @@ export class MaterializedView {
     const relations = analysis.relations.map((r) => ({ table: r.table, alias: r.alias }))
     const compositeSchema: Schema = []
     const offsets: number[] = []
-    const slotByTable = new Map<string, number>()
+    const tableSlots = new Map<string, number[]>()
     relations.forEach((rel, slot) => {
       offsets.push(compositeSchema.length)
       const t = db.getTable(rel.table)
       for (const c of t.columns) compositeSchema.push({ table: rel.alias, name: c.name, type: c.type })
-      slotByTable.set(rel.table.toLowerCase(), slot)
+      const lc = rel.table.toLowerCase()
+      const arr = tableSlots.get(lc)
+      if (arr) arr.push(slot)
+      else tableSlots.set(lc, [slot])
     })
     const width = compositeSchema.length
 
@@ -647,19 +711,43 @@ export class MaterializedView {
       return s
     }
 
-    // Gather conjuncts from every JOIN-ON and the WHERE, and bucket each by the
-    // depth (slot) at which all its referenced columns are bound — classic
-    // predicate push-down, so a selective join condition prunes early.
-    const predsAt: Evaluator[][] = relations.map(() => [])
+    // Gather conjuncts from every JOIN-ON and the WHERE. Each is compiled against
+    // the composite row and tagged with the set of slots it reads, so a plan can
+    // evaluate it the moment those slots are bound — predicate push-down that
+    // adapts to whatever visiting order the delta-driven planner chooses. A pure,
+    // same-typed `col = col` across two slots is additionally recorded as an
+    // equijoin edge, which lets maintenance probe one side by a hash index on its
+    // join key (sublinear) rather than scanning it.
+    const allPreds: { ev: Evaluator; slots: number[] }[] = []
+    const equiEdges = new Map<number, Map<number, [number, number][]>>()
+    const addEdge = (a: number, ca: number, b: number, cb: number): void => {
+      let m = equiEdges.get(a)
+      if (!m) {
+        m = new Map()
+        equiEdges.set(a, m)
+      }
+      const arr = m.get(b)
+      if (arr) arr.push([ca, cb])
+      else m.set(b, [[ca, cb]])
+    }
     const placePred = (e: Expr): void => {
       const cols: { table?: string; name: string }[] = []
       collectColumns(e, cols)
-      let depth = 0
-      for (const c of cols) {
-        const idx = resolveColumn(compositeSchema, c.table, c.name)
-        depth = Math.max(depth, slotOfIndex(idx))
+      const slotSet = new Set<number>()
+      for (const c of cols) slotSet.add(slotOfIndex(resolveColumn(compositeSchema, c.table, c.name)))
+      allPreds.push({ ev: compileExpr(e, ctx), slots: [...slotSet] })
+      if (e.kind === 'binary' && e.op === '=' && e.left.kind === 'column' && e.right.kind === 'column') {
+        const li = resolveColumn(compositeSchema, e.left.table, e.left.name)
+        const ri = resolveColumn(compositeSchema, e.right.table, e.right.name)
+        const ls = slotOfIndex(li)
+        const rs = slotOfIndex(ri)
+        // Same-typed columns only: the canonical hash key is then a faithful proxy
+        // for `=`, so a probe can never miss a match (no cross-type surprises).
+        if (ls !== rs && compositeSchema[li].type === compositeSchema[ri].type) {
+          addEdge(ls, li - offsets[ls], rs, ri - offsets[rs])
+          addEdge(rs, ri - offsets[rs], ls, li - offsets[ls])
+        }
       }
-      predsAt[depth].push(compileExpr(e, ctx))
     }
     select.joins.forEach((j) => {
       for (const c of conjuncts(j.on)) placePred(c)
@@ -765,6 +853,7 @@ export class MaterializedView {
     }
 
     const baseTables = [...new Set(relations.map((r) => r.table.toLowerCase()))]
+    const slotColumns = relations.map((rel) => db.getTable(rel.table).columns.map((c) => c.name))
     return new MaterializedView({
       name,
       select,
@@ -772,8 +861,10 @@ export class MaterializedView {
       relations,
       offsets,
       width,
-      predsAt,
-      slotByTable,
+      allPreds,
+      equiEdges,
+      slotColumns,
+      tableSlots,
       sink,
       baseTables,
       shapeLabel,
@@ -935,48 +1026,203 @@ export class MaterializedView {
     return out
   }
 
-  /** The composite-row delta produced by a delta on a single relation slot,
-   *  joined against the other relations' current contents and filtered. */
-  private spjDelta(db: Database, changedSlot: number, deltaRows: ZSetEntry[]): ZSet {
+  /** Compile (and cache) a join order for the given *driver* slots — the slots
+   *  fed the small delta (or, for the full materialization, slot 0). Drivers are
+   *  visited first and scanned in full; every remaining slot is attached to an
+   *  already-visited neighbour by an equijoin edge so it can be *probed* by a hash
+   *  index (O(matches)); a slot with no such edge is a cross-product full scan.
+   *  Conjuncts are evaluated at the position their last slot becomes bound. */
+  private planFor(driverMask: number): TermPlan {
+    const cached = this.planCache.get(driverMask)
+    if (cached) return cached
+    const N = this.relations.length
+    const drivers: number[] = []
+    for (let s = 0; s < N; s++) if ((driverMask >> s) & 1) drivers.push(s)
+
+    const ordered = [...drivers]
+    const inOrder = new Set(drivers)
+    const steps: TermStep[] = drivers.map((s) => ({ slot: s, parent: null, parentCols: null }))
+    while (ordered.length < N) {
+      let picked = -1
+      let parent = -1
+      for (let s = 0; s < N && picked < 0; s++) {
+        if (inOrder.has(s)) continue
+        const nbrs = this.equiEdges.get(s)
+        if (!nbrs) continue
+        for (const t of ordered) {
+          if (nbrs.has(t)) {
+            picked = s
+            parent = t
+            break
+          }
+        }
+      }
+      if (picked < 0) {
+        for (let s = 0; s < N; s++)
+          if (!inOrder.has(s)) {
+            picked = s
+            break
+          }
+      }
+      ordered.push(picked)
+      inOrder.add(picked)
+      if (parent >= 0) {
+        const edge = this.equiEdges.get(picked)!.get(parent)!
+        steps.push({ slot: picked, parent, parentCols: edge.map(([, pc]) => this.offsets[parent] + pc) })
+      } else {
+        steps.push({ slot: picked, parent: null, parentCols: null })
+      }
+    }
+
+    const posOf = new Map<number, number>()
+    ordered.forEach((s, i) => posOf.set(s, i))
+    const predAtPos: Evaluator[][] = ordered.map(() => [])
+    for (const p of this.allPreds) {
+      let mp = 0
+      for (const s of p.slots) mp = Math.max(mp, posOf.get(s)!)
+      predAtPos[mp].push(p.ev)
+    }
+    const plan: TermPlan = { steps, predAtPos }
+    this.planCache.set(driverMask, plan)
+    return plan
+  }
+
+  /** Run one join term under a plan: driver/cross slots are scanned from
+   *  `sources`, probed slots come from their hash index keyed by the bound parent
+   *  columns. The output weight of a composite row is the product of its source
+   *  rows' weights — the textbook bilinear join over Z-sets. Every conjunct is
+   *  applied as a residual, so the index probe only ever *narrows* candidates. */
+  private expandTerm(plan: TermPlan, sources: ZSet[]): ZSet {
     const out = new ZSet()
     const composite: Row = new Array(this.width).fill(null)
     const N = this.relations.length
-    const liveTables: (Table | null)[] = this.relations.map((r, s) => (s === changedSlot ? null : db.getTable(r.table)))
 
-    const recur = (slot: number, weight: number): void => {
-      if (slot === N) {
+    const recur = (pos: number, weight: number): void => {
+      if (pos === N) {
         out.add(composite.slice(), weight)
         return
       }
+      const step = plan.steps[pos]
+      const slot = step.slot
       const off = this.offsets[slot]
       const colCount = (slot + 1 < N ? this.offsets[slot + 1] : this.width) - off
-      const preds = this.predsAt[slot]
-      const tryRow = (r: Row, rw: number): void => {
+      const preds = plan.predAtPos[pos]
+      const emit = (r: Row, w: number): void => {
         for (let i = 0; i < colCount; i++) composite[off + i] = r[i]
         for (const p of preds) if (!truthy(p(composite))) return
-        recur(slot + 1, weight * rw)
+        recur(pos + 1, weight * w)
       }
-      if (slot === changedSlot) {
-        for (const e of deltaRows) tryRow(e.row, e.weight)
+      if (step.parent === null) {
+        for (const e of sources[slot].entries()) emit(e.row, e.weight)
       } else {
-        for (const r of liveTables[slot]!.heap.values()) tryRow(r, 1)
+        const vals = step.parentCols!.map((c) => composite[c])
+        for (const v of vals) if (v === null) return // a NULL key never equijoins
+        const bucket = this.slotIndexes.get(slot)!.get(step.parent)!.get(hashKey(vals))
+        if (!bucket) return
+        for (const e of bucket.entries()) emit(e.row, e.weight)
       }
     }
     recur(0, 1)
     return out
   }
 
-  /** Populate the view from the current base tables (a full re-evaluation). */
+  /** The composite-row delta from a change to one base table, computed off the
+   *  mirrors. A join is multilinear, so when base table T (occupying the slots
+   *  `P`) changes by ΔT, the view delta is the binomial expansion
+   *
+   *      Δ(⋈) = Σ_{∅ ≠ S ⊆ P}  [ ΔT at the slots in S, T_old at the slots in P∖S ]
+   *
+   *  (every non-T slot stays at its current mirror). For a single occurrence
+   *  (|P| = 1) the only term is `ΔT ⋈ others` — the ordinary linear push-down.
+   *  For a self-join (|P| = 2) the three terms are exactly ΔT⋈T_old, T_old⋈ΔT and
+   *  ΔT⋈ΔT. The mirror (and its indexes) still hold T_old here — they are updated
+   *  only *after* this returns — so the cross-terms read straight off it. The
+   *  slots fed ΔT drive that term (small, scanned); the rest are index-probed. */
+  private innerDelta(tableLower: string, deltaZ: ZSet): ZSet {
+    const P = this.tableSlots.get(tableLower)!
+    const mirrorT = this.mirrors.get(tableLower)!
+    const out = new ZSet()
+    const k = P.length
+    for (let mask = 1; mask < 1 << k; mask++) {
+      let driverMask = 0
+      const sources = this.relations.map((rel, slot) => {
+        const lc = rel.table.toLowerCase()
+        if (lc !== tableLower) return this.mirrors.get(lc)!
+        const j = P.indexOf(slot)
+        if ((mask >> j) & 1) {
+          driverMask |= 1 << slot
+          return deltaZ
+        }
+        return mirrorT
+      })
+      out.addZSet(this.expandTerm(this.planFor(driverMask), sources))
+    }
+    return out
+  }
+
+  /** (Re)build the integrated mirrors and their join-key indexes from the live
+   *  catalog (the cold path: create / refresh / restore / rollback). */
+  private buildMirrors(db: Database): void {
+    this.mirrors.clear()
+    for (const rel of this.relations) {
+      const lc = rel.table.toLowerCase()
+      if (this.mirrors.has(lc)) continue
+      const z = new ZSet()
+      for (const r of db.getTable(rel.table).heap.values()) z.add(r, 1)
+      this.mirrors.set(lc, z)
+    }
+    this.slotIndexes.clear()
+    for (const [s, parents] of this.probeCols) {
+      const mirror = this.mirrors.get(this.relations[s].table.toLowerCase())!
+      const byParent = new Map<number, Map<string, ZSet>>()
+      for (const [t, cols] of parents) {
+        const idx = new Map<string, ZSet>()
+        for (const e of mirror.entries()) this.indexAdd(idx, e.row, cols, e.weight)
+        byParent.set(t, idx)
+      }
+      this.slotIndexes.set(s, byParent)
+    }
+  }
+
+  /** Add `weight` copies of `row` to a slot index under its join key (skipping a
+   *  NULL key, which can never match), pruning a bucket once it drains to empty. */
+  private indexAdd(idx: Map<string, ZSet>, row: Row, cols: number[], weight: number): void {
+    for (const c of cols) if (row[c] === null) return
+    const key = hashKey(cols.map((c) => row[c]))
+    let b = idx.get(key)
+    if (!b) {
+      b = new ZSet()
+      idx.set(key, b)
+    }
+    b.add(row, weight)
+    if (b.isEmpty()) idx.delete(key)
+  }
+
+  /** Fold a base-table delta into every join-key index that reads that table,
+   *  keeping the indexes in lock-step with the mirror. */
+  private updateIndexes(tableLower: string, deltaZ: ZSet): void {
+    for (const [s, parents] of this.probeCols) {
+      if (this.relations[s].table.toLowerCase() !== tableLower) continue
+      const byParent = this.slotIndexes.get(s)!
+      for (const [t, cols] of parents) {
+        const idx = byParent.get(t)!
+        for (const e of deltaZ.entries()) this.indexAdd(idx, e.row, cols, e.weight)
+      }
+    }
+  }
+
+  /** Populate the view from the current base tables (a full re-evaluation). The
+   *  inner path drives the join from slot 0 and index-probes the rest (a left-deep
+   *  hash join of the mirrors), so even a self-join materializes in O(n·matches). */
   initialize(db: Database): void {
     this.sink.reset()
     if (this.relations.length === 0) return
     if (this.outer) {
       this.outerInitialize(db)
     } else {
-      const first = db.getTable(this.relations[0].table)
-      const delta: ZSetEntry[] = []
-      for (const r of first.heap.values()) delta.push({ row: r, weight: 1 })
-      this.sink.apply(this.spjDelta(db, 0, delta))
+      this.buildMirrors(db)
+      const sources = this.relations.map((rel) => this.mirrors.get(rel.table.toLowerCase())!)
+      this.sink.apply(this.expandTerm(this.planFor(1), sources))
     }
     this.stats.steps = 0
     this.stats.lastInserted = 0
@@ -985,15 +1231,26 @@ export class MaterializedView {
 
   /** Does a change to `tableLower` affect this view? */
   dependsOn(tableLower: string): boolean {
-    return this.slotByTable.has(tableLower)
+    return this.tableSlots.has(tableLower)
   }
 
   /** Apply a base-table delta (the rows that changed, with ±1 weights) and
    *  maintain the materialized result. Returns the output delta it produced. */
   applyChange(db: Database, tableLower: string, deltaRows: ZSetEntry[]): { inserted: number; deleted: number; outDelta: ZSet } {
-    const slot = this.slotByTable.get(tableLower)
-    if (slot === undefined) return { inserted: 0, deleted: 0, outDelta: new ZSet() }
-    const composite = this.outer ? this.outerDelta(db, slot, deltaRows) : this.spjDelta(db, slot, deltaRows)
+    const slots = this.tableSlots.get(tableLower)
+    if (!slots) return { inserted: 0, deleted: 0, outDelta: new ZSet() }
+    let composite: ZSet
+    if (this.outer) {
+      composite = this.outerDelta(db, slots[0], deltaRows)
+    } else {
+      const deltaZ = new ZSet()
+      for (const e of deltaRows) deltaZ.add(e.row, e.weight)
+      composite = this.innerDelta(tableLower, deltaZ)
+      // Fold the delta into the mirror and its indexes *after* the view delta is
+      // computed, so the cross-terms above saw the pre-delta state T_old.
+      this.mirrors.get(tableLower)!.addZSet(deltaZ)
+      this.updateIndexes(tableLower, deltaZ)
+    }
     const outDelta = this.sink.apply(composite)
     let inserted = 0
     let deleted = 0
@@ -1023,6 +1280,21 @@ export class MaterializedView {
     return this.sink.outputSchema
   }
 
+  /** If slot `i` equijoins to an earlier slot, the EXPLAIN note for the hash
+   *  index maintenance probes it by — the key to its `O(matches)`, not
+   *  `O(table)`, delta join. Returns null for a cross-product / non-equi join. */
+  private probeNote(i: number): string | null {
+    const nbrs = this.equiEdges.get(i)
+    if (!nbrs) return null
+    for (let t = 0; t < i; t++) {
+      const e = nbrs.get(t)
+      if (!e) continue
+      const keyCols = e.map(([ci]) => this.slotColumns[i][ci]).join(', ')
+      return `Δ-probe: hash index on ${this.relations[i].alias}(${keyCols}) — O(matches), not O(${this.relations[i].alias})`
+    }
+    return null
+  }
+
   /** The compiled incremental dataflow as a render-ready tree: the sink at the
    *  top, the join/scan structure (where each base delta enters) at the bottom.
    *  The incremental dual of `EXPLAIN` — it describes how a Δ to a base table is
@@ -1031,7 +1303,12 @@ export class MaterializedView {
     const scan = (slot: number): IvmPlanNode => {
       const rel = this.relations[slot]
       const named = rel.alias !== rel.table ? `${rel.table} ${rel.alias}` : rel.table
-      return { op: 'DeltaScan', detail: named, extra: ['a Δ on this table drives maintenance'], children: [] }
+      const occ = this.tableSlots.get(rel.table.toLowerCase())
+      const extra =
+        occ && occ.length > 1
+          ? [`a Δ on ${rel.table} drives maintenance (occurs ${occ.length}× → bilinear cross-term)`]
+          : ['a Δ on this table drives maintenance']
+      return { op: 'DeltaScan', detail: named, extra, children: [] }
     }
 
     // The join / scan producer subtree.
@@ -1059,13 +1336,20 @@ export class MaterializedView {
       for (let i = 1; i < this.relations.length; i++) {
         const j = this.select.joins[i - 1]
         const onText = conjuncts(j.on).map(exprText).join(' AND ')
+        const extra: string[] =
+          i === 1
+            ? [
+                this.selfJoined
+                  ? 'bilinear self-join: a Δ to a repeated table expands to ΔT⋈T + T⋈ΔT + ΔT⋈ΔT'
+                  : 'bilinear: one table’s Δ is linear; the other inputs are read from the view’s integrated mirror',
+              ]
+            : []
+        const probe = this.probeNote(i)
+        if (probe) extra.push(probe)
         producer = {
           op: `${j.type} JOIN`,
           detail: onText ? `ON ${onText}` : '(cross product)',
-          extra:
-            i === 1
-              ? ['bilinear: a single table’s Δ is linear; the other side is read live from the catalog']
-              : [],
+          extra,
           children: [producer, scan(i)],
         }
       }
