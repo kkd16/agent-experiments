@@ -221,6 +221,31 @@ fn main() {
 `,
   },
   {
+    id: 'pre',
+    title: 'Partial redundancy (GVN-PRE)',
+    blurb:
+      'a*b+c is computed only when a>b, then recomputed after the merge. At -O2 PRE inserts it on the other edge and fuses the two with a φ — the recomputation becomes a reuse. (Open the Optimizer tab and click the "pre" pass to see the rewrite.)',
+    source: `fn main() {
+  // a, b, c are genuine runtime values (a loop sum the optimizer can't fold away).
+  let g = 0;
+  for (let k = 0; k < 100; k = k + 1) { g = g + k * 3 - 1; }
+  let a = (g & 15) - 6;
+  let b = (g & 7) - 3;
+  let c = (g & 31) - 12;
+  let s = 0;
+
+  if (a > b) {
+    let t = a * b + c;   // computed on this path only...
+    print(t);            // (the print keeps the branch — no if-conversion)
+    s = 1;
+  }
+  let z = a * b + c;     // ...recomputed here, redundant whenever a > b
+  print(z);
+  print(s);
+}
+`,
+  },
+  {
     id: 'ackermann',
     title: 'Ackermann',
     blurb: 'Deeply nested recursion — a small but brutal stress test.',
