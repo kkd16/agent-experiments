@@ -293,3 +293,14 @@ live here as long as you like.
 - [ ] Add an option to practice percentages and decimals specifically.
 - [x] Create a visual "Trophy Case" summarizing all achievements.
 - [ ] Add an "Endless Mode" that gradually increases in difficulty without stopping.
+## New Jules Improvements Batch
+- [x] Add an option to toggle a "Show Hints" setting which slightly highlights correct digits for a few seconds.
+- [x] Add a visual "Ghost Pacer" in speed runs that shows average previous speed on the progress bar.
+- [x] Implement a "Distraction Mode" which throws random safe floating shapes or text to train focus.
+- [x] Add a small "Session Duration" stat to the summary screen indicating how long the current play session lasted.
+- [x] Implement a "Blind Mode" toggle that hides the operation sign and requires the user to guess based on the numbers.
+- [x] Add an explicit "Reset High Scores" button in the settings separate from full reset.
+- [x] Implement a "Consecutive Days Played" stat to encourage daily engagement.
+- [x] Add a custom "Welcome Back" toast message that varies based on the time of day.
+- [x] Add an option to invert the keypad numbers (123 at top vs 789 at top).
+- [x] Include a "Most Missed Operation" insight in the main menu statistics.

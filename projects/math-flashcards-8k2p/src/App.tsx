@@ -190,6 +190,22 @@ function getInitialDisableConfetti(): boolean {
 }
 
 
+function getInitialShowHints(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsShowHints') === 'true'; } catch { return false; }
+}
+
+function getInitialGhostPacer(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsGhostPacer') === 'true'; } catch { return false; }
+}
+function getInitialDistractionMode(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsDistractionMode') === 'true'; } catch { return false; }
+}
+function getInitialBlindMode(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsBlindMode') === 'true'; } catch { return false; }
+}
+function getInitialInvertKeypad(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsInvertKeypad') === 'true'; } catch { return false; }
+}
 function getInitialColorBlindMode(): boolean {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsColorBlindMode');
@@ -673,6 +689,23 @@ function App() {
     }
   }, [floatingBubbles]);
   const [pulsingFlashcard, setPulsingFlashcard] = useState<boolean>(getInitialPulsingFlashcard());
+  const [distractionMode, setDistractionMode] = useState<boolean>(getInitialDistractionMode());
+  const [distractionProps, setDistractionProps] = useState({ top: '50%', left: '50%', emoji: '🚀' });
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsDistractionMode', distractionMode.toString()); } catch (e) { console.error(e); }
+  }, [distractionMode]);
+  const [ghostPacer, setGhostPacer] = useState<boolean>(getInitialGhostPacer());
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsGhostPacer', ghostPacer.toString()); } catch (e) { console.error(e); }
+  }, [ghostPacer]);
+  const [showHints, setShowHints] = useState<boolean>(getInitialShowHints());
+  const [hintActive, setHintActive] = useState<boolean>(false);
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsShowHints', showHints.toString()); } catch (e) { console.error(e); }
+  }, [showHints]);
   const [inputMethod, setInputMethod] = useState<'numpad' | 'row'>(getInitialInputMethod());
   const [statsCollapsed, setStatsCollapsed] = useState<boolean>(false);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>(new Date().toLocaleTimeString());
@@ -762,6 +795,18 @@ function App() {
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen'>('time');
+  useEffect(() => {
+    if (distractionMode && isSpeedRunActive && !isPaused) {
+      const interval = setInterval(() => {
+        setDistractionProps({
+          top: `${Math.random() * 80 + 10}%`,
+          left: `${Math.random() * 80 + 10}%`,
+          emoji: ['🚀', '🎈', '☁️', '🛸', '👀'][Math.floor(Math.random() * 5)]
+        });
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [distractionMode, isSpeedRunActive, isPaused]);
   const [maxComboMultiplier, setMaxComboMultiplier] = useState<number>(getInitialMaxCombo());
 
   useEffect(() => {
@@ -775,7 +820,11 @@ function App() {
   const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
   const [isSurvivalMode, setIsSurvivalMode] = useState<boolean>(false);
   const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
-  const [hideOperator, setHideOperator] = useState<boolean>(false);
+  const [hideOperator, setHideOperator] = useState<boolean>(getInitialBlindMode());
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsBlindMode', hideOperator.toString()); } catch (e) { console.error(e); }
+  }, [hideOperator]);
   const [timeLeft, setTimeLeft] = useState<number>(60);
   const [selectedTimerDuration, setSelectedTimerDuration] = useState<number>(60);
   const [customTimerDuration, setCustomTimerDuration] = useState<number>(getInitialCustomTimer());
@@ -804,6 +853,58 @@ function App() {
   const [streakMessage, setStreakMessage] = useState<string>('');
   const [avgTimePerDigit, setAvgTimePerDigit] = useState<number>(getInitialAvgTimePerDigit());
   const [totalDigitsAnswered, setTotalDigitsAnswered] = useState<number>(getInitialTotalDigitsAnswered());
+  const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+  useEffect(() => {
+    setTimeout(() => setSessionStartTime(Date.now()), 0);
+  }, []);
+  const [currentSessionDuration, setCurrentSessionDuration] = useState<number>(0);
+  useEffect(() => {
+    if (showSummary && sessionStartTime > 0) {
+      setTimeout(() => setCurrentSessionDuration(Date.now() - sessionStartTime), 0);
+    }
+  }, [showSummary, sessionStartTime]);
+  const [welcomeToast, setWelcomeToast] = useState<string>('');
+  useEffect(() => {
+    setTimeout(() => {
+      const h = new Date().getHours();
+      const getTod = () => {
+        if (h >= 5 && h < 12) return 'Morning';
+        if (h >= 12 && h < 17) return 'Afternoon';
+        if (h >= 17 && h < 21) return 'Evening';
+        return 'Night';
+      };
+      setWelcomeToast(`Good ${getTod()}! Welcome Back.`);
+    }, 0);
+    const timer = setTimeout(() => setWelcomeToast(''), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+  const [consecutiveDays] = useState<number>(() => {
+    try {
+      const lastDate = window.localStorage.getItem('mathFlashcardsLastPlayedDate');
+      const today = new Date().toDateString();
+      if (!lastDate) {
+        window.localStorage.setItem('mathFlashcardsLastPlayedDate', today);
+        return 1;
+      }
+      if (lastDate === today) {
+        return parseInt(window.localStorage.getItem('mathFlashcardsConsecutiveDays') || '1', 10);
+      }
+      const last = new Date(lastDate);
+      const curr = new Date(today);
+      const diffTime = Math.abs(curr.getTime() - last.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays === 1) {
+        const days = parseInt(window.localStorage.getItem('mathFlashcardsConsecutiveDays') || '1', 10) + 1;
+        window.localStorage.setItem('mathFlashcardsConsecutiveDays', days.toString());
+        window.localStorage.setItem('mathFlashcardsLastPlayedDate', today);
+        return days;
+      } else {
+         window.localStorage.setItem('mathFlashcardsConsecutiveDays', '1');
+         window.localStorage.setItem('mathFlashcardsLastPlayedDate', today);
+         return 1;
+      }
+    } catch { return 1; }
+  });
   const [questionStartTime, setQuestionStartTime] = useState<number>(0);
 
   useEffect(() => {
@@ -815,6 +916,11 @@ function App() {
   }, [totalDigitsAnswered]);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [numpadLayout, setNumpadLayout] = useState<'phone' | 'calculator'>(getInitialNumpadLayout());
+  const [invertKeypad, setInvertKeypad] = useState<boolean>(getInitialInvertKeypad());
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsInvertKeypad', invertKeypad.toString()); } catch (e) { console.error(e); }
+  }, [invertKeypad]);
   const [bgColor, setBgColor] = useState<string>(() => {
     try {
       return window.localStorage.getItem('mathFlashcardsBgColor') || '';
@@ -1016,6 +1122,10 @@ function App() {
     setMessage(`Skipped! Answer was ${correctAns}`);
     setAnswerStatus('incorrect');
     setTimeout(() => { generateProblem(); setAnswerStatus(null); }, 1000);
+    if (showHints) {
+      setHintActive(true);
+      setTimeout(() => setHintActive(false), 2000);
+    }
   };
 
   const [isBossActive, setIsBossActive] = useState(false);
@@ -1041,7 +1151,8 @@ function App() {
       setMessage('');
     }
     inputRef.current?.focus();
-  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, customQuestionLimit, isHardcoreMode, allowNegatives, customMinNumber, customMaxNumber]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [difficulty, isSpeedRunActive, timeLeft, allowedOperations, gameMode, questionsAnswered, questionLimit, customQuestionLimit, isHardcoreMode, allowNegatives, customMinNumber, customMaxNumber, showHints, setHintActive, setNum1, setNum2, setOperation, setUserAnswer, setMessage]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1481,6 +1592,11 @@ function App() {
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
         <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
+        <label htmlFor="showHints"><input id="showHints" type="checkbox" checked={showHints} onChange={(e) => setShowHints(e.target.checked)} /> Show Hints</label>
+        <label htmlFor="ghostPacer"><input id="ghostPacer" type="checkbox" checked={ghostPacer} onChange={(e) => setGhostPacer(e.target.checked)} /> Ghost Pacer</label>
+        <label htmlFor="distractionMode"><input id="distractionMode" type="checkbox" checked={distractionMode} onChange={(e) => setDistractionMode(e.target.checked)} /> Distraction Mode</label>
+        <label htmlFor="blindMode"><input id="blindMode" type="checkbox" checked={hideOperator} onChange={(e) => setHideOperator(e.target.checked)} /> Blind Mode (Hide Operation)</label>
+        <label htmlFor="invertKeypad"><input id="invertKeypad" type="checkbox" checked={invertKeypad} onChange={(e) => setInvertKeypad(e.target.checked)} /> Invert Keypad Numbers</label>
       </div>
 
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
@@ -1552,6 +1668,27 @@ function App() {
           })()}
 
           <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
+          {(() => {
+            const missed = fullHistory.filter(h => !h.isCorrect);
+            if (missed.length === 0) return null;
+            const counts: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0 };
+            missed.forEach(h => {
+              if (counts[h.operation] !== undefined) counts[h.operation]++;
+            });
+            let maxOp = '';
+            let maxCount = -1;
+            Object.entries(counts).forEach(([op, count]) => {
+              if (count > maxCount) {
+                maxCount = count;
+                maxOp = op;
+              }
+            });
+            if (maxCount > 0) {
+              return <div className="stat">Most Missed Operation: {maxOp} ({maxCount} times)</div>;
+            }
+            return null;
+          })()}
+          <div className="stat">Consecutive Days Played: {consecutiveDays}</div>
 
           {(() => {
             const missed = fullHistory.filter(h => !h.isCorrect);
@@ -1760,6 +1897,9 @@ function App() {
           <button onClick={handleFactoryReset} className="reset-btn" style={{marginTop: '0.5rem', padding: '0.5rem', background: '#e74c3c', color: 'white', borderRadius: '4px', cursor: 'pointer', border: 'none', width: '100%'}}>
             Factory Reset
           </button>
+          <button onClick={() => { if(window.confirm('Reset High Scores?')) { setHighScore(0); try { window.localStorage.removeItem('mathFlashcardsHighScore'); } catch (err) { console.error(err); } } }} className="reset-btn" style={{marginTop: '0.5rem', padding: '0.5rem', background: '#f39c12', color: 'white', borderRadius: '4px', cursor: 'pointer', border: 'none', width: '100%'}}>
+            Reset High Scores
+          </button>
         </div>
 
         <div className="speed-run-controls">
@@ -1767,9 +1907,12 @@ function App() {
           {isSpeedRunActive ? (
             gameMode !== 'zen' && (
               (gameMode === 'time' || gameMode === 'timeAttack') ? (
-                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
+                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible', position: 'relative' }}>
                   <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
-                  <div className="progress-text">{timeLeft}s</div>
+                  {ghostPacer && runScores.length > 0 && (
+                    <div className="ghost-pacer-bar" style={{ position: 'absolute', top: 0, left: 0, height: '100%', backgroundColor: 'rgba(255, 255, 255, 0.4)', width: `${Math.max(0, 100 - (elapsedTime / (runScores.reduce((acc, val) => acc + val.score, 0) / runScores.length || 1)) * 100)}%`, zIndex: 1, pointerEvents: 'none', transition: 'width 1s linear' }}></div>
+                  )}
+                  <div className="progress-text" style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
                 </div>
               ) : gameMode === 'questions' ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
@@ -1899,14 +2042,14 @@ function App() {
             onChange={(e) => setUserAnswer(e.target.value)}
             autoFocus
             className="answer-input"
-            placeholder="?"
+            placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
             disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
           />
           <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
         </form>
 
         <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
-          {(numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3]).map(num => (
+          {(invertKeypad ? (numpadLayout === 'phone' ? [7, 8, 9, 4, 5, 6, 1, 2, 3] : [1, 2, 3, 4, 5, 6, 7, 8, 9]) : (numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3])).map(num => (
             <button
               key={num}
               type="button"
@@ -1961,7 +2104,13 @@ function App() {
       {showHighScoreBanner && <div className="message" style={{color: '#f39c12', animation: 'pulse 0.5s infinite'}}>New High Score! 🏆</div>}
       {showCurrentTime && !(isSpeedRunActive && focusMode) && <div style={{position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold', zIndex: 100}}>{currentTimeStr}</div>}
       {message && <div className={`message ${message === 'Correct!' ? 'success' : (message.includes('Time') ? 'info' : 'error')}`}>{message}</div>}
+      {welcomeToast && <div className="message success" style={{animation: 'pulse 1s infinite', zIndex: 100}}>{welcomeToast}</div>}
       {streakMessage && <div className="message" style={{color: '#9b59b6', animation: 'pulse 1s infinite'}}>{streakMessage}</div>}
+      {distractionMode && isSpeedRunActive && !isPaused && (
+        <div style={{position: 'absolute', top: distractionProps.top, left: distractionProps.left, fontSize: '2rem', animation: 'float 3s infinite', pointerEvents: 'none', opacity: 0.5, zIndex: 0}}>
+          {distractionProps.emoji}
+        </div>
+      )}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
 
       {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
@@ -1972,6 +2121,7 @@ function App() {
           <div className="summary-modal">
             <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit)) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
             <p>Final Score: <strong>{score}</strong></p>
+            <p>Session Duration: <strong>{Math.floor(currentSessionDuration / 60000)}m {Math.floor((currentSessionDuration % 60000) / 1000)}s</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
             <p>Best Combo: <strong>{bestHistoricalCombo}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
