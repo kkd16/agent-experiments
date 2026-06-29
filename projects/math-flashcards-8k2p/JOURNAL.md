@@ -272,13 +272,24 @@ live here as long as you like.
 - [ ] Support complex numbers in a special university mode.
 - [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
 ## New Agent Additions
-- [ ] Add an option to toggle a "Color Blind Mode" that uses distinct patterns instead of just colors for feedback.
+- [x] Add an option to toggle a "Color Blind Mode" that uses distinct patterns instead of just colors for feedback.
 - [ ] Add a "Speed Graph" to the summary screen showing response time for each question in a run.
 - [ ] Implement a system to unlock different font styles based on math rank.
 - [x] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
 - [ ] Create a "Fraction Mode" focused entirely on adding/subtracting/multiplying/dividing fractions.
-- [ ] Add a visual "Streak Multiplier" indicator that glows brighter as the combo increases.
+- [x] Add a visual "Streak Multiplier" indicator that glows brighter as the combo increases.
 - [ ] Implement an option to export all run history as a CSV file.
 - [ ] Add a "Daily Challenge" mode that provides a fixed set of questions for everyone each day.
 - [ ] Support a "Hexadecimal Mode" for computer science practice.
 - [ ] Add a setting to adjust the volume of sound effects.
+## Further Additions
+- [ ] Add a "Reverse Mode" where the answer is provided and the user must pick the correct question.
+- [ ] Create a feature that tracks the specific digits users struggle with most (e.g. 7s and 8s).
+- [ ] Add an option for Roman Numeral math problems.
+- [ ] Implement a dynamic background that changes color based on the time of day.
+- [ ] Add a visual "Heatmap" to the stats screen showing activity intensity over the past 30 days.
+- [ ] Allow users to customize the background image with an uploaded picture.
+- [x] Implement a "Survival Mode" where incorrect answers reduce the timer significantly.
+- [ ] Add an option to practice percentages and decimals specifically.
+- [x] Create a visual "Trophy Case" summarizing all achievements.
+- [ ] Add an "Endless Mode" that gradually increases in difficulty without stopping.

@@ -189,6 +189,17 @@ function getInitialDisableConfetti(): boolean {
   }
 }
 
+
+function getInitialColorBlindMode(): boolean {
+  try {
+    const stored = window.localStorage.getItem('mathFlashcardsColorBlindMode');
+    if (stored !== null) return stored === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+  }
+  return false;
+}
+
 function getInitialLowBatteryMode(): boolean {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLowBatteryMode');
@@ -635,6 +646,9 @@ function App() {
   const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
   const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
+  const [colorBlindMode, setColorBlindMode] = useState<boolean>(getInitialColorBlindMode());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
+
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
   const [disableConfetti, setDisableConfetti] = useState<boolean>(getInitialDisableConfetti());
   const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
@@ -759,6 +773,7 @@ function App() {
   }, [maxComboMultiplier]);
 
   const [isSuddenDeathMode, setIsSuddenDeathMode] = useState<boolean>(false);
+  const [isSurvivalMode, setIsSurvivalMode] = useState<boolean>(false);
   const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
   const [hideOperator, setHideOperator] = useState<boolean>(false);
   const [timeLeft, setTimeLeft] = useState<number>(60);
@@ -1296,6 +1311,9 @@ function App() {
       }
 
     } else {
+      if (isSurvivalMode && !isSuddenDeathMode && (gameMode === 'time' || gameMode === 'timeAttack')) {
+        setTimeLeft(prev => Math.max(0, prev - 5));
+      }
       if (isSuddenDeathMode) {
         setMessage(`Incorrect! Sudden Death over.`);
         if (soundEnabled) playSound('incorrect', soundVolume);
@@ -1403,7 +1421,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1506,7 +1524,7 @@ function App() {
                 </div>
               )}
 
-              {streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}
+              <span className={streak >= 10 ? 'streak-glow-3x' : (streak >= 5 ? 'streak-glow-2x' : '')}>{streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}</span>
               <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
             </div>
             <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
@@ -1559,6 +1577,17 @@ function App() {
               </div>
             );
           })()}
+
+          <div className="stat trophy-case" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>Trophy Case 🏆</div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {nightOwlUnlocked ? <span title="Night Owl (Play at night)" style={{ fontSize: '1.5rem' }}>🦉</span> : <span title="Night Owl (Locked)" style={{ fontSize: '1.5rem', opacity: 0.2 }}>🦉</span>}
+              {lifetimeCorrectAnswers >= 50 ? <span title="Scholar Rank" style={{ fontSize: '1.5rem' }}>🎓</span> : <span title="Scholar Rank (Locked)" style={{ fontSize: '1.5rem', opacity: 0.2 }}>🎓</span>}
+              {lifetimeCorrectAnswers >= 250 ? <span title="Wizard Rank" style={{ fontSize: '1.5rem' }}>🧙</span> : <span title="Wizard Rank (Locked)" style={{ fontSize: '1.5rem', opacity: 0.2 }}>🧙</span>}
+              {lifetimeCorrectAnswers >= 1000 ? <span title="Master Rank" style={{ fontSize: '1.5rem' }}>👑</span> : <span title="Master Rank (Locked)" style={{ fontSize: '1.5rem', opacity: 0.2 }}>👑</span>}
+              {highScore >= 1000 ? <span title="1000+ Score" style={{ fontSize: '1.5rem' }}>💯</span> : <span title="1000+ Score (Locked)" style={{ fontSize: '1.5rem', opacity: 0.2 }}>💯</span>}
+            </div>
+          </div>
 
 
           {(() => {
@@ -1691,6 +1720,11 @@ function App() {
             Screen Shake
           </label>
           <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
+            <input type="checkbox" checked={colorBlindMode} onChange={(e) => setColorBlindMode(e.target.checked)} />
+            Color Blind Mode
+          </label>
+
+          <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
             <input type="checkbox" checked={hideTimer} onChange={(e) => setHideTimer(e.target.checked)} />
             Hide Timer
           </label>
@@ -1760,6 +1794,15 @@ function App() {
                 />
                 Sudden Death
               </label>
+              <label style={{display: 'flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer', fontSize: '0.9rem'}}>
+                <input
+                  type="checkbox"
+                  checked={isSurvivalMode}
+                  onChange={(e) => setIsSurvivalMode(e.target.checked)}
+                />
+                Survival
+              </label>
+
               <label style={{display: 'flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer', fontSize: '0.9rem'}}>
                 <input
                   type="checkbox"
@@ -1840,7 +1883,7 @@ function App() {
           )}
           {streak >= 5 && (
             <span style={{position: 'absolute', top: '-10px', right: '-10px', background: '#f1c40f', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '10px', fontSize: '1rem', fontWeight: 'bold', animation: 'pulse 0.5s'}}>
-              {streak >= 10 ? 'x3' : 'x2'}
+              <span className={streak >= 10 ? 'streak-glow-3x' : 'streak-glow-2x'}>{streak >= 10 ? 'x3' : 'x2'}</span>
             </span>
           )}
 

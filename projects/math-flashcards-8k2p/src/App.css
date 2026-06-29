@@ -773,3 +773,46 @@ h1 {
     background-color: #e0e8f0;
   }
 }
+
+.color-blind-mode .flashcard.flash-correct {
+  background: repeating-linear-gradient(
+    45deg,
+    #27ae60,
+    #27ae60 10px,
+    #2ecc71 10px,
+    #2ecc71 20px
+  ) !important;
+}
+
+.color-blind-mode .flashcard.flash-incorrect {
+  background: repeating-linear-gradient(
+    -45deg,
+    #c0392b,
+    #c0392b 10px,
+    #e74c3c 10px,
+    #e74c3c 20px
+  ) !important;
+}
+
+@keyframes streakGlow2x {
+  0% { text-shadow: 0 0 5px #f39c12; }
+  50% { text-shadow: 0 0 15px #f1c40f, 0 0 20px #f1c40f; }
+  100% { text-shadow: 0 0 5px #f39c12; }
+}
+
+@keyframes streakGlow3x {
+  0% { text-shadow: 0 0 10px #e74c3c; color: #e74c3c; }
+  50% { text-shadow: 0 0 20px #c0392b, 0 0 30px #e74c3c; color: #c0392b; }
+  100% { text-shadow: 0 0 10px #e74c3c; color: #e74c3c; }
+}
+
+.streak-glow-2x {
+  animation: streakGlow2x 1.5s infinite;
+  font-weight: bold;
+}
+
+.streak-glow-3x {
+  animation: streakGlow3x 1s infinite;
+  font-weight: bold;
+  font-size: 1.1em;
+}
