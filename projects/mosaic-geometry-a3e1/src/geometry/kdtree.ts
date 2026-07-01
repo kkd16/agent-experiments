@@ -328,4 +328,100 @@ export function kdNearestSteps(tree: KdNode | null, points: Point[], q: Point): 
   return steps
 }
 
+// ── Approximate nearest neighbour: best-bin-first with an ε guarantee ────────
+//
+// Exact NN can, in the worst case (a query far from every point), be forced to
+// unwind most of the tree. Approximate NN trades a bounded error for far fewer
+// visits: explore subtrees in order of how close their *region* is to the query
+// (a priority queue keyed by region distance — "best bin first"), and stop as soon
+// as the closest unexplored region is more than a (1+ε) factor nearer than the best
+// point found. The returned point is then within (1+ε) of the true nearest, and
+// for ε > 0 the search usually terminates after a handful of bins.
+
+/** A tiny binary min-heap over {node, key} — key is the squared region distance. */
+class NodeHeap {
+  private a: { node: KdNode; key: number }[] = []
+  get size(): number {
+    return this.a.length
+  }
+  push(node: KdNode, key: number): void {
+    const a = this.a
+    a.push({ node, key })
+    let i = a.length - 1
+    while (i > 0) {
+      const p = (i - 1) >> 1
+      if (a[p].key <= a[i].key) break
+      ;[a[p], a[i]] = [a[i], a[p]]
+      i = p
+    }
+  }
+  pop(): { node: KdNode; key: number } | undefined {
+    const a = this.a
+    if (a.length === 0) return undefined
+    const top = a[0]
+    const last = a.pop() as { node: KdNode; key: number }
+    if (a.length > 0) {
+      a[0] = last
+      let i = 0
+      for (;;) {
+        const l = 2 * i + 1
+        const r = 2 * i + 2
+        let m = i
+        if (l < a.length && a[l].key < a[m].key) m = l
+        if (r < a.length && a[r].key < a[m].key) m = r
+        if (m === i) break
+        ;[a[m], a[i]] = [a[i], a[m]]
+        i = m
+      }
+    }
+    return top
+  }
+}
+
+export interface ApproxNnResult {
+  index: number
+  dist: number
+  visited: number
+  exact: boolean // true when the search happened to certify the exact nearest
+}
+
+/** (1+ε)-approximate nearest neighbour via best-bin-first traversal. With ε = 0
+ *  it degrades to an exact best-first search; with ε > 0 it prunes any region that
+ *  cannot beat the current best by more than a (1+ε) factor. */
+export function kdApproxNearest(
+  tree: KdNode | null,
+  points: Point[],
+  q: Point,
+  epsilon: number,
+): ApproxNnResult {
+  if (!tree) return { index: -1, dist: Infinity, visited: 0, exact: true }
+  const factor = (1 + Math.max(0, epsilon)) ** 2 // compare in squared space
+  let best = -1
+  let bestD2 = Infinity
+  let visited = 0
+  let exact = true
+  const heap = new NodeHeap()
+  heap.push(tree, rectDist2(q, tree.region))
+  for (;;) {
+    const top = heap.pop()
+    if (!top) break
+    // If even the closest remaining region can't improve on best/(1+ε), stop.
+    if (top.key * factor > bestD2) {
+      // Certified exact only if the region couldn't improve even without the ε slack.
+      exact = top.key >= bestD2
+      break
+    }
+    const node = top.node
+    visited++
+    const d2 = dist2(points[node.index], q)
+    if (d2 < bestD2) {
+      bestD2 = d2
+      best = node.index
+    }
+    if (node.left) heap.push(node.left, rectDist2(q, node.left.region))
+    if (node.right) heap.push(node.right, rectDist2(q, node.right.region))
+  }
+  return { index: best, dist: Math.sqrt(bestD2), visited, exact }
+}
+
 export { rectDist2, inRect, rectsIntersect }

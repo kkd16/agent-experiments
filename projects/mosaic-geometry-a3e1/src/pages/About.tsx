@@ -161,11 +161,49 @@ export default function About() {
             and the dashed trail shows the path it took.
           </li>
           <li>
+            <strong>Approximate nearest neighbour</strong> — exact NN can be forced to unwind most of
+            the tree; <em>best-bin-first</em> instead explores subtrees in order of how close their
+            region is to the query (a priority queue keyed by region distance) and stops as soon as no
+            unopened region can beat the best found by more than a (1+ε) factor. The answer is provably
+            within (1+ε) of the true nearest — for a fraction of the visits. Toggle it on in the{' '}
+            <strong>Search</strong> tab and watch the amber marker track the exact green one as you
+            trade ε for speed.
+          </li>
+          <li>
+            <strong>Range tree with fractional cascading</strong> — orthogonal range <em>reporting</em>{' '}
+            in O(log n + k): a balanced BST on x, each node carrying its subtree's points sorted by y.
+            Fractional cascading threads a pointer from every y-entry to the first ≥-entry of each
+            child, so the y-search happens <em>once</em> at the top of the query path and is then
+            followed downward for free — collapsing the naïve O(log² n) to O(log n). The Search tab's
+            range mode shows how few canonical subtrees it opens next to the k-d tree's region scan.
+          </li>
+          <li>
             <strong>Geometric spanners</strong> — sparse graphs that still approximate every distance.
             A <em>t-spanner</em> keeps each pair's shortest path within t× the straight line. The{' '}
             <em>Yao</em> and <em>Θ</em> graphs keep one edge per direction-cone; the <em>greedy</em>{' '}
-            spanner adds edges shortest-first only where the graph can't already get within t. The
-            realized <em>dilation</em> is measured by all-pairs shortest path and shown live.
+            spanner adds edges shortest-first only where the graph can't already get within t; and the{' '}
+            <em>WSPD-spanner</em> draws one edge per well-separated pair for a linear-size t-spanner.
+            The realized <em>dilation</em> is measured by all-pairs shortest path and shown live.
+          </li>
+        </ul>
+
+        <h2>Space-filling curves</h2>
+        <p>
+          The <strong>Curves</strong> tab is a fourth axis: turning 2-D proximity into a 1-D order. A
+          space-filling curve visits every cell of a 2ⁿ×2ⁿ grid exactly once, and sorting a point
+          cloud along it gives a cache-friendly linear layout whose consecutive hops stay short.
+        </p>
+        <ul>
+          <li>
+            <strong>Morton (Z-order)</strong> — interleave the bits of x and y. Trivial to compute and
+            the backbone of quadtrees and geohashes, but its "Z" jumps leak locality: cells adjacent on
+            the curve can be far apart in the plane.
+          </li>
+          <li>
+            <strong>Hilbert</strong> — a recursively rotated "U" whose consecutive indices are{' '}
+            <em>always</em> grid-neighbours, so it never jumps. Raise the order to watch it subdivide;
+            switch to the point tour to see it thread a real cloud, and read the locality metric — the
+            total tour length — confirm Hilbert beats Morton every time.
           </li>
         </ul>
 
@@ -213,12 +251,13 @@ export default function About() {
           <li>Turn on <strong>Power cells</strong>, hit <em>Randomize weights</em>, and add the regular triangulation to see Voronoi's weighted cousin and its dual.</li>
           <li>Enable the <strong>Farthest-point</strong> diagram to see the hull-vertex tree and the enclosing-circle centre that rides on it.</li>
           <li>Open the <strong>Algorithms</strong> tab to step through the hull, Quickhull, Delaunay, enclosing-circle, Fortune sweep, power-cell, k-d tree, and quadtree builds.</li>
-          <li>Open the <strong>Search</strong> tab, turn on the k-d partition, and move the probe to watch nearest-neighbour search prune — then drag a window for a range query.</li>
+          <li>Open the <strong>Search</strong> tab, turn on the k-d partition, and move the probe to watch nearest-neighbour search prune — then flip on <em>Approximate</em> and raise ε to trade accuracy for visits, or drag a window to race the range tree's canonical subtrees against the k-d scan.</li>
+          <li>Open the <strong>Curves</strong> tab, hit <em>Play</em> to sweep a Hilbert curve through the grid, then switch to the point tour and compare its locality against Z-order.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 91 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 161 checks.
         </p>
       </article>
     </div>

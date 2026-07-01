@@ -20,6 +20,7 @@ import {
   thetaBound,
   type Dilation,
 } from '../geometry/spanner'
+import { wspdSpanner, wspdSpannerBound } from '../geometry/wspd'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { alphaShape, alphaForSlider, circumRadii } from '../geometry/alphaShape'
 import { refineDelaunay, type RefineResult } from '../geometry/refine'
@@ -40,7 +41,7 @@ const PAD = 14
 const DIAG = Math.SQRT2 // normalize lengths so the frame diagonal reads as 1.0
 
 type Distribution = 'poisson' | 'uniform' | 'grid'
-type SpannerType = 'yao' | 'theta' | 'greedy'
+type SpannerType = 'yao' | 'theta' | 'greedy' | 'wspd'
 
 // Greedy spanner is O(n³)-ish (a Dijkstra per candidate pair), so cap it; Yao/Θ
 // are O(n²) and run on the full set without trouble.
@@ -115,6 +116,7 @@ export default function Studio() {
   const [spannerType, setSpannerType] = usePersistentState<SpannerType>('spannerType', 'theta')
   const [spannerCones, setSpannerCones] = usePersistentState<number>('spannerCones', 8)
   const [spannerT, setSpannerT] = usePersistentState<number>('spannerT', 2)
+  const [spannerS, setSpannerS] = usePersistentState<number>('spannerS', 6)
   const [schemeId, setSchemeId] = usePersistentState<string>('scheme', 'aurora')
   const [cellAlpha, setCellAlpha] = usePersistentState<number>('alpha', 0.92)
   const [dist, setDist] = usePersistentState<Distribution>('dist', 'poisson')
@@ -221,10 +223,11 @@ export default function Studio() {
         edges = []
       } else edges = greedySpanner(points, spannerT)
     } else if (spannerType === 'yao') edges = yaoGraph(points, spannerCones)
+    else if (spannerType === 'wspd') edges = wspdSpanner(points, spannerS)
     else edges = thetaGraph(points, spannerCones)
     const dil: Dilation | null = edges.length ? dilation(points, edges) : null
     return { edges, dilation: dil, capped }
-  }, [layers.spanner, points, spannerType, spannerCones, spannerT])
+  }, [layers.spanner, points, spannerType, spannerCones, spannerT, spannerS])
 
   // Farthest-point Voronoi diagram (the inside-out twin), with the MEC link.
   const farthestData = useMemo(() => {
@@ -949,7 +952,8 @@ export default function Studio() {
             Sparse graphs that still approximate every distance. A <strong>t-spanner</strong> keeps each
             pair's shortest path within t× the straight line; the realized <em>dilation</em> is measured
             by all-pairs shortest path. Θ and Yao split directions into cones; greedy adds edges
-            shortest-first only where the graph can't already get within t.
+            shortest-first only where the graph can't already get within t; <strong>WSPD</strong> draws
+            one edge per well-separated pair for a linear-size t-spanner.
           </p>
           <Toggle
             label="Show spanner"
@@ -962,6 +966,7 @@ export default function Studio() {
               { id: 'theta', label: 'Θ-graph' },
               { id: 'yao', label: 'Yao' },
               { id: 'greedy', label: 'Greedy' },
+              { id: 'wspd', label: 'WSPD' },
             ]}
             value={spannerType}
             onChange={setSpannerType}
@@ -976,6 +981,16 @@ export default function Studio() {
               onChange={(v) => setSpannerT(v)}
               format={(v) => `${v.toFixed(1)}×`}
             />
+          ) : spannerType === 'wspd' ? (
+            <Slider
+              label="s  (separation)"
+              value={spannerS}
+              min={4.5}
+              max={12}
+              step={0.5}
+              onChange={(v) => setSpannerS(v)}
+              format={(v) => v.toFixed(1)}
+            />
           ) : (
             <Slider label="cones (k)" value={spannerCones} min={4} max={16} step={1} onChange={(v) => setSpannerCones(v)} />
           )}
@@ -983,15 +998,17 @@ export default function Studio() {
             <Stat label="edges" value={spannerData ? spannerData.edges.length : '—'} />
             <Stat label="dilation" value={spannerData?.dilation ? spannerData.dilation.stretch.toFixed(3) : '—'} />
             <Stat
-              label={spannerType === 'theta' ? 'Θ bound' : 'connected'}
+              label={spannerType === 'theta' ? 'Θ bound' : spannerType === 'wspd' ? 't bound' : 'connected'}
               value={
                 spannerType === 'theta'
                   ? thetaBound(spannerCones).toFixed(2)
-                  : spannerData?.dilation
-                    ? spannerData.dilation.connected
-                      ? 'yes'
-                      : 'no'
-                    : '—'
+                  : spannerType === 'wspd'
+                    ? wspdSpannerBound(spannerS).toFixed(2)
+                    : spannerData?.dilation
+                      ? spannerData.dilation.connected
+                        ? 'yes'
+                        : 'no'
+                      : '—'
               }
             />
           </div>
