@@ -3,6 +3,7 @@ import type { Point, Rect, Triangle } from '../geometry/types'
 import {
   buildKdTree,
   kdNearest,
+  kdApproxNearest,
   kdKNearest,
   kdRange,
   kdDepth,
@@ -10,6 +11,7 @@ import {
   kdSplits,
 } from '../geometry/kdtree'
 import { buildQuadtree, quadLeaves, quadRange, quadStats } from '../geometry/quadtree'
+import { buildRangeTree, rangeQuery } from '../geometry/rangeTree'
 import { delaunay } from '../geometry/delaunay'
 import { buildMesh, locate, locateBruteForce, pointInTriangle } from '../geometry/pointLocation'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
@@ -53,6 +55,8 @@ export default function Search() {
   const [showKd, setShowKd] = usePersistentState<boolean>('search:kd', true)
   const [showQuad, setShowQuad] = usePersistentState<boolean>('search:quad', false)
   const [k, setK] = usePersistentState<number>('search:k', 8)
+  const [approx, setApprox] = usePersistentState<boolean>('search:approx', false)
+  const [epsilon, setEpsilon] = usePersistentState<number>('search:eps', 0.5)
 
   const [query, setQuery] = useState<Point>({ x: 0.5, y: 0.5 })
   const [windowRect, setWindowRect] = useState<Rect>({ minX: 0.3, minY: 0.3, maxX: 0.7, maxY: 0.6 })
@@ -62,6 +66,7 @@ export default function Search() {
   // ── Derived structures (rebuilt only when the point set changes) ────────────
   const kdTree = useMemo(() => buildKdTree(points, CLIP), [points])
   const quadTree = useMemo(() => buildQuadtree(points, CLIP), [points])
+  const rangeTree = useMemo(() => buildRangeTree(points), [points])
   const tris = useMemo<Triangle[]>(() => (points.length >= 3 ? delaunay(points) : []), [points])
   const mesh = useMemo(() => buildMesh(points, tris), [points, tris])
   const kdSplitLines = useMemo(() => (showKd ? kdSplits(kdTree, points) : []), [showKd, kdTree, points])
@@ -69,9 +74,14 @@ export default function Search() {
 
   // ── Query results (recomputed as the probe / window moves) ──────────────────
   const nn = useMemo(() => kdNearest(kdTree, points, query), [kdTree, points, query])
+  const ann = useMemo(
+    () => kdApproxNearest(kdTree, points, query, epsilon),
+    [kdTree, points, query, epsilon],
+  )
   const knn = useMemo(() => kdKNearest(kdTree, points, query, k), [kdTree, points, query, k])
   const range = useMemo(() => kdRange(kdTree, points, windowRect), [kdTree, points, windowRect])
   const quadRangeRes = useMemo(() => quadRange(quadTree, points, windowRect), [quadTree, points, windowRect])
+  const rtRangeRes = useMemo(() => rangeQuery(rangeTree, windowRect), [rangeTree, windowRect])
   const located = useMemo(() => locate(mesh, query, 0), [mesh, query])
 
   // ── Brute-force oracles → correctness badges ────────────────────────────────
@@ -82,8 +92,17 @@ export default function Search() {
   }, [points, query, nn])
   const rangeVerified = useMemo(() => {
     const brute = points.reduce((s, p) => (inWindow(p, windowRect) ? s + 1 : s), 0)
-    return brute === range.indices.length && brute === quadRangeRes.indices.length
-  }, [points, windowRect, range, quadRangeRes])
+    return (
+      brute === range.indices.length &&
+      brute === quadRangeRes.indices.length &&
+      brute === rtRangeRes.indices.length
+    )
+  }, [points, windowRect, range, quadRangeRes, rtRangeRes])
+  const annVerified = useMemo(() => {
+    if (points.length === 0) return true
+    // The approximate answer must sit within the (1 + ε) factor of the true nearest.
+    return ann.dist <= (1 + epsilon) * nn.dist + 1e-9
+  }, [points, ann, nn, epsilon])
   const locateVerified = useMemo(() => {
     const brute = locateBruteForce(points, tris, query)
     if (brute < 0) return located.triangle < 0 // both agree the probe is outside the hull
@@ -303,6 +322,20 @@ export default function Search() {
       ctx.lineWidth = 1
       ctx.stroke()
     }
+    // Approximate-NN result: an amber marker (+ ring) when it differs from exact.
+    if (mode === 'nn' && approx && ann.index >= 0) {
+      const t = toPx(points[ann.index])
+      ctx.strokeStyle = 'rgba(255,179,71,0.95)'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(t.x, t.y, 7, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(qp.x, qp.y, sx(ann.dist), 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(255,179,71,0.28)'
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
     if (mode === 'knn' && knn.length > 0) {
       ctx.strokeStyle = 'rgba(124,246,192,0.5)'
       ctx.lineWidth = 1.2
@@ -335,7 +368,7 @@ export default function Search() {
       ctx.fillStyle = '#ffd166'
       ctx.fill()
     }
-  }, [ref, size, points, tris, mode, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, knn, range, located, k])
+  }, [ref, size, points, tris, mode, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, ann, approx, knn, range, located, k])
 
   const badge = (ok: boolean) => (
     <span className={`badge ${ok ? 'badge--ok' : 'badge--bad'}`}>{ok ? '✓ verified' : '✗ mismatch'}</span>
@@ -392,6 +425,21 @@ export default function Search() {
           {mode === 'knn' && (
             <Slider label="k (neighbours)" value={k} min={1} max={20} step={1} onChange={setK} />
           )}
+          {mode === 'nn' && (
+            <>
+              <div className="layers">
+                <Toggle
+                  label="Approximate (best-bin-first)"
+                  swatch="#ffb347"
+                  checked={approx}
+                  onChange={setApprox}
+                />
+              </div>
+              {approx && (
+                <Slider label="ε (max relative error)" value={epsilon} min={0} max={2} step={0.1} onChange={setEpsilon} />
+              )}
+            </>
+          )}
         </Panel>
 
         <Panel title="Result" hint="vs. brute force">
@@ -403,6 +451,25 @@ export default function Search() {
                 <Stat label="nodes visited" value={`${nn.visited} / ${points.length}`} />
               </div>
               {badge(nnVerified)}
+              {approx && (
+                <>
+                  <p className="muted">
+                    Best-bin-first explores subtrees closest-region-first and stops once no
+                    unopened region can beat the current best by more than (1+ε) — a bounded-error
+                    answer for a fraction of the work.
+                  </p>
+                  <div className="metrics">
+                    <Stat label="approx #" value={ann.index >= 0 ? ann.index : '—'} />
+                    <Stat label="approx dist" value={ann.index >= 0 ? ann.dist.toFixed(4) : '—'} />
+                    <Stat label="approx visited" value={`${ann.visited} / ${points.length}`} />
+                    <Stat
+                      label="visited vs exact"
+                      value={`${(nn.visited > 0 ? ann.visited / nn.visited : 1).toFixed(2)}×`}
+                    />
+                  </div>
+                  {badge(annVerified)}
+                </>
+              )}
             </>
           )}
           {mode === 'knn' && (
@@ -420,7 +487,13 @@ export default function Search() {
                 <Stat label="in window" value={range.indices.length} />
                 <Stat label="k-d nodes" value={`${range.visited} / ${points.length}`} />
                 <Stat label="quad nodes" value={quadRangeRes.visited} />
+                <Stat label="range-tree canon." value={rtRangeRes.canonical} />
               </div>
+              <p className="muted">
+                The range tree decomposes the window into only {rtRangeRes.canonical} canonical
+                subtrees — O(log n) regardless of how many points fall inside — thanks to fractional
+                cascading, versus the k-d tree’s Θ(√n) region scan.
+              </p>
               {badge(rangeVerified)}
             </>
           )}

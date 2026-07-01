@@ -45,11 +45,24 @@ libraries.
     brute-force oracles (triangle scan, nearest site) for verification.
   - `spanner.ts` — geometric **t-spanners**: the **Yao** and **Θ** cone graphs and the **greedy**
     spanner, with a Dijkstra-based **dilation** (realized spanning ratio) and the Θ dilation bound.
+  - `wspd.ts` — the **well-separated pair decomposition** (Callahan–Kosaraju) over a from-scratch
+    **fair-split tree** (cut the longest box side at its midpoint): the O(s²·n) cluster pairs that
+    cover every point pair exactly once, plus the **linear-size WSPD t-spanner** and its (s+4)/(s−4)
+    bound. Coverage (Σ|A||B| = n(n−1)/2) and s-separation are self-checked.
+  - `rangeTree.ts` — a 2-D **range tree with fractional cascading**: a balanced BST on x, each node's
+    subtree points sorted by y with a pointer from every y-entry to the first ≥-entry of each child, so
+    the y-search runs *once* at the query root and follows downward — O(log n + k) orthogonal range
+    *reporting*. A non-cascaded reference query cross-validates the cascaded one.
+  - `spaceFilling.ts` — **Morton (Z-order)** and **Hilbert** space-filling curves from scratch:
+    bit-interleave encode/decode and the Hilbert rotation trick (xy2d/d2xy), point-cloud ordering
+    along the curve, the tour-length locality metric, and the full-curve polyline for rendering.
+  - `kdtree.ts` also carries a **best-bin-first (1+ε)-approximate NN** (`kdApproxNearest`): a
+    region-distance priority queue that stops once no unopened cell can beat the best by more than (1+ε).
   - `pointset.ts` — text + compact base64url codecs for import/export and shareable URLs.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 91 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 161 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
     CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
@@ -59,8 +72,10 @@ libraries.
   spanner layer).
 - `src/hooks/` — `useCanvas` (DPR + ResizeObserver), `useHashRoute`, `usePersistentState`.
 - `src/pages/` — `Studio` (playground), `Search` (interactive spatial-search explorer: k-d /
-  quadtree partitions + live NN / k-NN / range / point-location queries, each verified vs brute
-  force), `Algorithms` (step-through), `About`.
+  quadtree partitions + live NN / k-NN / range / point-location queries, plus **approximate NN** and
+  a **range-tree** node-count race, each verified vs brute force), `Curves` (the **space-filling
+  curves** studio: animate a Morton/Hilbert curve, sort a cloud along it, measure locality),
+  `Algorithms` (step-through), `About`.
 
 ## Ideas / backlog
 
@@ -101,18 +116,61 @@ Next (open — natural follow-ups on this axis):
 
 - [ ] **k-d tree visualizer for the NN *query*** (animate the descend-then-unwind with the pruned
   far subtree greying out) — the `kdNearestSteps` trace already exists; wire it into Algorithms.
-- [ ] **Range trees / fractional cascading** for faster orthogonal range reporting, side-by-side
-  with the k-d tree's range query (a node-count race).
-- [ ] **Well-separated pair decomposition (WSPD)** off the quadtree, and the linear-size spanner it
-  yields — a fourth spanner to compare against Yao/Θ/greedy.
-- [ ] **Approximate nearest neighbour** (a priority-queue best-bin-first k-d search with an ε knob)
-  showing the accuracy/speed trade-off against exact NN.
+- [x] **Range trees / fractional cascading** for faster orthogonal range reporting, side-by-side
+  with the k-d tree's range query (a node-count race) — see 2026-07-01 below.
+- [x] **Well-separated pair decomposition (WSPD)** and the linear-size spanner it yields — a fourth
+  spanner to compare against Yao/Θ/greedy — see 2026-07-01 below.
+- [x] **Approximate nearest neighbour** (a priority-queue best-bin-first k-d search with an ε knob)
+  showing the accuracy/speed trade-off against exact NN — see 2026-07-01 below.
 - [ ] **k-d tree on a non-axis split (PCA / BSP)** and a comparison of cell shapes.
 - [ ] **Dynamic point location** (Kirkpatrick hierarchy or a trapezoidal map) as an O(log n) rival
   to the jump-and-walk, with the search path animated.
-- [ ] **Morton / Hilbert curve order** overlay (the space-filling-curve linearization a quadtree
-  induces) and a "sort by Z-order" animation.
+- [x] **Morton / Hilbert curve order** overlay (the space-filling-curve linearization a quadtree
+  induces) and a "sort by Z-order" animation — shipped as the full **Curves** page (2026-07-01).
 - [ ] **A `compute`-level cache** so the Studio spanner's dilation isn't recomputed every Lloyd frame.
+
+### 2026-07-01 — spatial search & hierarchies, part II (space-filling curves, WSPD, range trees, approximate NN)
+
+Part I (2026-06-28) built the query structures; this session clears most of its own "next" list and
+opens a fourth axis — turning 2-D proximity into a 1-D order. Everything is from scratch and
+cross-checked; the self-test grew **91 → 161 checks** (+70), all green, and the live app was
+re-verified headless (Playwright/Chromium) across all five tabs with zero console errors.
+
+Shipped this session:
+
+- [x] **Space-filling curves** (`spaceFilling.ts`): **Morton (Z-order)** by bit interleaving and the
+  **Hilbert** curve by the rotation trick (`xy2d`/`d2xy`), each with encode *and* decode; point-cloud
+  ordering along either curve; the **tour-length locality metric**; and the full-curve polyline.
+  Verified: encode∘decode is the identity and codes are a permutation over the whole grid (orders 1–5);
+  **Hilbert steps are always unit grid moves** (it never jumps) while Morton demonstrably does; and the
+  Hilbert *tour* is shorter than Morton's on a real cloud — the locality win, made numeric.
+- [x] **Curves page** (`pages/Curves.tsx`, new **Curves** tab): pick Hilbert or Z-order, raise the
+  order to watch the curve subdivide, and **Play** to sweep a temperature-ramped head along it. Switch
+  to *point tour* to thread a generated cloud in curve order, with a live Hilbert-vs-Z-order tour-length
+  readout and the Hilbert improvement %.
+- [x] **Well-separated pair decomposition** (`wspd.ts`): a from-scratch **fair-split tree** (cut the
+  longest box side at its midpoint) + the Callahan–Kosaraju pair recursion, plus the **linear-size
+  WSPD t-spanner**. Verified hard: **Σ|A||B| = n(n−1)/2** (every point pair covered *exactly* once,
+  double-checked by enumerating memberships), every emitted pair is genuinely s-well-separated, the
+  decomposition is sub-quadratic, and the s>4 spanner realizes dilation ≤ (s+4)/(s−4). Wired into the
+  **Studio** Spanners panel as a fourth option (separation slider + t-bound readout).
+- [x] **2-D range tree with fractional cascading** (`rangeTree.ts`): O(log n + k) orthogonal range
+  *reporting* — one y-binary-search at the query root, then cascade pointers followed downward. Verified:
+  it matches brute force and its own non-cascaded reference over 60 random windows, is a perfect 2n−1-node
+  balanced tree, and opens only O(log n) canonical subtrees. Surfaced in the **Search** range mode next
+  to the k-d and quadtree node counts (the "canonical subtrees" race).
+- [x] **Best-bin-first (1+ε)-approximate NN** (`kdApproxNearest` in `kdtree.ts`): a region-distance
+  min-heap that halts once no unopened cell can beat the best by more than (1+ε). Verified: ε=0 reproduces
+  the exact nearest, ε=0.5 always stays within the (1+ε) factor, and it touches no more nodes than exact
+  on average. Wired into the **Search** nn mode with an ε slider, an amber result marker, a
+  visited-vs-exact ratio, and a "within (1+ε)" badge.
+
+Next (open — natural follow-ups):
+
+- [ ] Wire the existing `kdNearestSteps` NN-query trace and a new WSPD/curve step-trace into the
+  **Algorithms** tab (the Curves page already animates the curve refinement interactively).
+- [ ] **Approximate range counting** and **k-NN** off the WSPD; a WSPD-based Euclidean-MST.
+- [ ] **PCA/BSP splits**, **dynamic point location**, and the `compute`-level dilation cache (carried over).
 
 ### 2026-06-28 — weighted & advanced geometry expansion (planned this session)
 

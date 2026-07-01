@@ -60,6 +60,31 @@ import {
   pointInTriangle,
 } from './pointLocation'
 import { yaoGraph, thetaGraph, greedySpanner, dilation, thetaBound } from './spanner'
+import {
+  mortonEncode,
+  mortonDecode,
+  hilbertEncode,
+  hilbertDecode,
+  curveOrder,
+  tourLength,
+  curvePath,
+} from './spaceFilling'
+import {
+  buildRangeTree,
+  rangeQuery,
+  rangeQueryNaive,
+  rangeTreeDepth,
+  rangeTreeSize,
+} from './rangeTree'
+import {
+  buildSplitTree,
+  wspd,
+  wellSeparated,
+  coveredPairCount,
+  wspdSpanner,
+  wspdSpannerBound,
+} from './wspd'
+import { kdApproxNearest } from './kdtree'
 import { dist } from './vector'
 import type { Rect } from './types'
 
@@ -917,6 +942,206 @@ function canonicalHull(hull: number[]): number[] {
     seen.add(k)
   }
   check('Θ-graph edges are canonical and unique', bad === 0, `(${bad})`)
+}
+
+// ── Space-filling curves (Morton / Hilbert) ─────────────────────────────────
+{
+  // Encode/decode are inverse bijections over the whole 2^order grid.
+  for (const order of [1, 2, 4, 5]) {
+    const side = 1 << order
+    const n = side * side
+    let mortonBad = 0
+    let hilbertBad = 0
+    const mortonSeen = new Set<number>()
+    const hilbertSeen = new Set<number>()
+    for (let x = 0; x < side; x++) {
+      for (let y = 0; y < side; y++) {
+        const md = mortonEncode(x, y, order)
+        const [mx, my] = mortonDecode(md, order)
+        if (mx !== x || my !== y) mortonBad++
+        mortonSeen.add(md)
+        const hd = hilbertEncode(x, y, order)
+        const [hx, hy] = hilbertDecode(hd, order)
+        if (hx !== x || hy !== y) hilbertBad++
+        hilbertSeen.add(hd)
+      }
+    }
+    check(`Morton encode∘decode is identity (order ${order})`, mortonBad === 0, `(${mortonBad})`)
+    check(`Morton codes are a permutation of 0…${n - 1}`, mortonSeen.size === n)
+    check(`Hilbert encode∘decode is identity (order ${order})`, hilbertBad === 0, `(${hilbertBad})`)
+    check(`Hilbert codes are a permutation of 0…${n - 1}`, hilbertSeen.size === n)
+  }
+
+  // Hilbert's defining property: consecutive indices are grid-neighbours (the
+  // curve never jumps). Morton, by contrast, does jump — so it fails this.
+  const order = 5
+  const cells = 1 << (2 * order)
+  let hilbertGaps = 0
+  let mortonJumps = 0
+  for (let d = 0; d + 1 < cells; d++) {
+    const [ax, ay] = hilbertDecode(d, order)
+    const [bx, by] = hilbertDecode(d + 1, order)
+    if (Math.abs(ax - bx) + Math.abs(ay - by) !== 1) hilbertGaps++
+    const [mx0, my0] = mortonDecode(d, order)
+    const [mx1, my1] = mortonDecode(d + 1, order)
+    if (Math.abs(mx0 - mx1) + Math.abs(my0 - my1) !== 1) mortonJumps++
+  }
+  check('Hilbert steps are always unit grid moves (no jumps)', hilbertGaps === 0, `(${hilbertGaps})`)
+  check('Morton order does jump (locality leaks)', mortonJumps > 0, `(${mortonJumps} jumps)`)
+
+  // curvePath threads every cell for the Hilbert curve (path length = 4^order).
+  const path = curvePath('hilbert', 4, RECT)
+  check('Hilbert curvePath visits every cell once', path.length === 1 << (2 * 4))
+
+  // Locality: over a real point set, the Hilbert tour is shorter than the Morton
+  // tour — the whole reason Hilbert is preferred for spatial layouts.
+  const rng = mulberry32(20260701)
+  const pts = uniformPoints(400, RECT, rng)
+  const mOrder = curveOrder(pts, RECT, 8, 'morton')
+  const hOrder = curveOrder(pts, RECT, 8, 'hilbert')
+  const perm = [...hOrder.visit].sort((a, b) => a - b)
+  check('curveOrder returns a permutation of all points', perm.every((v, i) => v === i))
+  const mLen = tourLength(pts, mOrder)
+  const hLen = tourLength(pts, hOrder)
+  check('Hilbert tour is shorter than Morton (locality win)', hLen < mLen,
+    `(hilbert ${hLen.toFixed(1)} < morton ${mLen.toFixed(1)})`)
+}
+
+// ── 2-D range tree with fractional cascading ─────────────────────────────────
+{
+  const rng = mulberry32(7)
+  const pts = uniformPoints(200, RECT, rng)
+  const tree = buildRangeTree(pts)
+
+  // A full binary tree on n leaves has exactly 2n−1 nodes and depth ≤ ⌈log₂n⌉+1.
+  check('range tree has 2n−1 nodes', rangeTreeSize(tree.root) === 2 * pts.length - 1)
+  check('range tree is balanced (depth ≤ ⌈log₂n⌉+1)',
+    rangeTreeDepth(tree.root) <= Math.ceil(Math.log2(pts.length)) + 1)
+
+  const inWin = (p: Point, r: Rect) =>
+    p.x >= r.minX && p.x <= r.maxX && p.y >= r.minY && p.y <= r.maxY
+  let mismatches = 0
+  let cascadeVsNaive = 0
+  let maxCanonical = 0
+  for (let t = 0; t < 60; t++) {
+    const x0 = rng() * 100
+    const x1 = rng() * 100
+    const y0 = rng() * 100
+    const y1 = rng() * 100
+    const win: Rect = {
+      minX: Math.min(x0, x1),
+      maxX: Math.max(x0, x1),
+      minY: Math.min(y0, y1),
+      maxY: Math.max(y0, y1),
+    }
+    const res = rangeQuery(tree, win)
+    const naive = rangeQueryNaive(tree, win)
+    const brute = pts.map((_, i) => i).filter((i) => inWin(pts[i], win))
+    const asSet = (a: number[]) => [...a].sort((p, q) => p - q).join(',')
+    if (asSet(res.indices) !== asSet(brute)) mismatches++
+    if (asSet(res.indices) !== asSet(naive)) cascadeVsNaive++
+    maxCanonical = Math.max(maxCanonical, res.canonical)
+  }
+  check('range tree matches brute force over 60 random windows', mismatches === 0, `(${mismatches})`)
+  check('cascaded query ≡ naive (per-node binary search) query', cascadeVsNaive === 0, `(${cascadeVsNaive})`)
+  check('range query uses O(log n) canonical subtrees',
+    maxCanonical <= 4 * Math.ceil(Math.log2(pts.length)), `(${maxCanonical})`)
+}
+
+// ── Well-separated pair decomposition + spanner ──────────────────────────────
+{
+  const rng = mulberry32(11)
+  for (const n of [30, 60, 90]) {
+    const pts = uniformPoints(n, RECT, rng)
+    for (const s of [1, 2, 4]) {
+      const pairs = wspd(pts, s)
+      // THE correctness property: every unordered point pair covered exactly once.
+      const covered = coveredPairCount(pairs)
+      const expected = (n * (n - 1)) / 2
+      check(`WSPD(n=${n}, s=${s}) covers every pair exactly once (Σ|A||B| = n(n−1)/2)`,
+        covered === expected, `(${covered} vs ${expected})`)
+      // No pair is double-counted: enumerate memberships into a set.
+      const seen = new Set<number>()
+      let dup = 0
+      for (const { a, b } of pairs) {
+        for (const i of a.points) {
+          for (const j of b.points) {
+            const lo = Math.min(i, j)
+            const hi = Math.max(i, j)
+            const key = lo * n + hi
+            if (seen.has(key)) dup++
+            seen.add(key)
+          }
+        }
+      }
+      check(`WSPD(n=${n}, s=${s}) has no double-covered pair`, dup === 0 && seen.size === expected,
+        `(dup ${dup}, distinct ${seen.size})`)
+      // Every emitted pair really is s-well-separated.
+      const allSep = pairs.every((p) => wellSeparated(p.a, p.b, s))
+      check(`WSPD(n=${n}, s=${s}) pairs are all s-well-separated`, allSep)
+      // Sub-quadratic: far fewer than the n(n−1)/2 raw pairs.
+      check(`WSPD(n=${n}, s=${s}) is sub-quadratic (${pairs.length} pairs ≪ ${expected})`,
+        pairs.length <= 15 * n, `(${pairs.length} ≤ ${15 * n})`)
+    }
+  }
+
+  // Split tree: exactly n leaves (one per point).
+  const pts = uniformPoints(50, RECT, mulberry32(3))
+  const leafCount = (() => {
+    const root = buildSplitTree(pts)
+    let count = 0
+    const walk = (node: ReturnType<typeof buildSplitTree>) => {
+      if (!node) return
+      if (!node.left && !node.right) count++
+      walk(node.left)
+      walk(node.right)
+    }
+    walk(root)
+    return count
+  })()
+  check('fair-split tree has one leaf per point', leafCount === pts.length, `(${leafCount})`)
+
+  // WSPD-spanner: with s > 4 it is a t-spanner for t = (s+4)/(s−4).
+  for (const s of [6, 8]) {
+    const g = wspdSpanner(pts, s)
+    const dg = dilation(pts, g)
+    const bound = wspdSpannerBound(s)
+    check(`WSPD ${s}-separated spanner realizes dilation ≤ (s+4)/(s−4)`,
+      dg.connected && dg.stretch <= bound + 1e-9, `(${dg.stretch.toFixed(3)} ≤ ${bound.toFixed(3)})`)
+    check(`WSPD spanner is linear-size (${g.length} edges for n=${pts.length})`,
+      g.length <= 20 * pts.length)
+  }
+}
+
+// ── Approximate nearest neighbour (best-bin-first) ───────────────────────────
+{
+  const rng = mulberry32(99)
+  const pts = uniformPoints(500, RECT, rng)
+  const tree = buildKdTree(pts, RECT)
+  let exactMismatch = 0
+  let boundViolations = 0
+  let approxVisitedSum = 0
+  let exactVisitedSum = 0
+  const trials = 80
+  for (let t = 0; t < trials; t++) {
+    const q: Point = { x: rng() * 100, y: rng() * 100 }
+    // Brute-force truth.
+    let trueD = Infinity
+    for (const p of pts) trueD = Math.min(trueD, dist(p, q))
+    // ε = 0 must reproduce the exact nearest.
+    const a0 = kdApproxNearest(tree, pts, q, 0)
+    if (Math.abs(a0.dist - trueD) > 1e-9) exactMismatch++
+    // ε = 0.5 must stay within the (1+ε) factor, and touch no more nodes on average.
+    const aeps = kdApproxNearest(tree, pts, q, 0.5)
+    if (aeps.dist > 1.5 * trueD + 1e-9) boundViolations++
+    approxVisitedSum += aeps.visited
+    exactVisitedSum += kdNearest(tree, pts, q).visited
+  }
+  check('approx-NN with ε=0 equals the exact nearest', exactMismatch === 0, `(${exactMismatch})`)
+  check('approx-NN with ε=0.5 stays within the (1+ε) factor', boundViolations === 0, `(${boundViolations})`)
+  check('approx-NN (ε=0.5) touches no more nodes than exact, on average',
+    approxVisitedSum <= exactVisitedSum,
+    `(approx ${(approxVisitedSum / trials).toFixed(1)} ≤ exact ${(exactVisitedSum / trials).toFixed(1)})`)
 }
 
 export const result = { failures }
