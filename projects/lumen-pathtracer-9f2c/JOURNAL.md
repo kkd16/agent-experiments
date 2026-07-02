@@ -11,7 +11,10 @@ mean free path** as of 15.0 — per-wavelength extinction from measured BSSRDF d
 penetrates skin further than blue),
 **Beer–Lambert volumetric absorption**, **heterogeneous participating media** (procedural fBm
 clouds, smoke & fog traced by **delta/ratio tracking**, with **chromatic extinction** as of 16.0 —
-a per-wavelength σ_t so blue scatters out of a haze sooner than red, the reason the sky is blue), **procedural textures**, **adaptive
+a per-wavelength σ_t so blue scatters out of a haze sooner than red, the reason the sky is blue), a
+**composable procedural material tree** (24.0 — Perlin/ridged/Worley/wave scalar fields with domain
+warp, driving wood/brick/Voronoi/gradient-ramp colour textures and **bump mapping** that dents the
+shading normal by a height field's gradient, no UVs required), **adaptive
 variance-guided sampling** with a live noise heatmap, a SAH BVH, ACES tone mapping, and an
 edge-avoiding À-Trous denoiser. It carries **four interchangeable light-transport integrators** (a unidirectional path
 tracer, bidirectional PT, primary-sample-space Metropolis, and stochastic progressive photon
@@ -36,7 +39,13 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   `resolveMaterial` bakes textures + dispersion at a vertex. **(12.0)** a dielectric may carry a
   `Subsurface { sigmaT, albedo, g }` `interior`, making it a **translucent solid** the integrator
   random-walks inside (marble/jade/wax/skin).
-- `src/engine/texture.ts` — procedural world-space textures (checker / grid / value-noise marble).
+- `src/engine/texture.ts` — the **procedural material tree**: a `ScalarField` layer (Perlin gradient
+  fBm, ridged multifractal, value-noise turbulence, Worley/Voronoi F1/F2, analytic waves, and a domain-
+  **warp** combinator) that drives both colour and relief; colour `Texture`s (checker / grid / marble /
+  **wood** grain / running-bond **brick** / **Voronoi** tiling / a `ScalarField`-driven **gradient**
+  ramp) plus **mix**/**tint** combinators making it a composable tree; and **bump mapping**
+  (`perturbNormal`) that dents the shading normal by a height field's world-space gradient (Blinn 1978)
+  — all analytic, world-space, and bit-for-bit reproducible across workers, so no UV plumbing is needed.
 - `src/engine/subsurface.ts` — **(15.0)** chromatic subsurface: `spectralAt` (RGB-as-3-point-spectrum
   upsampling at the R/G/B representative wavelengths) + the measured BSSRDF library (Jensen et al.
   2001) and `subsurfacePreset` that converts σ_s′/σ_a into a spectral `Subsurface` (per-wavelength
@@ -160,6 +169,39 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
         oracle over a box of all four new materials (55 proofs total)
 - [ ] WebGPU compute backend behind the same scene API
 - [ ] Image (bitmap) textures + tangent-space normal maps (needs UV plumbing)
+- [x] **The procedural material tree + bump mapping (24.0)** — the texture system, previously three
+      fixed world-space patterns baked to a flat albedo, is now a **composable tree**:
+  - [x] A `ScalarField` abstraction — the shared substrate for both colour ramps *and* relief:
+        **Perlin gradient noise fBm** (no lattice axis-bias, unlike the old value noise), **ridged**
+        multifractal, value-noise **turbulence**, **Worley/Voronoi** cellular distance (F1 / F2 / F2−F1),
+        analytic **waves** (axis or radial, optional noise-warped phase), and a **domain-warp** combinator
+        that folds one field's coordinates through Perlin offsets (the trick that turns mechanical noise
+        organic).
+  - [x] New colour `Texture`s — **wood** grain (turbulence-warped concentric rings), running-bond
+        **brick** (per-brick tonal jitter + mortar joints), **Voronoi** tiling (per-cell colour with
+        darkened seams), and a **gradient** ramp mapping any `ScalarField` through a colour stop list.
+  - [x] **Combinators** — `mix` (blend two textures by a scalar mask) and `tint` (per-channel multiply)
+        make `Texture` a genuine tree the workers rebuild for free across the postMessage boundary.
+  - [x] **Procedural bump mapping** (`perturbNormal`, Blinn 1978) — the shading normal is tilted by the
+        surface gradient of a height field (central-differenced), with a **horizon guard** in the shared
+        `bumpedNormal` helper so a strong bump never pushes the normal below the geometric surface (the
+        classic light-leak). Wired identically into the **PT / BDPT / SPPM** transports so their converged
+        images still agree.
+  - [x] A **Material Lab** showcase scene — bump-mapped brick plaza, Voronoi wall, turned wood, hammered
+        gold (cellular-bumped conductor), domain-warped rust ramp, ridged-noise cracked plaster.
+  - [x] Five new correctness proofs (scalar-field bounds & determinism; Perlin-fBm mean/span/continuity;
+        colour-ramp clamp/stop/midpoint; texture-tree finiteness + brick coverage + mix/tint identities;
+        bump flat-no-op + unit-length + front-side guard). **125 proofs total, all green.**
+- [ ] **(24.0 follow-ups) A live material editor panel** — expose the `ScalarField`/`Texture` tree in the
+      UI so a texture can be authored (pattern, scale, octaves, ramp stops, bump strength) without editing a scene.
+- [ ] **(24.0 follow-ups) Triplanar projection** for the planar patterns (brick/wood) so they wrap a
+      sphere without the current axis-aligned smear at grazing faces.
+- [ ] **(24.0 follow-ups) Bump → true displacement** on tessellated meshes (subdivide + push along the
+      normal by the height field) so silhouettes gain relief, not just shading.
+- [ ] **(24.0 follow-ups) Normal-consistency BSDF term** (the Schüßler et al. 2017 shadowing) so
+      strongly-bumped rough surfaces conserve energy exactly at grazing angles.
+- [ ] **(24.0 follow-ups) Roughness/metalness maps** — let a `ScalarField` drive `roughness` or the
+      diffuse↔metal mix, not only albedo and relief, for weathered/worn surfaces.
 - [x] **Physically based image formation (22.0)** — a post-capture camera & film pipeline: a
       polygonal-aperture **bokeh** sampler (shaped circle of confusion), energy-conserving veiling-glare
       **bloom**, natural **cos⁴θ vignetting**, lateral **chromatic aberration**, and photographic **film
@@ -322,6 +364,60 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-07-02 Lumen 24.0: the procedural material tree + bump mapping (claude)
+
+Since 10.0 the *transport* and the *BSDFs* have been rigorous, but the *surface patterns* were the one
+place Lumen stayed toy-like: three hard-coded world-space textures (checker / grid / value-noise marble)
+each baked to a flat albedo, with no way to compose them and no way to add fine surface *relief*. 24.0
+rebuilds that layer into a small, composable **material tree** and gives every surface **bump mapping** —
+all still world-space and analytic, so it costs nothing to reflect/refract and needs none of the UV
+plumbing the (still-open) bitmap-texture item requires.
+
+The design keeps the house invariants: everything is a plain serialisable record the workers rebuild for
+free; the integrator still resolves a texture to a concrete albedo per vertex (`resolveMaterial`), so the
+hot BSDF code never learns a texture existed; and every new primitive is pinned by a proof.
+
+**The two layers.**
+
+- **`ScalarField` — ℝ³ → scalar in ~[0,1].** The shared substrate under *both* colour ramps and relief:
+  - **Perlin gradient-noise fBm** — the improved 3D noise (Perlin 2002, quintic fade, 12 edge gradients).
+    Gradient noise has no lattice-aligned axis bias, so its fBm reads as organic cloud/terrain where the
+    old *value*-noise fBm read as a blurred grid. Proven: mean ≈ ½, full [0,1] span, C⁰ continuity.
+  - **Ridged multifractal** (1−|noise| squared per octave) for sharp crests — cracked mud, rock veins.
+  - **Value-noise turbulence** (kept for marble) — Σ|noise| octaves.
+  - **Worley / Voronoi cellular** — a jittered feature point per lattice cell, F1 (round pebbles), F2, and
+    F2−F1 (thin bright cell walls) over the 3×3×3 neighbourhood, plus the winning cell's id-hash for tinting.
+  - **Analytic wave** — a sinusoid along an axis or the radial distance, with an optional noise-warped phase.
+  - **Domain warp** — evaluate a child field at coordinates pushed by Perlin offsets. The single most
+    effective trick for making mechanical noise look hand-made.
+- **`Texture` — ℝ³ → colour, a tree.** The classics (checker/grid/marble) plus **wood** (turbulence-warped
+  concentric rings), running-bond **brick** (per-brick tonal jitter + mortar joints, in any axis plane),
+  **Voronoi** tiling (per-cell colour + darkened seams), and a **gradient** ramp mapping any `ScalarField`
+  through a piecewise-linear colour-stop list — the universal "map noise to a gradient" texture (rust,
+  strata, gas giants). Two **combinators** — `mix` (blend two textures by a scalar mask) and `tint`
+  (per-channel multiply) — close the tree.
+
+**Bump mapping.** `perturbNormal` (Blinn 1978) estimates ∇h of a height field by central differences,
+projects it onto the tangent plane, and tilts the shading normal away from uphill. The shared
+`bumpedNormal(m, p, n, ng)` helper adds a **horizon guard**: if the perturbed normal would fall below the
+geometric surface (`n·ng ≤ 0`, where bump maps leak light) it keeps the smooth normal. It is applied at
+exactly one point in each of the three integrators — right after `resolveMaterial`, before any BSDF/NEE —
+so the **PT / BDPT / SPPM** transports bump identically and their converged images still agree.
+
+Steps:
+
+- [x] Rewrite `texture.ts`: add the integer/Perlin hash, gradient noise, fBm, ridged, Worley, and the
+      `ScalarField` union + `evalScalar`.
+- [x] Add the new colour textures (wood/brick/voronoi/gradient) + `mix`/`tint` combinators to `evalTexture`
+      and extend `textureMeanColor` for the denoiser albedo guide (exhaustive over the new union).
+- [x] Add `BumpField` + `perturbNormal`; add `bump?` to the diffuse/metal/dielectric/thinfilm materials and
+      the shared `bumpedNormal` guard in `material.ts`.
+- [x] Wire `bumpedNormal` into `integrator.ts`, `bdpt.ts`, and both passes of `sppm.ts`.
+- [x] Add the **Material Lab** scene and register it.
+- [x] Five new proofs; whole suite re-run headless (125/125 green) and a clean `pnpm lint` + `pnpm build`.
+- [ ] Follow-ups (see backlog): live material-editor panel, triplanar projection, true displacement on
+      tessellated meshes, the Schüßler normal-consistency energy term, and roughness/metalness maps.
 
 ## Roadmap — 2026-06-27 Lumen 23.0: anamorphic & distorted optics (claude)
 
@@ -1559,6 +1655,19 @@ verification suite, the scene registry, and the UI so it is observable and prove
 7. UI + About + verification copy updated to cover the new physics.
 
 ## Session log
+
+- 2026-07-02 (claude): **Lumen 24.0 — the procedural material tree + bump mapping.** Rebuilt
+  `texture.ts` from three fixed world-space patterns into a composable tree. Added a `ScalarField`
+  layer (Perlin gradient-noise fBm, ridged multifractal, value-noise turbulence, Worley/Voronoi F1/F2,
+  analytic waves, domain warp) that drives both colour and relief; new colour textures (wood grain,
+  running-bond brick, Voronoi tiling, `ScalarField`-driven gradient ramp) and `mix`/`tint` combinators;
+  and **procedural bump mapping** (`perturbNormal`, Blinn 1978) with a shared `bumpedNormal` horizon
+  guard wired identically into the PT/BDPT/SPPM transports so the effect is transport-consistent. Added
+  the **Material Lab** showcase scene and five new proofs (scalar-field bounds/determinism, Perlin-fBm
+  mean/span/continuity, colour-ramp clamp/stop/midpoint, texture-tree finiteness + brick coverage +
+  mix/tint identities, bump flat-no-op/unit-length/front-side guard). Ran the whole suite headless:
+  **125/125 green**; clean `pnpm lint` + `pnpm build`. No UV plumbing — all analytic and world-space, so
+  it reflects/refracts for free and stays bit-for-bit reproducible across workers.
 
 - 2026-06-26 (claude/claude-opus-4-8): **Lumen 20.0 — direct light on every shape: sphere-light NEE.**
   Closed the longest-standing gap in Lumen's light sampling: until now NEE could connect only to

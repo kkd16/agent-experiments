@@ -18,8 +18,8 @@
 import type { Vec3 } from './vec3'
 import { add, dot, onb, scale, toWorld, v } from './vec3'
 import { Rng } from './rng'
-import type { Texture } from './texture'
-import { evalTexture } from './texture'
+import type { BumpField, Texture } from './texture'
+import { evalTexture, perturbNormal } from './texture'
 import { cauchyIor } from './spectrum'
 import { thinFilmReflectance } from './thinfilm'
 import type { ConductorName } from './conductor'
@@ -74,7 +74,7 @@ export type Material =
   // `sigma` (radians) turns Lambert into a rough-diffuse Oren–Nayar surface
   // (chalk / clay / unfinished plaster); `coat` layers a clear dielectric gloss
   // over the base (ceramic / lacquer / car paint).
-  | { kind: 'diffuse'; albedo: Vec3; tex?: Texture; sigma?: number; coat?: Coat }
+  | { kind: 'diffuse'; albedo: Vec3; tex?: Texture; sigma?: number; coat?: Coat; bump?: BumpField }
   // `multiscatter` adds Kulla–Conty energy compensation so rough metals stop
   // darkening (they recover the energy single-scatter GGX drops between
   // microfacets); `aniso` ∈ [0,1) stretches the GGX lobe into an anisotropic
@@ -97,6 +97,7 @@ export type Material =
       anisoAngle?: number
       spectrum?: ConductorName
       cond?: { eta: number; k: number; favg: number }
+      bump?: BumpField
     }
   // Dielectric (glass/water). `tint` colours transmitted radiance; `roughness`
   // (0 = smooth) frosts it via a microfacet interface; `absorption` is the
@@ -113,13 +114,22 @@ export type Material =
       absorption?: Vec3
       cauchyB?: number
       interior?: Subsurface
+      bump?: BumpField
     }
   // A thin-film-coated specular reflector (iridescent). `thickness` (nm) and
   // `filmIor` set the interference; `baseIor` is the substrate the film coats;
   // `base`, when present, tints the reflection (e.g. a coloured metal under the
   // film). Reflectance is spectral, so the integrator commits a hero wavelength
   // (see isSpectral) and `lambda` is baked in by resolveMaterial before shading.
-  | { kind: 'thinfilm'; thickness: number; filmIor: number; baseIor: number; base?: Vec3; lambda?: number }
+  | {
+      kind: 'thinfilm'
+      thickness: number
+      filmIor: number
+      baseIor: number
+      base?: Vec3
+      lambda?: number
+      bump?: BumpField
+    }
   | { kind: 'emissive'; emission: Vec3 }
 
 export interface BsdfSample {
@@ -160,6 +170,19 @@ export function resolveMaterial(m: Material, p: Vec3, lambdaNm: number): Materia
     default:
       return m
   }
+}
+
+// Bump mapping: if the (unresolved) material carries a height field, return the
+// shading normal perturbed by its world-space gradient. The perturbed normal is
+// rejected if it would fall below the geometric horizon (dot with `ng` ≤ 0),
+// which is where bump maps otherwise leak light; there we keep the smooth
+// normal. Shared by every integrator so the effect is identical across the PT /
+// BDPT / SPPM transports (and thus their converged images still agree).
+export function bumpedNormal(m: Material, p: Vec3, n: Vec3, ng: Vec3): Vec3 {
+  const bump = (m as { bump?: BumpField }).bump
+  if (!bump || bump.strength === 0) return n
+  const nb = perturbNormal(bump, p, n)
+  return dot(nb, ng) > 1e-3 ? nb : n
 }
 
 const ROUGHNESS_DELTA = 1e-3 // below this a metal is treated as a perfect mirror

@@ -49,7 +49,7 @@ import { Rng, triangleBary } from './rng'
 import type { Scene } from './scene'
 import type { Camera } from './camera'
 import type { Material } from './material'
-import { evalBSDF, isDelta, isSpectral, resolveMaterial, sampleBSDF } from './material'
+import { bumpedNormal, evalBSDF, isDelta, isSpectral, resolveMaterial, sampleBSDF } from './material'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import type { Triangle } from './primitive'
 import type { RayStats } from './integrator'
@@ -513,6 +513,7 @@ export class SppmState {
             beta = mul(beta, wavelengthWeight(lambda))
           }
           const mat = resolveMaterial(rawMat, hit.p, lambda)
+          hit.n = bumpedNormal(rawMat, hit.p, hit.n, hit.ng)
           if (mat.kind === 'emissive') {
             // A directly visible emitter (or one seen through specular glass):
             // photon mapping handles indirect light, so emission is added here.
@@ -585,6 +586,7 @@ export class SppmState {
           beta = mul(beta, wavelengthWeight(lambda))
         }
         const mat = resolveMaterial(rawMat, hit.p, lambda)
+        hit.n = bumpedNormal(rawMat, hit.p, hit.n, hit.ng)
         if (mat.kind === 'emissive') break // photons are absorbed by lights
         const wi = neg(ray.d) // incoming direction at the surface (points back along the photon)
         if (!isDelta(mat)) {

@@ -35,7 +35,7 @@ import type { Scene } from './scene'
 import type { Rng } from './rng'
 import { powerHeuristic } from './rng'
 import type { Material, Subsurface } from './material'
-import { evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
+import { bumpedNormal, evalBSDF, isDelta, isSpectral, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
 import { hgPhase, sampleHG } from './phase'
 import { LAMBDA_MAX, LAMBDA_MIN, wavelengthWeight } from './spectrum'
 import { spectralAt } from './subsurface'
@@ -319,6 +319,9 @@ export function radiance(
       beta = mul(beta, wavelengthWeight(lambda))
     }
     const mat = resolveMaterial(rawMat, hit.p, lambda)
+    // Procedural bump mapping: dent the shading normal by the material's height
+    // field before any BSDF/NEE call so the whole interaction sees the bump.
+    hit.n = bumpedNormal(rawMat, hit.p, hit.n, hit.ng)
     const wo = neg(r.d)
 
     if (gbuf && !captured) {

@@ -34,7 +34,7 @@ import type { Scene } from './scene'
 import type { Rng } from './rng'
 import { cosineHemisphere } from './rng'
 import type { Material } from './material'
-import { evalBSDF, isDelta, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
+import { bumpedNormal, evalBSDF, isDelta, pdfBSDF, resolveMaterial, sampleBSDF } from './material'
 import type { Triangle } from './primitive'
 import type { IntegratorSettings } from './types'
 import type { GBuffer, RayStats } from './integrator'
@@ -173,6 +173,9 @@ function randomWalk(
     const prev = verts[verts.length - 1]
     const rawMat = scene.materials[hit.material]
     const mat = resolveMaterial(rawMat, hit.p, 0)
+    // Procedural bump mapping — perturb the shading normal so the vertex stored
+    // below (and the connection math) uses the bumped frame, matching PT/SPPM.
+    hit.n = bumpedNormal(rawMat, hit.p, hit.n, hit.ng)
     const prim = scene.prims[hit.primId]
     const isEmit = rawMat.kind === 'emissive'
     // Emitters store their *winding* (front) normal so emission is one-sided and
