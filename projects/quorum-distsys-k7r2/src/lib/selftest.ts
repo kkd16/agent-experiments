@@ -21,6 +21,9 @@ import { DEFAULT_PAXOS_CONFIG, type PaxosCmd, type PaxosState, type PaxosValue }
 import { createVR } from '../protocols/vr/vr';
 import { vrInvariants } from '../protocols/vr/invariants';
 import { DEFAULT_VR_CONFIG, primaryOf as vrPrimaryOf, quorum as vrQuorum, type VrCommand, type VrState } from '../protocols/vr/types';
+import { createBenOr } from '../protocols/benor/benor';
+import { benorInvariants, benorGauge } from '../protocols/benor/invariants';
+import { type BenOrCommand, type BenOrState, type Bit } from '../protocols/benor/types';
 import { createChord } from '../protocols/chord/chord';
 import { chordInvariants } from '../protocols/chord/invariants';
 import { DEFAULT_CHORD_CONFIG, type ChordCmd, type ChordState } from '../protocols/chord/types';
@@ -2812,6 +2815,120 @@ export function runSelfTests(): TestResult[] {
     }
     const ok = !!vrPrimary(k) && minCommit > 0 && converged && vrOk(k);
     return [ok, ok ? `re-established a primary and every live replica converged on ${minCommit} committed ops` : vrBad(k) || `primary=${!!vrPrimary(k)} minCommit=${minCommit} converged=${converged}`];
+  });
+
+  // ---- Ben-Or randomized consensus ----
+  const benKernel = (seed: number, ids: string[], inputs?: Bit[], net?: { minLatency: number; maxLatency: number; dropRate: number }) =>
+    new Kernel<BenOrState, BenOrCommand>({ seed, protocol: createBenOr(undefined, inputs), nodeIds: ids, network: net });
+  const benOk = (k: Kernel<BenOrState, BenOrCommand>) => benorInvariants(k.views()).every((iv) => iv.ok);
+  const benBad = (k: Kernel<BenOrState, BenOrCommand>) => {
+    const b = benorInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+
+  t('BenOr', 'Validity — a unanimous input is the only possible decision', () => {
+    let ok = true;
+    let detail = '';
+    for (const v of [0, 1] as Bit[]) {
+      const k = benKernel(v + 1, ['A', 'B', 'C', 'D', 'E'], [v, v, v, v, v]);
+      for (let i = 0; i < 200; i++) k.advance(20);
+      const g = benorGauge(k.views());
+      if (g.decided !== 5 || g.value !== v || !benOk(k)) {
+        ok = false;
+        detail = `unanimous ${v}: decided ${g.decided}/5 value ${g.value}; ${benBad(k)}`;
+        break;
+      }
+    }
+    return [ok, ok ? 'unanimous 0 → 0 and unanimous 1 → 1 on every replica' : detail];
+  });
+
+  t('BenOr', 'Agreement + termination from a split (30 seeds)', () => {
+    let agree = true;
+    let terminated = 0;
+    let worst = '';
+    let maxRound = 0;
+    for (let seed = 1; seed <= 30; seed++) {
+      const k = benKernel(seed, ['A', 'B', 'C', 'D', 'E'], [0, 1, 0, 1, 0]);
+      let done = false;
+      for (let i = 0; i < 800 && !done; i++) {
+        k.advance(20);
+        if (benBad(k)) {
+          agree = false;
+          worst = `seed ${seed}: ${benBad(k)}`;
+          break;
+        }
+        if (benorGauge(k.views()).decided === 5) done = true;
+      }
+      const g = benorGauge(k.views());
+      maxRound = Math.max(maxRound, g.maxRound);
+      if (done) terminated++;
+      else if (!worst) worst = `seed ${seed} did not fully decide (decided=${g.decided}/5)`;
+      if (!benOk(k)) agree = false;
+    }
+    const ok = agree && terminated === 30;
+    return [ok, ok ? `all 30 seeds agreed and terminated (≤ ${maxRound} rounds), safety never violated` : worst || 'agreement broke'];
+  });
+
+  t('BenOr', 'Tolerates f crashes (N=5, crash 2) and survivors still agree', () => {
+    let ok = true;
+    let worst = '';
+    for (let seed = 1; seed <= 15; seed++) {
+      const k = benKernel(seed, ['A', 'B', 'C', 'D', 'E'], [0, 1, 0, 1, 1]);
+      for (let i = 0; i < 30; i++) k.advance(20);
+      k.crash('D');
+      k.crash('E');
+      let done = false;
+      for (let i = 0; i < 900 && !done; i++) {
+        k.advance(20);
+        if (benBad(k)) {
+          ok = false;
+          worst = `seed ${seed}: ${benBad(k)}`;
+          break;
+        }
+        const live = k.views().filter((v) => v.up);
+        if (live.every((v) => v.state.decided !== null)) done = true;
+      }
+      const live = k.views().filter((v) => v.up);
+      const vals = new Set(live.filter((v) => v.state.decided !== null).map((v) => v.state.decided));
+      if (!done || vals.size > 1 || !benOk(k)) {
+        ok = false;
+        if (!worst) worst = `seed ${seed}: done=${done} values=${[...vals].join('/')}`;
+      }
+    }
+    return [ok, ok ? 'the 3 survivors decided and agreed in all 15 seeds despite f=2 crashes' : worst];
+  });
+
+  t('BenOr', 'Deterministic (same seed ⇒ byte-identical run)', () => {
+    const run = () => {
+      const k = benKernel(99, ['A', 'B', 'C', 'D', 'E'], [0, 1, 0, 1, 0]);
+      for (let i = 0; i < 300; i++) k.advance(20);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('BenOr', 'Safe & terminates under a lossy network (15% drop)', () => {
+    let ok = true;
+    let worst = '';
+    for (let seed = 1; seed <= 12; seed++) {
+      const k = benKernel(seed, ['A', 'B', 'C', 'D', 'E'], [0, 1, 1, 0, 1], { minLatency: 20, maxLatency: 90, dropRate: 0.15 });
+      let done = false;
+      for (let i = 0; i < 2500 && !done; i++) {
+        k.advance(20);
+        if (benBad(k)) {
+          ok = false;
+          worst = `seed ${seed}: ${benBad(k)}`;
+          break;
+        }
+        if (benorGauge(k.views()).decided === 5) done = true;
+      }
+      if (!done) {
+        ok = false;
+        if (!worst) worst = `seed ${seed} did not decide under 15% loss`;
+      }
+    }
+    return [ok, ok ? 'agreement held and every replica decided across 12 lossy runs' : worst];
   });
 
   return out;

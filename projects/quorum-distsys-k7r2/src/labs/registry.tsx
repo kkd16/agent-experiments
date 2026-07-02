@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
 import { VrLab } from './VrLab';
+import { BenOrLab } from './BenOrLab';
 import { EPaxosLab } from './EPaxosLab';
 import { AbdLab } from './AbdLab';
 import { CraqLab } from './CraqLab';
@@ -57,6 +58,15 @@ export const LABS: LabDef[] = [
     icon: '⟲',
     tag: 'consensus',
     Component: VrLab,
+  },
+  {
+    id: 'benor',
+    title: 'Ben-Or (randomized)',
+    blurb:
+      "Consensus that defeats the FLP impossibility — by flipping coins. FLP (1985) proves no deterministic protocol can guarantee agreement in an asynchronous system with even one crash; Ben-Or (1983) sidesteps it with randomization. No leader, no stable storage, no synchrony assumption: each round runs Report → Propose, a strict majority forms a proposal, f+1 matching proposals decide, and an inconclusive round is broken by a coin toss. Safety (Agreement + Validity) is deterministic and unconditional — only termination is probabilistic (with probability 1, in a handful of rounds here). Set the input bits, crash up to f of N=2f+1, partition the network, and watch it still agree.",
+    icon: '⚄',
+    tag: 'randomized consensus',
+    Component: BenOrLab,
   },
   {
     id: 'epaxos',
