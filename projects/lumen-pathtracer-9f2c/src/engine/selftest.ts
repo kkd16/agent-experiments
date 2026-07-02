@@ -54,8 +54,9 @@ import {
 import { MltState, PssmltSampler } from './pssmlt'
 import { renderSPPM, HashGrid } from './sppm'
 import type { SceneDef } from './types'
-import { evalTexture } from './texture'
-import type { Texture } from './texture'
+import { evalTexture, evalScalar, sampleRamp, perturbNormal } from './texture'
+import type { Texture, ScalarField, BumpField, ColorStop } from './texture'
+import { bumpedNormal } from './material'
 import { cauchyIor, wavelengthWeight, LAMBDA_MIN, LAMBDA_MAX } from './spectrum'
 import { icosphere, torus, meshTriangleCount } from './mesh'
 import { parseObj, CUBE_OBJ } from './obj'
@@ -429,6 +430,160 @@ function testTexture(): { pass: boolean; detail: string } {
     if (c.x < -1e-6 || c.x > 1 + 1e-6) inRange = false
   }
   return { pass: alternates && inRange, detail: `checker alternates=${alternates}, marble∈[lo,hi]=${inRange}` }
+}
+
+// 10a — Scalar fields (the layer under ramps and bump) must be bounded to ~[0,1]
+// and be *deterministic*: the same point always yields the same value, so every
+// worker rebuilds an identical texture from its serialised record.
+function testScalarFields(): { pass: boolean; detail: string } {
+  const fields: ScalarField[] = [
+    { kind: 'fbm', scale: 1.3, octaves: 5 },
+    { kind: 'ridged', scale: 1.1, octaves: 5 },
+    { kind: 'turbulence', scale: 1.7, octaves: 5 },
+    { kind: 'cellular', scale: 0.9, metric: 'f1', jitter: 1 },
+    { kind: 'cellular', scale: 0.9, metric: 'f2', jitter: 1 },
+    { kind: 'cellular', scale: 0.9, metric: 'f2f1', jitter: 1 },
+    { kind: 'wave', axis: 'radial', freq: 1.5, warp: 0.4 },
+    { kind: 'warp', field: { kind: 'fbm', scale: 1.2, octaves: 4 }, amount: 0.3, scale: 1.1 },
+  ]
+  const rng = new Rng(31337, 7)
+  let bounded = true
+  let deterministic = true
+  for (let i = 0; i < 4000; i++) {
+    const p = v(rng.range(-12, 12), rng.range(-12, 12), rng.range(-12, 12))
+    for (const f of fields) {
+      const a = evalScalar(f, p)
+      const b = evalScalar(f, p)
+      if (a !== b) deterministic = false
+      if (!(a >= -1e-6 && a <= 1 + 1e-6)) bounded = false
+    }
+  }
+  return { pass: bounded && deterministic, detail: `bounded[0,1]=${bounded}, deterministic=${deterministic}` }
+}
+
+// 10b — Perlin-fBm statistics: unbiased around ½ and its extremes span the range
+// (a constant or clipped field would fail both), plus C⁰ continuity — a tiny
+// step in position gives a tiny step in value.
+function testFbmField(): { pass: boolean; detail: string } {
+  const f: ScalarField = { kind: 'fbm', scale: 1.0, octaves: 6 }
+  const rng = new Rng(2024, 9)
+  let sum = 0
+  let lo = Infinity
+  let hi = -Infinity
+  let maxJump = 0
+  const N = 40000
+  for (let i = 0; i < N; i++) {
+    const p = v(rng.range(-30, 30), rng.range(-30, 30), rng.range(-30, 30))
+    const a = evalScalar(f, p)
+    sum += a
+    lo = Math.min(lo, a)
+    hi = Math.max(hi, a)
+    const q = v(p.x + 1e-3, p.y, p.z)
+    maxJump = Math.max(maxJump, Math.abs(evalScalar(f, q) - a))
+  }
+  const mean = sum / N
+  const ok = approx(mean, 0.5, 0.03) && lo < 0.25 && hi > 0.75 && maxJump < 0.05
+  return { pass: ok, detail: `mean=${mean.toFixed(3)}, span=[${lo.toFixed(2)},${hi.toFixed(2)}], maxΔ(1e-3)=${maxJump.toFixed(4)}` }
+}
+
+// 10c — Colour ramp: endpoints clamp beyond the first/last stop, and the value
+// at a stop equals that stop's colour; the midpoint of a two-stop ramp is the
+// exact average (piecewise-linear).
+function testColorRamp(): { pass: boolean; detail: string } {
+  const stops: ColorStop[] = [
+    { t: 0.2, color: v(0, 0, 0) },
+    { t: 0.8, color: v(1, 1, 1) },
+  ]
+  const below = sampleRamp(stops, -1) // clamps to first
+  const above = sampleRamp(stops, 5) // clamps to last
+  const mid = sampleRamp(stops, 0.5) // halfway ⇒ 0.5
+  const atStop = sampleRamp(stops, 0.2)
+  const ok =
+    below.x === 0 && above.x === 1 && approx(mid.x, 0.5, 1e-9) && atStop.x === 0
+  return { pass: ok, detail: `clamp lo=${below.x}, hi=${above.x}, mid=${mid.x.toFixed(3)}, at-stop=${atStop.x}` }
+}
+
+// 10d — The new colour textures & combinators: every pattern returns a finite,
+// non-negative colour; brick shows *both* its brick and mortar colours across a
+// sample grid; `mix` collapses to child a at mask=0 and child b at mask=1; and
+// `tint` multiplies its child channel-wise.
+function testTextureTree(): { pass: boolean; detail: string } {
+  const wood: Texture = { kind: 'wood', lo: v(0.2, 0.1, 0), hi: v(0.7, 0.4, 0.2), scale: 1, rings: 2, turbulence: 0.5 }
+  const brick: Texture = {
+    kind: 'brick',
+    brick: v(0.6, 0.2, 0.15),
+    mortar: v(0.8, 0.8, 0.8),
+    scaleU: 1,
+    scaleV: 1,
+    mortarWidth: 0.08,
+  }
+  const voro: Texture = { kind: 'voronoi', a: v(0.1, 0.2, 0.3), b: v(0.5, 0.6, 0.7), scale: 1, jitter: 1, seam: 0.2 }
+  const grad: Texture = {
+    kind: 'gradient',
+    field: { kind: 'fbm', scale: 1, octaves: 4 },
+    stops: [
+      { t: 0, color: v(0, 0, 0) },
+      { t: 1, color: v(1, 0.5, 0) },
+    ],
+  }
+  const rng = new Rng(555, 2)
+  let allFinite = true
+  let sawBrick = false
+  let sawMortar = false
+  for (let i = 0; i < 5000; i++) {
+    const p = v(rng.range(-9, 9), 0, rng.range(-9, 9))
+    for (const t of [wood, brick, voro, grad]) {
+      const c = evalTexture(t, p)
+      if (!(Number.isFinite(c.x) && Number.isFinite(c.y) && Number.isFinite(c.z)) || c.x < -1e-6) allFinite = false
+    }
+    const b = evalTexture(brick, p)
+    if (b.x > 0.75 && b.y > 0.75) sawMortar = true
+    else sawBrick = true
+  }
+  // Combinator identities.
+  const a: Texture = { kind: 'checker', even: v(1, 0, 0), odd: v(1, 0, 0), scale: 1 }
+  const bb: Texture = { kind: 'checker', even: v(0, 0, 1), odd: v(0, 0, 1), scale: 1 }
+  const mix0 = evalTexture({ kind: 'mix', a, b: bb, field: { kind: 'const', value: 0 } }, v(0.3, 0, 0.3))
+  const mix1 = evalTexture({ kind: 'mix', a, b: bb, field: { kind: 'const', value: 1 } }, v(0.3, 0, 0.3))
+  const tinted = evalTexture({ kind: 'tint', tex: a, factor: v(0.5, 1, 1) }, v(0.3, 0, 0.3))
+  const mixOk = mix0.x === 1 && mix0.z === 0 && mix1.x === 0 && mix1.z === 1
+  const tintOk = approx(tinted.x, 0.5, 1e-9)
+  const ok = allFinite && sawBrick && sawMortar && mixOk && tintOk
+  return {
+    pass: ok,
+    detail: `finite=${allFinite}, brick&mortar=${sawBrick && sawMortar}, mix identity=${mixOk}, tint=${tintOk}`,
+  }
+}
+
+// 10e — Bump mapping. On a *flat* (constant) height field the perturbation is a
+// no-op (∇h=0 ⇒ normal unchanged); on a real field the shading normal tilts
+// (dot < 1) yet stays unit length; and `bumpedNormal`'s horizon guard keeps the
+// result on the front side of the geometric normal for any strength — the
+// property that stops bump maps from leaking light through the surface.
+function testBumpMapping(): { pass: boolean; detail: string } {
+  const flat: BumpField = { field: { kind: 'const', value: 0.3 }, strength: 1 }
+  const n = normalize(v(0.2, 1, 0.1))
+  const noop = perturbNormal(flat, v(1, 2, 3), n)
+  const isNoop = approx(noop.x, n.x, 1e-9) && approx(noop.y, n.y, 1e-9) && approx(noop.z, n.z, 1e-9)
+
+  const bump: BumpField = { field: { kind: 'fbm', scale: 2, octaves: 4 }, strength: 0.8 }
+  const rng = new Rng(9091, 4)
+  let unit = true
+  let tilted = false
+  let frontSide = true
+  const ng = v(0, 1, 0)
+  const mat: Material = { kind: 'diffuse', albedo: v(0.8, 0.8, 0.8), bump: { field: bump.field, strength: 4 } }
+  for (let i = 0; i < 5000; i++) {
+    const p = v(rng.range(-8, 8), rng.range(-8, 8), rng.range(-8, 8))
+    const np = perturbNormal(bump, p, ng)
+    if (Math.abs(len(np) - 1) > 1e-6) unit = false
+    if (dot(np, ng) < 0.999) tilted = true
+    // Horizon guard: even a very strong bump must not push below the surface.
+    const guarded = bumpedNormal(mat, p, ng, ng)
+    if (dot(guarded, ng) <= 0) frontSide = false
+  }
+  const ok = isNoop && unit && tilted && frontSide
+  return { pass: ok, detail: `flat-noop=${isNoop}, unit=${unit}, tilts=${tilted}, front-side∀strength=${frontSide}` }
 }
 
 // 11 — Spectral white point: a flat (equal-energy) spectrum must integrate back
@@ -4050,6 +4205,11 @@ export function runSelfTests(): TestResult[] {
     test('Clear-coat diffuse — reciprocal, glossy, energy ≤ 1', testClearcoat),
     test('Diffuse Helmholtz reciprocity', testReciprocity),
     test('Procedural texture parity & range', testTexture),
+    test('Scalar fields — bounded & deterministic', testScalarFields),
+    test('Perlin fBm — mean ½, full span, C⁰', testFbmField),
+    test('Colour ramp — clamp, stop, linear midpoint', testColorRamp),
+    test('Texture tree — finite, brick, mix/tint identity', testTextureTree),
+    test('Bump mapping — flat no-op, unit, front-side guard', testBumpMapping),
     test('Spectral white point E_λ[w]=1', testSpectralWhitePoint),
     test('Cauchy dispersion n(blue) > n(red)', testDispersion),
     test('Rough dielectric energy ≤ 1', testRoughDielectricEnergy),

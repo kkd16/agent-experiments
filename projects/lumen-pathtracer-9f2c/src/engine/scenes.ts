@@ -533,6 +533,127 @@ function texturedStudio(): SceneDef {
   }
 }
 
+// ---- Scene: Material Lab — the composable texture tree + bump mapping --------
+
+function materialLab(): SceneDef {
+  // A gallery for the procedural material system: a running-bond brick plaza that
+  // is *bump-mapped* (not just coloured) so the mortar joints catch grazing
+  // light, a Voronoi-tiled back wall, and a row of spheres each showing a
+  // different pattern/height-field pairing — wood grain with embossed rings,
+  // hammered (cellular-bumped) gold, a rusted colour-ramp over domain-warped
+  // fBm, and pure procedural relief carved into plaster by ridged noise. None of
+  // the surface detail is geometry: every ripple is a normal perturbed by a
+  // scalar field's world-space gradient.
+  const materials: Material[] = [
+    {
+      kind: 'diffuse',
+      albedo: v(0.7, 0.5, 0.42),
+      tex: {
+        kind: 'brick',
+        brick: v(0.55, 0.24, 0.18),
+        mortar: v(0.72, 0.7, 0.66),
+        scaleU: 0.55,
+        scaleV: 0.32,
+        mortarWidth: 0.06,
+        axis: 'y',
+      },
+      // A gentle warped-fBm relief so the plaza reads as laid stone, not a decal.
+      bump: {
+        field: { kind: 'warp', field: { kind: 'fbm', scale: 6, octaves: 3 }, amount: 0.05, scale: 6 },
+        strength: 0.35,
+      },
+    }, // 0 brick floor
+    {
+      kind: 'diffuse',
+      albedo: v(0.5, 0.55, 0.6),
+      tex: {
+        kind: 'voronoi',
+        a: v(0.18, 0.22, 0.3),
+        b: v(0.55, 0.6, 0.68),
+        scale: 0.7,
+        jitter: 1,
+        seam: 0.25,
+      },
+      // Bright cell walls become raised grout ridges under grazing light.
+      bump: { field: { kind: 'cellular', scale: 0.7, metric: 'f2f1', jitter: 1 }, strength: 0.6 },
+    }, // 1 Voronoi-tiled wall
+    {
+      kind: 'diffuse',
+      albedo: v(0.6, 0.4, 0.24),
+      tex: {
+        kind: 'wood',
+        lo: v(0.28, 0.14, 0.06),
+        hi: v(0.72, 0.46, 0.22),
+        scale: 1.2,
+        rings: 2.2,
+        turbulence: 0.6,
+        axis: 'y',
+      },
+      // Embossed rings: the same radial wave that drives the grain.
+      bump: { field: { kind: 'wave', axis: 'radial', freq: 2.2, warp: 0.4 }, strength: 0.5 },
+    }, // 2 turned-wood sphere
+    {
+      kind: 'metal',
+      albedo: v(1.0, 0.78, 0.34),
+      roughness: 0.14,
+      spectrum: 'gold',
+      multiscatter: true,
+      // Hammered metal: cellular F1 dents.
+      bump: { field: { kind: 'cellular', scale: 3.0, metric: 'f1', jitter: 1 }, strength: 0.8 },
+    }, // 3 hammered gold sphere
+    {
+      kind: 'diffuse',
+      albedo: v(0.5, 0.3, 0.2),
+      // Rust: a colour ramp over domain-warped fBm, from dark iron to orange oxide.
+      tex: {
+        kind: 'gradient',
+        field: { kind: 'warp', field: { kind: 'fbm', scale: 1.6, octaves: 5 }, amount: 0.35, scale: 1.2 },
+        stops: [
+          { t: 0.0, color: v(0.06, 0.06, 0.07) },
+          { t: 0.4, color: v(0.28, 0.14, 0.08) },
+          { t: 0.7, color: v(0.62, 0.28, 0.12) },
+          { t: 1.0, color: v(0.82, 0.52, 0.28) },
+        ],
+      },
+      bump: { field: { kind: 'fbm', scale: 3.0, octaves: 4 }, strength: 0.4 },
+    }, // 4 rusted iron sphere
+    {
+      kind: 'diffuse',
+      albedo: v(0.85, 0.83, 0.8),
+      sigma: 0.6,
+      // Pure procedural relief: ridged noise carves cracked plaster with no
+      // colour variation, so the eye reads only the bump-lit topography.
+      bump: { field: { kind: 'ridged', scale: 4.5, octaves: 5 }, strength: 1.1 },
+    }, // 5 cracked-plaster relief sphere
+    { kind: 'emissive', emission: v(11, 10.6, 10) }, // 6 light
+  ]
+
+  const prims: PrimDef[] = []
+  const g = 24
+  prims.push(...quad(v(-g, 0, -g), v(g, 0, -g), v(g, 0, g), v(-g, 0, g), 0)) // brick floor
+  prims.push(...quad(v(-g, 0, -8), v(-g, 16, -8), v(g, 16, -8), v(g, 0, -8), 1)) // Voronoi wall
+  prims.push({ kind: 'sphere', center: v(-4.2, 1.3, 0.2), radius: 1.3, material: 2 }) // wood
+  prims.push({ kind: 'sphere', center: v(-1.4, 1.3, -0.4), radius: 1.3, material: 3 }) // gold
+  prims.push({ kind: 'sphere', center: v(1.4, 1.3, -0.4), radius: 1.3, material: 4 }) // rust
+  prims.push({ kind: 'sphere', center: v(4.2, 1.3, 0.2), radius: 1.3, material: 5 }) // plaster
+  prims.push(...quad(v(-5, 12, -4), v(5, 12, -4), v(5, 12, 4), v(-5, 12, 4), 6)) // ceiling light
+
+  return {
+    name: 'Material Lab',
+    materials,
+    prims,
+    camera: {
+      eye: v(0, 3.6, 11.5),
+      target: v(0, 1.3, -0.5),
+      up: v(0, 1, 0),
+      vfovDeg: 44,
+      aperture: 0.02,
+      focusDist: 12,
+    },
+    env: { kind: 'gradient', top: v(0.42, 0.5, 0.68), bottom: v(0.7, 0.72, 0.78) },
+  }
+}
+
 // ---- Scene 11: Cathedral — volumetric god rays through haze ------------------
 
 function cathedral(): SceneDef {
@@ -2408,6 +2529,7 @@ export const SCENES: ScenePreset[] = [
   { id: 'prism', label: 'Prism', build: prismScene },
   { id: 'menagerie', label: 'Glass Menagerie', build: glassMenagerie },
   { id: 'textured', label: 'Textured Studio', build: texturedStudio },
+  { id: 'material-lab', label: 'Material Lab (textures + bump)', build: materialLab },
   { id: 'cathedral', label: 'Cathedral', build: cathedral, fog: true },
   { id: 'cumulus', label: 'Cumulus (cloud)', build: cumulus, sky: true, fog: true, cloud: true },
   { id: 'smoke', label: 'Smoke Plume', build: smokePlume, fog: true, cloud: true },
