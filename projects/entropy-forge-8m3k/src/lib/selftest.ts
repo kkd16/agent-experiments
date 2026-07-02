@@ -23,6 +23,9 @@ import { ppmDecode, ppmEncode } from './ppm.ts'
 import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
+import { packageMerge, minLimit } from './lengthLimited.ts'
+import { canonicalCodes } from './huffman.ts'
+import { frequencies } from './entropy.ts'
 
 export interface TestCase {
   group: string
@@ -165,6 +168,32 @@ export function runSelfTest(): TestCase[] {
       results.push({ group: 'BWT via suffix array', name, pass: bytesEqual(saBack, data), detail: `row ${sentinelRow}` })
     } catch (e) {
       results.push({ group: 'Suffix array (SA-IS)', name, pass: false, detail: (e as Error).message })
+    }
+    // Length-limited Huffman (package-merge): every length ≤ cap, Kraft ≤ 1, and
+    // the canonical codes are genuinely prefix-free.
+    try {
+      const counts = frequencies(data)
+      const distinct = counts.filter((c) => c > 0).length
+      if (distinct >= 2) {
+        const cap = Math.max(minLimit(distinct), minLimit(distinct) + 1)
+        const ll = packageMerge(counts, cap)
+        let kraft = 0
+        for (const l of ll.lengths.values()) kraft += Math.pow(2, -l)
+        const canon = canonicalCodes(ll.lengths)
+        let prefixFree = true
+        const codes = canon.map((c) => c.code)
+        for (let a = 0; a < codes.length && prefixFree; a++) {
+          for (let b = 0; b < codes.length; b++) {
+            if (a !== b && codes[b].startsWith(codes[a])) { prefixFree = false; break }
+          }
+        }
+        const pass = ll.maxUsed <= cap && kraft <= 1.0000001 && prefixFree && ll.lengths.size === distinct
+        results.push({ group: 'Length-limited Huffman', name, pass, detail: `cap ${cap}, depth ${ll.maxUsed}, Kraft ${kraft.toFixed(3)}` })
+      } else {
+        results.push({ group: 'Length-limited Huffman', name, pass: true, detail: '<2 symbols (n/a)' })
+      }
+    } catch (e) {
+      results.push({ group: 'Length-limited Huffman', name, pass: false, detail: (e as Error).message })
     }
   }
 

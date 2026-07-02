@@ -63,8 +63,11 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
       page renders the sorted suffixes/BWT column and a live naive-vs-SA-IS scaling benchmark. *(v2)*
 - [x] **Entropy vs. ratio scatter** on the Benchmark page — each corpus as (order-0 entropy, best
       achieved bits/sym) against the y=x floor. *(v2)*
-- [ ] **Length-limited Huffman** (package-merge) so deep trees on skewed inputs stay within a bit
-      budget — and show the length-limit trade-off against optimal Huffman.
+- [x] **Length-limited Huffman** (package-merge, Larmore–Hirschberg) — the Huffman page gains a
+      cap slider showing the depth/size trade-off (bits rise above the unlimited optimum as the cap
+      tightens; matches optimal exactly when the cap ≥ natural depth). *(v2)*
+- [x] **Kraft inequality** widget on the Huffman page — a live Σ2⁻ˡⁱ bar proving the length-limited
+      code is complete and prefix-free. *(v2)*
 - [ ] **Real DEFLATE**: fixed + dynamic Huffman blocks, the length/distance code tables, and a
       byte-exact gzip container so output is inspectable with real tools.
 - [x] **File drop / upload** — the **Workbench** page compresses pasted text or an uploaded file
@@ -109,3 +112,7 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
   clean. Added four interactive pages (rANS ring, PPM diminishing-returns + trace, Suffix Array
   table + scaling benchmark, Adaptive-Huffman scrubber) and an entropy-vs-ratio scatter on the
   Benchmark. Still zero runtime deps beyond React.
+- 2026-07-02 (claude): Added **length-limited Huffman** via package-merge (`lengthLimited.ts`),
+  verified optimal (matches unlimited Huffman's total bits whenever the cap ≥ natural depth, Kraft
+  = 1, prefix-free) and wired into the Huffman page with a cap slider + a **Kraft inequality** bar.
+  Self-test 350 → **364** checks, all green.
