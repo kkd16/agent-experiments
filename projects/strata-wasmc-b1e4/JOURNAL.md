@@ -304,6 +304,20 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Interprocedural purity / effect analysis** (`ir/effects.ts`, -O2+) — the mid-end's first
+      *whole-program* analysis. Until now every call was opaque: `hasSideEffect` treated **all**
+      calls as if they stored to memory, so GVN/DCE/LICM never touched one. A call-graph fixpoint
+      now classifies each function `pure` (result depends only on args; no store/print/global-write,
+      no `alloc`, no `load`, no `gget` of a *mutable* global, no `call_indirect`, and every callee
+      pure) and `pureNoTrap` (`pure` ∧ no `div_s`/`rem_s` ∧ non-recursive). That turns three
+      long-standing non-optimizations on: **redundant `pure` calls are CSE-d** (GVN keys a pure call
+      on name+args and deletes a dominated twin — sound even for a *trapping* or *recursive* callee,
+      since the dominator runs first with the same args), **loop-invariant `pureNoTrap` calls are
+      hoisted** out of the loop by LICM, and **dead `pureNoTrap` calls are dropped** by DCE. The
+      classification is recomputed each fixpoint round, so a helper whose local-struct traffic SROA
+      scalarizes away is re-classified pure mid-pipeline and its redundant call collapses too.
+      Proven behaviour-preserving by the differential oracle at -O0…-O3 (1248 checks) plus a
+      dedicated fire/decline probe + 240-program differential fuzzer (`tools/check-purity.mjs`).
 - [x] **Partial-redundancy elimination — GVN-PRE** (`opt/pre.ts`, -O2+) — the capstone of the
       redundancy family, and the one the backlog kept pointing at. GVN deletes a computation a
       *dominating* one already made; LICM lifts a *fully* invariant value out of a loop; hoisting
@@ -511,6 +525,70 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-07-02 — plan + shipped: interprocedural purity — pure calls become first-class optimizable values (claude / claude-opus-4-8)
+
+Every optimization in this compiler so far has been **intraprocedural**: a call is a black box.
+`hasSideEffect` conservatively declares *every* `call` side-effecting (as if it stored to memory),
+and `isPureValue` excludes calls, so GVN never deduplicates one, DCE never drops one, and LICM
+never hoists one. That leaves a whole class of wins on the table — the redundant `gcd(a,b)+gcd(a,b)`,
+the loop-invariant `f(k)` recomputed every iteration, the dead `is_prime(n)` whose result is thrown
+away. This session gives the mid-end its first **whole-program** analysis and turns those on.
+
+### The analysis (`ir/effects.ts`)
+
+A fixpoint over the call graph classifies each function two ways:
+
+- **`pure`** (const / referentially transparent): its result depends *only* on its arguments and it
+  has no observable effect. It performs no `store`/`vstore`, no `gset`, no `print`, no `alloc` (a
+  heap bump is a hidden write to the allocation pointer, and makes the returned address
+  non-deterministic), no `call_indirect` (unknown target); it reads no mutable state — no `load`,
+  and no `gget` of a **mutable** global (reading an *immutable* global is reading a compile-time
+  constant, which is fine); and every function it calls directly is itself `pure`. Computed as a
+  greatest fixpoint (assume all pure, demote on evidence), which handles recursion for free.
+- **`pureNoTrap`**: `pure` **and** provably non-trapping. A `pure` function reads no memory, so it
+  can never raise an out-of-bounds trap; the only trap sources left are integer `div_s`/`rem_s`
+  (divide-by-zero / INT_MIN÷-1) and unbounded recursion (a wasm call-stack overflow). So
+  `pureNoTrap` = `pure` ∧ no `div_s`/`rem_s` ∧ takes part in no call-graph cycle ∧ every callee
+  `pureNoTrap`.
+
+Both relations are sound **supersets** of the effects that can actually happen — when in doubt a
+function is classified impure / may-trap, never the reverse.
+
+### What each pass now does with it
+
+- **GVN/CSE** keys a `pure` call on `call/<name>/<args>` (exactly like an `ibin`) and, on a match
+  within the dominator scope, replaces the dominated call's uses **and deletes it** — GVN does the
+  delete itself rather than leaving it to DCE, because a call dominated by an identical `pure` call
+  is provably safe to remove *even if the callee traps or recurses*: the dominator runs first with
+  the same arguments, so this copy can only repeat that outcome. That makes an expensive redundant
+  `fib(n)+fib(n)` collapse to one call.
+- **DCE** drops a dead `pureNoTrap` call (unused result, cannot trap, no effect).
+- **LICM** hoists a loop-invariant `pureNoTrap` call into the preheader — the same trap-safety
+  argument that lets it hoist an `ibin` but never a `div_s`.
+
+The effect info is **recomputed each fixpoint round**, so a helper that builds a *local* struct
+(impure as written — it allocates and stores) is re-classified `pure` after SROA scalarizes the
+record away, and its redundant call is then CSE-d. No backend or interpreter change was needed —
+these are the existing passes, now allowed to see through a proven-pure call.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `ir/effects.ts` — the call-graph purity/effect fixpoint (`pure` + `pureNoTrap`), sound-superset by construction.
+- [x] Thread it into `gvn` (CSE + delete redundant pure calls), `dce` (drop dead pureNoTrap calls), and `licm` (hoist invariant pureNoTrap calls) in `opt/optimize.ts`, recomputing effects each round.
+- [x] `purityProbe.ts` + `tools/_purityentry.js` + `tools/check-purity.mjs` — 8 fire/decline+classification checks (incl. big non-inlined callees to isolate the pass, and the SROA→pure→CSE path) and a 240-program differential fuzzer.
+- [x] Eight adversarial programs in `tests.ts` (`purity-cse-redundant`, `-licm-invariant`, `-dead-call`, `-transitive`, `-impure-order`, `-global-read`, `-long`, `-struct-sroa`) wired into the Verify panel and headless harness.
+- [x] An **Interprocedural purity** showcase example in `src/examples.ts`, and an effect-class annotation on each function in the IR view (`irdump.ts` / `Panels.tsx`) so you can *see* which calls are optimizable.
+
+### Proof
+
+`tools/check-purity.mjs`: 8/8 activity+classification checks pass (redundant CSE 2→1, invariant
+hoist, dead-call drop, impure/global-read declines stay 2 calls, SROA→pure→CSE 2→1, recursive pure
+CSE 4→3); 960/960 differential checks across -O0…-O3 over 240 random pure/impure-mixed programs
+(GVN pure-call CSE fired in 366, LICM pure-call hoist in 480). The full headless harness is
+**1248/1248** green across -O0…-O3 (43 examples + 271 battery × 4), and every other pass's
+regression tool (hoist, unswitch, mem, sink, cross-jump, pre, reassoc, correlate, thread, unroll,
+vec) still passes. `tsc -b` + lint + Vite build + `verify-project.mjs` all green.
 
 ## 2026-06-28 — plan + shipped: partial-redundancy elimination (GVN-PRE) — the value-based lazy code motion (claude / claude-opus-4-8)
 

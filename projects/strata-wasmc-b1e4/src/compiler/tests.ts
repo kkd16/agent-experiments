@@ -3125,4 +3125,107 @@ fn main(){ for (let k = 0; k < 9; k = k + 1) { print(fold(k * 2 + 1, k * 777)); 
   print(z + s);
 }`,
   },
+
+  // --- Interprocedural purity: pure-call CSE / LICM / DCE, and the impure
+  // callees the analysis must decline on. Every program is non-trapping and its
+  // printed output is the invariant the oracle checks at -O0..-O3.
+  {
+    // A pure helper called with identical args is CSE-d to one call; the printed
+    // sum must be unchanged. `sq`/`poly` read no state, so they are pure.
+    name: 'purity-cse-redundant',
+    source: `fn sq(x: int) -> int { return x * x; }
+fn poly(a: int, b: int) -> int { return sq(a) + sq(b) - a * b; }
+fn main() {
+  let a = 13; let b = 7;
+  print(poly(a, b) + poly(a, b) * 3);
+  print(poly(b, a) - poly(b, a));   // folds to 0 once CSE-d
+}`,
+  },
+  {
+    // A loop-invariant pure call hoisted out of the loop: `weight(base)` does not
+    // depend on `i`, so it runs once — the accumulated total must match -O0.
+    name: 'purity-licm-invariant',
+    source: `fn weight(k: int) -> int { return k * 31 + (k ^ 5) - 7; }
+fn main() {
+  let base = 9; let acc = 0;
+  for (let i = 0; i < 40; i = i + 1) { acc = acc + weight(base) + i * 2; }
+  print(acc);
+  print(weight(base));
+}`,
+  },
+  {
+    // A dead pure call (result unused) is removed; a live one is kept. Output is
+    // driven only by the live computation, so removing the dead call is invisible.
+    name: 'purity-dead-call',
+    source: `fn f(x: int) -> int { return x * x - x + 1; }
+fn main() {
+  let a = 12;
+  let unused = f(a * 2 - 1);       // never read -> dropped
+  let used = f(a);
+  print(used);
+  print(a + 1);
+}`,
+  },
+  {
+    // Transitive purity: `combine` is pure only because `mix` is. Called
+    // redundantly, both levels collapse; the value must be preserved.
+    name: 'purity-transitive',
+    source: `fn mix(x: int, y: int) -> int { return (x * 3 - y) ^ (y * 5 + x); }
+fn combine(x: int, y: int) -> int { return mix(x, y) + mix(y, x); }
+fn main() {
+  let a = 21; let b = 4;
+  print(combine(a, b) + combine(a, b));
+}`,
+  },
+  {
+    // Impure callee: `noisy` prints, so two calls are observably distinct and the
+    // print order (a, then b, then a) must be preserved verbatim — never merged.
+    name: 'purity-impure-order',
+    source: `fn noisy(x: int) -> int { print(x); return x * 2 + 1; }
+fn main() {
+  let a = 5; let b = 8;
+  let s = noisy(a) + noisy(b) + noisy(a);
+  print(s);
+}`,
+  },
+  {
+    // A callee reading a *mutable* global is impure: the two calls straddle a
+    // write to `g`, so they must return different values and stay separate.
+    name: 'purity-global-read',
+    source: `let g = 0;
+fn scaled(x: int) -> int { return x * g + 1; }
+fn main() {
+  g = 3;
+  let a = scaled(10);
+  g = 7;
+  let b = scaled(10);
+  print(a); print(b); print(a + b);
+}`,
+  },
+  {
+    // 64-bit pure helper: purity is type-agnostic, so a redundant `long` call is
+    // CSE-d too. `print(long)` goes through the BigInt import; values must match.
+    name: 'purity-long',
+    source: `fn h(x: long, y: long) -> long { return x * y + x - y; }
+fn main() {
+  let a = 1000000000L; let b = 3L;
+  print(h(a, b) + h(a, b));
+  print(h(a, b) * 2L);
+}`,
+  },
+  {
+    // A helper that builds a *local* struct and returns a field. It is impure as
+    // written (it allocates and stores), but SROA scalarizes the non-escaping
+    // record; because the effect analysis is recomputed each fixpoint round, a
+    // function whose memory traffic has been optimized away can be re-classified
+    // pure mid-pipeline. The result must be identical to -O0 however the two
+    // redundant calls are collapsed (here the small callee also inlines).
+    name: 'purity-struct-sroa',
+    source: `struct P { x: int; y: int; }
+fn hyp(a: int, b: int) -> int { let p = P(a * 2, b * 3); return p.x * p.x + p.y * p.y; }
+fn main() {
+  let a = 6; let b = 5;
+  print(hyp(a, b) + hyp(a, b));
+}`,
+  },
 ];
