@@ -497,6 +497,35 @@ select {
 .mercury-box .preset-desc {
   margin: 0;
 }
+.merger-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.merger-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.merger-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  padding: 3px 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: rgba(255, 120, 120, 0.05);
+}
+.merger-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-2);
+}
 .chaos-result {
   display: flex;
   flex-direction: column;

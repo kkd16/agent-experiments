@@ -79,8 +79,12 @@ import {
   bulirschStoer,
   changeover,
   changeoverAndDeriv,
+  mergeBodies,
+  mergeKineticLoss,
+  mergeAngularMomentumTransfer,
+  simulateWithMergers,
 } from './hybrid'
-import type { BSStats } from './hybrid'
+import type { BSStats, MassiveBody } from './hybrid'
 import type { IntegratorId } from './types'
 import {
   anosovaState,
@@ -1452,6 +1456,59 @@ export function runSelfTest(): SelfTestReport {
       'Hybrid matches an independent reference through closest approach',
       worst < 1e-4,
       `max |Δr| at the closest approach = ${worst.toExponential(2)}`,
+    )
+  }
+
+  // 50g — MERGERS #1: a perfectly-inelastic merge is exact. Mass adds; total linear
+  // momentum and the centre of mass are preserved to machine precision; kinetic energy
+  // drops by exactly the inelastic loss μ·|v_rel|²/2; and the tracked orbital angular
+  // momentum drops by exactly the pair's internal term μ·(r_rel × v_rel) — the L that
+  // physically becomes the merged body's spin. All checked in a drifting (non-COM) frame.
+  {
+    const a: MassiveBody = { m: 2, x: 1, y: 0.5, vx: 0.3, vy: -0.2, radius: 0.1 }
+    const b: MassiveBody = { m: 5, x: -0.4, y: 1.1, vx: -0.6, vy: 0.9, radius: 0.2 }
+    const m = mergeBodies(a, b)
+    const dpx = m.m * m.vx - (a.m * a.vx + b.m * b.vx)
+    const dpy = m.m * m.vy - (a.m * a.vy + b.m * b.vy)
+    const dcom = Math.hypot(m.m * m.x - (a.m * a.x + b.m * b.x), m.m * m.y - (a.m * a.y + b.m * b.y))
+    const keB = 0.5 * a.m * (a.vx ** 2 + a.vy ** 2) + 0.5 * b.m * (b.vx ** 2 + b.vy ** 2)
+    const keA = 0.5 * m.m * (m.vx ** 2 + m.vy ** 2)
+    const keErr = Math.abs(keB - keA - mergeKineticLoss(a, b))
+    const lB = a.m * (a.x * a.vy - a.y * a.vx) + b.m * (b.x * b.vy - b.y * b.vx)
+    const lA = m.m * (m.x * m.vy - m.y * m.vx)
+    const lErr = Math.abs(lB - lA - mergeAngularMomentumTransfer(a, b))
+    const volErr = Math.abs(m.radius ** 3 - (a.radius ** 3 + b.radius ** 3))
+    add(
+      'Merger conserves m, p, COM; KE loss = μv²/2; ΔL = μ(r×v)',
+      Math.abs(m.m - 7) < 1e-15 &&
+        Math.hypot(dpx, dpy) < 1e-13 &&
+        dcom < 1e-13 &&
+        keErr < 1e-13 &&
+        lErr < 1e-13 &&
+        keA < keB &&
+        volErr < 1e-15,
+      `|Δp|=${Math.hypot(dpx, dpy).toExponential(1)}, |ΔCOM|=${dcom.toExponential(1)}, KE-loss err=${keErr.toExponential(1)}, L-transfer err=${lErr.toExponential(1)}`,
+    )
+  }
+
+  // 50h — MERGERS #2: integrating a collision-course system through contact with the
+  // hybrid map, total mass is conserved exactly, the body count drops, and the total
+  // orbital angular momentum lost equals the summed spin transfer of the merges (each
+  // merge is the only thing that removes L; the hybrid drift in between conserves it).
+  {
+    const bodies: MassiveBody[] = [
+      { m: 1, x: 0, y: 0, vx: 0, vy: 0, radius: 0.02 },
+      { m: 3e-4, x: 0.98, y: 0, vx: 0.06, vy: 1, radius: 0.008 },
+      { m: 3e-4, x: 1.02, y: 0, vx: -0.06, vy: 1, radius: 0.008 },
+    ]
+    const r = simulateWithMergers(bodies, 1, 0.02, 80, {})
+    add(
+      'Mergers conserve total mass; ΔL equals the summed spin transfer',
+      Math.abs(r.massF - r.mass0) < 1e-13 &&
+        r.events.length >= 1 &&
+        r.countF < r.count0 &&
+        Math.abs(r.angular0 - r.angularF - r.spinTotal) < 1e-6,
+      `${r.count0}→${r.countF} bodies, ${r.events.length} merge(s); |ΔL − spin| = ${Math.abs(r.angular0 - r.angularF - r.spinTotal).toExponential(2)}`,
     )
   }
 

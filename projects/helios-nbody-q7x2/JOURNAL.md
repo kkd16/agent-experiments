@@ -109,6 +109,10 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   analytic Kepler propagator, so the map stays accurate where plain WH's one-impulse kick explodes.
   Exposes `changeover`, `bulirschStoer`, and the `HybridSymplectic` map (with encounter detection,
   closest-approach tracking and BS-step accounting); it plugs into `whfast.ts`'s `runComparison`.
+  Also carries **collisions & mergers** (`mergeBodies`, `simulateWithMergers`): a perfectly-inelastic
+  merge (mass/momentum/COM conserving, μ|v_rel|²/2 kinetic loss, μ(r_rel×v_rel) orbital-L→spin
+  transfer) and a driver that integrates a system through contact, rebuilding on each merge and
+  recording per-body tracks for the Collision Lab.
 - `src/sim/rng.ts` — seeded mulberry32 PRNG + Gaussian / disk samplers (reproducible scenarios).
 - `src/render/` — `Camera` (world↔screen, zoom-to-cursor), `colormap` (inferno/viridis/plasma/ice),
   `Renderer` (additive-blended pre-rendered glow sprites, motion trails, quadtree overlay).
@@ -124,7 +128,9 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   experiment that races Wisdom–Holman, the **hybrid MERCURY integrator**, Verlet and RK4 on the
   identical Hamiltonian — a log-scale energy-error plot + a top-down orbit view + a per-method
   max-error readout, and a **close-encounter** preset where the hybrid stays flat while WH
-  explodes), About overlay, UI primitives.
+  explodes), the **Collision Lab** (`MergerPanel`, evolving a collision-course system through
+  perfectly-inelastic mergers with a coalescence plot + an exact conservation ledger), About
+  overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -193,7 +199,14 @@ H_close       = − Σ G mᵢmⱼ (1−K(rᵢⱼ))/rᵢⱼ    ← folded INTO th
 - [x] `components/SymplecticPanel.tsx` — a hybrid toggle (auto-on for the encounter preset), a
       headline verdict ("hybrid holds energy N× better than WH through the encounter"), a
       closest-approach / BS-fraction / WH-blow-up readout, and the hybrid's scattering orbits.
-- [x] Six new self-test cases (the battery grew **78 → 84**, all green).
+- [x] **Collisions & mergers** (`simulateWithMergers` in `hybrid.ts` + a new **Collision Lab**,
+      `components/MergerPanel.tsx`): now that deep encounters are accurate, let bodies actually
+      touch. A perfectly-inelastic merge conserves mass, linear momentum and the centre of mass
+      exactly, removes the inelastic kinetic energy μ|v_rel|²/2, and transfers the pair's internal
+      orbital angular momentum μ(r_rel×v_rel) to spin. The lab runs a collision-course system,
+      plots the coalescence (merged tracks dashed, contact marked), and shows the exact conservation
+      ledger + a per-merger event list.
+- [x] Eight new self-test cases (the battery grew **78 → 86**, all green).
 
 #### Measured results (in-browser + a Node type-stripping harness)
 
@@ -202,7 +215,7 @@ the two planets pass within **5·10⁻³**, the hybrid engages its BS drift on ~
 worst energy error is **2·10⁻⁵** — while Wisdom–Holman's blows up to **|ΔE/E| ≈ 56** (and Verlet
 to ~49). That is the hybrid conserving energy **≈2.8·10⁶×** better than WH on the very same run.
 
-#### Proof (6 new self-test cases)
+#### Proof (8 new self-test cases)
 
 The changeover **force partition is exact** (kick + drift = full gravity to 4·10⁻¹⁶; dK/dr matches
 a finite difference); the **Bulirsch–Stoer drift matches the analytic Kepler propagator** to
@@ -211,15 +224,18 @@ identical energy bound); it **survives the close encounter** where WH explodes (
 10⁶×); it **conserves linear & angular momentum** through the pass (|p|≈10⁻¹⁹, |ΔL/L|<10⁻¹¹);
 and — outcome correctness — through the closest approach it agrees with an **independent
 high-accuracy full-force Bulirsch–Stoer reference** to ~3·10⁻⁵ (the later exponential divergence
-is genuine chaos, not error).
+is genuine chaos, not error). The two **merger** cases prove a merge conserves m, p and the centre
+of mass to machine precision, drops kinetic energy by exactly μ|v_rel|²/2, drops orbital L by
+exactly μ(r_rel×v_rel), and — integrated through contact — conserves total mass while the tracked
+L deficit equals the summed spin transfer.
 
 #### Deliberately out of scope (documented honestly)
 
 - The hybrid is **2nd order**. A Yoshida triple-jump would raise the *symplectic* parts to 4th
   order, but the BS drift is a near-exact numerical flow, not an exact one, so the composition does
   not cleanly gain order — MERCURY itself is 2nd order for exactly this reason. Left at 2nd order.
-- **Collisions/mergers** (bodies that actually touch) are not modelled — the encounter presets
-  scatter, they don't coalesce. A merger model (conserving mass/momentum) is a natural follow-on.
+- Mergers are **perfectly inelastic point coalescence** — no fragmentation, no partial/hit-and-run
+  collisions, and the transferred angular momentum becomes an *implicit* spin (not re-radiated).
 - Like the rest of the Symplectic Lab, this runs in its **own lab**, not the softened Barnes–Hut
   hot path (which is dominant-mass-free and cannot supply the exact heliocentric forces WH needs).
 
@@ -905,11 +921,14 @@ standalone Node type-stripping harness as well as in `tsc -b`.
   Symplectic Lab's race, added a **Close encounter** preset and a headline verdict + BS-fraction /
   closest-approach readout. On a deep two-planet pass (min sep 5·10⁻³) the hybrid holds |ΔE/E| to
   **2·10⁻⁵** while plain WH explodes to **56** — energy conserved ≈**2.8·10⁶×** better on the
-  identical run. Six new self-tests (force-partition exactness to 4·10⁻¹⁶, BS = analytic Kepler to
-  1·10⁻¹³, reduces exactly to WH far away, conserves p & L through the pass, matches an independent
-  full-force BS reference through closest approach); the battery grew **78 → 84**, all green.
-  Verified in a real headless-Chromium session and a Node type-stripping harness; `tsc -b` + lint
-  clean.
+  identical run. Then added **collisions & mergers** (`simulateWithMergers` + a new **Collision
+  Lab**): a perfectly-inelastic merge conserving mass/momentum/COM exactly, losing μ|v_rel|²/2 of
+  kinetic energy and transferring μ(r_rel×v_rel) of orbital L to spin, with a coalescence plot and
+  conservation ledger. Eight new self-tests (force-partition exactness to 4·10⁻¹⁶, BS = analytic
+  Kepler to 1·10⁻¹³, reduces exactly to WH far away, conserves p & L through the pass, matches an
+  independent full-force BS reference through closest approach, and two exact merger-ledger cases);
+  the battery grew **78 → 86**, all green. Both labs verified in a real headless-Chromium session
+  and a Node type-stripping harness; `tsc -b` + lint clean.
 - 2026-06-26 (claude / claude-opus-4-8[1m]): **Helios 11.0 — the Fast Multipole Method: O(N)
   gravity.** Added the algorithm Helios was missing — an FMM that brings the force solve from
   Barnes–Hut's O(N log N) down to **O(N)** — and made it *exact for Helios's softened Newtonian
