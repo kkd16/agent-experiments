@@ -28,6 +28,8 @@ import { MonoidPanel } from './components/MonoidPanel';
 import { LogicPanel } from './components/LogicPanel';
 import { OmegaPanel } from './components/OmegaPanel';
 import { LearnPanel } from './components/LearnPanel';
+import { AlternationPanel } from './components/AlternationPanel';
+import { DEFAULT_AFA_SOURCE } from './engine/afa';
 import type { LogicMode } from './engine/logic';
 import { CensusPanel } from './components/CensusPanel';
 import { AmbiguityPanel } from './components/AmbiguityPanel';
@@ -55,6 +57,7 @@ type Tab =
   | 'monoid'
   | 'logic'
   | 'omega'
+  | 'afa'
   | 'learn'
   | 'compare'
   | 'coalgebra'
@@ -92,6 +95,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'monoid', label: 'Algebra' },
       { id: 'logic', label: 'Logic' },
       { id: 'omega', label: 'ω / Büchi' },
+      { id: 'afa', label: 'Alternation' },
       { id: 'learn', label: 'Learn' },
       { id: 'compare', label: 'Compare' },
       { id: 'coalgebra', label: 'Coalgebra' },
@@ -114,6 +118,7 @@ interface Stored {
   logic: string;
   logicMode: LogicMode;
   omega: string;
+  afa: string;
 }
 
 const DEFAULT_EXTENDED = '.*[0-9].*&.*[a-z].*&.{6,}';
@@ -133,6 +138,7 @@ function loadStored(): Stored {
         logic: parsed.logic ?? DEFAULT_LOGIC,
         logicMode: parsed.logicMode === 'ltlf' ? 'ltlf' : 'mso',
         omega: parsed.omega ?? DEFAULT_OMEGA,
+        afa: parsed.afa ?? DEFAULT_AFA_SOURCE,
       };
     }
   } catch {
@@ -146,6 +152,7 @@ function loadStored(): Stored {
     logic: DEFAULT_LOGIC,
     logicMode: 'mso',
     omega: DEFAULT_OMEGA,
+    afa: DEFAULT_AFA_SOURCE,
   };
 }
 
@@ -158,18 +165,19 @@ export default function App() {
   const [logicSource, setLogicSource] = useState(initial.logic);
   const [logicMode, setLogicMode] = useState<LogicMode>(initial.logicMode);
   const [omegaSource, setOmegaSource] = useState(initial.omega);
+  const [afaSource, setAfaSource] = useState(initial.afa);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
       localStorage.setItem(
         STORE_KEY,
-        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode, omega: omegaSource }),
+        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode, omega: omegaSource, afa: afaSource }),
       );
     } catch {
       /* ignore */
     }
-  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode, omegaSource]);
+  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode, omegaSource, afaSource]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
   const regular = compiled.features ? compiled.features.regular : false;
@@ -218,7 +226,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, and now <strong>turn the head around — a two-way DFA</strong> compiled to a one-way DFA by Shepherdson's crossing-sequence construction (Rabin–Scott: two-way = regular), fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, and now <strong>turn the head around — a two-way DFA</strong> compiled to a one-way DFA by Shepherdson's crossing-sequence construction (Rabin–Scott: two-way = regular), and now <strong>branch ∧ <em>and</em> ∨ at once — an alternating automaton</strong> (positive-boolean transitions; complement free by dualising, ∧/∨-closure with no product) determinised through the studio's own subset construction and cross-checked against its alternating semantics, fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -408,6 +416,8 @@ export default function App() {
             )}
 
             {tab === 'omega' && <OmegaPanel source={omegaSource} onSourceChange={setOmegaSource} />}
+
+            {tab === 'afa' && <AlternationPanel source={afaSource} onSourceChange={setAfaSource} />}
 
             {tab === 'learn' && <LearnPanel dfa={compiled.minDfa} notice={automataNotice} />}
 

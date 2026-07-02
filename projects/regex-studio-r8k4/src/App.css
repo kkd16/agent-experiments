@@ -4749,3 +4749,156 @@
 .td-compose-badge {
   margin: 8px 0;
 }
+
+/* ── Alternation (AFA) panel ─────────────────────────────────────────────── */
+.afa-panel {
+  --afa: #2dd4bf;
+  --afa-deep: #14b8a6;
+}
+.afa-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.afa-panel button.chip {
+  cursor: pointer;
+  color: var(--muted);
+  background: var(--panel);
+  transition: border-color 0.12s, color 0.12s;
+}
+.afa-panel button.chip:hover {
+  color: var(--text);
+  border-color: var(--afa);
+}
+.afa-panel button.chip.primary {
+  color: var(--afa);
+  border-color: rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.1);
+}
+.afa-editor {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0a0d14;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 12px 14px;
+  resize: vertical;
+  tab-size: 2;
+}
+.afa-editor:focus {
+  outline: none;
+  border-color: var(--afa);
+}
+.afa-editor.has-error {
+  border-color: var(--bad);
+}
+.afa-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+.afa-combine {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.afa-combine select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.afa-stats {
+  margin: 8px 0 14px;
+}
+.afa-lang code {
+  color: var(--afa);
+}
+.afa-formula {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.afa-table-wrap,
+.afa-frontier-wrap {
+  overflow-x: auto;
+  margin: 10px 0 4px;
+}
+.afa-table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.afa-table th,
+.afa-table td {
+  border: 1px solid var(--border-soft);
+  padding: 7px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+.afa-table thead th {
+  color: var(--afa);
+  font-family: var(--mono);
+  background: rgba(45, 212, 191, 0.06);
+}
+.afa-state {
+  font-family: var(--mono);
+  color: var(--accent-2);
+  white-space: nowrap;
+}
+.afa-final {
+  color: var(--afa);
+  margin-left: 5px;
+}
+.afa-runbox {
+  margin: 8px 0;
+}
+.afa-frontier {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.afa-frontier th {
+  padding: 4px 8px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.afa-frontier tbody .afa-state {
+  text-align: right;
+  padding-right: 10px;
+}
+.afa-fcell {
+  width: 22px;
+  height: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+}
+.afa-fcell.on {
+  background: var(--afa);
+  border-color: var(--afa-deep);
+}
+.afa-fcell.off {
+  background: transparent;
+}
+.afa-cx-src {
+  background: #0a0d14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow-x: auto;
+  white-space: pre;
+  margin-top: 8px;
+}
