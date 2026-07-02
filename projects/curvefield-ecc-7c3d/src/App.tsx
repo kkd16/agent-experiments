@@ -24,6 +24,7 @@ import { HashToCurvePage } from './pages/HashToCurvePage'
 import { Groth16Page } from './pages/Groth16Page'
 import { BulletproofsPage } from './pages/BulletproofsPage'
 import { PlonkPage } from './pages/PlonkPage'
+import { StarkPage } from './pages/StarkPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -51,6 +52,7 @@ const ROUTES = [
   { path: '/groth16', label: 'Groth16 SNARK' },
   { path: '/bulletproofs', label: 'Bulletproofs' },
   { path: '/plonk', label: 'PLONK' },
+  { path: '/stark', label: 'STARK' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -101,6 +103,7 @@ export default function App() {
       {base === '/groth16' && <Groth16Page />}
       {base === '/bulletproofs' && <BulletproofsPage />}
       {base === '/plonk' && <PlonkPage />}
+      {base === '/stark' && <StarkPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
@@ -108,7 +111,8 @@ export default function App() {
         from-scratch engine: BigInt field arithmetic, hand-written SHA-256 / SHA-512 / RIPEMD-160,
         RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
         signing, zero-knowledge Σ-protocols, KZG polynomial commitments, a Groth16 and a universal
-        PLONK zk-SNARK, and logarithmic-size Bulletproofs range proofs — zero crypto dependencies.
+        PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, and a transparent hash-only STARK
+        (Goldilocks NTT + FRI) — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>
