@@ -328,3 +328,344 @@ export function simpleLinear(y: number[], x: number[]): { slope: number; interce
   if (!res) return null
   return { slope: res.coefficients[0], intercept: res.coefficients[1], r2: res.rSquared }
 }
+
+// =============================================================================
+// v8 — the spectral layer: symmetric eigendecomposition (Jacobi), the SVD
+// (one-sided Jacobi), general eigenvalues (Faddeev–LeVerrier → Durand–Kerner),
+// and everything they unlock (rank, the 2-norm and its condition number, the
+// Moore–Penrose pseudo-inverse). Still hand-derived, still dependency-free.
+// =============================================================================
+
+/** True when `a` is square and symmetric to a relative tolerance. */
+export function isSymmetric(a: Mat, tol = 1e-9): boolean {
+  const n = a.length
+  if (n === 0 || a.some((r) => r.length !== n)) return false
+  let scale = 0
+  for (const row of a) for (const v of row) scale = Math.max(scale, Math.abs(v))
+  const eps = tol * (scale || 1)
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if (Math.abs(a[i][j] - a[j][i]) > eps) return false
+  return true
+}
+
+export interface SymEigen {
+  /** Eigenvalues, sorted descending. */
+  values: number[]
+  /** Eigenvectors as columns, aligned with `values`; orthonormal (Q with A = QΛQᵀ). */
+  vectors: Mat
+}
+
+/**
+ * Symmetric eigendecomposition by the cyclic **Jacobi** method: repeatedly apply
+ * plane rotations that annihilate the largest off-diagonal pair until the matrix is
+ * diagonal. Unconditionally convergent for a symmetric matrix and delivers a fully
+ * orthonormal eigenvector basis — the accurate path behind `EIGVALS`/`EIGVECS`.
+ */
+export function jacobiEigen(aIn: Mat, sweeps = 100): SymEigen | null {
+  const n = aIn.length
+  if (n === 0 || aIn.some((r) => r.length !== n)) return null
+  const a = aIn.map((r) => r.slice())
+  const v = identity(n)
+  const offNorm = (): number => {
+    let s = 0
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) s += a[p][q] * a[p][q]
+    return Math.sqrt(2 * s)
+  }
+  let diagScale = 0
+  for (let i = 0; i < n; i++) diagScale = Math.max(diagScale, Math.abs(a[i][i]))
+  const tol = 1e-15 * (diagScale || 1)
+  for (let sweep = 0; sweep < sweeps; sweep++) {
+    if (offNorm() <= tol) break
+    for (let p = 0; p < n - 1; p++) {
+      for (let q = p + 1; q < n; q++) {
+        const apq = a[p][q]
+        if (Math.abs(apq) < 1e-300) continue
+        // Rotation angle that zeroes a[p][q].
+        const theta = (a[q][q] - a[p][p]) / (2 * apq)
+        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1))
+        const c = 1 / Math.sqrt(t * t + 1)
+        const s = t * c
+        // Rotate rows/cols p and q of A.
+        for (let k = 0; k < n; k++) {
+          const akp = a[k][p]
+          const akq = a[k][q]
+          a[k][p] = c * akp - s * akq
+          a[k][q] = s * akp + c * akq
+        }
+        for (let k = 0; k < n; k++) {
+          const apk = a[p][k]
+          const aqk = a[q][k]
+          a[p][k] = c * apk - s * aqk
+          a[q][k] = s * apk + c * aqk
+        }
+        a[p][q] = a[q][p] = 0
+        // Accumulate the rotation into the eigenvector matrix.
+        for (let k = 0; k < n; k++) {
+          const vkp = v[k][p]
+          const vkq = v[k][q]
+          v[k][p] = c * vkp - s * vkq
+          v[k][q] = s * vkp + c * vkq
+        }
+      }
+    }
+  }
+  const values = a.map((_, i) => a[i][i])
+  // Sort eigenvalues (and their eigenvectors) descending.
+  const order = values.map((_, i) => i).sort((i, j) => values[j] - values[i])
+  const sortedVals = order.map((i) => values[i])
+  const sortedVecs: Mat = Array.from({ length: n }, (_, r) => order.map((i) => v[r][i]))
+  // Canonicalize sign so the largest-magnitude entry of each eigenvector is positive.
+  for (let col = 0; col < n; col++) {
+    let best = 0
+    for (let r = 0; r < n; r++) if (Math.abs(sortedVecs[r][col]) > Math.abs(sortedVecs[best][col])) best = r
+    if (sortedVecs[best][col] < 0) for (let r = 0; r < n; r++) sortedVecs[r][col] = -sortedVecs[r][col]
+  }
+  return { values: sortedVals, vectors: sortedVecs }
+}
+
+export interface SVD {
+  /** m×k left singular vectors (columns), k = min(m,n). */
+  u: Mat
+  /** Singular values, descending, length k. */
+  s: number[]
+  /** n×k right singular vectors (columns). */
+  v: Mat
+}
+
+/**
+ * Singular Value Decomposition by **one-sided Jacobi**: orthogonalize the columns of
+ * A with plane rotations (each rotation zeroes one column-pair inner product) while
+ * accumulating the right vectors in V; the column norms at convergence are the
+ * singular values and the normalized columns are the left vectors. Works for any
+ * shape — a wide matrix is handled by transposing and swapping U↔V.
+ */
+export function svd(aIn: Mat): SVD | null {
+  const m0 = aIn.length
+  if (m0 === 0) return null
+  const n0 = aIn[0].length
+  if (aIn.some((r) => r.length !== n0)) return null
+  const wide = n0 > m0
+  // Work on a tall (or square) matrix; transpose a wide one and swap U/V at the end.
+  const A: Mat = wide ? transpose(aIn) : aIn.map((r) => r.slice())
+  const m = A.length
+  const n = A[0].length
+  const V = identity(n)
+  const EPS_SVD = 1e-14
+  let converged = false
+  for (let sweep = 0; sweep < 100 && !converged; sweep++) {
+    converged = true
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let alpha = 0
+        let beta = 0
+        let gamma = 0
+        for (let k = 0; k < m; k++) {
+          alpha += A[k][i] * A[k][i]
+          beta += A[k][j] * A[k][j]
+          gamma += A[k][i] * A[k][j]
+        }
+        if (Math.abs(gamma) <= EPS_SVD * Math.sqrt(alpha * beta) || gamma === 0) continue
+        converged = false
+        const zeta = (beta - alpha) / (2 * gamma)
+        const t = Math.sign(zeta || 1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta))
+        const c = 1 / Math.sqrt(1 + t * t)
+        const s = c * t
+        for (let k = 0; k < m; k++) {
+          const aki = A[k][i]
+          const akj = A[k][j]
+          A[k][i] = c * aki - s * akj
+          A[k][j] = s * aki + c * akj
+        }
+        for (let k = 0; k < n; k++) {
+          const vki = V[k][i]
+          const vkj = V[k][j]
+          V[k][i] = c * vki - s * vkj
+          V[k][j] = s * vki + c * vkj
+        }
+      }
+    }
+  }
+  // Singular values = column norms; left vectors = normalized columns.
+  const cols = Array.from({ length: n }, (_, j) => {
+    let nrm = 0
+    for (let k = 0; k < m; k++) nrm += A[k][j] * A[k][j]
+    return Math.sqrt(nrm)
+  })
+  const order = cols.map((_, j) => j).sort((a, b) => cols[b] - cols[a])
+  const k = Math.min(m, n)
+  const s: number[] = []
+  const u: Mat = Array.from({ length: m }, () => new Array(k).fill(0))
+  const v: Mat = Array.from({ length: n }, () => new Array(k).fill(0))
+  for (let idx = 0; idx < k; idx++) {
+    const j = order[idx]
+    const sigma = cols[j]
+    s.push(sigma)
+    for (let r = 0; r < n; r++) v[r][idx] = V[r][j]
+    if (sigma > 1e-300) for (let r = 0; r < m; r++) u[r][idx] = A[r][j] / sigma
+  }
+  return wide ? { u: v, s, v: u } : { u, s, v }
+}
+
+/** Numerical rank from the SVD: singular values above a relative tolerance. */
+export function matrixRank(a: Mat, tol?: number): number {
+  const d = svd(a)
+  if (!d) return 0
+  const smax = d.s[0] ?? 0
+  const t = tol ?? Math.max(a.length, a[0]?.length ?? 0) * smax * 2.220446049250313e-16
+  return d.s.filter((x) => x > t).length
+}
+
+/** The 2-norm (largest singular value). */
+export function norm2(a: Mat): number {
+  const d = svd(a)
+  return d ? d.s[0] ?? 0 : 0
+}
+
+/** The 2-norm condition number σ_max / σ_min (∞ when rank-deficient). */
+export function cond2(a: Mat): number {
+  const d = svd(a)
+  if (!d || d.s.length === 0) return Infinity
+  const smin = d.s[d.s.length - 1]
+  return smin > 0 ? d.s[0] / smin : Infinity
+}
+
+/** Frobenius / 1 / ∞ matrix norms. */
+export function normFro(a: Mat): number {
+  let s = 0
+  for (const row of a) for (const v of row) s += v * v
+  return Math.sqrt(s)
+}
+export function norm1(a: Mat): number {
+  const n = a[0]?.length ?? 0
+  let best = 0
+  for (let j = 0; j < n; j++) {
+    let s = 0
+    for (let i = 0; i < a.length; i++) s += Math.abs(a[i][j])
+    best = Math.max(best, s)
+  }
+  return best
+}
+export function normInf(a: Mat): number {
+  let best = 0
+  for (const row of a) best = Math.max(best, row.reduce((s, v) => s + Math.abs(v), 0))
+  return best
+}
+
+/** Moore–Penrose pseudo-inverse A⁺ = V Σ⁺ Uᵀ (the exact least-squares solver, any shape/rank). */
+export function pseudoInverse(a: Mat, tol?: number): Mat | null {
+  const d = svd(a)
+  if (!d) return null
+  const m = a.length
+  const n = a[0].length
+  const k = d.s.length
+  const smax = d.s[0] ?? 0
+  const t = tol ?? Math.max(m, n) * smax * 2.220446049250313e-16
+  // A⁺[j][i] = Σ_r V[j][r] (1/σ_r) U[i][r]
+  const out: Mat = Array.from({ length: n }, () => new Array(m).fill(0))
+  for (let r = 0; r < k; r++) {
+    const sigma = d.s[r]
+    if (sigma <= t) continue
+    const inv = 1 / sigma
+    for (let j = 0; j < n; j++) {
+      const vjr = d.v[j][r] * inv
+      if (vjr === 0) continue
+      for (let i = 0; i < m; i++) out[j][i] += vjr * d.u[i][r]
+    }
+  }
+  return out
+}
+
+// ---- general (non-symmetric) eigenvalues -----------------------------------
+export interface Complex {
+  re: number
+  im: number
+}
+
+/**
+ * The characteristic polynomial of a square matrix via the **Faddeev–LeVerrier**
+ * recurrence. Returns the monic coefficients [1, c_{n-1}, …, c_0] (highest degree
+ * first), each an exact rational combination of traces of powers of A. Accurate for
+ * the small matrices a spreadsheet meets.
+ */
+export function charPoly(a: Mat): number[] | null {
+  const n = a.length
+  if (n === 0 || a.some((r) => r.length !== n)) return null
+  // M_0 = I; a_k = tr(A M_{k-1})/k; M_k = A M_{k-1} − a_k I. p(λ)=λⁿ − Σ a_k λ^{n−k}.
+  let M = identity(n)
+  const coeffs = [1] // leading coefficient of the monic polynomial
+  for (let k = 1; k <= n; k++) {
+    const AM = matMul(a, M)
+    if (!AM) return null
+    let tr = 0
+    for (let i = 0; i < n; i++) tr += AM[i][i]
+    const ak = tr / k
+    coeffs.push(-ak)
+    // M_k = A M_{k-1} − a_k I
+    M = AM.map((row, i) => row.map((val, j) => val - (i === j ? ak : 0)))
+  }
+  return coeffs
+}
+
+/** Evaluate a real-coefficient polynomial (highest degree first) at a complex point. */
+function polyEvalComplex(coeffs: number[], z: Complex): Complex {
+  let re = 0
+  let im = 0
+  for (const c of coeffs) {
+    // (re + i·im)·z + c
+    const nr = re * z.re - im * z.im + c
+    const ni = re * z.im + im * z.re
+    re = nr
+    im = ni
+  }
+  return { re, im }
+}
+
+/**
+ * All (complex) roots of a monic real polynomial by the **Durand–Kerner** (Weierstrass)
+ * simultaneous iteration — robust for the modest degrees a spreadsheet eigenproblem
+ * produces. Complex-conjugate roots are recovered as pairs.
+ */
+export function polyRoots(coeffs: number[], iters = 500): Complex[] {
+  const deg = coeffs.length - 1
+  if (deg <= 0) return []
+  // Deflate any exact zero leading terms already handled (monic assumed).
+  const roots: Complex[] = []
+  // Spread initial guesses off the real axis to separate conjugate pairs.
+  const seed: Complex = { re: 0.4, im: 0.9 }
+  let p: Complex = { re: 1, im: 0 }
+  for (let i = 0; i < deg; i++) {
+    roots.push({ re: p.re, im: p.im })
+    p = { re: p.re * seed.re - p.im * seed.im, im: p.re * seed.im + p.im * seed.re }
+  }
+  const cdiv = (a: Complex, b: Complex): Complex => {
+    const d = b.re * b.re + b.im * b.im
+    return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d }
+  }
+  for (let it = 0; it < iters; it++) {
+    let maxDelta = 0
+    for (let i = 0; i < deg; i++) {
+      const num = polyEvalComplex(coeffs, roots[i])
+      let den: Complex = { re: 1, im: 0 }
+      for (let j = 0; j < deg; j++) {
+        if (j === i) continue
+        const diff = { re: roots[i].re - roots[j].re, im: roots[i].im - roots[j].im }
+        den = { re: den.re * diff.re - den.im * diff.im, im: den.re * diff.im + den.im * diff.re }
+      }
+      const step = cdiv(num, den)
+      roots[i] = { re: roots[i].re - step.re, im: roots[i].im - step.im }
+      maxDelta = Math.max(maxDelta, Math.hypot(step.re, step.im))
+    }
+    if (maxDelta < 1e-14) break
+  }
+  // Snap negligible imaginary parts to zero (real roots), relative to magnitude.
+  return roots.map((r) => ({ re: r.re, im: Math.abs(r.im) < 1e-9 * (1 + Math.hypot(r.re, r.im)) ? 0 : r.im }))
+}
+
+/** General eigenvalues (possibly complex): char poly (Faddeev–LeVerrier) → roots (Durand–Kerner). */
+export function eigenvaluesGeneral(a: Mat): Complex[] | null {
+  const poly = charPoly(a)
+  if (!poly) return null
+  const roots = polyRoots(poly)
+  // Sort by descending real part, then descending imaginary part — a stable display order.
+  roots.sort((x, y) => y.re - x.re || y.im - x.im)
+  return roots
+}

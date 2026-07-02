@@ -128,12 +128,23 @@ function ChartCard({
         >
           L
         </button>
+        <button
+          className={'chart-toggle' + (spec.trendline ? ' on' : '')}
+          title="Least-squares trendline + R² (line / area / scatter)"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            onCheckpoint()
+            onChange(spec.id, { trendline: !spec.trendline })
+          }}
+        >
+          T
+        </button>
         <button className="chart-x" title="Delete chart" onPointerDown={(e) => e.stopPropagation()} onClick={() => onDelete(spec.id)}>
           ✕
         </button>
       </div>
       <div className="chart-body">
-        <ChartView type={spec.type} data={data} width={spec.w - 2} height={spec.h - HEADER_H - 2} />
+        <ChartView type={spec.type} data={data} width={spec.w - 2} height={spec.h - HEADER_H - 2} trendline={spec.trendline} />
       </div>
       <div className="chart-resize" onPointerDown={(e) => beginDrag(e, 'resize')} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
     </div>

@@ -305,6 +305,78 @@ export function runSelfTests(): TestResult[] {
   eq('dist', 'FISHERINV inverts FISHER', ev('ROUND(FISHERINV(FISHER(0.5)),6)'), '0.5')
   eq('dist', 'CONFIDENCE.NORM(0.05,2.5,50)', ev('ROUND(CONFIDENCE.NORM(0.05,2.5,50),5)'), '0.69295')
 
+  // --- v8: spectral linear algebra (EIGVALS / EIGVECS / SVD / MPINV / MRANK / MCOND / MNORM) ---
+  // A 3×3 symmetric matrix A = [[2,0,0],[0,3,4],[0,4,9]] with eigenvalues {11, 2, 1}.
+  const symM = { A1: '2', B1: '0', C1: '0', A2: '0', B2: '3', C2: '4', A3: '0', B3: '4', C3: '9' }
+  eq('spectral', 'EIGVALS symmetric top = 11', ev('ROUND(INDEX(EIGVALS(A1:C3),1,1),6)', symM), '11')
+  eq('spectral', 'EIGVALS symmetric mid = 2', ev('ROUND(INDEX(EIGVALS(A1:C3),2,1),6)', symM), '2')
+  eq('spectral', 'EIGVALS symmetric low = 1', ev('ROUND(INDEX(EIGVALS(A1:C3),3,1),6)', symM), '1')
+  eq('spectral', 'ΣEIGVALS = trace (14)', ev('ROUND(SUM(EIGVALS(A1:C3)),6)', symM), '14')
+  eq('spectral', 'ΠEIGVALS = det (22)', ev('ROUND(INDEX(EIGVALS(A1:C3),1,1)*INDEX(EIGVALS(A1:C3),2,1)*INDEX(EIGVALS(A1:C3),3,1),6)', symM), '22')
+  eq('spectral', 'MDETERM cross-check = 22', ev('ROUND(MDETERM(A1:C3),6)', symM), '22')
+  // Eigenvectors: QᵀQ = I (orthonormal), and the eigen-equation A·v₁ = λ₁·v₁ (λ₁ = 11).
+  eq('spectral', 'EIGVECS orthonormal (diagonal 1)', ev('ROUND(INDEX(MMULT(TRANSPOSE(EIGVECS(A1:C3)),EIGVECS(A1:C3)),1,1),6)', symM), '1')
+  eq('spectral', 'EIGVECS orthonormal (off-diag 0)', ev('ROUND(INDEX(MMULT(TRANSPOSE(EIGVECS(A1:C3)),EIGVECS(A1:C3)),1,2),6)', symM), '0')
+  eq('spectral', 'eigen-equation A·v₁ = λ₁·v₁', ev('ROUND(INDEX(MMULT(A1:C3,EIGVECS(A1:C3)),2,1)-11*INDEX(EIGVECS(A1:C3),2,1),6)', symM), '0')
+  // SVD: singular values of diag(4,3) are 4 and 3.
+  const diagM = { A1: '4', B1: '0', A2: '0', B2: '3' }
+  eq('spectral', 'SVDVALS diag top = 4', ev('ROUND(INDEX(SVDVALS(A1:B2),1,1),6)', diagM), '4')
+  eq('spectral', 'SVDVALS diag next = 3', ev('ROUND(INDEX(SVDVALS(A1:B2),2,1),6)', diagM), '3')
+  // σ₁ of a general matrix = √(largest eigenvalue of AᵀA).
+  const gm = { A1: '1', B1: '2', A2: '3', B2: '4', A3: '5', B3: '6' }
+  eq('spectral', 'σ₁ = √λ_max(AᵀA)', ev('ROUND(INDEX(SVDVALS(A1:B3),1,1)^2-INDEX(EIGVALS(MMULT(TRANSPOSE(A1:B3),A1:B3)),1,1),6)', gm), '0')
+  // Rank, condition number, matrix norms.
+  eq('spectral', 'MRANK rank-deficient = 1', ev('MRANK(A1:B2)', { A1: '1', B1: '2', A2: '2', B2: '4' }), '1')
+  eq('spectral', 'MRANK full = 2', ev('MRANK(A1:B2)', { A1: '1', B1: '2', A2: '3', B2: '4' }), '2')
+  eq('spectral', 'MCOND identity = 1', ev('ROUND(MCOND(A1:B2),6)', { A1: '1', B1: '0', A2: '0', B2: '1' }), '1')
+  eq('spectral', 'MNORM 2-norm of diag = 4', ev('ROUND(MNORM(A1:B2,2),6)', diagM), '4')
+  eq('spectral', 'MNORM Frobenius = √30', ev('ROUND(MNORM(A1:B2,"fro"),6)', { A1: '1', B1: '2', A2: '3', B2: '4' }), '5.477226')
+  eq('spectral', 'MNORM 1-norm (max col sum) = 6', ev('MNORM(A1:B2,1)', { A1: '1', B1: '-2', A2: '3', B2: '4' }), '6')
+  eq('spectral', 'MNORM ∞-norm (max row sum) = 7', ev('MNORM(A1:B2,"inf")', { A1: '1', B1: '-2', A2: '3', B2: '4' }), '7')
+  // Moore–Penrose pseudo-inverse solves least squares: X=[[1,1],[1,2],[1,3]], y=(1,2,2) ⇒ β=(2/3, 1/2).
+  const pinvS = { A1: '1', B1: '1', A2: '1', B2: '2', A3: '1', B3: '3', D1: '1', D2: '2', D3: '2' }
+  eq('spectral', 'MPINV least-squares β₀ = 0.6667', ev('ROUND(INDEX(MMULT(MPINV(A1:B3),D1:D3),1,1),4)', pinvS), '0.6667')
+  eq('spectral', 'MPINV least-squares β₁ = 0.5', ev('ROUND(INDEX(MMULT(MPINV(A1:B3),D1:D3),2,1),4)', pinvS), '0.5')
+  eq('spectral', 'MPINV slope matches SLOPE()', ev('ROUND(INDEX(MMULT(MPINV(A1:B3),D1:D3),2,1)-SLOPE(D1:D3,B1:B3),6)', pinvS), '0')
+  // General (non-symmetric) eigenvalues via the QR-algorithm path.
+  // A 2×2 rotation by π/3 has eigenvalues cos π/3 ± i·sin π/3 = 0.5 ± 0.866025 i.
+  const rotM = { A1: '0.5', B1: '-0.8660254', A2: '0.8660254', B2: '0.5' }
+  eq('spectral', 'rotation eig real part = 0.5', ev('ROUND(INDEX(EIGVALS(A1:B2),1,1),6)', rotM), '0.5')
+  eq('spectral', 'rotation eig |imag| = sin(π/3)', ev('ROUND(ABS(INDEX(EIGVALS(A1:B2),1,2)),6)', rotM), '0.866025')
+  // A non-symmetric matrix [[0,-2],[1,-3]] has char poly λ²+3λ+2 ⇒ eigenvalues −1, −2 (real).
+  const nsM = { A1: '0', B1: '-2', A2: '1', B2: '-3' }
+  eq('spectral', 'non-symmetric eig = −1', ev('ROUND(INDEX(EIGVALS(A1:B2),1,1),6)', nsM), '-1')
+  eq('spectral', 'non-symmetric eig = −2', ev('ROUND(INDEX(EIGVALS(A1:B2),2,1),6)', nsM), '-2')
+
+  // --- v8: inferential statistics (T.TEST / Z.TEST / F.TEST / CHISQ.TEST) ---
+  // Excel's T.TEST documentation example (paired, two-tailed) = 0.196016.
+  const pairT = {
+    A1: '3', A2: '4', A3: '5', A4: '8', A5: '9', A6: '1', A7: '2', A8: '4', A9: '5',
+    B1: '6', B2: '19', B3: '3', B4: '2', B5: '14', B6: '4', B7: '5', B8: '17', B9: '1',
+  }
+  eq('inference', 'T.TEST paired 2-tail = 0.196016 (Excel)', ev('ROUND(T.TEST(A1:A9,B1:B9,2,1),6)', pairT), '0.196016')
+  eq('inference', 'TTEST legacy alias agrees', ev('ROUND(TTEST(A1:A9,B1:B9,2,1),6)', pairT), '0.196016')
+  eq('inference', 'T.TEST 1-tail = ½·2-tail', ev('ROUND(2*T.TEST(A1:A9,B1:B9,1,1)-T.TEST(A1:A9,B1:B9,2,1),9)', pairT), '0')
+  eq('inference', 'T.TEST pooled (type 2)', ev('ROUND(T.TEST(A1:A9,B1:B9,2,2),6)', pairT), '0.191996')
+  eq('inference', 'T.TEST Welch (type 3)', ev('ROUND(T.TEST(A1:A9,B1:B9,2,3),6)', pairT), '0.202294')
+  eq('inference', 'T.TEST bad type → #NUM!', ev('T.TEST(A1:A9,B1:B9,2,4)', pairT), '#NUM!')
+  // Excel's F.TEST documentation example = 0.648318.
+  const fT = { A1: '6', A2: '7', A3: '9', A4: '15', A5: '21', B1: '20', B2: '28', B3: '31', B4: '38', B5: '40' }
+  eq('inference', 'F.TEST = 0.648318 (Excel)', ev('ROUND(F.TEST(A1:A5,B1:B5),6)', fT), '0.648318')
+  eq('inference', 'F.TEST of identical spread = 1', ev('ROUND(F.TEST(A1:A5,A1:A5),6)', fT), '1')
+  // Excel's Z.TEST documentation example, ZTEST(data, 4) = 0.090574.
+  const zT = { A1: '3', A2: '6', A3: '7', A4: '8', A5: '6', A6: '5', A7: '4', A8: '2', A9: '1', A10: '9' }
+  eq('inference', 'Z.TEST = 0.090574 (Excel)', ev('ROUND(Z.TEST(A1:A10,4),6)', zT), '0.090574')
+  // χ² goodness-of-fit: observed (10,20,30,40) vs expected (25,25,25,25) ⇒ χ²=20, df=3.
+  const chiG = { A1: '10', A2: '20', A3: '30', A4: '40', B1: '25', B2: '25', B3: '25', B4: '25' }
+  eq('inference', 'CHISQ.TEST = CHISQ.DIST.RT(20,3)', ev('ROUND(CHISQ.TEST(A1:A4,B1:B4)-CHISQ.DIST.RT(20,3),9)', chiG), '0')
+  eq('inference', 'CHISQ.TEST GoF p-value', ev('ROUND(CHISQ.TEST(A1:A4,B1:B4),8)', chiG), '0.00016974')
+  // A 2×2 contingency table exercises df = (r−1)(c−1) = 1: χ² = 4 ⇒ p = CHISQ.DIST.RT(4,1).
+  const chi2 = { A1: '20', B1: '30', A2: '30', B2: '20', D1: '25', E1: '25', D2: '25', E2: '25' }
+  eq('inference', 'CHISQ.TEST 2×2 df=(r-1)(c-1) → RT(4,1)', ev('ROUND(CHISQ.TEST(A1:B2,D1:E2)-CHISQ.DIST.RT(4,1),9)', chi2), '0')
+  eq('inference', 'CHISQ.TEST 2×2 p-value = 0.0455', ev('ROUND(CHISQ.TEST(A1:B2,D1:E2),6)', chi2), '0.0455')
+  eq('inference', 'CHITEST shape mismatch → #N/A', ev('CHITEST(A1:B2,D1:E1)', chi2), '#N/A')
+
   // --- v4: engine internals (spill-range refs, recursive lambdas) ---
   r.push(spillRefTests())
   r.push(recursiveLambdaTests())
