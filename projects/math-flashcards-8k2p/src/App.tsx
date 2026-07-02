@@ -20,6 +20,8 @@ type HistoryItem = {
 };
 
 
+const MOTIVATIONAL_QUOTES = ["Math is power.", "Every problem has a solution.", "Practice makes perfect.", "Numbers rule the universe."];
+
 function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false, customMin: number = 1, customMax: number = 10, isBossBattle: boolean = false) {
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
@@ -205,6 +207,9 @@ function getInitialBlindMode(): boolean {
 }
 function getInitialInvertKeypad(): boolean {
   try { return window.localStorage.getItem('mathFlashcardsInvertKeypad') === 'true'; } catch { return false; }
+}
+function getInitialDisableKeyboardShortcuts(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsDisableKeyboardShortcuts') === 'true'; } catch { return false; }
 }
 function getInitialColorBlindMode(): boolean {
   try {
@@ -503,6 +508,15 @@ function getInitialLifetimeSkips(): number {
   }
 }
 
+function getInitialLifetimeLongestStreak(): number {
+  try {
+    return parseInt(window.localStorage.getItem('mathFlashcardsLifetimeLongestStreak') || '0', 10);
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return 0;
+  }
+}
+
 function getInitialLifetimeCorrect(): number {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsLifetimeCorrect');
@@ -552,6 +566,9 @@ function getInitialAvgTimePerDigit(): number {
   return 0;
 }
 
+function getInitialGrayscaleMode(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsGrayscaleMode') === 'true'; } catch { return false; }
+}
 function getInitialTotalDigitsAnswered(): number {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsTotalDigitsAnswered');
@@ -662,7 +679,11 @@ function App() {
   const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
   const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
+  const [disableKeyboardShortcuts, setDisableKeyboardShortcuts] = useState<boolean>(getInitialDisableKeyboardShortcuts());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDisableKeyboardShortcuts', disableKeyboardShortcuts.toString()); } catch (e) { console.error(e); } }, [disableKeyboardShortcuts]);
   const [colorBlindMode, setColorBlindMode] = useState<boolean>(getInitialColorBlindMode());
+  const [grayscaleMode, setGrayscaleMode] = useState<boolean>(getInitialGrayscaleMode());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsGrayscaleMode', grayscaleMode.toString()); } catch (e) { console.error(e); } }, [grayscaleMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
 
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
@@ -847,6 +868,7 @@ function App() {
   const [lifetimeSkips, setLifetimeSkips] = useState<number>(getInitialLifetimeSkips());
     useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTimeOfDay', JSON.stringify(timeOfDayAccuracy)); } catch(e) { console.error(e); } }, [timeOfDayAccuracy]);
   const [lifetimeCorrectAnswers, setLifetimeCorrectAnswers] = useState<number>(getInitialLifetimeCorrect());
+  const [lifetimeLongestStreak, setLifetimeLongestStreak] = useState<number>(getInitialLifetimeLongestStreak());
     const [showComboExplosion, setShowComboExplosion] = useState<boolean>(false);
   const [showSummary, setShowSummary] = useState<boolean>(false);
   const [animationClass, setAnimationClass] = useState<string>('');
@@ -1156,6 +1178,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (disableKeyboardShortcuts) return;
       // Don't trigger if user is typing in the input
       if (e.target instanceof HTMLInputElement) return;
 
@@ -1175,7 +1198,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit]);
+  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit, disableKeyboardShortcuts]);
 
 
 
@@ -1185,6 +1208,10 @@ function App() {
       setTimeout(() => setShowComboExplosion(false), 1000);
     }
     setStreak(newStreak);
+    if (newStreak > lifetimeLongestStreak) {
+      setLifetimeLongestStreak(newStreak);
+      try { window.localStorage.setItem('mathFlashcardsLifetimeLongestStreak', newStreak.toString()); } catch (e) { console.error(e); }
+    }
 
     if (newStreak > bestHistoricalCombo) {
       setBestHistoricalCombo(newStreak);
@@ -1463,6 +1490,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (disableKeyboardShortcuts) return;
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'SELECT' || document.activeElement?.tagName === 'TEXTAREA') {
         return;
       }
@@ -1486,7 +1514,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSpeedRunActive]);
+  }, [isSpeedRunActive, disableKeyboardShortcuts]);
 
 
   const handleFactoryReset = () => {
@@ -1521,6 +1549,12 @@ function App() {
     setHideTimer(false);
   };
 
+  const clearRecentHistoryOnly = () => {
+    if (!window.confirm("Clear recent history only?")) return;
+    setHistory([]);
+    setFavorites([]);
+  };
+
   const clearRunHistory = () => {
     if (!window.confirm("Are you sure you want to clear your run history?")) return;
     setRunScores([]);
@@ -1532,7 +1566,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1564,6 +1598,7 @@ function App() {
 
       {!(isSpeedRunActive && focusMode) && (<>
       <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
+      <button onClick={clearRecentHistoryOnly} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#f39c12'}}>Clear Recent History</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
         <div className="setting-group">
@@ -1578,6 +1613,8 @@ function App() {
         <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
         <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
         <label htmlFor="inputMethod">Input: <select id="inputMethod" value={inputMethod} onChange={(e) => setInputMethod(e.target.value as 'numpad' | 'row')}><option value="numpad">Numpad</option><option value="row">Row</option></select></label>
+        <label htmlFor="disableKeyboardShortcuts"><input id="disableKeyboardShortcuts" type="checkbox" checked={disableKeyboardShortcuts} onChange={(e) => setDisableKeyboardShortcuts(e.target.checked)} /> Disable Shortcuts</label>
+        <label htmlFor="grayscaleMode"><input id="grayscaleMode" type="checkbox" checked={grayscaleMode} onChange={(e) => setGrayscaleMode(e.target.checked)} /> Grayscale Mode</label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
@@ -1627,6 +1664,7 @@ function App() {
             {statsCollapsed ? '▶ Show Stats' : '▼ Hide Stats Info'}
           </button>
         </div>
+        <div className="quote" style={{ fontStyle: 'italic', color: '#7f8c8d', marginBottom: '1rem', textAlign: 'center' }}>{MOTIVATIONAL_QUOTES[new Date().getDate() % MOTIVATIONAL_QUOTES.length]}</div>
         {!statsCollapsed && (
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
@@ -1650,7 +1688,7 @@ function App() {
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
-          <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}%</div>
+          <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak}</div>
 
           {(() => {
             let bestTime = 'N/A';
@@ -2262,6 +2300,7 @@ function App() {
 
             <div style={{marginTop: '1.5rem'}}>
               <button onClick={() => setShowSummary(false)} className="submit-button">Close</button>
+              <button onClick={() => { setShowSummary(false); setTimeout(() => startSpeedRun(), 0); }} className="speed-run-button" style={{marginLeft: '1rem', backgroundColor: '#e67e22'}}>Quick Restart</button>
               <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
             </div>
           </div>
