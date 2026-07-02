@@ -13,14 +13,18 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     label: 'Entropy coders',
     items: [
       { route: 'huffman', name: 'Huffman' },
+      { route: 'adaptive', name: 'Adaptive Huffman' },
       { route: 'arithmetic', name: 'Arithmetic' },
+      { route: 'rans', name: 'rANS' },
     ],
   },
   {
     label: 'Modelling coders',
     items: [
+      { route: 'ppm', name: 'PPM' },
       { route: 'lempel', name: 'LZ77 & LZW' },
       { route: 'burrows', name: 'Burrows–Wheeler' },
+      { route: 'suffix', name: 'Suffix Array' },
     ],
   },
   {
