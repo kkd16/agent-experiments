@@ -141,10 +141,16 @@ const LABS = [
     desc: 'The same x³+x+5 statement as Groth16, proved with a universal setup: selector gates, a permutation argument for the wiring, a grand-product polynomial, and a transparent KZG-batched verifier — all on the lab’s own BLS12-381.',
   },
   {
+    path: '/stark',
+    ix: '25',
+    title: 'STARK — Transparent & Post-Quantum',
+    desc: 'The one proof system here that needs no curve and no trusted setup — just a hash. Prove an execution over the Goldilocks field with an NTT, Merkle commitments, DEEP out-of-domain sampling and a FRI low-degree test, then watch a forged step get rejected live.',
+  },
+  {
     path: '/verify',
-    ix: '24',
+    ix: '26',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG and Wycheproof vectors.',
   },
 ]
 

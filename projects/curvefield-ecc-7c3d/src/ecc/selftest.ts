@@ -98,6 +98,20 @@ import * as plonk from './plonk'
 import * as bp from './bulletproofs'
 import { commit as pedersenCommit } from './sigma'
 import { randomScalar } from './rng'
+import {
+  P as GOLD_P,
+  GENERATOR as GOLD_GEN,
+  pow as goldPow,
+  rootOfUnity as goldRoot,
+  ntt as goldNtt,
+  intt as goldIntt,
+  cosetEval as goldCosetEval,
+  fp as goldFp,
+} from './goldilocks'
+import { friProve, friVerify, type FriParams } from './fri'
+import { Transcript as StarkTranscript } from './transcript'
+import { starkProve, starkVerify, fibSquareOutput, type StarkConfig } from './stark'
+import { add as goldAdd } from './goldilocks'
 
 export interface TestCase {
   name: string
@@ -1052,5 +1066,108 @@ export function runSelfTest(): TestCase[] {
     )
   }
 
+  // ── 33. Goldilocks field 𝔽_p, p = 2^64 − 2^32 + 1 (the STARK field) ──
+  {
+    const primes = [2n, 3n, 5n, 17n, 257n, 65537n] // distinct prime factors of p − 1
+    check(
+      'Goldilocks',
+      'generator 7 has full order p − 1',
+      primes.every((q) => goldPow(GOLD_GEN, (GOLD_P - 1n) / q) !== 1n) && goldPow(GOLD_GEN, GOLD_P - 1n) === 1n,
+      'g^((p−1)/q) ≠ 1 for every prime q | p−1 (so ⟨g⟩ = 𝔽_p^×)',
+    )
+    const w = goldRoot(1024)
+    check(
+      'Goldilocks',
+      'primitive 1024-th root of unity',
+      goldPow(w, 1024n) === 1n && goldPow(w, 512n) !== 1n,
+      'ω^1024 = 1 but ω^512 ≠ 1 — the 2-adic subgroup the NTT needs',
+    )
+    const coeffs = [3n, 1n, 4n, 1n, 5n, 9n, 2n, 6n]
+    const roundTrip = goldIntt(goldNtt(coeffs))
+    check(
+      'Goldilocks',
+      'NTT ∘ INTT is the identity',
+      coeffs.every((c, i) => goldFp(c) === roundTrip[i]),
+      'interpolation and evaluation on ⟨ω_8⟩ invert exactly',
+    )
+  }
+
+  // ── 34. FRI low-degree proximity test ──
+  {
+    const TSIZE = 64,
+      BLOWUP = 8,
+      N = TSIZE * BLOWUP
+    const params: FriParams = { size: N, offset: GOLD_GEN, degreeBound: TSIZE, numQueries: 24 }
+    const lowDeg = Array.from({ length: TSIZE }, (_, i) => BigInt((i * 2654435761 + 7) % 1_000_000_007))
+    const codeword = goldCosetEval(lowDeg, GOLD_GEN, N)
+    const { proof: friProof } = friProve(codeword, params, new StarkTranscript('kat'))
+    check(
+      'FRI',
+      'honest degree < N/8 codeword accepts',
+      friVerify(friProof, params, new StarkTranscript('kat')).ok,
+      'log₂(N/blowup) random folds collapse it to a constant',
+    )
+    const highDeg = Array.from({ length: N }, (_, i) => BigInt((i * 1103515245 + 12345) % 2147483647))
+    const { proof: badProof } = friProve(highDeg, params, new StarkTranscript('kat'))
+    check(
+      'FRI',
+      'full-degree (random) codeword rejected',
+      !friVerify(badProof, params, new StarkTranscript('kat')).ok,
+      'a codeword far from any low-degree polynomial fails the fold checks',
+    )
+    const tampered = { ...friProof, finalConst: goldAdd(friProof.finalConst, 1n) }
+    check(
+      'FRI',
+      'tampered final constant rejected',
+      !friVerify(tampered, params, new StarkTranscript('kat')).ok,
+      'query folds no longer land on the claimed constant',
+    )
+  }
+
+  // ── 35. STARK — a transparent, hash-only, post-quantum proof ──
+  {
+    const cfg: StarkConfig = { traceLen: 16, blowup: 8, numQueries: 20 }
+    const out = fibSquareOutput(16)
+    check(
+      'STARK',
+      'Fibonacci-square output a₁₅ is the pinned value',
+      out === 735957447973472791n,
+      'a₀=a₁=1, a_{n+2}=a_n²+a_{n+1}², run 16 steps over Goldilocks',
+    )
+    const { proof: stProof } = starkProve(cfg)
+    check(
+      'STARK',
+      'honest execution proof verifies',
+      starkVerify(out, cfg, stProof).ok,
+      'AIR → LDE → composition → DEEP → FRI, checked with only a hash',
+    )
+    check(
+      'STARK',
+      'soundness: a false claimed output is rejected',
+      !starkVerify(goldAdd(out, 1n), cfg, stProof).ok,
+      'the constraint identity at ζ no longer binds',
+    )
+    const forged = starkProve(cfg, { corruptRow: 7 }).proof
+    check(
+      'STARK',
+      'soundness: a forged intermediate step is rejected',
+      !starkVerify(out, cfg, forged).ok,
+      'one wrong row makes the composition non-low-degree; FRI catches it',
+    )
+    const mauled = structuredCloneProof(stProof)
+    mauled.ood.Az = goldAdd(mauled.ood.Az, 1n)
+    check(
+      'STARK',
+      'soundness: a mauled out-of-domain value is rejected',
+      !starkVerify(out, cfg, mauled).ok,
+      'DEEP quotient at ζ stops being a polynomial',
+    )
+  }
+
   return t
+}
+
+// A minimal deep clone for the STARK proof (structuredClone preserves bigint).
+function structuredCloneProof<T>(p: T): T {
+  return structuredClone(p)
 }

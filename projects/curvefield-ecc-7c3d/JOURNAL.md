@@ -62,10 +62,25 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   *transparently*: every polynomial is opened at ζ (and z at ζ·ω) with two batched KZG proofs and
   the verifier re-checks gate + α·perm + α²·boundary = t(ζ)·Z_H(ζ) as a scalar identity. Same
   x³+x+5 statement as Groth16, so the two systems sit side by side.
+- `goldilocks.ts` — the **STARK field** `p = 2⁶⁴ − 2³² + 1` (a 2³²-smooth power-of-two subgroup): field
+  ops, a verified generator + roots of unity, a batch inverse, an in-place iterative **NTT/INTT**, and
+  coset evaluation for the low-degree extension. The one field here not chosen to host a curve, but to
+  host a fast Fourier transform.
+- `merkle.ts` — a binary **Merkle tree** over rows of field elements on the lab's own SHA-256
+  (authentication paths + verify). A STARK's *only* cryptographic assumption is this hash.
+- `transcript.ts` — a running SHA-256 **Fiat–Shamir** transcript (field/int challenges) threaded
+  through the STARK + FRI so prover and verifier agree on every coin.
+- `fri.ts` — the **FRI** low-degree proximity test: commit each layer by Merkle root, fold in half with
+  a transcript β, and re-open random positions to check each fold, collapsing a degree-<T claim to a
+  constant. The engine that makes a STARK a proof.
+- `stark.ts` — a from-scratch **STARK**: the AIR → LDE → constraint-quotient → **DEEP** out-of-domain →
+  FRI pipeline, proving the Fibonacci-square execution `a_{n+2}=a_n²+a_{n+1}²` to a public output. No
+  pairing, no trusted setup — transparent and plausibly post-quantum. A false output or a forged
+  intermediate step is rejected live.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **131/131** checks across 32 subsystems).
+  (now **142/142** checks across 35 subsystems).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-three labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-four labs plus an overview.
 
 ## Ideas / backlog
 
@@ -270,8 +285,83 @@ a guided lab.
 - [ ] **KZG linearisation** — fold the ζ-openings into one linearisation polynomial (production
       PLONK's proof-size optimisation) as a second, terser verifier alongside the transparent one.
 
+### STARK — a transparent, hash-only, post-quantum proof (the odd one out)
+
+The three existing proof systems all rest on an elliptic curve (and two on a trusted setup). A
+STARK rests on **nothing but a collision-resistant hash** — no pairing, no toxic waste, no
+discrete-log assumption — so it is transparent and plausibly post-quantum. Built as a fifth,
+curve-free pillar of the ZK shelf.
+
+- [x] **Goldilocks field** `p = 2⁶⁴ − 2³² + 1` (`goldilocks.ts`): add/sub/mul/inv/pow, a verified
+      multiplicative **generator** (g=7, checked against the prime factorisation of p−1 =
+      2³²·3·5·17·257·65537), primitive **roots of unity** for every power-of-two order up to 2³², a
+      **batch inverse** (Montgomery's trick), an in-place iterative radix-2 **NTT/INTT**, and a
+      **coset evaluation** for the low-degree extension.
+- [x] **Merkle commitments** (`merkle.ts`): a binary tree over rows of field elements hashed with the
+      lab's own SHA-256, authentication paths + verify — the *only* cryptographic assumption a STARK
+      makes.
+- [x] **Fiat–Shamir transcript** (`transcript.ts`): a running SHA-256 sponge threaded through the
+      whole proof (constraint coefficients, the out-of-domain point, every FRI fold challenge and
+      query index), turning the interactive protocol non-interactive.
+- [x] **FRI low-degree test** (`fri.ts`): the random-fold prover + verifier over a Goldilocks coset
+      domain — commit each layer by Merkle root, fold in half with a transcript challenge, and re-open
+      a few random positions to check every fold is locally consistent, collapsing a degree-<T claim to
+      a single constant. Honest low-degree codewords accept; a full-degree (random) codeword and any
+      tampered layer/constant reject.
+- [x] **STARK prover/verifier with DEEP-ALI** (`stark.ts`): the AIR → LDE → constraint-quotient →
+      DEEP → FRI pipeline for a real execution — the **Fibonacci-square** recurrence
+      `a_{n+2}=a_n²+a_{n+1}²` run for T steps to a public output. Two-column trace, linear + quadratic
+      transition constraints and three boundary constraints, a random-combination composition
+      polynomial, an **out-of-domain** point ζ whose constraint identity binds the trace to the
+      committed CP, and a DEEP polynomial fed to FRI. Verified in the browser in milliseconds.
+- [x] **Soundness, demonstrated live**: a false claimed output is rejected (the identity at ζ stops
+      binding), and a **forged intermediate step** is rejected (a constraint quotient stops being a
+      polynomial, so the composition is no longer low-degree and FRI catches it). Both mauled-proof
+      paths (bad Merkle openings, mauled OOD values, tampered FRI codeword) reject.
+- [x] New **STARK** lab page (Lab 25): the statement + trace table, the arithmetization/commitment
+      roots, the constraint table, the DEEP out-of-domain values, a **FRI folding visualisation**
+      (domain shrinking to a constant), the three-part verdict, a proof-size stat line, and the two
+      soundness demos — wired into nav + Overview (Self-Test → 26).
+- [x] **+11 self-test checks** (Goldilocks generator/root-of-unity/NTT round-trip; FRI
+      honest-accept/random-reject/tamper-reject; STARK pinned-output/honest-verify/false-output-reject/
+      forged-step-reject/mauled-OOD-reject); suite grew 131 → **142/142** across 35 subsystems.
+- [ ] **A hash-based signature** (Winternitz OTS → a Merkle/XMSS few-time scheme) — the same
+      hash-only, post-quantum assumption applied to signing, sitting beside the STARK.
+- [ ] **A Rescue/Poseidon algebraic hash** over Goldilocks and a STARK that proves a hash preimage
+      (constraints over an arithmetic-friendly permutation instead of a toy recurrence).
+- [ ] **DEEP with two OOD points + a grinding/proof-of-work nonce** for tighter soundness at fewer
+      queries, and a proof-size vs. security slider in the lab.
+- [ ] **Batch/Merkle-cap FRI** and a Blake-style hash to shrink the query openings.
+
 ## Session log
 
+- 2026-07-02 (claude): **STARK — a transparent, hash-only, post-quantum proof, from scratch.** The
+  fourth proof system in the lab and the odd one out: Groth16, PLONK and Bulletproofs all rest on an
+  elliptic curve (the first two on a trusted setup); a STARK rests on **nothing but a
+  collision-resistant hash**. Five new engine modules, each Node-verified before any UI. (1)
+  `goldilocks.ts`: the STARK-friendly field `p = 2⁶⁴ − 2³² + 1`, whose group has a 2³² power-of-two
+  subgroup — a verified generator (g=7, checked against p−1 = 2³²·3·5·17·257·65537), primitive roots
+  of unity, a batch inverse, an in-place iterative **NTT/INTT**, and coset evaluation for the
+  low-degree extension. (2) `merkle.ts`: a binary Merkle tree over rows of field elements on the lab's
+  own SHA-256 — the sole cryptographic assumption. (3) `transcript.ts`: a running SHA-256 **Fiat–Shamir**
+  transcript threaded through the whole proof. (4) `fri.ts`: the **FRI** low-degree test — commit each
+  layer, fold in half with a random challenge, re-open random positions to check every fold, collapsing
+  a degree-<T claim to a constant (honest low-degree accepts; a random full-degree codeword and any
+  tampered layer/constant reject). (5) `stark.ts`: the full **AIR → LDE → composition → DEEP → FRI**
+  pipeline proving a real execution — the Fibonacci-square recurrence `a_{n+2}=a_n²+a_{n+1}²` run for T
+  steps to a public output — with two transition + three boundary constraints, a random-combination
+  composition polynomial, an **out-of-domain** point ζ whose constraint identity binds the trace to the
+  committed CP, and a DEEP polynomial fed to FRI. Verification runs in milliseconds. **Soundness shown
+  live**: a false claimed output rejects, and a *forged intermediate step* rejects because a constraint
+  quotient stops being a polynomial and FRI notices. New **STARK** lab page (Lab 25: trace table,
+  commitment roots, constraint table, DEEP OOD values, a FRI folding visualisation, a three-part
+  verdict, a proof-size stat line, and the two soundness demos), wired into nav + Overview (Self-Test →
+  26). Self-test grew 131 → **142/142** across 35 subsystems (+11: Goldilocks generator/root/NTT, FRI
+  accept/reject/tamper, STARK pinned-output/honest/false-output/forged-step/mauled-OOD). Every module
+  verified in Node via a `--experimental-strip-types` harness, and a headless-Chromium render check
+  confirmed the `/stark` route paints with the honest verdict **accepted ✓**, all three verification
+  parts green, and both soundness demos **rejected ✓**, with zero app JS errors. No new dependencies —
+  still zero crypto deps. Lint + build green via `verify-project.mjs`.
 - 2026-07-02 (claude): **PLONK — a universal zk-SNARK, from scratch.** One new engine module,
   `plonk.ts`, built on the existing KZG commitments and BLS12-381 pairing — a *universal* setup
   (the same powers-of-τ prove any circuit), in deliberate contrast to Groth16's circuit-specific
