@@ -59,6 +59,49 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Program synthesis (Aether 25.0 — the compiler in reverse)
+
+Shipped this session:
+
+- [x] **Type-and-example-directed program synthesis ("Aether Sketch")** — a from-scratch
+      bottom-up (observational-equivalence) enumerative synthesizer, `src/lang/synth.ts`: read the
+      structural type off concrete example values, grow a typed term bank pruned by behavioural
+      dedup, and stop the instant a term's result vector equals the outputs (Aether 25.0)
+- [x] **Nested lambda synthesis for the combinators** — the function argument of
+      `map`/`filter`/`foldr`/`foldl` is itself found by a second bottom-up search over the
+      combinator's bound variables, deduped observationally on a fixed probe set
+- [x] **Decision-list `if` learning** — when no straight-line program fits, find a boolean term
+      whose truth value splits the examples and a branch matching each side (piecewise clamp/sign),
+      strictly as a *fallback* so a clean program is never upstaged by an over-fit conditional
+- [x] **Constant-only pruning** — every operator must read a variable in ≥1 operand, so the bank
+      never re-derives constants it already holds (the pruning that keeps the search sub-second)
+- [x] **Verify through the real compiler** — the discovered program is re-run through the genuine
+      pipeline (HM → bytecode → VM) before it is ever shown; the fast internal evaluator is only the
+      search oracle
+- [x] **`Synthesize` workbench page** — editable examples, a 16-task gallery, live search stats,
+      an inferred type, a per-example check table, `?run=<id>` deep-links, and "open in Playground"
+
+Deferred (future, building on Aether 25.0 synthesis):
+
+- [ ] **Anti-overfitting by counter-example** — after a program is found, generate a *distinguishing*
+      input on which two surviving candidates disagree and ask which is intended (CEGIS-style),
+      instead of trusting the given examples alone (would kill the `sign ⟶ x % 2` coincidence).
+- [ ] **Multi-argument goals without tupling** — synthesize `fn a b -> …` directly rather than
+      forcing the user to pass a pair and project with `fst`/`snd`.
+- [ ] **Recursion beyond the fold schemes** — a structural-recursion template (paramorphism /
+      general `let rec`) so functions that are not a single fold (`zip`, `intercalate`) come into range.
+- [ ] **Inner conditionals in synthesized lambdas** — let a `foldl` body itself be piecewise
+      (`if x > acc then x else acc`) via decision-list learning inside the nested search, not just the
+      library `max`/`min` shortcut.
+- [ ] **ADT-aware generation** — read user `type` declarations and add their constructors + `match`
+      to the component set, so synthesis reaches `Option`/`Tree`-shaped programs.
+- [ ] **Cost-ranked results** — when several programs fit, present the top few by VM-step cost (reuse
+      the optimizer's step counter) rather than only the first/smallest by AST size.
+- [ ] **Property goals, not just examples** — accept a `prop`-style predicate (reusing the
+      property-testing generators) as an alternative specification and synthesize against it.
+- [ ] **Send a found program straight into the property tester** — one click to fuzz the synthesized
+      function against its own inferred invariants, closing the loop with the existing `property.ts`.
+
 - [x] Lexer, Pratt parser, full AST with source spans
 - [x] Hindley–Milner type inference with let-polymorphism
 - [x] Bytecode compiler with clox-style upvalues + recursion
@@ -1835,6 +1878,48 @@ clean first-order loop over the unpacked fields.
       threaded loops (594 fired, all VM ≡ JS, all monotone). Full CI gate (scope + conformance + lint +
       tsc + build) green.
 
+### Aether 25.0 — program synthesis: the compiler in reverse (planned + shipped this session)
+
+Every release so far took *code* and made it faster, safer, or easier to read. 25.0 turns the tool
+around: you give input⇒output **examples** and Aether **writes the code**. `src/lang/synth.ts` is a
+from-scratch **bottom-up, observational-equivalence enumerative synthesizer** — the Escher / Transit /
+EUSolver family — with no SMT solver and no library, and a `Synthesize` page that drives it.
+
+The pipeline:
+
+1. **Types from values.** Each example's input and output is evaluated to a real runtime `Value`
+   through the ordinary pipeline, and a *structural* monomorphic shape is read off it
+   (`Int`/`Bool`/`String`/`List a`/tuples), merged across examples (an empty-list example's element
+   type is resolved by a non-empty one). The goal type is `shape(input) -> shape(output)`.
+2. **A term bank grown bottom-up.** Level 0 is the argument `x` plus a few constants (including the
+   integer literals that literally appear in the outputs). Each round applies a typed component
+   library — arithmetic, `%`, `abs`, `min`/`max`, comparisons, `&&`/`||`/`!`, `::`, `++`, `length`,
+   `reverse`, `head`, `tail`, `sum`, `elem`, `fst`/`snd`, string `^` — and admits a new term only if
+   its *result vector over the examples* is one no cheaper term already produced (observational
+   equivalence, the pruning that makes enumeration tractable). Every term carries a JS closure so it
+   evaluates at any environment, and a source rendering.
+3. **Higher-order search.** `map`/`filter`/`foldr`/`foldl` need a function argument, so that lambda is
+   found by a **nested** bottom-up search over the combinator's bound variables, deduped
+   observationally on a fixed probe set — `foldr (fn h acc -> h * acc) 1 xs` for product,
+   `filter (fn h -> 0 == h % 2) xs` for the evens, all discovered, not hard-coded.
+4. **Conditionals by decision-list learning.** When no straight-line term fits, find a boolean term
+   whose truth value splits the examples and a branch matching each side — far cheaper than blind
+   `c×t×e` enumeration. It runs strictly as a *fallback* so a clean program is never upstaged by an
+   over-fit `if` that merely happens to match.
+5. **The compiler has the final say.** The discovered program is re-run through the genuine pipeline
+   (HM → elaborate → bytecode → VM) and every example re-checked before it is shown. The internal
+   evaluator is only the search oracle; because the output is ordinary Aether, one click runs it in
+   the Playground where VM ≡ JS ≡ WASM all agree on it.
+
+Two pruning ideas keep the whole thing sub-second across the gallery: (a) **constant-only elimination**
+— at least one operand of every operator must read a variable, so the bank never re-derives constants
+it already holds; and (b) **goal-checking every freshly built term before the per-type cap can evict
+it**, so a large solution (`length (filter … x)`, AST size 8) is caught the moment it is generated even
+while a flood of cheaper fold variants would otherwise crowd it out. On the 16-task gallery the engine
+finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
+`foldr (fn h acc -> max h acc) 0 x`, `(fst x) + (snd x)`, and
+`length (filter (fn h -> 0 == h % 2) x)` — each verified, each in single-digit-to-~200 ms.
+
 ## Standard library
 
 - list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
@@ -1843,6 +1928,25 @@ clean first-order loop over the unpacked fields.
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-02 (claude): **Aether 25.0 — program synthesis: the compiler in reverse.** Twenty-four
+  releases made *code* faster; 25.0 makes the *code itself* — you give input⇒output examples and Aether
+  writes the program. Added `src/lang/synth.ts`, a from-scratch **bottom-up (observational-equivalence)
+  enumerative synthesizer** (the Escher/Transit/EUSolver family — no SMT solver, no library): it reads
+  the structural type off the example *values*, grows a typed term bank keeping only behaviourally-novel
+  terms, synthesizes the lambdas passed to `map`/`filter`/`foldr`/`foldl` by a nested search, and learns
+  piecewise `if`s by decision-list splitting (as a strict fallback so clean programs win). Two prunes
+  keep it sub-second — constant-only elimination (every operator must read a variable) and goal-checking
+  each freshly built term before the per-type cap can evict a large solution. Whatever it finds is
+  **re-checked through the real compiler + VM** before being shown, so it is always a program the genuine
+  pipeline accepts and runs to the right answers (and can then be opened in the Playground where VM ≡ JS
+  ≡ WASM all agree). Added a `Synthesize` page: editable examples, a 16-task gallery, an inferred type, a
+  per-example ✓ check table, live search stats, `#/synthesize?run=<id>` deep-links, and "open in
+  Playground". On the gallery it finds `sum x`, `abs x`, `max x 0`, `reverse x`,
+  `map (fn h -> h + h) x`, `foldr (fn h acc -> max h acc) 0 x`, `(fst x) + (snd x)` and
+  `length (filter (fn h -> 0 == h % 2) x)` — each verified, each in ≤~200 ms. Purely additive: three
+  new files (`synth.ts`, `Synthesize.tsx`, CSS) plus router/nav wiring; the compiler pipeline is
+  untouched. `pnpm lint` + `pnpm build` green.
 
 - 2026-06-28 (claude): **Integer multiplication made sound across all three backends (`Math.imul`) —
   fixing the eqsat overflow bug the SpecConstr fuzzer caught.** The 23.0 follow-up fuzzer turned up a
