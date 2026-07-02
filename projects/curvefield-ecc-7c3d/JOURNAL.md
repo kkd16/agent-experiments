@@ -77,10 +77,22 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   FRI pipeline, proving the Fibonacci-square execution `a_{n+2}=a_n²+a_{n+1}²` to a public output. No
   pairing, no trusted setup — transparent and plausibly post-quantum. A false output or a forged
   intermediate step is rejected live.
+- `poseidon.ts` — an **algebraic hash** over Goldilocks: the Hades-strategy Poseidon permutation
+  (R_F=8 full + R_P=22 partial rounds), an **x⁷ S-box** (7 is the smallest exponent coprime to p−1, so
+  x↦x⁷ is a bijection), a **Cauchy MDS** diffusion matrix (Cauchy ⇒ MDS), and nothing-up-my-sleeve
+  round constants from the lab's own SHA-256. A sponge `hash`, a 2-to-1 Merkle compressor, a
+  256→256-bit `compress`, and a `permuteTrace` emitting one state per row. Unlike the bit-hashes here,
+  its whole computation is already low-degree polynomial identities — so a STARK can prove it.
+- `poseidon_stark.ts` — a from-scratch **STARK proving knowledge of a Poseidon preimage**: a genuine
+  multi-column AIR (width 8, degree-7 constraints) where the round map becomes eight transition
+  constraints (round constants + full/partial selector as public polynomials), and the sponge IV and
+  public digest become boundary constraints. Proves *"I know m with Poseidon(m)=d"* via the same
+  AIR → LDE → composition → DEEP → FRI pipeline as `stark.ts`, revealing nothing about m; a lying
+  statement, a fudged round, and a mauled OOD value are all rejected live.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **142/142** checks across 35 subsystems).
+  (now **174/174** checks across 37 subsystems).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-four labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-six labs plus an overview.
 
 ## Ideas / backlog
 
@@ -366,14 +378,94 @@ through the lab's own SHA-256, so the *only* assumption is the one the STARK alr
 - [x] **Self-test battery** — SHA-anchored tweakable-hash KATs, the WOTS⁺ chain composition law
       (`chain(x,0,a)` then `chain(·,a,b) = chain(x,0,a+b)`), Lamport/WOTS⁺/XMSS/SPHINCS⁺ round-trips,
       forgery rejection for each, and the XMSS state-advance / no-reuse invariant.
-- [ ] **A Rescue/Poseidon algebraic hash** over Goldilocks and a STARK that proves a hash preimage
-      (constraints over an arithmetic-friendly permutation instead of a toy recurrence).
+- [x] **A Rescue/Poseidon algebraic hash** over Goldilocks and a STARK that proves a hash preimage
+      (constraints over an arithmetic-friendly permutation instead of a toy recurrence) — `poseidon.ts`
+      (x⁷ S-box, Cauchy MDS, NUMS SHA-256 constants, sponge + 2-to-1 compression) and
+      `poseidon_stark.ts` (a width-8, degree-7 AIR proving *"I know m with Poseidon(m)=d"* via DEEP+FRI).
+      New **Poseidon** lab (Lab 26); self-test 163 → **174/174**.
 - [ ] **DEEP with two OOD points + a grinding/proof-of-work nonce** for tighter soundness at fewer
       queries, and a proof-size vs. security slider in the lab.
 - [ ] **Batch/Merkle-cap FRI** and a Blake-style hash to shrink the query openings.
 
+### Session 9 plan — an arithmetic hash and a STARK that proves you know a preimage
+
+Every earlier STARK statement was a *toy* recurrence chosen for trivial constraints. Every earlier
+hash was a *bit* function (SHA-256/512, RIPEMD-160) that a proof system loathes. This session builds
+the missing bridge: an **arithmetic** hash whose entire computation is already low-degree polynomial
+identities, and a STARK that proves knowledge of its **preimage** — closing the loop the whole ZK
+shelf has been building toward (a STARK's only assumption is a hash; now it proves a preimage of one).
+
+- [x] **`poseidon.ts`** — a Poseidon permutation over the Goldilocks STARK field: the Hades layout
+      (R_F=8 full + R_P=22 partial rounds, laid out 4·full · 22·partial · 4·full), an **x⁷ S-box**
+      (7 is the smallest exponent coprime to p−1, so x↦x⁷ is a bijection — the Plonky2/Risc0 choice),
+      a **Cauchy MDS** diffusion matrix M[i][j]=1/(xᵢ−yⱼ) (Cauchy ⇒ MDS ⇒ the mix layer is a
+      bijection), and **nothing-up-my-sleeve round constants** derived from the lab's *own* SHA-256, so
+      there is nowhere to hide a trapdoor. On top: a sponge `hash`, a 2-to-1 Merkle `hashTwoToOne`, a
+      `compress` (a 256→256-bit fixed-input hash), and a `permuteTrace` that emits one row per state.
+- [x] **`poseidon_stark.ts`** — a genuine **multi-column AIR** (width t=8, unlike the two-column fib
+      STARK): the trace is 32 rows × 8 lanes, one row per permutation state; eight **transition
+      constraints** (one per lane) encode `colⱼ(g·x)=Σₖ MDS[j][k]·Yₖ`, with the round constants and the
+      full/partial selector interpolated as **public polynomials** the verifier evaluates at ζ; and
+      **boundary constraints** pin the capacity IV to 0 (row 0) and the rate lanes to the public digest
+      (output row). The x⁷ S-box makes these ≈degree-248 constraints — an order of magnitude past the
+      fib STARK's degree-2 ones — so the FRI degree bound (256) and LDE blowup are larger. Same
+      AIR→LDE→composition→DEEP→FRI pipeline; a ~500 ms prove / ~175 ms verify at the default params.
+- [x] **Soundness, three ways.** A prover who **lies about the statement** (claims a digest that is not
+      the real hash) is rejected — the output-boundary quotient stops vanishing. A prover who **fudges
+      one interior round** is rejected — a transition quotient stops being a polynomial, so the
+      composition is no longer low degree and FRI catches it. A **mauled out-of-domain value** is
+      rejected — the DEEP quotient at ζ no longer reproduces the committed codeword.
+- [x] New **Poseidon** lab page (Lab 26): the construction (t/α/rounds/MDS stat line + a full/partial
+      round-schedule strip), an editable secret preimage with its public digest, the permutation drawn
+      round by round (the very table the STARK lays out as a trace), the arithmetization + commitment
+      roots, the constraint table, the DEEP out-of-domain openings, the FRI folding visualisation, the
+      verification verdict + proof-size stat line, and the two soundness demos. Wired into nav +
+      Overview (cards renumbered 01–28: Poseidon 26, PQ Signatures 27, Self-Test 28).
+- [x] **+11 self-test checks** (S-box=pow bijection, MDS invertibility, permutation + compression +
+      2-to-1 pinned KATs, trace-length/consistency, and the preimage STARK's honest-accept +
+      wrong-digest/forged-statement/fudged-round/mauled-OOD rejects); suite grew 163 → **174/174**
+      across **37 subsystems**.
+
 ## Session log
 
+- 2026-07-02 (claude): **Poseidon — an arithmetic hash, and a STARK that proves you know its
+  preimage.** Two new engine modules that finally bridge the lab's two hash worlds. Every earlier hash
+  here is a *bit* function (SHA-256/512, RIPEMD-160) — rotations, xors, 32/64-bit adds — which a proof
+  system loathes because one xor is dozens of field constraints; and every earlier STARK statement was
+  a *toy* recurrence chosen precisely so its constraints were trivial. This session builds the missing
+  piece: (1) `poseidon.ts` — a Poseidon permutation over the Goldilocks STARK field whose whole
+  computation is *nothing but field arithmetic* (add a constant, raise to the 7th power, multiply by an
+  MDS matrix), so it is already a short list of low-degree polynomial identities. The Hades layout
+  (R_F=8 full + R_P=22 partial, 4·full · 22·partial · 4·full), an **x⁷ S-box** (7 is the smallest
+  exponent coprime to p−1 = 2³²·3·5·17·257·65537, so x↦x⁷ is a bijection — the Plonky2/Risc0 choice),
+  a **Cauchy MDS** matrix M[i][j]=1/(xᵢ−yⱼ) (Cauchy ⇒ MDS ⇒ the mix layer is a bijection, verified by
+  a live Gaussian elimination), and **nothing-up-my-sleeve round constants** derived from the lab's
+  *own* SHA-256 — nowhere to hide a trapdoor. Plus a sponge `hash`, a 2-to-1 Merkle `hashTwoToOne`, a
+  `compress` (a 256→256-bit fixed-input hash), and a `permuteTrace` emitting one row per state.
+  (2) `poseidon_stark.ts` — a genuine **multi-column AIR** (width t=8, versus the fib STARK's two
+  columns): a 32×8 trace, eight **transition constraints** encoding `colⱼ(g·x)=Σₖ MDS[j][k]·Yₖ` with
+  the round constants and the full/partial selector interpolated as **public polynomials** the verifier
+  evaluates at ζ, and **boundary constraints** pinning the capacity IV to 0 (row 0) and the rate lanes
+  to the public digest (output row). The x⁷ S-box makes these ≈degree-248 constraints — an order of
+  magnitude past the fib STARK's degree-2 — so the FRI degree bound (256) and LDE blowup are larger;
+  the same AIR→LDE→composition→DEEP→FRI pipeline proves *"I know a secret preimage m with
+  Poseidon(m)=d"* in ~500 ms and verifies in ~175 ms, revealing nothing about m. **Soundness shown
+  three ways, all live**: a prover who lies about the statement (a digest that isn't the real hash) is
+  rejected (the output-boundary quotient stops vanishing); a prover who fudges one interior round is
+  rejected (a transition quotient stops being a polynomial → the composition isn't low degree → FRI
+  notices); and a mauled out-of-domain value is rejected (the DEEP quotient at ζ stops reproducing the
+  committed codeword). New **Poseidon** lab page (Lab 26): the construction with a full/partial
+  round-schedule strip, an editable secret preimage with its public digest, the permutation drawn round
+  by round (the very table the STARK lays out as a trace), the commitment roots, the constraint table,
+  the DEEP openings, the FRI folding bars, the verdict + proof-size stat line, and the two soundness
+  demos. Wired into nav + Overview (cards renumbered 01–28: Poseidon 26, PQ Signatures 27, Self-Test
+  28). Both modules Node-verified against their algebraic invariants before any UI (S-box=pow
+  bijection, MDS invertibility, permutation/compression/2-to-1 pinned KATs, and the STARK's honest
+  round-trip + all three soundness rejects across several edge-case preimages), and a headless-Chromium
+  render check confirmed the `/poseidon` route paints, the hash runs, the preimage STARK verifies
+  **accepted ✓** and both soundness provers show **rejected ✓**, with zero app JS errors. Self-test
+  grew 163 → **174/174** across **37 subsystems** (+11 Poseidon checks). No new dependencies — still
+  zero crypto deps. Lint + build green via verify-project.mjs.
 - 2026-07-02 (claude): **post-quantum hash-based signatures — Lamport → WOTS⁺ → XMSS → SPHINCS⁺,
   from scratch.** The lab's first signature family that survives a quantum computer: every other
   signature here (ECDSA, Schnorr, MuSig, BLS) dies to Shor, while these rest on *nothing but a

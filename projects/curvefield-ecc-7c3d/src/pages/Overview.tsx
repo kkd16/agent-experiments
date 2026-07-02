@@ -147,14 +147,20 @@ const LABS = [
     desc: 'The one proof system here that needs no curve and no trusted setup — just a hash. Prove an execution over the Goldilocks field with an NTT, Merkle commitments, DEEP out-of-domain sampling and a FRI low-degree test, then watch a forged step get rejected live.',
   },
   {
-    path: '/pqsig',
+    path: '/poseidon',
     ix: '26',
+    title: 'Poseidon — a Hash You Can Prove',
+    desc: 'An algebraic hash over the Goldilocks field — add a constant, raise to the 7ᵗʰ power, multiply by an MDS matrix — so its whole computation is already low-degree constraints. Then a from-scratch STARK proves "I know a preimage m with Poseidon(m) = d" without revealing m, with the forged-statement and fudged-round provers both rejected live.',
+  },
+  {
+    path: '/pqsig',
+    ix: '27',
     title: 'Post-Quantum Hash-Based Signatures',
     desc: 'The one signature family here that survives a quantum computer — resting on nothing but a hash. One idea, a hash chain, carried from a pencil-and-paper Lamport OTS through Winternitz (WOTS⁺) and a reusable Merkle key (XMSS, RFC 8391) all the way to the stateless scheme NIST standardised as SLH-DSA (SPHINCS⁺, FIPS 205).',
   },
   {
     path: '/verify',
-    ix: '27',
+    ix: '28',
     title: 'Self-Test & Vectors',
     desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 8391 XMSS / SPHINCS⁺ and Wycheproof vectors.',
   },

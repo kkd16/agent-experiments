@@ -111,7 +111,23 @@ import {
 import { friProve, friVerify, type FriParams } from './fri'
 import { Transcript as StarkTranscript } from './transcript'
 import { starkProve, starkVerify, fibSquareOutput, type StarkConfig } from './stark'
-import { add as goldAdd } from './goldilocks'
+import { add as goldAdd, P as GOLD_MOD } from './goldilocks'
+import {
+  permute as posPermute,
+  permuteTrace as posTrace,
+  compress as posCompress,
+  hashTwoToOne as posHash2,
+  sbox as posSbox,
+  mdsInvertible as posMdsInvertible,
+  ROUNDS as POS_ROUNDS,
+} from './poseidon'
+import { pow as goldPow2 } from './goldilocks'
+import {
+  poseidonStarkProve,
+  poseidonStarkVerify,
+  digestOf as posDigestOf,
+  type PoseidonStarkConfig,
+} from './poseidon_stark'
 import { F as thF, PRF as thPRF, Hmsg as thHmsg, Adrs, ADRS_OTS } from './hashaddr'
 import * as lamport from './lamport'
 import {
@@ -1173,6 +1189,96 @@ export function runSelfTest(): TestCase[] {
       'soundness: a mauled out-of-domain value is rejected',
       !starkVerify(out, cfg, mauled).ok,
       'DEEP quotient at ζ stops being a polynomial',
+    )
+  }
+
+  // ── 36. Poseidon — an arithmetic hash + a STARK proving its preimage ──
+  {
+    // The x^7 S-box must be a bijection (gcd(7, p−1) = 1) and match plain pow.
+    check(
+      'Poseidon',
+      'S-box x⁷ agrees with pow(x, 7)',
+      posSbox(123456789n) === goldPow2(123456789n, 7n) && posSbox(2n) === 128n,
+      'the round non-linearity is the smallest permutation power over Goldilocks',
+    )
+    check(
+      'Poseidon',
+      'MDS diffusion matrix is invertible',
+      posMdsInvertible(),
+      'a Cauchy matrix M[i][j]=1/(xᵢ−yⱼ) is MDS, so the mix layer is a bijection',
+    )
+    // Permutation determinism + a pinned known-answer.
+    check(
+      'Poseidon',
+      'permutation pinned KAT permute(1..8)[0]',
+      posPermute([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n])[0] === 7517557254607333542n,
+      'fixed input → fixed output over 30 rounds (4 full · 22 partial · 4 full)',
+    )
+    // permuteTrace's last row equals a direct permute (the trace the STARK uses).
+    const posTr = posTrace([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n])
+    const posLast = posPermute([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n])
+    check(
+      'Poseidon',
+      `trace has ${POS_ROUNDS + 1} rows, last = permute`,
+      posTr.length === POS_ROUNDS + 1 && posLast.every((v, i) => v === posTr[posTr.length - 1][i]),
+      'one row per intermediate state — exactly the STARK execution trace',
+    )
+    check(
+      'Poseidon',
+      'compression pinned KAT compress([1,2,3,4])',
+      posCompress([1n, 2n, 3n, 4n]).join(',') ===
+        '3457105896106100785,6884924267685363494,15415893254428231705,14712388735000733596',
+      'permute([m‖0]) truncated to the rate — a 256→256-bit zk-friendly hash',
+    )
+    check(
+      'Poseidon',
+      '2-to-1 compression pinned KAT hashTwoToOne(3,5)',
+      posHash2(3n, 5n) === 4900053281390009859n,
+      'the Merkle-tree compressor',
+    )
+
+    // The STARK proving knowledge of a Poseidon preimage (light params for speed).
+    const posCfg: PoseidonStarkConfig = { blowup: 4, degreeBound: 256, numQueries: 12 }
+    const posPre = [111n, 222n, 333n, 444n]
+    const posDigest = posDigestOf(posPre)
+    const { proof: posProof } = poseidonStarkProve(posPre, posCfg)
+    check(
+      'Poseidon',
+      'preimage-knowledge STARK verifies',
+      poseidonStarkVerify(posDigest, posCfg, posProof).ok,
+      'a width-8, degree-7-constraint AIR proven with DEEP + FRI — no trusted setup, only a hash',
+    )
+    const posWrong = posDigest.slice()
+    posWrong[0] = (posWrong[0] + 1n) % GOLD_MOD
+    check(
+      'Poseidon',
+      'STARK rejects a wrong claimed digest',
+      !poseidonStarkVerify(posWrong, posCfg, posProof).ok,
+      'the proof commits to its own digest; a different claim mismatches',
+    )
+    const posForgeD = posDigest.slice()
+    posForgeD[0] = (posForgeD[0] + 1n) % GOLD_MOD
+    const posForgeProof = poseidonStarkProve(posPre, posCfg, { forgeDigest: posForgeD }).proof
+    check(
+      'Poseidon',
+      'STARK soundness: lying about the statement is rejected',
+      !poseidonStarkVerify(posForgeD, posCfg, posForgeProof).ok,
+      'a false digest makes the output-boundary quotient non-polynomial; FRI catches it',
+    )
+    const posCorrupt = poseidonStarkProve(posPre, posCfg, { corruptRow: 15 }).proof
+    check(
+      'Poseidon',
+      'STARK soundness: a fudged round is rejected',
+      !poseidonStarkVerify(posDigest, posCfg, posCorrupt).ok,
+      'one wrong state breaks a transition constraint — the composition stops being low degree',
+    )
+    const posMauled = structuredClone(posProof)
+    posMauled.ood.cols[0] = (posMauled.ood.cols[0] + 1n) % GOLD_MOD
+    check(
+      'Poseidon',
+      'STARK soundness: a mauled out-of-domain value is rejected',
+      !poseidonStarkVerify(posDigest, posCfg, posMauled).ok,
+      'the DEEP quotient at ζ stops reproducing the committed codeword',
     )
   }
 
