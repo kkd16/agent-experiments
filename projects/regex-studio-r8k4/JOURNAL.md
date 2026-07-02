@@ -157,6 +157,15 @@ keep it current.
   vocabularies + a curated example gallery), and `weighted-verify.ts` (the seeded fuzzer: forward≡backward≡brute
   per word, Boolean≡DFA, Counting≡the Ambiguity tab's run count, the four closure roads agree, and the semiring
   laws hold — over 1.18M differential checks at zero disagreements).
+- `src/engine/transducer/` — **the transducer studio** (session 18): the studio's first *relation* machine.
+  `fst.ts` (the finite-state transducer model — single-symbol reads, string writes, per-final-state final
+  outputs — with the trivially-correct `transduce` relation semantics, the `traceRun` single-run tracer,
+  `trim` and `splitWrites`), `rational.ts` (the rational closure — `union`/`concat`/`star`, `identityFromDFA`
+  the regex→transducer bridge, and `compose` the pipeline product), `subseq.ts` (**determinisation** to a
+  subsequential transducer by the longest-common-prefix output-delay construction, with twinning-failure
+  detection, + `runSubseq`), `gallery.ts` (a hand-built gallery spanning Mealy / subsequential / ε-output /
+  multi-write / non-functional / not-subsequentialisable), and `verify.ts` (the seeded differential fuzzer —
+  every construction vs a brute-force reference from the relation semantics; ~449K checks, zero disagreements).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
@@ -187,6 +196,67 @@ keep it current.
   and an exhaustive gallery sweep.
 
 ## Ideas / backlog
+
+### Session 18 — Transducers: machines that translate, not just accept (2026-07-02, claude)
+
+Every road in the studio so far computes a **language** `L ⊆ Σ*` — a machine that says *yes* or *no* to a
+word. This session adds the studio's first **relation machine**: a **finite-state transducer**, which reads
+an input word and *emits* output words, its edges labelled `read : write`. A transducer computes a relation
+`R ⊆ Σ* × Γ*` (or, when single-valued, a *function* on words) — the model behind tokenisers, spell-checkers,
+transliteration and phonology. The **rational relations** are exactly what finite transducers compute, and —
+Elgot–Mezei — they are closed under **union, concatenation, star and composition**; **Choffrut's** twinning
+property decides which functional transducers can run **deterministically** (subsequentially). All of that is
+built from scratch here and, in the house style, held to a brute-force reference by a seeded differential
+fuzzer.
+
+New self-contained `engine/transducer/` module + a new **Transducers** tab. The plan, all shipped this session:
+
+- [x] **The FST model** (`transducer/fst.ts`) — a nondeterministic transducer with single-symbol *reads*
+      (or ε), arbitrary-string *writes*, and per-final-state *final outputs* (subsequential machines carry
+      one; acceptors carry ''). Plus the trivially-correct reference semantics `transduce` (enumerate every
+      run consuming the whole input, collect outputs, ε-cycle-safe with a truncation flag), a single-run
+      tracer `traceRun` for the animated tape, `trim`, and `splitWrites` (multi-char writes → ε-chains, the
+      normal form composition needs).
+- [x] **Rational operations** (`transducer/rational.ts`) — `union` / `concat` / `star` (the transducer twins
+      of Thompson's ε-NFA constructions), `identityFromDFA` (the bridge: a regex's language as the identity
+      transduction — echo iff in `L`), and **`compose(A,B)`**, the deep one: split A's writes to one symbol,
+      product the states, interleave *A-emits-c-that-B-reads* / *A-emits-ε* / *B-reads-ε* moves, and thread
+      A's final output through B — relationally exact (no ε-filter needed since we only track the output set).
+- [x] **Determinisation → subsequential** (`transducer/subseq.ts`) — the transducer analogue of subset
+      construction: a deterministic state is a set of *(state, pending-output)* pairs; each step emits the
+      **longest common prefix** of the pending outputs and carries the remainder. Detects when the residuals
+      grow without bound (the **twinning property fails**) and reports the machine is *not subsequentialisable*
+      rather than looping. `runSubseq` walks the result deterministically.
+- [x] **The gallery** (`transducer/gallery.ts`) — ROT13 (a Mealy involution), a↔b swap, **binary increment**
+      (LSB-first, a real subsequential machine with a carry state + overflow final output), delete-x (ε-output),
+      double-every-symbol (multi-write), running-index-mod-3 (a state-driven Mealy machine), optional-double
+      (genuinely **non-functional** — one input, a *set* of outputs), and **delayed-choice** `aⁿb→xⁿ, aⁿc→yⁿ`
+      (functional but **not subsequentialisable** — the textbook twinning-failure witness).
+- [x] **The differential fuzzer** (`transducer/verify.ts`) — random transducers vs a brute-force reference
+      straight from the relation semantics: union/concat/star match the reference relation over all
+      splits/partitions; **composition** equals running A then B by hand over every input; **determinisation**
+      of a functional machine computes the same function and is deterministic (and delayed-choice is correctly
+      rejected); **identity(L)** echoes exactly a compiled regex's language. **~449,000 checks across 6 seeds,
+      zero disagreements** (it surfaced two real bugs during the build: the star loop-back went to `a.start`
+      instead of the accepting start, and the brute-star reference wrongly allowed the empty partition on a
+      non-empty word — both fixed and now guarded by the fuzzer).
+- [x] **The Transducers panel + tab** (`components/TransducerPanel.tsx`, wired into `App.tsx`) — the gallery
+      picker; structural badges (real-time? deterministic?); the relation `T(w)` as a *set*; an **animated tape**
+      (input consumed left-to-right, output emitted below, the final output flushed with `⇥`, current state lit
+      on the `read:write` graph, transport controls); the **determinisation** view (subsequential graph +
+      "computes the same function ✓", or the twinning-failure verdict with its explanation); a **compose**
+      playground (pick A and B, watch `x → A(x) → (A;B)(x)`, ROT13∘ROT13 = identity, with an agreement badge);
+      the **regex→identity bridge**; and the seeded cross-check console.
+
+Ideas parked for a later session:
+
+- [ ] **ε-removal / real-time-isation** so an ε-read transducer can be normalised before determinising.
+- [ ] **Bimachines** (Schützenberger) — the left-to-right + right-to-left factorisation of a rational function,
+      the deterministic model for the *non*-subsequentialisable functions like delayed-choice.
+- [ ] **Weighted transducers** — tie the semiring studio (session 16) to this one: outputs weighted over a
+      semiring, with the tropical shortest-output and the OSTIA-style learner.
+- [ ] **Functionality test** — decide single-valuedness structurally (the squared transducer / twinning) instead
+      of by sampling, and surface it as a live badge.
 
 ### Session 17 — Two-way DFA: the head turns around (2026-06-26, claude)
 

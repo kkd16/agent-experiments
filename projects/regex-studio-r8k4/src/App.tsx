@@ -21,6 +21,7 @@ import { DerivativesPanel } from './components/DerivativesPanel';
 import { AntimirovPanel } from './components/AntimirovPanel';
 import { GlushkovPanel } from './components/GlushkovPanel';
 import { TwoWayPanel } from './components/TwoWayPanel';
+import { TransducerPanel } from './components/TransducerPanel';
 import { WeightedPanel } from './components/WeightedPanel';
 import { ExtendedPanel } from './components/ExtendedPanel';
 import { MonoidPanel } from './components/MonoidPanel';
@@ -50,6 +51,7 @@ type Tab =
   | 'census'
   | 'ambiguity'
   | 'weighted'
+  | 'transducer'
   | 'monoid'
   | 'logic'
   | 'omega'
@@ -86,6 +88,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'census', label: 'Census' },
       { id: 'ambiguity', label: 'Ambiguity' },
       { id: 'weighted', label: 'Weighted' },
+      { id: 'transducer', label: 'Transducers' },
       { id: 'monoid', label: 'Algebra' },
       { id: 'logic', label: 'Logic' },
       { id: 'omega', label: 'ω / Büchi' },
@@ -395,6 +398,8 @@ export default function App() {
             )}
 
             {tab === 'weighted' && <WeightedPanel compiled={compiled} />}
+
+            {tab === 'transducer' && <TransducerPanel dfa={compiled.minDfa} pattern={pattern} />}
 
             {tab === 'monoid' && <MonoidPanel compiled={compiled} />}
 
