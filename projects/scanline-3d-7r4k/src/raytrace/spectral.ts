@@ -37,13 +37,15 @@ import {
 
 const PI = Math.PI
 const EPS = 1e-3
-const SMOOTH_DIELECTRIC = 0.04
+// A dielectric this smooth is treated as a perfect (Dirac) interface — the same threshold
+// the hero integrator reads to know when a refraction is direction-fixed vs GGX-spread.
+export const SMOOTH_DIELECTRIC = 0.04
 
 // ── per-frame spectral caches ─────────────────────────────────────────────────────────
 // Light colours and emitter spectra are reused frame to frame; up-sample them once and key
 // by value/identity so the inner loop never allocates.
 const lightSpecCache = new Map<string, Float64Array>()
-function lightSpectrum(color: Vec3): Float64Array {
+export function lightSpectrum(color: Vec3): Float64Array {
   const key = `${Math.round(color[0] * 4096)},${Math.round(color[1] * 4096)},${Math.round(color[2] * 4096)}`
   let c = lightSpecCache.get(key)
   if (!c) { c = rgbToSpectrum(color[0], color[1], color[2]); lightSpecCache.set(key, c) }
@@ -63,7 +65,7 @@ function emitterSpec(mat: RTMaterial): EmitterSpec {
   }
   return e
 }
-function emitterRadiance(mat: RTMaterial, lambda: number): number {
+export function emitterRadiance(mat: RTMaterial, lambda: number): number {
   const e = emitterSpec(mat)
   if (e.scale <= 0) return 0
   if (e.T > 0) return blackbodyRadiance(lambda, e.T) * e.scale
@@ -79,14 +81,14 @@ export function resetSpectralCaches(): void {
 
 // The albedo's reflectance at λ. Untextured materials use the cached Smits coefficients;
 // textured ones up-sample the per-hit modulated colour (rare on spectral scenes).
-function reflectanceAt(s: Surface, lambda: number): number {
+export function reflectanceAt(s: Surface, lambda: number): number {
   if (s.mat.texture) return spectrumAt(rgbToSpectrum(s.br, s.bg, s.bb), lambda)
   return spectrumAt(s.mat.albedoSpectrum, lambda)
 }
 
 // The dispersive index of refraction at λ: a named Sellmeier glass if set, else the
 // achromatic base IOR fanned by the `dispersion` knob (Cauchy), else the flat IOR.
-function iorAt(mat: RTMaterial, lambda: number): number {
+export function iorAt(mat: RTMaterial, lambda: number): number {
   if (mat.glass) { const g = getGlass(mat.glass); if (g) return sellmeierIor(g, lambda) }
   return mat.dispersion > 0 ? cauchyIor(mat.ior, mat.dispersion, lambda) : mat.ior
 }
@@ -95,7 +97,7 @@ function iorAt(mat: RTMaterial, lambda: number): number {
 // The metallic-roughness BRDF value (no cosine) at one wavelength. `refl` is the surface
 // reflectance at λ; a thin-film coat replaces the Schlick Fresnel with the exact spectral
 // interference reflectance at this very wavelength — true spectral iridescence.
-function evalBRDFSpectral(
+export function evalBRDFSpectral(
   s: Surface, lambda: number, refl: number,
   vx: number, vy: number, vz: number, lx: number, ly: number, lz: number,
 ): number {
@@ -128,7 +130,7 @@ function evalBRDFSpectral(
   return kd * refl / PI + D * Vis * F
 }
 
-function specProbSpectral(s: Surface, lambda: number, refl: number, vx: number, vy: number, vz: number): number {
+export function specProbSpectral(s: Surface, lambda: number, refl: number, vx: number, vy: number, vz: number): number {
   const mat = s.mat
   const diff = refl * (1 - mat.metallic)
   let f0: number
@@ -144,7 +146,7 @@ function specProbSpectral(s: Surface, lambda: number, refl: number, vx: number, 
   return pSpec
 }
 
-function bsdfPdfSpectral(
+export function bsdfPdfSpectral(
   s: Surface, lambda: number, refl: number,
   vx: number, vy: number, vz: number, wx: number, wy: number, wz: number,
 ): number {

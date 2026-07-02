@@ -117,6 +117,18 @@ export function spectralRadianceToRGB(radiance: number, lambda: number, pdf: num
   out[0] /= WHITE[0]; out[1] /= WHITE[1]; out[2] /= WHITE[2]
 }
 
+// The hero-wavelength integrator accumulates raw tristimulus X = Σ x̄(λ_i)·L_i/pdf_i across
+// the C wavelengths it carries (rather than one converter call per wavelength), then finalises
+// here: divide by ∫ȳ, map XYZ → linear sRGB and apply the same equal-energy white balance
+// `spectralRadianceToRGB` uses — so a single hero wavelength (C=1) is bit-identical to the
+// single-wavelength converter, and C>1 is its unbiased C-sample average. WHITE stays module-
+// private; this is the only sanctioned way to reconstruct from pre-summed XYZ.
+export function xyzToBalancedRgb(X: number, Y: number, Z: number, out: Float64Array): void {
+  const k = 1 / CIE_INTEGRAL_Y
+  xyzToLinearSrgb(X * k, Y * k, Z * k, out)
+  out[0] /= WHITE[0]; out[1] /= WHITE[1]; out[2] /= WHITE[2]
+}
+
 // ── Smits (1999) RGB → reflectance up-sampling ────────────────────────────────────────
 // Seven basis spectra (white / cyan / magenta / yellow / red / green / blue), each ten
 // samples over 380–720 nm, combined so the smallest channel rides `white` and the other two

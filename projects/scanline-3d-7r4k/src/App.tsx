@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
   rt: {
     mode: 'path',
     maxBounces: 4,
+    heroCount: 4,
     mis: true,
     softShadows: true,
     sunSoftness: 1.5,

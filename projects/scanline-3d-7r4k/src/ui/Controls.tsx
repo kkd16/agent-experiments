@@ -20,6 +20,8 @@ import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
 import { runSpectralSelfTest } from '../raytrace/spectral_verify.ts'
 import type { SpectralTest } from '../raytrace/spectral_verify.ts'
+import { runHeroSelfTest } from '../raytrace/hero_verify.ts'
+import type { HeroTest } from '../raytrace/hero_verify.ts'
 import { runSSFXSelfTest } from '../render/ssfx_verify.ts'
 import type { SSFXTest } from '../render/ssfx_verify.ts'
 import type { TransparencySettings } from '../render/oit.ts'
@@ -221,6 +223,16 @@ export default function Controls(props: Props) {
       setSpecTesting(false)
     }, 30)
   }
+  const [heroTests, setHeroTests] = useState<HeroTest[] | null>(null)
+  const [heroTesting, setHeroTesting] = useState(false)
+  const runHero = (): void => {
+    setHeroTesting(true)
+    setHeroTests(null)
+    setTimeout(() => {
+      setHeroTests(runHeroSelfTest())
+      setHeroTesting(false)
+    }, 30)
+  }
   const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
   const rtViews: { key: RTView; label: string }[] = [
     { key: 'denoised', label: 'Denoised' },
@@ -241,9 +253,11 @@ export default function Controls(props: Props) {
   ]
   const rtModes: { key: RTMode; label: string }[] = [
     { key: 'path', label: 'Path tracer' },
-    { key: 'spectral', label: 'Spectral' },
+    { key: 'spectral', label: 'Spectral 1λ' },
+    { key: 'hero', label: 'Hero Cλ' },
     { key: 'ao', label: 'Ambient occlusion' },
   ]
+  const heroCounts = [2, 4, 8]
 
   return (
     <aside className="panel">
@@ -336,6 +350,20 @@ export default function Controls(props: Props) {
               onChange={(v) => setRT({ maxBounces: v })} format={(v) => v.toFixed(0)}
             />
           )}
+          {rt.mode === 'hero' && (
+            <div className="seg" style={{ marginTop: 8 }}>
+              {heroCounts.map((n) => (
+                <button
+                  key={n}
+                  className={rt.heroCount === n ? 'active' : ''}
+                  onClick={() => setRT({ heroCount: n })}
+                  type="button"
+                >
+                  {n}λ / path
+                </button>
+              ))}
+            </div>
+          )}
           {rt.mode !== 'ao' && (
             <Toggle
               label="Multiple importance sampling"
@@ -406,6 +434,46 @@ export default function Controls(props: Props) {
                 spectral furnaces (energy &amp; exposure parity).
               </p>
               {specTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {isRT && rt.mode === 'hero' && (
+        <Section title="Hero-wavelength sampling — C λ per path">
+          <p className="blurb">
+            The <em>Spectral 1λ</em> mode carries a single wavelength per ray, so colour — above all
+            luminance — is noisy until many samples average the spectrum out. This mode implements
+            <em> hero-wavelength spectral sampling</em> (Wilkie et al., EGSR 2014): each path carries a
+            whole <em>tuple</em> of {rt.heroCount} wavelengths — a hero λ₀ importance-sampled ∝ ȳ(λ),
+            plus companions spread evenly across the visible band — down <em>one shared path</em>. Every
+            wavelength-independent interaction (diffuse, glossy, mirror reflection, thin-film iridescence,
+            absorption) keeps the tuple intact, so a single traced path delivers {rt.heroCount} spectral
+            samples at once and the picture converges several times faster — for free. At a
+            <em> dispersive refraction</em> — where red and violet leave a glass facet in different
+            directions — only the hero can follow, so the tuple <em>terminates its secondaries</em> and the
+            reconstruction is rescaled (÷{rt.heroCount}, exactly PBRT-v4's <code>TerminateSecondary</code>),
+            keeping prisms and rainbows perfectly unbiased. Compare against <em>Spectral 1λ</em> on
+            <em> Prism</em> or <em>Dispersion</em>: the two converge to the identical image, but Hero gets
+            there with far less colour noise on everything that isn't the glass itself.
+          </p>
+          <button className="reset" onClick={runHero} type="button" disabled={heroTesting} style={{ width: '100%' }}>
+            {heroTesting ? 'Running…' : 'Run hero-wavelength self-test'}
+          </button>
+          {heroTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {heroTests.filter((t) => t.pass).length}/{heroTests.length} checks passed — the stratified
+                tuple &amp; pdf/C weights, the tristimulus reconstruction identity (C=1 is bit-identical to
+                the 1λ converter), an unbiased white furnace, exposure parity <em>and</em> measured colour-
+                variance reduction vs 1λ, and dispersive-glass parity (proving the secondary termination is
+                unbiased).
+              </p>
+              {heroTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
                   {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
                 </p>

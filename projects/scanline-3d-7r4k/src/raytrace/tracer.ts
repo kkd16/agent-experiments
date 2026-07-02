@@ -39,6 +39,7 @@ export interface RTLighting {
   aoRadius: number // ambient-occlusion ray reach
   medium?: Medium | null // optional participating medium (fog / haze / smoke / nebula)
   mis?: boolean // combine NEE + BSDF sampling by the power heuristic (default on); off ⇒ NEE-only
+  heroCount?: number // wavelengths carried per path in hero-wavelength mode (1/2/4/8)
 }
 
 export interface RTContext extends RTLighting {

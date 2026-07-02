@@ -165,9 +165,9 @@ the RGB hot path. Two physical phenomena the RGB tracer simply cannot express no
 
 **Phase D — ideas not yet taken** (open, for a later session):
 
-- [ ] **Hero-wavelength spectral sampling** (Wilkie 2014) — carry 3–4 stratified wavelengths per ray
+- [x] **Hero-wavelength spectral sampling** (Wilkie 2014) — carry 3–4 stratified wavelengths per ray
       sharing one path until a dispersive event, combined by MIS, to crush the per-pixel colour noise
-      single-λ sampling leaves (the prism's speckle) at no extra path cost.
+      single-λ sampling leaves (the prism's speckle) at no extra path cost. **→ shipped in v11.**
 - [ ] **A spectral denoiser path** — the À-Trous filter blurs the very chromatic variance dispersion
       creates; a hue-preserving (chroma-aware) edge stop would let it clean spectral images too.
 - [ ] **Measured reflectance spectra** (Macbeth ColorChecker patches) as an alternative to Smits, with
@@ -178,6 +178,56 @@ the RGB hot path. Two physical phenomena the RGB tracer simply cannot express no
       throws a real rainbow band onto a wall, not only a fan seen through the glass.
 - [ ] **Fluorescence / Stokes shift** — re-emission at a longer wavelength, the one big spectral effect
       a wavelength-independent renderer structurally cannot fake.
+
+### v11 — Hero-wavelength spectral sampling (shipped 2026-07-02)
+
+The single-wavelength `traceSpectral` (v10) is *correct* but carries one λ per ray, so colour —
+above all luminance — stays noisy until many samples average the spectrum out; on smooth,
+saturated spectra that speckle is the dominant error. v11 implements **hero-wavelength spectral
+sampling** (Wilkie, Nawaz, Droske, Weidlich & Hanika, EGSR 2014): a path carries a whole *tuple*
+of C wavelengths (a hero λ₀ importance-sampled ∝ ȳ plus C−1 companions rotated evenly across the
+band) down **one shared path**, so a single traced path delivers C spectral samples at once.
+
+Design (all additive — the v10 `'spectral'` mode is untouched and stands beside `'hero'` for a
+direct 1λ↔Cλ A/B):
+
+- [x] **`raytrace/hero.ts`** — the hero integrator, a twin of `traceSpectral` carrying C
+      wavelengths. The outgoing direction at every vertex is sampled from the **hero's** BSDF pdf;
+      each companion weights that shared sample by its *own* BSDF value ÷ the hero pdf (plain
+      shared-proposal importance sampling — unbiased per wavelength). Wavelength-independent events
+      (diffuse, glossy, mirror reflection, thin-film iridescence, Beer–Lambert absorption) keep the
+      whole tuple, so those bounces cost one path and pay C samples.
+- [x] **Secondary termination at a dispersive refraction** — the one place wavelengths part ways:
+      red and violet leave a glass facet in different directions, so only the hero can follow. The
+      companions terminate and the hero's reconstruction pdf is rescaled **÷ C** (exactly PBRT-v4's
+      `TerminateSecondary`), keeping prisms/rainbows perfectly unbiased. Reflection off glass and
+      *non*-dispersive refraction keep the tuple (each corrected by its own Fresnel ÷ the hero's
+      branch probability).
+- [x] **Incremental tristimulus reconstruction** — radiance is banked to a running XYZ accumulator
+      Xᵢ=Σ x̄(λᵢ)·Lᵢ/(pdfᵢ·C) *as it is found*, with each wavelength's pdf **frozen at the moment it
+      dies** — so a companion keeps every photon it banked before a mid-path termination (no energy
+      lost) and **C=1 is bit-identical to `traceSpectral`**. New `xyzToBalancedRgb` helper in
+      `spectrum.ts` finalises through the same ∫ȳ + equal-energy white balance the 1λ converter uses.
+- [x] **Hero-aware NEE** (`directLightHero`) — one shadow ray per light/emitter sample (geometry is
+      wavelength-independent), the BSDF/light-SPD/emitter-radiance then evaluated at every live λ,
+      MIS-weighted against BSDF sampling.
+- [x] **Engine wiring** — a fourth `RTMode` `'hero'`, a `heroCount` (2/4/8 λ) knob, threaded through
+      `renderer.ts` → `raytracer.ts` (same stratified hero seed as 1λ mode) → `Controls` → `App`.
+      Shared spectral BSDF helpers now `export` from `spectral.ts` so there is one source of truth.
+- [x] **A 5-check self-test** (`raytrace/hero_verify.ts`, in a new control section): the stratified
+      tuple's coverage + pdf/C weights; the reconstruction identity (C=1 exact, C=N its own average,
+      Δ ≤ 1e-15); an unbiased white furnace; **exposure parity *and* measured variance reduction** vs
+      1λ (on an amber-sky diffuse furnace the per-sample colour variance drops to **≈0.10× — ~9.7×
+      fewer samples for equal noise**); and **dispersive-glass parity** (an SF10 sphere: C=4 and 1λ
+      converge to the same mean within 0.003, proving the secondary termination is unbiased). All 5
+      pass headlessly and in-app; the v10 spectral suite still 9/9.
+
+Stretch (open):
+
+- [ ] Wavelength-count-aware SIMD-style batching (evaluate the C `evalBRDFSpectral` calls over a
+      packed λ array) to reclaim the per-λ call overhead.
+- [ ] A **MIS-weight / variance false-colour view** contrasting hero-vs-single per-pixel noise.
+- [ ] Owen-scrambled Sobol pixel sampler underneath both spectral modes.
 
 ### v9 — variance-optimal transport & spectral coatings (planned 2026-06-24)
 
@@ -668,6 +718,26 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-07-02 (claude / claude-opus-4-8): **v11 — hero-wavelength spectral sampling.** The v10
+  spectral tracer carries one wavelength per ray, so colour is noisy until many samples average the
+  spectrum out. v11 adds a new **`'hero'` RT mode** (`raytrace/hero.ts`) implementing hero-wavelength
+  spectral sampling (Wilkie et al., EGSR 2014): each path carries a *tuple* of C wavelengths (a hero
+  λ₀ importance-sampled ∝ ȳ plus C−1 companions rotated evenly across the band) down **one shared
+  path**, so a single traced path yields C spectral samples. Every wavelength-independent interaction
+  (diffuse, glossy, mirror, thin-film, absorption) keeps the whole tuple; at a **dispersive
+  refraction** — the only place λ's bend differently — the tuple **terminates its secondaries** and
+  the hero's reconstruction pdf is rescaled ÷C (PBRT-v4's `TerminateSecondary`), so glass stays
+  perfectly unbiased. Reconstruction banks tristimulus incrementally with each λ's pdf frozen at its
+  death, so no energy is lost mid-path and **C=1 is bit-identical to `traceSpectral`** (new
+  `xyzToBalancedRgb` helper in `spectrum.ts`; the shared spectral BSDF helpers now `export` from
+  `spectral.ts`). Wired a fourth `RTMode`, a 2/4/8-λ `heroCount` knob and an explainer panel through
+  `renderer`/`raytracer`/`Controls`/`App`, standing beside the v10 `'spectral'` mode for a direct
+  1λ↔Cλ A/B. A 5-check self-test (`raytrace/hero_verify.ts`) proves it: stratified-tuple coverage +
+  pdf/C weights, the reconstruction identity (Δ ≤ 1e-15), an unbiased white furnace, exposure parity
+  **and measured variance reduction** vs 1λ — on an amber-sky diffuse furnace the per-sample colour
+  variance falls to **≈0.10× (≈9.7× fewer samples for equal noise)** — and dispersive-glass parity
+  (an SF10 sphere: C=4 vs 1λ means agree to 0.003, proving the secondary termination is unbiased).
+  All 5 pass headlessly and in-app; the v10 spectral suite still 9/9, lint clean, production build green.
 - 2026-06-27 (claude / claude-opus-4-8): **v10 — true spectral rendering: continuous-wavelength
   dispersion & blackbody light.** The RGB path tracer faked dispersion with a three-channel hero
   hack; this adds a real **spectral path tracer** that carries one continuously-sampled wavelength λ
