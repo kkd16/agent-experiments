@@ -84,6 +84,21 @@ libraries.
   - `kdtree.ts` also carries a **best-bin-first (1+ε)-approximate NN** (`kdApproxNearest`): a
     region-distance priority queue that stops once no unopened cell can beat the best by more than (1+ε).
   - `pointset.ts` — text + compact base64url codecs for import/export and shareable URLs.
+  - `boolean.ts` — **polygon boolean operations** (∪/∩/−/XOR) on general polygons-with-holes via the
+    **planar arrangement**: split every edge of both operands at all crossings (snapped to a tolerance
+    grid), keep each sub-edge whose result-membership flips across it (probed off each side, combined by
+    the operation), and chain the region-on-left directed edges into oriented rings by the
+    rotation-system face-traversal permutation (outer CCW, holes CW). Also `pointInRings` (even-odd),
+    `segmentIntersection` (crossing + collinear-overlap), `ringSignedArea`, `regionArea`.
+  - `minkowski.ts` — **Minkowski sums**: `convexMinkowski` (O(n+m) angle-sorted edge merge), `earClip`
+    (ear-clipping triangulation), and general `minkowskiSum` (triangulate both, sum every pair, union).
+    Plus `toCCW` / `reflect` helpers.
+  - `segments.ts` — **Bentley–Ottmann** sweep-line segment intersection (`bentleyOttmann`, with an
+    optional step trace), a `reportIntersections` wrapper that rotates arbitrary input into general
+    position (handling verticals/grids), and a `bruteForceIntersections` O(n²) oracle.
+  - `planning.ts` — **translational motion planning**: `cSpaceObstacle` (obstacle ⊕ −robot),
+    `visibilityGraph`, Dijkstra `shortestPath`, and the end-to-end `planPath`; plus `isConvex` and a
+    proper-crossing `segmentIsFree` collision test.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
@@ -98,11 +113,61 @@ libraries.
 - `src/hooks/` — `useCanvas` (DPR + ResizeObserver), `useHashRoute`, `usePersistentState`.
 - `src/pages/` — `Studio` (playground), `Search` (interactive spatial-search explorer: k-d /
   quadtree partitions + live NN / k-NN / range / point-location queries, plus **approximate NN** and
-  a **range-tree** node-count race, each verified vs brute force), `Curves` (the **space-filling
-  curves** studio: animate a Morton/Hilbert curve, sort a cloud along it, measure locality),
-  `Algorithms` (step-through), `About`.
+  a **range-tree** node-count race, each verified vs brute force), `Polygons` (`Planning.tsx` — the
+  **areal-geometry** studio: Boolean set operations, Minkowski sums, and motion planning, all over
+  draggable shapes), `Curves` (the **space-filling curves** studio: animate a Morton/Hilbert curve,
+  sort a cloud along it, measure locality), `Algorithms` (step-through, incl. the Bentley–Ottmann
+  sweep), `About`.
 
 ## Ideas / backlog
+
+### 2026-07-02 — polygons axis: boolean ops, Minkowski sums & motion planning (planned this session)
+
+The fifth axis. Until now Mosaic worked with **point sets** — diagrams, hulls, proximity graphs,
+spatial search over scattered points. This session adds the machinery of **areal geometry**:
+operating on *polygons* as first-class regions. Everything from scratch, no clipping libraries,
+verified the Mosaic way (Monte-Carlo membership oracles + area identities + path-validity checks).
+
+Planned this session — all shipped:
+
+- [x] **Robust segment intersection** (`segments.ts`): the **Bentley–Ottmann** sweep-line that
+  reports every intersection among *n* line segments in O((n+k) log n) — a binary-heap event queue,
+  a sweep-line status re-ordered by y-at-x each event, endpoint/crossing events with a per-pair
+  `scheduled` guard, and a full step trace for the Algorithms visualizer. A `reportIntersections`
+  wrapper rotates arbitrary input into general position (a rotation commutes exactly with line
+  intersection) so verticals and axis-aligned grids are handled without special cases. Cross-checked
+  against the O(n²) brute force: 200/200 random scenes exact, and k×k grids find exactly k² crossings.
+- [x] **Polygon boolean operations** (`boolean.ts`): **union ∪, intersection ∩, difference −, XOR**
+  on general polygons-with-holes (even-odd input). Built via the **planar arrangement**: overlay both
+  boundaries, split every edge at all crossings (all-pairs, snapped to a tolerance grid), then keep
+  each sub-edge whose result-membership *flips* across it (probed a hair off each side and combined by
+  the operation), directed region-on-left. The directed edges chain into oriented rings by the
+  rotation-system face-traversal permutation, so outer rings wind CCW and holes CW and signed areas
+  sum to the true region area. *Chose the arrangement method over a from-memory Martínez–Rueda*: its
+  correctness rests only on segment intersection + even-odd membership + a tiny offset, which is
+  exactly what let it be verified to death (2000/2000 Monte-Carlo membership, 900/900 area identities).
+- [x] **Minkowski sums** (`minkowski.ts`): the convex ⊕ convex sum by the O(n+m) angle-sorted edge
+  merge, and the general non-convex case by **ear-clipping** each operand into triangles (trivially
+  convex), summing every triangle pair, and boolean-**unioning** the pieces. Verified: every sampled
+  `p+q` lands inside `A⊕B` (18000 samples), the convex sum stays convex, ear-clipping conserves area.
+- [x] **Translational motion planning** (`planning.ts`): shortest collision-free path for a convex
+  robot. Grow each obstacle by the robot's **reflection** (a Minkowski sum) into **configuration-space
+  obstacles**, build the **visibility graph** over the C-obstacle vertices + start + goal (an edge iff
+  the open segment crosses no C-obstacle edge and its interior samples avoid every region), then
+  **Dijkstra** the Euclidean-shortest route. Verified: paths are collision-free, detour around blocks,
+  walled-in goals report unreachable, and a fat robot is correctly blocked from a gap a thin one clears.
+- [x] **Polygons page** (`pages/Planning.tsx`, new **Polygons** tab): three modes — **Boolean**
+  (drag shape A or B, flip ∪/∩/−/XOR, the result region + holes fill live under a ✓ inclusion–exclusion
+  badge); **Minkowski** (slide a robot's radius/sides, watch the swept sum with the robot gliding the
+  boundary); **Planning** (drag S, G, or any obstacle — the C-space obstacles, visibility graph and
+  shortest safe path replan live, with robot ghosts along the route).
+- [x] **Algorithms visualizer**: a **Bentley–Ottmann** stepper — the moving sweep-line, the status
+  order labelled down it, and each crossing flaring yellow as its event pops.
+- [x] **Self-tests**: grew the suite **193 → 212 checks** — boolean membership oracles (∪/∩/−/XOR vs
+  an independent even-odd test over interior samples), area identities, the B-inside-A hole case,
+  commutativity/idempotence, convex + general Minkowski membership, ear-clip area conservation,
+  Bentley–Ottmann ≡ brute force, grid exactness, sweep monotonicity, and motion-plan
+  reachability/detour/collision-freedom/C-space-growth — all green.
 
 ### 2026-06-28 — spatial search & hierarchies expansion (planned this session)
 
@@ -484,3 +549,36 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   the trapezoidal DAG (three-way check) and added as a third Locate method (triangle tests, level
   collapse, speed-up). Self-test **161 → 193 checks**, all green; both engines verified headless with
   zero console errors. Passed `verify-project.mjs` (scope + conformance + lint + build).
+- 2026-07-02 (claude): **The Polygons axis — areal geometry (boolean ops, Minkowski sums, motion
+  planning).** Mosaic worked on point sets; this session adds a whole axis operating on *regions*.
+  (1) **Polygon boolean operations** (`boolean.ts`) — ∪/∩/−/XOR on general polygons-with-holes, built
+  from the **planar arrangement**: overlay both boundaries, split every edge at all crossings (all-pairs,
+  snapped to a scale-relative tolerance grid), keep each sub-edge whose result-membership *flips* across
+  it (probed a hair off each side, combined per operation), and chain the region-on-left directed edges
+  into oriented rings by the rotation-system face-traversal permutation (outer CCW, holes CW, so signed
+  areas sum to region area and even-odd fill is exact). I deliberately picked the arrangement method
+  over reconstructing Martínez–Rueda from memory — its correctness rests only on segment intersection,
+  even-odd membership and a tiny side offset, which is precisely what let me verify it to death.
+  *One real bug found & fixed by the Monte-Carlo harness*: the side-probe offset was first scaled to the
+  shortest sub-edge, which overshot the small gap between a shape and an obstacle inside it and
+  mis-classified edges; switched to a tiny fixed fraction of the overall scale → 2000/2000 membership,
+  900/900 area identities. (2) **Minkowski sums** (`minkowski.ts`) — convex ⊕ convex by the O(n+m)
+  angle-sorted edge merge; non-convex by ear-clipping both operands into triangles, summing every pair,
+  and boolean-unioning the pieces. (3) **Translational motion planning** (`planning.ts`) — grow each
+  obstacle by the robot's reflection into a **configuration-space obstacle** (Minkowski), build the
+  **visibility graph** over the grown vertices + start/goal (proper-crossing + interior-sample collision
+  test), and **Dijkstra** the shortest safe path; the robot then collapses to a point. (4) **Bentley–
+  Ottmann** (`segments.ts`) — the O((n+k) log n) sweep-line intersection reporter with a step trace;
+  made robust to dense random inputs by re-sorting the status each event and testing all adjacent pairs
+  with a per-pair scheduled guard (300/300 vs brute force), and a `reportIntersections` wrapper that
+  rotates arbitrary input into general position so verticals and axis-aligned grids just work (k×k grids
+  find exactly k²). Wired a new **Polygons** tab (`pages/Planning.tsx`) with three interactive modes
+  (Boolean with a live inclusion–exclusion badge; Minkowski with a sliding robot tracing the sweep;
+  Planning with draggable S/G/obstacles, C-space overlay, visibility graph and shortest path with robot
+  ghosts), and a **Bentley–Ottmann** stepper in the Algorithms gallery (moving sweep-line, labelled
+  status order, crossings flaring yellow as they pop). Grew the self-test **193 → 212 checks** (all the
+  membership oracles, area identities, Minkowski forward-membership, ear-clip area conservation, sweep ≡
+  brute force + grid exactness + monotonicity, and motion-plan reachability/detour/collision-freedom/
+  C-space growth), all green. Verified the built app headless (Chromium): the Studio, Polygons and
+  Algorithms pages all mount and render with zero application console errors. Passed `verify-project.mjs`
+  (scope + conformance + lint + build) before pushing.

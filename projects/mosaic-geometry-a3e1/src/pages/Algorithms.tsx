@@ -13,11 +13,12 @@ import {
   type PowerCellStep,
   type WeightedSite,
 } from '../geometry/power'
+import { bentleyOttmann, type Segment, type SweepStep } from '../geometry/segments'
 import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power' | 'kdtree' | 'quadtree'
+type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power' | 'kdtree' | 'quadtree' | 'bentley'
 const PAD = 28
 const CLIP: Rect = { minX: 0, minY: 0, maxX: 1, maxY: 1 }
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
@@ -32,6 +33,21 @@ function makePoints(algo: Algo, seed: number): Point[] {
   if (algo === 'kdtree') return uniformPoints(20, GEN_RECT, rng)
   if (algo === 'quadtree') return uniformPoints(24, GEN_RECT, rng)
   return poissonDisk(algo === 'hull' ? 14 : 18, GEN_RECT, rng)
+}
+
+// A deterministic bundle of segments in general position for the sweep demo.
+function makeSegments(seed: number): Segment[] {
+  const rng = mulberry32(seed * 131 + 7)
+  const segs: Segment[] = []
+  const n = 8
+  for (let i = 0; i < n; i++) {
+    const a = { x: 0.08 + rng() * 0.84, y: 0.1 + rng() * 0.8 }
+    const ang = rng() * Math.PI
+    const len = 0.35 + rng() * 0.4
+    const b = { x: a.x + Math.cos(ang) * len, y: a.y + Math.sin(ang) * len }
+    segs.push({ a, b: { x: Math.min(0.95, Math.max(0.05, b.x)), y: Math.min(0.95, Math.max(0.05, b.y)) } })
+  }
+  return segs
 }
 
 // Deterministic weighted sites for the power-cell demo, plus the target cell
@@ -101,6 +117,11 @@ export default function Algorithms() {
     () => (algo === 'quadtree' ? quadBuildSteps(points, CLIP) : []),
     [algo, points],
   )
+  const boSegs = useMemo<Segment[]>(() => (algo === 'bentley' ? makeSegments(seed) : []), [algo, seed])
+  const bo = useMemo(
+    () => (algo === 'bentley' ? bentleyOttmann(boSegs, true) : { intersections: [], steps: [] as SweepStep[] }),
+    [algo, boSegs],
+  )
   const total =
     algo === 'hull'
       ? hullSteps.length
@@ -116,7 +137,9 @@ export default function Algorithms() {
                 ? kdSteps.length
                 : algo === 'quadtree'
                   ? quadSteps.length
-                  : fortuneSteps.length
+                  : algo === 'bentley'
+                    ? bo.steps.length
+                    : fortuneSteps.length
   const clamped = Math.min(step, Math.max(0, total - 1))
 
   // Playback timer.
@@ -159,8 +182,9 @@ export default function Algorithms() {
     else if (algo === 'power') drawPowerStep(ctx, powerSteps[clamped], weighted.sites, weighted.target, toPx, w)
     else if (algo === 'kdtree') drawKdBuildStep(ctx, kdSteps[clamped], points, toPx)
     else if (algo === 'quadtree') drawQuadBuildStep(ctx, quadSteps[clamped], points, toPx)
+    else if (algo === 'bentley') drawBentleyStep(ctx, bo.steps, clamped, boSegs, toPx, PAD, w, h)
     else drawFortuneStep(ctx, fortuneSteps[clamped], points, PAD, w, h)
-  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, kdSteps, quadSteps, fortuneSteps, clamped, points])
+  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, kdSteps, quadSteps, fortuneSteps, bo, boSegs, clamped, points])
 
   const note =
     algo === 'hull'
@@ -177,7 +201,9 @@ export default function Algorithms() {
                 ? kdSteps[clamped]?.note
                 : algo === 'quadtree'
                   ? quadSteps[clamped]?.note
-                  : fortuneSteps[clamped]?.note
+                  : algo === 'bentley'
+                    ? bentleyNote(bo.steps[clamped])
+                    : fortuneSteps[clamped]?.note
   const phase = algo === 'hull' ? hullSteps[clamped]?.phase : undefined
   const changeAlgo = (a: Algo) => {
     setAlgo(a)
@@ -218,6 +244,7 @@ export default function Algorithms() {
               { id: 'power', label: 'Power cell' },
               { id: 'kdtree', label: 'k-d tree' },
               { id: 'quadtree', label: 'Quadtree' },
+              { id: 'bentley', label: 'Bentley–Ottmann' },
             ]}
             value={algo}
             onChange={changeAlgo}
@@ -237,7 +264,9 @@ export default function Algorithms() {
                         ? 'k-d tree: recursively split the points at the median along an axis that alternates with depth (x, then y, then x…). Each cut halves a region; the result is a balanced tree whose every node owns a slab of the plane — the structure that makes nearest-neighbour and range queries prune.'
                         : algo === 'quadtree'
                           ? 'Point-region quadtree: insert points one at a time; whenever a cell holds more than its capacity, it divides into four equal quadrants. Space (not the data) drives the split, so the grid is fine where points cluster and coarse where they are sparse.'
-                          : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
+                          : algo === 'bentley'
+                            ? "Bentley–Ottmann: a vertical line sweeps left to right through the segments; the status (right) holds the segments it currently crosses, ordered by height. Only neighbours in that order can cross next, so each endpoint or crossing re-tests just a couple of pairs — O((n+k) log n) instead of the O(n²) all-pairs scan. Yellow rings are crossings already found."
+                            : "Fortune's sweep: a line descends the plane; the beach line of parabolas (each equidistant from a site and the line) tracks the emerging Voronoi diagram. Site events split arcs; circle events pinch one out, fixing a Voronoi vertex."}
           </p>
           <Button variant="ghost" onClick={regen}>
             New points
@@ -758,5 +787,78 @@ function drawQuadBuildStep(
     ctx.arc(q.x, q.y, isNew ? 6.5 : 3.5, 0, Math.PI * 2)
     ctx.fillStyle = isNew ? '#7cf6c0' : '#f4f7ff'
     ctx.fill()
+  }
+}
+
+function bentleyNote(s: SweepStep | undefined): string {
+  if (!s) return ''
+  const at = `sweep x = ${s.x.toFixed(3)}, ${s.status.length} in status`
+  if (s.kind === 'left') return `Left endpoint reached — insert the segment into the status. ${at}.`
+  if (s.kind === 'right') return `Right endpoint reached — remove the segment; its old neighbours become adjacent and are tested. ${at}.`
+  return s.found
+    ? `Crossing event — a new intersection is reported and the two segments swap order. ${at}.`
+    : `Crossing event (already reported) — swap the two segments' order. ${at}.`
+}
+
+function drawBentleyStep(
+  ctx: CanvasRenderingContext2D,
+  steps: SweepStep[],
+  clamped: number,
+  segs: Segment[],
+  toPx: (p: Point) => { x: number; y: number },
+  pad: number,
+  w: number,
+  h: number,
+) {
+  const s = steps[clamped]
+  if (!s) return
+  const active = new Set(s.status)
+
+  // All segments: faint by default, brighter if currently on the sweep-line status.
+  for (let i = 0; i < segs.length; i++) {
+    const a = toPx(segs[i].a)
+    const b = toPx(segs[i].b)
+    ctx.strokeStyle = active.has(i) ? 'rgba(156,192,255,0.95)' : 'rgba(120,140,180,0.35)'
+    ctx.lineWidth = active.has(i) ? 2.4 : 1.2
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+  }
+
+  // The vertical sweep line.
+  const sx = pad + s.x * w
+  ctx.strokeStyle = 'rgba(255,209,102,0.8)'
+  ctx.lineWidth = 1.4
+  ctx.setLineDash([5, 4])
+  ctx.beginPath()
+  ctx.moveTo(sx, pad)
+  ctx.lineTo(sx, pad + h)
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // Status order labels down the sweep line (bottom → top of the ordering).
+  ctx.fillStyle = 'rgba(255,209,102,0.55)'
+  ctx.font = '600 10px ui-sans-serif, system-ui'
+  s.status.forEach((segIdx, k) => {
+    ctx.fillText(`${k}`, sx + 4, pad + 14 + k * 12)
+    void segIdx
+  })
+
+  // Intersections reported up to and including this step; the newest one flares.
+  for (let i = 0; i <= clamped; i++) {
+    const f = steps[i].found
+    if (!f) continue
+    const q = toPx(f)
+    const isNew = i === clamped
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, isNew ? 7 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = isNew ? 'rgba(255,209,102,0.95)' : 'rgba(255,209,102,0.6)'
+    ctx.fill()
+    if (isNew) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
   }
 }
