@@ -478,3 +478,69 @@ table.data tr:hover td {
   height: 100%;
   border-radius: 7px;
 }
+
+/* ── PLONK lab ─────────────────────────────────────────────────────────── */
+table.plonk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+table.plonk-table th,
+table.plonk-table td {
+  text-align: left;
+  padding: 0.36rem 0.6rem;
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+table.plonk-table th {
+  color: var(--ink-faint);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+table.plonk-table td.dim {
+  color: var(--ink-dim);
+  white-space: normal;
+}
+table.plonk-table tr:hover td {
+  background: var(--panel-2);
+}
+.pill {
+  display: inline-block;
+  min-width: 4.4rem;
+  text-align: center;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  color: var(--accent-3);
+  font-size: 0.74rem;
+}
+.acc-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.acc-cell {
+  flex: 1 1 5.2rem;
+  min-width: 5.2rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  text-align: center;
+}
+.acc-cell.close {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.acc-cell .acc-ix {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+.acc-cell .acc-val {
+  font-size: 0.78rem;
+  color: var(--accent);
+  margin-top: 0.15rem;
+}

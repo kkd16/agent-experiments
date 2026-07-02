@@ -53,10 +53,19 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   group elements. Plus a full **confidential transaction**: a homomorphic kernel-excess balance
   proof (Σin = Σout + fee) wrapped around one aggregated range proof — the Monero/Mimblewimble
   structure, with an inflation attack shown to break it.
+- `plonk.ts` — **PLONK** (Gabizon–Williamson–Ciobotaru 2019), a *universal* zk-SNARK on the same
+  BLS12-381 pairing + KZG: a multiplicative evaluation domain H = ⟨ω⟩ (roots of unity found live in
+  F_r's 2³²-smooth subgroup), selector-gate arithmetization
+  (q_L·a+q_R·b+q_O·c+q_M·a·b+q_C+PI = 0), a copy-constraint **permutation argument** over the three
+  cosets H, k₁·H, k₂·H, the **grand-product** accumulator z(X), the split quotient
+  t_lo/mid/hi, a Fiat–Shamir transcript, and a fully **blinded** 5-round prover. Verified
+  *transparently*: every polynomial is opened at ζ (and z at ζ·ω) with two batched KZG proofs and
+  the verifier re-checks gate + α·perm + α²·boundary = t(ζ)·Z_H(ζ) as a scalar identity. Same
+  x³+x+5 statement as Groth16, so the two systems sit side by side.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **122/122** checks across 26 subsystems).
+  (now **131/131** checks across 32 subsystems).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-two labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-three labs plus an overview.
 
 ## Ideas / backlog
 
@@ -180,7 +189,10 @@ consistency.
       tampered proof, and forged witness all reject. A worked x³+x+5 circuit.
 - [x] Two new lab pages (**Hash-to-Curve**, **Groth16 SNARK**) and **+24 self-test checks** across
       five new subsystems (Final Exp, Hash-to-Curve, BLS Serialization, BLS Signatures, Groth16).
-- [ ] **PLONK / universal SRS** as a second proof system reusing KZG + this hash-to-curve.
+- [x] **PLONK / universal SRS** as a second proof system reusing KZG — `plonk.ts`: roots-of-unity
+      domain, selector-gate + permutation-argument arithmetization, grand-product z(X), a blinded
+      5-round Fiat–Shamir prover, and a transparent KZG-batched verifier. Same x³+x+5 statement as
+      Groth16 (Session 8). New **PLONK** lab; self-test 122 → **131/131**.
 - [ ] **BLS hash-to-curve fuzzer** — random messages cross-checked against on-curve + in-subgroup.
 - [ ] **Aggregate-verify performance**: a multi-Miller-loop product cached across signatures.
 - [ ] **G2 subgroup check** via the ψ endomorphism (faster than the full r·P test).
@@ -223,7 +235,67 @@ scratch on secp256k1, pinned by round-trip + soundness + dual-verifier checks.
       2-byte header), with an exact-size formula and a loss-free, re-verifying round-trip test (a
       64-bit proof is **723 bytes** on the wire); the real byte length is surfaced in the UI.
 
+### Session 8 plan — PLONK, a universal SNARK
+
+Groth16 (Session 6) gave the smallest possible proof, but at the cost of a *circuit-specific*
+ceremony. This session builds its universal counterpart on the machinery already here — the KZG
+commitments (Session 5) and the BLS12-381 pairing (Session 3) — so the *same* powers-of-τ prove any
+circuit. Every piece from scratch, validated in Node against its own algebraic identities and given
+a guided lab.
+
+- [x] **`plonk.ts` — the domain & arithmetization.** A multiplicative domain H = ⟨ω⟩ with ω a
+      primitive n-th root of unity found live in F_r's 2³²-smooth subgroup; the vanishing
+      polynomial Z_H = Xⁿ−1; closed-form Lagrange evaluations. Selector-gate encoding
+      (q_L,q_R,q_O,q_M,q_C) with a public-input polynomial PI(X), and a copy-constraint
+      **permutation** σ over the 3n wire cells, interpolated into S_σ1/2/3 on the disjoint cosets
+      H, k₁·H, k₂·H.
+- [x] **The grand-product argument.** z(X) accumulates ∏ (wire+β·id+γ)/(wire+β·σ+γ) across the
+      rows; it returns to 1 after a full loop iff every copy constraint holds (checked live).
+- [x] **A blinded 5-round prover.** Fiat–Shamir transcript (β,γ,α,ζ,v); witness polys a,b,c and z
+      blinded by multiples of Z_H; the quotient t = (gate + α·perm + α²·boundary)/Z_H split into
+      t_lo/mid/hi with the standard cross-term blinders; two **batched KZG openings** (at ζ, and z
+      at ζ·ω).
+- [x] **A transparent verifier.** Re-derives every challenge, evaluates the public selectors and
+      PI at ζ, and re-checks gate + α·(perm₁−perm₂) + α²·(z̄−1)·L₁(ζ) = t(ζ)·Z_H(ζ) as a scalar
+      identity, then confirms the two openings by pairing. Honest proofs accept; a wrong public
+      input, a tampered commitment, a mauled evaluation, and a forged witness all reject.
+- [x] New **PLONK** lab page (the 5 rounds, the gate table, the σ-cycles, the grand-product
+      accumulator drawn cell by cell, the transparent identity broken into its terms, and a
+      PLONK-vs-Groth16 comparison), wired into nav + Overview (cards renumbered, Self-Test → 24).
+- [x] **+9 self-test checks** (roots of unity, Lagrange closed form, witness satisfaction, grand
+      product closes, quotient divides, honest accept, wrong-input/mauled-eval/forged-witness
+      reject); suite grew 122 → **131/131**.
+- [ ] **Custom & lookup gates (plookup)** — range/XOR tables to shrink bit-heavy circuits.
+- [ ] **Recursive/aggregate PLONK** — verify one proof inside another's circuit.
+- [ ] **KZG linearisation** — fold the ζ-openings into one linearisation polynomial (production
+      PLONK's proof-size optimisation) as a second, terser verifier alongside the transparent one.
+
 ## Session log
+
+- 2026-07-02 (claude): **PLONK — a universal zk-SNARK, from scratch.** One new engine module,
+  `plonk.ts`, built on the existing KZG commitments and BLS12-381 pairing — a *universal* setup
+  (the same powers-of-τ prove any circuit), in deliberate contrast to Groth16's circuit-specific
+  ceremony. (1) A multiplicative **evaluation domain** H = ⟨ω⟩: ω a primitive n-th root of unity
+  located at run time in F_r's 2³²-smooth subgroup, with Z_H = Xⁿ−1 and closed-form Lagrange
+  evaluations pinned to the interpolated ones. (2) A **selector-gate arithmetization**
+  (q_L·a+q_R·b+q_O·c+q_M·a·b+q_C+PI = 0) plus a **copy-constraint permutation** σ over the 3n wire
+  cells, interpolated into S_σ1/2/3 on the disjoint cosets H, k₁·H, k₂·H. (3) The **grand-product**
+  polynomial z(X) that certifies the wiring — it accumulates ∏(wire+β·id+γ)/(wire+β·σ+γ) and returns
+  to 1 exactly when every copy constraint holds. (4) A **blinded 5-round Fiat–Shamir prover**
+  (challenges β,γ,α,ζ,v; a,b,c,z blinded by Z_H multiples; the split quotient t_lo/mid/hi with the
+  standard cross-term blinders; two batched KZG openings at ζ and ζ·ω). (5) A **transparent
+  verifier** that re-checks gate + α·(perm₁−perm₂) + α²·(z̄−1)·L₁(ζ) = t(ζ)·Z_H(ζ) as a scalar
+  identity among the opened values and confirms both openings by pairing — keeping every term of the
+  argument visible rather than folding it into a linearisation. Proves the *same* x³+x+5 statement as
+  the Groth16 lab. The whole module was validated in Node first (25 checks: honest accept, grand
+  product closes, quotient divides, and wrong-public-input / tampered-commitment / mauled-evaluation
+  / forged-witness all reject), then wired into a new **PLONK** lab page (the 5 rounds, the gate
+  table, the σ-cycles, the grand-product accumulator drawn cell by cell, the transparent identity
+  broken into its three terms with live lie/tamper toggles, and a PLONK-vs-Groth16 comparison).
+  Nav + Overview updated (cards renumbered, Self-Test → 24). A headless-Chromium render check
+  confirmed the route paints, the proof builds live, the verifier accepts, and the lie toggle flips
+  it to a clean reject — zero app JS errors. Self-test grew 122 → **131/131** (+9 PLONK checks). No
+  new dependencies — still zero crypto deps. Lint + build green via verify-project.mjs.
 
 - 2026-06-28 (claude): **Bulletproofs — logarithmic range proofs, from scratch.** One new engine
   module, `bulletproofs.ts`, built in three layers on the existing Pedersen commitments. (1) A

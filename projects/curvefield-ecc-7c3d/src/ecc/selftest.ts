@@ -94,6 +94,7 @@ import {
   ikmFromLabel,
 } from './blssig'
 import * as groth16 from './groth16'
+import * as plonk from './plonk'
 import * as bp from './bulletproofs'
 import { commit as pedersenCommit } from './sigma'
 import { randomScalar } from './rng'
@@ -980,6 +981,74 @@ export function runSelfTest(): TestCase[] {
       'zero-knowledge: a fresh secret (x=4) yields a valid, distinct proof',
       groth16.verify(st.vk, [1n, w2.out], proof2) && !groth16.verify(st.vk, [1n, out], proof2),
       'the proof reveals only the public output, never x',
+    )
+  }
+
+  // ── 30. PLONK universal zk-SNARK (same statement, universal KZG setup) ──
+  {
+    // Domain: a primitive n-th root of unity has order exactly n; Z_H vanishes on H.
+    const w8 = plonk.rootOfUnity(8)
+    check(
+      'PLONK',
+      'primitive 8th root of unity (order exactly 8)',
+      plonk.domain(8).length === 8 && plonk.evalVanishing(8, w8) === 0n && w8 !== 1n,
+      'ω⁸ = 1, ω⁴ ≠ 1 in F_r; Z_H(ω) = 0',
+    )
+    // Lagrange closed form agrees with interpolation.
+    const zTest = 0x9999n
+    const L2closed = plonk.lagrangeEval(8, 2, zTest)
+    const L2poly = polyEval(plonk.lagrangeBasis(8, 2), zTest, BLS_SCALAR)
+    check('PLONK', 'Lagrange L_i(ζ) closed form = interpolation', L2closed === L2poly, 'ℓ₂(ζ) two ways')
+
+    const circuit = plonk.cubeCircuit()
+    const { witness, out } = plonk.cubeWitness(3n)
+    check(
+      'PLONK',
+      'witness satisfies every gate + copy constraint',
+      plonk.circuitSatisfied(circuit, witness) && out === 35n,
+      'x³+x+5 = 35 across selector gates and wiring',
+    )
+    const pp = plonk.preprocess(circuit, 0xc0ffeen)
+    const { proof, trace } = plonk.prove(pp, circuit, witness, 0xbeefn)
+    check(
+      'PLONK',
+      'grand product returns to 1 (permutation argument)',
+      trace.grandProductClosed,
+      'z(ωⁿ) = z(ω⁰) = 1 ⇒ every copy constraint holds',
+    )
+    check(
+      'PLONK',
+      'quotient divides exactly (remainder 0)',
+      trace.quotientRemainderZero,
+      'gate + α·perm + α²·boundary is divisible by Z_H',
+    )
+    const ok = plonk.verify(pp, [out], proof)
+    check(
+      'PLONK',
+      'honest proof accepts (identity + two KZG pairings)',
+      ok.accepted && ok.identityHolds && ok.openingZeta && ok.openingZetaOmega,
+      'LHS = t(ζ)·Z_H(ζ), both batched openings verify',
+    )
+    check(
+      'PLONK',
+      'soundness: wrong public input rejected',
+      !plonk.verify(pp, [(out + 1n) % BLS_SCALAR], proof).accepted,
+      'claiming out=36 breaks the scalar identity at ζ',
+    )
+    check(
+      'PLONK',
+      'soundness: a mauled evaluation is rejected',
+      !plonk.verify(pp, [out], { ...proof, aBar: (proof.aBar + 1n) % BLS_SCALAR }).accepted,
+      'a(ζ) inconsistent with [a]₁ fails the batched opening',
+    )
+    // A forged witness for a different secret must not verify against out=35.
+    const w4 = plonk.cubeWitness(4n)
+    const p4 = plonk.prove(pp, circuit, w4.witness, 0xabcdn).proof
+    check(
+      'PLONK',
+      'zero-knowledge: x=4 proof valid for its own out, invalid for x=3’s',
+      plonk.verify(pp, [w4.out], p4).accepted && !plonk.verify(pp, [out], p4).accepted,
+      'the proof reveals only out, never x',
     )
   }
 
