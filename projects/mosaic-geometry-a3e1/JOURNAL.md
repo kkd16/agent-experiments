@@ -43,6 +43,19 @@ libraries.
   - `pointLocation.ts` — planar **point location** by the jump-and-walk (Lawson) oriented walk on the
     Delaunay mesh: triangle adjacency, a walk returning the containing triangle + its path, plus
     brute-force oracles (triangle scan, nearest site) for verification.
+  - `trapezoidal.ts` — **Seidel's randomized-incremental trapezoidal map + search DAG**, the O(log n)
+    rival to the jump-and-walk. Non-crossing segments (inserted in a seeded random order) carve the
+    plane into vertical-sided trapezoids while an acyclic **search structure** grows in lock-step:
+    **x-nodes** test a query's abscissa against an endpoint's vertical wall, **y-nodes** test above/
+    below a segment, and leaves name trapezoids — so a point query drops to its containing trapezoid
+    in one root→leaf descent. The segment walk **re-queries the DAG just past each wall** (nudging a
+    safe fraction of the min endpoint gap) instead of threading neighbour pointers — the classic bug
+    source — and consecutive pieces merge by an exact orientation test. `trapezoidalFromTriangulation`
+    labels each mesh edge with the triangle on either side so a located trapezoid resolves to a
+    **triangle**, cross-checkable against the brute-force scan; `explain(q)` returns the decision path
+    (every x-wall / y-segment tested) for the animated overlay. Verified in `selftest.ts` to agree
+    with the O(n) oracle over tens of thousands of queries across uniform / blue-noise / jittered-grid
+    inputs (n up to 800), with depth ≪ #triangles and linear structure size.
   - `spanner.ts` — geometric **t-spanners**: the **Yao** and **Θ** cone graphs and the **greedy**
     spanner, with a Dijkstra-based **dilation** (realized spanning ratio) and the Θ dilation bound.
   - `wspd.ts` — the **well-separated pair decomposition** (Callahan–Kosaraju) over a from-scratch
@@ -99,6 +112,19 @@ Shipped this session:
 - [x] **Point location** (`pointLocation.ts`): jump-and-walk (Lawson's oriented walk) on the
   Delaunay mesh — triangle adjacency + a walk that returns the containing triangle and its path.
   Verified: the walk lands in the triangle that actually contains the query, with a short path.
+- [x] **Trapezoidal map + search DAG** (`trapezoidal.ts`): Seidel's randomized-incremental
+  construction over the mesh edges — x/y/leaf DAG, seeded random insertion order, re-query segment
+  walk (no neighbour pointers), orientation-based piece merging. `explain(q)` exposes the decision
+  path. Verified: exact agreement with the O(n) triangle scan over tens of thousands of queries
+  across uniform / blue-noise / jittered-grid inputs (n up to 800); depth ≪ #triangles; linear size.
+- [x] **Trapezoidal → triangle face mapping** (`trapezoidalFromTriangulation`): each undirected mesh
+  edge is labelled with the triangle on its orient>0 / orient<0 side, so a located trapezoid names
+  the containing triangle directly (and reports "outside" beyond the hull, agreeing with the oracle).
+- [x] **O(log n) point-location rival in the Search page**: a Locate-mode method toggle
+  (Jump & walk ↔ Trapezoidal DAG) that draws the full trapezoidal decomposition, highlights the
+  located trapezoid (amber) and triangle (teal), **animates the DAG decision path** (gold x-walls,
+  green y-segments, brightening toward the leaf), and reports DAG comparisons, x/y test split, the
+  speed-up over the brute-force scan, and structure depth — with a live ✓-verified badge.
 - [x] **Geometric spanners** (`spanner.ts`): the **Yao** and **Θ** cone graphs and the **greedy**
   t-spanner, with a Dijkstra all-pairs **dilation** (realized spanning ratio). Verified: graphs are
   connected, Θ meets its 1/(1−2 sin(π/k)) bound, and the greedy graph realizes dilation ≤ its target t.
@@ -123,11 +149,71 @@ Next (open — natural follow-ups on this axis):
 - [x] **Approximate nearest neighbour** (a priority-queue best-bin-first k-d search with an ε knob)
   showing the accuracy/speed trade-off against exact NN — see 2026-07-01 below.
 - [ ] **k-d tree on a non-axis split (PCA / BSP)** and a comparison of cell shapes.
-- [ ] **Dynamic point location** (Kirkpatrick hierarchy or a trapezoidal map) as an O(log n) rival
-  to the jump-and-walk, with the search path animated.
+- [x] **Point location in O(log n)** — a **trapezoidal map + search DAG** (Seidel), the promised
+  rival to the jump-and-walk, with the **search path animated** — see 2026-07-02 below.
+- [ ] **Kirkpatrick's hierarchy** as a *second* O(log n) point-location structure (independent-set
+  removal + retriangulation), cross-verified against both the trapezoidal DAG and the brute force —
+  a three-way race in the Locate panel.
+- [ ] **Trapezoidal map over the Voronoi diagram** (locate the owning cell) and over arbitrary
+  user-drawn segment sets, not just the triangulation.
+- [ ] **A point-location cost race** (brute-force n vs jump-and-walk √n vs DAG log n) plotted as
+  the point count grows, to *show* the asymptotics.
 - [x] **Morton / Hilbert curve order** overlay (the space-filling-curve linearization a quadtree
   induces) and a "sort by Z-order" animation — shipped as the full **Curves** page (2026-07-01).
 - [ ] **A `compute`-level cache** so the Studio spanner's dilation isn't recomputed every Lloyd frame.
+
+### 2026-07-02 — the O(log n) point-location rival: Seidel's trapezoidal map + a search DAG
+
+The Search page could already *locate* a point — the jump-and-walk oriented walk across the Delaunay
+mesh — but that is a Θ(√n) stroll: from a cold start it touches on the order of √T triangles. The
+backlog has long promised "an O(log n) rival … with the search path animated." This session delivers
+it, the crown jewel of randomized computational geometry: **Seidel's randomized-incremental
+trapezoidal map together with its search DAG** (`geometry/trapezoidal.ts`), from scratch, no
+libraries — and wires it into the Locate panel beside the walk.
+
+**What it is.** Feed it the mesh's edges as non-crossing segments (inserted in a *seeded random
+order*). The algorithm carves the plane into vertical-sided **trapezoids** while, in lock-step, an
+acyclic **search structure** grows: an **x-node** tests a query's abscissa against the vertical wall
+dropped from an endpoint; a **y-node** tests whether the query lies above or below a segment; a
+**leaf** names a trapezoid. Inserting a segment finds the trapezoids it crosses, splits each into an
+above- and below-piece (plus left/right caps at the segment's own endpoints), and grafts a tiny
+subtree in place of each crossed leaf — so yesterday's leaves become today's internal nodes and the
+structure is a genuine DAG with shared subtrees. A point query is then **one root→leaf descent**:
+O(log n) expected, an exponential win over the O(n) scan and an asymptotic win over the walk.
+
+**The engineering choices that make it correct.** (1) Rather than thread the four neighbour pointers
+each trapezoid classically carries — the textbook's richest bug source — the segment walk
+**re-queries the DAG** for the trapezoid just past each vertical wall, stepping a safe fraction of the
+smallest endpoint-x gap so the probe lands *strictly* inside the next trapezoid instead of on the
+wall (where the x-tie is ambiguous). (2) x-ties are broken lexicographically — the standard
+symbolic-shear order — so equal-x endpoints (a jittered grid) are still totally ordered. (3) Ties on
+a segment happen only at a shared mesh vertex and are resolved by the inserted segment's own
+direction. (4) "Above" is *always* `orient(p, q, r) > 0`, used identically by the y-node router, the
+piece-merging rule and the face labelling, so the three can never disagree. Consecutive above/below
+pieces merge by an exact orientation test on the separating vertex — reproducing the linear-size
+guarantee without neighbour links.
+
+**Faces, not just trapezoids.** `trapezoidalFromTriangulation` labels every undirected mesh edge with
+the triangle on its orient>0 and orient<0 side; a located trapezoid's bounding segments then name the
+containing **triangle** (or report "outside" beyond the convex hull), so the DAG answers the exact
+same question as the jump-and-walk and the brute-force scan — making a three-way cross-check possible.
+
+**Proven, then shown.** The shipped self-test (`selftest.ts`) grew with a trapezoidal section:
+across uniform / blue-noise / jittered-grid inputs (n up to 800) the DAG's answer matches the O(n)
+triangle scan on **every** one of tens of thousands of random queries; its depth stays far below the
+triangle count; and the structure is linear in the segment count. A throwaway Node harness hammered
+the same invariants harder before a line of UI was written (uniform-800: 1577 triangles, mean **19.5
+comparisons** per query vs 1577 for the scan — an ~80× reduction — worst-case DAG depth 35). The
+Locate panel now offers a **Jump & walk ↔ Trapezoidal DAG** toggle: the trapezoidal mode draws the
+whole decomposition, highlights the located trapezoid (amber) and triangle (teal), and **animates the
+DAG decision path** — each x-wall it tested as a gold dashed line, each y-segment as a green edge,
+brightening toward the leaf — beside a live readout of DAG comparisons, the x/y test split, the
+speed-up over the scan, and the map's depth/size, all under a ✓-verified badge. Headless-Chromium
+run of the production build confirms it end-to-end: 160 points → **11 DAG comparisons vs a 303-tri
+scan (27.5× speed-up), ✓ verified, zero console errors**, walk mode still ✓ verified. Additive only:
+one new module, one new Locate method, and a self-test section — the existing structures are untouched.
+Clean scope + conformance + lint + tsc + vite build via `node scripts/verify-project.mjs
+mosaic-geometry-a3e1`.
 
 ### 2026-07-01 — spatial search & hierarchies, part II (space-filling curves, WSPD, range trees, approximate NN)
 
@@ -342,3 +428,15 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   four tabs (no React errors; the k-d partition, quadtree grid, all four query modes with verified
   badges, both new steppers, and the Studio spanner layer all confirmed). Passed `verify-project.mjs`
   (scope + conformance + lint + build) before pushing.
+- 2026-07-02 (claude): **Point location in O(log n)** — Seidel's randomized-incremental
+  **trapezoidal map + search DAG** from scratch (`trapezoidal.ts`), the promised rival to the
+  Θ(√n) jump-and-walk. x/y/leaf DAG grown in lock-step with the decomposition; a re-query segment
+  walk (no neighbour pointers) with an exact orientation-based merge; `trapezoidalFromTriangulation`
+  labels mesh edges by adjacent triangle so a located trapezoid names the containing triangle;
+  `explain(q)` exposes the decision path. Wired a **Jump & walk ↔ Trapezoidal DAG** toggle into the
+  Locate panel that draws the decomposition, highlights the located trapezoid/triangle, **animates
+  the DAG path** (gold x-walls, green y-segments), and reports comparisons / x-y split / speed-up /
+  depth under a ✓-verified badge. Self-test gained a trapezoidal section — exact agreement with the
+  O(n) oracle over tens of thousands of queries (uniform / blue-noise / jittered-grid, n≤800), depth
+  ≪ #triangles, linear size — all green. Verified headless (160 pts → 11 comparisons vs 303, 27.5×,
+  ✓ verified, zero console errors). Passed `verify-project.mjs` (scope + conformance + lint + build).

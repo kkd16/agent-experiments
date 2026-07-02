@@ -19,7 +19,7 @@ import {
 import { fortune } from './fortune'
 import { refineDelaunay, minMeshAngle } from './refine'
 import { constrainedDelaunay } from './constrained'
-import { poissonDisk, mulberry32, uniformPoints } from './random'
+import { poissonDisk, mulberry32, uniformPoints, jitteredGrid } from './random'
 import { lloydStep } from './lloyd'
 import { area } from './polygon'
 import { diameter, minWidth, convexLayers } from './hullMetrics'
@@ -59,6 +59,7 @@ import {
   nearestSite,
   pointInTriangle,
 } from './pointLocation'
+import { trapezoidalFromTriangulation, buildTrapezoidalMap } from './trapezoidal'
 import { yaoGraph, thetaGraph, greedySpanner, dilation, thetaBound } from './spanner'
 import {
   mortonEncode,
@@ -908,6 +909,63 @@ function canonicalHull(hull: number[]): number[] {
     if (ns !== bi) nsBad++
   }
   check('nearest-site (Voronoi owner) matches brute force', nsBad === 0, `(${nsBad})`)
+}
+
+// ── Trapezoidal map (Seidel): O(log n) point location vs the brute-force oracle ─
+{
+  // Across distributions, sizes and seeds the DAG query must return the same
+  // face as an O(n) triangle scan, its depth must scale ~log n (well under n),
+  // and the structure must stay linear in the number of segments.
+  for (const [label, pts, seed] of [
+    ['uniform-120', uniformPoints(120, RECT, mulberry32(1234)), 3] as const,
+    ['uniform-400', uniformPoints(400, RECT, mulberry32(5678)), 7] as const,
+    ['grid-jitter-90', jitteredGrid(90, RECT, mulberry32(4321)), 2] as const,
+  ]) {
+    const tris = delaunay(pts)
+    const map = trapezoidalFromTriangulation(pts, tris, seed)
+    const rng = mulberry32(seed * 31 + 11)
+    let mismatch = 0
+    let inside = 0
+    let compSum = 0
+    const Q = 3000
+    for (let i = 0; i < Q; i++) {
+      const q = { x: rng() * 90 + 5, y: rng() * 90 + 5 }
+      const brute = locateBruteForce(pts, tris, q)
+      const res = map.locateTriangle(q)
+      compSum += res.comparisons
+      if (brute < 0) {
+        if (res.triangle >= 0) mismatch++
+      } else {
+        inside++
+        if (res.triangle < 0) mismatch++
+        else {
+          const tt = tris[res.triangle]
+          if (!pointInTriangle(pts[tt.a], pts[tt.b], pts[tt.c], q)) mismatch++
+        }
+      }
+    }
+    check(`trapezoidal map (${label}) locate agrees with brute force`, mismatch === 0, `(${mismatch}/${Q})`)
+    check(`trapezoidal map (${label}) DAG depth ≪ #triangles`, map.depth < tris.length,
+      `(depth ${map.depth} vs ${tris.length} tris)`)
+    check(`trapezoidal map (${label}) query touches far fewer nodes than a scan`,
+      compSum / Q < tris.length * 0.5,
+      `(mean ${(compSum / Q).toFixed(1)} cmp vs ${tris.length})`)
+    check(`trapezoidal map (${label}) is linear-size in segments`,
+      map.trapCount <= 8 * map.segments.length + 16, `(${map.trapCount} traps, ${map.segments.length} segs)`)
+    check(`trapezoidal map (${label}) covers ${inside} interior queries`, inside > Q * 0.4)
+  }
+
+  // A pure decomposition (no faces): two non-crossing segments in a box carve at
+  // least four trapezoids, each a renderable quad.
+  const decomp = buildTrapezoidalMap(
+    [
+      { p: { x: 10, y: 50 }, q: { x: 90, y: 50 } },
+      { p: { x: 30, y: 20 }, q: { x: 70, y: 80 } },
+    ],
+    { seed: 5 },
+  )
+  check('trapezoidal decomposition carves ≥ 4 trapezoids from 2 segments', decomp.trapCount >= 4, `(${decomp.trapCount})`)
+  check('trapezoidal decomposition renders quads', decomp.trapezoids().every((t) => t.polygon.length === 4))
 }
 
 // ── Geometric spanners: connectivity, Θ-bound, greedy realizes its target t ───
