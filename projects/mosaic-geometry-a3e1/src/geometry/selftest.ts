@@ -60,6 +60,7 @@ import {
   pointInTriangle,
 } from './pointLocation'
 import { trapezoidalFromTriangulation, buildTrapezoidalMap } from './trapezoidal'
+import { buildKirkpatrick } from './kirkpatrick'
 import { yaoGraph, thetaGraph, greedySpanner, dilation, thetaBound } from './spanner'
 import {
   mortonEncode,
@@ -966,6 +967,60 @@ function canonicalHull(hull: number[]): number[] {
   )
   check('trapezoidal decomposition carves ≥ 4 trapezoids from 2 segments', decomp.trapCount >= 4, `(${decomp.trapCount})`)
   check('trapezoidal decomposition renders quads', decomp.trapezoids().every((t) => t.polygon.length === 4))
+}
+
+// ── Kirkpatrick's hierarchy: a second O(log n) locator, vs oracle & vs the DAG ─
+{
+  // Two completely independent O(log n) point-location engines (Seidel's random
+  // trapezoidal map and Kirkpatrick's deterministic vertex-removal hierarchy)
+  // must agree with each other *and* with the O(n) triangle scan — a strong
+  // three-way cross-check. Levels must fall off geometrically (O(log n) deep).
+  for (const [label, pts, seed] of [
+    ['uniform-100', uniformPoints(100, RECT, mulberry32(2718)), 3] as const,
+    ['poisson-160', poissonDisk(160, RECT, mulberry32(1618)), 5] as const,
+    ['grid-jitter-90', jitteredGrid(90, RECT, mulberry32(1414)), 2] as const,
+  ]) {
+    const tris = delaunay(pts)
+    const kirk = buildKirkpatrick(pts, tris)
+    const trap = trapezoidalFromTriangulation(pts, tris, seed)
+    const rng = mulberry32(seed * 17 + 9)
+    let mismBrute = 0
+    let mismTrap = 0
+    let inside = 0
+    const Q = 2500
+    for (let i = 0; i < Q; i++) {
+      const q = { x: rng() * 90 + 5, y: rng() * 90 + 5 }
+      const brute = locateBruteForce(pts, tris, q)
+      const r = kirk.locateTriangle(q)
+      const t = trap.locateTriangle(q)
+      if (brute < 0) {
+        if (r.triangle >= 0) mismBrute++
+      } else {
+        inside++
+        if (r.triangle < 0) mismBrute++
+        else {
+          const tt = tris[r.triangle]
+          if (!pointInTriangle(pts[tt.a], pts[tt.b], pts[tt.c], q)) mismBrute++
+        }
+      }
+      // The two O(log n) engines must reach the same verdict (containment-equal).
+      if ((r.triangle < 0) !== (t.triangle < 0)) mismTrap++
+      else if (r.triangle >= 0 && t.triangle >= 0 && r.triangle !== t.triangle) {
+        const a = tris[r.triangle]
+        const b = tris[t.triangle]
+        if (!(pointInTriangle(pts[a.a], pts[a.b], pts[a.c], q) && pointInTriangle(pts[b.a], pts[b.b], pts[b.c], q)))
+          mismTrap++
+      }
+    }
+    check(`Kirkpatrick (${label}) agrees with brute force`, mismBrute === 0, `(${mismBrute}/${Q})`)
+    check(`Kirkpatrick (${label}) agrees with the trapezoidal DAG`, mismTrap === 0, `(${mismTrap}/${Q})`)
+    check(`Kirkpatrick (${label}) hierarchy is O(log n) deep`,
+      kirk.levelCount <= 3 * Math.ceil(Math.log2(tris.length + 2)) + 12,
+      `(levels ${kirk.levelCount}, tris ${tris.length})`)
+    check(`Kirkpatrick (${label}) collapses to one enclosing triangle`,
+      kirk.levelSizes[kirk.levelSizes.length - 1] === 1)
+    check(`Kirkpatrick (${label}) covers ${inside} interior queries`, inside > Q * 0.4)
+  }
 }
 
 // ── Geometric spanners: connectivity, Θ-bound, greedy realizes its target t ───
