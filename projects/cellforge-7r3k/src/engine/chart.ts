@@ -23,6 +23,8 @@ export interface ChartSpec {
   headers: boolean
   /** Treat the first column of the range as category labels. */
   labels: boolean
+  /** Draw a least-squares trendline (+ R²) over each series (line/area/scatter). */
+  trendline?: boolean
 }
 
 export const CHART_TYPES: ChartType[] = ['line', 'column', 'bar', 'area', 'scatter', 'pie']
@@ -44,6 +46,48 @@ export interface Series {
 export interface ChartData {
   categories: string[]
   series: Series[]
+}
+
+export interface TrendFit {
+  slope: number
+  intercept: number
+  r2: number
+}
+
+/**
+ * Ordinary-least-squares fit of a series' values against their category positions
+ * (0, 1, 2, …), the same x the chart plots each point at — so the returned line is the
+ * one that visually best-fits the drawn marks. Returns null when there are fewer than
+ * two numeric points or the x-values are degenerate.
+ */
+export function trendFit(values: Array<number | null>): TrendFit | null {
+  const xs: number[] = []
+  const ys: number[] = []
+  values.forEach((v, i) => {
+    if (v !== null && Number.isFinite(v)) {
+      xs.push(i)
+      ys.push(v)
+    }
+  })
+  const n = xs.length
+  if (n < 2) return null
+  const mx = xs.reduce((a, b) => a + b, 0) / n
+  const my = ys.reduce((a, b) => a + b, 0) / n
+  let sxx = 0
+  let sxy = 0
+  let syy = 0
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx
+    const dy = ys[i] - my
+    sxx += dx * dx
+    sxy += dx * dy
+    syy += dy * dy
+  }
+  if (sxx === 0) return null
+  const slope = sxy / sxx
+  const intercept = my - slope * mx
+  const r2 = syy === 0 ? 1 : Math.max(0, Math.min(1, (sxy * sxy) / (sxx * syy)))
+  return { slope, intercept, r2 }
 }
 
 const num = (v: RuntimeValue): number | null => (typeof v === 'number' ? v : null)

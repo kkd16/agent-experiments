@@ -1,16 +1,18 @@
 import type { ChartData, ChartType } from '../engine/chart'
+import { trendFit } from '../engine/chart'
 
 interface Props {
   type: ChartType
   data: ChartData
   width: number
   height: number
+  trendline?: boolean
 }
 
 const PALETTE = ['#7c9cff', '#5fd0ff', '#58d39b', '#ffce6b', '#ff8a8a', '#c89bff', '#6be0c4', '#ff9f5a']
 
 /** A dependency-free SVG chart: line, column, bar, area, scatter, and pie. */
-export default function ChartView({ type, data, width, height }: Props) {
+export default function ChartView({ type, data, width, height, trendline }: Props) {
   const hasData = data.series.some((s) => s.values.some((v) => v !== null))
   if (!hasData) {
     return (
@@ -20,7 +22,7 @@ export default function ChartView({ type, data, width, height }: Props) {
     )
   }
   if (type === 'pie') return <Pie data={data} width={width} height={height} />
-  return <Cartesian type={type} data={data} width={width} height={height} />
+  return <Cartesian type={type} data={data} width={width} height={height} trendline={trendline} />
 }
 
 // ---- niceness for axis ticks -----------------------------------------------
@@ -49,7 +51,7 @@ const fmtTick = (n: number) => {
 
 // ---- cartesian charts (line / column / bar / area / scatter) ---------------
 
-function Cartesian({ type, data, width, height }: { type: ChartType; data: ChartData; width: number; height: number }) {
+function Cartesian({ type, data, width, height, trendline }: { type: ChartType; data: ChartData; width: number; height: number; trendline?: boolean }) {
   const horizontal = type === 'bar'
   const ML = 46
   const MR = 12
@@ -148,6 +150,39 @@ function Cartesian({ type, data, width, height }: { type: ChartType; data: Chart
       if (pts.length < 40) pts.forEach(([x, y], i) => elems.push(<circle key={`d${si}-${i}`} cx={x} cy={y} r={2} fill={color} />))
     }
   })
+
+  // least-squares trendlines (line / area / scatter): the OLS fit of each series over
+  // its category positions, drawn as a dashed line in the series colour with an R² tag.
+  if (trendline && !horizontal && (type === 'line' || type === 'area' || type === 'scatter')) {
+    const clampY = (v: number) => MT + Math.max(0, Math.min(plotH, valToPx(v)))
+    data.series.forEach((s, si) => {
+      const fit = trendFit(s.values)
+      if (!fit) return
+      const color = PALETTE[si % PALETTE.length]
+      const x0 = ML + catBand / 2
+      const x1 = ML + (n - 1) * catBand + catBand / 2
+      const y0 = clampY(fit.intercept)
+      const y1v = clampY(fit.slope * (n - 1) + fit.intercept)
+      elems.push(
+        <line
+          key={`trend${si}`}
+          x1={x0}
+          y1={y0}
+          x2={x1}
+          y2={y1v}
+          stroke={color}
+          strokeWidth={1.75}
+          strokeDasharray="5 3"
+          opacity={0.9}
+        />,
+      )
+      elems.push(
+        <text key={`r2${si}`} x={x1 - 2} y={y1v - 4} className="chart-axis" textAnchor="end" fill={color}>
+          R²={fit.r2.toFixed(3)}
+        </text>,
+      )
+    })
+  }
 
   // axis frame
   elems.push(<line key="ax" x1={ML} y1={MT} x2={ML} y2={MT + plotH} stroke="var(--line-2)" strokeWidth={1} />)

@@ -445,10 +445,68 @@ every value cross-checked against the known textbook answer.
 ### Forward backlog (next sessions)
 - [ ] A **Regression / Data-Analysis dialog** (pick y & x ranges → drop a labelled LINEST block + a
   residual plot), the natural UI marquee on top of this engine
-- [ ] Polynomial / weighted regression helpers and **prediction intervals** for `TREND`/`FORECAST`
-- [ ] Eigenvalues & SVD (a QR-algorithm iteration on the existing Householder core)
-- [ ] Two-sample / paired **`T.TEST`**, **`Z.TEST`**, **`F.TEST`**, **`CHISQ.TEST`** and an ANOVA
-- [ ] Trendlines on scatter charts (fit with `regress`, draw the line + R² on the SVG renderer)
+- [x] Polynomial / weighted regression helpers and **prediction intervals** for `TREND`/`FORECAST`
+  → prediction-interval band shipped in the Inference Lab demo (STEYX · leverage · T.INV)
+- [x] Eigenvalues & SVD (a QR-algorithm iteration on the existing Householder core)
+- [x] Two-sample / paired **`T.TEST`**, **`Z.TEST`**, **`F.TEST`**, **`CHISQ.TEST`** and an ANOVA
+- [x] Trendlines on scatter charts (fit with `regress`, draw the line + R² on the SVG renderer)
+
+## v8 — inferential statistics + spectral linear algebra (planned this session)
+
+The v7 forward backlog named eigenvalues/SVD, the four hypothesis tests, trendlines and
+prediction intervals. v8 ships all of them: a spectral layer bolted onto the existing
+Householder/LU core, the inferential-statistics functions that turn the v7 distribution CDFs
+into real decisions, an "Inference Lab" flagship demo, and OLS trendlines on the SVG charts.
+Everything stays pure/React-free in `src/engine/` and is cross-checked in the in-app self-test
+suite plus an isolated Node harness before wiring, in the house style.
+
+### Engine — spectral linear algebra (`linalg.ts`)
+- [x] **Symmetric eigendecomposition** — cyclic **Jacobi rotations** to `A = QΛQᵀ`: real
+  eigenvalues + an orthonormal eigenvector basis, unconditionally convergent for symmetric input.
+- [x] **Singular Value Decomposition** — **one-sided Jacobi** on the columns → `U`, `Σ`, `V` for
+  any m×n (tall or wide), singular values non-negative and descending.
+- [x] **General real eigenvalues** — **Hessenberg reduction + Francis double-shift QR** to the real
+  Schur form; 1×1 blocks give real eigenvalues, 2×2 blocks give complex-conjugate pairs.
+- [x] Derived from the above: numerical **rank** (σ tolerance), the **2-norm** and **condition
+  number** (σ_max/σ_min), the **Moore–Penrose pseudo-inverse** `A⁺ = VΣ⁺Uᵀ`, and the Frobenius /
+  1 / ∞ matrix norms.
+
+### Functions (`functions.ts`)
+- [x] **`EIGVALS(A)`** — eigenvalues: a real descending column for a symmetric matrix, an n×2
+  `[re, im]` block for a general one (via the QR algorithm).
+- [x] **`EIGVECS(A)`** — the orthonormal eigenvectors of a symmetric matrix (one per column, aligned
+  with `EIGVALS`).
+- [x] **`SVDVALS(A)`** — the singular values (descending column).
+- [x] **`MPINV(A)`** — the Moore–Penrose pseudo-inverse (the exact least-squares solver for any
+  shape/rank).
+- [x] **`MRANK(A)`**, **`MCOND(A)`**, **`MNORM(A,[type])`** — numerical rank, 2-norm condition
+  number, and the 2 / 1 / inf / Frobenius norms.
+- [x] **`T.TEST`/`TTEST`** — paired (1), two-sample equal-variance/pooled (2), and two-sample
+  unequal-variance/Welch (3), returning the 1- or 2-tailed p-value (exact Excel semantics).
+- [x] **`Z.TEST`/`ZTEST`** — the one-sample right-tail z probability with a known or sample σ.
+- [x] **`F.TEST`/`FTEST`** — the two-tailed variance-ratio p-value.
+- [x] **`CHISQ.TEST`/`CHITEST`** — Pearson's χ² from an observed vs expected table, df from the
+  table shape, returning the upper-tail p-value.
+
+### Demo + charts
+- [x] New flagship **"Inference Lab"** demo (default): a two-sample Welch **T.TEST** beside the
+  pooled variant, a **paired** T.TEST, an **F.TEST** for equal variances gating the pooled test,
+  a **Z.TEST**, and a **χ² test of independence** on a 2×3 contingency table — each with a p-value
+  and a reject/can't-reject verdict; a **spectral block** (symmetric eigenvalues + eigenvectors,
+  singular values, rank, condition number, and a rank-deficient least-squares solve via `MPINV`);
+  and a **prediction-interval band** around a `TREND` forecast (STEYX · leverage · `T.INV`).
+- [x] **Trendlines** — an optional OLS fit line + R² label on line/scatter charts (`chart.ts`
+  spec flag, drawn in `ChartView.tsx`, toggled from the chart toolbar in `ChartLayer.tsx`).
+
+### Tests
+- [x] New `spectral` + `inference` self-test sections cross-checking: Jacobi eigenvalues vs the
+  2×2/3×3 characteristic polynomial and known matrices, `A = QΛQᵀ` reconstruction and eigenvector
+  orthonormality, SVD reconstruction `A = UΣVᵀ` and σ = √eig(AᵀA), the pseudo-inverse identities
+  (`A A⁺ A = A`, `MPINV` least-squares = `LINEST`), rank/condition on singular and well-conditioned
+  matrices, general QR eigenvalues agreeing with Jacobi on symmetric input and giving a rotation's
+  `e^{±iθ}`, and every hypothesis test against its hand-computed / Excel-documented value.
+- [x] Re-validated the spectral numerics outside the browser in an isolated Node harness before
+  wiring (Jacobi/SVD/QR-eig reconstruction, orthogonality, pinv identities) — the house rule.
 
 ## Session log
 
@@ -556,3 +614,33 @@ every value cross-checked against the known textbook answer.
   +16 `dist`), every value cross-checked against the textbook answer; also validated in an isolated
   tsx harness (26 core numerics vs known references) before wiring. Gate green (scope + conformance +
   lint + build).
+- 2026-07-02 (claude): **v8 — inferential statistics + a spectral linear-algebra layer.** Planned
+  and shipped the whole v8 roadmap above, clearing the v7 forward backlog (eigenvalues/SVD, the four
+  hypothesis tests, trendlines, prediction intervals). **Spectral core** (added to `linalg.ts`,
+  still pure/React-free): a symmetric **Jacobi eigendecomposition** (`A = QΛQᵀ`, real eigenvalues +
+  an orthonormal eigenvector basis), a **one-sided-Jacobi SVD** for any shape, a **general
+  eigenvalue** path (Faddeev–LeVerrier characteristic polynomial → Durand–Kerner roots, returning
+  complex-conjugate pairs), and everything they unlock — numerical **rank**, the **2-norm** and its
+  **condition number**, the Frobenius/1/∞ norms, and the **Moore–Penrose pseudo-inverse**
+  `A⁺ = VΣ⁺Uᵀ`. Wired **7 spectral functions** (`EIGVALS` — real column for symmetric, n×2 `[re,im]`
+  for general; `EIGVECS`, `SVDVALS`, `MPINV`, `MRANK`, `MCOND`, `MNORM`) and **the four hypothesis
+  tests** — `T.TEST`/`TTEST` (paired / pooled / Welch), `Z.TEST`/`ZTEST`, `F.TEST`/`FTEST`,
+  `CHISQ.TEST`/`CHITEST` — turning the v7 distribution CDFs into real decisions with exact Excel
+  semantics (library now ~245 fns). Added **OLS trendlines** to the SVG charts: a `trendline` flag
+  on `ChartSpec`, a pure `trendFit` (slope/intercept/R²) in `chart.ts`, a dashed fit line + R² label
+  drawn in `ChartView` for line/area/scatter, and a **T** toggle in the chart toolbar. New flagship
+  **"Inference Lab"** demo (now default): an F-test gating a pooled-vs-Welch two-sample **T.TEST**,
+  a **paired** T.TEST, a **χ² test of independence** on a 2×3 table with expected counts built from
+  the margins, the **spectral block** (eigenvalues + eigenvectors + singular values + rank +
+  condition number of a symmetric matrix) and a rank-flexible **MPINV** least-squares fit, plus a
+  **95% prediction-interval** band (STEYX · leverage · `T.INV`) and a scatter chart with the live
+  OLS trendline. The in-app self-test suite grew **290 → 330** (+26 `spectral`, +14 `inference`):
+  eigenvalues cross-checked against the characteristic polynomial, `ΣΠλ` = trace/det, `QᵀQ = I` and
+  the eigen-equation `A·v = λ·v`, `σ = √λ(AᵀA)`, the pseudo-inverse identities and its agreement with
+  `SLOPE`, rank/cond on singular vs well-conditioned matrices, a rotation's complex `e^{±iθ}`, and
+  every test against its Excel-documented value (paired **T.TEST = 0.196016**, **F.TEST = 0.648318**,
+  **Z.TEST = 0.090574**, χ² df logic against `CHISQ.DIST.RT`). Re-validated the spectral numerics
+  first in an isolated Node harness (43 reconstruction/orthogonality/pinv checks), then end-to-end in
+  a headless Chromium: the Inference Lab paints with **zero error cells**, the self-test panel reads
+  **330/330 passing**, and the chart draws its dashed trendline at **R² = 0.997** — no app console
+  errors. Gate green (scope + conformance + lint + build).

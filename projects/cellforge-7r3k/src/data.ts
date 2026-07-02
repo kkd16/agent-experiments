@@ -740,7 +740,230 @@ function statisticsLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+function inferenceLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Inference Lab')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+  const box = (a1: string, a2: string): RangeBox => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    return { top: f.row, left: f.col, bottom: t.row, right: t.col }
+  }
+  const muted = '#97a0b8'
+
+  set('A1', 'Inference Lab — hypothesis tests, a spectral decomposition, and a prediction interval, all from scratch')
+  fmt('A1', 'A1', { bold: true })
+  set('A2', 'Every p-value, eigenvalue and confidence band below is computed live by the engine — no stats library, no charts library.')
+  fmt('A2', 'A2', { color: muted })
+
+  // ---- ① Two independent samples: T.TEST (pooled & Welch) gated by an F.TEST ----
+  set('A4', '① Two independent samples — do two teaching methods differ in exam scores?')
+  fmt('A4', 'A4', { bold: true })
+  set('A5', 'Method A')
+  set('B5', 'Method B')
+  fmt('A5', 'B5', { bold: true, align: 'center' })
+  const methodA = [72, 75, 68, 80, 77, 73, 79, 71, 74, 76]
+  const methodB = [82, 85, 79, 88, 84, 90, 83, 86, 81, 87]
+  methodA.forEach((v, i) => set(`A${6 + i}`, String(v)))
+  methodB.forEach((v, i) => set(`B${6 + i}`, String(v)))
+  fmt('A6', 'B15', { align: 'center' })
+  set('D5', 'F-test: equal variances? (p)')
+  set('F5', '=ROUND(F.TEST(A6:A15,B6:B15),4)')
+  set('D6', 'chosen test')
+  set('F6', '=IF(F5>0.05,"pooled t","Welch t")')
+  set('D7', 'mean A')
+  set('F7', '=ROUND(AVERAGE(A6:A15),2)')
+  set('D8', 'mean B')
+  set('F8', '=ROUND(AVERAGE(B6:B15),2)')
+  set('D9', 'pooled t-test p (2-tail)')
+  set('F9', '=ROUND(T.TEST(A6:A15,B6:B15,2,2),5)')
+  set('D10', 'Welch t-test p (2-tail)')
+  set('F10', '=ROUND(T.TEST(A6:A15,B6:B15,2,3),5)')
+  set('D11', 'verdict (α = 0.05)')
+  set('F11', '=IF(MIN(F9,F10)<0.05,"means differ","no evidence")')
+  fmt('D5', 'D11', { color: '#cdd3e6' })
+  fmt('F11', 'F11', { bold: true })
+
+  // ---- ② Paired samples: T.TEST type 1 on the before/after differences ----
+  set('A17', '② Paired samples — weight (lb) before vs after an 8-week program')
+  fmt('A17', 'A17', { bold: true })
+  set('A18', 'Before')
+  set('B18', 'After')
+  set('C18', 'Δ')
+  fmt('A18', 'C18', { bold: true, align: 'center' })
+  const before = [210, 195, 180, 220, 205, 190, 200, 215]
+  const after = [201, 190, 178, 210, 197, 185, 194, 205]
+  before.forEach((v, i) => {
+    set(`A${19 + i}`, String(v))
+    set(`B${19 + i}`, String(after[i]))
+    set(`C${19 + i}`, `=B${19 + i}-A${19 + i}`)
+  })
+  fmt('A19', 'C26', { align: 'center' })
+  set('D18', 'mean Δ (lb)')
+  set('F18', '=ROUND(AVERAGE(C19:C26),2)')
+  set('D19', 'paired t-test p (2-tail)')
+  set('F19', '=ROUND(T.TEST(A19:A26,B19:B26,2,1),6)')
+  set('D20', 'verdict (α = 0.05)')
+  set('F20', '=IF(F19<0.05,"significant loss","no evidence")')
+  fmt('D18', 'D20', { color: '#cdd3e6' })
+  fmt('F20', 'F20', { bold: true })
+
+  // ---- ③ Chi-square test of independence on a 2×3 contingency table ----
+  set('A28', '③ χ² test of independence — drink preference by group (expected from the margins)')
+  fmt('A28', 'A28', { bold: true })
+  set('B29', 'Coffee')
+  set('C29', 'Tea')
+  set('D29', 'Water')
+  set('E29', 'row Σ')
+  fmt('B29', 'E29', { bold: true, align: 'center' })
+  set('A30', 'Men')
+  set('B30', '40')
+  set('C30', '20')
+  set('D30', '40')
+  set('E30', '=SUM(B30:D30)')
+  set('A31', 'Women')
+  set('B31', '30')
+  set('C31', '50')
+  set('D31', '20')
+  set('E31', '=SUM(B31:D31)')
+  set('A32', 'col Σ')
+  set('B32', '=SUM(B30:B31)')
+  set('C32', '=SUM(C30:C31)')
+  set('D32', '=SUM(D30:D31)')
+  set('E32', '=SUM(E30:E31)')
+  fmt('A30', 'A32', { bold: true })
+  fmt('E30', 'E32', { color: muted })
+  fmt('B32', 'D32', { color: muted })
+  set('A33', 'Expected (row Σ × col Σ ÷ grand):')
+  fmt('A33', 'A33', { color: muted })
+  // Expected counts under independence, computed from the marginals.
+  set('B34', '=E30*B32/$E$32')
+  set('C34', '=E30*C32/$E$32')
+  set('D34', '=E30*D32/$E$32')
+  set('B35', '=E31*B32/$E$32')
+  set('C35', '=E31*C32/$E$32')
+  set('D35', '=E31*D32/$E$32')
+  fmt('B34', 'D35', { decimals: 1, align: 'center', color: muted })
+  set('D37', 'χ² test p-value')
+  set('F37', '=ROUND(CHISQ.TEST(B30:D31,B34:D35),6)')
+  set('D38', 'df = (r−1)(c−1)')
+  set('F38', '2')
+  set('D39', 'verdict (α = 0.05)')
+  set('F39', '=IF(F37<0.05,"not independent","independent")')
+  fmt('D37', 'D39', { color: '#cdd3e6' })
+  fmt('F39', 'F39', { bold: true })
+
+  // ---- ④ Spectral decomposition of a symmetric matrix ----
+  set('H4', '④ Spectral decomposition — a symmetric 3×3 matrix A = QΛQᵀ')
+  fmt('H4', 'H4', { bold: true })
+  set('H5', 'A =')
+  fmt('H5', 'H5', { bold: true })
+  const symA = [
+    [4, 1, 0],
+    [1, 3, 1],
+    [0, 1, 2],
+  ]
+  symA.forEach((row, i) => row.forEach((v, j) => set(`${String.fromCharCode(72 + j)}${6 + i}`, String(v)))) // H..J, rows 6..8
+  fmt('H6', 'J8', { align: 'center' })
+  set('L5', 'eigenvalues λ (EIGVALS) ↓')
+  fmt('L5', 'L5', { color: muted })
+  set('L6', '=EIGVALS(H6:J8)') // spills L6:L8
+  fmt('L6', 'L8', { decimals: 4 })
+  set('H10', 'eigenvectors Q (EIGVECS) — one per column')
+  fmt('H10', 'H10', { color: muted })
+  set('H11', '=EIGVECS(H6:J8)') // spills H11:J13
+  fmt('H11', 'J13', { decimals: 4, align: 'center' })
+  set('L10', 'singular values σ (SVDVALS) ↓')
+  fmt('L10', 'L10', { color: muted })
+  set('L11', '=SVDVALS(H6:J8)') // spills L11:L13
+  fmt('L11', 'L13', { decimals: 4 })
+  set('H15', 'rank')
+  set('I15', '=MRANK(H6:J8)')
+  set('H16', 'cond₂(A)')
+  set('I16', '=ROUND(MCOND(H6:J8),4)')
+  set('H17', '‖A‖₂')
+  set('I17', '=ROUND(MNORM(H6:J8,2),4)')
+  set('H18', 'trace = Σλ')
+  set('I18', '=ROUND(SUM(L6:L8),4)')
+  fmt('H15', 'H18', { color: '#cdd3e6' })
+
+  // ---- ⑤ Least squares by the Moore–Penrose pseudo-inverse ----
+  set('H20', '⑤ Least squares by pseudo-inverse — β = A⁺·y (any shape, any rank)')
+  fmt('H20', 'H20', { bold: true })
+  set('H21', 'A (design)')
+  set('K21', 'y')
+  fmt('H21', 'K21', { color: muted })
+  // Overdetermined system: rows [1, xᵢ], best-fit line through 4 noisy points.
+  const design: Array<[number, number]> = [
+    [1, 1],
+    [1, 2],
+    [1, 3],
+    [1, 4],
+  ]
+  const yObs = [2.1, 3.9, 6.1, 7.9]
+  design.forEach(([a, b], i) => {
+    set(`H${22 + i}`, String(a))
+    set(`I${22 + i}`, String(b))
+    set(`K${22 + i}`, String(yObs[i]))
+  })
+  fmt('H22', 'K25', { align: 'center' })
+  set('M22', 'β = MPINV(A)·y ↓')
+  fmt('M22', 'M22', { color: muted })
+  set('N22', '=MMULT(MPINV(H22:I25),K22:K25)') // spills N22:N23 (intercept, slope)
+  fmt('N22', 'N23', { decimals: 4 })
+  set('M24', 'slope check = SLOPE()')
+  set('N24', '=ROUND(SLOPE(K22:K25,I22:I25),4)')
+  fmt('M24', 'M24', { color: muted })
+
+  // ---- ⑥ Prediction interval around a TREND forecast ----
+  set('H27', '⑥ 95% prediction interval around a forecast (STEYX · leverage · T.INV)')
+  fmt('H27', 'H27', { bold: true })
+  set('H28', 'x')
+  set('I28', 'y')
+  fmt('H28', 'I28', { bold: true, align: 'center' })
+  const px = [1, 2, 3, 4, 5, 6, 7, 8]
+  const py = [2.3, 4.1, 5.6, 8.2, 9.4, 11.7, 13.1, 15.0]
+  px.forEach((v, i) => {
+    set(`H${29 + i}`, String(v))
+    set(`I${29 + i}`, String(py[i]))
+  })
+  fmt('H29', 'I36', { align: 'center' })
+  set('K28', 'forecast at x* = 9')
+  set('M28', '=ROUND(FORECAST(9,I29:I36,H29:H36),3)')
+  set('K29', 'std error (STEYX)')
+  set('M29', '=ROUND(STEYX(I29:I36,H29:H36),4)')
+  set('K30', 't₀.₉₇₅ (df = n−2)')
+  set('M30', '=ROUND(T.INV.2T(0.05,COUNT(H29:H36)-2),4)')
+  set('K31', 'PI half-width')
+  set('M31', '=ROUND(M30*M29*SQRT(1+1/COUNT(H29:H36)+(9-AVERAGE(H29:H36))^2/DEVSQ(H29:H36)),3)')
+  set('K32', 'lower 95%')
+  set('M32', '=ROUND(M28-M31,3)')
+  set('K33', 'upper 95%')
+  set('M33', '=ROUND(M28+M31,3)')
+  fmt('K28', 'K33', { color: '#cdd3e6' })
+  fmt('M28', 'M33', { bold: true })
+
+  // A scatter of the ⑥ data with the least-squares trendline + R² turned on.
+  wb.addChart(
+    { type: 'scatter', range: box('H28', 'I36'), title: 'Linear trend (OLS + R²)', x: 640, y: 470, w: 380, h: 260, headers: true, labels: true, trendline: true },
+    id,
+  )
+
+  wb.setActiveSheet(id)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'inference', name: 'Inference Lab', blurb: 'Two-sample/paired T.TEST, F.TEST & a χ² test; a symmetric eigen/SVD spectral block with MPINV least squares; and a 95% prediction interval + OLS trendline', snapshot: inferenceLab },
   { id: 'stats', name: 'Statistics Lab', blurb: 'A live multiple regression (LINEST full stats block), a one-sample t-test, and a 3×3 linear system solved with MINVERSE/MMULT', snapshot: statisticsLab },
   { id: 'integer', name: 'Integer Programming Lab', blurb: 'A 0/1 capital-budgeting knapsack solved by branch & bound, plus an LP with a shadow-price sensitivity report', snapshot: integerLab },
   { id: 'optimize', name: 'Optimization Lab', blurb: 'A linear program + a nonlinear fit, both solved by the ⚖ Solver (exact simplex & Nelder–Mead)', snapshot: optimizationLab },

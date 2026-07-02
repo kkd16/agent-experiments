@@ -26,6 +26,17 @@ import {
   transpose as matTranspose,
   identity as matIdentity,
   regress,
+  isSymmetric,
+  jacobiEigen,
+  svd as matSvd,
+  pseudoInverse,
+  matrixRank,
+  cond2,
+  norm2,
+  norm1,
+  normInf,
+  normFro,
+  eigenvaluesGeneral,
   type Mat,
 } from './linalg'
 import {
@@ -2015,6 +2026,73 @@ const STATS_FUNCTIONS: Record<string, FnImpl> = {
     return numMatrixValue(matIdentity(k))
   },
 
+  // ---- spectral linear algebra (v8) ----
+  EIGVALS: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0 || a.length !== a[0].length) return err('#VALUE!', 'EIGVALS needs a square matrix')
+    if (isSymmetric(a)) {
+      const e = jacobiEigen(a)
+      if (!e) return err('#NUM!', 'the eigensolver did not converge')
+      return matrix(e.values.map((v) => [finite(v)])) // real, descending, one per row
+    }
+    // Non-symmetric: (possibly complex) eigenvalues as an n×2 [re, im] block.
+    if (a.length > 12) return err('#NUM!', 'general EIGVALS is limited to n ≤ 12')
+    const g = eigenvaluesGeneral(a)
+    if (!g) return err('#NUM!')
+    return matrix(g.map((z) => [finite(z.re), finite(z.im)]))
+  },
+  EIGVECS: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0 || a.length !== a[0].length) return err('#VALUE!', 'EIGVECS needs a square matrix')
+    if (!isSymmetric(a)) return err('#NUM!', 'EIGVECS needs a symmetric matrix (real orthonormal basis)')
+    const e = jacobiEigen(a)
+    if (!e) return err('#NUM!', 'the eigensolver did not converge')
+    return numMatrixValue(e.vectors) // columns are eigenvectors, aligned with EIGVALS
+  },
+  SVDVALS: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0) return err('#VALUE!')
+    const d = matSvd(a)
+    if (!d) return err('#NUM!')
+    return matrix(d.s.map((v) => [finite(v)]))
+  },
+  MPINV: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0) return err('#VALUE!')
+    const p = pseudoInverse(a)
+    if (!p) return err('#NUM!')
+    return numMatrixValue(p)
+  },
+  MRANK: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0) return err('#VALUE!')
+    return matrixRank(a)
+  },
+  MCOND: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0) return err('#VALUE!')
+    return finite(cond2(a))
+  },
+  MNORM: (args, h) => {
+    const a = toNumMatrix(args[0], h)
+    if (isError(a)) return a
+    if (a.length === 0) return err('#VALUE!')
+    const kind = args.length > 1 ? toText(h.scalarOf(args[1])) : '2'
+    if (isError(kind)) return kind
+    const key = String(kind).trim().toLowerCase()
+    if (key === '2' || key === '') return finite(norm2(a))
+    if (key === '1') return norm1(a)
+    if (key === 'inf' || key === 'i' || key === '∞') return normInf(a)
+    if (key === 'fro' || key === 'f') return normFro(a)
+    return err('#VALUE!', 'MNORM type must be 2, 1, "inf" or "fro"')
+  },
+
   // ---- regression family ----
   LINEST: (args, h) => {
     const inp = regressionInputs(args, h, 0, 1)
@@ -2257,6 +2335,16 @@ const STATS_FUNCTIONS: Record<string, FnImpl> = {
   },
   'F.INV.RT': (args, h) => fInvRt(args, h),
   FINV: (args, h) => fInvRt(args, h),
+
+  // ---- hypothesis tests (v8) ----
+  'T.TEST': (args, h) => tTest(args, h),
+  TTEST: (args, h) => tTest(args, h),
+  'Z.TEST': (args, h) => zTest(args, h),
+  ZTEST: (args, h) => zTest(args, h),
+  'F.TEST': (args, h) => fTest(args, h),
+  FTEST: (args, h) => fTest(args, h),
+  'CHISQ.TEST': (args, h) => chiTest(args, h),
+  CHITEST: (args, h) => chiTest(args, h),
 }
 
 function finite(x: number): number | ErrorValue {
@@ -2448,6 +2536,151 @@ function fInvRt(args: Node[], h: FnHelpers): RuntimeValue {
   if (isError(d2)) return d2
   if (p <= 0 || p > 1 || d1 < 1 || d2 < 1) return err('#NUM!')
   return fInv(1 - p, d1, d2)
+}
+
+// ---- hypothesis-test helpers (v8) ------------------------------------------
+/** Flatten a range to its numeric values (text/blank drop; an error short-circuits). */
+function numArray(node: Node, h: FnHelpers): number[] | ErrorValue {
+  const m = h.asMatrix(node)
+  if (isError(m)) return m
+  const out: number[] = []
+  for (const v of m.data.flat()) {
+    if (isError(v)) return v
+    if (typeof v === 'number') out.push(v)
+    else if (typeof v === 'boolean') out.push(v ? 1 : 0)
+  }
+  return out
+}
+
+/** Sample variance (Bessel-corrected). */
+function sampleVar(xs: number[]): number {
+  return devsq(xs) / (xs.length - 1)
+}
+
+/**
+ * `T.TEST(array1, array2, tails, type)` — the p-value of a Student's t comparison.
+ * type 1 = paired, 2 = two-sample equal-variance (pooled), 3 = two-sample unequal
+ * variance (Welch–Satterthwaite fractional df). tails ∈ {1, 2}. Excel semantics.
+ */
+function tTest(args: Node[], h: FnHelpers): RuntimeValue {
+  const a = numArray(args[0], h)
+  if (isError(a)) return a
+  const b = numArray(args[1], h)
+  if (isError(b)) return b
+  const tails = numAt(args, 2, h, 2)
+  if (isError(tails)) return tails
+  const type = numAt(args, 3, h, 1)
+  if (isError(type)) return type
+  const nt = Math.trunc(tails)
+  const ty = Math.trunc(type)
+  if (nt !== 1 && nt !== 2) return err('#NUM!', 'tails must be 1 or 2')
+  if (ty !== 1 && ty !== 2 && ty !== 3) return err('#NUM!', 'type must be 1, 2 or 3')
+
+  let t: number
+  let df: number
+  if (ty === 1) {
+    // Paired: work on the differences.
+    if (a.length !== b.length) return err('#N/A', 'paired arrays must be the same length')
+    const n = a.length
+    if (n < 2) return err('#DIV/0!')
+    const d = a.map((v, i) => v - b[i])
+    const md = mean(d)
+    const sd = Math.sqrt(sampleVar(d))
+    if (sd === 0) return err('#DIV/0!')
+    t = md / (sd / Math.sqrt(n))
+    df = n - 1
+  } else {
+    const n1 = a.length
+    const n2 = b.length
+    if (n1 < 2 || n2 < 2) return err('#DIV/0!')
+    const m1 = mean(a)
+    const m2 = mean(b)
+    const v1 = sampleVar(a)
+    const v2 = sampleVar(b)
+    if (ty === 2) {
+      // Pooled equal-variance.
+      const sp2 = ((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2)
+      const se = Math.sqrt(sp2 * (1 / n1 + 1 / n2))
+      if (se === 0) return err('#DIV/0!')
+      t = (m1 - m2) / se
+      df = n1 + n2 - 2
+    } else {
+      // Welch unequal-variance with Satterthwaite fractional df.
+      const s1 = v1 / n1
+      const s2 = v2 / n2
+      const se = Math.sqrt(s1 + s2)
+      if (se === 0) return err('#DIV/0!')
+      t = (m1 - m2) / se
+      df = (s1 + s2) ** 2 / (s1 ** 2 / (n1 - 1) + s2 ** 2 / (n2 - 1))
+    }
+  }
+  const rightTail = 1 - tCdf(Math.abs(t), df)
+  return finite(nt === 2 ? 2 * rightTail : rightTail)
+}
+
+/**
+ * `Z.TEST(array, x, [sigma])` — the one-tailed upper probability that the sample mean
+ * exceeds `x`, i.e. `1 − Φ((x̄ − x)/(σ/√n))`. σ defaults to the sample standard deviation.
+ */
+function zTest(args: Node[], h: FnHelpers): RuntimeValue {
+  const a = numArray(args[0], h)
+  if (isError(a)) return a
+  const x = numAt(args, 1, h)
+  if (isError(x)) return x
+  const n = a.length
+  if (n < 1) return err('#N/A')
+  const sigma = args.length > 2 ? numAt(args, 2, h) : Math.sqrt(sampleVar(a))
+  if (isError(sigma)) return sigma
+  if (sigma <= 0 || n < 2) return err('#NUM!')
+  const z = (mean(a) - x) / (sigma / Math.sqrt(n))
+  return finite(1 - normCdf(z))
+}
+
+/**
+ * `F.TEST(array1, array2)` — the two-tailed p-value that the two samples' variances are
+ * equal: `2·min(P(F≤f), 1−P(F≤f))` with `f = var₁/var₂`, `df = (n₁−1, n₂−1)`.
+ */
+function fTest(args: Node[], h: FnHelpers): RuntimeValue {
+  const a = numArray(args[0], h)
+  if (isError(a)) return a
+  const b = numArray(args[1], h)
+  if (isError(b)) return b
+  if (a.length < 2 || b.length < 2) return err('#DIV/0!')
+  const v1 = sampleVar(a)
+  const v2 = sampleVar(b)
+  if (v1 === 0 || v2 === 0) return err('#DIV/0!')
+  const f = v1 / v2
+  const cdf = fCdf(f, a.length - 1, b.length - 1)
+  return finite(2 * Math.min(cdf, 1 - cdf))
+}
+
+/**
+ * `CHISQ.TEST(actual, expected)` — Pearson's χ² test. Statistic `Σ(O−E)²/E`; df is
+ * `(r−1)(c−1)` for an r×c table (both > 1) and `cells−1` for a single row/column.
+ * Returns the upper-tail p-value.
+ */
+function chiTest(args: Node[], h: FnHelpers): RuntimeValue {
+  const obs = h.asMatrix(args[0])
+  if (isError(obs)) return obs
+  const exp = h.asMatrix(args[1])
+  if (isError(exp)) return exp
+  if (obs.rows !== exp.rows || obs.cols !== exp.cols) return err('#N/A', 'ranges must be the same shape')
+  let chi = 0
+  for (let r = 0; r < obs.rows; r++) {
+    for (let c = 0; c < obs.cols; c++) {
+      const o = toNumber(obs.data[r][c])
+      if (isError(o)) return o
+      const e = toNumber(exp.data[r][c])
+      if (isError(e)) return e
+      if (e === 0) return err('#DIV/0!', 'an expected count is zero')
+      chi += (o - e) ** 2 / e
+    }
+  }
+  const r = obs.rows
+  const c = obs.cols
+  const df = r > 1 && c > 1 ? (r - 1) * (c - 1) : r * c - 1
+  if (df < 1) return err('#NUM!', 'need at least two categories')
+  return finite(1 - chiCdf(chi, df))
 }
 
 // Merge the v7 statistics & linear-algebra functions into the main registry.
