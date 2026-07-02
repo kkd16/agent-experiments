@@ -16,6 +16,7 @@ export type Mode =
   | 'logic'
   | 'branching'
   | 'star'
+  | 'symbolic'
 
 export interface AppState {
   mode: Mode
@@ -29,6 +30,7 @@ export interface AppState {
   logic: { formula: string; model: string; tab: string }
   branching: { formula: string; model: string; tab: string }
   star: { formula: string; model: string; tab: string }
+  symbolic: { formula: string; model: string; bool: string; tab: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -87,6 +89,13 @@ export function encodeHash(s: AppState): string {
     q.set('m', s.star.model)
     q.set('t', s.star.tab)
     return `#/star?${q.toString()}`
+  }
+  if (s.mode === 'symbolic') {
+    q.set('f', s.symbolic.formula)
+    q.set('m', s.symbolic.model)
+    q.set('b', s.symbolic.bool)
+    q.set('t', s.symbolic.tab)
+    return `#/symbolic?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -200,6 +209,18 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           formula: q.get('f') ?? fallback.star.formula,
           model: q.get('m') ?? fallback.star.model,
           tab: q.get('t') ?? fallback.star.tab,
+        },
+      }
+    }
+    if (path === 'symbolic') {
+      return {
+        ...fallback,
+        mode: 'symbolic',
+        symbolic: {
+          formula: q.get('f') ?? fallback.symbolic.formula,
+          model: q.get('m') ?? fallback.symbolic.model,
+          bool: q.get('b') ?? fallback.symbolic.bool,
+          tab: q.get('t') ?? fallback.symbolic.tab,
         },
       }
     }

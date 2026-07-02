@@ -625,8 +625,9 @@ top-level mode, **Branching**, and it reuses the v8 Kripke structure, DSL, and g
 - [x] **CTL\*** — the full logic, model-checked by *nesting the v8 LTL engine inside* the CTL labelling
       (LTL model checking on the maximal state-subformula-rooted path formulas) — a genuine synthesis
       of the v8 and v9 engines. **Shipped in v10 below** (the tenth, **CTL\***, mode — Emerson–Lei).
-- [ ] **Symbolic (BDD) CTL** — the same fixpoints over a from-scratch ROBDD of the transition relation,
-      the NuSMV idea, with a state-set-as-BDD visualization.
+- [x] **Symbolic (BDD) CTL** — the same fixpoints over a from-scratch ROBDD of the transition relation,
+      the NuSMV idea, with a state-set-as-BDD visualization. **Shipped in v11 below** (the eleventh,
+      **Symbolic**, mode — a hand-rolled ROBDD engine + BDD-based CTL, differential-tested against v9).
 - [ ] **Bisimulation** — the CTL-equivalence of two Kripke structures by partition refinement, mirror
       of Hopcroft/Myhill–Nerode one level up.
 
@@ -730,8 +731,87 @@ labelling on the outside, LTL automata on the inside.
 - [ ] **Counterexample minimization** — shrink a refuting lasso to its shortest stem+loop and explain
       which sub-obligation each cell discharges, as the v9 certificates do.
 
+## v11 — from explicit to symbolic: a from-scratch ROBDD engine + BDD-based CTL (planned + built this session)
+
+v8/v9/v10 built the temporal-logic tower, all checked with **explicit** state sets — one boolean per
+state in a plain array. That is perfect pedagogy and hopeless at scale: a system with 40 boolean
+variables has 2⁴⁰ states and no array is that long. The breakthrough of the 1990s (McMillan's **SMV**,
+then NuSMV) was to stop enumerating states and instead represent every *set of states*, and the
+*transition relation itself*, as a **Reduced Ordered Binary Decision Diagram** — a canonical
+Boolean-function DAG — and run the whole fixpoint computation with BDD operations. v11 builds that
+engine from scratch and re-checks CTL **symbolically**, as an eleventh top-level mode, **Symbolic**. It
+closes the long-standing v9 backlog item *"Symbolic (BDD) CTL"* and is differential-tested, live, to
+agree with the v9 explicit checker at **every** state. Everything stays library-free.
+
+### The ROBDD engine (`src/engine/bdd/`)
+
+- [x] `bdd.ts` — the ROBDD core as a `Bdd` manager over an ordered variable set: **hash-consed**
+      unique table (both reduction rules — collapse `lo === hi`, share structurally-identical nodes —
+      so equal functions are the SAME id and equivalence is a pointer compare), the universal
+      **`ite`** (if-then-else) Shannon-expansion recursion with a memoized **computed table**, `not`
+      and every binary connective (`and/or/xor/nand/nor/imp/iff`) as one `ite`, `restrict`
+      (cofactor), `compose` (substitute a variable by a BDD), existential & universal **quantification**
+      over a variable set, `rename` (current↔next-state renaming via composition), **`satCount`**
+      (exact #SAT — skipped variables counted as free), `anySat` (one concrete witness), `support`,
+      `nodeCount` (the DAG size — the real cost gauge) and `reachable` (for the diagram).
+- [x] `bool.ts` — a tolerant propositional-logic front end for the explorer: a precedence-climbing
+      **parser** (`¬ ∧ ∨ ⊕ → ↔`, Unicode + ASCII), `toBdd` (compile an AST into the manager), an
+      independent `evalBool` truth-table evaluator (the oracle the BDD is checked against), `varsOf`
+      and a `showBool` pretty-printer.
+- [x] `symbolic.ts` — the symbolic CTL checker. A `SymbolicModel` encodes a (totalized) Kripke
+      structure: `k = ⌈log₂ n⌉` state bits, `2k` variables in the classic **interleaved** order
+      `s₀ s₀′ s₁ s₁′ …`, a `valid` BDD pinning every set inside the real state space (so `¬` matches the
+      explicit checker when `n` isn't a power of two), the **transition relation** `T(s,s′)` as one BDD,
+      and the initial-state set. The pre-image `pre∃(Y)` is the textbook **relational product**
+      `∃ s′. T(s,s′) ∧ Y[s′]` (conjoin, then existentially quantify the next-state bits); `pre∀ = ¬pre∃¬`.
+      `symbolicLabel` runs the IDENTICAL Clarke–Emerson–Sistla fixpoints as v9 but over BDDs
+      (EU/EF/AF/AU least, EG/AG/ER/AR greatest, convergence by canonical-id comparison), capturing each
+      approximant's decoded states + BDD node count. `symbolicReachable` is the forward
+      `μZ. init ∨ post∃(Z)` state-space exploration. `decode`/`contains` read a set-BDD back to state
+      indices.
+- [x] `examples.ts` — a gallery (resettability `AG EF restart` ✓ and a trap ✗, mutual exclusion
+      `AG ¬(c1∧c2)`, inevitable service `AG(req → AF ack)`, a livelock search `EF AG ¬live`, a mod-4
+      counter) plus the default explorer formula `(a∧b)∨(c∧d)∨(e∧f)` that shows off variable ordering.
+- [x] `selftest.ts` — the live differential suite (see Verification).
+
+### The Symbolic mode (UI)
+
+- [x] `components/BddDiagram.tsx` (+ `.css`) — a **dedicated ROBDD renderer** (the general graph
+      layout would hide the structure): every node on the *level* of the variable it tests, the two
+      constant sinks at the bottom, the `hi` (1) edge solid and the `lo` (0) edge dashed, so sharing and
+      reduced level-skips are visible at a glance; an optional assignment **traces its decision path**.
+- [x] `views/SymbolicView.tsx` (+ `.css`) — the eleventh mode, sharing the CTL formula + Kripke inputs,
+      with tabs: **BDD explorer** (compile any Boolean formula, draw its ROBDD, toggle an assignment to
+      trace the path, see the truth table + exact #SAT, and **reorder the variables** to watch the node
+      count swing linear↔exponential — the NP-hard ordering problem made visible), **Transition
+      relation** (the symbolic encoding, `|T|` BDD nodes vs the naïve 2²ᵏ table vs the explicit edges,
+      the relation drawn as a BDD, and symbolic reachability as an animated μ-fixpoint), **Symbolic
+      check** (the CTL verdict, per-subformula BDD node counts, each `Sat` highlighted on the model graph
+      and drawn as a BDD, the fixpoint's per-round node counts, and a **live agreement badge** that
+      decodes the symbolic result and compares it against the explicit v9 checker for the exact model),
+      **Verify**, and **About** (explicit vs symbolic, the SMV/NuSMV story, why ordering is everything).
+- [x] Shareable permalink: the CTL formula, Kripke model, Boolean-explorer formula and active tab all
+      round-trip through the URL hash (`#/symbolic?…`).
+
+### Verification (all green, runs live in the Verify tab — 7/7)
+
+- [x] **The headline — symbolic CTL ≡ explicit CTL at every state.** The BDD fixpoint checker's decoded
+      `Sat(φ)` equals the v9 explicit boolean-array `satVector` at every state over **250** random
+      (Kripke model, CTL formula) pairs — 0 mismatches.
+- [x] `ite` against brute-force truth tables (400 random ternary combinations × all rows); the BDD
+      **algebra laws** by canonical id-equality (`¬¬`, commutativity, De Morgan, absorption, idempotence,
+      the complement laws); `satCount` against explicit enumeration; `anySat` soundness; the `∃`/`∀`
+      identities; the propositional parser **round-trip** (`parse∘show ≡ id` and BDD ≡ direct evaluator);
+      symbolic reachability ≡ explicit BFS over 200 models; and every gallery verdict = explicit =
+      documented.
+- [x] Also run headless during development (`node --experimental-strip-types`, extensionless-import
+      resolver hook): all 7 green, then the runner kept out of `src` so it doesn't ship.
+
 ## Future ideas (not yet built)
 
+- [x] **Symbolic (BDD) CTL model checking** — shipped in **v11** (Symbolic mode): a from-scratch ROBDD
+      engine (hash-consing, `ite`, quantification, relational product, `satCount`) and BDD-based CTL
+      fixpoints, differential-tested to agree with the v9 explicit checker at every state (see v11 above).
 - [x] **ω-automata + LTL model checking** — shipped in **v8** (Logic mode): GPVW LTL→Büchi, Kripke
       structures, the Vardi–Wolper product + lasso counterexamples (see the v8 section above).
 - [x] **CTL branching-time model checking** — shipped in **v9** (Branching mode): the
@@ -756,6 +836,26 @@ labelling on the outside, LTL automata on the inside.
 
 ## Session log
 
+- 2026-07-02 (claude / claude-opus-4-8): shipped **v11 — from explicit to symbolic model checking**,
+  an eleventh top-level mode built on a **from-scratch ROBDD engine**. New package `src/engine/bdd/`:
+  `bdd.ts` (the `Bdd` manager — hash-consed unique table, the `ite` Shannon recursion with a computed
+  table, `not`/binary connectives, `restrict`/`compose`, `∃`/`∀` quantification, current↔next `rename`,
+  exact `satCount`, `anySat`, `nodeCount`), `bool.ts` (a propositional parser + `toBdd` + independent
+  evaluator for the explorer), `symbolic.ts` (a `SymbolicModel` encoding a Kripke structure into
+  interleaved current/next bits, the transition relation as one BDD, `pre∃` as the relational product
+  `∃ s′. T ∧ Y[s′]`, and the IDENTICAL Clarke–Emerson–Sistla CTL fixpoints from v9 run over BDDs, plus
+  symbolic forward reachability), `examples.ts` and `selftest.ts`. New UI: a dedicated
+  `components/BddDiagram.tsx` (variable-level rows, hi/lo edges, a traced decision path) and
+  `views/SymbolicView.tsx` with **BDD explorer / Transition relation / Symbolic check / Verify / About**
+  tabs — the explorer lets you reorder variables to watch the node count swing linear↔exponential, and
+  the check tab **decodes the symbolic Sat-sets and compares them live against the v9 explicit checker**.
+  Wired the mode into `App.tsx` and the permalink into `lib/hash.ts`. The Verify tab is 7/7: the
+  headline check proves symbolic CTL ≡ explicit CTL at every state over 250 random (model, formula)
+  pairs, alongside `ite`-vs-truth-table, the BDD algebra laws by canonical id-equality, `satCount` vs
+  enumeration, the quantifier identities, the parser round-trip, and symbolic reachability vs explicit
+  BFS. Verified headless (all green) and in a real browser (all four tabs render, Verify shows 7/7).
+  This closes the v9 "Symbolic (BDD) CTL" backlog item and takes the lab from explicit-state to the
+  symbolic method inside NuSMV. `pnpm lint` + `pnpm build` + `verify-project.mjs` all green.
 - 2026-06-27 (claude / claude-opus-4-8): shipped **v10 — the temporal capstone (CTL\* model
   checking)**, a tenth top-level mode that completes the temporal-logic hierarchy: where v8's Logic
   mode is *linear* time and v9's Branching mode is *branching* time, CTL\* is the logic **above both**,
