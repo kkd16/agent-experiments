@@ -35,6 +35,22 @@ import { makeAZNet, azLoss } from './aznet';
 import { makeGame, solve, type GameState, type SolveResult } from './games';
 import { runSearch, visitPolicy, argmaxPolicy } from './mcts';
 import { gradCheck } from './gradcheck';
+import {
+  QNet,
+  weightedHuber,
+  tdTarget,
+  DQNAgent,
+  Corridor,
+  corridorQStar,
+  tabularQStar,
+  SumTree,
+  qForward,
+  argmaxOf,
+  maxOf,
+  type DQNConfig,
+  type Transition,
+} from './dqn';
+import { GRID_LAYOUTS } from './rl-env';
 
 export interface OpCheck {
   name: string;
@@ -1268,6 +1284,167 @@ export function runSelfTest(seed = 7): SelfTestReport {
         [perfLosses, 0], // perfect play never loses to random
       ]),
     );
+  }
+
+  // ---- Value · DQN --------------------------------------------------------------------------
+  // The value-based deep-RL lab: the Q-net (plain + dueling) gradchecked through the
+  // importance-weighted Huber TD loss, the tabular value-iteration ground truth, the Double-DQN
+  // target identity, exact target-network sync, prioritized-replay proportional sampling, and an
+  // end-to-end proof that a from-scratch DQN converges to the value-iteration optimum.
+  {
+    // A small fixed minibatch of states / actions / (constant) TD targets, off the Huber kink.
+    const B = 6;
+    const S = 5;
+    const A = 3;
+    const delta = 20; // keep every residual inside the quadratic region so finite differences are smooth
+    const makeBatch = () => {
+      const sd = new Float64Array(B * S);
+      for (let i = 0; i < sd.length; i++) sd[i] = rng() * 2 - 1;
+      const statesT = Tensor.fromFlat(sd, B, S, false);
+      const acts = new Int32Array(B);
+      const targets = new Float64Array(B);
+      const weights = new Float64Array(B);
+      for (let i = 0; i < B; i++) {
+        acts[i] = Math.floor(rng() * A);
+        targets[i] = rng() * 0.6 - 0.3;
+        weights[i] = 0.5 + rng(); // heterogeneous importance weights, like PER
+      }
+      return { statesT, acts, targets, weights };
+    };
+
+    // (1) plain Q-net through the weighted-Huber TD loss.
+    {
+      const net = new QNet(S, A, [8, 8], 'tanh', 'plain', rngFrom(4210));
+      const { statesT, acts, targets, weights } = makeBatch();
+      const gc = gradCheck(net.parameters(), () => weightedHuber(gatherCols(net.forward(statesT), acts), targets, weights, delta), {
+        samplesPerParam: 4,
+      });
+      ops.push({ name: 'dqn-qnet (huber TD, e2e)', maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
+    }
+    // (2) dueling Q-net (value + advantage recombination) through the same loss.
+    {
+      const net = new QNet(S, A, [8, 8], 'tanh', 'dueling', rngFrom(4211));
+      const { statesT, acts, targets, weights } = makeBatch();
+      const gc = gradCheck(net.parameters(), () => weightedHuber(gatherCols(net.forward(statesT), acts), targets, weights, delta), {
+        samplesPerParam: 4,
+      });
+      ops.push({ name: 'dqn-dueling (V+A, e2e)', maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
+    }
+
+    // (3) value-iteration Bellman residual ≈ 0 on every GridWorld layout (the ground-truth solver).
+    {
+      let maxResidual = 0;
+      for (const layout of GRID_LAYOUTS) maxResidual = Math.max(maxResidual, tabularQStar(layout, 0.99).bellmanResidual);
+      ops.push(relCheck('dqn-value-iteration (Bellman residual)', [[maxResidual, 0]]));
+    }
+
+    // (4) Double-DQN target identity: tdTarget() equals the hand-computed r + γ·Q_tgt(s', argmax_a Q_on(s',a)),
+    //     the plain-DQN r + γ·max_a Q_tgt(s',a), and rn for terminal transitions — to machine precision.
+    {
+      const on = new QNet(4, 3, [8], 'tanh', 'plain', rngFrom(777));
+      const tg = new QNet(4, 3, [8], 'tanh', 'plain', rngFrom(778));
+      const s2 = Float64Array.from([0.3, -0.2, 0.5, -0.4]);
+      const tr: Transition = { s: Float64Array.from([0.1, 0.2, -0.1, 0.0]), a: 1, rn: 0.35, s2, gammaN: 0.9, reward1: 0.35 };
+      const aStar = argmaxOf(qForward(on, s2));
+      const expectedDouble = tr.rn + tr.gammaN * qForward(tg, s2)[aStar];
+      const expectedPlain = tr.rn + tr.gammaN * maxOf(qForward(tg, s2));
+      const term: Transition = { ...tr, s2: null };
+      ops.push(
+        relCheck('dqn-target identity (double/plain/terminal)', [
+          [tdTarget(tr, on, tg, true), expectedDouble],
+          [tdTarget(tr, on, tg, false), expectedPlain],
+          [tdTarget(term, on, tg, true), tr.rn],
+        ]),
+      );
+    }
+
+    // (5) hard target-sync copies every weight exactly (max abs diff = 0).
+    {
+      const on = new QNet(4, 3, [8], 'relu', 'dueling', rngFrom(9001));
+      const tg = new QNet(4, 3, [8], 'relu', 'dueling', rngFrom(9002));
+      tg.hardUpdateFrom(on);
+      let maxDiff = 0;
+      const sp = on.parameters();
+      const dp = tg.parameters();
+      for (let i = 0; i < sp.length; i++) for (let j = 0; j < sp[i].size; j++) maxDiff = Math.max(maxDiff, Math.abs(sp[i].data[j] - dp[i].data[j]));
+      ops.push(relCheck('dqn-target sync (hard copy exact)', [[maxDiff, 0]]));
+    }
+
+    // (6) prioritized-replay sum-tree samples ∝ priority: with leaf priorities [1,2,3,4], the
+    //     empirical sampling frequencies must match [0.1,0.2,0.3,0.4]. Encoded as a boolean so a
+    //     regression flips it to a hard failure.
+    {
+      const tree = new SumTree(4);
+      const pr = [1, 2, 3, 4];
+      for (let i = 0; i < 4; i++) tree.set(i, pr[i]);
+      const total = tree.total();
+      const counts = new Float64Array(4);
+      const srng = rngFrom(2718);
+      const N = 40000;
+      for (let k = 0; k < N; k++) counts[tree.find(srng() * total)]++;
+      let maxErr = 0;
+      for (let i = 0; i < 4; i++) maxErr = Math.max(maxErr, Math.abs(counts[i] / N - pr[i] / total));
+      ops.push(relCheck('dqn-PER sum-tree (samples ∝ priority)', [[maxErr < 0.02 ? 1 : 0, 1], [tree.total(), 10]]));
+    }
+
+    // (7) convergence: a from-scratch DQN trained on a tiny deterministic corridor MDP reaches the
+    //     optimal greedy policy at EVERY state and its learned Q matches the closed-form Q*.
+    {
+      const corridor = new Corridor({ length: 6, stepCost: 0.02 });
+      const star = corridorQStar({ length: 6, stepCost: 0.02 }, 0.99);
+      const cfg: DQNConfig = {
+        gamma: 0.99,
+        lr: 0.005,
+        arch: 'plain',
+        double: true,
+        per: false,
+        hidden: [32],
+        activation: 'relu',
+        bufferSize: 5000,
+        batch: 32,
+        warmup: 100,
+        nStep: 1,
+        epsStart: 1,
+        epsEnd: 0.05,
+        epsDecaySteps: 3000,
+        targetMode: 'hard',
+        targetPeriod: 200,
+        tau: 0.01,
+        perAlpha: 0.6,
+        perBetaStart: 0.4,
+        perBetaEnd: 1,
+        perBetaSteps: 5000,
+        huberDelta: 1,
+        clipNorm: 10,
+        seed: 20260702,
+      };
+      const agent = new DQNAgent(corridor.stateDim, corridor.nActions, cfg);
+      const erng = rngFrom(4242);
+      corridor.reset();
+      for (let step = 0; step < 12000; step++) {
+        const obs = corridor.observe();
+        const a = agent.act(obs, erng, true);
+        const r = corridor.step(a);
+        agent.observe(obs, a, r.reward, r.obs, r.terminated, r.truncated);
+        agent.learn(erng);
+        if (r.terminated || r.truncated) corridor.reset();
+      }
+      let allOptimal = 1;
+      let maxQErr = 0;
+      for (let i = 0; i < corridor.stateDim - 1; i++) {
+        const obs = new Float64Array(corridor.stateDim);
+        obs[i] = 1;
+        const q = qForward(agent.online, obs);
+        if (argmaxOf(q) !== star.policy[i]) allOptimal = 0;
+        for (let a = 0; a < 2; a++) maxQErr = Math.max(maxQErr, Math.abs(q[a] - star.Q[i * 2 + a]));
+      }
+      ops.push(
+        relCheck('dqn-convergence (→ Q* on corridor)', [
+          [allOptimal, 1], // optimal greedy action at every state
+          [maxQErr < 0.15 ? 1 : 0, 1], // learned Q within tolerance of the closed-form optimum
+        ]),
+      );
+    }
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
