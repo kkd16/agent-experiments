@@ -29,6 +29,7 @@ import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
 import { VrfPage } from './pages/VrfPage'
 import { RingPage } from './pages/RingPage'
+import { SealedPage } from './pages/SealedPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -61,6 +62,7 @@ const ROUTES = [
   { path: '/pqsig', label: 'PQ Signatures' },
   { path: '/vrf', label: 'ECVRF' },
   { path: '/ring', label: 'Ring Sigs' },
+  { path: '/sealed', label: 'Sealed E2EE' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -116,6 +118,7 @@ export default function App() {
       {base === '/pqsig' && <HashSigPage />}
       {base === '/vrf' && <VrfPage />}
       {base === '/ring' && <RingPage />}
+      {base === '/sealed' && <SealedPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
@@ -125,8 +128,9 @@ export default function App() {
         signing, zero-knowledge Σ-protocols, KZG polynomial commitments, a Groth16 and a universal
         PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, a transparent hash-only STARK
         (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, Monero-style linkable
-        ring signatures (bLSAG / CLSAG) with stealth addresses, and post-quantum hash-based signatures
-        (Lamport / WOTS⁺ / XMSS / SPHINCS⁺) — zero crypto dependencies.
+        ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
+        (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), and a Signal-style end-to-end encrypted channel (X3DH +
+        Double Ratchet over a from-scratch ChaCha20-Poly1305) — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>

@@ -488,8 +488,112 @@ Open follow-ups (next sessions):
 - [ ] **Sub-address derivation** (Monero's `Hs(a‖i‖j)` scheme) on top of the stealth-address lab.
 - [ ] **Fujisaki–Suzuki / traceable ring signatures** as an alternative linkability flavour.
 
+### Session 11 plan — Sealed: the secure channel (X3DH + Double Ratchet, the Signal protocol)
+
+Every lab here so far answers *authenticity* ("who signed this?") or *soundness* ("is this statement
+true?"). Not one of them keeps a message **secret** — the engine had signatures, proofs, and key
+agreement, but no *confidentiality* and no secure-channel protocol. That is the one missing dimension
+of applied crypto, and it happens to be the most recognizable: the **Signal protocol** — the exact
+end-to-end encryption behind WhatsApp, Signal, and Messenger's secret conversations. This session
+composes the lab's existing X25519 + HKDF/HMAC-SHA256 with a from-scratch AEAD into a real secure
+channel, anchored to the strongest checks available: RFC 8439 and RFC 5869 byte-level vectors for the
+primitives, and the protocol's own security properties (forward secrecy, post-compromise security,
+out-of-order delivery) for the composition.
+
+- [x] **`chacha20.ts` — ChaCha20-Poly1305 AEAD (RFC 8439), from scratch.** The 20-round ARX block
+      function (Uint32 quarter-rounds), counter-mode stream encryption, the Poly1305 one-time
+      Wegman–Carter MAC (a single polynomial mod 2¹³⁰−5 on BigInt), and `AEAD_CHACHA20_POLY1305` with
+      the §2.8 length-framed MAC-data and a constant-time tag compare. `seal`/`open` convenience wrappers.
+      The lab's first symmetric cipher — the piece that actually hides a message.
+- [x] **Pin the RFC 8439 vectors.** The §2.3.2 keystream block, §2.4.2 stream ciphertext, §2.5.2
+      Poly1305 tag, and §2.8.2 AEAD tag all reproduce **byte-for-byte**; decrypt round-trips and a
+      one-bit maul of the ciphertext / tag / associated data is rejected (checked live in Self-Test).
+- [x] **`hkdf.ts` — HKDF-SHA256 (RFC 5869) as a first-class module.** Extract + expand + the combined
+      one-shot, on the lab's own HMAC-SHA256. Pinned to RFC 5869 test cases 1 and 3 (including the
+      zero-filled default salt). The KDF that turns a raw DH secret into namespaced sub-keys.
+- [x] **`xeddsa.ts` — XEdDSA (Signal), from scratch.** The trick that lets a single X25519 (Montgomery)
+      identity key *sign*: convert the key pair to the birationally equivalent twisted-Edwards pair,
+      pin the public key's sign bit to 0 (so the verifier can rebuild it from just the u-coordinate),
+      and sign with ordinary Ed25519 maths. The verifier reuses the lab's `ed25519Verify` unchanged —
+      an XEdDSA signature *is* a valid Ed25519 signature under the derived key. Sign→verify, and
+      tamper/wrong-key rejection, checked live.
+- [x] **`x3dh.ts` — Extended Triple Diffie–Hellman (Signal), from scratch.** Prekey bundles (identity
+      key, XEdDSA-signed prekey, one-time prekey), the initiator's 3–4 DH mix (`DH1=IK_A·SPK_B`,
+      `DH2=EK_A·IK_B`, `DH3=EK_A·SPK_B`, `DH4=EK_A·OPK_B`), the curve25519 `F ‖ …` domain prefix, and
+      `SK = HKDF(...)`. The responder recomputes the identical secret from his private keys. A tampered
+      signed-prekey signature yields **no session** (verified before the DHs run).
+- [x] **`doubleratchet.ts` — the Double Ratchet (Signal), from scratch.** The root KDF (`KDF_RK` via
+      HKDF), the symmetric-key chain (`KDF_CK` via HMAC with 0x01/0x02 constants), per-message keys →
+      (ChaCha20 key ‖ nonce), the **DH ratchet** (a fresh ephemeral reseeds the root on every direction
+      change), and a **skipped-message-key store** (bounded by `MAX_SKIP`) for out-of-order and dropped
+      messages. Headers are authenticated as AEAD associated data. `initAlice`/`initBob` bootstrap from
+      the X3DH secret; `cloneState` snapshots for the UI.
+- [x] **`signal.ts` — the full session + three demonstrations.** Participant/bundle creation, the
+      initiator/responder handshakes, `encryptText`/`decryptText`, and three self-contained scenarios
+      the UI and the Self-Test both replay: **out-of-order** delivery (3,1,2 still decrypts),
+      **forward secrecy** (a used key is deleted — replaying a delivered message fails), and
+      **post-compromise security** (a stolen full state reads the next message but is locked back out
+      one round trip later, once a fresh ratchet key it never saw reseeds the root).
+- [x] **`SealedPage.tsx` (Lab 24) — a live Alice⇄Bob encrypted chat.** The X3DH handshake laid out
+      (Bob's bundle with a live prekey-signature verdict, Alice's ephemeral, the four DHs, the derived
+      root secret), a conversation you drive (each bubble shows plaintext, header, ciphertext bytes,
+      a "↻ DH ratchet" marker when the direction turns, and a decrypt/rejected verdict), a **forge**
+      toggle that flips a ciphertext bit and shows the AEAD reject it, a **live ratchet-state** panel
+      for both sides (root key, chain keys, Ns/Nr/PN, stashed skipped keys), and one-click runners for
+      the three guarantees. Node-verified before UI and headless-render checked.
+- [x] Self-test grew 218 → **241/241** (+23: ChaCha20 / Poly1305 / AEAD / HKDF / XEdDSA / X3DH /
+      Ratchet). Nav + Overview + footer updated (Sealed slots into the free index 24, between PLONK and
+      STARK). No new dependencies — still **zero crypto deps**.
+
+Open follow-ups (next sessions):
+
+- [ ] **Sesame / multi-device sessions** — one identity, several device sessions, and the
+      session-management layer that fans a message out to each.
+- [ ] **Header encryption** (the Double Ratchet's HE variant) — encrypt the header with a separate
+      key chain so the ratchet public key and counters are hidden from a network observer.
+- [ ] **Sealed sender** — Signal's metadata-hiding envelope (an ephemeral-key certificate so the
+      server never learns the sender), on top of this channel.
+- [ ] **A group protocol** — a sender-keys / MLS-style tree so N participants share a ratcheting group
+      key, not just a pair.
+- [ ] **AES-GCM as a second AEAD** (a from-scratch GF(2¹²⁸) GHASH) so the message layer is
+      cipher-agile, with the NIST GCM test vectors.
+- [ ] **A network-timeline view** — a draggable message queue so you can hold, reorder, and drop
+      messages by hand and watch the skip store fill and drain.
+- [ ] **Deniability demo** — show that either party could have forged the transcript (the shared-key
+      symmetry that gives the protocol its off-the-record deniability).
+
 ## Session log
 
+- 2026-07-02 (claude): **Sealed — the secure channel: X3DH + Double Ratchet (the Signal protocol),
+  from scratch.** Closed the one missing dimension of the lab: *confidentiality*. Every prior module
+  proves who signed something or that a statement is true; none kept a message secret. This session
+  composes the existing X25519 + HKDF/HMAC-SHA256 with a **from-scratch ChaCha20-Poly1305** into the
+  actual end-to-end encryption behind WhatsApp/Signal. Six new engine modules + one lab.
+  **(1) `chacha20.ts` — ChaCha20-Poly1305 AEAD (RFC 8439):** the 20-round ARX block function, counter-
+  mode encryption, the Poly1305 polynomial MAC mod 2¹³⁰−5, and the §2.8 length-framed AEAD with a
+  constant-time tag compare — pinned **byte-for-byte** to the RFC's §2.3.2/§2.4.2/§2.5.2/§2.8.2 vectors.
+  **(2) `hkdf.ts` — HKDF-SHA256 (RFC 5869):** extract/expand as a first-class module on the lab's HMAC,
+  pinned to RFC test cases 1 and 3. **(3) `xeddsa.ts` — XEdDSA (Signal):** the birational
+  Montgomery→Edwards trick that lets one X25519 identity key *sign* its prekey, with the sign bit pinned
+  to 0 so the verifier rebuilds the key from the u-coordinate alone — an XEdDSA signature is a valid
+  Ed25519 signature, so it reuses `ed25519Verify` unchanged. **(4) `x3dh.ts` — Extended Triple DH:**
+  prekey bundles, the 3–4-way DH mix, and `SK = HKDF(F ‖ DH1‖…‖DH4)`, with a tampered signed-prekey
+  signature yielding no session. **(5) `doubleratchet.ts` — the Double Ratchet:** the HKDF root chain,
+  the HMAC symmetric chain, per-message ChaCha20 keys, the DH ratchet that reseeds the root on every
+  direction change, and a bounded skipped-message-key store for out-of-order delivery — headers
+  authenticated as AEAD associated data. **(6) `signal.ts` — the session + three replayable proofs:**
+  out-of-order (3,1,2 still decrypts), **forward secrecy** (a used key is deleted, so replaying a
+  delivered message fails), and **post-compromise security** (a stolen full state reads the next
+  message but is locked back out one round trip later, once a fresh ratchet key it never saw reseeds
+  the root — the subtle part: healing needs Bob to generate a new key, which he only does on *receiving*
+  Alice's ratchet, so it takes a full round trip). **(7) `SealedPage.tsx` (Lab 24):** a live Alice⇄Bob
+  chat — the X3DH handshake with a live prekey-signature verdict and the four DHs, message bubbles
+  showing plaintext + header + ciphertext bytes + a "↻ DH ratchet" marker + a decrypt/rejected verdict,
+  a forge toggle that flips a ciphertext bit and shows the AEAD reject it, a live two-sided ratchet-
+  state panel, and one-click runners for the three guarantees. All 28 primitive+protocol checks pass in
+  a Node harness (RFC vectors byte-exact); the live Self-Test grew **218 → 241/241**; lint + build +
+  the exact CI gate all green; the page SSR-rendered clean before commit. Nav/Overview/footer updated;
+  Sealed takes the free index 24. **Zero new dependencies — still zero crypto deps.**
 - 2026-07-02 (claude): **Verifiable randomness (ECVRF) + linkable ring signatures & stealth
   addresses.** Two new engine modules and two new labs, adding the two applied-crypto pillars the shelf
   still lacked. **(1) `ecvrf.ts` — ECVRF (RFC 9381)**, a verifiable random function on Edwards25519 in

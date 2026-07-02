@@ -171,10 +171,16 @@ const LABS = [
     desc: 'The cryptography that hides a sender yet still forbids double-spends — Monero’s core. bLSAG and the concise CLSAG built on key images I = x·Hₚ(P), plus CryptoNote stealth one-time keys, assembled into a complete private payment with a ring of decoys.',
   },
   {
+    path: '/sealed',
+    ix: '24',
+    title: 'Sealed · End-to-End Encrypted Messaging',
+    desc: 'The whole lab, assembled into the Signal protocol — the E2EE behind WhatsApp and Signal. X3DH agrees a secret with an offline recipient; the Double Ratchet then gives every message forward secrecy and heals the session after a key compromise, over a from-scratch ChaCha20-Poly1305. A live Alice⇄Bob chat you can tamper with, reorder, and compromise.',
+  },
+  {
     path: '/verify',
     ix: '30',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺ and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, and Wycheproof vectors.',
   },
 ]
 

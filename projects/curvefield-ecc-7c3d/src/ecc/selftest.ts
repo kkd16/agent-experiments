@@ -164,6 +164,21 @@ import {
   pubFromSecret,
 } from './ring'
 import { edEqual2, L25519 as RING_L } from './ed25519'
+import { chacha20Block, chacha20, poly1305Mac, aeadEncrypt, aeadDecrypt } from './chacha20'
+import { hkdf, hkdfExtract } from './hkdf'
+import { xeddsaSign, xeddsaVerify } from './xeddsa'
+import {
+  createParticipant,
+  publishBundle,
+  beginInitiator,
+  beginResponder,
+  encryptText,
+  decryptText,
+  runOutOfOrderDemo,
+  runForwardSecrecyDemo,
+  runPostCompromiseDemo,
+} from './signal'
+import { x3dhInitiate, x3dhRespond, generateKeyPair as x25519Keypair } from './x3dh'
 
 export interface TestCase {
   name: string
@@ -1556,6 +1571,89 @@ export function runSelfTest(): TestCase[] {
     const payRing = [...decoys.slice(0, 4), P, ...decoys.slice(4)]
     const pay = blsagSign(utf8('pay 1 coin'), payRing, recovered.x, 4)
     check('RingSig', 'private payment: ring sig over the stealth output verifies', blsagVerify(utf8('pay 1 coin'), payRing, pay), 'spend a stealth coin among 10 decoys')
+  }
+
+  // ── Sealed: the secure channel (ChaCha20-Poly1305, HKDF, X3DH, Double Ratchet) ──
+  {
+    const bhex = (b: Uint8Array) => bytesToHex(b)
+    const range = (n: number, s = 0) => Uint8Array.from({ length: n }, (_, i) => s + i)
+
+    // ChaCha20 block function — RFC 8439 §2.3.2.
+    const ccBlock = chacha20Block(range(32), 1, hexToBytes('000000090000004a00000000'))
+    check(
+      'ChaCha20',
+      'block function matches RFC 8439 §2.3.2',
+      bhex(ccBlock) ===
+        '10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c0680304' +
+        '22aa9ac3d46c4ed2826446079faa0914c2d705d98b02a2b5129c' +
+        'd1de164eb9cbd083e8a2503c4e',
+      'the 20-round ARX permutation, keystream block',
+    )
+    // ChaCha20 encryption — RFC 8439 §2.4.2 (first 16 ciphertext bytes).
+    const ccMsg = utf8("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.")
+    const ccCt = chacha20(range(32), 1, hexToBytes('000000000000004a00000000'), ccMsg)
+    check('ChaCha20', 'stream encryption matches RFC 8439 §2.4.2', bhex(ccCt).startsWith('6e2e359a2568f98041ba0728dd0d6981'), 'counter-mode keystream XOR')
+
+    // Poly1305 — RFC 8439 §2.5.2.
+    const polyKey = hexToBytes('85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b')
+    const polyTag = poly1305Mac(polyKey, utf8('Cryptographic Forum Research Group'))
+    check('Poly1305', 'MAC matches RFC 8439 §2.5.2', bhex(polyTag) === 'a8061dc1305136c6c22b8baf0c0127a9', 'a single polynomial mod 2¹³⁰−5')
+
+    // AEAD_CHACHA20_POLY1305 — RFC 8439 §2.8.2 + authentication.
+    const aeadKey = range(32, 0x80)
+    const aeadNonce = hexToBytes('070000004041424344454647')
+    const aeadAad = hexToBytes('50515253c0c1c2c3c4c5c6c7')
+    const aead = aeadEncrypt(aeadKey, aeadNonce, ccMsg, aeadAad)
+    check('AEAD', 'ChaCha20-Poly1305 tag matches RFC 8439 §2.8.2', bhex(aead.tag) === '1ae10b594f09e26a7e902ecbd0600691', 'tag covers AAD ‖ ciphertext ‖ lengths')
+    check('AEAD', 'decrypt round-trips', (() => { const p = aeadDecrypt(aeadKey, aeadNonce, aead.ciphertext, aead.tag, aeadAad); return !!p && bhex(p) === bhex(ccMsg) })(), 'seal → open recovers the plaintext')
+    check('AEAD', 'rejects a tampered ciphertext', (() => { const c = aead.ciphertext.slice(); c[0] ^= 1; return aeadDecrypt(aeadKey, aeadNonce, c, aead.tag, aeadAad) === null })(), 'one flipped bit → authentication fails')
+    check('AEAD', 'rejects tampered associated data', aeadDecrypt(aeadKey, aeadNonce, aead.ciphertext, aead.tag, hexToBytes('00')) === null, 'the AD is bound into the tag')
+
+    // HKDF-SHA256 — RFC 5869 test case 1 and 3.
+    const prk = hkdfExtract(hexToBytes('000102030405060708090a0b0c'), hexToBytes('0b'.repeat(22)))
+    check('HKDF', 'extract PRK matches RFC 5869 case 1', bhex(prk) === '077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5', 'PRK = HMAC(salt, IKM)')
+    const okm1 = hkdf(hexToBytes('0b'.repeat(22)), hexToBytes('000102030405060708090a0b0c'), hexToBytes('f0f1f2f3f4f5f6f7f8f9'), 42)
+    check('HKDF', 'expand OKM matches RFC 5869 case 1', bhex(okm1) === '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865', '42-byte output keying material')
+    const okm3 = hkdf(hexToBytes('0b'.repeat(22)), new Uint8Array(0), new Uint8Array(0), 42)
+    check('HKDF', 'expand with empty salt/info matches RFC 5869 case 3', bhex(okm3) === '8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8', 'zero-filled default salt')
+
+    // XEdDSA — an X25519 key signs its prekey (Signal).
+    const xk = x25519Keypair()
+    const xmsg = utf8('signed prekey')
+    const xsig = xeddsaSign(xk.priv, xmsg)
+    check('XEdDSA', 'X25519 key signs and verifies', xeddsaVerify(xk.pub, xmsg, xsig), 'Montgomery→Edwards, Ed25519 equation')
+    check('XEdDSA', 'rejects a tampered message', !xeddsaVerify(xk.pub, utf8('other'), xsig), 'the challenge no longer closes')
+    check('XEdDSA', 'rejects the wrong key', !xeddsaVerify(x25519Keypair().pub, xmsg, xsig), 'signature is bound to the signer')
+
+    // X3DH — the extended triple Diffie–Hellman agreement.
+    const alice = createParticipant('Alice')
+    const bob = createParticipant('Bob')
+    const eph = x25519Keypair()
+    const bundle = publishBundle(bob, 0)
+    const init = x3dhInitiate(alice.identity, eph, bundle)
+    const resp = x3dhRespond(bob.identity, bob.signedPreKey, bob.oneTimePreKeys[0], init.message)
+    check('X3DH', 'initiator and responder derive the same secret', bhex(init.result.sharedSecret) === bhex(resp.sharedSecret), '3–4 DHs → one HKDF root secret')
+    check('X3DH', 'associated data agrees', bhex(init.result.associatedData) === bhex(resp.associatedData), 'AD = IK_A ‖ IK_B, bound into every message')
+    check('X3DH', 'rejects a forged signed-prekey signature', (() => { const bad = { ...bundle, signedPreKeySignature: bundle.signedPreKeySignature.slice() }; bad.signedPreKeySignature[3] ^= 1; try { x3dhInitiate(alice.identity, x25519Keypair(), bad); return false } catch { return true } })(), 'a tampered bundle yields no session')
+
+    // Double Ratchet — a full end-to-end conversation.
+    {
+      const A = createParticipant('Alice')
+      const B = createParticipant('Bob')
+      const { session: aS, initial } = beginInitiator(A, publishBundle(B, 0))
+      const bS = beginResponder(B, 0, initial)
+      const m1 = encryptText(aS, 'hi bob')
+      check('Ratchet', 'A→B first message decrypts', decryptText(bS, m1) === 'hi bob', 'root key bootstrapped from the X3DH secret')
+      const r1 = encryptText(bS, 'hi alice')
+      check('Ratchet', 'B→A reply turns the DH ratchet', decryptText(aS, r1) === 'hi alice', 'a new ephemeral reseeds the root')
+      const m2 = encryptText(aS, 'new sending chain')
+      check('Ratchet', 'A→B on the new chain decrypts', decryptText(bS, m2) === 'new sending chain', 'the symmetric ratchet clicks per message')
+      const bad = encryptText(aS, 'secret'); bad.ciphertext[0] ^= 1
+      check('Ratchet', 'rejects a tampered ratchet message', decryptText(bS, bad) === null, 'AEAD binds the header as AD')
+    }
+    check('Ratchet', 'out-of-order delivery still decrypts (3,1,2)', runOutOfOrderDemo().ok, 'skipped message keys are stashed until they arrive')
+    check('Ratchet', 'forward secrecy: a used key is deleted', runForwardSecrecyDemo().ok, 'replaying a delivered message fails')
+    check('Ratchet', 'post-compromise security: a stolen state heals out', runPostCompromiseDemo().ok, 'one round trip locks the thief back out')
   }
 
   return t
