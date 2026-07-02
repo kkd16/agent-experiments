@@ -325,8 +325,47 @@ curve-free pillar of the ZK shelf.
 - [x] **+11 self-test checks** (Goldilocks generator/root-of-unity/NTT round-trip; FRI
       honest-accept/random-reject/tamper-reject; STARK pinned-output/honest-verify/false-output-reject/
       forged-step-reject/mauled-OOD-reject); suite grew 131 → **142/142** across 35 subsystems.
-- [ ] **A hash-based signature** (Winternitz OTS → a Merkle/XMSS few-time scheme) — the same
-      hash-only, post-quantum assumption applied to signing, sitting beside the STARK.
+### Post-quantum hash-based signatures (planned 2026-07-02, RFC 8391 / SPHINCS⁺)
+
+The STARK proved the lab's *proofs* can rest on nothing but a collision-resistant hash. This
+brings the same hash-only, plausibly-post-quantum assumption to **signing** — the one corner of
+the lab that was still 100 % discrete-log / pairing. One idea (a hash chain) carried, exactly like
+the group law was, from a signature you could verify with pencil and paper up to a **stateless**
+scheme with the same shape as NIST's SLH-DSA (FIPS 205). No new dependencies: every byte flows
+through the lab's own SHA-256, so the *only* assumption is the one the STARK already makes.
+
+- [x] **Tweakable-hash substrate** (`hashaddr.ts`) — the RFC 8391 §2.5/§5.1 primitives on the lab's
+      SHA-256: `toByte`, the 32-byte **ADRS** address (OTS / L-tree / hash-tree types with their
+      field setters), and the four domain-separated hashes `F`/`H`/`H_msg`/`PRF` (`SHA256(toByte(t,32)
+      ‖ KEY ‖ M)`), plus `PRF_keygen`. Standards-conformant by construction — SHA-256 is the only
+      trust root, and it is already KAT-pinned to FIPS 180-4.
+- [x] **Lamport OTS** (`lamport.ts`) — the pencil-and-paper starting point: a secret of `2·8n`
+      random preimages, a public key of their hashes, sign one message by revealing the preimage
+      selected by each message-digest bit. Signs **exactly once**; a second signature under one key
+      leaks halves and is forgeable — demonstrated. The "draw it by hand" of the PQ world.
+- [x] **WOTS⁺** (`wots.ts`, RFC 8391 §3) — the Winternitz collapse: `base_w`, the bitmasked hash
+      `chain`, the length-2 **checksum** that stops a forger walking a chain forward, keygen-from-seed
+      (`PRF_keygen`), `sign`, and `pkFromSig` (verify by finishing every chain to its top). `w`
+      trades signature size against hash work (`len = ⌈8n/lg w⌉ + len₂`); the lab exposes the curve.
+- [x] **XMSS** (`xmss.ts`, RFC 8391 §4) — a **Merkle tree of WOTS⁺ keys** turns 2^h one-time keys
+      into one reusable public key: `RAND_HASH`, the **L-tree** that crushes `len` WOTS⁺ pk elements
+      into a leaf, `treeHash`/authentication-path, stateful `sign` (a leaf index that must advance —
+      **reuse is refused**), and `rootFromSig` verify. The Merkle root *is* the public key; a
+      signature is a WOTS⁺ sig + an O(h) auth path.
+- [x] **SPHINCS⁺ / SLH-DSA-shape stateless scheme** (`sphincs.ts`, FIPS 205 shape) — remove the
+      state: a **FORS** few-time signature (`k` Merkle trees of `2^a` leaves, message-selected leaf
+      per tree) signed by a **hypertree** (`d` layers of XMSS, each layer's root WOTS⁺-signed by the
+      layer above). `H_msg` maps (R, PK, M) → a FORS index + tree/leaf address; a random `R = PRF_msg`
+      makes it stateless. Scaled-down toy params in the lab, real FIPS-205 param names documented.
+- [x] **`PQSignatures` lab page** — Lamport → WOTS⁺ → XMSS → SPHINCS⁺ in one pedagogical arc: live
+      sign/verify with all-green verdict tags, a key/signature **size table** (bytes, and the famous
+      "small keys, big signatures" tradeoff), a `w`/`h`/`d` control surface, the XMSS **authentication
+      path** drawn to its root, the **one-time-key exhaustion** guard shown refusing reuse, and three
+      **forgery demos** (Lamport double-sign, a walked WOTS⁺ chain caught by the checksum, a tampered
+      auth path). Wired into nav + Overview; cards renumbered.
+- [x] **Self-test battery** — SHA-anchored tweakable-hash KATs, the WOTS⁺ chain composition law
+      (`chain(x,0,a)` then `chain(·,a,b) = chain(x,0,a+b)`), Lamport/WOTS⁺/XMSS/SPHINCS⁺ round-trips,
+      forgery rejection for each, and the XMSS state-advance / no-reuse invariant.
 - [ ] **A Rescue/Poseidon algebraic hash** over Goldilocks and a STARK that proves a hash preimage
       (constraints over an arithmetic-friendly permutation instead of a toy recurrence).
 - [ ] **DEEP with two OOD points + a grinding/proof-of-work nonce** for tighter soundness at fewer
@@ -335,6 +374,45 @@ curve-free pillar of the ZK shelf.
 
 ## Session log
 
+- 2026-07-02 (claude): **post-quantum hash-based signatures — Lamport → WOTS⁺ → XMSS → SPHINCS⁺,
+  from scratch.** The lab's first signature family that survives a quantum computer: every other
+  signature here (ECDSA, Schnorr, MuSig, BLS) dies to Shor, while these rest on *nothing but a
+  collision-resistant hash* — the exact assumption the STARK already makes — so the whole lab now
+  spans classical curves, pairings, transparent proofs *and* a plausibly-post-quantum signature.
+  Six new engine modules, each Node-verified against its algebraic invariants before any UI, all on
+  the lab's own SHA-256 (still **zero crypto dependencies**). (1) `hashaddr.ts`: the RFC 8391
+  §2.5/§5.1 **tweakable-hash substrate** — `toByte`, the 32-byte **ADRS** address (OTS / L-tree /
+  hash-tree / FORS types with their field setters), the four domain-separated hashes
+  `F`/`H`/`H_msg`/`PRF` (`SHA256(toByte(t,32) ‖ KEY ‖ M)`), `RAND_HASH` (the bitmasked Merkle node),
+  and the SPHINCS⁺ `T_ℓ` multi-input compressor — standards-conformant by construction (SHA-256 is
+  the only trust root, and it is already KAT-pinned to FIPS 180-4). (2) `lamport.ts`: **Lamport
+  OTS**, the pencil-and-paper root — reveal one of two preimages per digest bit; a live forger shows
+  that reusing the key ~16× leaks all 512 secret halves and enables *universal* forgery, the reason
+  it is one-time. (3) `wots.ts`: **WOTS⁺** (RFC 8391 §3) — `base_w`, the bitmasked `chain`, the
+  length-2 **checksum** that blocks forward-walking a chain, PRF-expanded keygen, `sign`,
+  `pkFromSig`; `w` is a pure size/speed dial (`len = ⌈8n/lg w⌉ + len₂`; w=16 ⇒ 67 chains), verified
+  at w=4/16/256 and via the chain composition law `chain(·,0,a)∘chain(·,a,b)=chain(·,0,a+b)`.
+  (4) `xmss.ts`: **XMSS** (RFC 8391 §4) — the **L-tree** crush of a WOTS⁺ pk into a leaf, the Merkle
+  `treeHash` + O(h) authentication path, and **stateful** sign where the leaf counter *must* advance
+  (the signer refuses to reuse a leaf, and exhausts at 2^h). The root *is* the public key.
+  (5) `sphincs.ts`: **SPHINCS⁺ / SLH-DSA-shape** (FIPS 205) — the *stateless* scheme: a **FORS**
+  few-time signature (k Merkle trees, message-selected leaves) signed by a **hypertree** (d layers of
+  XMSS, each root WOTS⁺-signed by the layer above, trees regenerated from seeds on demand), the leaf
+  chosen pseudo-randomly from `H_msg(R ‖ PK.seed ‖ PK.root, M)` so there is no counter to lose;
+  scaled toy params (h=12, d=3, k=8, a=6) keygen/sign/verify in the browser in well under a second,
+  with the real SLH-DSA-128s names documented. (6) A **`PQSignatures` lab page** (Lab 26): the four
+  schemes in one pedagogical arc — a Lamport reuse-slider that turns the key red as it leaks, a WOTS⁺
+  `w` selector with the checksum guard shown rejecting a forward-walk, interactive XMSS signing that
+  advances the leaf counter and refuses reuse once exhausted (with the authentication path drawn to
+  its root), a one-click SPHINCS⁺ keygen·sign·verify showing the digest→(FORS indices, tree, leaf)
+  split and a FORS/hypertree size breakdown, and a comparison table of key/signature sizes vs. the
+  Shor-broken curves. Wired into nav + Overview (cards renumbered 01–27; Self-Test → 27). Self-test
+  grew 142 → **163/163** across **36 subsystems** (+21: tweakable-hash domain separation, the WOTS⁺
+  lengths + chain law + multi-w round-trips, Lamport reuse→universal-forgery, XMSS state-advance /
+  tampered-path / exhaustion, and SPHINCS⁺ stateless round-trip + FORS/hypertree/randomiser
+  mauling all rejected). Verified in Node against every invariant, and a headless-Chromium check
+  confirmed the page paints, SPHINCS⁺ signs+verifies live and XMSS advances state with **zero app JS
+  errors**. Lint + build green via verify-project.mjs.
 - 2026-07-02 (claude): **STARK — a transparent, hash-only, post-quantum proof, from scratch.** The
   fourth proof system in the lab and the odd one out: Groth16, PLONK and Bulletproofs all rest on an
   elliptic curve (the first two on a trusted setup); a STARK rests on **nothing but a

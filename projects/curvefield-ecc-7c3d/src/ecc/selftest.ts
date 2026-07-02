@@ -79,7 +79,7 @@ import { provePoK, verifyPoK, proveDleq, verifyDleq, proveBit, verifyBit, proveR
 import { setup as kzgSetup, commit as kzgCommit, open as kzgOpen, verify as kzgVerify, batchVerify as kzgBatchVerify } from './kzg'
 import { secp256k1 as secpCurve } from './secp256k1'
 import { R as BLS_SCALAR } from './bls12381'
-import { seedRng } from './rng'
+import { seedRng, randomBytes } from './rng'
 import { expandMessageXmd, hashToCurveG1, hashToCurveG2 } from './hash2curve'
 import { compressG1, compressG2, decompressG1, decompressG2, toBytesG1, toBytesG2 } from './blsenc'
 import {
@@ -112,6 +112,18 @@ import { friProve, friVerify, type FriParams } from './fri'
 import { Transcript as StarkTranscript } from './transcript'
 import { starkProve, starkVerify, fibSquareOutput, type StarkConfig } from './stark'
 import { add as goldAdd } from './goldilocks'
+import { F as thF, PRF as thPRF, Hmsg as thHmsg, Adrs, ADRS_OTS } from './hashaddr'
+import * as lamport from './lamport'
+import {
+  WOTS_W16,
+  wotsParams,
+  wotsKeypair,
+  wotsSign as wotsSignFn,
+  wotsVerify as wotsVerifyFn,
+  chain as wotsChain,
+} from './wots'
+import { xmssKeygen, xmssSign, xmssVerify, type XmssParams } from './xmss'
+import { sphincsKeygen, sphincsSign, sphincsVerify, SPHINCS_TOY } from './sphincs'
 
 export interface TestCase {
   name: string
@@ -1162,6 +1174,127 @@ export function runSelfTest(): TestCase[] {
       !starkVerify(out, cfg, mauled).ok,
       'DEEP quotient at ζ stops being a polynomial',
     )
+  }
+
+  // ── 26. Post-quantum hash-based signatures (RFC 8391 / SPHINCS⁺) ──
+  {
+    seedRng(0xc0ffee)
+
+    // Tweakable-hash substrate: the four hashes are SHA-256 with distinct
+    // one-word type prefixes, so they behave as independent functions. Anchor
+    // them to the KAT-pinned SHA-256 already checked above.
+    const key = new Uint8Array(32).fill(0x11)
+    const m1 = new Uint8Array(32).fill(0x22)
+    check(
+      'HashSig',
+      'F/PRF domain separation',
+      bytesToHex(thF(key, m1)) !== bytesToHex(thPRF(key, m1)),
+      'F = SHA256(0‖·), PRF = SHA256(3‖·) — same inputs, different digests',
+    )
+    check(
+      'HashSig',
+      'ADRS round-trips through 32 bytes',
+      new Adrs().setType(ADRS_OTS).setOts(5).setChain(9).setHash(3).toBytes().length === 32,
+      'the RFC 8391 hash-function address is eight big-endian words',
+    )
+    check(
+      'HashSig',
+      'H_msg keyed by 3n bytes',
+      thHmsg(new Uint8Array(96).fill(7), utf8('m')).length === 32,
+      'the randomized message digest keys on r ‖ root ‖ idx',
+    )
+
+    // Lamport OTS: round-trip, tamper rejection, and the one-time break —
+    // reusing a key a handful of times leaks the whole secret and enables
+    // universal forgery.
+    const lk = lamport.keygen()
+    const lm = utf8('lamport once')
+    const lsig = lamport.sign(lk, lm)
+    check('HashSig', 'Lamport OTS verifies', lamport.verify(lk.pk, lm, lsig), 'reveal one preimage per digest bit')
+    check('HashSig', 'Lamport rejects a tampered message', !lamport.verify(lk.pk, utf8('lamport twice'), lsig), 'a flipped bit selects an unrevealed preimage')
+    const forger = lamport.newForger()
+    for (let i = 0; i < 24; i++) {
+      const mm = utf8('reuse-' + i)
+      lamport.observe(forger, mm, lamport.sign(lk, mm))
+    }
+    const target = utf8('forge-this-message')
+    const forged = lamport.forge(forger, target)
+    check(
+      'HashSig',
+      'Lamport: reuse leaks the key → universal forgery',
+      lamport.leaked(forger) === lamport.sizes.bits * 2 && !!forged && lamport.verify(lk.pk, target, forged),
+      'after ~16 reuses all 512 secrets leak; a forger signs any message',
+    )
+
+    // WOTS+ : the RFC 8391 lengths, a round-trip, the chain composition law,
+    // and the checksum that stops a forger walking a chain forward.
+    const wp = WOTS_W16
+    check('HashSig', 'WOTS⁺ lengths (w=16 ⇒ len=67)', wp.len1 === 64 && wp.len2 === 3 && wp.len === 67, 'len₁=⌈8n/lg w⌉, len₂ from the checksum bound')
+    const wSk = randomBytes(32)
+    const wSeed = randomBytes(32)
+    const { adrs: wAdrs, pk: wPk } = wotsKeypair(wSk, wSeed, wp)
+    const wMsg = randomBytes(32)
+    const wSig = wotsSignFn(wMsg, wSk, wSeed, wAdrs.clone(), wp)
+    check('HashSig', 'WOTS⁺ signature verifies', wotsVerifyFn(wMsg, wSig, wPk, wSeed, wAdrs.clone(), wp), 'each chain finished to its top lands on the public key')
+    check('HashSig', 'WOTS⁺ rejects a different message', !wotsVerifyFn(randomBytes(32), wSig, wPk, wSeed, wAdrs.clone(), wp), 'the checksum makes forward-walking a chain infeasible')
+    const cx = randomBytes(32)
+    const cA = wotsChain(cx, 0, 5, wSeed, wAdrs.clone().setChain(2), wp.w)
+    const cAB = wotsChain(cA, 5, 4, wSeed, wAdrs.clone().setChain(2), wp.w)
+    const cComposed = wotsChain(cx, 0, 9, wSeed, wAdrs.clone().setChain(2), wp.w)
+    check('HashSig', 'WOTS⁺ chain composition law', bytesToHex(cAB) === bytesToHex(cComposed), 'chain(·,0,a) then (·,a,b) = chain(·,0,a+b)')
+    {
+      const pp = wotsParams(4)
+      const s = randomBytes(32)
+      const sd = randomBytes(32)
+      const kp = wotsKeypair(s, sd, pp)
+      const mm = randomBytes(32)
+      const sg = wotsSignFn(mm, s, sd, kp.adrs.clone(), pp)
+      check('HashSig', `WOTS⁺ round-trips at w=4 (len=${pp.len})`, wotsVerifyFn(mm, sg, kp.pk, sd, kp.adrs.clone(), pp), 'the w/size tradeoff, same security')
+    }
+
+    // XMSS : a Merkle tree of 2^h WOTS⁺ keys behind one reusable root. Two leaves
+    // sign two messages; a tampered auth path fails; the key exhausts and refuses
+    // to reuse a leaf.
+    const xParams: XmssParams = { h: 2, wots: WOTS_W16 }
+    const { pk: xpk, sk: xsk } = xmssKeygen(randomBytes(32), randomBytes(32), randomBytes(32), xParams)
+    const xm1 = utf8('xmss leaf 0')
+    const xm2 = utf8('xmss leaf 1')
+    const xs1 = xmssSign(xsk, xm1)
+    check('HashSig', 'XMSS signature verifies', xmssVerify(xpk, xm1, xs1), 'a WOTS⁺ sig + an O(h) auth path to the published root')
+    check('HashSig', 'XMSS state advances (idx 0 → 1)', xsk.idx === 1, 'the leaf counter must move — reuse is a break')
+    const xs2 = xmssSign(xsk, xm2)
+    check('HashSig', 'XMSS second leaf verifies', xmssVerify(xpk, xm2, xs2) && xs2.idx === 1, 'each signature burns a distinct one-time key')
+    const xBad = { ...xs1, auth: xs1.auth.map((a, i) => (i === 0 ? a.map((b) => b ^ 1) : a)) }
+    check('HashSig', 'XMSS rejects a tampered auth path', !xmssVerify(xpk, xm1, xBad), 're-hashing the path no longer reaches the root')
+    const { sk: xskE } = xmssKeygen(randomBytes(32), randomBytes(32), randomBytes(32), xParams)
+    let signed = 0
+    try {
+      for (let i = 0; i < 20; i++) {
+        xmssSign(xskE, utf8('m' + i))
+        signed++
+      }
+    } catch {
+      /* exhausted */
+    }
+    check('HashSig', 'XMSS exhausts at 2^h one-time keys', signed === 1 << xParams.h, `all ${1 << xParams.h} leaves used, then signing throws`)
+
+    // SPHINCS⁺ : the stateless scheme. FORS few-time signature under a hypertree.
+    // No counter — the same key signs any number of messages, each verifying,
+    // and every mauling (FORS path, hypertree WOTS⁺, randomiser) is caught.
+    const { pk: spk, sk: ssk } = sphincsKeygen(randomBytes(32), randomBytes(32), randomBytes(32), SPHINCS_TOY)
+    const sm = utf8('SPHINCS+ — stateless, hash-only, post-quantum')
+    const ssig = sphincsSign(ssk, sm)
+    check('HashSig', 'SPHINCS⁺ signature verifies', sphincsVerify(spk, sm, ssig), 'FORS pk climbs the d-layer hypertree to PK.root')
+    check('HashSig', 'SPHINCS⁺ rejects a tampered message', !sphincsVerify(spk, utf8('different message'), ssig), 'the digest selects a different FORS/leaf address')
+    const sm2 = utf8('a different message, same key, no state')
+    const sAllOk = sphincsVerify(spk, sm2, sphincsSign(ssk, sm2))
+    check('HashSig', 'SPHINCS⁺ signs another message with no state', sAllOk, 'no counter to lose — the leaf is pseudo-random from R')
+    const sBadFors = structuredClone(ssig)
+    sBadFors.fors[0].auth[0][0] ^= 1
+    check('HashSig', 'SPHINCS⁺ rejects a mauled FORS path', !sphincsVerify(spk, sm, sBadFors), 'the FORS root, hence the FORS pk, changes')
+    const sBadHt = structuredClone(ssig)
+    sBadHt.ht[0].wots[0][0] ^= 1
+    check('HashSig', 'SPHINCS⁺ rejects a mauled hypertree sig', !sphincsVerify(spk, sm, sBadHt), 'the recovered subtree root no longer chains to PK.root')
   }
 
   return t
