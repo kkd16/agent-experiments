@@ -20,6 +20,7 @@ const METHOD_COLOR: Record<MethodId, string> = {
   wh4: 'rgba(120,200,255,0.95)', // cyan
   verlet: 'rgba(255,210,120,0.95)', // amber
   rk4: 'rgba(255,122,122,0.95)', // red
+  hybrid: 'rgba(200,150,255,0.98)', // violet
 }
 
 function fmt(v: number, digits = 2): string {
@@ -35,14 +36,22 @@ export function SymplecticPanel() {
   const [dt, setDt] = useState(preset.dt)
   const [orbits, setOrbits] = useState(60)
   const [useWh4, setUseWh4] = useState(false)
+  const [useHybrid, setUseHybrid] = useState(false)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<SimResult | null>(null)
 
-  // When the preset changes, adopt its suggested coarse step.
+  const isEncounter = presetId === 'close-encounter'
+
+  // When the preset changes, adopt its suggested coarse step. The close-encounter
+  // preset is the hybrid integrator's showcase, so switch it on (and shorten the run).
   const onPreset = (id: string) => {
     setPresetId(id)
     setDt(presetById(id).dt)
     setResult(null)
+    if (id === 'close-encounter') {
+      setUseHybrid(true)
+      setOrbits(40)
+    }
   }
 
   const run = () => {
@@ -54,7 +63,10 @@ export function SymplecticPanel() {
       const r = Math.hypot(inner.x - bodies[0].x, inner.y - bodies[0].y)
       const mu = preset.G * (bodies[0].m + inner.m)
       const T = 2 * Math.PI * Math.sqrt((r * r * r) / mu)
-      const methods: MethodId[] = useWh4 ? ['wh2', 'wh4', 'verlet', 'rk4'] : ['wh2', 'verlet', 'rk4']
+      const methods: MethodId[] = ['wh2']
+      if (useWh4) methods.push('wh4')
+      if (useHybrid) methods.push('hybrid')
+      methods.push('verlet', 'rk4')
       const res = runComparison({
         bodies, G: preset.G, dt, duration: orbits * T, samples: 600, methods,
       })
@@ -65,7 +77,10 @@ export function SymplecticPanel() {
 
   const wh = result?.traces.find((t) => t.id === 'wh2')
   const verlet = result?.traces.find((t) => t.id === 'verlet')
+  const hybrid = result?.traces.find((t) => t.id === 'hybrid')
   const advantage = wh && verlet ? verlet.maxEnergyErr / Math.max(wh.maxEnergyErr, 1e-30) : NaN
+  const hybridAdvantage = hybrid && wh ? wh.maxEnergyErr / Math.max(hybrid.maxEnergyErr, 1e-30) : NaN
+  const orbitTrace = hybrid ?? wh
 
   return (
     <div className="chaos-panel">
@@ -112,6 +127,12 @@ export function SymplecticPanel() {
         onChange={setUseWh4}
         title="Add the 4th-order Wisdom–Holman map (a Yoshida triple-jump of the 2nd-order map) to the race."
       />
+      <Toggle
+        label="Include the hybrid (MERCURY) integrator"
+        checked={useHybrid}
+        onChange={setUseHybrid}
+        title="Add the hybrid symplectic integrator (Chambers 1999): a smooth changeover moves the close-range part of each pair force out of the impulsive kick and into a high-accuracy Bulirsch–Stoer drift, so the map survives close encounters that make plain Wisdom–Holman explode."
+      />
 
       <button type="button" className="btn primary chaos-run" onClick={run} disabled={running}>
         {running ? 'Integrating…' : '◷ Run the race'}
@@ -120,10 +141,47 @@ export function SymplecticPanel() {
       {result && wh && verlet && (
         <div className="chaos-result">
           <div className="chaos-verdict">
-            <span className="tag good">
-              WH conserves energy {fmt(advantage, 4)}× better than Verlet
-            </span>
+            {hybrid && Number.isFinite(hybridAdvantage) && hybridAdvantage > 2 ? (
+              <span className="tag good">
+                Hybrid holds energy {fmt(hybridAdvantage, 4)}× better than Wisdom–Holman through the encounter
+              </span>
+            ) : (
+              <span className="tag good">
+                WH conserves energy {fmt(advantage, 4)}× better than Verlet
+              </span>
+            )}
           </div>
+
+          {hybrid && (
+            <div className="diag-readout">
+              <Stat
+                label="Closest approach"
+                value={hybrid.minSeparation !== undefined ? fmt(hybrid.minSeparation, 3) : '—'}
+                color={METHOD_COLOR.hybrid}
+              />
+              <Stat
+                label="Steps using BS drift"
+                value={hybrid.bsFraction !== undefined ? `${(hybrid.bsFraction * 100).toFixed(1)}%` : '—'}
+                color={METHOD_COLOR.hybrid}
+              />
+              <Stat
+                label="WH energy blow-up"
+                value={wh ? fmt(wh.maxEnergyErr, 3) : '—'}
+                color={METHOD_COLOR.wh2}
+              />
+            </div>
+          )}
+
+          {isEncounter && (
+            <p className="preset-desc">
+              During the deep pass the two planets come within{' '}
+              <strong>{hybrid?.minSeparation !== undefined ? fmt(hybrid.minSeparation, 3) : '—'}</strong> of each other.
+              Plain Wisdom–Holman tries to represent that nearly-singular tug with a{' '}
+              <em>single impulse per step</em> and its energy error explodes; the hybrid detects the encounter,
+              fades the kick out with the changeover, and hands the close motion to its Bulirsch–Stoer drift —
+              so the violet curve stays flat while the green one leaps.
+            </p>
+          )}
           <p className="preset-desc">
             Every method took the same {fmt(result.times[result.times.length - 1] / (result.innerPeriod || 1), 0)}-orbit
             journey at Δt={fmt(dt)}. The symplectic methods keep |ΔE/E| <em>bounded</em>; Runge–Kutta,
@@ -152,10 +210,10 @@ export function SymplecticPanel() {
 
           <div className="chaos-plot">
             <div className="diag-plot-head">
-              <span>Orbits (Wisdom–Holman)</span>
-              <span className="drift muted">{wh.paths.length - 1} planets</span>
+              <span>Orbits ({orbitTrace === hybrid ? 'Hybrid / MERCURY' : 'Wisdom–Holman'})</span>
+              <span className="drift muted">{(orbitTrace ?? wh).paths.length - 1} planets</span>
             </div>
-            <OrbitPlot trace={wh} />
+            <OrbitPlot trace={orbitTrace ?? wh} />
           </div>
         </div>
       )}
@@ -168,6 +226,18 @@ export function SymplecticPanel() {
           universal-variable Kepler solver (good for any eccentricity), and integrates only the faint
           planet–planet tug. Because the approximated piece is tiny, the energy error scales with the
           <em> perturbation</em>, not the full dynamics — the principle behind SWIFT, MERCURY and REBOUND.
+        </p>
+        <div className="mercury-head">The hybrid trick (MERCURY, Chambers 1999)</div>
+        <p className="preset-desc">
+          That perturbation stops being tiny during a <strong>close encounter</strong> — two planets
+          passing close feel a nearly-singular 1/r force that one impulsive kick per step cannot
+          resolve, and WH's energy explodes. The hybrid splits each pair term with a smooth
+          <strong> changeover</strong> K(r): far apart (K=1) it is the ordinary WH kick; up close
+          (K→0) the term is moved into the drift, which a from-scratch
+          <strong> Bulirsch–Stoer</strong> integrator advances to machine accuracy. The two halves
+          partition the <em>same</em> force exactly, so far from encounters the map is bit-identical
+          to Wisdom–Holman, and through a deep pass it stays bounded where WH leaps by orders of
+          magnitude. Try the <em>Close encounter</em> system above.
         </p>
       </div>
     </div>
