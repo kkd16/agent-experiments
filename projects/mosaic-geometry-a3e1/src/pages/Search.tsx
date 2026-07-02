@@ -15,6 +15,7 @@ import { buildRangeTree, rangeQuery } from '../geometry/rangeTree'
 import { delaunay } from '../geometry/delaunay'
 import { buildMesh, locate, locateBruteForce, pointInTriangle } from '../geometry/pointLocation'
 import { trapezoidalFromTriangulation } from '../geometry/trapezoidal'
+import { buildKirkpatrick } from '../geometry/kirkpatrick'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { dist as euclid } from '../geometry/vector'
 import { useCanvas } from '../hooks/useCanvas'
@@ -33,7 +34,7 @@ const PAD = 16
 
 type Distribution = 'poisson' | 'uniform' | 'grid'
 type Mode = 'nn' | 'knn' | 'range' | 'locate'
-type LocateMethod = 'walk' | 'trapezoid'
+type LocateMethod = 'walk' | 'trapezoid' | 'kirkpatrick'
 
 function generate(dist: Distribution, count: number, seed: number): Point[] {
   const rng = mulberry32(seed)
@@ -101,6 +102,15 @@ export default function Search() {
     [trapMap, query],
   )
   const trapPath = useMemo(() => (trapMap ? trapMap.explain(query) : null), [trapMap, query])
+  // Kirkpatrick's hierarchy — the second O(log n) locator, built only on demand.
+  const kirkMap = useMemo(
+    () =>
+      mode === 'locate' && locateMethod === 'kirkpatrick' && tris.length > 0
+        ? buildKirkpatrick(points, tris)
+        : null,
+    [mode, locateMethod, points, tris],
+  )
+  const kirkLocated = useMemo(() => (kirkMap ? kirkMap.locateTriangle(query) : null), [kirkMap, query])
 
   // ── Brute-force oracles → correctness badges ────────────────────────────────
   const nnVerified = useMemo(() => {
@@ -138,6 +148,14 @@ export default function Search() {
     const t = tris[trapLocated.face]
     return pointInTriangle(points[t.a], points[t.b], points[t.c], query)
   }, [trapLocated, points, tris, query])
+  const kirkVerified = useMemo(() => {
+    if (!kirkLocated) return true
+    const brute = locateBruteForce(points, tris, query)
+    if (brute < 0) return kirkLocated.triangle < 0
+    if (kirkLocated.triangle < 0) return false
+    const t = tris[kirkLocated.triangle]
+    return pointInTriangle(points[t.a], points[t.b], points[t.c], query)
+  }, [kirkLocated, points, tris, query])
 
   const kdInfo = useMemo(() => ({ size: kdSize(kdTree), depth: kdDepth(kdTree) }), [kdTree])
   const quadInfo = useMemo(() => quadStats(quadTree), [quadTree])
@@ -312,7 +330,7 @@ export default function Search() {
           }
         }
       } else {
-        // Jump-and-walk method: faint mesh + the walk path.
+        // Jump-and-walk & Kirkpatrick: faint mesh underlay (walk adds its path).
         ctx.strokeStyle = 'rgba(120,170,255,0.18)'
         ctx.lineWidth = 1
         ctx.beginPath()
@@ -330,7 +348,7 @@ export default function Search() {
           x: (points[t.a].x + points[t.b].x + points[t.c].x) / 3,
           y: (points[t.a].y + points[t.b].y + points[t.c].y) / 3,
         })
-        if (located.path.length > 1) {
+        if (locateMethod === 'walk' && located.path.length > 1) {
           ctx.strokeStyle = 'rgba(255,209,102,0.7)'
           ctx.lineWidth = 1.6
           ctx.setLineDash([5, 4])
@@ -344,8 +362,13 @@ export default function Search() {
           ctx.setLineDash([])
         }
       }
-      // The located triangle, highlighted the same way for both methods.
-      const face = locateMethod === 'trapezoid' ? (trapLocated?.face ?? -1) : located.triangle
+      // The located triangle, highlighted the same way for every method.
+      const face =
+        locateMethod === 'trapezoid'
+          ? (trapLocated?.face ?? -1)
+          : locateMethod === 'kirkpatrick'
+            ? (kirkLocated?.triangle ?? -1)
+            : located.triangle
       if (face >= 0) {
         const t = tris[face]
         const a = toPx(points[t.a])
@@ -457,7 +480,7 @@ export default function Search() {
       ctx.fillStyle = '#ffd166'
       ctx.fill()
     }
-  }, [ref, size, points, tris, mode, locateMethod, trapMap, trapCells, trapLocated, trapPath, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, ann, approx, knn, range, located, k])
+  }, [ref, size, points, tris, mode, locateMethod, trapMap, trapCells, trapLocated, trapPath, kirkMap, kirkLocated, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, ann, approx, knn, range, located, k])
 
   const badge = (ok: boolean) => (
     <span className={`badge ${ok ? 'badge--ok' : 'badge--bad'}`}>{ok ? '✓ verified' : '✗ mismatch'}</span>
@@ -486,6 +509,9 @@ export default function Search() {
           )}
           {mode === 'locate' && locateMethod === 'trapezoid' && trapLocated && (
             <Stat label="DAG comparisons" value={`${trapLocated.comparisons} / ${tris.length}`} />
+          )}
+          {mode === 'locate' && locateMethod === 'kirkpatrick' && kirkLocated && (
+            <Stat label="triangle tests" value={`${kirkLocated.comparisons} / ${tris.length}`} />
           )}
         </div>
         <p className="stage__hint">
@@ -516,13 +542,16 @@ export default function Search() {
                   ? 'Orthogonal range reporting: both the k-d tree and the quadtree skip any region disjoint from the window, so only cells overlapping it are opened.'
                   : locateMethod === 'walk'
                     ? 'Point location by jump-and-walk on the Delaunay mesh: step across whichever edge the probe lies outside of until a triangle contains it. The dashed trail is the walk — Θ(√n) touches on average.'
-                    : "Point location by Seidel's trapezoidal map: the plane is carved into vertical-sided trapezoids and a search DAG (x-nodes test the probe's x, y-nodes test above/below a segment) drops to the containing trapezoid in O(log n) — the amber cell — which names the triangle."}
+                    : locateMethod === 'trapezoid'
+                      ? "Point location by Seidel's trapezoidal map: the plane is carved into vertical-sided trapezoids and a search DAG (x-nodes test the probe's x, y-nodes test above/below a segment) drops to the containing trapezoid in O(log n) — the amber cell — which names the triangle."
+                      : "Point location by Kirkpatrick's hierarchy: repeatedly delete an independent set of low-degree vertices and re-triangulate the holes, giving O(log n) ever-coarser triangulations. A query starts in the lone enclosing triangle and walks down, at each level stepping into the one finer triangle (of the constant-many it overlaps) that contains the probe."}
           </p>
           {mode === 'locate' && (
             <Segmented<LocateMethod>
               options={[
                 { id: 'walk', label: 'Jump & walk' },
-                { id: 'trapezoid', label: 'Trapezoidal DAG' },
+                { id: 'trapezoid', label: 'Trapezoid' },
+                { id: 'kirkpatrick', label: 'Kirkpatrick' },
               ]}
               value={locateMethod}
               onChange={setLocateMethod}
@@ -630,6 +659,24 @@ export default function Search() {
                 {trapMap.meanLeafDepth.toFixed(1)} — the O(log n) guarantee of Seidel's randomized construction.
               </p>
               {badge(trapVerified)}
+            </>
+          )}
+          {mode === 'locate' && locateMethod === 'kirkpatrick' && kirkMap && (
+            <>
+              <div className="metrics">
+                <Stat label="triangle" value={kirkLocated && kirkLocated.triangle >= 0 ? kirkLocated.triangle : 'outside'} />
+                <Stat label="triangle tests" value={kirkLocated ? kirkLocated.comparisons : '—'} />
+                <Stat label="levels descended" value={kirkLocated ? `${kirkLocated.levelsDescended} / ${kirkMap.levelCount - 1}` : '—'} />
+                <Stat label="speed-up" value={kirkLocated && kirkLocated.comparisons > 0 ? `${(tris.length / kirkLocated.comparisons).toFixed(1)}×` : '—'} />
+              </div>
+              <p className="muted">
+                The hierarchy collapses {kirkMap.levelSizes[0]} triangles to one across{' '}
+                {kirkMap.levelCount} levels ({kirkMap.levelSizes.join(' → ')}), {kirkMap.totalNodes} nodes
+                total. Each query walks the levels top-down, testing only the constant-many finer
+                triangles each coarse one overlaps — O(log n), independent of Seidel's map yet always
+                in agreement with it.
+              </p>
+              {badge(kirkVerified)}
             </>
           )}
         </Panel>

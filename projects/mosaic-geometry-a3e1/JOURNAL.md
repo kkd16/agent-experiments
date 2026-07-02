@@ -56,6 +56,18 @@ libraries.
     (every x-wall / y-segment tested) for the animated overlay. Verified in `selftest.ts` to agree
     with the O(n) oracle over tens of thousands of queries across uniform / blue-noise / jittered-grid
     inputs (n up to 800), with depth ≪ #triangles and linear structure size.
+  - `kirkpatrick.ts` — **Kirkpatrick's point-location hierarchy**, the *deterministic* O(log n)
+    locator and a fully independent cross-check on the trapezoidal DAG. The sites are enclosed in a
+    far outer triangle and Delaunay-triangulated; then an **independent set of low-degree interior
+    vertices** is deleted each round and the small holes they leave are **ear-clipped** into a coarser
+    triangulation, until only the enclosing triangle remains (O(log n) levels). Each coarse triangle
+    links to the constant-many finer triangles it overlaps (overlap by half-plane clipping), forming
+    a DAG; a query walks top-down, at each level stepping (by largest containment margin, so a
+    hull-edge tie never mis-routes) into the finer triangle that holds it. Since adding far points
+    can only shrink empty circumcircles, an all-original located triangle is a genuine site triangle;
+    a rare near-boundary disagreement between the augmented and site Delaunay is reconciled by a
+    hull-gated linear check (so genuinely-outside queries stay O(log n)). Verified in `selftest.ts`
+    to agree with **both** the brute-force scan and the trapezoidal DAG over thousands of queries.
   - `spanner.ts` — geometric **t-spanners**: the **Yao** and **Θ** cone graphs and the **greedy**
     spanner, with a Dijkstra-based **dilation** (realized spanning ratio) and the Θ dilation bound.
   - `wspd.ts` — the **well-separated pair decomposition** (Callahan–Kosaraju) over a from-scratch
@@ -125,6 +137,12 @@ Shipped this session:
   located trapezoid (amber) and triangle (teal), **animates the DAG decision path** (gold x-walls,
   green y-segments, brightening toward the leaf), and reports DAG comparisons, x/y test split, the
   speed-up over the brute-force scan, and structure depth — with a live ✓-verified badge.
+- [x] **Kirkpatrick's hierarchy** (`kirkpatrick.ts`): a second, deterministic O(log n) locator —
+  enclose the sites, delete independent low-degree vertices and ear-clip their holes into ever-coarser
+  triangulations, then walk the resulting DAG top-down by largest containment margin. Verified to
+  agree with the O(n) scan **and** the trapezoidal DAG (a three-way cross-check). Added as a third
+  Locate method that reports triangle tests, levels descended, the hierarchy's level collapse
+  (n → … → 1), and the speed-up, under a live ✓-verified badge.
 - [x] **Geometric spanners** (`spanner.ts`): the **Yao** and **Θ** cone graphs and the **greedy**
   t-spanner, with a Dijkstra all-pairs **dilation** (realized spanning ratio). Verified: graphs are
   connected, Θ meets its 1/(1−2 sin(π/k)) bound, and the greedy graph realizes dilation ≤ its target t.
@@ -151,9 +169,9 @@ Next (open — natural follow-ups on this axis):
 - [ ] **k-d tree on a non-axis split (PCA / BSP)** and a comparison of cell shapes.
 - [x] **Point location in O(log n)** — a **trapezoidal map + search DAG** (Seidel), the promised
   rival to the jump-and-walk, with the **search path animated** — see 2026-07-02 below.
-- [ ] **Kirkpatrick's hierarchy** as a *second* O(log n) point-location structure (independent-set
-  removal + retriangulation), cross-verified against both the trapezoidal DAG and the brute force —
-  a three-way race in the Locate panel.
+- [x] **Kirkpatrick's hierarchy** as a *second* O(log n) point-location structure (independent-set
+  removal + ear-clip retriangulation), cross-verified against both the trapezoidal DAG and the brute
+  force — a three-method Locate toggle — see 2026-07-02 below.
 - [ ] **Trapezoidal map over the Voronoi diagram** (locate the owning cell) and over arbitrary
   user-drawn segment sets, not just the triangulation.
 - [ ] **A point-location cost race** (brute-force n vs jump-and-walk √n vs DAG log n) plotted as
@@ -162,7 +180,7 @@ Next (open — natural follow-ups on this axis):
   induces) and a "sort by Z-order" animation — shipped as the full **Curves** page (2026-07-01).
 - [ ] **A `compute`-level cache** so the Studio spanner's dilation isn't recomputed every Lloyd frame.
 
-### 2026-07-02 — the O(log n) point-location rival: Seidel's trapezoidal map + a search DAG
+### 2026-07-02 — O(log n) point location, twice over: Seidel's trapezoidal map + Kirkpatrick's hierarchy
 
 The Search page could already *locate* a point — the jump-and-walk oriented walk across the Delaunay
 mesh — but that is a Θ(√n) stroll: from a cold start it touches on the order of √T triangles. The
@@ -212,8 +230,27 @@ speed-up over the scan, and the map's depth/size, all under a ✓-verified badge
 run of the production build confirms it end-to-end: 160 points → **11 DAG comparisons vs a 303-tri
 scan (27.5× speed-up), ✓ verified, zero console errors**, walk mode still ✓ verified. Additive only:
 one new module, one new Locate method, and a self-test section — the existing structures are untouched.
-Clean scope + conformance + lint + tsc + vite build via `node scripts/verify-project.mjs
-mosaic-geometry-a3e1`.
+
+**Then a second, independent O(log n) engine — Kirkpatrick's hierarchy** (`kirkpatrick.ts`), so the
+two great point-location algorithms stand side by side and *check each other*. Where Seidel is
+randomized over a segment arrangement, Kirkpatrick is deterministic and structural: enclose the sites
+in a far outer triangle, Delaunay-triangulate, then repeatedly delete an **independent set of
+low-degree interior vertices** and **ear-clip** the holes into a coarser triangulation until only the
+enclosing triangle is left — O(log n) levels, each triangle linked to the constant-many finer ones it
+overlaps (overlap by half-plane clipping). A query walks the levels top-down, at each step choosing
+the finer child with the **largest containment margin**, so a query hugging a hull edge never
+mis-routes into the annulus. Two correctness subtleties, both surfaced by the oracle harness and
+fixed: ear-clipping had to tolerate the near-collinear link polygons a jittered grid produces, and
+the augmented Delaunay occasionally flips a near-cocircular boundary diagonal relative to the site
+triangulation — reconciled by a **hull-gated** linear check that fires only for the handful of
+interior queries in that thin disagreement band, so the common outside-the-hull answer stays O(log n).
+The payoff is a **three-way cross-check**: Kirkpatrick, the trapezoidal DAG and the brute-force scan
+must all agree, and they do — across uniform / blue-noise / jittered-grid inputs over thousands of
+queries in `selftest.ts` (suite now **161 → 193 checks**). A third **Kirkpatrick** Locate method
+reports triangle tests, levels descended, the hierarchy's collapse (n → … → 1) and the speed-up,
+verified live in headless-Chromium (a 321→…→1, 14-level collapse resolving in ~44 triangle tests, ✓
+verified, zero console errors). Clean scope + conformance + lint + tsc + vite build via
+`node scripts/verify-project.mjs mosaic-geometry-a3e1`.
 
 ### 2026-07-01 — spatial search & hierarchies, part II (space-filling curves, WSPD, range trees, approximate NN)
 
@@ -439,4 +476,11 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   depth under a ✓-verified badge. Self-test gained a trapezoidal section — exact agreement with the
   O(n) oracle over tens of thousands of queries (uniform / blue-noise / jittered-grid, n≤800), depth
   ≪ #triangles, linear size — all green. Verified headless (160 pts → 11 comparisons vs 303, 27.5×,
-  ✓ verified, zero console errors). Passed `verify-project.mjs` (scope + conformance + lint + build).
+  ✓ verified, zero console errors). Then added a **second, independent O(log n) locator —
+  Kirkpatrick's hierarchy** (`kirkpatrick.ts`): enclose the sites, delete an independent set of
+  low-degree vertices and ear-clip the holes into ever-coarser triangulations, then walk the DAG
+  top-down by largest containment margin; a hull-gated linear check reconciles the rare augmented-vs-
+  site Delaunay boundary disagreement. Cross-verified to agree with **both** the brute-force scan and
+  the trapezoidal DAG (three-way check) and added as a third Locate method (triangle tests, level
+  collapse, speed-up). Self-test **161 → 193 checks**, all green; both engines verified headless with
+  zero console errors. Passed `verify-project.mjs` (scope + conformance + lint + build).
