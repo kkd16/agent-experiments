@@ -27,6 +27,7 @@ import { PlonkPage } from './pages/PlonkPage'
 import { StarkPage } from './pages/StarkPage'
 import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
+import { MlKemPage } from './pages/MlKemPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -57,6 +58,7 @@ const ROUTES = [
   { path: '/stark', label: 'STARK' },
   { path: '/poseidon', label: 'Poseidon' },
   { path: '/pqsig', label: 'PQ Signatures' },
+  { path: '/mlkem', label: 'ML-KEM' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -110,6 +112,7 @@ export default function App() {
       {base === '/stark' && <StarkPage />}
       {base === '/poseidon' && <PoseidonPage />}
       {base === '/pqsig' && <HashSigPage />}
+      {base === '/mlkem' && <MlKemPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
@@ -118,8 +121,9 @@ export default function App() {
         RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
         signing, zero-knowledge Σ-protocols, KZG polynomial commitments, a Groth16 and a universal
         PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, a transparent hash-only STARK
-        (Goldilocks NTT + FRI), and post-quantum hash-based signatures (Lamport / WOTS⁺ / XMSS /
-        SPHINCS⁺) — zero crypto dependencies.
+        (Goldilocks NTT + FRI), post-quantum hash-based signatures (Lamport / WOTS⁺ / XMSS /
+        SPHINCS⁺), a Keccak / SHA-3 sponge, and a lattice ML-KEM (FIPS 203, matched to the CCTV
+        10,000-round vector) — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>

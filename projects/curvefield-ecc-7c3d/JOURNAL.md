@@ -426,6 +426,48 @@ shelf has been building toward (a STARK's only assumption is a hash; now it prov
       wrong-digest/forged-statement/fudged-round/mauled-OOD rejects); suite grew 163 → **174/174**
       across **37 subsystems**.
 
+### Session 10 plan — ML-KEM, the lattice half of post-quantum (planned + built 2026-07-02)
+
+The PQ shelf so far (Lamport → WOTS⁺ → XMSS → SPHINCS⁺) is entirely **hash-based**. That is one of
+the two families NIST standardised; the other — the one actually chosen for **key establishment**,
+already shipping in TLS 1.3 hybrids — is **lattice-based**, and Curvefield had *none* of it, nor even
+the Keccak sponge every lattice standard is built on. This session adds the whole thing from scratch
+and pins it to a published vector so the claim is "correct", not "self-consistent".
+
+- [x] **`keccak.ts`** — Keccak-f[1600] and the SHA-3 family (FIPS 202): SHA3-256 (H), SHA3-512 (G),
+      SHAKE128 (the matrix XOF), SHAKE256 (the PRF and the implicit-rejection KDF J), plus an
+      incremental `Keccak` sponge for the streaming test RNG and the accumulator. The 24-round
+      permutation runs on **split 32-bit lanes** (a Uint32Array of 50) — JavaScript has no 64-bit ALU
+      and ML-KEM leans on the sponge hard — with a little-endian byte cursor for absorb/squeeze.
+      Pinned to the FIPS 202 KATs (SHA3-256/512 "", "abc"; SHAKE128/256 "").
+- [x] **`mlkem.ts`** — the full **FIPS 203 ML-KEM** (Kyber), parameter sets 512/768/1024. A
+      **number-theoretic transform** mod q=3329 (ζ=17; X²⁵⁶+1 splits into 128 quadratics, so the NTT
+      is an exact involution and ring multiplication becomes 128 base-case products), centred-binomial
+      noise, `Compress`/`Decompress` in exact integer rounding, `ByteEncode`/`ByteDecode`, rejection
+      `SampleNTT`, the k×k public matrix, the **K-PKE** IND-CPA core, and the **Fujisaki–Okamoto**
+      wrapper to IND-CCA2 with **implicit rejection** (a mauled ciphertext yields the secret key
+      J(z‖c), never an error). Deterministic `*_internal` cores + randomised wrappers + the
+      encapsulation-key modulus check.
+- [x] **The ipd → final one-byte fix, made explicit.** FIPS 203 *final* hashes the seed as `G(d‖k)`
+      for cross-parameter-set domain separation; the *ipd* (and the C2SP CCTV vectors, and NIST's
+      Oct-2023 intermediate values) hash `G(d)`. The engine ships **final** by default and takes a
+      `Variant` flag; the two differ by exactly that byte, which the self-test asserts.
+- [x] **`mlkem-vectors.ts` + verification.** A Node harness (Node type-stripping + a tiny resolver
+      hook, no new deps) reproduces the **C2SP CCTV "accumulated" test** — 10,000 randomised
+      KeyGen→Encaps→Decaps rounds (with a random-ciphertext implicit rejection each round) folded into
+      a running SHAKE-128 tag — and matches the community-published 32-byte constant for **all three**
+      parameter sets, plus a single CCTV intermediate KAT (ρ/ek/ct/K). A resumable `AccumulatedRun`
+      lets the browser drive the same 10k test chunked.
+- [x] New **ML-KEM** lab page (Lab 28): a parameter-set picker, live key establishment (ek/dk/ct sizes
+      + a shared secret Alice and Bob both derive), an implicit-rejection tamper slider, the NTT ⇒
+      cheap-multiply proof (NTT product = schoolbook negacyclic product), the CCTV-512 KAT panel, and
+      the **10,000-round accumulated test run live in the browser** with a progress bar and a
+      published-hash verdict. Wired into nav + Overview (cards renumbered; Self-Test → 29).
+- [x] **+24 self-test checks** (5 SHA-3/SHAKE KATs; NTT involution; the CCTV-512 KAT ρ/ek/ct/K;
+      encaps→decaps + implicit rejection + key sizes for all three sets; the modulus check; a 64-round
+      accumulated prefix for each set; and the ipd≠final domain-separation assertion); suite grew
+      174 → **198/198** across **39 subsystems**.
+
 ## Session log
 
 - 2026-07-02 (claude): **Poseidon — an arithmetic hash, and a STARK that proves you know its
@@ -673,3 +715,33 @@ shelf has been building toward (a STARK's only assumption is a hash; now it prov
   reference, then hand-transcribed into from-scratch code — no runtime dependency added, still zero
   crypto deps), and a headless-Chromium render check confirmed both new routes paint all-green with
   zero app JS errors. Lint + build green via verify-project.mjs.
+
+**Session 10 — ML-KEM, the lattice half of post-quantum (2026-07-02, claude).** The PQ shelf was all
+hash-based; this session adds the lattice standard NIST actually chose for key establishment, plus the
+Keccak sponge it stands on, and pins both to published vectors. Two new engine modules and one vectors
+module, ~640 lines, zero new dependencies. (1) **`keccak.ts`** — Keccak-f[1600] on split 32-bit lanes,
+giving SHA3-256 / SHA3-512 / SHAKE128 / SHAKE256 and an incremental sponge; matches the FIPS 202 KATs.
+(2) **`mlkem.ts`** — the complete **FIPS 203 ML-KEM** for all three parameter sets: a from-scratch NTT
+mod 3329 (X²⁵⁶+1 → 128 quadratics, so `INTT(â⊙b̂)` equals the schoolbook negacyclic product — proven on
+the page), centred-binomial noise, exact-integer `Compress`/`Decompress`, the k×k Module-LWE matrix, the
+K-PKE IND-CPA core, and the **Fujisaki–Okamoto** wrapper to IND-CCA2 with **implicit rejection**. (3)
+**`mlkem-vectors.ts`** — the anchors. The headline proof is the **C2SP CCTV accumulated test**: one
+empty-seeded SHAKE-128 stream drives **10,000** randomised KeyGen→Encaps→Decaps rounds (each including a
+random-ciphertext implicit rejection), and every ek, dk, ciphertext and both shared secrets are folded
+into a running SHAKE-128 tag whose final 32 bytes must equal a single community-published constant —
+which it does, **byte-for-byte, for ML-KEM-512/768/1024** (`845913ea…`, `f7db260e…`, `47ac888f…`), a
+result that certifies the whole KEM at once. Getting there surfaced the real **FIPS 203 ipd→final**
+difference: the CCTV vectors hash the seed as `G(d)`, the final standard as `G(d‖k)` for domain
+separation. Rather than pick one, the engine ships **final** by default and keeps an `ipd` variant for
+the vectors — the one-byte delta is now an educational point on the page and a self-test assertion. New
+**ML-KEM** lab (Lab 28): a parameter picker, live key establishment with the real ek/dk/ct byte sizes, an
+implicit-rejection tamper slider, the NTT cheap-multiply proof, the CCTV-512 known-answer panel, and the
+**10,000-round accumulated test run live in the browser** (chunked, with a progress bar) ending in a
+published-hash verdict. **+24 self-test checks** (SHA-3/SHAKE KATs, NTT involution, the CCTV-512 KAT,
+encaps↔decaps + implicit rejection + sizes for all three sets, the modulus check, a 64-round accumulated
+prefix per set, and ipd≠final); suite grew 174 → **198/198** across **39 subsystems**. Validated three
+ways: the Node harness matched all three published 10k hashes; `verify-project.mjs` is green
+(scope + conformance + lint + build); and a headless-Chromium run of the built app opened the ML-KEM
+route, confirmed the KAT verdicts and the live Alice/Bob shared secret, and ran the full 10,000-round
+ML-KEM-512 test to a **published ✓** with zero app JS errors. Additive only — a new sponge, a new KEM, a
+new lab, a longer self-test; nothing else on the shelf was touched.

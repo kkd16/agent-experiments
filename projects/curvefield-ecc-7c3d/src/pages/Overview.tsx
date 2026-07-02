@@ -159,10 +159,16 @@ const LABS = [
     desc: 'The one signature family here that survives a quantum computer — resting on nothing but a hash. One idea, a hash chain, carried from a pencil-and-paper Lamport OTS through Winternitz (WOTS⁺) and a reusable Merkle key (XMSS, RFC 8391) all the way to the stateless scheme NIST standardised as SLH-DSA (SPHINCS⁺, FIPS 205).',
   },
   {
-    path: '/verify',
+    path: '/mlkem',
     ix: '28',
+    title: 'ML-KEM — Lattice Post-Quantum KEM',
+    desc: 'The lattice half of the post-quantum standards, from scratch: a Keccak / SHA-3 sponge, a number-theoretic transform mod 3329, and the full FIPS 203 ML-KEM (Kyber) — an IND-CPA Module-LWE encryption wrapped in the Fujisaki–Okamoto transform for IND-CCA2, with implicit rejection. Pinned to the C2SP CCTV 10,000-round accumulated vector for all three parameter sets, run live in the browser.',
+  },
+  {
+    path: '/verify',
+    ix: '29',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 8391 XMSS / SPHINCS⁺ and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3/SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 8391 XMSS / SPHINCS⁺, FIPS 203 ML-KEM and Wycheproof vectors.',
   },
 ]
 

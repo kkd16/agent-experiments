@@ -139,6 +139,25 @@ import {
   chain as wotsChain,
 } from './wots'
 import { xmssKeygen, xmssSign, xmssVerify, type XmssParams } from './xmss'
+import {
+  keyGenInternal,
+  decapsInternal,
+  keyGen as mlkemKeyGen,
+  encaps as mlkemEncaps,
+  encapsCheck,
+  ntt as mlkemNtt,
+  invNtt as mlkemInvNtt,
+  PARAM_SETS as MLKEM_SETS,
+  sizes as mlkemSizes,
+  ML_KEM_512,
+  ML_KEM_768,
+} from './mlkem'
+import {
+  checkKeccak,
+  runKat512,
+  runAccumulated,
+  ACC_EXPECTED_64,
+} from './mlkem-vectors'
 import { sphincsKeygen, sphincsSign, sphincsVerify, SPHINCS_TOY } from './sphincs'
 
 export interface TestCase {
@@ -1403,7 +1422,71 @@ export function runSelfTest(): TestCase[] {
     check('HashSig', 'SPHINCS⁺ rejects a mauled hypertree sig', !sphincsVerify(spk, sm, sBadHt), 'the recovered subtree root no longer chains to PK.root')
   }
 
+  // ── SHA-3 / SHAKE (FIPS 202) ────────────────────────────────────────────────
+  for (const v of checkKeccak()) {
+    check('SHA-3', v.name, v.pass, v.pass ? `= ${v.want.slice(0, 16)}…` : `got ${v.got.slice(0, 16)}…`)
+  }
+
+  // ── ML-KEM (FIPS 203, lattice KEM) ──────────────────────────────────────────
+  {
+    // The NTT is an exact involution with its inverse (the ring isomorphism
+    // that makes R_q multiplication cheap).
+    const f = Array.from({ length: 256 }, (_, i) => (i * 7 + 3) % 3329)
+    const rt = mlkemInvNtt(mlkemNtt(f))
+    check('ML-KEM', 'NTT ∘ NTT⁻¹ = id', rt.every((x, i) => x === f[i]), '256-point negacyclic transform round-trips')
+
+    // The C2SP CCTV ML-KEM-512 intermediate known-answer test, end to end.
+    const kat = runKat512()
+    check('ML-KEM', 'KAT-512 ρ = G(d)', kat.rhoOk, 'seed expansion matches the published vector')
+    check('ML-KEM', 'KAT-512 encapsulation key', kat.ekOk, 't̂ ‖ ρ matches CCTV ek prefix')
+    check('ML-KEM', 'KAT-512 ciphertext', kat.ctOk, 'compressed (u, v) matches CCTV ct prefix')
+    check('ML-KEM', 'KAT-512 shared secret', kat.kOk, `K = ${kat.K.length}·8-bit = ${kat.encapsDecapsOk ? 'decaps agrees' : '—'}`)
+
+    // Encaps → Decaps agreement and Fujisaki–Okamoto implicit rejection, for
+    // every parameter set, in the shipped FIPS 203 *final* variant.
+    for (const p of MLKEM_SETS) {
+      const { ek, dk } = mlkemKeyGen(p)
+      const sz = mlkemSizes(p)
+      check('ML-KEM', `${p.name} key sizes`, ek.length === sz.ek && dk.length === sz.dk, `ek ${ek.length} B · dk ${dk.length} B`)
+      const enc = mlkemEncaps(ek, p)
+      const dec = decapsInternal(dk, enc.c, p)
+      check('ML-KEM', `${p.name} encaps→decaps`, dec.valid && bytesEqual(dec.K, enc.K), `ct ${enc.c.length} B · shared secret agrees`)
+      const cbad = enc.c.slice()
+      cbad[0] ^= 0xff
+      const rej = decapsInternal(dk, cbad, p)
+      check('ML-KEM', `${p.name} implicit rejection`, !rej.valid && !bytesEqual(rej.K, enc.K), 'a mauled ciphertext yields the secret rejection key, not a failure')
+    }
+
+    // The encapsulation-key modulus check rejects a non-canonical field element.
+    const { ek: ek0 } = mlkemKeyGen(ML_KEM_512)
+    const good = encapsCheck(ek0, ML_KEM_512)
+    const mauled = ek0.slice()
+    mauled[0] = 0xff
+    mauled[1] = 0xff // first coefficient decodes to 4095 ≥ q ⇒ non-canonical
+    check('ML-KEM', 'encaps rejects non-canonical key', good && !encapsCheck(mauled, ML_KEM_512), 'ByteEncode(ByteDecode(ek)) must be the identity')
+
+    // A short prefix of the CCTV accumulated test — same accumulator that matches
+    // the published 10,000-round constants — for every parameter set.
+    for (const p of MLKEM_SETS) {
+      const got = runAccumulated(p, 64, 'ipd')
+      check('ML-KEM', `${p.name} accumulated (64)`, got === ACC_EXPECTED_64[p.name], '10k-round test on the page pins the published CCTV hash')
+    }
+
+    // The final and ipd variants differ only in KeyGen's domain byte.
+    const d = new Uint8Array(32).fill(9)
+    const z = new Uint8Array(32).fill(4)
+    const finalEk = keyGenInternal(d, z, ML_KEM_768, 'final').ek
+    const ipdEk = keyGenInternal(d, z, ML_KEM_768, 'ipd').ek
+    check('ML-KEM', 'final ≠ ipd (domain separation)', !bytesEqual(finalEk, ipdEk), 'G(d‖k) vs G(d): the one-byte FIPS 203 ipd→final fix')
+  }
+
   return t
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
 }
 
 // A minimal deep clone for the STARK proof (structuredClone preserves bigint).
