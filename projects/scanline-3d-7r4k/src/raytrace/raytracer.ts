@@ -13,6 +13,7 @@ import { BVH } from './bvh.ts'
 import { tracePath, traceAO, primaryFeature } from './tracer.ts'
 import type { RTContext, RTLighting, PrimaryFeature } from './tracer.ts'
 import { traceSpectral, resetSpectralCaches } from './spectral.ts'
+import { traceHero } from './hero.ts'
 import { sampleWavelength } from './spectrum.ts'
 import { Rng, hashSeed } from './sampling.ts'
 import type { Vec3 } from '../math/vec.ts'
@@ -28,7 +29,7 @@ export interface RTCamera {
   aspect: number
 }
 
-export type RTMode = 'path' | 'ao' | 'spectral'
+export type RTMode = 'path' | 'ao' | 'spectral' | 'hero'
 
 // What the denoiser-aware resolve presents. 'denoised' is the beauty; the rest are
 // debug views into the pipeline (the raw average, the feature buffers, the variance
@@ -185,6 +186,13 @@ export class RayTracer {
         uL -= Math.floor(uL)
         const ws = sampleWavelength(uL)
         c = traceSpectral(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng, ws.lambda, ws.pdf)
+      } else if (mode === 'hero') {
+        // Same stratified hero seed as the single-wavelength path, but `traceHero` fans it into
+        // a whole tuple of wavelengths carried down one shared path (hero-wavelength sampling).
+        const off = (hashSeed(x, y, 0) >>> 8) / 0x01000000
+        let uL = counts[p] * 0.6180339887498949 + off
+        uL -= Math.floor(uL)
+        c = traceHero(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng, uL, ctx.heroCount ?? 4)
       } else if (mode === 'ao') {
         c = traceAO(cam.ex, cam.ey, cam.ez, dx, dy, dz, ctx, rng)
       } else {
