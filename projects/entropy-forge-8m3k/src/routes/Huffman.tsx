@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { PageHeader, Panel, Stat } from '../components/ui'
 import { InputPanel } from '../components/InputPanel'
-import { huffmanEncode, type HuffNode } from '../lib/huffman'
+import { huffmanEncode, canonicalCodes, type HuffNode } from '../lib/huffman'
+import { packageMerge, minLimit } from '../lib/lengthLimited'
 import { analyze } from '../lib/entropy'
 import { strToBytes } from '../lib/bits'
 import { byteLabel, fmtNum } from '../lib/format'
+import { frequencies } from '../lib/entropy'
 
 // Lay out the Huffman tree: leaves spread evenly left-to-right, internal nodes
 // centred over their children, depth mapped to rows. Drawn as pure SVG.
@@ -185,6 +187,112 @@ export function Huffman() {
           </p>
         </Panel>
       </div>
+
+      <LengthLimited data={data} result={result} />
     </div>
+  )
+}
+
+// Length-limited Huffman (package-merge) + a Kraft-inequality readout. Shows the
+// depth/size trade-off: cap the code length and watch total bits rise above the
+// unlimited optimum, while the Kraft sum stays ≤ 1 (a valid, complete prefix code).
+function LengthLimited({ data, result }: { data: Uint8Array; result: ReturnType<typeof huffmanEncode> }) {
+  const counts = useMemo(() => frequencies(data), [data])
+  const distinct = useMemo(() => counts.filter((c) => c > 0).length, [counts])
+  const naturalMax = useMemo(() => {
+    let m = 0
+    for (const l of result.lengths.values()) m = Math.max(m, l)
+    return m
+  }, [result])
+
+  const lo = Math.max(1, minLimit(distinct))
+  const hi = Math.max(lo, naturalMax)
+  const [limit, setLimit] = useState(hi)
+  const clamped = Math.min(Math.max(limit, lo), hi)
+
+  const ll = useMemo(() => packageMerge(counts, clamped), [counts, clamped])
+  const canon = useMemo(() => canonicalCodes(ll.lengths), [ll])
+  const kraft = useMemo(() => {
+    let s = 0
+    for (const l of ll.lengths.values()) s += Math.pow(2, -l)
+    return s
+  }, [ll])
+
+  const unlimitedBits = useMemo(() => {
+    let b = 0
+    for (const [sym, l] of result.lengths) b += counts[sym] * l
+    return b
+  }, [result, counts])
+
+  const overhead = unlimitedBits > 0 ? (ll.totalBits / unlimitedBits - 1) * 100 : 0
+
+  if (distinct < 2) {
+    return (
+      <Panel title="Length-limited Huffman" note="package-merge (Larmore–Hirschberg)">
+        <div className="muted">Needs at least two distinct symbols. Add more variety to the input.</div>
+      </Panel>
+    )
+  }
+
+  return (
+    <Panel
+      title="Length-limited Huffman — package-merge"
+      note="the optimal prefix code whose longest word is capped (JPEG caps at 16 bits, DEFLATE at 15); package-merge is provably optimal for the cap"
+      right={<span className="pill ok">natural depth {naturalMax}</span>}
+    >
+      <div className="controls">
+        <label className="field" style={{ minWidth: 300, flex: 1 }}>
+          maximum code length — {clamped} bits (min {lo}, natural {naturalMax})
+          <input type="range" min={lo} max={hi} value={clamped} onChange={(e) => setLimit(Number(e.target.value))} />
+        </label>
+      </div>
+
+      <div className="grid grid-4" style={{ marginTop: 6 }}>
+        <Stat label="Cap" value={clamped} unit="bits" />
+        <Stat label="Deepest used" value={ll.maxUsed} unit="bits" accent />
+        <Stat label="Total bits" value={ll.totalBits} sub={`unlimited optimum ${unlimitedBits}`} />
+        <Stat label="Overhead" value={`${overhead.toFixed(2)}%`} sub={overhead === 0 ? 'matches optimal' : 'cost of the cap'} />
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div className="row spread" style={{ marginBottom: 6 }}>
+          <div className="stat-label">Kraft inequality — Σ 2⁻ˡⁱ</div>
+          <div className="mono" style={{ fontSize: 12, color: kraft <= 1.0000001 ? 'var(--green)' : 'var(--red)' }}>
+            {kraft.toFixed(4)} {kraft <= 1.0000001 ? '≤ 1 ✓ (complete & prefix-free)' : '> 1 ✗'}
+          </div>
+        </div>
+        <div style={{ height: 14, borderRadius: 7, background: 'var(--panel-2)', overflow: 'hidden', border: '1px solid var(--border)' }}>
+          <div style={{ width: `${Math.min(100, kraft * 100)}%`, height: '100%', background: 'var(--teal)', opacity: 0.85 }} />
+        </div>
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>
+          Kraft's theorem: a prefix code with lengths lᵢ exists iff Σ 2⁻ˡⁱ ≤ 1. A tighter cap forces
+          some frequent symbols to longer codes, so the sum stays exactly 1 (complete) while total
+          bits rise — the depth/size trade-off, made exact.
+        </p>
+      </div>
+
+      <div className="table-wrap" style={{ maxHeight: 240, overflowY: 'auto', marginTop: 8 }}>
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Count</th>
+              <th>Length</th>
+              <th>Code</th>
+            </tr>
+          </thead>
+          <tbody>
+            {canon.map((c) => (
+              <tr key={c.symbol}>
+                <td className="mono">{byteLabel(c.symbol)}</td>
+                <td className="num">{counts[c.symbol]}</td>
+                <td className="num">{c.length}</td>
+                <td className="mono" style={{ color: 'var(--teal)' }}>{c.code}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
   )
 }
