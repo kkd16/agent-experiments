@@ -19,6 +19,8 @@ import BranchingView from './views/BranchingView'
 import type { BranchingTab } from './views/BranchingView'
 import StarView from './views/StarView'
 import type { StarTab } from './views/StarView'
+import SymbolicView from './views/SymbolicView'
+import type { SymbolicTab } from './views/SymbolicView'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -31,6 +33,11 @@ import { LEARN_EXAMPLES } from './engine/learn/examples'
 import { DEFAULT_FORMULA, DEFAULT_MODEL } from './engine/ltl/examples'
 import { DEFAULT_FORMULA as CTL_DEFAULT_FORMULA, DEFAULT_MODEL as CTL_DEFAULT_MODEL } from './engine/ctl/examples'
 import { DEFAULT_FORMULA as STAR_DEFAULT_FORMULA, DEFAULT_MODEL as STAR_DEFAULT_MODEL } from './engine/star/examples'
+import {
+  DEFAULT_FORMULA as SYM_DEFAULT_FORMULA,
+  DEFAULT_MODEL as SYM_DEFAULT_MODEL,
+  DEFAULT_BOOL as SYM_DEFAULT_BOOL,
+} from './engine/bdd/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
@@ -42,6 +49,7 @@ const VALID_LEARN_TABS: LearnTab[] = ['table', 'hypothesis', 'target']
 const VALID_LOGIC_TABS: LogicTab[] = ['formula', 'buchi', 'kripke', 'check', 'verify', 'about']
 const VALID_BRANCHING_TABS: BranchingTab[] = ['formula', 'label', 'check', 'verify', 'about']
 const VALID_STAR_TABS: StarTab[] = ['formula', 'decompose', 'check', 'verify', 'about']
+const VALID_SYMBOLIC_TABS: SymbolicTab[] = ['bdd', 'relation', 'check', 'verify', 'about']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
@@ -62,6 +70,7 @@ const DEFAULT_STATE: AppState = {
   logic: { formula: DEFAULT_FORMULA, model: DEFAULT_MODEL, tab: 'check' },
   branching: { formula: CTL_DEFAULT_FORMULA, model: CTL_DEFAULT_MODEL, tab: 'check' },
   star: { formula: STAR_DEFAULT_FORMULA, model: STAR_DEFAULT_MODEL, tab: 'decompose' },
+  symbolic: { formula: SYM_DEFAULT_FORMULA, model: SYM_DEFAULT_MODEL, bool: SYM_DEFAULT_BOOL, tab: 'bdd' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -76,6 +85,7 @@ function clean(s: AppState): AppState {
   const lgtab = VALID_LOGIC_TABS.includes(s.logic.tab as LogicTab) ? s.logic.tab : 'check'
   const brtab = VALID_BRANCHING_TABS.includes(s.branching.tab as BranchingTab) ? s.branching.tab : 'check'
   const startab = VALID_STAR_TABS.includes(s.star.tab as StarTab) ? s.star.tab : 'decompose'
+  const symtab = VALID_SYMBOLIC_TABS.includes(s.symbolic.tab as SymbolicTab) ? s.symbolic.tab : 'bdd'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -91,6 +101,7 @@ function clean(s: AppState): AppState {
     logic: { ...s.logic, tab: lgtab },
     branching: { ...s.branching, tab: brtab },
     star: { ...s.star, tab: startab },
+    symbolic: { ...s.symbolic, tab: symtab },
   }
 }
 
@@ -148,7 +159,9 @@ export default function App() {
                               ? 'branching time: CTL model checking by the labelling algorithm — Sat-set fixpoints & witness trees'
                               : state.mode === 'star'
                                 ? 'CTL*: the logic above both — Emerson–Lei model checking, branching labelling glued to LTL automata'
-                                : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                                : state.mode === 'symbolic'
+                                  ? 'symbolic model checking: a from-scratch ROBDD engine — encode the system as BDDs & run the CTL fixpoints symbolically'
+                                  : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -234,6 +247,14 @@ export default function App() {
             >
               CTL*
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'symbolic'}
+              className={`mode-btn${state.mode === 'symbolic' ? ' active' : ''}`}
+              onClick={() => setMode('symbolic')}
+            >
+              Symbolic
+            </button>
           </div>
           <button
             className="share-btn"
@@ -252,7 +273,18 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'star' ? (
+      {state.mode === 'symbolic' ? (
+        <SymbolicView
+          formula={state.symbolic.formula}
+          onFormula={(formula) => setState((s) => ({ ...s, symbolic: { ...s.symbolic, formula } }))}
+          model={state.symbolic.model}
+          onModel={(model) => setState((s) => ({ ...s, symbolic: { ...s.symbolic, model } }))}
+          bool={state.symbolic.bool}
+          onBool={(bool) => setState((s) => ({ ...s, symbolic: { ...s.symbolic, bool } }))}
+          tab={state.symbolic.tab as SymbolicTab}
+          onTab={(tab) => setState((s) => ({ ...s, symbolic: { ...s.symbolic, tab } }))}
+        />
+      ) : state.mode === 'star' ? (
         <StarView
           formula={state.star.formula}
           onFormula={(formula) => setState((s) => ({ ...s, star: { ...s.star, formula } }))}

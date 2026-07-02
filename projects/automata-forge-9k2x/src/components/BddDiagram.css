@@ -1,0 +1,140 @@
+.bdd-diagram-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bdd-svg {
+  max-width: 100%;
+  height: auto;
+  background: radial-gradient(circle at 50% 0%, rgba(92, 200, 255, 0.05), transparent 70%);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.bdd-edge {
+  fill: none;
+  stroke: var(--node-stroke);
+  stroke-width: 1.6;
+}
+.bdd-edge.lo {
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+}
+.bdd-edge.hi {
+  stroke: var(--accent);
+  opacity: 0.9;
+}
+.bdd-edge.hl {
+  stroke: var(--warn);
+  stroke-width: 2.6;
+  opacity: 1;
+  stroke-dasharray: none;
+}
+.bdd-arrowhead {
+  fill: var(--node-stroke);
+}
+.bdd-arrowhead.hl {
+  fill: var(--warn);
+}
+.bdd-rootedge {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.6;
+}
+
+.bdd-node circle {
+  fill: var(--node);
+  stroke: var(--node-stroke);
+  stroke-width: 1.6;
+}
+.bdd-node.hl circle {
+  stroke: var(--warn);
+  stroke-width: 2.4;
+  fill: #35406e;
+}
+.bdd-varlabel {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.bdd-levellabel {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-anchor: start;
+}
+
+.bdd-term rect {
+  fill: #1b2440;
+  stroke: var(--node-stroke);
+  stroke-width: 1.6;
+}
+.bdd-term.one rect {
+  stroke: var(--good);
+}
+.bdd-term.zero rect {
+  stroke: var(--bad);
+}
+.bdd-term.hl rect {
+  stroke: var(--warn);
+  stroke-width: 2.4;
+}
+.bdd-termlabel {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.bdd-rootlabel {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.bdd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.bdd-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.bdd-legend .swatch {
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--node-stroke);
+  display: inline-block;
+}
+.bdd-legend .swatch.solid {
+  border-top-color: var(--accent);
+}
+.bdd-legend .swatch.dashed {
+  border-top-style: dashed;
+}
+.bdd-legend .swatch.node {
+  width: 12px;
+  height: 12px;
+  border: 1.6px solid var(--node-stroke);
+  border-radius: 50%;
+  background: var(--node);
+}
+
+.bdd-toobig {
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
