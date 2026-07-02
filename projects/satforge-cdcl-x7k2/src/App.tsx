@@ -24,9 +24,22 @@ import { PhysStudio } from './components/PhysStudio'
 import { SimplifyStudio } from './components/SimplifyStudio'
 import { TwoSatStudio } from './components/TwoSatStudio'
 import { LiaStudio } from './components/LiaStudio'
+import { InsightStudio } from './components/InsightStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
-type Mode = 'sat' | 'smt' | 'qbf' | 'imc' | 'bdd' | 'pb' | 'phys' | 'simplify' | 'twosat' | 'lia' | 'lab'
+type Mode =
+  | 'sat'
+  | 'smt'
+  | 'qbf'
+  | 'imc'
+  | 'bdd'
+  | 'pb'
+  | 'phys'
+  | 'simplify'
+  | 'twosat'
+  | 'lia'
+  | 'insight'
+  | 'lab'
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('sat')
@@ -110,7 +123,9 @@ export default function App() {
                               ? 'CNF preprocessing & inprocessing: equisatisfiable simplification with model reconstruction.'
                               : mode === 'lia'
                                 ? 'Quantifier-free integer linear arithmetic (QF_LIA) decided exactly by the Omega test.'
-                                : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                                : mode === 'insight'
+                                  ? 'Beyond yes/no: model enumeration, backbones, MUS/MCS diagnosis, and approximate counting.'
+                                  : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -145,6 +160,9 @@ export default function App() {
           <button className={mode === 'lia' ? 'active' : ''} onClick={() => setMode('lia')}>
             LIA Studio
           </button>
+          <button className={mode === 'insight' ? 'active' : ''} onClick={() => setMode('insight')}>
+            Insight Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -160,6 +178,7 @@ export default function App() {
       {mode === 'simplify' && <SimplifyStudio />}
       {mode === 'twosat' && <TwoSatStudio />}
       {mode === 'lia' && <LiaStudio />}
+      {mode === 'insight' && <InsightStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -282,7 +301,12 @@ export default function App() {
         provably lifts any model of the simplified formula back to the original, cross-checked exhaustively · plus a
         standalone <b>QF_LIA</b> decision procedure by the <b>Omega test</b> (Pugh 1991) — real / dark / gray-shadow
         variable elimination with Euclid equality reduction and certificate-checked integer models, every verdict
-        corroborated by an exhaustive integer oracle — all hand-written in TypeScript.
+        corroborated by an exhaustive integer oracle · plus an <b>Insight Studio</b> that reasons about the whole
+        solution space on the same CDCL core — AllSAT / projected model enumeration, <b>backbone</b> extraction,
+        infeasibility diagnosis into every minimal-unsatisfiable and minimal-correction subset by <b>MARCO</b>
+        (deletion &amp; QuickXplain shrinking over selector-assumption cores), and <b>approximate model counting</b>
+        by ApproxMC-style XOR-parity hashing with an (ε,δ) guarantee, every answer cross-checked against a
+        brute-force truth-table oracle — all hand-written in TypeScript.
       </footer>
     </div>
   )
