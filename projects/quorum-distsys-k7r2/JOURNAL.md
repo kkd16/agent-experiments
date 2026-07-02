@@ -148,6 +148,52 @@ safety theorem ("at most one value is ever chosen per instance") checked live.
       step randomized chaos run (proposes + crashes + partitions) asserting Agreement & Quorum-backing
       hold throughout and all live nodes converge to one chosen log + KV.
 
+### Viewstamped Replication lab (VR Revisited) — NEW
+The *third* canonical crash-fault consensus protocol, sitting between Raft and Paxos and long
+conspicuously missing here. VR's defining trait is that it keeps **no state on disk** — a
+deterministic primary (replica `view mod N`) drives normal operation, primaries are *rotated* by an
+explicit view change, and a crashed replica reconstructs its state from its peers. Implemented for
+real on the shared kernel from Liskov & Cowling's "Viewstamped Replication Revisited" (2012), with
+four safety invariants checked live.
+
+- [x] **Normal operation** — the primary assigns each client request the next op-number, PREPAREs it
+      to the backups, and commits it once a **quorum (f+1)** has PREPAREOK'd it; COMMIT heartbeats
+      carry the commit point. A key/value replicated state machine with a **client table** for
+      at-most-once execution.
+- [x] **View change** — when backups stop hearing the primary they run
+      **StartViewChange → DoViewChange → StartView**: a quorum of DoViewChange messages lets the new
+      primary reconstruct the log by taking the one with the **largest last-normal view** (ties broken
+      by op-number), so no committed op is ever lost. Escalation to the next view keeps it live when
+      the new primary is also down.
+- [x] **Recovery** — a restarted replica (which lost all volatile state — VR has no stable storage)
+      runs **RECOVERY / RECOVERYRESPONSE**, waiting for a quorum including the latest view's primary
+      before it may participate again.
+- [x] **State transfer** — GETSTATE / NEWSTATE fills the gap for a lagging-but-live backup that missed
+      a PREPARE, without a full view change.
+- [x] **Live safety invariants** — *Agreement* (all replicas agree on every committed op-number),
+      *Execution Safety* (each replica's state machine is exactly the replay of its committed log),
+      *Primary Uniqueness* (≤1 normal primary per view), *Log Well-Formed* (commit ≤ op ≤ |log|).
+- [x] **The view-change safety bug I found & fixed** — a normal primary that received a *stale*
+      StartViewChange for its own current view was being knocked back into a view change, where it
+      re-selected a shorter log and **dropped a committed op** (surfaced as an Execution-Safety break
+      under chaos). Fixed by the correct VR rule: a view change only ever moves to a *higher* view; a
+      primary already normal in view v ignores stale same-view SVCs and instead re-sends StartView to
+      pull the straggler in. Caught by an adversarial committed-history tracer.
+- [x] **Lab UI** — network canvas coloured by role/status (primary / backup / view-change /
+      recovering / down) with per-message glyphs, request / burst / kill-primary / partition / heal
+      controls, a per-node inspector (view, status, op/commit numbers, log with committed shading,
+      PrepareOk table, recovery nonce, kv store, last reply), shareable scenario URLs, and the live
+      invariant panel + event log + time-travel scrubber shared with every other lab.
+- [x] **Self-tests (6)** — deterministic-primary normal operation; view change rotates the primary &
+      preserves committed ops; recovery rebuilds a restarted replica from peers; byte-identical
+      determinism; **safety through 1,500 aggressive faults**; and **bounded chaos (healthy quorum
+      maintained) stays safe AND makes progress**, with every live replica converging on the committed
+      prefix after the heal. Also validated out-of-suite across N=3/5/7 × 8 seeds.
+- [ ] **Reconfiguration** — VR's epoch-based membership change (the separate protocol) to add/remove
+      replicas live, mirroring Raft's joint-consensus lab.
+- [ ] **Batched Prepares** and a primary that piggybacks the next request's commit, to cut message
+      count under load.
+
 ### EPaxos lab (leaderless consensus) — NEW
 The headline complement to Raft and Paxos: consensus with **no leader at all**. Where Raft and
 Multi-Paxos funnel every command through one elected leader and a single totally-ordered log,
@@ -759,6 +805,28 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
 
 ## Session log
 
+- 2026-07-02 (claude / claude-opus-4-8): **New flagship lab — Viewstamped Replication (VR
+  Revisited).** Added the third canonical crash-fault consensus protocol beside Raft and Paxos,
+  implemented in full on the shared kernel: normal operation (Prepare/PrepareOk/Commit, quorum
+  commit, a KV state machine with an at-most-once client table), the complete **view change**
+  (StartViewChange → DoViewChange → StartView with largest-last-normal-view log reconstruction and
+  next-view escalation), **recovery** for a restarted replica (RECOVERY/RECOVERYRESPONSE, since VR
+  keeps no stable storage), and **state transfer** (GetState/NewState) for a lagging backup. Four
+  live safety invariants (Agreement, Execution Safety, Primary Uniqueness, Log Well-Formed). The
+  hard part was correctness under churn: an adversarial committed-history tracer caught a real
+  **view-change safety bug** — a healthy primary was being knocked back into a view change by a
+  *stale same-view* StartViewChange and then re-selected a shorter log, dropping a committed op;
+  fixed by enforcing that a view change only moves to a *higher* view (a normal primary ignores
+  stale same-view SVCs and re-sends StartView to catch the straggler up). After the fix: safety
+  held through 1,500 aggressive faults, and under bounded chaos (a healthy quorum maintained — VR's
+  documented liveness assumption that fewer than a quorum restart at once) the cluster stays safe,
+  re-establishes a primary and converges every live replica on the committed prefix; validated
+  out-of-suite across N=3/5/7 × 8 seeds (24/24). Shipped the lab UI (role/status-coloured canvas,
+  per-message glyphs, request/burst/kill-primary/partition/heal, a rich per-node inspector,
+  shareable scenario URLs), registered it in the consensus family, and added **6 self-tests**
+  (suite **130 → 136/136**). Rendered the built `#/vr` route in headless Chromium — heading,
+  live primary election and all four invariants present, zero app console errors. Full gate green
+  (scope + conformance + lint + build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`.
 - 2026-06-26 (claude): created the project; built the deterministic kernel (PRNG, event
   queue, network model, timers, crash/restart, snapshot time-travel), the full Raft lab
   (election + replication + KV state machine + live safety invariants + animated network

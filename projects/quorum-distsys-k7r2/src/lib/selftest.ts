@@ -18,6 +18,9 @@ import { createCoedit, docText, visibleCells, type CoeditOp, type CoeditState } 
 import { createPaxos } from '../protocols/paxos/paxos';
 import { paxosInvariants } from '../protocols/paxos/invariants';
 import { DEFAULT_PAXOS_CONFIG, type PaxosCmd, type PaxosState, type PaxosValue } from '../protocols/paxos/types';
+import { createVR } from '../protocols/vr/vr';
+import { vrInvariants } from '../protocols/vr/invariants';
+import { DEFAULT_VR_CONFIG, primaryOf as vrPrimaryOf, quorum as vrQuorum, type VrCommand, type VrState } from '../protocols/vr/types';
 import { createChord } from '../protocols/chord/chord';
 import { chordInvariants } from '../protocols/chord/invariants';
 import { DEFAULT_CHORD_CONFIG, type ChordCmd, type ChordState } from '../protocols/chord/types';
@@ -2655,6 +2658,160 @@ export function runSelfTests(): TestResult[] {
       }
     }
     return [!bad && total > 0, bad || `${caught}/${total} runs: flipping one read's value to a never-written one is caught and blamed`];
+  });
+
+  // ---- Viewstamped Replication ----
+  const vrKernel = (seed: number, ids: string[], net?: { minLatency: number; maxLatency: number; dropRate: number }) =>
+    new Kernel<VrState, VrCommand>({ seed, protocol: createVR(DEFAULT_VR_CONFIG), nodeIds: ids, network: net });
+  const vrPrimary = (k: Kernel<VrState, VrCommand>) =>
+    k.views().find((v) => v.up && v.state.status === 'normal' && vrPrimaryOf(v.state.view, v.state.configuration) === v.id);
+  const vrOk = (k: Kernel<VrState, VrCommand>) => vrInvariants(k.views()).every((iv) => iv.ok);
+  const vrBad = (k: Kernel<VrState, VrCommand>) => {
+    const b = vrInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+  const vrReq = (k: Kernel<VrState, VrCommand>, id: string, cid: string, rn: number, key: string, value: string) =>
+    k.command(id, { type: 'request', clientId: cid, requestNumber: rn, op: { op: 'set', key, value } });
+
+  t('VR', 'Deterministic primary (view mod N) drives normal operation', () => {
+    const k = vrKernel(1, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 40; i++) k.advance(25);
+    const p = vrPrimary(k);
+    if (!p || p.id !== 'A') return [false, `expected A as primary of view 0, got ${p?.id ?? 'none'}`];
+    let rn = 1;
+    for (let n = 0; n < 6; n++) {
+      vrReq(k, p.id, 'c1', rn++, 'x', String(n));
+      for (let i = 0; i < 20; i++) k.advance(25);
+    }
+    const applied = k.views().filter((v) => v.state.kv['x'] === '5').length;
+    return [applied >= 3 && vrOk(k), applied >= 3 ? `${applied}/5 replicas executed the latest committed op; invariants held` : vrBad(k) || `only ${applied}/5 applied`];
+  });
+
+  t('VR', 'View change rotates the primary and preserves committed ops', () => {
+    const k = vrKernel(7, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 40; i++) k.advance(25);
+    const p0 = vrPrimary(k);
+    if (!p0) return [false, 'no initial primary'];
+    vrReq(k, p0.id, 'c1', 1, 'k', 'v0');
+    for (let i = 0; i < 24; i++) k.advance(25);
+    k.crash(p0.id);
+    for (let i = 0; i < 140; i++) k.advance(25);
+    const p1 = vrPrimary(k);
+    if (!p1 || p1.id === p0.id) return [false, `no new primary after crashing ${p0.id}`];
+    const survived = k.views().filter((v) => v.up && v.state.kv['k'] === 'v0').length;
+    vrReq(k, p1.id, 'c2', 1, 'k', 'v1');
+    for (let i = 0; i < 50; i++) k.advance(25);
+    const progressed = k.views().filter((v) => v.up && v.state.kv['k'] === 'v1').length;
+    const ok = survived >= 2 && progressed >= 2 && vrOk(k);
+    return [ok, ok ? `primary rotated ${p0.id}→${p1.id} (view ${p1.state.view}); committed op survived and progress resumed` : vrBad(k) || `survived=${survived} progressed=${progressed}`];
+  });
+
+  t('VR', 'A restarted replica rebuilds its state via the recovery protocol', () => {
+    const k = vrKernel(3, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 40; i++) k.advance(25);
+    const p = vrPrimary(k);
+    if (!p) return [false, 'no primary'];
+    for (let n = 0; n < 5; n++) {
+      vrReq(k, vrPrimary(k)?.id ?? p.id, 'c1', n + 1, 'z', String(n));
+      for (let i = 0; i < 12; i++) k.advance(25);
+    }
+    const victim = k.nodeOrder.find((id) => id !== p.id)!;
+    k.crash(victim);
+    for (let i = 0; i < 40; i++) k.advance(25);
+    k.restart(victim);
+    for (let i = 0; i < 240; i++) k.advance(25);
+    const v = k.views().find((n) => n.id === victim)!.state;
+    const ok = v.kv['z'] === '4' && v.status === 'normal' && vrOk(k);
+    return [ok, ok ? `${victim} recovered from its peers to z=${v.kv['z']}` : vrBad(k) || `z=${v.kv['z']} status=${v.status}`];
+  });
+
+  t('VR', 'Simulation is deterministic (same seed ⇒ byte-identical run)', () => {
+    const run = () => {
+      const k = vrKernel(99, ['A', 'B', 'C', 'D', 'E']);
+      for (let i = 0; i < 200; i++) {
+        k.advance(25);
+        if (i % 30 === 0) {
+          const p = vrPrimary(k);
+          if (p) vrReq(k, p.id, 'c', i, 'x', String(i));
+        }
+      }
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('VR', 'Safety holds through 1,500 randomized faults (aggressive chaos)', () => {
+    const k = vrKernel(2026, ['A', 'B', 'C', 'D', 'E'], { minLatency: 20, maxLatency: 80, dropRate: 0.05 });
+    const chaos = new Rng(31337);
+    const ids = k.nodeOrder;
+    let cmd = 0;
+    let firstBreak = '';
+    let maxCommit = 0;
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 3) k.crash(chaos.pick(up)!);
+      else if (roll < 0.11 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.14) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.19) k.healNetwork();
+      else if (roll < 0.4) {
+        const p = vrPrimary(k);
+        if (p) vrReq(k, p.id, 'c' + (cmd % 3), cmd, 'c', String(cmd));
+        cmd++;
+      }
+      const bad = vrInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+      maxCommit = Math.max(maxCommit, ...k.views().map((v) => v.state.commitNumber));
+    }
+    return [!firstBreak, firstBreak || `all four invariants held through 1,500 faults (reached commit #${maxCommit})`];
+  });
+
+  t('VR', 'Bounded chaos (healthy quorum) stays safe AND makes progress', () => {
+    const k = vrKernel(555, ['A', 'B', 'C', 'D', 'E'], { minLatency: 20, maxLatency: 70, dropRate: 0.03 });
+    const chaos = new Rng(4242);
+    const ids = k.nodeOrder;
+    const healthy = () => k.views().filter((v) => v.up && v.state.status === 'normal').length;
+    const need = vrQuorum(ids.length);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1400 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      // Never push a quorum into recovery — VR without stable storage assumes fewer
+      // than a quorum restart at once. Under that assumption it must stay live.
+      if (roll < 0.03 && healthy() > need && up.length > need) k.crash(chaos.pick(up)!);
+      else if (roll < 0.14 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.16 && healthy() > need) k.partition([chaos.shuffle(up).slice(0, 1), chaos.shuffle(up).slice(1)]);
+      else if (roll < 0.24) k.healNetwork();
+      else if (roll < 0.5) {
+        const p = vrPrimary(k);
+        if (p) vrReq(k, p.id, 'c' + (cmd % 3), cmd, 'c', String(cmd));
+        cmd++;
+      }
+      const bad = vrInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    if (firstBreak) return [false, firstBreak];
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    for (let i = 0; i < 800; i++) k.advance(20);
+    const live = k.views().filter((v) => v.up && v.state.status === 'normal');
+    const minCommit = live.length ? Math.min(...live.map((v) => v.state.commitNumber)) : 0;
+    let converged = true;
+    for (let idx = 0; idx < minCommit; idx++) {
+      const set = new Set(live.map((v) => JSON.stringify(v.state.log[idx].request)));
+      if (set.size !== 1) converged = false;
+    }
+    const ok = !!vrPrimary(k) && minCommit > 0 && converged && vrOk(k);
+    return [ok, ok ? `re-established a primary and every live replica converged on ${minCommit} committed ops` : vrBad(k) || `primary=${!!vrPrimary(k)} minCommit=${minCommit} converged=${converged}`];
   });
 
   return out;

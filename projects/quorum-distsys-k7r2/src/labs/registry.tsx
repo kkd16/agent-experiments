@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
+import { VrLab } from './VrLab';
 import { EPaxosLab } from './EPaxosLab';
 import { AbdLab } from './AbdLab';
 import { CraqLab } from './CraqLab';
@@ -47,6 +48,15 @@ export const LABS: LabDef[] = [
     icon: '▦',
     tag: 'consensus',
     Component: PaxosLab,
+  },
+  {
+    id: 'vr',
+    title: 'Viewstamped Replication',
+    blurb:
+      'The third canonical crash-fault consensus protocol beside Raft and Paxos — and the one that keeps NO state on disk. A primary (replica view mod N) drives normal operation (Prepare / PrepareOk / Commit); when it goes quiet the backups run a view change (StartViewChange → DoViewChange → StartView) to rotate to the next primary, rebuilding the log from the most up-to-date replica in a quorum; and a crashed replica runs an explicit recovery protocol to rebuild its state from its peers before it may participate again. State transfer fills gaps for a lagging backup, and the client table gives at-most-once execution. Crash the primary, partition the cluster and restart nodes while four safety invariants — Agreement, Execution Safety, Primary Uniqueness and Log Well-Formed — stay green.',
+    icon: '⟲',
+    tag: 'consensus',
+    Component: VrLab,
   },
   {
     id: 'epaxos',
