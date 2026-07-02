@@ -50,6 +50,8 @@ const DQN_INITIAL: DQNUIConfig = {
   perAlpha: 0.6,
   huberDelta: 1,
   clipNorm: 10,
+  useTargetNet: true,
+  useReplay: true,
   learnPerStep: 1,
   stepsPerFrame: 8,
   demoSpeed: 2,
@@ -71,7 +73,18 @@ function sanitize(raw: unknown): DQNUIConfig {
   const arch = c.arch === 'dueling' ? 'dueling' : 'plain';
   const targetMode = c.targetMode === 'soft' ? 'soft' : 'hard';
   const activation = ACTS.includes(c.activation as Activation) ? (c.activation as Activation) : DQN_INITIAL.activation;
-  return { ...DQN_INITIAL, ...c, envKind, presetId, gridLayoutId, arch, targetMode, activation };
+  return {
+    ...DQN_INITIAL,
+    ...c,
+    envKind,
+    presetId,
+    gridLayoutId,
+    arch,
+    targetMode,
+    activation,
+    useTargetNet: c.useTargetNet !== false,
+    useReplay: c.useReplay !== false,
+  };
 }
 
 export default function DQNLab() {

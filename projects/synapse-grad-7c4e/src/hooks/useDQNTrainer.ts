@@ -52,6 +52,8 @@ export interface DQNUIConfig {
   perAlpha: number;
   huberDelta: number;
   clipNorm: number;
+  useTargetNet: boolean; // deadly-triad demo: off ⇒ bootstrap from the online net
+  useReplay: boolean; // deadly-triad demo: off ⇒ learn online from correlated recent transitions
   learnPerStep: number; // gradient steps per collected env step
   stepsPerFrame: number; // collected env steps per animation frame
   demoSpeed: number;
@@ -166,6 +168,8 @@ function toEngineConfig(c: DQNUIConfig): DQNConfig {
     perBetaSteps: 20000,
     huberDelta: c.huberDelta,
     clipNorm: c.clipNorm,
+    useTargetNet: c.useTargetNet,
+    useReplay: c.useReplay,
     seed: c.seed,
   };
 }
@@ -257,6 +261,8 @@ export function useDQNTrainer(cfg: DQNUIConfig) {
     gamma: cfg.gamma,
     bufferSize: cfg.bufferSize,
     nStep: cfg.nStep,
+    useTargetNet: cfg.useTargetNet,
+    useReplay: cfg.useReplay,
     seed: cfg.seed,
     loadId: cfg.loadId,
   });
