@@ -1954,3 +1954,146 @@ learning, with a depth-limited alpha-beta opponent.
   mean) with node size = visits and colour = value — so you literally watch the search concentrate on
   the lines that survive lookahead. Capture is opt-in (interactive position only, not self-play, so it
   costs nothing during training). Self-test unchanged (93 ops green); gate green.
+
+## v19 — Value · DQN (off-policy, value-based deep RL) — planned + built this session
+
+The nineteenth lab, and the one that fills the last obvious gap in the reinforcement-learning
+story. Synapse already has **on-policy policy-gradient** control (`Control · RL`: REINFORCE →
+PPO — learn a policy *directly* from the returns of the trajectories you just rolled out) and a
+**model-based search** learner (`AlphaZero`: a policy/value net guiding MCTS). The one paradigm
+missing is the most famous one of all: **off-policy, value-based Q-learning** — learn the
+*action-value* `Q(s,a)` (the expected discounted return of taking `a` in `s` and acting greedily
+after), then act greedily w.r.t. it. This is **DQN** (Mnih et al., *Human-level control through
+deep reinforcement learning*, Nature 2015) — the result that started deep RL — plus the two
+refinements everyone actually ships: **Double DQN** (van Hasselt et al., 2016) and the
+**Dueling** architecture (Wang et al., 2016), with **n-step returns** and **Prioritized
+Experience Replay** (Schaul et al., 2016) on top.
+
+Why it belongs here and isn't a rerun of the RL lab:
+- It learns **off-policy** from a **replay buffer** of past transitions, not from fresh
+  on-policy rollouts — a genuinely different data path (experience replay + a slowly-tracking
+  **target network** are the two tricks that made bootstrapped value learning stable with a
+  neural function approximator; watching training diverge without them is part of the lab).
+- Its object of study is the **value function itself**, which we can render: the headline is the
+  **max-Q heatmap** flooding backward from the goal across GridWorld with the greedy-policy arrows
+  organising into a path — value iteration, but *learned by a net from one-hot states*.
+- Crucially for this repo's *prove-it* culture, GridWorld is a **finite, deterministic MDP**, so
+  we ship a from-scratch **tabular value-iteration solver** that computes the **exact** optimal
+  `Q*(s,a)` — an *external ground truth* — and the lab proves the neural DQN converges to it (a
+  `Q` vs `Q*` scatter collapsing onto the `y=x` line, and a policy-match count). No other lab has
+  an exact optimum to check the whole *learned behaviour* against; DQN on a one-hot grid does.
+
+### Plan (this session's checklist)
+
+- [x] **`engine/dqn.ts`** — the value-based brain, all on the existing autograd:
+  - [x] **`QNet`** — an MLP `state → hidden → nActions` of Q-values built from the engine's
+        `Linear`; a **Dueling** variant with a scalar **value** stream `V(s)` and an **advantage**
+        stream `A(s,a)` recombined as `Q = V + (A − mean_a A)` (the identifiability mean-subtraction),
+        assembled from tape ops so it gradchecks. `parameters()`, `export/importWeights`,
+        `hardUpdateFrom` (target sync) and `softUpdateFrom(τ)` (Polyak).
+  - [x] A fast **no-tape** `qForward` for the demo/field/greedy-action paths (identical values to
+        the taped net), so animation and the Q-heatmap never build a graph.
+  - [x] **`ReplayBuffer`** — a ring buffer of `(s, a, r, s', done)`; uniform sampling; **n-step**
+        transition assembly (accumulate `Σ γ^k r_{t+k}` + `γ^n` bootstrap).
+  - [x] **`PrioritizedReplay`** — a **sum-tree** for O(log N) proportional sampling by priority
+        `p^α`, with **importance-sampling weights** `w_i = (N·P_i)^{−β}` (β annealed to 1) and
+        priority updates from the last TD error; provably samples ∝ priority (self-tested).
+  - [x] **TD targets**: standard `y = r + γ·max_a' Q_tgt(s',a')` and **Double DQN**
+        `y = r + γ·Q_tgt(s', argmax_a' Q_online(s',a'))` (0-bootstrap on terminal), computed with
+        the frozen target net (no grad), then a **Huber** (smooth-L1) loss on `Q_online(s,a) − y`
+        gathered at the taken action, IS-weighted under PER.
+  - [x] **`tabularQStar(layout, γ)`** — exact **value iteration** on the GridWorld MDP (deterministic
+        transitions, `−stepCost`/`+1 goal`/`−1 pit`, walls = stay) → `Q*`, `V*`, greedy policy, plus
+        a Bellman-residual reporter. The ground truth for the convergence proof.
+- [x] **`hooks/useDQNTrainer.ts`** — mirror `useRLTrainer`'s RAF architecture: build env + online/
+      target `QNet` + Adam + replay; each iteration **collect** ε-greedy transitions into the buffer,
+      then (past a warmup) run K **learn** steps (sample minibatch → Double/-n-step target → Huber →
+      clip → Adam), **decay ε**, and **sync the target** (hard every C steps, or Polyak). Always-on
+      **greedy demo** rollout for the live agent. Metrics (return, TD-loss, mean/max Q, ε, buffer
+      fill, grad-norm, and — GridWorld — the live **mean |Q−Q*|** and **policy-match %**), an
+      end-to-end **gradcheck**, and snapshot/load/share.
+- [x] **`components/dqn/`** — the lab UI, library-free SVG/canvas throughout:
+  - [x] **`DQNPanel`** — env (CartPole / GridWorld / MountainCar) + grid layout, **architecture**
+        (plain / dueling), **Double** toggle, **PER** toggle, γ, lr, ε schedule (start/end/decay),
+        buffer size, batch, warmup, **n-step**, target-sync mode (hard period / Polyak τ), hidden
+        preset, seed; start/pause/step/reset/reset-demo/gradcheck; a live metrics read-out and the
+        gradcheck badge; save / load / share.
+  - [x] **`EnvView`** — the live greedy agent acting frame-by-frame (GridWorld grid, CartPole
+        cart-and-pole, MountainCar hill).
+  - [x] **`QValueField`** (headline) — GridWorld: per-cell **max-Q heatmap** + greedy arrows; the
+        continuous envs: max-Q over a 2-D state slice.
+  - [x] **`QBars`** — the per-action Q-values for the live state, greedy action highlighted, the
+        ε-greedy choice shown.
+  - [x] **`GroundTruthView`** (GridWorld) — the **Q vs Q\*** scatter collapsing onto `y=x`, the
+        per-cell policy-agreement grid, and the `mean |Q−Q*|` read-out: the learned value function
+        converging on the provably-optimal one.
+  - [x] **`LearningChart`** — episode-return curve (raw + smoothed) with the **TD-loss** (log) and
+        **ε** overlaid; **`ReplayView`** — buffer fill + a reward/priority histogram of what's stored.
+- [x] **Self-tests** (into the engine self-test): (1) gradcheck `QNet` (plain) through the Huber TD
+      loss; (2) gradcheck the **Dueling** `QNet` (value + advantage recombination); (3) value
+      iteration **Bellman residual ≈ 0**; (4) the **Double-DQN target identity** (the taped target
+      equals the hand-computed `r+γ·Q_tgt(s',argmax Q_on)`); (5) **hard target-sync** copies weights
+      exactly; (6) **PER sum-tree** samples ∝ priority; (7) **convergence** — a small DQN trained on
+      a tiny corridor MDP reaches the **optimal greedy policy at every state** and `Q≈Q*`.
+- [x] Wire the **Value · DQN** tab into `App.tsx` (+ `#q=` hash route), a `DQN_SLOT_PREFIX` +
+      `#q=` in `serialize.ts`, refresh `project.json`, and pass the full `verify-project.mjs` gate
+      (scope + conformance + lint + build). Validate **outside the browser** (a Node harness runs the
+      self-test + a real GridWorld training run that converges to `Q*`), then **headless-Chromium**
+      smoke-test the live build.
+
+### Stretch / next-time ideas (open)
+
+- [ ] **Categorical DQN (C51)** / a distributional value head — learn the return *distribution*,
+      not just its mean, and render the per-action atom histogram.
+- [ ] **NoisyNets** exploration (learned parametric noise) as a drop-in for ε-greedy.
+- [ ] **Rainbow** — turn all the toggles on at once and A/B it against vanilla DQN on one chart.
+- [ ] A **divergence demo** — a one-click "deadly triad" toggle (no target net / no replay) that
+      makes the Q-values blow up, so the two stabilising tricks earn their keep visibly.
+
+## Session log (v19)
+
+- 2026-07-02 (claude / claude-opus-4-8[1m]): **Built the nineteenth lab — Value · DQN — end to
+  end.** One new engine module, a trainer hook, six UI components, seven new self-tests, all on the
+  existing autograd engine and reusing the hand-written RL environments (no RL library).
+  - **`engine/dqn.ts`** — the value-based brain. A `QNet` (plain MLP `state → hidden → Q[nActions]`
+    and a **Dueling** variant `Q = V + (A − mean_a A)` assembled from tape ops) with hard/Polyak
+    target sync and a fast no-tape `qForward`; a **`UniformReplay`** ring buffer and a
+    **`PrioritizedReplay`** built on a from-scratch **`SumTree`** (O(log N) proportional sampling +
+    IS weights); **n-step** transition assembly; Double/plain **TD targets** with a frozen target
+    net; the one genuinely new backward pass, **`weightedHuber`** (importance-weighted smooth-L1,
+    VJP hand-derived); a **`DQNAgent`** tying it together (ε-schedule, collect/learn loop); and the
+    exact ground truth: **`tabularQStar`** (value iteration on the GridWorld MDP) + a `Corridor`
+    MDP with closed-form `corridorQStar` for the convergence proof.
+  - **`hooks/useDQNTrainer.ts`** — the RAF trainer mirroring the RL lab: build env + online/target
+    nets + Adam + replay, collect ε-greedy transitions, run gradient steps off the buffer, decay ε,
+    Polyak-sync the target, and stream metrics (return, TD-loss, mean Q, ε, buffer fill, and — on
+    GridWorld — the live **mean |Q − Q*|** and **policy-match %** against value iteration). Greedy
+    demo rollout, end-to-end gradcheck, snapshot/load/share.
+  - **`components/dqn/`** — the lab UI: `DQNPanel` (env/arch/Double/PER/γ/lr/ε-schedule/buffer/
+    target-sync/n-step controls + live stats + gradcheck badge + save/share), `EnvView` (the live
+    greedy agent in GridWorld/CartPole/MountainCar), the headline **`QValueField`** (GridWorld max-Q
+    heatmap + greedy arrows; a 2-D max-Q slice for the continuous envs), `QBars` (signed per-action
+    Q for the live state), **`GroundTruthView`** (the **Q vs Q\*** scatter collapsing onto y = x + a
+    per-cell policy-agreement grid), `LearningChart` (return + log-TD-loss + ε) and `ReplayView`
+    (buffer fill + a reward histogram). Wired the **Value · DQN** tab + `#q=` route into `App.tsx`
+    and a `DQN_SLOT_PREFIX` into `serialize.ts`.
+  - **Self-tests** wired into the engine self-test (now **100 ops, all green**, maxRel 5.1e-4):
+    `dqn-qnet (huber TD, e2e)` **3.4e-10** and `dqn-dueling (V+A, e2e)` **4.3e-10** gradcheck the
+    whole Q-net through the weighted-Huber TD loss; `dqn-value-iteration (Bellman residual)`,
+    `dqn-target identity (double/plain/terminal)`, `dqn-target sync (hard copy exact)` and
+    `dqn-PER sum-tree (samples ∝ priority)` are all **exact (0.0)**; and `dqn-convergence (→ Q* on
+    corridor)` trains a from-scratch DQN on a corridor MDP and proves it reaches the **optimal
+    greedy policy at every state** with the learned Q matching the **closed-form Q\*** — machine-checked.
+  - **Validated outside the browser** (Vite-SSR Node harness over the shipped engine): the self-test
+    is green (100 ops), and a **real GridWorld training run converges to the value-iteration
+    optimum** — on *Four rooms* the greedy policy is **98% optimal** with mean |Q − Q\*| **0.005**,
+    on *Cliff walk* the learned Q lands within **~0.01** of the exact Q\* (greedy |Q − Q*| 0.003–0.011)
+    with 88–98% optimal-policy (the residual is co-optimal near-ties in cliff's flat value
+    landscape). The earlier divergence with a hard target + high lr on the big net was the textbook
+    **deadly triad**; switching to Polyak targets fixed it (all |Q − Q\*| dropped from ~1.0 to ~0.01),
+    and those stable defaults ship.
+  - **Smoke-tested in headless Chromium** (production build): the Value · DQN tab mounts via `#q=`,
+    all six canvases render, 5 s of live training advances (env/grad steps climbing, policy-match
+    already 80%, the Q-vs-Q* grid greening), the in-browser **gradient check reads 1.99e-11 ✓**, and
+    there are **zero console errors**. Full `verify-project.mjs` gate (scope + conformance + lint +
+    build) green.

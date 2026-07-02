@@ -17,9 +17,10 @@ import SsmLab from './components/ssm/SsmLab';
 import NCALab from './components/nca/NCALab';
 import ContrastiveLab from './components/contrastive/ContrastiveLab';
 import AlphaZeroLab from './components/az/AlphaZeroLab';
+import DQNLab from './components/dqn/DQNLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
 
 // Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
 function initialTab(): Tab {
@@ -35,6 +36,7 @@ function initialTab(): Tab {
     if (/[#&]z=/.test(location.hash)) return 'contrastive';
     if (/[#&]a=/.test(location.hash)) return 'adversarial';
     if (/[#&]r=/.test(location.hash)) return 'control';
+    if (/[#&]q=/.test(location.hash)) return 'value';
     if (/[#&]p=/.test(location.hash)) return 'alphazero';
     if (/[#&]n=/.test(location.hash)) return 'graph';
     if (/[#&]k=/.test(location.hash)) return 'kan';
@@ -97,6 +99,9 @@ export default function App() {
             <button className={tab === 'control' ? 'on' : ''} onClick={() => setTab('control')}>
               Control · RL
             </button>
+            <button className={tab === 'value' ? 'on' : ''} onClick={() => setTab('value')}>
+              Value · DQN
+            </button>
             <button className={tab === 'alphazero' ? 'on' : ''} onClick={() => setTab('alphazero')}>
               AlphaZero · Self-play
             </button>
@@ -146,6 +151,8 @@ export default function App() {
         <ContrastiveLab />
       ) : tab === 'control' ? (
         <RLLab />
+      ) : tab === 'value' ? (
+        <DQNLab />
       ) : tab === 'alphazero' ? (
         <AlphaZeroLab />
       ) : tab === 'graph' ? (
