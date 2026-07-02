@@ -89,6 +89,17 @@ import {
 import { kdApproxNearest } from './kdtree'
 import { dist } from './vector'
 import type { Rect } from './types'
+import {
+  booleanOp,
+  pointInRings,
+  regionArea,
+  type BoolOp,
+  type MultiPolygon,
+  type Ring,
+} from './boolean'
+import { convexMinkowski, minkowskiSum, earClip } from './minkowski'
+import { bentleyOttmann, bruteForceIntersections, reportIntersections, type Segment } from './segments'
+import { isConvex, planPath, segmentIsFree } from './planning'
 
 let failures = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -1255,6 +1266,234 @@ function canonicalHull(hull: number[]): number[] {
   check('approx-NN (ε=0.5) touches no more nodes than exact, on average',
     approxVisitedSum <= exactVisitedSum,
     `(approx ${(approxVisitedSum / trials).toFixed(1)} ≤ exact ${(exactVisitedSum / trials).toFixed(1)})`)
+}
+
+// ── Polygon boolean operations ───────────────────────────────────────────────
+{
+  const regular = (cx: number, cy: number, r: number, n: number, phase: number): Ring => {
+    const pts: Ring = []
+    for (let i = 0; i < n; i++) {
+      const a = phase + (i / n) * Math.PI * 2
+      pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r })
+    }
+    return pts
+  }
+  const distToRings = (rings: MultiPolygon, p: Point): number => {
+    let m = Infinity
+    for (const ring of rings) {
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i]
+        const b = ring[(i + 1) % ring.length]
+        const vx = b.x - a.x
+        const vy = b.y - a.y
+        const wx = p.x - a.x
+        const wy = p.y - a.y
+        const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / (vx * vx + vy * vy || 1)))
+        m = Math.min(m, Math.hypot(p.x - (a.x + t * vx), p.y - (a.y + t * vy)))
+      }
+    }
+    return m
+  }
+  const want = (op: BoolOp, a: boolean, b: boolean) =>
+    op === 'union' ? a || b : op === 'intersection' ? a && b : op === 'difference' ? a && !b : a !== b
+  const ops: BoolOp[] = ['union', 'intersection', 'difference', 'xor']
+
+  // Monte-Carlo membership: booleanOp must agree with the operation applied to the
+  // operands' even-odd memberships, at every interior sample point.
+  const rng = mulberry32(7)
+  let clean = 0
+  let opInstances = 0
+  for (let trial = 0; trial < 250; trial++) {
+    const A: MultiPolygon = [regular(0.4 + rng() * 0.2, 0.4 + rng() * 0.2, 0.1 + rng() * 0.2, 3 + Math.floor(rng() * 6), rng() * 6)]
+    const B: MultiPolygon = [regular(0.4 + rng() * 0.2, 0.4 + rng() * 0.2, 0.1 + rng() * 0.2, 3 + Math.floor(rng() * 6), rng() * 6)]
+    for (const op of ops) {
+      const R = booleanOp(A, B, op)
+      let mism = 0
+      for (let s = 0; s < 300; s++) {
+        const p: Point = { x: rng(), y: rng() }
+        if (Math.min(distToRings(A, p), distToRings(B, p), distToRings(R, p)) < 2e-3) continue
+        if (pointInRings(R, p) !== want(op, pointInRings(A, p), pointInRings(B, p))) mism++
+      }
+      opInstances++
+      if (mism === 0) clean++
+    }
+  }
+  check(`boolean ∪/∩/−/XOR match the membership oracle at all interior samples (${clean}/${opInstances})`,
+    clean === opInstances, `(${opInstances - clean} dirty)`)
+
+  // Area identities on overlapping convex polygons.
+  let areaBad = 0
+  for (let trial = 0; trial < 200; trial++) {
+    const A: MultiPolygon = [regular(0.45, 0.5, 0.15 + rng() * 0.12, 4 + Math.floor(rng() * 5), rng() * 6)]
+    const B: MultiPolygon = [regular(0.55, 0.5, 0.15 + rng() * 0.12, 4 + Math.floor(rng() * 5), rng() * 6)]
+    const u = regionArea(booleanOp(A, B, 'union'))
+    const i = regionArea(booleanOp(A, B, 'intersection'))
+    const d = regionArea(booleanOp(A, B, 'difference'))
+    const x = regionArea(booleanOp(A, B, 'xor'))
+    const aA = regionArea(A)
+    const aB = regionArea(B)
+    if (Math.abs(u + i - aA - aB) > 1e-4) areaBad++
+    if (Math.abs(x - (u - i)) > 1e-4) areaBad++
+    if (Math.abs(d - (aA - i)) > 1e-4) areaBad++
+  }
+  check('boolean area identities |A∪B|+|A∩B|=|A|+|B|, |XOR|=|∪|−|∩|, |A−B|=|A|−|∩| hold',
+    areaBad === 0, `(${areaBad} violations)`)
+
+  // Explicit hole case: B strictly inside A → A−B is a square with a square hole.
+  const outer: MultiPolygon = [[{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }]]
+  const inner: MultiPolygon = [[{ x: 3, y: 3 }, { x: 7, y: 3 }, { x: 7, y: 7 }, { x: 3, y: 7 }]]
+  const diff = booleanOp(outer, inner, 'difference')
+  check('A−B with B inside A yields an outer ring + a hole (area 84, two rings)',
+    diff.length === 2 && Math.abs(regionArea(diff) - 84) < 1e-6, `(rings=${diff.length}, area=${regionArea(diff).toFixed(3)})`)
+
+  // Algebraic laws.
+  const P: MultiPolygon = [regular(0.45, 0.5, 0.2, 6, 0.3)]
+  const Q: MultiPolygon = [regular(0.55, 0.52, 0.2, 5, 0.1)]
+  check('boolean union is commutative (area)', Math.abs(regionArea(booleanOp(P, Q, 'union')) - regionArea(booleanOp(Q, P, 'union'))) < 1e-6)
+  check('boolean union is idempotent (A∪A ≈ A)', Math.abs(regionArea(booleanOp(P, P, 'union')) - regionArea(P)) < 1e-4)
+  check('boolean A∩A ≈ A', Math.abs(regionArea(booleanOp(P, P, 'intersection')) - regionArea(P)) < 1e-4)
+  check('boolean A−A ≈ ∅', regionArea(booleanOp(P, P, 'difference')) < 1e-4)
+}
+
+// ── Minkowski sums ────────────────────────────────────────────────────────────
+{
+  const regular = (r: number, n: number, phase: number): Ring => {
+    const pts: Ring = []
+    for (let i = 0; i < n; i++) {
+      const a = phase + (i / n) * Math.PI * 2
+      pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r })
+    }
+    return pts
+  }
+  const rng = mulberry32(3)
+  let cInside = 0
+  let cTot = 0
+  let convexBad = 0
+  for (let t = 0; t < 150; t++) {
+    const P = regular(0.2 + rng() * 0.3, 3 + Math.floor(rng() * 5), rng() * 6)
+    const Q = regular(0.1 + rng() * 0.2, 3 + Math.floor(rng() * 5), rng() * 6)
+    const S = convexMinkowski(P, Q)
+    if (!isConvex(S)) convexBad++
+    const rings: MultiPolygon = [S]
+    for (let s = 0; s < 40; s++) {
+      const p = P[Math.floor(rng() * P.length)]
+      const q = Q[Math.floor(rng() * Q.length)]
+      cTot++
+      if (pointInRings(rings, { x: (p.x + q.x) * 0.999, y: (p.y + q.y) * 0.999 })) cInside++
+    }
+  }
+  check(`convex Minkowski sum: every p+q lies inside A⊕B (${cInside}/${cTot})`, cInside === cTot)
+  check('convex Minkowski sum stays convex', convexBad === 0, `(${convexBad} non-convex)`)
+
+  // Ear clipping conserves area.
+  const L: Ring = [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 1 }, { x: 1, y: 1 }, { x: 1, y: 3 }, { x: 0, y: 3 }]
+  const tris = earClip(L)
+  let triArea = 0
+  for (const tr of tris) triArea += Math.abs((tr[1].x - tr[0].x) * (tr[2].y - tr[0].y) - (tr[2].x - tr[0].x) * (tr[1].y - tr[0].y)) / 2
+  check('ear clipping triangulates an L-shape conserving area (n−2 triangles)',
+    tris.length === L.length - 2 && Math.abs(triArea - 5) < 1e-9, `(${tris.length} tris, area ${triArea.toFixed(3)})`)
+
+  // General (non-convex) Minkowski via triangulate + union.
+  const sq: Ring = [{ x: -0.3, y: -0.3 }, { x: 0.3, y: -0.3 }, { x: 0.3, y: 0.3 }, { x: -0.3, y: 0.3 }]
+  const gen = minkowskiSum(L, sq)
+  let gInside = 0
+  const gTot = 3000
+  const rng2 = mulberry32(11)
+  for (let s = 0; s < gTot; s++) {
+    const p = L[Math.floor(rng2() * L.length)]
+    const q: Point = { x: -0.3 + rng2() * 0.6, y: -0.3 + rng2() * 0.6 }
+    if (pointInRings(gen, { x: p.x + q.x * 0.98, y: p.y + q.y * 0.98 })) gInside++
+  }
+  check(`general Minkowski (L ⊕ square): every sampled p+q lies inside the sum (${gInside}/${gTot})`, gInside === gTot)
+}
+
+// ── Bentley–Ottmann segment intersection ─────────────────────────────────────
+{
+  const rng = mulberry32(42)
+  const key = (x: number, y: number) => `${Math.round(x * 1e4)}:${Math.round(y * 1e4)}`
+  let agree = 0
+  let trials = 0
+  let totalCrossings = 0
+  for (let t = 0; t < 200; t++) {
+    const n = 3 + Math.floor(rng() * 18)
+    const segs: Segment[] = []
+    for (let i = 0; i < n; i++) segs.push({ a: { x: rng(), y: rng() }, b: { x: rng(), y: rng() } })
+    const bf = new Set(bruteForceIntersections(segs).map((c) => key(c.point.x, c.point.y)))
+    const bo = new Set(bentleyOttmann(segs).intersections.map((c) => key(c.point.x, c.point.y)))
+    totalCrossings += bf.size
+    let same = bf.size === bo.size
+    for (const k of bf) if (!bo.has(k)) same = false
+    trials++
+    if (same) agree++
+  }
+  check(`Bentley–Ottmann ≡ brute force on ${trials} random scenes (${totalCrossings} crossings)`, agree === trials, `(${trials - agree} mismatched)`)
+
+  // Rotated-into-general-position reporter handles axis-aligned grids exactly.
+  let gridBad = 0
+  for (const k of [3, 5, 8]) {
+    const segs: Segment[] = []
+    for (let i = 0; i < k; i++) {
+      const c = (i + 1) / (k + 1)
+      segs.push({ a: { x: 0, y: c }, b: { x: 1, y: c } })
+      segs.push({ a: { x: c, y: 0 }, b: { x: c, y: 1 } })
+    }
+    if (reportIntersections(segs).length !== k * k) gridBad++
+  }
+  check('robust reporter finds exactly k² crossings on k×k axis-aligned grids', gridBad === 0, `(${gridBad} grids off)`)
+
+  // The step trace is monotone in the sweep-line abscissa.
+  const demo: Segment[] = []
+  const rng3 = mulberry32(5)
+  for (let i = 0; i < 8; i++) demo.push({ a: { x: rng3(), y: rng3() }, b: { x: rng3(), y: rng3() } })
+  const steps = bentleyOttmann(demo, true).steps
+  let monotone = true
+  for (let i = 1; i < steps.length; i++) if (steps[i].x < steps[i - 1].x - 1e-9) monotone = false
+  check('Bentley–Ottmann sweep trace advances monotonically in x', monotone && steps.length > 0)
+}
+
+// ── Translational motion planning ────────────────────────────────────────────
+{
+  const pointRobot: Ring = [{ x: 0, y: 0 }, { x: 1e-3, y: 0 }, { x: 0, y: 1e-3 }]
+
+  // A blocking square between start and goal forces a detour longer than the
+  // straight-line distance, and every path segment must be collision-free.
+  const obstacles: Ring[] = [[{ x: 4, y: 4 }, { x: 6, y: 4 }, { x: 6, y: 6 }, { x: 4, y: 6 }]]
+  const { result, cObstacles } = planPath({ x: 0, y: 5 }, { x: 10, y: 5 }, obstacles, pointRobot)
+  check('motion plan reaches the goal around a blocking obstacle', result.reachable)
+  check('motion plan detours (length > straight-line 10)', result.length > 10, `(len ${result.length.toFixed(3)})`)
+  const edges = cObstacles.flatMap((r) => r.flatMap((ring) => ring.map((p, k) => ({ a: p, b: ring[(k + 1) % ring.length] }))))
+  let allFree = true
+  for (let i = 0; i + 1 < result.path.length; i++) {
+    if (!segmentIsFree(result.path[i], result.path[i + 1], cObstacles, edges)) allFree = false
+  }
+  check('every segment of the planned path is collision-free', allFree)
+
+  // A fully walled-in goal is unreachable.
+  const box: Ring[] = [
+    [{ x: 8, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 8.2 }, { x: 8, y: 8.2 }],
+    [{ x: 8, y: 8 }, { x: 8.2, y: 8 }, { x: 8.2, y: 12 }, { x: 8, y: 12 }],
+    [{ x: 8, y: 11.8 }, { x: 12, y: 11.8 }, { x: 12, y: 12 }, { x: 8, y: 12 }],
+    [{ x: 11.8, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 12 }, { x: 11.8, y: 12 }],
+  ]
+  const walled = planPath({ x: 0, y: 0 }, { x: 10, y: 10 }, box, pointRobot)
+  check('a fully walled-in goal is reported unreachable', !walled.result.reachable)
+
+  // Configuration-space growth: a fat robot cannot fit through a gap a thin one can.
+  const gap: Ring[] = [
+    [{ x: 4, y: 0 }, { x: 4.5, y: 0 }, { x: 4.5, y: 4.6 }, { x: 4, y: 4.6 }],
+    [{ x: 4, y: 5.4 }, { x: 4.5, y: 5.4 }, { x: 4.5, y: 10 }, { x: 4, y: 10 }],
+  ]
+  const thinRobot: Ring = []
+  const fatRobot: Ring = []
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2
+    thinRobot.push({ x: Math.cos(a) * 0.2, y: Math.sin(a) * 0.2 })
+    fatRobot.push({ x: Math.cos(a) * 0.6, y: Math.sin(a) * 0.6 })
+  }
+  const thin = planPath({ x: 1, y: 5 }, { x: 8, y: 5 }, gap, thinRobot)
+  const fat = planPath({ x: 1, y: 5 }, { x: 8, y: 5 }, gap, fatRobot)
+  check('C-space growth: thin robot passes a 0.8-wide gap, fat robot is blocked',
+    thin.result.reachable && !fat.result.reachable, `(thin ${thin.result.reachable}, fat ${fat.result.reachable})`)
 }
 
 export const result = { failures }

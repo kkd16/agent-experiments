@@ -3,12 +3,14 @@ import Studio from './pages/Studio'
 import Algorithms from './pages/Algorithms'
 import Search from './pages/Search'
 import Curves from './pages/Curves'
+import Planning from './pages/Planning'
 import About from './pages/About'
 import './App.css'
 
 const TABS = [
   { route: '/studio', label: 'Studio' },
   { route: '/search', label: 'Search' },
+  { route: '/polygons', label: 'Polygons' },
   { route: '/curves', label: 'Curves' },
   { route: '/algorithms', label: 'Algorithms' },
   { route: '/about', label: 'About' },
@@ -44,6 +46,7 @@ export default function App() {
       <main className="content">
         {active === '/studio' && <Studio />}
         {active === '/search' && <Search />}
+        {active === '/polygons' && <Planning />}
         {active === '/curves' && <Curves />}
         {active === '/algorithms' && <Algorithms />}
         {active === '/about' && <About />}
