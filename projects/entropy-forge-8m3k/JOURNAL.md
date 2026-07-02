@@ -12,6 +12,16 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
   - `entropy.ts` — Shannon entropy order-0/1/2, per-symbol information, redundancy.
   - `huffman.ts` — tree build (min-heap), canonical codes, encode/decode.
   - `arithmetic.ts` — Witten–Neal–Cleary integer coder + adaptive order-0/order-1 models.
+  - `rangecoder.ts` — the WNC coder *decoupled* from any model (explicit [cumLow,cumHigh)/total
+    per step); the substrate PPM drives.
+  - `rans.ts` — static **rANS** (range Asymmetric Numeral System): freq normalisation to M=2^12,
+    byte-wise state renorm, (de)serialised table; the zstd/LZFSE-class entropy backend.
+  - `ppm.ts` — **PPMC** (prediction by partial matching): orders 0..N with escape + full exclusion,
+    range-coded; carries a per-symbol trace (coding order + escape count) for the visualiser.
+  - `adaptiveHuffman.ts` — **FGK** adaptive Huffman: dynamic tree with the sibling property + an
+    NYT escape; snapshot()-able for the step-by-step tree view.
+  - `suffixArray.ts` — linear-time **SA-IS** suffix array (+ brute-force oracle) and a sentinel-
+    based BWT that scales to kilobytes and inverts without a primary index.
   - `lz77.ts` — LZSS sliding-window matcher + token stream.
   - `lzw.ts` — variable-width LZW with the KwKwK case handled.
   - `bwt.ts` — Burrows–Wheeler (suffix-sort + LF-mapping inverse), MTF, RLE.
@@ -42,25 +52,30 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 
 ## Ideas / backlog
 
+- [x] **Adaptive Huffman** (FGK) alongside the static coder — the tree mutates as symbols arrive;
+      the Adaptive-Huffman page scrubs the tree step-by-step and shows the live code table. *(v2)*
+- [x] **PPM** (prediction by partial matching, PPMC) with escape + full exclusion — order-0..N
+      context model driven by a decoupled WNC range coder; the PPM page shows the diminishing-
+      returns curve, a per-order coding breakdown and a per-byte escape trace. *(v2)*
+- [x] **rANS** as a third entropy backend — static range Asymmetric Numeral System; its page shows
+      the [0,M) normalisation ring and its size against the true/quantised floors + arithmetic. *(v2)*
+- [x] **BWT scaling**: linear-time **SA-IS** suffix array + a sentinel-based BWT; the Suffix Array
+      page renders the sorted suffixes/BWT column and a live naive-vs-SA-IS scaling benchmark. *(v2)*
+- [x] **Entropy vs. ratio scatter** on the Benchmark page — each corpus as (order-0 entropy, best
+      achieved bits/sym) against the y=x floor. *(v2)*
 - [ ] **Length-limited Huffman** (package-merge) so deep trees on skewed inputs stay within a bit
       budget — and show the length-limit trade-off against optimal Huffman.
-- [ ] **Adaptive Huffman** (FGK / Vitter) alongside the static coder, to mirror the adaptive
-      arithmetic story and animate the tree mutating as symbols arrive.
-- [ ] **PPM** (prediction by partial matching) with escape symbols — a proper order-N context
-      model to sit above order-1 arithmetic and show diminishing returns per order.
-- [ ] **rANS / range coder** as a third entropy backend; compare speed/size against WNC.
 - [ ] **Real DEFLATE**: fixed + dynamic Huffman blocks, the length/distance code tables, and a
       byte-exact gzip container so output is inspectable with real tools.
 - [ ] **File drop / upload**: compress arbitrary user bytes (with the sandbox `try/catch` guards)
       and show a live size readout; add a download of the compressed blob.
-- [ ] **BWT scaling**: swap the O(n² log n) rotation sort for a real suffix-array (DC3/SA-IS) so
-      the pipeline handles kilobytes, and visualise the suffix array.
 - [ ] **Kraft inequality** widget on the Huffman page (prove the code is complete/prefix-free).
-- [ ] **Entropy vs. ratio scatter**: plot every corpus as (order-0 entropy, best ratio) to make
-      the "you can't beat entropy on random data" point visually.
 - [ ] **Step controls** on the arithmetic + LZ pages (play/pause/scrub) to animate coding.
 - [ ] **Lower bound annotations**: mark each codec's own theoretical floor (order-k) on the
       benchmark bars, not just order-0.
+- [ ] **rANS interleaving / adaptive rANS** and a tANS (table-driven) variant for a speed story.
+- [ ] **PPM* / PPMd escape estimators** (methods A/B/D, secondary symbol estimation) as an
+      escape-method comparison; and update exclusions.
 
 ## Session log
 
@@ -74,3 +89,22 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
   passed clean. Then built eight pages with SVG visualisations (Huffman tree, arithmetic interval
   narrowing, LZ parse map, BWT rotation matrix) and a benchmark that races all codecs against the
   entropy floor. Zero dependencies beyond React.
+- 2026-07-02 (claude): **v2 — four new from-scratch coding engines**, each round-trip-verified and
+  wired into the `Codec` interface so they flow into the Benchmark and Self-test automatically.
+  (1) **rANS** (`rans.ts`): frequency normalisation to M=2^12, byte-wise state renormalisation, a
+  serialised table; hits the order-0 floor by a table-and-multiply. (2) **PPM/PPMC** (`ppm.ts`)
+  on a new decoupled WNC **range coder** (`rangecoder.ts`): orders 0..N with escape + full
+  exclusion — order-3 takes structured text from 57% (order-0) to ~4%. (3) **SA-IS suffix array**
+  (`suffixArray.ts`): the linear-time induced-sorting algorithm, checked against a brute-force
+  oracle, powering a sentinel-based BWT that inverts with no primary index; 16 KB sorts in ~10 ms.
+  (4) **Adaptive Huffman / FGK** (`adaptiveHuffman.ts`): one-pass dynamic tree with the sibling
+  property and an NYT escape — no table transmitted. Debugged three real correctness bugs under
+  Node before wiring in: the inverse SA-BWT LF walk (the stored row is the cyclic *primary index*,
+  not the sentinel's F-row), and two FGK tree-surgery bugs (an orphaned old-NYT node polluting the
+  block-leader scan, fixed by converting NYT in place; and a transient equal-weight tie letting the
+  block leader be an ancestor, fixed with an ancestry guard). Self-test grows **210 → 350** checks,
+  all green (rANS/PPM-o{0,2,4}/adaptive-Huffman round-trips + SA-IS = oracle + SA-BWT round-trip
+  over corpus and adversarial inputs); offline fuzz: 3k rANS, 5×0.8k PPM, 8k FGK, 4k SA-BWT cases
+  clean. Added four interactive pages (rANS ring, PPM diminishing-returns + trace, Suffix Array
+  table + scaling benchmark, Adaptive-Huffman scrubber) and an entropy-vs-ratio scatter on the
+  Benchmark. Still zero runtime deps beyond React.

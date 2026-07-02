@@ -9,9 +9,13 @@ import { navigate } from '../hooks/useHashRoute'
 const MODULES = [
   { route: 'analyzer', name: 'Entropy Analyzer', desc: 'Measure the information content and the theoretical compression floor.' },
   { route: 'huffman', name: 'Huffman Coding', desc: 'Build the optimal prefix-code tree and watch symbols become bits.' },
+  { route: 'adaptive', name: 'Adaptive Huffman', desc: 'The FGK tree that learns as bytes arrive — scrub it mutating live.' },
   { route: 'arithmetic', name: 'Arithmetic Coding', desc: 'Spend fractional bits per symbol; reach the entropy bound.' },
+  { route: 'rans', name: 'rANS', desc: 'Asymmetric numeral systems — the entropy coder inside zstd & LZFSE.' },
+  { route: 'ppm', name: 'PPM', desc: 'Context modelling with escapes; watch more context hit diminishing returns.' },
   { route: 'lempel', name: 'LZ77 & LZW', desc: 'Exploit repetition with back-references and self-building dictionaries.' },
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
+  { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
   { route: 'benchmark', name: 'Benchmark', desc: 'Race every codec on shared corpora against the entropy floor.' },
   { route: 'selftest', name: 'Self-test', desc: 'Every codec round-trips every input — proven live.' },
 ]
@@ -30,8 +34,9 @@ export function Overview() {
         lede={
           <>
             A hands-on laboratory of lossless data compression, built from first principles with
-            zero dependencies. Every codec here — Huffman, arithmetic, LZ77, LZW, and a full
-            Burrows–Wheeler stack — is implemented from scratch and{' '}
+            zero dependencies. Every codec here — Huffman (static & adaptive), arithmetic,{' '}
+            <strong>rANS</strong>, <strong>PPM</strong>, LZ77, LZW, and a full Burrows–Wheeler stack
+            over a linear-time <strong>suffix array</strong> — is implemented from scratch and{' '}
             <strong>provably round-trips</strong> its input. Watch entropy turn into bits.
           </>
         }
@@ -97,10 +102,12 @@ export function Overview() {
           <p>
             Lossless compression splits into two ideas that combine into every real format. First,{' '}
             <strong>entropy coding</strong> assigns shorter codes to more probable symbols: Huffman
-            does it with whole-bit prefix codes (optimal among those), and{' '}
-            <strong>arithmetic coding</strong> does it with fractional bits, reaching the entropy
-            bound exactly. Second, <strong>modelling</strong> makes symbols more predictable before
-            they are coded — <strong>LZ77/LZW</strong> replace repeats with references, and the{' '}
+            does it with whole-bit prefix codes (optimal among those), while{' '}
+            <strong>arithmetic coding</strong> and <strong>rANS</strong> spend fractional bits to
+            reach the entropy bound exactly — the latter by a fast table-and-multiply that powers
+            zstd. Second, <strong>modelling</strong> makes symbols more predictable before they are
+            coded — <strong>PPM</strong> conditions on the longest matching context,{' '}
+            <strong>LZ77/LZW</strong> replace repeats with references, and the{' '}
             <strong>Burrows–Wheeler transform</strong> reorders data so a cheap local model suffices.
           </p>
           <p>
