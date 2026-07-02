@@ -1,6 +1,14 @@
 import type { Inst, IRFunc, IRModule, Operand, Phi, Term } from './ir/ir';
+import { analyzeEffects } from './ir/effects';
 
 // Human-readable textual SSA, used by the dev harness and the IR panel in the UI.
+
+/** A one-line human tag for a function's interprocedural effect class. */
+export function effectTag(pure: boolean, pureNoTrap: boolean): string {
+  if (pureNoTrap) return '; effect: pure, non-trapping — calls are CSE-able, hoistable & droppable';
+  if (pure) return '; effect: pure — redundant calls are CSE-able';
+  return '; effect: impure — calls are opaque (kept, ordered, never merged)';
+}
 
 function op(o: Operand): string {
   if (o.tag === 'const') return o.ty === 'i32' ? `${(o.num as number) | 0}` : `${o.num}`; // i64 prints with no suffix
@@ -90,8 +98,9 @@ function term(t: Term): string {
   }
 }
 
-export function dumpFunc(fn: IRFunc): string {
+export function dumpFunc(fn: IRFunc, tag?: string): string {
   const lines: string[] = [];
+  if (tag) lines.push(tag);
   const ps = fn.params.map((p, i) => `v${i}:${p.ty}`).join(', ');
   lines.push(`func ${fn.name}(${ps}) -> ${fn.retTy} {`);
   for (const b of fn.blocks) {
@@ -109,6 +118,9 @@ export function dumpModule(mod: IRModule): string {
   const parts: string[] = [];
   for (const g of mod.globals) parts.push(`global ${g.name}: ${g.ty} = ${g.init}`);
   if (mod.globals.length) parts.push('');
-  for (const fn of mod.funcs) parts.push(dumpFunc(fn));
+  // Annotate each function with its whole-program effect class, so the pass-by-pass
+  // IR view shows exactly which calls the interprocedural passes may touch.
+  const eff = analyzeEffects(mod);
+  for (const fn of mod.funcs) parts.push(dumpFunc(fn, effectTag(eff.pure(fn.name), eff.pureNoTrap(fn.name))));
   return parts.join('\n\n');
 }

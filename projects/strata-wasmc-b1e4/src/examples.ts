@@ -10,6 +10,57 @@ export interface Example {
 
 export const EXAMPLES: Example[] = [
   {
+    id: 'purity',
+    title: 'Interprocedural purity',
+    blurb: 'A whole-program effect analysis makes pure calls first-class: redundant ones are CSE-d, invariant ones hoisted out of loops, dead ones deleted — while a printing helper is left untouched.',
+    source: `// Every other pass here is intraprocedural: a call is opaque, so the optimizer
+// never touches one. This program shows what changes once the compiler proves,
+// by a fixpoint over the whole call graph, which functions are *pure* — their
+// result depends only on their arguments and they have no observable effect.
+//
+// Compile at -O0, then flip to -O2 and read the IR / WASM tabs and the optimizer
+// log. The reference interpreter and the compiled wasm are proven to print the
+// same thing at every level, so these rewrites are behaviour-preserving.
+
+// PURE: reads no memory, writes nothing, only arithmetic on its arguments.
+fn sq(x: int) -> int { return x * x; }
+
+// PURE (transitively): it only calls sq, which is pure.
+fn dist2(ax: int, ay: int, bx: int, by: int) -> int {
+  return sq(ax - bx) + sq(ay - by);
+}
+
+// IMPURE: it prints. Two calls are observably different, so the optimizer must
+// never merge, hoist, or delete one — the output order is part of the meaning.
+fn trace(tag: int, v: int) -> int { print(tag); print(v); return v; }
+
+fn main() {
+  let ax = 10; let ay = 4; let bx = 3; let by = 9;
+
+  // (1) REDUNDANT pure call: dist2(...) is computed twice with the same
+  //     arguments. GVN/CSE keeps ONE call and reuses its result — so this whole
+  //     expression folds to 3 * dist2(...) with a single call in the wasm.
+  let d = dist2(ax, ay, bx, by) + dist2(ax, ay, bx, by) * 2;
+
+  // (2) LOOP-INVARIANT pure call: sq(ax) does not depend on i, so LICM hoists it
+  //     into the loop preheader — it runs once instead of 60 times.
+  let acc = 0;
+  for (let i = 0; i < 60; i = i + 1) { acc = acc + sq(ax) + i; }
+
+  // (3) DEAD pure call: the result is never read, so DCE deletes the call
+  //     entirely (a pure, non-trapping call has nothing to leave behind).
+  let unused = dist2(ay, ax, by, bx);
+
+  // (4) The impure helper is preserved exactly, calls and print-order intact.
+  let t = trace(1, d) + trace(2, acc);
+
+  print(d);
+  print(acc);
+  print(t);
+}
+`,
+  },
+  {
     id: 'divmagic',
     title: 'Division by a constant',
     blurb: 'Watch -O1 turn every `/ C` and `% C` into multiply-shift — no hardware divide.',

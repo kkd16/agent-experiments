@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { Compilation } from '../compiler/pipeline';
 import type { Block, Expr, FnDecl, Program, Stmt } from '../compiler/ast';
 import { tyName } from '../compiler/ast';
-import { dumpFunc } from '../compiler/irdump';
+import { dumpFunc, effectTag } from '../compiler/irdump';
+import { analyzeEffects } from '../compiler/ir/effects';
 import { interpret } from '../compiler/interp';
 import { Debugger } from '../compiler/debug';
 import type { DebugState } from '../compiler/debug';
@@ -126,13 +127,14 @@ export function IrPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
   const mod = showOpt ? comp.optimized : comp.ssa;
   if (!mod) return <Empty />;
   const fn = mod.funcs[Math.min(fnIdx, mod.funcs.length - 1)];
+  const eff = analyzeEffects(mod);
   return (
     <div className="panel-scroll">
       <div className="seg">
         <button className={!showOpt ? 'on' : ''} onClick={() => setShowOpt(false)}>unoptimized</button>
         <button className={showOpt ? 'on' : ''} onClick={() => setShowOpt(true)}>optimized (O{comp.level})</button>
       </div>
-      <pre className="code-pre ir-pre">{fn ? dumpFunc(fn) : '(no function)'}</pre>
+      <pre className="code-pre ir-pre">{fn ? dumpFunc(fn, effectTag(eff.pure(fn.name), eff.pureNoTrap(fn.name))) : '(no function)'}</pre>
     </div>
   );
 }

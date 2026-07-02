@@ -2,6 +2,7 @@ import type { Block, ConstNum, Inst, IRFunc, IRModule, IRType, Operand, Phi } fr
 import { eachOperand, hasSideEffect, isPureValue, zeroOf } from '../ir/ir';
 import { computeDom, succOfTerm } from '../ir/cfg';
 import { findNaturalLoops } from '../ir/loops';
+import { analyzeEffects } from '../ir/effects';
 import { simplifyCFG } from './simplifycfg';
 import { jumpThread } from './thread';
 import { unrollLoops } from './unroll';
@@ -486,13 +487,26 @@ function sameVal(a: Operand, b: Operand): boolean {
 
 const COMMUTATIVE = new Set(['add', 'mul', 'and', 'or', 'xor', 'eq', 'ne']);
 
-export function gvn(fn: IRFunc): number {
+export function gvn(fn: IRFunc, pureCall?: (name: string) => boolean): number {
   const dom = computeDom(fn);
   const byId = new Map(fn.blocks.map((b) => [b.id, b]));
   let changed = 0;
+  // Redundant `pure` calls we prove dominated by an identical one. GVN removes
+  // them itself rather than leaving them to DCE: a `pure` call still counts as
+  // side-effecting to the generic `hasSideEffect` guard (it might trap or
+  // recurse), but a call dominated by an identical `pure` call is provably safe
+  // to delete — the dominator runs first with the same arguments, so it already
+  // produced this value or trapped, and this copy can only repeat that outcome.
+  const redundant = new Set<Inst>();
+
+  // A `call` to a `pure` function is a value expression keyed on its name + args,
+  // exactly like an `ibin`. (Its `sub` is the callee name, so distinct callees
+  // never collide.) Every other kind falls back to the pure-value test.
+  const keyable = (inst: Inst): boolean =>
+    inst.kind === 'call' ? pureCall?.(inst.sub) === true : isPureValue(inst) && inst.kind !== 'copy';
 
   const keyOf = (inst: Inst): string | null => {
-    if (!isPureValue(inst) || inst.kind === 'copy') return null;
+    if (!keyable(inst)) return null;
     const ops = inst.args.map((o) => (o.tag === 'const' ? `c${o.ty}:${o.num}` : `v${o.id}`));
     if (COMMUTATIVE.has(inst.sub) && ops.length === 2) ops.sort();
     return `${inst.kind}/${inst.sub}/${ops.join(',')}`;
@@ -509,6 +523,7 @@ export function gvn(fn: IRFunc): number {
       const existing = table.get(k);
       if (existing !== undefined) {
         changed += replaceAllUses(fn, inst.res, { tag: 'val', id: existing });
+        if (inst.kind === 'call') redundant.add(inst); // now dead, but DCE won't touch a call
       } else {
         table.set(k, inst.res);
         added.push(k);
@@ -518,6 +533,10 @@ export function gvn(fn: IRFunc): number {
     for (const k of added) table.delete(k);
   };
   walk(fn.entry);
+  if (redundant.size > 0) {
+    for (const b of fn.blocks) b.insts = b.insts.filter((i) => !redundant.has(i));
+    changed += redundant.size;
+  }
   return changed;
 }
 
@@ -525,9 +544,13 @@ export function gvn(fn: IRFunc): number {
 // Dead code elimination
 // =====================================================================
 
-export function dce(fn: IRFunc): number {
+export function dce(fn: IRFunc, pureNoTrapCall?: (name: string) => boolean): number {
   let changed = 0;
   let again = true;
+  // A call to a `pureNoTrap` function has no observable effect and cannot trap,
+  // so — unlike a general call — it is removable once its result is unused.
+  const effectful = (i: Inst): boolean =>
+    hasSideEffect(i) && !(i.kind === 'call' && pureNoTrapCall?.(i.sub) === true);
   while (again) {
     again = false;
     const counts = countUses(fn);
@@ -538,7 +561,7 @@ export function dce(fn: IRFunc): number {
         b.phis = keptPhis;
         again = true;
       }
-      const keptInsts = b.insts.filter((i) => i.res === null || hasSideEffect(i) || (counts.get(i.res) ?? 0) > 0);
+      const keptInsts = b.insts.filter((i) => effectful(i) || (i.res !== null && (counts.get(i.res) ?? 0) > 0));
       if (keptInsts.length !== b.insts.length) {
         changed += b.insts.length - keptInsts.length;
         b.insts = keptInsts;
@@ -615,7 +638,7 @@ export function getPreheader(fn: IRFunc, header: Block, loop: Set<number>, idCtr
   return ph;
 }
 
-export function licm(fn: IRFunc): number {
+export function licm(fn: IRFunc, pureNoTrapCall?: (name: string) => boolean): number {
   // Natural loops come from the shared loop forest (one definition of "loop" for
   // the whole mid-end). LICM only needs each loop's header and body set.
   const naturalLoops = findNaturalLoops(fn);
@@ -655,10 +678,16 @@ export function licm(fn: IRFunc): number {
         const b = byId.get(id)!;
         const keep: Inst[] = [];
         for (const inst of b.insts) {
+          // A `pureNoTrap` call is speculatively executable: it cannot trap and
+          // has no effect, so running it once in the preheader (even for a loop
+          // that never iterates) is behaviour-preserving — the same trap-safety
+          // argument that gates hoisting a `div_s` (never) or an `ibin` (always).
+          const hoistableCall = inst.kind === 'call' && pureNoTrapCall?.(inst.sub) === true;
           const hoistable =
             inst.res !== null &&
-            HOISTABLE.has(inst.kind) &&
-            !(inst.kind === 'ibin' && (inst.sub === 'div_s' || inst.sub === 'rem_s')) &&
+            (hoistableCall ||
+              (HOISTABLE.has(inst.kind) &&
+                !(inst.kind === 'ibin' && (inst.sub === 'div_s' || inst.sub === 'rem_s')))) &&
             inst.args.every(invariant);
           if (hoistable) {
             ph.insts.push(inst);
@@ -908,13 +937,18 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // branch above the loop leaves two specialized clones whose now-constant
     // branches and dead arms the fixpoint rounds below (SCCP/DCE/CFG-simplify)
     // sweep away — turning a per-iteration test into a single pre-loop one.
-    record('licm (pre-unswitch)', licm);
+    record('licm (pre-unswitch)', (fn) => licm(fn, analyzeEffects(out).pureNoTrap));
     record('loop-unswitch', unswitchLoops);
   }
 
   const rounds = level >= 2 ? 4 : 1;
   for (let r = 0; r < rounds; r++) {
     const suffix = rounds > 1 ? ` (round ${r + 1})` : '';
+    // Recompute the whole-program effect classification each round: as SROA and
+    // mem-opt scalarize local aggregates, functions that only used a private
+    // struct shed their stores/loads and become `pure`, exposing more pure-call
+    // CSE/hoisting/DCE. Cheap (linear in instructions) and always sound.
+    const eff = analyzeEffects(out);
     record('copy-propagation' + suffix, copyProp);
     record('sccp' + suffix, sccp);
     record('devirtualize' + suffix, devirtualize);
@@ -925,7 +959,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('sroa' + suffix, sroa);
     record('mem-opt' + suffix, memOpt);
     if (level >= 2) record('reassociate' + suffix, reassociate);
-    if (level >= 2) record('gvn/cse' + suffix, gvn);
+    if (level >= 2) record('gvn/cse' + suffix, (fn) => gvn(fn, eff.pure));
     // Partial-redundancy elimination (GVN-PRE): GVN has just removed the fully
     // redundant computations, so what's left for PRE is the *partial* ones — an
     // expression recomputed after a merge where only some incoming paths already
@@ -941,7 +975,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     if (level >= 2) record('correlated-fold' + suffix, correlatedFold);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
-    if (level >= 2) record('licm' + suffix, licm);
+    if (level >= 2) record('licm' + suffix, (fn) => licm(fn, eff.pureNoTrap));
     // Sinking is the dual of LICM: push a pure value used on only one arm of a
     // branch down into that arm, so the other path never computes it. Runs after
     // LICM (which has pulled the loop-invariant work the other way) and before DCE.
@@ -956,7 +990,7 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // hoisting can't move). Runs right after hoist so the code-motion trio (sink /
     // hoist / cross-jump) is contiguous, and before DCE sweeps the collapsed φs.
     if (level >= 2) record('cross-jump' + suffix, crossJump);
-    record('dead-code-elim' + suffix, dce);
+    record('dead-code-elim' + suffix, (fn) => dce(fn, eff.pureNoTrap));
     // Jump threading folds per-edge-constant conditional merges (a materialized
     // boolean phi feeding a branch) into direct jumps; simplify-cfg then coalesces
     // the straight-line blocks and forwarders the fold leaves behind.
@@ -974,18 +1008,19 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('sccp (post-unroll)', sccp);
     record('mem-opt (post-unroll)', memOpt);
     record('reassociate (post-unroll)', reassociate);
-    record('gvn/cse (post-unroll)', gvn);
+    const effPost = analyzeEffects(out);
+    record('gvn/cse (post-unroll)', (fn) => gvn(fn, effPost.pure));
     record('strength-reduce-iv (post-unroll)', osr);
-    record('licm (post-unroll)', licm);
+    record('licm (post-unroll)', (fn) => licm(fn, effPost.pureNoTrap));
     record('algebraic-simplify (post-unroll)', algebraic);
     record('cross-jump (post-unroll)', crossJump);
-    record('dead-code-elim (post-unroll)', dce);
+    record('dead-code-elim (post-unroll)', (fn) => dce(fn, effPost.pureNoTrap));
     record('jump-thread (post-unroll)', jumpThread);
     record('simplify-cfg (post-unroll)', simplifyCFG);
   }
   // a final cleanup pass that always runs
   record('cfg-cleanup', (fn) => pruneUnreachable(fn));
-  record('dead-code-elim (final)', dce);
+  record('dead-code-elim (final)', (fn) => dce(fn, analyzeEffects(out).pureNoTrap));
   const removed = pruneFunctions(out);
   if (removed > 0) {
     log.push({ name: 'dead-function-elim', changed: removed });
