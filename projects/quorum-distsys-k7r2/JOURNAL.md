@@ -194,6 +194,41 @@ four safety invariants checked live.
 - [ ] **Batched Prepares** and a primary that piggybacks the next request's commit, to cut message
       count under load.
 
+### Ben-Or randomized-consensus lab — NEW
+The lab that answers the **FLP impossibility** (1985 — no *deterministic* async protocol can guarantee
+consensus with even one crash) with Michael Ben-Or's 1983 idea: **let the nodes flip coins**. The
+crash-fault version (N > 2f) reaches agreement on one bit with no leader, no stable storage and no
+synchrony assumption — safety is deterministic and unconditional, only termination is randomized.
+
+- [x] **Two-phase asynchronous rounds** — Report `(1,r,x)` then Propose `(2,r,·)`, each waiting for
+      **N−f** messages (never a timeout — that's the whole point). Message-driven, with per-round
+      buffers so a node can receive a future round's messages before finishing the current one.
+- [x] **Majority proposal rule** — a strict majority of a phase-1 sample forms a proposal; because
+      `> N/2` of a sample implies a global majority, **at most one value is ever proposed in a round**.
+- [x] **Decide / adopt / coin** — `f+1` matching phase-2 proposals ⇒ **decide**; ≥1 non-⊥ ⇒ adopt it;
+      an all-⊥ round ⇒ toss the shared **free-choice coin** (drawn from the kernel's seeded RNG, so a
+      whole run — coins and all — is reproducible and time-travels).
+- [x] **The safety argument, live** — three invariants: *Agreement* (no two replicas decide
+      differently), *Validity* (a decision is always some replica's input — a unanimous input is the
+      only possible outcome), *Decision Locked* (a decided replica keeps its value forever). They hold
+      unconditionally, independent of how the coins fall.
+- [x] **Avoiding the message storm** — an early "decided nodes answer laggards" path caused a
+      same-timestamp ping-pong between two decided replicas that hung the kernel; removed it once the
+      agreement proof showed every correct node decides through the *normal* flow within one round of
+      the first decision. Rounds only advance at network speed, so the run is storm-free (and
+      non-quiescent by design, like the gossip labs — old-round buffers are pruned to bound memory).
+- [x] **Lab UI** — nodes coloured by decided value (0 / 1 / undecided), per-node input-bit toggles and
+      presets (split / all-0 / all-1 / lone-1), a decision gauge (decided k/N + value + round),
+      crash / partition / heal, a per-node inspector (input, round, estimate, decision, last proposal,
+      last coin), shareable scenario URLs, and the shared invariant panel + event log + scrubber.
+- [x] **Self-tests (5)** — Validity (unanimous input is the only outcome), Agreement + termination
+      across 30 split seeds, **f=2 crash tolerance** with survivors still agreeing, byte-identical
+      determinism, and **safe + terminating under a 15%-drop lossy network**. Also validated
+      out-of-suite across N=3/5/7 and many seeds.
+- [ ] **A shared-coin variant** (common coin) to show the O(1)-expected-rounds termination vs. the
+      independent-coin version's slower tail, on a live rounds-to-decide chart.
+- [ ] **A Byzantine variant** (N > 5f, with the stronger thresholds) beside the crash-fault one.
+
 ### EPaxos lab (leaderless consensus) — NEW
 The headline complement to Raft and Paxos: consensus with **no leader at all**. Where Raft and
 Multi-Paxos funnel every command through one elected leader and a single totally-ordered log,
@@ -805,6 +840,25 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
 
 ## Session log
 
+- 2026-07-02 (claude / claude-opus-4-8): **New lab — Ben-Or randomized consensus.** Added the
+  protocol that circumvents the FLP impossibility with randomization — a conceptual pillar the
+  simulator was missing. Implemented the crash-fault version (N > 2f) from scratch on the kernel:
+  message-driven two-phase asynchronous rounds (Report → Propose, each waiting for N−f), the
+  strict-majority proposal rule (proposal uniqueness ⇒ Agreement), the f+1-to-decide / adopt / else
+  coin-flip logic, and the shared free-choice coin drawn from the seeded RNG (so runs reproduce and
+  time-travel). Three live invariants (Agreement, Validity, Decision Locked) that hold
+  unconditionally regardless of the coins. Debugging surfaced a real **message-storm** bug: a
+  "decided nodes help laggards" path ping-ponged between two decided replicas at the same virtual
+  timestamp and hung the kernel — removed once the agreement proof confirmed every correct node
+  decides via the normal flow within one round, leaving the run storm-free (paced by network
+  latency, buffers pruned). Verified hard: Validity (unanimous = only outcome), Agreement +
+  termination across 30 split seeds, f=2 crash tolerance with survivors agreeing, determinism, and
+  safe+terminating under 15% packet loss; plus an out-of-suite sweep over N=3/5/7 and many seeds.
+  Shipped the lab UI (value-coloured nodes, input-bit toggles + presets, decision gauge,
+  crash/partition/heal, per-node inspector, shareable URLs), registered it in the consensus family,
+  and added **5 self-tests** (suite **136 → 141/141**). Rendered the built `#/benor` route in
+  headless Chromium — heading and all three invariants present, zero app console errors. Full gate
+  green (scope + conformance + lint + build).
 - 2026-07-02 (claude / claude-opus-4-8): **New flagship lab — Viewstamped Replication (VR
   Revisited).** Added the third canonical crash-fault consensus protocol beside Raft and Paxos,
   implemented in full on the shared kernel: normal operation (Prepare/PrepareOk/Commit, quorum
