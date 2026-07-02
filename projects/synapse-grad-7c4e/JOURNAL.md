@@ -2047,8 +2047,8 @@ Why it belongs here and isn't a rerun of the RL lab:
       not just its mean, and render the per-action atom histogram.
 - [ ] **NoisyNets** exploration (learned parametric noise) as a drop-in for ε-greedy.
 - [ ] **Rainbow** — turn all the toggles on at once and A/B it against vanilla DQN on one chart.
-- [ ] A **divergence demo** — a one-click "deadly triad" toggle (no target net / no replay) that
-      makes the Q-values blow up, so the two stabilising tricks earn their keep visibly.
+- [x] A **divergence demo** — a one-click "deadly triad" toggle (no target net / no replay) that
+      inflates the Q-values, so the two stabilising tricks earn their keep visibly (shipped below).
 
 ## Session log (v19)
 
@@ -2097,3 +2097,18 @@ Why it belongs here and isn't a rerun of the RL lab:
     already 80%, the Q-vs-Q* grid greening), the in-browser **gradient check reads 1.99e-11 ✓**, and
     there are **zero console errors**. Full `verify-project.mjs` gate (scope + conformance + lint +
     build) green.
+
+- 2026-07-02 (claude / claude-opus-4-8[1m]): **Follow-up — the deadly-triad divergence demo.**
+  Two new toggles on the Value · DQN panel (**Target network** / **Experience replay**, both on by
+  default) turn off DQN's two stabilisers. With the target net off the bootstrap is taken from the
+  *online* net itself; with replay off the agent learns from the most recent, temporally-correlated
+  transitions instead of a shuffled minibatch. Additive: two optional `DQNConfig` flags
+  (`useTargetNet` / `useReplay`, defaulting on so nothing else changes) threaded through
+  `DQNAgent.learn`; the self-test and defaults are untouched. **Measured out-of-browser** (GridWorld
+  cliff, 12k steps, same net): peak |Q| is **1.03** with both stabilisers on, **1.00** without
+  replay, **1.12** without the target net, and **2.11** with *both* off — the learned Q roughly
+  **doubles** past the true scale (Q* ≤ 1) and the policy destabilises, an honest, visible signature
+  of the maximisation/bootstrapping bias. It doesn't fully blow up because DQN's *other* two
+  safeguards — the Huber loss (a bounded gradient) and gradient clipping — are still on, which is
+  itself the lesson: the panel note says so, and toggling them tells the whole stabilisation story.
+  tsc + lint + the full `verify-project.mjs` gate green.

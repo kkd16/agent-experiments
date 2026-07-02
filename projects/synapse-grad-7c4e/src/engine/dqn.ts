@@ -507,6 +507,12 @@ export interface DQNConfig {
   huberDelta: number;
   clipNorm: number;
   seed: number;
+  // Deadly-triad demo switches (default true). Turning both OFF — bootstrapping off the *online*
+  // net and training on the most recent, temporally-correlated transitions instead of a shuffled
+  // replay — reproduces the classic instability that makes tabular-looking Q-learning with a neural
+  // function approximator diverge, so the two stabilising tricks earn their keep visibly.
+  useTargetNet?: boolean; // false ⇒ bootstrap from the online net itself (no frozen target)
+  useReplay?: boolean; // false ⇒ learn online from the most recent transitions (correlated updates)
 }
 
 export interface LearnStats {
@@ -528,6 +534,7 @@ export class DQNAgent {
   envSteps = 0;
   learnSteps = 0;
   private nbuf: { s: Float64Array; a: number; r: number }[] = []; // n-step FIFO for the current episode
+  private recent: Transition[] = []; // recency window for the no-replay (online, correlated) path
 
   constructor(stateDim: number, nActions: number, cfg: DQNConfig) {
     this.cfg = cfg;
@@ -575,14 +582,7 @@ export class DQNAgent {
       for (let k = 0; k < n; k++) rn += Math.pow(gamma, k) * this.nbuf[k].r;
       const head = this.nbuf[0];
       const done = terminated; // the nth step's terminality
-      this.replay.add({
-        s: head.s,
-        a: head.a,
-        rn,
-        s2: done ? null : s2,
-        gammaN: Math.pow(gamma, n),
-        reward1: head.r,
-      });
+      this.emit({ s: head.s, a: head.a, rn, s2: done ? null : s2, gammaN: Math.pow(gamma, n), reward1: head.r });
       this.nbuf.shift();
     }
     if (terminated || truncated) {
@@ -592,17 +592,17 @@ export class DQNAgent {
         let rn = 0;
         for (let j = 0; j < k; j++) rn += Math.pow(gamma, j) * this.nbuf[j].r;
         const head = this.nbuf[0];
-        this.replay.add({
-          s: head.s,
-          a: head.a,
-          rn,
-          s2: terminated ? null : s2,
-          gammaN: Math.pow(gamma, k),
-          reward1: head.r,
-        });
+        this.emit({ s: head.s, a: head.a, rn, s2: terminated ? null : s2, gammaN: Math.pow(gamma, k), reward1: head.r });
         this.nbuf.shift();
       }
     }
+  }
+
+  // Store an assembled transition in the replay buffer and the recency window.
+  private emit(t: Transition): void {
+    this.replay.add(t);
+    this.recent.push(t);
+    if (this.recent.length > 1024) this.recent.shift();
   }
 
   ready(): boolean {
@@ -615,10 +615,26 @@ export class DQNAgent {
   learn(rng: () => number): LearnStats | null {
     if (!this.ready()) return null;
     const cfg = this.cfg;
-    const { items, indices, weights } = this.replay.sample(cfg.batch, this.beta(), rng);
+    const useReplay = cfg.useReplay !== false;
+    const useTarget = cfg.useTargetNet !== false;
+    let items: Transition[];
+    let indices: number[];
+    let weights: Float64Array;
+    if (useReplay) {
+      ({ items, indices, weights } = this.replay.sample(cfg.batch, this.beta(), rng));
+    } else {
+      // No replay: learn from the most recent transitions in order — highly temporally correlated,
+      // exactly the setting that makes bootstrapped value learning unstable.
+      const k = Math.min(cfg.batch, this.recent.length);
+      items = this.recent.slice(this.recent.length - k);
+      indices = [];
+      weights = new Float64Array(k).fill(1);
+    }
+    // Bootstrap from the frozen target net, or — in the deadly-triad demo — from the online net itself.
+    const tgtNet = useTarget ? this.target : this.online;
     const B = items.length;
     const targets = new Float64Array(B);
-    for (let i = 0; i < B; i++) targets[i] = tdTarget(items[i], this.online, this.target, cfg.double);
+    for (let i = 0; i < B; i++) targets[i] = tdTarget(items[i], this.online, tgtNet, cfg.double);
 
     const sd = new Float64Array(B * this.stateDim);
     const acts = new Int32Array(B);
@@ -648,11 +664,13 @@ export class DQNAgent {
       meanQ += qa.data[i];
       if (qa.data[i] > maxQ) maxQ = qa.data[i];
     }
-    this.replay.updatePriorities(indices, tdErr);
+    if (useReplay) this.replay.updatePriorities(indices, tdErr);
 
-    // Target network sync.
-    if (cfg.targetMode === 'soft') this.target.softUpdateFrom(this.online, cfg.tau);
-    else if (this.learnSteps % Math.max(1, cfg.targetPeriod) === 0) this.target.hardUpdateFrom(this.online);
+    // Target network sync (skipped entirely when the target net is disabled).
+    if (useTarget) {
+      if (cfg.targetMode === 'soft') this.target.softUpdateFrom(this.online, cfg.tau);
+      else if (this.learnSteps % Math.max(1, cfg.targetPeriod) === 0) this.target.hardUpdateFrom(this.online);
+    }
 
     return { loss: loss.data[0], meanQ: meanQ / B, maxQ, meanTdError: meanTd / B, gradNorm };
   }

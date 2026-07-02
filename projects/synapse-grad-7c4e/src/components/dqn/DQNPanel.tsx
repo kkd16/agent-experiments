@@ -359,6 +359,33 @@ export default function DQNPanel(props: Props) {
       </section>
 
       <section className="group">
+        <h3>
+          Deadly triad <span className="muted small">· why the tricks matter</span>
+        </h3>
+        <div className="two">
+          <button
+            className={`chip${config.useTargetNet ? ' on' : ''}`}
+            onClick={() => set('useTargetNet', !config.useTargetNet)}
+            style={{ width: '100%' }}
+          >
+            {config.useTargetNet ? '✓ ' : ''}Target network
+          </button>
+          <button
+            className={`chip${config.useReplay ? ' on' : ''}`}
+            onClick={() => set('useReplay', !config.useReplay)}
+            style={{ width: '100%' }}
+          >
+            {config.useReplay ? '✓ ' : ''}Experience replay
+          </button>
+        </div>
+        <p className="muted small task-blurb">
+          {!config.useTargetNet && !config.useReplay
+            ? '⚠ Both stabilisers OFF — the deadly triad: bootstrapping off the online net and training on temporally-correlated recent transitions. Watch the Q-values inflate (≈2× overestimation) and the policy destabilise; DQN’s other safeguards (the Huber loss + gradient clipping, still on) keep it from fully diverging.'
+            : 'Turn both OFF to expose the classic instability (function approximation + bootstrapping + off-policy data) that the target network and experience replay were invented to tame.'}
+        </p>
+      </section>
+
+      <section className="group">
         <h3>Run</h3>
         <div className="run-row">
           {running ? (
