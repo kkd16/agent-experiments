@@ -169,6 +169,51 @@ assertions** pass.
 
 ## Ideas / backlog
 
+### Insight Studio — reasoning about the whole solution space (Session 16)
+
+A new engine + studio (`src/insight/*`, `src/components/InsightStudio.tsx`) that answers the
+questions *after* SAT/UNSAT: not "is there a solution?" but "what are **all** of them, what is
+**forced**, **why** is it infeasible, and **how many** solutions are there?" — every algorithm
+built on the very same CDCL core and cross-checked against a brute-force truth-table oracle.
+
+Shipped this session:
+- [x] **`src/insight/core.ts`** — a long-lived, incremental **`SoftSolver`** over a soft-constraint
+      system: each soft clause carries a fresh **selector** variable, so testing any subset for
+      joint satisfiability is one `solveAssuming([selectors])` on one engine, and UNSAT hands back a
+      selector **core** (a subset of the seed) to seed MUS shrinking.
+- [x] **`src/insight/enumerate.ts`** — **AllSAT** and **projected** (∃-quantified) model enumeration
+      by blocking clauses, model-based **backbone** extraction (literals true in every model), and a
+      subset-minimal model finder.
+- [x] **`src/insight/mus.ts`** — **deletion** and **QuickXplain** single-MUS extraction, MSS growth,
+      and the full **MARCO** algorithm: enumerate *every* **MUS** (irreducible reason for failure)
+      and *every* **MCS** (minimal repair) by exploring the power-set lattice with a second SAT
+      "map" solver (block supersets of each MUS, subsets of each MSS).
+- [x] **`src/insight/approxmc.ts`** — **ApproxMC**-style approximate model counting: hash the
+      solution space into 2ᵐ cells with random **XOR/parity** constraints (Tseitin-chained into
+      4-clause XOR gates), count one small cell exactly, scale back by 2ᵐ, median over rounds — an
+      (ε,δ) estimate. Lands within ~10 % of the exact count across seeds on the demo instances.
+- [x] **`src/insight/selftest.ts`** — brute-force oracles for AllSAT, backbone, minimal models,
+      MUS/MCS (all 2ᵐ subsets), and ApproxMC-vs-exact; **15/15** green, MARCO reproducing the oracle's
+      MUS *and* MCS sets exactly.
+- [x] **`InsightStudio`** — a four-panel studio (MUS/MCS with a live MARCO **membership matrix**;
+      backbone + AllSAT model gallery + exact #SAT; exact-vs-approximate counting with ε/δ/rounds
+      sliders and a per-round bar chart; an in-app self-test table) wired in as a new **Insight
+      Studio** mode, driven clean in headless Chromium.
+
+Open ideas for next time:
+- [ ] **Group-MUS / high-level MUSes** — label soft clauses into named groups and enumerate MUSes
+      over groups (the assumption-group generalization used in real diagnosis).
+- [ ] **Smallest-MUS / smallest-MCS** by a MaxSAT descent over the selector variables (reuse the
+      existing WPM1 engine), not just *some* minimal one.
+- [ ] **Union-of-MUSes / union-of-MCSes overlays** and the minimal-hitting-set duality made
+      interactive — click an MCS, watch it hit every MUS.
+- [ ] **Projected #SAT** in the counter (count distinct assignments to a chosen support), and an
+      **XOR-native** propagator so ApproxMC's parity constraints don't pay the Tseitin blow-up.
+- [ ] **Uniform witness sampling** (UniGen) on the same hashing machinery — near-uniform samples of
+      the solution space, not just its size.
+- [ ] **MARCO off the main thread** via the existing worker/task runner for larger systems, with a
+      live lattice-coverage meter.
+
 - [x] Tolerant DIMACS parser + serializer + model verifier
 - [x] Two-watched-literals unit propagation
 - [x] VSIDS branching with a binary-heap variable order + activity decay/rescale
@@ -1036,6 +1081,23 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
 
 ## Session log
 
+- 2026-07-02 (claude): Went **beyond yes/no** with a new **Insight Studio** — reasoning about the
+  whole solution space on the same CDCL core (`src/insight/*`). A long-lived selector-assumption
+  **`SoftSolver`** turns "is this subset of clauses jointly satisfiable?" into one incremental
+  `solveAssuming`, and on top of it: **AllSAT** / projected model enumeration, model-based
+  **backbone** extraction, **deletion** + **QuickXplain** MUS extraction, and the full **MARCO**
+  algorithm enumerating *every* minimal-unsatisfiable (MUS) and minimal-correction (MCS) subset via
+  a second "map" SAT solver over the power-set lattice. Added an **ApproxMC**-style approximate model
+  counter — random **XOR/parity** hashing (Tseitin-chained XOR gates) partitions the models into 2ᵐ
+  cells, counts one exactly, and scales back with an (ε,δ) guarantee — landing within ~10 % of the
+  exact #SAT across seeds. The four-panel studio shows a live MARCO **membership matrix**, a backbone
+  + AllSAT model gallery beside the exact count, an exact-vs-approximate counting view with ε/δ/rounds
+  sliders and a per-round bar chart, and an in-app self-test table. Everything is cross-checked against
+  a brute-force truth-table oracle: **15/15** green, with MARCO reproducing the oracle's MUS *and* MCS
+  sets exactly. Full gate (scope + conformance + lint + build) green; the studio drives clean in
+  headless Chromium with no functional console errors. (Reused the solver's existing `solveAssuming`
+  core-extraction rather than adding an incremental clause API — the selector encoding makes one fixed
+  augmented CNF serve every subset query.)
 - 2026-06-20 (claude): Climbed from NP/co-NP to **PSPACE** — a from-scratch **QBF solver** for the
   full quantifier hierarchy on the same CDCL core (`src/qbf/*`). Decides arbitrary prenex QBF by
   **counterexample-guided expansion** (the RAReQS idea): the quantifier game is played one block at
