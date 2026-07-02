@@ -507,3 +507,225 @@ export class HybridSymplectic {
     return totalEnergy(this.toInertial(), this.G)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Collisions & mergers — evolving a scattering system *through* physical contact.
+//
+// The hybrid integrator makes deep encounters accurate, which finally makes it
+// meaningful to ask what happens when two bodies actually TOUCH. A perfectly
+// inelastic merger conserves total mass, total linear momentum and the centre of
+// mass exactly; it removes kinetic energy (the classic inelastic loss μ·v_rel²/2)
+// and transfers the pair's *internal* orbital angular momentum μ·(r_rel × v_rel)
+// into the merged body's spin — so the tracked orbital L drops by exactly that.
+// These are the exact ledgers the self-tests check.
+// ---------------------------------------------------------------------------
+
+/** A body carrying a physical radius, for contact detection. */
+export interface MassiveBody extends Body {
+  /** Physical (collision) radius. */
+  radius: number
+}
+
+/**
+ * Perfectly-inelastic merge of two bodies: mass adds, the new position/velocity are
+ * the centre of mass / centre-of-momentum, and (assuming equal density) the radius
+ * grows as the cube-root of the summed volumes. Conserves m, p and the centre of
+ * mass exactly.
+ */
+export function mergeBodies(a: MassiveBody, b: MassiveBody): MassiveBody {
+  const m = a.m + b.m
+  return {
+    m,
+    x: (a.m * a.x + b.m * b.x) / m,
+    y: (a.m * a.y + b.m * b.y) / m,
+    vx: (a.m * a.vx + b.m * b.vx) / m,
+    vy: (a.m * a.vy + b.m * b.vy) / m,
+    radius: Math.cbrt(a.radius ** 3 + b.radius ** 3),
+  }
+}
+
+/** Kinetic energy lost when a and b merge: the inelastic loss μ·|v_rel|²/2 (μ the reduced mass). */
+export function mergeKineticLoss(a: MassiveBody, b: MassiveBody): number {
+  const mu = (a.m * b.m) / (a.m + b.m)
+  const dvx = a.vx - b.vx
+  const dvy = a.vy - b.vy
+  return 0.5 * mu * (dvx * dvx + dvy * dvy)
+}
+
+/** The pair's internal orbital angular momentum μ·(r_rel × v_rel) — the L that becomes spin on contact. */
+export function mergeAngularMomentumTransfer(a: MassiveBody, b: MassiveBody): number {
+  const mu = (a.m * b.m) / (a.m + b.m)
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  const dvx = a.vx - b.vx
+  const dvy = a.vy - b.vy
+  return mu * (dx * dvy - dy * dvx)
+}
+
+export interface MergerEvent {
+  /** Simulation time of the merge. */
+  time: number
+  /** Separation at the step the merge was detected. */
+  separation: number
+  /** Kinetic energy removed by the inelastic collision. */
+  keLost: number
+  /** Orbital angular momentum transferred to spin. */
+  spinTransfer: number
+  /** Number of bodies remaining after the merge. */
+  remaining: number
+}
+
+/** One body's recorded trajectory (a stable id that ends when the body merges away). */
+export interface Track {
+  id: number
+  mass: number
+  /** Flattened [x0,y0,x1,y1,…] sampled positions in the barycentre frame. */
+  pts: number[]
+  /** Whether this track ends in a merge (true) or survives to the end (false). */
+  merged: boolean
+}
+
+export interface MergerResult {
+  /** Surviving bodies (barycentre frame) at the end of the run. */
+  bodies: MassiveBody[]
+  events: MergerEvent[]
+  /** Per-body trajectories (present when `samples > 0`), for plotting the coalescence. */
+  tracks: Track[]
+  /** Total mass at the start and end (must be identical). */
+  mass0: number
+  massF: number
+  /** Body count at start and end. */
+  count0: number
+  countF: number
+  /** Total angular momentum at start and end (drops only by the summed spin transfers). */
+  angular0: number
+  angularF: number
+  /** Sum of the per-merge spin transfers (should equal angular0 − angularF up to the hybrid's drift). */
+  spinTotal: number
+}
+
+/** Total (z-axis) angular momentum of a set of bodies about the origin. */
+function totalAngular(bodies: Body[]): number {
+  let l = 0
+  for (const b of bodies) l += b.m * (b.x * b.vy - b.y * b.vx)
+  return l
+}
+
+/**
+ * Integrate a system with the hybrid map, merging any two bodies that come within the
+ * sum of their radii. On a merge the integrator is rebuilt on the reduced body set
+ * (cheap — mergers are rare). Body 0 must remain the dominant star.
+ */
+export function simulateWithMergers(
+  initial: MassiveBody[],
+  G: number,
+  dt: number,
+  duration: number,
+  opts: HybridOptions = {},
+  samples = 0,
+): MergerResult {
+  let bodies = initial.map((b) => ({ ...b }))
+  const mass0 = bodies.reduce((s, b) => s + b.m, 0)
+  const count0 = bodies.length
+  // Measure L in the barycentre frame the integrator actually runs in, so that
+  // `angular0 − angularF` isolates the spin transfer (L is frame-dependent).
+  const angular0 = totalAngular(toBarycentric(bodies))
+  const events: MergerEvent[] = []
+  let spinTotal = 0
+
+  let hy = new HybridSymplectic(bodies, G, opts)
+  const nSteps = Math.max(1, Math.round(duration / dt))
+  // Trajectory recording keyed by a stable id (survives until a body merges away).
+  const trackMap = new Map<number, Track>()
+  let ids = bodies.map((b, i) => {
+    const id = i
+    trackMap.set(id, { id, mass: b.m, pts: [], merged: false })
+    return id
+  })
+  let nextId = bodies.length
+  const sampleEvery = samples > 0 ? Math.max(1, Math.floor(nSteps / samples)) : 0
+
+  const recordFrame = (inertial: Body[]) => {
+    if (!sampleEvery) return
+    for (let i = 0; i < inertial.length; i++) {
+      const t = trackMap.get(ids[i])
+      if (t) {
+        t.pts.push(inertial[i].x, inertial[i].y)
+      }
+    }
+  }
+
+  for (let step = 1; step <= nSteps; step++) {
+    hy.step(dt, 2)
+    const inertial = hy.toInertial()
+    // Carry the radii across (index-aligned with `bodies`).
+    const withRadius: MassiveBody[] = inertial.map((b, i) => ({ ...b, radius: bodies[i].radius }))
+    if (sampleEvery && step % sampleEvery === 0) recordFrame(withRadius)
+    // Find the closest touching pair, if any.
+    let hit: [number, number] | null = null
+    let hitSep = Infinity
+    for (let i = 0; i < withRadius.length; i++) {
+      for (let j = i + 1; j < withRadius.length; j++) {
+        const r = Math.hypot(withRadius[i].x - withRadius[j].x, withRadius[i].y - withRadius[j].y)
+        if (r < withRadius[i].radius + withRadius[j].radius && r < hitSep) {
+          hitSep = r
+          hit = [i, j]
+        }
+      }
+    }
+    if (hit) {
+      const [i, j] = hit
+      const a = withRadius[i]
+      const b = withRadius[j]
+      spinTotal += mergeAngularMomentumTransfer(a, b)
+      const merged = mergeBodies(a, b)
+      const keLost = mergeKineticLoss(a, b)
+      const spin = mergeAngularMomentumTransfer(a, b)
+      // Close the two parent tracks (recording their contact positions so the
+      // approach is always captured); open a fresh track for the merged body.
+      const t1 = trackMap.get(ids[i])
+      const t2 = trackMap.get(ids[j])
+      if (t1) {
+        t1.pts.push(a.x, a.y)
+        t1.merged = true
+      }
+      if (t2) {
+        t2.pts.push(b.x, b.y)
+        t2.merged = true
+      }
+      const mergedId = nextId++
+      trackMap.set(mergedId, { id: mergedId, mass: merged.m, pts: [merged.x, merged.y], merged: false })
+      // Rebuild the surviving set + id list, keeping the most massive body first.
+      const survivors: MassiveBody[] = []
+      const survivorIds: number[] = []
+      for (let k = 0; k < withRadius.length; k++) {
+        if (k === i || k === j) continue
+        survivors.push(withRadius[k])
+        survivorIds.push(ids[k])
+      }
+      survivors.push(merged)
+      survivorIds.push(mergedId)
+      const order = survivors.map((_, idx) => idx).sort((p, q) => survivors[q].m - survivors[p].m)
+      bodies = order.map((idx) => survivors[idx])
+      ids = order.map((idx) => survivorIds[idx])
+      events.push({ time: step * dt, separation: hitSep, keLost, spinTransfer: spin, remaining: bodies.length })
+      if (bodies.length < 2) break
+      hy = new HybridSymplectic(bodies, G, opts)
+    } else {
+      bodies = withRadius
+    }
+  }
+
+  return {
+    bodies,
+    events,
+    tracks: [...trackMap.values()].filter((t) => t.pts.length >= 2),
+    mass0,
+    massF: bodies.reduce((s, b) => s + b.m, 0),
+    count0,
+    countF: bodies.length,
+    angular0,
+    angularF: totalAngular(bodies),
+    spinTotal,
+  }
+}

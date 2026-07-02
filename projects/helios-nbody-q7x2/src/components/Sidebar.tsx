@@ -21,6 +21,7 @@ import { GravWavePanel } from './GravWavePanel'
 import { BlackHolePanel } from './BlackHolePanel'
 import { KerrPanel } from './KerrPanel'
 import { SymplecticPanel } from './SymplecticPanel'
+import { MergerPanel } from './MergerPanel'
 import { FmmPanel } from './FmmPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
@@ -344,6 +345,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Symplectic Lab" defaultOpen={false}>
         <SymplecticPanel />
+      </Section>
+
+      <Section title="Collision Lab" defaultOpen={false}>
+        <MergerPanel />
       </Section>
 
       <Section title="FMM Lab" defaultOpen={false}>
