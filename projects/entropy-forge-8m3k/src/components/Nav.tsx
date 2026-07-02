@@ -28,6 +28,10 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     ],
   },
   {
+    label: 'Use it',
+    items: [{ route: 'workbench', name: 'Workbench' }],
+  },
+  {
     label: 'Prove it',
     items: [
       { route: 'benchmark', name: 'Benchmark' },

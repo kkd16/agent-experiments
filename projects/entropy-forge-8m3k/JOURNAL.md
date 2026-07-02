@@ -67,8 +67,9 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
       budget — and show the length-limit trade-off against optimal Huffman.
 - [ ] **Real DEFLATE**: fixed + dynamic Huffman blocks, the length/distance code tables, and a
       byte-exact gzip container so output is inspectable with real tools.
-- [ ] **File drop / upload**: compress arbitrary user bytes (with the sandbox `try/catch` guards)
-      and show a live size readout; add a download of the compressed blob.
+- [x] **File drop / upload** — the **Workbench** page compresses pasted text or an uploaded file
+      with every codec, verifies each round-trip, times it, and downloads the compressed blob
+      (Blob/URL wrapped in try/catch for the sandbox); capped at 8 KB for the naive-BWT race. *(v2)*
 - [ ] **Kraft inequality** widget on the Huffman page (prove the code is complete/prefix-free).
 - [ ] **Step controls** on the arithmetic + LZ pages (play/pause/scrub) to animate coding.
 - [ ] **Lower bound annotations**: mark each codec's own theoretical floor (order-k) on the

@@ -12,6 +12,7 @@ import { Ppm } from './routes/Ppm'
 import { Lempel } from './routes/Lempel'
 import { Burrows } from './routes/Burrows'
 import { Suffix } from './routes/Suffix'
+import { Workbench } from './routes/Workbench'
 import { Benchmark } from './routes/Benchmark'
 import { SelfTest } from './routes/SelfTest'
 
@@ -26,6 +27,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   lempel: Lempel,
   burrows: Burrows,
   suffix: Suffix,
+  workbench: Workbench,
   benchmark: Benchmark,
   selftest: SelfTest,
 }
