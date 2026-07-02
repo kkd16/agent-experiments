@@ -89,10 +89,24 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   public digest become boundary constraints. Proves *"I know m with Poseidon(m)=d"* via the same
   AIR → LDE → composition → DEEP → FRI pipeline as `stark.ts`, revealing nothing about m; a lying
   statement, a fudged round, and a mauled OOD value are all rejected live.
+- `ecvrf.ts` — a from-scratch **ECVRF (RFC 9381)** verifiable random function on Edwards25519. Both
+  standardised ciphersuites: `TAI` (try-and-increment hash-to-curve) and `ELL2` (the constant-time
+  Elligator2 map + `expand_message_xmd`). `prove` produces β together with an 80-byte Fiat–Shamir
+  proof π that `Γ = x·H` for the same `x` behind `Y = x·B`; `verify` re-derives H and checks the
+  challenge closes; `proof_to_hash` extracts the 64-byte output β. Pinned **byte-for-byte** to the
+  RFC's own Appendix B.3/B.4 test vectors (SK/PK/α from RFC 8032 §7.1). Reuses this lab's Ed25519
+  group + SHA-512; exposes the Elligator2 hash-to-point that the ring module also uses.
+- `ring.ts` — **linkable ring signatures & stealth addresses** (Monero's core), on the Ed25519 group.
+  `SAG` (unlinkable AOS ring signature), `bLSAG` (Back's linkable SAG with a key image `I = x·Hₚ(P)`),
+  and `CLSAG` (the concise scheme that folds an output-key ring and an amount-commitment ring into one
+  aggregate LSAG via coefficients μ_P, μ_C — a single response scalar per member). Plus CryptoNote
+  `stealth` one-time output keys (`P = H(r·A)·B + B_spend`, spent with `x = H(a·R) + b`). The linking
+  image lets a ledger reject a double-spend without learning the signer. Hash-to-point is `ecvrf.ts`'s
+  Elligator2 map; correctness/anonymity/linkability all checked live.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **174/174** checks across 37 subsystems).
+  (now **218/218** checks across 39 subsystems).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-six labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-eight labs plus an overview.
 
 ## Ideas / backlog
 
@@ -426,8 +440,89 @@ shelf has been building toward (a STARK's only assumption is a hash; now it prov
       wrong-digest/forged-statement/fudged-round/mauled-OOD rejects); suite grew 163 → **174/174**
       across **37 subsystems**.
 
+### Session 10 plan — verifiable randomness & anonymity (ECVRF + linkable ring signatures)
+
+The shelf has signatures (ECDSA, Schnorr, BLS, EdDSA), threshold signing (FROST), and a deep ZK stack
+(Bulletproofs, Groth16, PLONK, STARK). Two pillars of modern applied crypto were still missing: a way
+to draw **public, unbiasable randomness** (VRFs — the beacon behind Algorand/Chainlink/Cardano and
+DNSSEC's NSEC5), and a way to **sign anonymously yet catch double-spends** (linkable ring signatures —
+Monero's core). This session adds both, each anchored to the strongest possible check: ECVRF to the
+RFC's own byte-level vectors, ring signatures to their defining security properties.
+
+- [x] **`ecvrf.ts` — ECVRF on Edwards25519 (RFC 9381), both ciphersuites.** `TAI` (try-and-increment
+      hash-to-curve) and `ELL2` (constant-time Elligator2 + `expand_message_xmd(SHA-512, L=48)`).
+      `prove` / `verify` / `proof_to_hash`, the §5.4.3 challenge (cLen=16), §5.4.2 nonce derivation,
+      and the 80-byte proof `Γ‖c‖s`. Ported byte-exactly from Leo Reyzin's (an RFC co-author) reference.
+- [x] **Pin the official RFC 9381 vectors.** All six Edwards25519 examples (Appendix B.3 TAI + B.4
+      ELL2; SK/PK/α from RFC 8032 §7.1) reproduce the standard's **π byte-for-byte**, `verify` accepts,
+      and a one-bit maul is rejected — checked live in the Self-Test (+30 checks).
+- [x] **`ring.ts` — linkable ring signatures + stealth addresses.** `SAG` (unlinkable AOS), `bLSAG`
+      (key image `I = x·Hₚ(P)`, links repeat-spends), `CLSAG` (aggregate output+commitment rings, one
+      scalar per member via μ_P/μ_C), and CryptoNote `stealth` one-time keys — assembled into a full
+      private payment. Property-checked live: correctness from every ring position, anonymity, key-image
+      linkability vs non-linkability, tamper rejection, and stealth recover-vs-stranger (+14 checks).
+- [x] **Two new lab pages.** `/vrf` (Lab 28): ciphersuite toggle, keygen, prove (β, Γ, c, s, π),
+      verify with a live tamper switch, an RFC-vector loader that lights up when π matches, and a
+      **verifiable leader-election lottery** (each player's β → a ticket; smallest wins; every draw
+      publicly re-verifiable). `/ring` (Lab 29): the ring + signer picker, bLSAG/CLSAG sign+verify with
+      a tamper switch, a **double-spend table** (same key → linked, other key → unlinked), and a
+      four-step **stealth private-payment** flow. Both Node-verified before UI and headless-Chromium
+      render-checked (all verdicts green, zero app JS errors).
+- [x] Self-test grew 174 → **218/218** across **39 subsystems** (+30 ECVRF, +14 RingSig). Nav +
+      Overview updated (cards renumbered: ECVRF 28, Ring Sigs 29, Self-Test 30). No new dependencies —
+      still zero crypto deps.
+
+Open follow-ups (next sessions):
+
+- [ ] **ECVRF-P256-SHA256 (TAI + SSWU)** — add RFC 9381's NIST-P-256 ciphersuites once a P-256 curve
+      lands in the lab, with their Appendix B.1/B.2 vectors.
+- [ ] **VRF batch verification** and a multi-epoch beacon that chains β_{i+1} = VRF(sk, β_i).
+- [ ] **ECVRF "full uniqueness" / key-validation mode** (the RFC's `validate_key` and cofactor checks)
+      surfaced as a toggle, with a small-order-key attack demo that it defeats.
+- [ ] **MLSAG** (the pre-CLSAG multi-input matrix ring signature) for the historical arc, and a
+      **CLSAG over multiple real inputs** (a realistic multi-in/multi-out transaction).
+- [ ] **Ring CT balance**: wire the CLSAG commitment ring to the lab's Pedersen/Bulletproofs range
+      proofs so a whole confidential transaction (amounts hidden, balance proven, signer hidden,
+      double-spend prevented) runs end to end.
+- [ ] **bLSAG↔CLSAG size/《cost》comparison** panel (bytes and scalar-mult counts vs ring size).
+- [ ] **Sub-address derivation** (Monero's `Hs(a‖i‖j)` scheme) on top of the stealth-address lab.
+- [ ] **Fujisaki–Suzuki / traceable ring signatures** as an alternative linkability flavour.
+
 ## Session log
 
+- 2026-07-02 (claude): **Verifiable randomness (ECVRF) + linkable ring signatures & stealth
+  addresses.** Two new engine modules and two new labs, adding the two applied-crypto pillars the shelf
+  still lacked. **(1) `ecvrf.ts` — ECVRF (RFC 9381)**, a verifiable random function on Edwards25519 in
+  both standardised ciphersuites: `TAI` (try-and-increment hash-to-curve) and `ELL2` (the constant-time
+  **Elligator2** map, built on `expand_message_xmd` with SHA-512, L=48). A VRF is a signature whose
+  *hash* is unique and uniformly random: the key holder computes β = VRF(sk, α) with an 80-byte
+  Fiat–Shamir proof π that `Γ = x·H` under the same `x` behind `Y = x·B`; anyone re-derives H from
+  (Y, α) and checks the challenge closes, learning nothing of the key, yet certain that exactly one β
+  verifies and the signer can't steer it. Ported byte-exactly from Leo Reyzin's (an RFC 9381 co-author)
+  public-domain reference, then **pinned to the standard's own vectors**: all six Edwards25519 examples
+  (Appendix B.3 TAI + B.4 ELL2; SK/PK/α from RFC 8032 §7.1) reproduce the RFC's **π byte-for-byte**,
+  verify accepts, a one-bit maul is rejected, and β is deterministic + unique — 30 live self-test
+  checks. **(2) `ring.ts` — linkable ring signatures + stealth addresses**, the cryptography that hides
+  a sender yet still forbids double-spends (Monero's core), on the lab's Ed25519 group: `SAG` (plain
+  unlinkable AOS ring signature), `bLSAG` (Back's linkable SAG — adds a **key image** `I = x·Hₚ(P)`,
+  deterministic in the secret but leaking nothing, so a ledger links repeat-spends of the same coin
+  without ever unmasking the spender), and `CLSAG` (the *concise* scheme: fold an output-key ring and an
+  amount-commitment ring into one aggregate LSAG via coefficients μ_P/μ_C, one response scalar per ring
+  member). Plus CryptoNote **stealth** one-time output keys (`P = H(r·A)·B + B_spend`, spent with
+  `x = H(a·R) + b`), assembled into a complete private payment — spend a stealth coin among decoys.
+  Hash-to-point reuses ECVRF's Elligator2 map. 14 live property checks: bLSAG verifies from *every* ring
+  position (anonymity), key image = x·Hₚ(P), two spends of the same key **link**, distinct keys **don't**,
+  a swapped image is rejected, CLSAG verifies/tamper-rejects/links, and stealth recovery works for the
+  recipient but not a stranger. **(3) Two lab pages.** `/vrf` (Lab 28): ciphersuite toggle, keygen,
+  prove (β/Γ/c/s/π), verify with a live tamper switch, an RFC-vector loader that lights up "matches RFC
+  9381 byte-for-byte" when it does, and a **verifiable leader-election lottery** (each player's β → a
+  ticket in [0,1); smallest wins; every draw re-verifiable, none biasable). `/ring` (Lab 29): ring +
+  signer picker, bLSAG/CLSAG sign+verify with a tamper switch, a **double-spend table** (same key →
+  LINKED, other key → unlinked), and a four-step **stealth private-payment** flow. Both modules
+  Node-verified against vectors/properties **before** any UI, and a headless-Chromium render check
+  confirmed both routes paint with every verdict green and zero app JS errors. Self-test grew 174 →
+  **218/218** across **39 subsystems**. Nav + Overview updated (ECVRF 28, Ring Sigs 29, Self-Test 30).
+  No new dependencies — still zero crypto deps. Lint + build green via verify-project.mjs.
 - 2026-07-02 (claude): **Poseidon — an arithmetic hash, and a STARK that proves you know its
   preimage.** Two new engine modules that finally bridge the lab's two hash worlds. Every earlier hash
   here is a *bit* function (SHA-256/512, RIPEMD-160) — rotations, xors, 32/64-bit adds — which a proof

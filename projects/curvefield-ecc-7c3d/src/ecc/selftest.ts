@@ -3,7 +3,7 @@
 // identities on secp256k1) and round-trips every signature scheme. Green here
 // means the math is not merely self-consistent but matches the standards.
 
-import { sha256, hmacSha256, bytesToHex, utf8, hexToBytes } from './sha256'
+import { sha256, hmacSha256, bytesToHex, utf8, hexToBytes, concat } from './sha256'
 import { Curve } from './curve'
 import {
   secp256k1,
@@ -140,6 +140,30 @@ import {
 } from './wots'
 import { xmssKeygen, xmssSign, xmssVerify, type XmssParams } from './xmss'
 import { sphincsKeygen, sphincsSign, sphincsVerify, SPHINCS_TOY } from './sphincs'
+import {
+  ecvrfKeygen,
+  ecvrfProve,
+  ecvrfVerify,
+  proofToBytes,
+  proofToHash,
+  type Suite,
+} from './ecvrf'
+import {
+  mulBase as ringMulBase,
+  keyImage,
+  sagSign,
+  sagVerify,
+  blsagSign,
+  blsagVerify,
+  imagesLinked,
+  clsagSign,
+  clsagVerify,
+  stealthKeygen,
+  stealthSend,
+  stealthReceive,
+  pubFromSecret,
+} from './ring'
+import { edEqual2, L25519 as RING_L } from './ed25519'
 
 export interface TestCase {
   name: string
@@ -1401,6 +1425,137 @@ export function runSelfTest(): TestCase[] {
     const sBadHt = structuredClone(ssig)
     sBadHt.ht[0].wots[0][0] ^= 1
     check('HashSig', 'SPHINCS⁺ rejects a mauled hypertree sig', !sphincsVerify(spk, sm, sBadHt), 'the recovered subtree root no longer chains to PK.root')
+  }
+
+  // ── ECVRF (RFC 9381) — the official Edwards25519 test vectors ──
+  // Byte-for-byte against Appendix B.3 (TAI) and B.4 (ELL2). SK/PK/α are the
+  // RFC 8032 §7.1 examples; π (proof) is the standard's own value.
+  {
+    const vectors: {
+      sk: string
+      pk: string
+      alpha: string
+      tai: string
+      ell2: string
+    }[] = [
+      {
+        sk: '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60',
+        pk: 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+        alpha: '',
+        tai: '8657106690b5526245a92b003bb079ccd1a92130477671f6fc01ad16f26f723f26f8a57ccaed74ee1b190bed1f479d9727d2d0f9b005a6e456a35d4fb0daab1268a1b0db10836d9826a528ca76567805',
+        ell2: '7d9c633ffeee27349264cf5c667579fc583b4bda63ab71d001f89c10003ab46f14adf9a3cd8b8412d9038531e865c341cafa73589b023d14311c331a9ad15ff2fb37831e00f0acaa6d73bc9997b06501',
+      },
+      {
+        sk: '4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb',
+        pk: '3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c',
+        alpha: '72',
+        tai: 'f3141cd382dc42909d19ec5110469e4feae18300e94f304590abdced48aed5933bf0864a62558b3ed7f2fea45c92a465301b3bbf5e3e54ddf2d935be3b67926da3ef39226bbc355bdc9850112c8f4b02',
+        ell2: '47b327393ff2dd81336f8a2ef10339112401253b3c714eeda879f12c509072ef055b48372bb82efbdce8e10c8cb9a2f9d60e93908f93df1623ad78a86a028d6bc064dbfc75a6a57379ef855dc6733801',
+      },
+      {
+        sk: 'c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7',
+        pk: 'fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025',
+        alpha: 'af82',
+        tai: '9bc0f79119cc5604bf02d23b4caede71393cedfbb191434dd016d30177ccbf8096bb474e53895c362d8628ee9f9ea3c0e52c7a5c691b6c18c9979866568add7a2d41b00b05081ed0f58ee5e31b3a970e',
+        ell2: '926e895d308f5e328e7aa159c06eddbe56d06846abf5d98c2512235eaa57fdce35b46edfc655bc828d44ad09d1150f31374e7ef73027e14760d42e77341fe05467bb286cc2c9d7fde29120a0b2320d04',
+      },
+    ]
+    for (const suite of ['TAI', 'ELL2'] as Suite[]) {
+      for (const v of vectors) {
+        const seed = hexToBytes(v.sk)
+        const alpha = hexToBytes(v.alpha)
+        const label = `α = ${v.alpha === '' ? '(empty)' : '0x' + v.alpha}`
+        const pk = bytesToHex(ecvrfKeygen(seed))
+        check('ECVRF', `${suite} public key, ${label}`, pk === v.pk, `Y = x·B = ${pk.slice(0, 16)}…`)
+        const pi = ecvrfProve(suite, seed, alpha)
+        const piHex = bytesToHex(proofToBytes(pi))
+        const want = suite === 'TAI' ? v.tai : v.ell2
+        check(
+          'ECVRF',
+          `${suite} proof π matches RFC 9381, ${label}`,
+          piHex === want,
+          `π = ${piHex.slice(0, 20)}… (80 bytes)`,
+        )
+        check(
+          'ECVRF',
+          `${suite} verify accepts, ${label}`,
+          ecvrfVerify(suite, hexToBytes(v.pk), alpha, pi),
+          'c′ recomputed from π equals c',
+        )
+        // Tampering: flip one bit of the response scalar → verify must fail.
+        const mauled = { ...pi, s: pi.s ^ 1n }
+        check(
+          'ECVRF',
+          `${suite} verify rejects a mauled proof, ${label}`,
+          !ecvrfVerify(suite, hexToBytes(v.pk), alpha, mauled),
+          'a one-bit change in s breaks the challenge equation',
+        )
+        // β is deterministic and 64 bytes; a different α gives a different β.
+        const beta = proofToHash(suite, pi)
+        const betaOther = proofToHash(suite, ecvrfProve(suite, seed, concat(alpha, utf8('!'))))
+        check(
+          'ECVRF',
+          `${suite} β is deterministic & unique, ${label}`,
+          beta.length === 64 && bytesToHex(beta) !== bytesToHex(betaOther),
+          `β = ${bytesToHex(beta).slice(0, 16)}…`,
+        )
+      }
+    }
+  }
+
+  // ── Linkable ring signatures & stealth addresses (Monero-style) ──
+  {
+    const q = RING_L
+    // SAG — unlinkable ring signature.
+    const sagSecrets = Array.from({ length: 5 }, () => randomScalar(q))
+    const sagRing = sagSecrets.map(ringMulBase)
+    const sagMsg = utf8('one of us signed this')
+    const sag = sagSign(sagMsg, sagRing, sagSecrets[2], 2)
+    check('RingSig', 'SAG ring signature verifies', sagVerify(sagMsg, sagRing, sag), '“1-of-n” with no signer revealed')
+    check('RingSig', 'SAG rejects a tampered message', !sagVerify(utf8('forged'), sagRing, sag), 'every c_i changes')
+
+    // bLSAG — linkable, with a key image.
+    const secrets = Array.from({ length: 6 }, () => randomScalar(q))
+    const ring = secrets.map(ringMulBase)
+    const msg = utf8('spend output #1')
+    let everyPosition = true
+    for (let i = 0; i < ring.length; i++) {
+      const s = blsagSign(msg, ring, secrets[i], i)
+      if (!blsagVerify(msg, ring, s)) everyPosition = false
+    }
+    check('RingSig', 'bLSAG verifies from every ring position', everyPosition, 'anonymity: the index π is hidden')
+    const sig1 = blsagSign(msg, ring, secrets[3], 3)
+    const sig2 = blsagSign(utf8('spend again, same key'), ring, secrets[3], 3)
+    check('RingSig', 'bLSAG key image = x·Hp(P)', edEqual2(sig1.image, keyImage(secrets[3], ring[3])), 'deterministic in the secret')
+    check('RingSig', 'bLSAG links two signatures by the same key', imagesLinked(sig1.image, sig2.image), 'double-spend detection')
+    const sigOther = blsagSign(msg, ring, secrets[4], 4)
+    check('RingSig', 'bLSAG does not link distinct keys', !imagesLinked(sig1.image, sigOther.image), 'unrelated images stay unlinked')
+    check('RingSig', 'bLSAG rejects a swapped key image', !blsagVerify(msg, ring, { ...sig1, image: sigOther.image }), 'the R-side equation fails')
+
+    // CLSAG — concise LSAG over (output key, commitment).
+    const p = Array.from({ length: 8 }, () => randomScalar(q))
+    const z = Array.from({ length: 8 }, () => randomScalar(q))
+    const ringP = p.map(ringMulBase)
+    const ringC = z.map(ringMulBase)
+    const cmsg = utf8('confidential transfer')
+    const clsag = clsagSign(cmsg, ringP, ringC, p[5], z[5], 5)
+    check('RingSig', 'CLSAG verifies', clsagVerify(cmsg, ringP, ringC, clsag), 'one scalar per member — “concise”')
+    check('RingSig', 'CLSAG rejects a mauled response', !clsagVerify(cmsg, ringP, ringC, { ...clsag, s: clsag.s.map((v, i) => (i === 1 ? v + 1n : v)) }), 'aggregate challenge no longer closes')
+    const ringC2 = Array.from({ length: 8 }, () => randomScalar(q)).map(ringMulBase)
+    const clsag2 = clsagSign(utf8('a later spend'), ringP, ringC2, p[5], randomScalar(q), 5)
+    check('RingSig', 'CLSAG links via the spend-key image I', imagesLinked(clsag.I, clsag2.I), 'I = p·Hp(P) is independent of the amount')
+
+    // Stealth addresses + a full private payment.
+    const recip = stealthKeygen()
+    const { R, P } = stealthSend(recip.A, recip.Bs, 0)
+    const recovered = stealthReceive(recip, R, 0)
+    check('RingSig', 'stealth: recipient recovers the one-time key', edEqual2(P, recovered.P), 'x·B = P from the ECDH shared secret')
+    check('RingSig', 'stealth: recovered secret opens P', edEqual2(pubFromSecret(recovered.x), P), 'x = H(a·R) + b')
+    check('RingSig', 'stealth: a stranger cannot recover P', !edEqual2(stealthReceive(stealthKeygen(), R, 0).P, P), 'needs the recipient’s view key a')
+    const decoys = Array.from({ length: 10 }, () => ringMulBase(randomScalar(q)))
+    const payRing = [...decoys.slice(0, 4), P, ...decoys.slice(4)]
+    const pay = blsagSign(utf8('pay 1 coin'), payRing, recovered.x, 4)
+    check('RingSig', 'private payment: ring sig over the stealth output verifies', blsagVerify(utf8('pay 1 coin'), payRing, pay), 'spend a stealth coin among 10 decoys')
   }
 
   return t

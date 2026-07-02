@@ -269,5 +269,52 @@ function cat(...arrs: Uint8Array[]): Uint8Array {
   return out
 }
 
+// ── Exposed Edwards-group API ────────────────────────────────────────────────
+// ECVRF (RFC 9381) and linkable ring signatures both need the raw twisted-Edwards
+// group — point add/sub/negate, scalar multiplication over an *arbitrary* base
+// (not just B), and the compressed 32-byte encoding. Rather than re-implement a
+// second, subtly-different Ed25519 for them, they build on the exact group this
+// file already validates against the RFC 8032 vectors.
+
+/** A point on Ed25519 in extended (X:Y:Z:T) coordinates. */
+export type EdPoint = Ed
+/** The Ed25519 base point B (order ℓ). */
+export const ED_B: Ed = B
+/** The group identity (neutral element), (x,y) = (0,1). */
+export const ED_IDENTITY: Ed = { X: 0n, Y: 1n, Z: 1n, T: 0n }
+/** Complete Edwards addition P + Q. */
+export const edPointAdd = edAdd
+/** Scalar multiplication k·P for any point P (double-and-add). */
+export const edMul = edScalarMul
+/** Point negation −P = (−x, y). */
+export function edNeg(p: Ed): Ed {
+  return { X: fmod(-p.X), Y: p.Y, Z: p.Z, T: fmod(-p.T) }
+}
+/** Point subtraction P − Q. */
+export function edSub(p: Ed, q: Ed): Ed {
+  return edAdd(p, edNeg(q))
+}
+/** Compress a point to 32 bytes (little-endian y with x's low bit in the MSB). */
+export const edEncode = encodePoint
+/** Decompress 32 bytes to a point, or null if not a valid encoding. */
+export const edDecode = decodePoint
+/** Projective point equality. */
+export const edEqual2 = edEqual
+/** True iff P is the identity. */
+export function edIsIdentity(p: Ed): boolean {
+  return edEqual(p, ED_IDENTITY)
+}
+
+/** Derive the Ed25519 secret scalar `x` and the 32-byte nonce `prefix` from a
+ *  32-byte seed: h = SHA-512(seed); x = clamp(h[0..32]); prefix = h[32..64].
+ *  This is the RFC 8032 §5.1.5 expansion, shared by EdDSA, ECVRF, and CLSAG. */
+export function edExpandSeed(seed: Uint8Array): { x: bigint; prefix: Uint8Array; A: Uint8Array } {
+  const h = sha512(seed.slice(0, 32))
+  const x = clampEd(h.slice(0, 32))
+  const prefix = h.slice(32, 64)
+  const A = encodePoint(edScalarMul(x, B))
+  return { x, prefix, A }
+}
+
 // Small helpers the page reuses for display / interop.
 export { encodeLittleEndian, decodeLittleEndian }
