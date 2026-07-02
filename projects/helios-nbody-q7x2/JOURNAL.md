@@ -100,6 +100,15 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   the planet–planet perturbation is integrated approximately. Carries exact-pairwise Verlet & RK4
   reference steppers, an inertial↔DH transform, exact energy/momentum/angular-momentum probes, a
   `runComparison` harness (energy-error + trajectory traces per method), and planetary presets.
+- `src/sim/hybrid.ts` — the **hybrid (MERCURY) symplectic integrator** (Chambers 1999): a
+  Wisdom–Holman map that survives close encounters. A smooth **changeover** `K(r)` splits each pair
+  force into a far-field WH kick (weighted by K) and a near-field remainder (weighted by 1−K) that
+  is folded into the drift; the two halves partition the full −Gmᵢmⱼ/r³ gradient *exactly*. When a
+  pair enters its Hill-radius shell the drift is advanced by a from-scratch **Gragg–Bulirsch–Stoer**
+  integrator (modified-midpoint + Neville extrapolation + adaptive bisection) instead of the
+  analytic Kepler propagator, so the map stays accurate where plain WH's one-impulse kick explodes.
+  Exposes `changeover`, `bulirschStoer`, and the `HybridSymplectic` map (with encounter detection,
+  closest-approach tracking and BS-step accounting); it plugs into `whfast.ts`'s `runComparison`.
 - `src/sim/rng.ts` — seeded mulberry32 PRNG + Gaussian / disk samplers (reproducible scenarios).
 - `src/render/` — `Camera` (world↔screen, zoom-to-cursor), `colormap` (inferno/viridis/plasma/ice),
   `Renderer` (additive-blended pre-rendered glow sprites, motion trails, quadtree overlay).
@@ -112,9 +121,10 @@ presets and renderer are hand-written TypeScript on typed arrays — no physics 
   radiation-reaction inspiral with an inspiral-spiral plot, the strain chirp h₊(t)/h×(t), the
   rising GW-frequency track, Web-Audio sonification of the chirp, and the measured-vs-Peters
   merger-time verdict), the **Symplectic Lab** (`SymplecticPanel`, a self-contained planetary
-  experiment that races Wisdom–Holman against Verlet and RK4 on the identical Hamiltonian — a
-  log-scale energy-error plot + a top-down orbit view + a per-method max-error readout), About
-  overlay, UI primitives.
+  experiment that races Wisdom–Holman, the **hybrid MERCURY integrator**, Verlet and RK4 on the
+  identical Hamiltonian — a log-scale energy-error plot + a top-down orbit view + a per-method
+  max-error readout, and a **close-encounter** preset where the hybrid stays flat while WH
+  explodes), About overlay, UI primitives.
 - `src/App.tsx` — wires the rAF step/render loop, camera, pointer interaction (pan + slingshot),
   keyboard shortcuts, and settings persistence.
 
@@ -124,6 +134,94 @@ The energy-drift plot is computed independently of the force solver, so switchin
 an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler visibly ramps up.
 
 ## Ideas / backlog
+
+### Helios 12.0 — the Hybrid (MERCURY) integrator: surviving close encounters (this session, planned + shipped)
+
+The Symplectic Lab shipped Wisdom–Holman (Helios 7.0): integrate the dominant Kepler motion
+*exactly* and treat the planet–planet tug as a small impulsive **kick** once per step. That is
+the right tool for a *quiet* planetary system — but the moment two massive bodies pass close, the
+approximation it rests on collapses. The 1/r pair force is no longer a small perturbation; a
+single kick per step cannot represent the nearly-singular tug, and WH's bounded energy error
+**explodes**. This is the classic failure that made naive symplectic maps unusable for the very
+problems (planet scattering, formation, resonant overlap) that most need long, stable integrations.
+
+This session ships the fix that the real solar-system codes use — the **hybrid symplectic
+integrator of Chambers (1999)**, the heart of **MERCURY** — entirely from scratch in TypeScript.
+
+#### The physics
+
+Split *each* planet–planet term with a smooth **changeover** `K(r)` that is 1 far apart and 0 up
+close, so the Hamiltonian's interaction piece factors into two:
+
+```
+H_interaction = − Σ G mᵢmⱼ K(rᵢⱼ)/rᵢⱼ        ← the ordinary symplectic WH KICK (far field)
+H_close       = − Σ G mᵢmⱼ (1−K(rᵢⱼ))/rᵢⱼ    ← folded INTO the Kepler drift (near field)
+```
+
+- **The changeover** (`changeover`, `changeoverAndDeriv`). Chambers' rational S-curve
+  `K(y)=y²/(2y²−2y+1)` on `y=(r/r_crit−0.1)/0.9`, flat 0/1 outside the shell `[0.1 r_crit, r_crit]`.
+  It has `K(0)=0, K(1)=1` **and** `K'(0)=K'(1)=0`, so both K and its derivative are continuous —
+  which keeps the *force* (∝ dK/dr) continuous, so neither sub-map ever sees a kink. `r_crit` is a
+  few mutual **Hill radii**; whether the coarse step can actually resolve an approach on that scale
+  is decided separately, by an exact **closest-approach prediction** over the step (so a fast fly-by
+  is never stepped over, yet distant non-encountering planets never trip the expensive path).
+- **The exact partition.** The K-weighted kick force and the (1−K)-weighted drift force sum, at
+  *every* separation, to the full −G mᵢmⱼ/r³ Newtonian gradient (proven to 4·10⁻¹⁶ in the tests) —
+  so the split changes *nothing* about the physics, only *which sub-map* carries each part.
+- **The Bulirsch–Stoer drift** (`bulirschStoer`). The near-field term makes the drift a coupled
+  system that is no longer analytically Keplerian, so it is advanced by a from-scratch
+  **Gragg–Bulirsch–Stoer** integrator: the modified-midpoint method over the sequence n=2,4,6,…
+  with **Neville polynomial extrapolation** to zero step size, an error test, and recursive
+  bisection on failure. It reproduces the analytic universal-variable Kepler propagator to ~machine
+  precision in *two* macro-steps.
+- **The map** (`HybridSymplectic`). Same democratic-heliocentric state as `WisdomHolman`, same
+  symmetric `Sun(τ/2)·Kick(τ/2)·Drift(τ)·Kick(τ/2)·Sun(τ/2)` composition — but the drift is the
+  analytic Kepler propagator when no encounter is active, and the BS close-drift when one is. Far
+  from encounters K≡1, the close term vanishes and the map is **bit-identical to Wisdom–Holman**.
+
+#### Planned steps — all shipped this session
+
+- [x] `src/sim/hybrid.ts` — the changeover + its exact-partition derivative, a self-contained
+      Gragg–Bulirsch–Stoer integrator (mmid + Neville extrapolation + adaptive bisection), and the
+      `HybridSymplectic` map with per-step encounter detection (Hill-radius `r_crit` + linear
+      closest-approach prediction) and BS/analytic drift switching.
+- [x] Wire `hybrid` into the Symplectic Lab's comparison harness (`whfast.ts` `runComparison`,
+      `MethodId`, colour/label/symplectic tables) and record its **closest approach** and the
+      **fraction of steps** that used the BS drift.
+- [x] A new **Close encounter (two planets)** preset: two Neptune-mass planets shearing past each
+      other in a deep pass — the regime where WH breaks and the hybrid shines.
+- [x] `components/SymplecticPanel.tsx` — a hybrid toggle (auto-on for the encounter preset), a
+      headline verdict ("hybrid holds energy N× better than WH through the encounter"), a
+      closest-approach / BS-fraction / WH-blow-up readout, and the hybrid's scattering orbits.
+- [x] Six new self-test cases (the battery grew **78 → 84**, all green).
+
+#### Measured results (in-browser + a Node type-stripping harness)
+
+On the **Close encounter** preset at Δt=0.05, both integrators running the identical Hamiltonian:
+the two planets pass within **5·10⁻³**, the hybrid engages its BS drift on ~11% of steps, and its
+worst energy error is **2·10⁻⁵** — while Wisdom–Holman's blows up to **|ΔE/E| ≈ 56** (and Verlet
+to ~49). That is the hybrid conserving energy **≈2.8·10⁶×** better than WH on the very same run.
+
+#### Proof (6 new self-test cases)
+
+The changeover **force partition is exact** (kick + drift = full gravity to 4·10⁻¹⁶; dK/dr matches
+a finite difference); the **Bulirsch–Stoer drift matches the analytic Kepler propagator** to
+1.7·10⁻¹³; the hybrid **reduces exactly to Wisdom–Holman** far from encounters (0 BS steps,
+identical energy bound); it **survives the close encounter** where WH explodes (bounded ≪ WH by
+10⁶×); it **conserves linear & angular momentum** through the pass (|p|≈10⁻¹⁹, |ΔL/L|<10⁻¹¹);
+and — outcome correctness — through the closest approach it agrees with an **independent
+high-accuracy full-force Bulirsch–Stoer reference** to ~3·10⁻⁵ (the later exponential divergence
+is genuine chaos, not error).
+
+#### Deliberately out of scope (documented honestly)
+
+- The hybrid is **2nd order**. A Yoshida triple-jump would raise the *symplectic* parts to 4th
+  order, but the BS drift is a near-exact numerical flow, not an exact one, so the composition does
+  not cleanly gain order — MERCURY itself is 2nd order for exactly this reason. Left at 2nd order.
+- **Collisions/mergers** (bodies that actually touch) are not modelled — the encounter presets
+  scatter, they don't coalesce. A merger model (conserving mass/momentum) is a natural follow-on.
+- Like the rest of the Symplectic Lab, this runs in its **own lab**, not the softened Barnes–Hut
+  hot path (which is dominant-mass-free and cannot supply the exact heliocentric forces WH needs).
 
 ### Helios 10.0 — the Three-Body Chaos Atlas (this session, planned + shipped)
 
@@ -737,8 +835,10 @@ modules + a panel, never touching the Barnes–Hut hot path).
 - [ ] Wiring WH into the *live* Barnes–Hut engine — WH needs a dominant central mass + exact
       heliocentric pairwise forces, which is at odds with the softened, dominant-mass-free, Barnes–Hut
       hot path. It belongs in its own lab, exactly as the GR/GW/black-hole physics does.
-- [ ] Close-encounter handling (symplectic correctors, hybrid/BS switching à la MERCURY) — the lab's
-      presets stay in the regime where the basic map is accurate.
+- [x] Close-encounter handling (hybrid/BS switching à la MERCURY) — **shipped in Helios 12.0**
+      (`src/sim/hybrid.ts`): a Chambers-1999 changeover splits each pair force into a far-field WH
+      kick and a near-field Bulirsch–Stoer drift, so the map survives deep encounters that make the
+      basic map explode. See the plan below.
 
 ### Helios 10.0 — the Three-Body Atlas (this session)
 
@@ -796,6 +896,20 @@ standalone Node type-stripping harness as well as in `tsc -b`.
 
 ## Session log
 
+- 2026-07-02 (claude / claude-opus-4-8[1m]): **Helios 12.0 — the hybrid (MERCURY) integrator:
+  surviving close encounters.** Shipped the from-scratch Chambers-1999 hybrid symplectic map
+  (`src/sim/hybrid.ts`): a smooth changeover splits each pair force into a far-field Wisdom–Holman
+  kick and a near-field **Bulirsch–Stoer** drift (a hand-written Gragg–Bulirsch–Stoer with
+  modified-midpoint + Neville extrapolation + adaptive bisection), with per-step encounter
+  detection (Hill-radius `r_crit` + exact closest-approach prediction). Wired `hybrid` into the
+  Symplectic Lab's race, added a **Close encounter** preset and a headline verdict + BS-fraction /
+  closest-approach readout. On a deep two-planet pass (min sep 5·10⁻³) the hybrid holds |ΔE/E| to
+  **2·10⁻⁵** while plain WH explodes to **56** — energy conserved ≈**2.8·10⁶×** better on the
+  identical run. Six new self-tests (force-partition exactness to 4·10⁻¹⁶, BS = analytic Kepler to
+  1·10⁻¹³, reduces exactly to WH far away, conserves p & L through the pass, matches an independent
+  full-force BS reference through closest approach); the battery grew **78 → 84**, all green.
+  Verified in a real headless-Chromium session and a Node type-stripping harness; `tsc -b` + lint
+  clean.
 - 2026-06-26 (claude / claude-opus-4-8[1m]): **Helios 11.0 — the Fast Multipole Method: O(N)
   gravity.** Added the algorithm Helios was missing — an FMM that brings the force solve from
   Barnes–Hut's O(N log N) down to **O(N)** — and made it *exact for Helios's softened Newtonian

@@ -72,7 +72,15 @@ import {
   angularMomentum,
   runComparison,
   LAB_PRESETS,
+  presetById,
 } from './whfast'
+import {
+  HybridSymplectic,
+  bulirschStoer,
+  changeover,
+  changeoverAndDeriv,
+} from './hybrid'
+import type { BSStats } from './hybrid'
 import type { IntegratorId } from './types'
 import {
   anosovaState,
@@ -1247,6 +1255,203 @@ export function runSelfTest(): SelfTestReport {
       'Wisdom–Holman is reversible & conserves p, L',
       pass,
       `return error=${ret.toExponential(2)}, |p|=${pMag.toExponential(1)}, |ΔL/L|=${Ldrift.toExponential(1)}`,
+    )
+  }
+
+  // 50a — HYBRID (MERCURY) #1: the changeover partition is EXACT. The far-field kick
+  // force (weighted by K) and the close-drift pair force (weighted by 1−K) must sum, at
+  // every separation, to the full −G/r³ Newtonian gradient — that identity is the whole
+  // reason the split reproduces the true dynamics. Also checks K's endpoints & that its
+  // analytic derivative dK/dr matches a central finite difference on the changeover shell.
+  {
+    let worstPart = 0
+    const G = 1.3
+    for (const rc of [0.4, 1.0, 2.5]) {
+      for (let r = 0.02 * rc; r < 2 * rc; r += 0.013 * rc) {
+        const { K, dKdr } = changeoverAndDeriv(r, rc)
+        const kick = (G * (dKdr / r - K / (r * r))) / r
+        const drift = G * (-(1 - K) / (r * r * r) - dKdr / (r * r))
+        const full = -G / (r * r * r)
+        worstPart = Math.max(worstPart, Math.abs((kick + drift - full) / full))
+      }
+    }
+    let worstDeriv = 0
+    for (let r = 0.11; r < 0.99; r += 0.01) {
+      const fd = (changeover(r + 1e-6, 1) - changeover(r - 1e-6, 1)) / 2e-6
+      worstDeriv = Math.max(worstDeriv, Math.abs(fd - changeoverAndDeriv(r, 1).dKdr))
+    }
+    const endpoints = changeover(0.05, 1) === 0 && changeover(1.4, 1) === 1
+    add(
+      'Hybrid: the K-changeover force partition is exact',
+      worstPart < 1e-12 && worstDeriv < 1e-4 && endpoints,
+      `max rel |kick+drift−full| = ${worstPart.toExponential(2)}; max |dK/dr − Δ| = ${worstDeriv.toExponential(2)}`,
+    )
+  }
+
+  // 50b — HYBRID #2: the from-scratch Bulirsch–Stoer drift integrates a pure two-body
+  // orbit as accurately as the analytic universal-variable Kepler propagator — i.e. the
+  // GBS modified-midpoint + polynomial extrapolation is correct to ~machine precision.
+  {
+    const mu = 1
+    const r0 = { x: 1, y: 0 }
+    const v0 = { x: 0, y: 1.2 } // a moderately eccentric ellipse
+    const stats: BSStats = { steps: 0, rejections: 0, derivEvals: 0 }
+    let worst = 0
+    const y = new Float64Array([r0.x, r0.y, v0.x, v0.y])
+    let st = { r: { ...r0 }, v: { ...v0 } }
+    for (let s = 0; s < 8; s++) {
+      bulirschStoer(
+        y,
+        (yv, out) => {
+          const r = Math.hypot(yv[0], yv[1])
+          const i3 = 1 / (r * r * r)
+          out[0] = yv[2]
+          out[1] = yv[3]
+          out[2] = -mu * yv[0] * i3
+          out[3] = -mu * yv[1] * i3
+        },
+        0.7,
+        1e-13,
+        stats,
+      )
+      st = keplerStep(st, mu, 0.7)
+      worst = Math.max(worst, Math.hypot(y[0] - st.r.x, y[1] - st.r.y))
+    }
+    add(
+      'Hybrid: Bulirsch–Stoer drift matches the analytic Kepler propagator',
+      worst < 1e-9,
+      `max |Δr| vs universal-variable Kepler over 8 drifts = ${worst.toExponential(2)}`,
+    )
+  }
+
+  // 50c — HYBRID #3: far from any encounter the changeover is identically 1, the close
+  // term vanishes, and the hybrid must reduce EXACTLY to Wisdom–Holman — never firing
+  // the BS drift, and holding energy to the same tiny bound. (The inner-system preset:
+  // four well-separated planets that never come within a Hill radius of each other.)
+  {
+    const bary = toBarycentric(presetById('inner-system').build())
+    const E0 = totalEnergy(bary, 1)
+    const hy = new HybridSymplectic(bary, 1)
+    let eh = 0
+    for (let i = 0; i < 1500; i++) {
+      hy.step(0.3, 2)
+      if (i % 20 === 0) eh = Math.max(eh, Math.abs((hy.energy() - E0) / E0))
+    }
+    const wh = new WisdomHolman(bary, 1)
+    let ew = 0
+    for (let i = 0; i < 1500; i++) {
+      wh.step(0.3, 2)
+      if (i % 20 === 0) ew = Math.max(ew, Math.abs((wh.energy() - E0) / E0))
+    }
+    add(
+      'Hybrid reduces exactly to Wisdom–Holman with no encounter',
+      hy.bsSteps === 0 && eh < 1e-6 && Math.abs(eh - ew) / Math.max(ew, 1e-30) < 1,
+      `BS steps = ${hy.bsSteps}; max |ΔE/E|: hybrid=${eh.toExponential(2)}, WH=${ew.toExponential(2)}`,
+    )
+  }
+
+  // 50d — HYBRID #4, THE headline: on a deep close encounter between two Neptune-mass
+  // planets, plain Wisdom–Holman's one-impulse kick cannot resolve the nearly-singular
+  // pair force and its energy error explodes; the hybrid switches to the BS close drift
+  // and keeps |ΔE/E| bounded and tiny — orders of magnitude better on the identical run.
+  {
+    const p = presetById('close-encounter')
+    const bary = toBarycentric(p.build())
+    const E0 = totalEnergy(bary, 1)
+    const dt = 0.05
+    const N = 800
+    const hy = new HybridSymplectic(bary, 1)
+    let eh = 0
+    for (let i = 0; i < N; i++) {
+      hy.step(dt, 2)
+      if (i % 4 === 0) eh = Math.max(eh, Math.abs((hy.energy() - E0) / E0))
+    }
+    const wh = new WisdomHolman(bary, 1)
+    let ew = 0
+    for (let i = 0; i < N; i++) {
+      wh.step(dt, 2)
+      if (i % 4 === 0) ew = Math.max(ew, Math.abs((wh.energy() - E0) / E0))
+    }
+    add(
+      'Hybrid survives a close encounter where Wisdom–Holman explodes',
+      hy.minSeparation < 0.05 && hy.bsSteps > 0 && eh < 1e-3 && eh < ew * 1e-2,
+      `min sep = ${hy.minSeparation.toExponential(2)}; max |ΔE/E|: hybrid=${eh.toExponential(2)} ≪ WH=${ew.toExponential(2)} (${(ew / Math.max(eh, 1e-30)).toExponential(1)}×)`,
+    )
+  }
+
+  // 50e — HYBRID #5: through the encounter the hybrid conserves total linear momentum
+  // (≈0 in the barycentre frame) and angular momentum — the symplectic structure and
+  // the momentum-preserving BS drift keep both integrals intact across the deep pass.
+  {
+    const bary = toBarycentric(presetById('close-encounter').build())
+    const L0 = angularMomentum(bary)
+    const hy = new HybridSymplectic(bary, 1)
+    let maxP = 0
+    let maxL = 0
+    for (let i = 0; i < 1200; i++) {
+      hy.step(0.05, 2)
+      if (i % 8 === 0) {
+        const b = hy.toInertial()
+        maxP = Math.max(maxP, momentumMagnitude(b))
+        maxL = Math.max(maxL, Math.abs((angularMomentum(b) - L0) / L0))
+      }
+    }
+    add(
+      'Hybrid conserves p and L through the encounter',
+      maxP < 1e-10 && maxL < 1e-7,
+      `|p| ≤ ${maxP.toExponential(2)}, |ΔL/L| ≤ ${maxL.toExponential(2)}`,
+    )
+  }
+
+  // 50f — HYBRID #6: outcome correctness. Through the closest approach (before the
+  // chaotic encounter amplifies discretisation differences) the hybrid at a fine step
+  // agrees with an INDEPENDENT high-accuracy full-force Bulirsch–Stoer integration of
+  // the same system to ~1e-4 — proof it computes the *right* encounter, not just a
+  // bounded-energy one. (The later exponential divergence is genuine chaos, not error.)
+  {
+    const bary = toBarycentric(presetById('close-encounter').build())
+    const NB = bary.length
+    const G = 1
+    // Independent reference: plain inertial N-body, BS with a tiny step & tight tol.
+    const refStats: BSStats = { steps: 0, rejections: 0, derivEvals: 0 }
+    const y = new Float64Array(4 * NB)
+    for (let i = 0; i < NB; i++) {
+      y[4 * i] = bary[i].x
+      y[4 * i + 1] = bary[i].y
+      y[4 * i + 2] = bary[i].vx
+      y[4 * i + 3] = bary[i].vy
+    }
+    const refDeriv = (yv: Float64Array, out: Float64Array) => {
+      for (let i = 0; i < NB; i++) {
+        out[4 * i] = yv[4 * i + 2]
+        out[4 * i + 1] = yv[4 * i + 3]
+        out[4 * i + 2] = 0
+        out[4 * i + 3] = 0
+      }
+      for (let i = 0; i < NB; i++)
+        for (let j = 0; j < NB; j++) {
+          if (i === j) continue
+          const dx = yv[4 * j] - yv[4 * i]
+          const dy = yv[4 * j + 1] - yv[4 * i + 1]
+          const r = Math.hypot(dx, dy)
+          const s = (G * bary[j].m) / (r * r * r)
+          out[4 * i + 2] += s * dx
+          out[4 * i + 3] += s * dy
+        }
+    }
+    const T = 0.25
+    const refN = Math.round(T / 0.0025)
+    for (let k = 0; k < refN; k++) bulirschStoer(y, refDeriv, 0.0025, 1e-13, refStats)
+    const hy = new HybridSymplectic(bary, 1)
+    const hN = Math.round(T / 0.005)
+    for (let k = 0; k < hN; k++) hy.step(0.005, 2)
+    const hb = hy.toInertial()
+    let worst = 0
+    for (let i = 1; i < NB; i++) worst = Math.max(worst, Math.hypot(hb[i].x - y[4 * i], hb[i].y - y[4 * i + 1]))
+    add(
+      'Hybrid matches an independent reference through closest approach',
+      worst < 1e-4,
+      `max |Δr| at the closest approach = ${worst.toExponential(2)}`,
     )
   }
 

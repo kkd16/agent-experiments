@@ -37,6 +37,7 @@
 // (the Kepler propagator handles the negative middle sub-step without complaint).
 
 import { keplerStep } from './kepler'
+import { HybridSymplectic } from './hybrid'
 
 export interface Body {
   m: number
@@ -339,7 +340,7 @@ export function rk4Step(bodies: Body[], G: number, dt: number): void {
 // Comparison harness used by the Symplectic Lab.
 // ---------------------------------------------------------------------------
 
-export type MethodId = 'wh2' | 'wh4' | 'verlet' | 'rk4'
+export type MethodId = 'wh2' | 'wh4' | 'verlet' | 'rk4' | 'hybrid'
 
 export interface MethodTrace {
   id: MethodId
@@ -353,6 +354,10 @@ export interface MethodTrace {
   paths: Float64Array[]
   /** Wall-clock milliseconds to integrate (rough; for the speed story). */
   ms: number
+  /** Smallest planet–planet separation encountered (close-encounter methods only). */
+  minSeparation?: number
+  /** Fraction of steps that triggered the Bulirsch–Stoer close drift (hybrid only). */
+  bsFraction?: number
 }
 
 export interface SimConfig {
@@ -379,8 +384,9 @@ const METHOD_LABEL: Record<MethodId, string> = {
   wh4: 'Wisdom–Holman (4th)',
   verlet: 'Velocity Verlet',
   rk4: 'Runge–Kutta 4',
+  hybrid: 'Hybrid (MERCURY)',
 }
-const METHOD_SYMPLECTIC: Record<MethodId, boolean> = { wh2: true, wh4: true, verlet: true, rk4: false }
+const METHOD_SYMPLECTIC: Record<MethodId, boolean> = { wh2: true, wh4: true, verlet: true, rk4: false, hybrid: true }
 
 /**
  * Integrate the same system with several methods at the same step size and
@@ -429,6 +435,8 @@ export function runComparison(cfg: SimConfig): SimResult {
       sIdx++
     }
 
+    let minSeparation: number | undefined
+    let bsFraction: number | undefined
     if (id === 'wh2' || id === 'wh4') {
       const wh = new WisdomHolman(bary, G)
       const order: WHOrder = id === 'wh4' ? 4 : 2
@@ -437,14 +445,28 @@ export function runComparison(cfg: SimConfig): SimResult {
         wh.step(dt, order)
         if (step % sampleEvery === 0) record(wh.toInertial(), step * dt)
       }
+    } else if (id === 'hybrid') {
+      const hy = new HybridSymplectic(bary, G)
+      record(hy.toInertial(), 0)
+      for (let step = 1; step <= nSteps; step++) {
+        hy.step(dt, 2)
+        if (step % sampleEvery === 0) record(hy.toInertial(), step * dt)
+      }
+      minSeparation = hy.minSeparation
+      bsFraction = nSteps > 0 ? hy.bsSteps / nSteps : 0
     } else {
       const bodies = cloneBodies(bary)
       record(bodies, 0)
+      let mSep = Infinity
       for (let step = 1; step <= nSteps; step++) {
         if (id === 'verlet') verletStep(bodies, G, dt)
         else rk4Step(bodies, G, dt)
+        for (let i = 1; i < bodies.length; i++)
+          for (let j = i + 1; j < bodies.length; j++)
+            mSep = Math.min(mSep, Math.hypot(bodies[i].x - bodies[j].x, bodies[i].y - bodies[j].y))
         if (step % sampleEvery === 0) record(bodies, step * dt)
       }
+      if (bodies.length > 2) minSeparation = mSep
     }
 
     const ms = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
@@ -456,6 +478,8 @@ export function runComparison(cfg: SimConfig): SimResult {
       maxEnergyErr: maxErr,
       paths: paths.map((p) => p.subarray(0, sIdx * 2)),
       ms,
+      minSeparation,
+      bsFraction,
     })
   }
 
@@ -547,6 +571,31 @@ export const LAB_PRESETS: LabPreset[] = [
         { m: star, x: 0, y: 0, vx: 0, vy: 0 },
         planet(star, 1e-3, 2.2, G, 0),
         eccentricPlanet(star, 1e-6, 1.4, 0.6, G),
+      ]
+    },
+  },
+  {
+    id: 'close-encounter',
+    label: 'Close encounter (two planets)',
+    description:
+      'Two Neptune-mass planets sharing an orbit shear past each other in a deep close encounter. ' +
+      'This is exactly where plain Wisdom–Holman breaks — its one-impulse kick cannot resolve the ' +
+      'nearly-singular pair force — so its energy spikes, while the hybrid (MERCURY) integrator ' +
+      'switches to a Bulirsch–Stoer close drift and sails through with the error still bounded.',
+    G: 1,
+    dt: 0.05,
+    duration: 40,
+    build: () => {
+      const G = 1
+      const star = 1
+      const m = 3e-4
+      // Both planets ride the same near-circular orbit at r≈1 (speed vc≈1, +y), but with a
+      // small opposing radial nudge so they cross at tiny separation ~a fraction of 0.04.
+      const vc = Math.sqrt(G * star)
+      return [
+        { m: star, x: 0, y: 0, vx: 0, vy: 0 },
+        { m, x: 0.98, y: 0, vx: 0.06, vy: vc },
+        { m, x: 1.02, y: 0, vx: -0.06, vy: vc },
       ]
     },
   },
