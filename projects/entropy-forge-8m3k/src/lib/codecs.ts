@@ -28,6 +28,9 @@ import {
   rleDecode,
   rleEncode,
 } from './bwt.ts'
+import { ppmDecode, ppmEncode } from './ppm.ts'
+import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
+import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 
 export interface Codec {
   id: string
@@ -304,6 +307,51 @@ function arithDecodeWide(encoded: Uint8Array, length: number, alphabet: number):
   return out
 }
 
+// ---- Static rANS codec: transmits the normalised frequency table, then the
+// state-normalisation byte stream. A modern, table-driven entropy backend that
+// reaches the same order-0 floor as the arithmetic coder by a different route. ----
+function ransCodecEncode(data: Uint8Array): Uint8Array {
+  const table = tableFromData(data)
+  const { encoded } = ransEncode(data, table)
+  const header: number[] = []
+  putU32(header, data.length)
+  const tableBytes = serialiseTable(table)
+  return concat([Uint8Array.from(header), Uint8Array.from(tableBytes), encoded])
+}
+function ransCodecDecode(comp: Uint8Array): Uint8Array {
+  const length = getU32(comp, 0)
+  const { table, next } = deserialiseTable(comp, 4)
+  return ransDecode(comp.subarray(next), length, table)
+}
+
+// ---- PPM codec (order-4 PPMC): a context-mixing coder that models the previous
+// up-to-4 bytes with escape+exclusion, range-coded. The maxOrder is transmitted
+// so decode rebuilds the identical model. ----
+const PPM_ORDER = 4
+function ppmCodecEncode(data: Uint8Array): Uint8Array {
+  const { encoded } = ppmEncode(data, PPM_ORDER)
+  const header: number[] = []
+  putU32(header, data.length)
+  header.push(PPM_ORDER)
+  return concat([Uint8Array.from(header), encoded])
+}
+function ppmCodecDecode(comp: Uint8Array): Uint8Array {
+  const length = getU32(comp, 0)
+  const order = comp[4]
+  return ppmDecode(comp.subarray(5), length, order)
+}
+
+// ---- Adaptive (FGK) Huffman codec: one-pass, self-synchronising — no table. ----
+function adaptiveHuffmanCodecEncode(data: Uint8Array): Uint8Array {
+  const { encoded } = adaptiveHuffmanEncode(data)
+  const header: number[] = []
+  putU32(header, data.length)
+  return concat([Uint8Array.from(header), encoded])
+}
+function adaptiveHuffmanCodecDecode(comp: Uint8Array): Uint8Array {
+  return adaptiveHuffmanDecode(comp.subarray(4), getU32(comp, 0))
+}
+
 export const CODECS: Codec[] = [
   {
     id: 'huffman',
@@ -312,6 +360,14 @@ export const CODECS: Codec[] = [
     blurb: 'Optimal integer-length prefix code; transmits a canonical length table.',
     encode: huffmanCodecEncode,
     decode: huffmanCodecDecode,
+  },
+  {
+    id: 'adaptive-huffman',
+    name: 'Huffman (adaptive · FGK)',
+    family: 'entropy',
+    blurb: 'One-pass adaptive prefix code; the tree mutates as symbols arrive — no table sent.',
+    encode: adaptiveHuffmanCodecEncode,
+    decode: adaptiveHuffmanCodecDecode,
   },
   {
     id: 'arith0',
@@ -327,6 +383,22 @@ export const CODECS: Codec[] = [
     blurb: 'Context model on the previous byte; exploits order-1 structure of text.',
     ...arithCodec(() => new Order1Adaptive(256)),
   } as Codec,
+  {
+    id: 'rans',
+    name: 'rANS (static)',
+    family: 'entropy',
+    blurb: 'Asymmetric numeral system — zstd/LZFSE-class entropy coder; byte-wise renorm.',
+    encode: ransCodecEncode,
+    decode: ransCodecDecode,
+  },
+  {
+    id: 'ppm',
+    name: 'PPM · order-4',
+    family: 'entropy',
+    blurb: 'Prediction by partial matching (PPMC): escape + exclusion over 0..4-byte contexts.',
+    encode: ppmCodecEncode,
+    decode: ppmCodecDecode,
+  },
   {
     id: 'lz77',
     name: 'LZ77 / LZSS',

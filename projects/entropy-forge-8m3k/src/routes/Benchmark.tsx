@@ -96,6 +96,31 @@ export function Benchmark() {
         />
       </Panel>
 
+      <Panel
+        title="Entropy vs. achieved size"
+        note="each corpus plotted as (order-0 entropy, best coder's bits/symbol); the diagonal is the order-0 floor"
+      >
+        <EntropyScatter
+          points={matrix.map((m, i) => {
+            const bestBytes = Math.min(...CODECS.map((c) => m.cells[c.id].bytes))
+            return {
+              label: m.sample.name,
+              x: m.floor.order0,
+              y: m.data.length > 0 ? (bestBytes * 8) / m.data.length : 0,
+              color: seriesColor(i),
+            }
+          })}
+        />
+        <div className="legend" style={{ marginTop: 12 }}>
+          <span>
+            Points <strong>on</strong> the diagonal are compressed no better than their order-0
+            entropy (a memoryless source — e.g. high-entropy data near the top-right corner). Points{' '}
+            <strong>below</strong> it are beaten by context and dictionary modelling: repetitive and
+            source inputs fall far under their own order-0 floor.
+          </span>
+        </div>
+      </Panel>
+
       <Panel title="Full results — compression ratio (%)" note="Lower is better. Green = verified round-trip. The header row lists each corpus.">
         <div className="table-wrap">
           <table className="data">
@@ -170,6 +195,46 @@ export function Benchmark() {
           </p>
         </div>
       </Panel>
+    </div>
+  )
+}
+
+// Scatter of (order-0 entropy, best achieved bits/sym) over a shared 0..8 bit
+// axis, with the y = x diagonal drawn as the order-0 floor. The vertical distance
+// below the diagonal is exactly how much modelling bought on that corpus.
+function EntropyScatter({ points }: { points: { label: string; x: number; y: number; color: string }[] }) {
+  const size = 300
+  const pad = 40
+  const maxBits = 8
+  const sx = (v: number) => pad + (Math.min(v, maxBits) / maxBits) * (size - pad * 1.4)
+  const sy = (v: number) => size - pad - (Math.min(v, maxBits) / maxBits) * (size - pad * 1.4)
+  const ticks = [0, 2, 4, 6, 8]
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${size + 120} ${size}`} width="100%" style={{ minWidth: 420, maxWidth: 560 }}>
+        {/* axes */}
+        <line x1={pad} y1={size - pad} x2={size - pad * 0.4} y2={size - pad} stroke="var(--border-hi)" />
+        <line x1={pad} y1={pad} x2={pad} y2={size - pad} stroke="var(--border-hi)" />
+        {/* y = x diagonal (order-0 floor) */}
+        <line x1={sx(0)} y1={sy(0)} x2={sx(maxBits)} y2={sy(maxBits)} stroke="var(--amber)" strokeDasharray="4 4" opacity={0.8} />
+        <text x={sx(maxBits) - 6} y={sy(maxBits) - 6} fill="var(--amber)" fontSize={10} textAnchor="end">order-0 floor</text>
+        {ticks.map((t) => (
+          <g key={t}>
+            <text x={sx(t)} y={size - pad + 14} fontSize={10} fill="var(--text-dim)" textAnchor="middle">{t}</text>
+            <text x={pad - 8} y={sy(t) + 3} fontSize={10} fill="var(--text-dim)" textAnchor="end">{t}</text>
+          </g>
+        ))}
+        <text x={(size) / 2} y={size - 6} fontSize={11} fill="var(--text-mid)" textAnchor="middle">order-0 entropy (bits/sym)</text>
+        <text x={12} y={size / 2} fontSize={11} fill="var(--text-mid)" textAnchor="middle" transform={`rotate(-90 12 ${size / 2})`}>achieved (bits/sym)</text>
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={sx(p.x)} cy={sy(p.y)} r={5.5} fill={p.color} stroke="var(--bg)" strokeWidth={1} />
+            <text x={size - pad * 0.4 + 8} y={pad + i * 16 + 4} fontSize={11} fill="var(--text-mid)">
+              <tspan fill={p.color}>●</tspan> {p.label}
+            </text>
+          </g>
+        ))}
+      </svg>
     </div>
   )
 }
