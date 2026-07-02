@@ -132,6 +132,50 @@ rotation group.
   guarantees incl. toroidal-seam validity).
 - `hex/permalink_hex.ts` — the `m=h` shareable hash for the hex studio.
 
+### The mesh engine (`src/mesh/*`, `src/components/MeshStudio.tsx` + `MeshViewport.tsx`)
+
+A fifth engine — and the first that leaves the *regular* lattice entirely. Every prior engine solves
+a grid where cells are identical and neighbours are found by arithmetic; this one runs WFC on an
+**irregular all-quad mesh**, the Townscaper-style organic grid where no two cells are the same shape
+and every vertex has a different valence. The trick that makes it work: force the mesh to be *all
+quads* (arity 4), so a tile is still the square engine's four cyclic edge sockets with a 4-fold
+rotation group — the tile algebra is untouched. What changes is that adjacency is no longer a
+formula but an **explicit graph** the mesh hands the solver.
+
+- `mesh/mesh.ts` — the geometry engine. Grows a deterministic irregular all-quad mesh from a seed
+  the way Townscaper does: (1) a sheared **triangular lattice** (guaranteed planar/manifold, no
+  floating-point predicates), (2) a random **maximal matching** that merges adjacent triangle pairs
+  into quads (the irregularity injector — done *combinatorially* from the triangles' winding, never
+  from jittered coordinates), (3) **primal quad subdivision** (Catmull–Clark's face step: any k-gon
+  → k quads through edge midpoints + centroid, so incident faces share one midpoint per edge and the
+  result is a conforming all-quad 2-manifold *by construction*), (4) **Laplacian relaxation**
+  (boundary pinned) to round it organic. Builds the half-edge adjacency (`nbCell`/`nbSlot`, plus a
+  `nbSameDir` orientation flag that is provably 0 for a consistently-CCW mesh) and per-cell geometry.
+- `mesh/meshtypes.ts` / `compile_mesh.ts` — the square engine's socket algebra distilled (four CCW
+  sockets, `reverse` seam rule, cyclic-shift rotation) plus the compiler: expand rotations, dedup,
+  and precompute the adjacency tensor **generalised off the lattice** — indexed by the *pair* of
+  local edge-slots `(sA, sB)` that meet at a seam rather than a global direction.
+- `mesh/meshsolver.ts` — the WFC core on a general graph: support-counter propagation (four counters
+  /tile), weighted min-Shannon-entropy observation with seeded noise, the arc-consistency purge, and
+  snapshot backtracking — identical guarantees to the lattice solvers, deterministic from a seed. The
+  only change is that neighbours come from `mesh.nbCell` and "which tiles fit here" from the slot-pair
+  tensor.
+- `mesh/tilesets/*` — connection-model sets drawn **live into each real polygon** (no pre-rendered
+  bitmap could fit an irregular quad): **Paths** (a cased road web), **Rivers** (a sparse meandering
+  water net — same rules, tuned weights), and **Circuit** (two signal nets, cyan/magenta, each
+  joining only its own kind and crossing without touching). Because a connection always leaves at an
+  *edge midpoint*, and the neighbour's matching connection enters at that same shared midpoint, the
+  network is seamless across the irregular seams for free. `tilesets/paint.ts` holds the shared
+  ribbon/spoke/hub painters; `factory.ts` builds a set from a palette + lane style + canonical tiles.
+- `mesh/render_mesh.ts` — the from-scratch renderer: fit the mesh into the backing store, paint each
+  collapsed cell's tile into its actual polygon, ghost/entropy-tint the superposed ones, optional
+  cell outlines; a point-in-polygon hit-test powers the hover lens.
+- `mesh/controller_mesh.ts` — owns the generated mesh (cached by geometry params), the solver/render
+  loop, view toggles, weight overrides, PNG export, and the hit-test.
+- `mesh/tests_mesh.ts` — the in-app **Mesh Proof Lab** (manifold validity + Euler χ, adjacency-tensor
+  symmetry, determinism, and the headline — every finished solve is 4-edge adjacency-valid).
+- `mesh/permalink_mesh.ts` — the `m=m` shareable hash for the mesh studio.
+
 ## Ideas / backlog
 
 - [x] Edge-code algebra with the clockwise-read + reversal adjacency rule
@@ -416,7 +460,86 @@ idea, one more fold of symmetry. Strictly additive — a top-level **⬡** switc
       pluggable search heuristics (MRV/scanline) like the square Solver Lab; an overlapping (learn
       from a hex sample) model; bring the hex renderer to the infinite engine.
 
+### v8 — "Irregular ground: WFC on a Townscaper-style quad mesh" (shipped 2026-07-02)
+
+Every Tessera engine so far — 2D square, overlapping, infinite, voxel, hex — solves a **regular**
+lattice: identical cells, a fixed neighbour set, adjacency found by arithmetic. v8 is the first to
+leave the lattice behind and run WFC on an **irregular all-quad mesh**, the organic grid Oskar
+Stålberg's *Townscaper* made famous, where no two cells share a shape and vertices have wildly
+different valence. The insight that keeps the whole WFC machine intact: force the mesh to be *all
+quads* (arity 4), and a tile is exactly the square engine's four cyclic sockets with a 4-fold
+rotation group — so the tile algebra, the support-counter propagation, the entropy heuristic and the
+snapshot backtracking all carry over verbatim. The one genuinely new idea is that **adjacency
+becomes an explicit graph** the geometry engine builds, indexed by the pair of edge-slots that meet
+at a seam. Strictly additive — a top-level **▨** switch picks the engine; the 2D/3D/∞/hex studios are
+byte-for-byte untouched. Each item below is a concrete, self-contained step, and all landed:
+
+- [x] **Mesh geometry engine (`mesh/mesh.ts`).** A deterministic irregular all-quad mesh from a seed:
+      sheared triangular lattice → random combinatorial triangle-pair merge → primal quad subdivision
+      (k-gon → k quads, sharing one midpoint per edge so it is manifold *by construction*) → Laplacian
+      relaxation. Builds half-edge adjacency (`nbCell`/`nbSlot`/`nbSameDir`) and per-cell geometry.
+- [x] **Socket algebra + compiler (`meshtypes.ts` / `compile_mesh.ts`).** The square edge algebra
+      distilled to four CCW sockets with a cyclic-shift rotation and the `reverse` seam rule, plus an
+      adjacency tensor **generalised off the lattice** — indexed by the `(slotA, slotB)` pair meeting
+      at a seam and the seam orientation, not a global direction.
+- [x] **Graph WFC solver (`meshsolver.ts`).** The lattice core on a general graph: four support
+      counters per tile, weighted min-Shannon-entropy observation with seeded noise, the
+      arc-consistency purge, snapshot backtracking + auto-restart — identical guarantees, deterministic
+      from a seed. Neighbours from `mesh.nbCell`, fits from the slot-pair tensor.
+- [x] **Three connection tilesets, drawn live into every real polygon.** **Paths** (a cased road web),
+      **Rivers** (a sparse meandering water net — same rules, tuned weights), **Circuit** (two signal
+      nets that join only their own kind and cross without touching). Seamless across irregular seams
+      because a connection always meets its neighbour's at the shared edge midpoint. `paint.ts` +
+      `factory.ts` build a set from a palette, a lane style and a handful of canonical tiles.
+- [x] **From-scratch mesh renderer (`render_mesh.ts`).** Fit the mesh to the backing store, paint each
+      collapsed tile into its actual quad, ghost/entropy-tint the superposed cells, optional cell
+      outlines; a point-in-polygon hit-test drives the hover lens.
+- [x] **`ControllerMesh` + `MeshStudio`/`MeshViewport`.** The mesh analogue of the other controllers:
+      an rAF solve/draw loop with auto-restart, transport (play/step/reset/seed/PNG/link), tuning (set
+      picker, cols/rows, **jitter** + **relax** + **merge** mesh controls, view toggles), a live-drawn
+      tile gallery with weight sliders, and the hover lens.
+- [x] **Top-level ▨ mode switch + `m=m` permalink.** A fifth engine wired into the header/footer; a
+      hash that pins set / cols / rows / seed / jitter / relax / merge / backtracking / speed / view
+      toggles. The shared `Mode` union learns `'mesh'`.
+- [x] **Mesh Proof Lab (`tests_mesh.ts` + panel).** 13 checks on the *real* generator + compiler +
+      solver: the mesh is a valid 2-manifold (every interior edge shared by exactly two cells in
+      opposite senses, Euler χ = V − E + F = 1), the adjacency tensor is symmetric, and the headline —
+      mesh *and* collapse are deterministic from a seed, and every finished solve is 4-edge
+      adjacency-valid with no connection dead-ending across a seam, all re-checked the long way.
+- [ ] **Future — the overlapping bridge:** learn a mesh tileset's adjacency from a hand-collapsed
+      example board rather than authoring sockets, the irregular analogue of the square overlapping model.
+- [ ] **Future — Delaunay / Poisson-disc base mesh** (blue-noise points → Bowyer–Watson) for even
+      more irregular valence than the sheared lattice gives, with the robustness suite to match.
+- [ ] **Future — region tilesets** (land/sea, biomes) via a dual-mesh / corner-coded fill so a colour
+      region is seamless across seams, not just connection lanes.
+- [ ] **Future — pin / constraint painting** (click a cell to fix a tile) and a **global-connectivity**
+      constraint (one network / routed terminals) like the square engine, lifted to the graph.
+- [ ] **Future — pluggable heuristics** (MRV / scanline / random) and a Mesh Solver Lab benchmark, and
+      an **animated cell-outline reveal** that tweens the mesh as jitter/relax change.
+- [ ] **Future — clipped domains** (disc / rounded / hand-drawn silhouette) instead of the parallelogram,
+      and a **Web-Worker** offload so large meshes solve off the main thread.
+
 ## Session log
+
+- 2026-07-02 (claude / claude-opus-4-8): **Shipped v8 — irregular ground.** Tessera grows a fifth,
+  parallel engine that runs Wave Function Collapse on an **irregular all-quad mesh** — the
+  Townscaper-style organic grid where no two cells share a shape — behind a top-level **▨** switch; the
+  2D/3D/∞/hex studios are byte-for-byte untouched. Eight planned steps, all landed:
+  • **Mesh geometry** (`mesh/mesh.ts`) — a deterministic all-quad mesh grown sheared-lattice → random
+    triangle-pair merge → primal quad subdivision → Laplacian relaxation, manifold *by construction*
+    (an early atan2-ordered merge tore cracks under jitter; rewritten to stitch quads combinatorially
+    from the triangles' winding, which the Proof Lab's Euler-χ / opposite-seam checks now confirm).
+  • **Socket algebra + graph solver** — the square four-socket tile algebra survives intact because
+    every cell is a quad; the only new idea is that adjacency is an explicit graph indexed by the
+    `(slotA, slotB)` pair meeting at a seam, so `compile_mesh.ts`'s tensor and `meshsolver.ts`'s
+    support-counter propagation generalise straight off the lattice.
+  • **Three live-drawn connection sets** — Paths (roads), Rivers (sparse water), Circuit (two crossing
+    nets) — seamless across irregular seams because connections meet at shared edge midpoints.
+  • **Renderer + `ControllerMesh` + `MeshStudio`** — paint each tile into its real polygon, jitter /
+    relax / merge mesh controls, hover lens, `m=m` permalink, and a **Mesh Proof Lab** (13 checks,
+    all green): manifold validity, Euler χ = 1, tensor symmetry, determinism, and the headline that
+    every finished solve is 4-edge adjacency-valid. Verified end-to-end in a headless browser — all
+    three sets solve 340–350 cells to 100 % with zero contradictions.
 
 - 2026-06-23 (claude / claude-opus-4-8): **Shipped v7 — the hexagon.** Tessera grows a fourth,
   parallel engine that runs Wave Function Collapse on a **hexagonal (axial) lattice**, behind a

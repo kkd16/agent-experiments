@@ -16,8 +16,10 @@ import { sampleByKey, type Sample } from './wfc/samples';
 import Studio3D from './components/Studio3D';
 import InfiniteStudio from './components/InfiniteStudio';
 import HexStudio from './components/HexStudio';
+import MeshStudio from './components/MeshStudio';
 import { decodeHash3, hashMode, type Mode } from './wfc3d/permalink3';
 import { decodeHashInf } from './infinite/permalink_inf';
+import { decodeHashMesh } from './mesh/permalink_mesh';
 import { decodeHashHex } from './hex/permalink_hex';
 
 const DEFAULTS: ControllerConfig = {
@@ -232,7 +234,9 @@ export default function App() {
                   ? 'Boundless — a deterministic, endlessly-pannable Wave Function Collapse world.'
                   : mode === 'hex'
                     ? 'Wave Function Collapse on a hexagonal lattice — six-way edge agreement.'
-                    : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
+                    : mode === 'mesh'
+                      ? 'Wave Function Collapse on an irregular quad mesh — a Townscaper-style grown grid.'
+                      : 'A Wave Function Collapse studio — watch constraints crystallise into form.'}
             </p>
           </div>
         </div>
@@ -250,6 +254,9 @@ export default function App() {
             <button className={`seg ${mode === 'hex' ? 'active' : ''}`} type="button" onClick={() => setMode('hex')} title="Hex — WFC on a hexagonal lattice">
               ⬡
             </button>
+            <button className={`seg ${mode === 'mesh' ? 'active' : ''}`} type="button" onClick={() => setMode('mesh')} title="Mesh — WFC on an irregular quad mesh">
+              ▨
+            </button>
           </div>
           <a className="repo-link" href="https://en.wikipedia.org/wiki/Model_synthesis" target="_blank" rel="noreferrer">
             what is WFC?
@@ -263,6 +270,8 @@ export default function App() {
         <InfiniteStudio initial={decodeHashInf(window.location.hash)} />
       ) : mode === 'hex' ? (
         <HexStudio initial={decodeHashHex(window.location.hash)} />
+      ) : mode === 'mesh' ? (
+        <MeshStudio initial={decodeHashMesh(window.location.hash)} />
       ) : (
         <main className="layout">
           <div className="stage">
@@ -344,6 +353,19 @@ export default function App() {
             </span>
             <span className="keys">
               <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>h</kbd> entropy · <kbd>g</kbd> grid · hover to inspect
+            </span>
+          </>
+        ) : mode === 'mesh' ? (
+          <>
+            <span>
+              Built from scratch — Wave Function Collapse on an <strong>irregular all-quad mesh</strong>: a sheared
+              triangular lattice → random triangle-pair merge → primal quad subdivision → Laplacian relaxation grows a
+              Townscaper-style organic grid, provably a valid 2-manifold. The square engine's four-socket tile algebra
+              survives intact; adjacency becomes an explicit graph (support-counter propagation, arc-consistency purge,
+              snapshot backtracking) · connections thread seamlessly across cells of every shape · in-app Mesh Proof Lab.
+            </span>
+            <span className="keys">
+              <kbd>space</kbd> play · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>n</kbd> seed · <kbd>e</kbd> png · <kbd>m</kbd> merge · <kbd>h</kbd> entropy · <kbd>g</kbd> grid · hover to inspect
             </span>
           </>
         ) : (
