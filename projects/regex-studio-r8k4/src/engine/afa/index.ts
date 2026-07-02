@@ -1,0 +1,5 @@
+// Alternating finite automata — public surface.
+export * from './afa';
+export * from './parse';
+export * from './gallery';
+export * from './verify';

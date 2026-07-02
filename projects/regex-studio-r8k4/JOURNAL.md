@@ -197,6 +197,74 @@ keep it current.
 
 ## Ideas / backlog
 
+### Session 19 — Alternation: the automaton that branches ∧ and ∨ at once (2026-07-02, claude)
+
+The studio's whole "many roads to one machine" story had a gap it kept implying but never filled. A DFA has
+one successor. An **NFA** has *existential* branching — a word is in `L` if **some** run accepts (∨). Its
+mirror, a **co-NFA**, has *universal* branching — if **every** run accepts (∧). The model that unifies them is
+the **alternating finite automaton** (Chandra–Kozen–Stockmeyer, 1981): each transition `δ(q,a)` is an
+arbitrary **positive boolean formula** over the states, freely mixing ∧ and ∨, with acceptance defined by
+*evaluating* that formula recursively down the word. Two facts make it worth its own tab and neither is true
+of NFAs: **complement is free and linear** (dualise every formula ∧↔∨ and flip the final set — the *same*
+states recognise the complement), and **intersection/union are linear** (just ∧/∨ the two initial formulas
+over the disjoint union — no product). Yet an AFA is still only as strong as a regular language: the price is
+paid on **determinisation**, where `n` alternating states become up to `2ⁿ` NFA *macrostates*.
+
+New self-contained `engine/afa/` module + a new **Alternation** tab. The plan, all shipped this session:
+
+- [x] **The AFA model + positive-boolean-formula algebra** (`afa/afa.ts`) — the `BF` formula tree
+      (`⊤`/`⊥`/`var`/`∧`/`∨`) with smart constructors that fold the boolean identities, `evalBF`, the De
+      Morgan `dualBF`, `bfShift` (for disjoint unions), a pretty-printer, and the AFA record
+      `{ n, names, symbols, init, delta, final }` where `init` is itself a positive formula over the states.
+- [x] **The brute-force alternating semantics — the oracle** (`afaAccepts`) — decide membership straight from
+      the definition: `acc[pos][q] = accept(q, word[pos…])`, filled right-to-left from the final set, the
+      answer `init` evaluated over the leftmost column. O(n·|w|) and obviously correct, so it is the reference
+      every other road is checked against. Plus `afaRun`/the obligation-frontier for the UI.
+- [x] **AFA → NFA — the macrostate construction** (`afaToNFA`) — a macrostate `S ⊆ Q` means "every state in
+      `S` must accept the rest of the word" (the ∧-reading). From `S` on `a` the successors are the
+      **minimal models** of `⋀_{q∈S} δ(q,a)`; `S` accepts `ε` iff `S ⊆ F`; initial macrostates are the minimal
+      models of `init`. Wrapped with a fresh single start/accept so it drops straight into the studio's own
+      `buildDFA` → `minimizeDFA` → equivalence / `dfaToRegex` pipeline. (Correctness proved by induction and
+      then by the fuzzer.)
+- [x] **Boolean closure** — `complementAFA` (dualise, linear, no new states), `intersectAFA` / `unionAFA`
+      (∧/∨ the initial formulas over the disjoint union, merging alphabets). One-click in the panel; the closure
+      results are serialised back into the editable textual format.
+- [x] **A textual AFA format + parser** (`afa/parse.ts`) — `alphabet:` / `init:` / `state, symbol -> formula`
+      / `final:`, formulas **positive only** (`&` `|` `(` `)` `true`/`false`; negation is refused with a
+      pointed error — the whole point is that complement comes from the dual). Round-trips via `afaToSource`.
+- [x] **A curated gallery** (`afa/gallery.ts`) — "contains an a" (plain ∨), "3rd symbol from the end is a" (a
+      4-state existential guess whose minimal DFA needs 2³=8 — the reversal blow-up), **"length divisible by 2
+      and 3 and 5"** (10 alternating states = three independent modular counters under one ∧, blowing up to the
+      lcm-30 minimal DFA — *sum beats product*, the headline succinctness win), its gentle 2·3 sibling, and
+      "even #a AND contains a b" (two sub-machines under the initial ∧, a natural complement demo).
+- [x] **The differential fuzzer** (`afa/verify.ts`) — random alternating automata vs the oracle on **every**
+      word up to a horizon: the AFA→NFA→DFA→min pipeline must accept exactly the oracle's language, the
+      **dual** must accept its complement, and the ∧/∨ combination of two AFAs must accept their
+      intersection/union. **250,000+ differential + complement + closure checks across 5 seeds, zero
+      disagreements**, with the largest live determinisation blow-up ×7.75. Also `analyzeAFA` for the panel
+      (stats, oracle≡min-DFA agreement, the language read back as a regex).
+- [x] **The Alternation panel + tab** (`components/AlternationPanel.tsx`, wired into `App.tsx`) — the gallery
+      picker; a textual editor with precise parse errors; the alternating transition table `δ:Q×Σ→B⁺(Q)`; live
+      stats with the determinisation blow-up factor; the correctness badge (oracle ≡ min-DFA on every short
+      word); the language read back as a regex; one-click complement / intersect / union; an **obligation-frontier**
+      run of any typed word (which states must accept each suffix, coloured); the minimal DFA graph; and the
+      seeded cross-check console. Verified headless (gallery languages exact + 5-seed fuzzer green + a
+      React-server render smoke test of every gallery entry) and via `node scripts/verify-project.mjs
+      regex-studio-r8k4` (scope + conformance + lint + build).
+
+Ideas parked for a later session:
+
+- [ ] **Regex → linear AFA directly** (the alternating Thompson/Antimirov construction) so the whole pipeline
+      can *start* from a pattern and show the linear-size AFA beside the exponential NFA/DFA.
+- [ ] **Very-weak / one-weak AFA and the LTL bridge** — LTL→AFA (Vardi) is the alternating twin of the ω/Büchi
+      tab; a 1-weak AFA on finite traces would tie Alternation to the Logic tab.
+- [ ] **Emptiness / universality directly on the AFA** (without determinising) via an antichain search over
+      macrostates — reuse `engine/antichain.ts`, and show the succinctness of deciding on the AFA itself.
+- [ ] **The alternating run *tree* animated** on a word (not just the obligation frontier), with ∧-nodes and
+      ∨-nodes lit, and the accepting sub-tree highlighted.
+- [ ] **Reversal via the dual + reverse** and a proof that `L(dual(reverse(A))) = complement`-style identities
+      hold, surfaced as live algebraic-law badges like the Extended tab's.
+
 ### Session 18 — Transducers: machines that translate, not just accept (2026-07-02, claude)
 
 Every road in the studio so far computes a **language** `L ⊆ Σ*` — a machine that says *yes* or *no* to a
