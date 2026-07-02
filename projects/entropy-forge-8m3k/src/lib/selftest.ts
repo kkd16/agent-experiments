@@ -19,6 +19,10 @@ import { arithDecode, arithEncode, Order0Adaptive, Order1Adaptive } from './arit
 import { huffmanDecode, huffmanEncode } from './huffman.ts'
 import { lz77Decode, lz77Encode } from './lz77.ts'
 import { lzwDecode, lzwEncode } from './lzw.ts'
+import { ppmDecode, ppmEncode } from './ppm.ts'
+import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
+import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
+import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
 
 export interface TestCase {
   group: string
@@ -121,6 +125,47 @@ export function runSelfTest(): TestCase[] {
     results.push({ group: 'LZ77 (primitive)', name, pass: bytesEqual(lz77Decode(lz.encoded, data.length), data), detail: `${lz.matches} matches` })
     const lw = lzwEncode(data)
     results.push({ group: 'LZW (primitive)', name, pass: bytesEqual(lzwDecode(lw.encoded, data.length), data), detail: `${lw.codes.length} codes` })
+    // rANS primitive (with a serialised/rebuilt table, as the codec transmits it)
+    try {
+      const tbl = tableFromData(data)
+      const rr = ransEncode(data, tbl)
+      const { table: rebuilt } = deserialiseTable(Uint8Array.from(serialiseTable(tbl)), 0)
+      const back = ransDecode(rr.encoded, data.length, rebuilt)
+      results.push({ group: 'rANS (primitive)', name, pass: bytesEqual(back, data), detail: `${rr.bytesOut}B state stream` })
+    } catch (e) {
+      results.push({ group: 'rANS (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // PPM primitive at several orders (context modelling round-trips at each order)
+    for (const order of [0, 2, 4]) {
+      try {
+        const pe = ppmEncode(data, order)
+        const pd = ppmDecode(pe.encoded, data.length, order)
+        results.push({ group: `PPM-o${order} (primitive)`, name, pass: bytesEqual(pd, data), detail: `${(pe.encodedBits / 8).toFixed(0)}B` })
+      } catch (e) {
+        results.push({ group: `PPM-o${order} (primitive)`, name, pass: false, detail: (e as Error).message })
+      }
+    }
+    // Adaptive (FGK) Huffman primitive
+    try {
+      const ae = adaptiveHuffmanEncode(data)
+      const ad = adaptiveHuffmanDecode(ae.encoded, data.length)
+      results.push({ group: 'Adaptive-Huffman (primitive)', name, pass: bytesEqual(ad, data), detail: `${ae.symbolsSeen} first-seen` })
+    } catch (e) {
+      results.push({ group: 'Adaptive-Huffman (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // SA-IS suffix array matches the brute-force oracle, and SA-BWT round-trips
+    try {
+      const fast = suffixArray(data)
+      const slow = suffixArrayNaive(data)
+      let saOk = fast.length === slow.length
+      for (let i = 0; saOk && i < fast.length; i++) if (fast[i] !== slow[i]) saOk = false
+      results.push({ group: 'Suffix array (SA-IS = oracle)', name, pass: saOk, detail: `${fast.length} suffixes` })
+      const { transformed, sentinelRow } = bwtEncodeSA(data)
+      const saBack = bwtDecodeSA(transformed, sentinelRow)
+      results.push({ group: 'BWT via suffix array', name, pass: bytesEqual(saBack, data), detail: `row ${sentinelRow}` })
+    } catch (e) {
+      results.push({ group: 'Suffix array (SA-IS)', name, pass: false, detail: (e as Error).message })
+    }
   }
 
   return results
