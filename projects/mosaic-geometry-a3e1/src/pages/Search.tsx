@@ -14,6 +14,7 @@ import { buildQuadtree, quadLeaves, quadRange, quadStats } from '../geometry/qua
 import { buildRangeTree, rangeQuery } from '../geometry/rangeTree'
 import { delaunay } from '../geometry/delaunay'
 import { buildMesh, locate, locateBruteForce, pointInTriangle } from '../geometry/pointLocation'
+import { trapezoidalFromTriangulation } from '../geometry/trapezoidal'
 import { jitteredGrid, mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { dist as euclid } from '../geometry/vector'
 import { useCanvas } from '../hooks/useCanvas'
@@ -32,6 +33,7 @@ const PAD = 16
 
 type Distribution = 'poisson' | 'uniform' | 'grid'
 type Mode = 'nn' | 'knn' | 'range' | 'locate'
+type LocateMethod = 'walk' | 'trapezoid'
 
 function generate(dist: Distribution, count: number, seed: number): Point[] {
   const rng = mulberry32(seed)
@@ -52,6 +54,7 @@ export default function Search() {
   const [points, setPoints] = useState<Point[]>(() => generate('poisson', 160, 2))
 
   const [mode, setMode] = usePersistentState<Mode>('search:mode', 'nn')
+  const [locateMethod, setLocateMethod] = usePersistentState<LocateMethod>('search:locate', 'walk')
   const [showKd, setShowKd] = usePersistentState<boolean>('search:kd', true)
   const [showQuad, setShowQuad] = usePersistentState<boolean>('search:quad', false)
   const [k, setK] = usePersistentState<number>('search:k', 8)
@@ -83,6 +86,21 @@ export default function Search() {
   const quadRangeRes = useMemo(() => quadRange(quadTree, points, windowRect), [quadTree, points, windowRect])
   const rtRangeRes = useMemo(() => rangeQuery(rangeTree, windowRect), [rangeTree, windowRect])
   const located = useMemo(() => locate(mesh, query, 0), [mesh, query])
+  // The trapezoidal map + search DAG are only built when the Locate mode asks
+  // for them (Seidel's randomized incremental construction over the mesh edges).
+  const trapMap = useMemo(
+    () =>
+      mode === 'locate' && locateMethod === 'trapezoid' && tris.length > 0
+        ? trapezoidalFromTriangulation(points, tris, 1)
+        : null,
+    [mode, locateMethod, points, tris],
+  )
+  const trapCells = useMemo(() => (trapMap ? trapMap.trapezoids() : []), [trapMap])
+  const trapLocated = useMemo(
+    () => (trapMap ? trapMap.locate(query) : null),
+    [trapMap, query],
+  )
+  const trapPath = useMemo(() => (trapMap ? trapMap.explain(query) : null), [trapMap, query])
 
   // ── Brute-force oracles → correctness badges ────────────────────────────────
   const nnVerified = useMemo(() => {
@@ -110,6 +128,16 @@ export default function Search() {
     const t = tris[located.triangle]
     return pointInTriangle(points[t.a], points[t.b], points[t.c], query)
   }, [points, tris, query, located])
+  // The trapezoidal DAG's answer is cross-checked the same way: it must contain
+  // the probe (or agree it's outside the hull) — the third leg of the oracle.
+  const trapVerified = useMemo(() => {
+    if (!trapLocated) return true
+    const brute = locateBruteForce(points, tris, query)
+    if (brute < 0) return trapLocated.face < 0
+    if (trapLocated.face < 0) return false
+    const t = tris[trapLocated.face]
+    return pointInTriangle(points[t.a], points[t.b], points[t.c], query)
+  }, [trapLocated, points, tris, query])
 
   const kdInfo = useMemo(() => ({ size: kdSize(kdTree), depth: kdDepth(kdTree) }), [kdTree])
   const quadInfo = useMemo(() => quadStats(quadTree), [quadTree])
@@ -224,41 +252,102 @@ export default function Search() {
       }
     }
 
-    // Locate mode: faint Delaunay mesh + highlighted triangle + the walk path.
+    // Locate mode.
     if (mode === 'locate') {
-      ctx.strokeStyle = 'rgba(120,170,255,0.18)'
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      for (const t of tris) {
-        const a = toPx(points[t.a])
-        const b = toPx(points[t.b])
-        const c = toPx(points[t.c])
-        ctx.moveTo(a.x, a.y)
-        ctx.lineTo(b.x, b.y)
-        ctx.lineTo(c.x, c.y)
-        ctx.lineTo(a.x, a.y)
-      }
-      ctx.stroke()
-      // The walk: a polyline through visited triangle centroids.
-      const centroid = (t: Triangle) => ({
-        x: (points[t.a].x + points[t.b].x + points[t.c].x) / 3,
-        y: (points[t.a].y + points[t.b].y + points[t.c].y) / 3,
-      })
-      if (located.path.length > 1) {
-        ctx.strokeStyle = 'rgba(255,209,102,0.7)'
-        ctx.lineWidth = 1.6
-        ctx.setLineDash([5, 4])
+      // Trapezoidal-DAG method: draw the whole trapezoidal decomposition, then
+      // highlight the trapezoid the search landed in.
+      if (locateMethod === 'trapezoid' && trapMap) {
+        for (const cell of trapCells) {
+          const poly = cell.polygon.map(toPx)
+          ctx.beginPath()
+          poly.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+          ctx.closePath()
+          // Inside a face → teal wash; outside the hull → muted violet.
+          ctx.fillStyle = cell.face >= 0 ? 'rgba(96,205,255,0.05)' : 'rgba(167,139,250,0.04)'
+          ctx.fill()
+          ctx.strokeStyle = 'rgba(140,180,255,0.16)'
+          ctx.lineWidth = 0.8
+          ctx.stroke()
+        }
+        // The DAG decision path: each x-node tested is a vertical line, each
+        // y-node a segment. Later steps (closer to the leaf) glow brighter.
+        if (trapPath) {
+          const decisions = trapPath.steps.filter((s) => s.kind !== 'leaf')
+          decisions.forEach((s, idx) => {
+            const glow = 0.25 + 0.6 * ((idx + 1) / decisions.length)
+            if (s.kind === 'x') {
+              const px = toPx({ x: s.x, y: 0 }).x
+              ctx.strokeStyle = `rgba(255,209,102,${glow.toFixed(3)})`
+              ctx.lineWidth = 1.1
+              ctx.setLineDash([3, 3])
+              ctx.beginPath()
+              ctx.moveTo(px, PAD)
+              ctx.lineTo(px, size.height - PAD)
+              ctx.stroke()
+              ctx.setLineDash([])
+            } else if (s.kind === 'y') {
+              const a = toPx(s.a)
+              const b = toPx(s.b)
+              ctx.strokeStyle = `rgba(124,246,192,${glow.toFixed(3)})`
+              ctx.lineWidth = 2
+              ctx.beginPath()
+              ctx.moveTo(a.x, a.y)
+              ctx.lineTo(b.x, b.y)
+              ctx.stroke()
+            }
+          })
+        }
+        if (trapLocated) {
+          const hit = trapCells.find((c) => c.trap === trapLocated.trap)
+          if (hit) {
+            const poly = hit.polygon.map(toPx)
+            ctx.beginPath()
+            poly.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+            ctx.closePath()
+            ctx.fillStyle = 'rgba(255,179,71,0.20)'
+            ctx.fill()
+            ctx.strokeStyle = 'rgba(255,179,71,0.9)'
+            ctx.lineWidth = 1.6
+            ctx.stroke()
+          }
+        }
+      } else {
+        // Jump-and-walk method: faint mesh + the walk path.
+        ctx.strokeStyle = 'rgba(120,170,255,0.18)'
+        ctx.lineWidth = 1
         ctx.beginPath()
-        located.path.forEach((ti, idx) => {
-          const q = toPx(centroid(tris[ti]))
-          if (idx === 0) ctx.moveTo(q.x, q.y)
-          else ctx.lineTo(q.x, q.y)
-        })
+        for (const t of tris) {
+          const a = toPx(points[t.a])
+          const b = toPx(points[t.b])
+          const c = toPx(points[t.c])
+          ctx.moveTo(a.x, a.y)
+          ctx.lineTo(b.x, b.y)
+          ctx.lineTo(c.x, c.y)
+          ctx.lineTo(a.x, a.y)
+        }
         ctx.stroke()
-        ctx.setLineDash([])
+        const centroid = (t: Triangle) => ({
+          x: (points[t.a].x + points[t.b].x + points[t.c].x) / 3,
+          y: (points[t.a].y + points[t.b].y + points[t.c].y) / 3,
+        })
+        if (located.path.length > 1) {
+          ctx.strokeStyle = 'rgba(255,209,102,0.7)'
+          ctx.lineWidth = 1.6
+          ctx.setLineDash([5, 4])
+          ctx.beginPath()
+          located.path.forEach((ti, idx) => {
+            const q = toPx(centroid(tris[ti]))
+            if (idx === 0) ctx.moveTo(q.x, q.y)
+            else ctx.lineTo(q.x, q.y)
+          })
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
       }
-      if (located.triangle >= 0) {
-        const t = tris[located.triangle]
+      // The located triangle, highlighted the same way for both methods.
+      const face = locateMethod === 'trapezoid' ? (trapLocated?.face ?? -1) : located.triangle
+      if (face >= 0) {
+        const t = tris[face]
         const a = toPx(points[t.a])
         const b = toPx(points[t.b])
         const c = toPx(points[t.c])
@@ -368,7 +457,7 @@ export default function Search() {
       ctx.fillStyle = '#ffd166'
       ctx.fill()
     }
-  }, [ref, size, points, tris, mode, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, ann, approx, knn, range, located, k])
+  }, [ref, size, points, tris, mode, locateMethod, trapMap, trapCells, trapLocated, trapPath, showKd, showQuad, kdSplitLines, quadCells, query, windowRect, nn, ann, approx, knn, range, located, k])
 
   const badge = (ok: boolean) => (
     <span className={`badge ${ok ? 'badge--ok' : 'badge--bad'}`}>{ok ? '✓ verified' : '✗ mismatch'}</span>
@@ -392,7 +481,12 @@ export default function Search() {
           {mode === 'knn' && <Stat label="found" value={knn.length} />}
           {mode === 'range' && <Stat label="in window" value={range.indices.length} />}
           {mode === 'range' && <Stat label="k-d nodes" value={`${range.visited} / ${points.length}`} />}
-          {mode === 'locate' && <Stat label="walk length" value={located.path.length} />}
+          {mode === 'locate' && locateMethod === 'walk' && (
+            <Stat label="walk length" value={located.path.length} />
+          )}
+          {mode === 'locate' && locateMethod === 'trapezoid' && trapLocated && (
+            <Stat label="DAG comparisons" value={`${trapLocated.comparisons} / ${tris.length}`} />
+          )}
         </div>
         <p className="stage__hint">
           {mode === 'range'
@@ -420,8 +514,20 @@ export default function Search() {
                 ? 'k-nearest neighbours: the same descent keeps the best k seen so far and prunes against the current kᵗʰ distance. The ring is the kᵗʰ-nearest radius.'
                 : mode === 'range'
                   ? 'Orthogonal range reporting: both the k-d tree and the quadtree skip any region disjoint from the window, so only cells overlapping it are opened.'
-                  : 'Point location by jump-and-walk on the Delaunay mesh: step across whichever edge the probe lies outside of until a triangle contains it. The dashed trail is the walk.'}
+                  : locateMethod === 'walk'
+                    ? 'Point location by jump-and-walk on the Delaunay mesh: step across whichever edge the probe lies outside of until a triangle contains it. The dashed trail is the walk — Θ(√n) touches on average.'
+                    : "Point location by Seidel's trapezoidal map: the plane is carved into vertical-sided trapezoids and a search DAG (x-nodes test the probe's x, y-nodes test above/below a segment) drops to the containing trapezoid in O(log n) — the amber cell — which names the triangle."}
           </p>
+          {mode === 'locate' && (
+            <Segmented<LocateMethod>
+              options={[
+                { id: 'walk', label: 'Jump & walk' },
+                { id: 'trapezoid', label: 'Trapezoidal DAG' },
+              ]}
+              value={locateMethod}
+              onChange={setLocateMethod}
+            />
+          )}
           {mode === 'knn' && (
             <Slider label="k (neighbours)" value={k} min={1} max={20} step={1} onChange={setK} />
           )}
@@ -497,7 +603,7 @@ export default function Search() {
               {badge(rangeVerified)}
             </>
           )}
-          {mode === 'locate' && (
+          {mode === 'locate' && locateMethod === 'walk' && (
             <>
               <div className="metrics">
                 <Stat label="triangle" value={located.triangle >= 0 ? located.triangle : 'outside'} />
@@ -505,6 +611,25 @@ export default function Search() {
                 <Stat label="of triangles" value={tris.length} />
               </div>
               {badge(locateVerified)}
+            </>
+          )}
+          {mode === 'locate' && locateMethod === 'trapezoid' && trapMap && (
+            <>
+              <div className="metrics">
+                <Stat label="triangle" value={trapLocated && trapLocated.face >= 0 ? trapLocated.face : 'outside'} />
+                <Stat label="DAG comparisons" value={trapLocated ? trapLocated.comparisons : '—'} />
+                <Stat label="brute-force scan" value={tris.length} />
+                <Stat label="speed-up" value={trapLocated && trapLocated.comparisons > 0 ? `${(tris.length / trapLocated.comparisons).toFixed(1)}×` : '—'} />
+                <Stat label="x-wall tests" value={trapPath ? trapPath.steps.filter((s) => s.kind === 'x').length : '—'} />
+                <Stat label="y-segment tests" value={trapPath ? trapPath.steps.filter((s) => s.kind === 'y').length : '—'} />
+              </div>
+              <p className="muted">
+                One root→leaf descent through the search DAG answers the query — {trapLocated?.comparisons ?? 0} tests
+                versus scanning all {tris.length} triangles. The map holds {trapMap.trapCount} trapezoids in{' '}
+                {trapMap.nodeCount} nodes; its worst-case depth is {trapMap.depth} and the mean leaf sits at{' '}
+                {trapMap.meanLeafDepth.toFixed(1)} — the O(log n) guarantee of Seidel's randomized construction.
+              </p>
+              {badge(trapVerified)}
             </>
           )}
         </Panel>
