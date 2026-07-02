@@ -304,3 +304,14 @@ live here as long as you like.
 - [x] Add a custom "Welcome Back" toast message that varies based on the time of day.
 - [x] Add an option to invert the keypad numbers (123 at top vs 789 at top).
 - [x] Include a "Most Missed Operation" insight in the main menu statistics.
+## New Additional Jules Improvements
+- [x] Create a feature that tracks and displays the "Longest Correct Streak" in lifetime statistics.
+- [x] Add an option to toggle a "Grayscale Mode" for less visual distraction.
+- [x] Implement a "Daily Motivational Quote" displayed on the main menu.
+- [ ] Add a small "Total Time Played" lifetime stat in the statistics menu.
+- [x] Add an option to disable keyboard shortcuts completely.
+- [x] Add a "Quick Restart" button on the summary screen to immediately start a new run with the same settings.
+- [ ] Implement an option to toggle "Large Text" mode for better accessibility.
+- [ ] Include a "Max Combo Reached" in the post-game summary screen.
+- [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
+- [x] Implement an option to clear only recent run history without resetting lifetime stats.
