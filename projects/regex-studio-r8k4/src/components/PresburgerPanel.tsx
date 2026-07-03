@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import { compilePresburger, PRESBURGER_EXAMPLES } from '../engine/presburger';
-import { acceptsTuple, enumerateSolutions, presburgerDfaToGraph } from '../engine/presburger/automata';
+import { acceptsTuple, enumerateSolutions, presburgerDfaToGraph, lowerSingleTrackToDFA } from '../engine/presburger/automata';
 import { evalFormula } from '../engine/presburger/semantics';
 import { runPresburgerFuzz, DEFAULT_PRESBURGER_FUZZ, type PresburgerFuzzReport } from '../engine/presburger/verify';
 import { layoutGraph } from '../engine/layout';
+import { minimizeDFA } from '../engine/minimize';
+import { dfaToRegex } from '../engine/synthesize';
 import { toDot, toSvg } from '../engine/export';
 import { AutomatonGraph } from './AutomatonGraph';
 
@@ -65,6 +67,19 @@ export function PresburgerPanel({
   const solutions = useMemo(() => {
     if (!compiled.automaton || compiled.sentence || compiled.free.length === 0) return null;
     return enumerateSolutions(compiled.automaton, { maxValue: 64, limit: 24 });
+  }, [compiled]);
+
+  // For a one-variable formula: lower to the studio DFA over {0,1} and read the
+  // set of binary encodings back as a regular expression (DFA→regex).
+  const numberRegex = useMemo(() => {
+    if (!compiled.automaton || compiled.free.length !== 1) return null;
+    try {
+      const dfa = minimizeDFA(lowerSingleTrackToDFA(compiled.automaton));
+      const syn = dfaToRegex(dfa);
+      return { regex: syn.regex, empty: syn.empty, variable: compiled.free[0] };
+    } catch {
+      return null;
+    }
   }, [compiled]);
 
   return (
@@ -196,6 +211,22 @@ export function PresburgerPanel({
       )}
       {solutions && solutions.rows.length === 0 && (
         <p className="muted-note">The automaton accepts <strong>no</strong> tuples in range — the relation is empty (unsatisfiable).</p>
+      )}
+
+      {/* a one-variable number set, read back as a regex */}
+      {numberRegex && !numberRegex.empty && (
+        <>
+          <h3 className="lang-h3">The number set, read back as a regular expression</h3>
+          <p className="muted-note">
+            Lowered into the studio's <em>own</em> DFA over <code>{'{0,1}'}</code> and run through DFA→regex (state
+            elimination): the set of <strong>least-significant-digit-first</strong> binary encodings of{' '}
+            <code>{'{'} {numberRegex.variable} : φ {'}'}</code>. This closes the loop with the studio's very first
+            example — “binary multiples of three” — now <em>derived</em> from the arithmetic instead of hand-written.
+          </p>
+          <div className="pres-regex">
+            <code>{numberRegex.regex}</code>
+          </div>
+        </>
       )}
 
       {/* the tuple grid: automaton vs the exact oracle */}

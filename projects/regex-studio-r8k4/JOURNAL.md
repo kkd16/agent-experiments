@@ -276,6 +276,10 @@ shipped this session:
       console.
 - [x] **Wired into `App.tsx`** (analysis group, beside Logic), state persisted, header/footer/`project.json`
       copy refreshed to "Presburger ⇒ automaton — Büchi–Bruyère–Villemaire", gate re-run to green.
+- [x] **The number set, read back as a regex** — for a *one-variable* formula, `lowerSingleTrackToDFA` lowers the
+      digit automaton into the studio's own `DFA` over `{0,1}` and runs it through the DFA→regex synthesiser, so
+      `x ≡ 0 (mod 3)` derives the LSD-first "binary multiples of three" regex (`0*|0*1(10*1)*10*|…`) — closing the
+      loop with the studio's very first hand-written example — and `∃y. x = y+y` reads back as `ε|0[01]*`.
 
 Parked for a future session:
 
@@ -286,8 +290,9 @@ Parked for a future session:
       beside the current ℕ view.
 - [ ] **Quantifier-elimination trace** (Presburger's classical proof) shown alongside the automata road, so the
       two decision procedures for the *same* sentence sit side by side.
-- [ ] **Lower a sentence's automaton into the studio DFA** (like Logic does) so `x+y=z`-style relations flow
-      into Census/Algebra, and read a single-track relation's language back as a *regex* over digit columns.
+- [ ] **Flow a multi-track relation into Census/Algebra** — the single-track regex readback shipped this
+      session; the remaining step is lowering a `x+y=z`-style multi-track relation so it flows into the syntactic
+      monoid / census views over the product digit alphabet.
 - [ ] **The `∃`-projection blow-up as a lesson** — an animated ladder showing determinisation growth on a
       formula whose automaton is provably large (the arithmetic analogue of MSO's non-elementary trace).
 

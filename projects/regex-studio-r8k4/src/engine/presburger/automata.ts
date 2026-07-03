@@ -31,6 +31,8 @@ import {
   complementDFA,
 } from '../logic/bitaut';
 import type { GraphInput } from '../layout';
+import { CharSet } from '../charset';
+import type { DFA, DFAState, DFATransition, Atom } from '../dfa';
 import { pruneCoef } from './ast';
 
 const MAX_TRACKS = 14;
@@ -271,6 +273,44 @@ export function enumerateSolutions(
 export function columnLabel(tracks: Track[], bits: number): string {
   if (tracks.length === 0) return '·';
   return tracks.map((t, i) => `${t.name}${(bits >> i) & 1}`).join(' ');
+}
+
+// Lower a **single-track** digit automaton into the studio's own `DFA` over the
+// two-letter alphabet {'0','1'} — so the set of least-significant-digit-first
+// binary encodings of {x : φ(x)} flows into the studio's DFA→regex synthesiser,
+// census and syntactic-monoid machinery. (The digit column carries one bit, so
+// the two symbols map straight to the characters '0' and '1'.)
+export function lowerSingleTrackToDFA(bit: BitDFA): DFA {
+  if (bit.tracks.length !== 1) throw new LogicError('lowerSingleTrackToDFA: not a single-variable automaton');
+  const codes = [48, 49]; // '0', '1' — bit value == symbol index (sigma = 1)
+  const atoms: Atom[] = codes.map((code) => ({ set: CharSet.fromChar(code), lo: code, hi: code }));
+  const states: DFAState[] = bit.accept.map((acc, id) => ({ id, nfaStates: [id], accept: acc }));
+  const table: number[][] = [];
+  for (let s = 0; s < bit.n; s++) {
+    const row = new Array<number>(atoms.length).fill(-1);
+    for (let digit = 0; digit < 2; digit++) {
+      const t = bit.trans[s][digit];
+      if (t >= 0) row[digit] = t;
+    }
+    table.push(row);
+  }
+  const edgeAccum = new Map<string, { from: number; to: number; sets: CharSet[] }>();
+  for (let from = 0; from < bit.n; from++) {
+    for (let a = 0; a < atoms.length; a++) {
+      const to = table[from][a];
+      if (to < 0) continue;
+      const key = `${from}->${to}`;
+      const acc = edgeAccum.get(key) ?? { from, to, sets: [] };
+      acc.sets.push(atoms[a].set);
+      edgeAccum.set(key, acc);
+    }
+  }
+  const transitions: DFATransition[] = [...edgeAccum.values()].map((e) => ({
+    from: e.from,
+    to: e.to,
+    set: CharSet.union(e.sets),
+  }));
+  return { start: bit.start, states, transitions, atoms, table: table.map((r) => Int32Array.from(r)) };
 }
 
 export function presburgerDfaToGraph(bit: BitDFA): GraphInput {

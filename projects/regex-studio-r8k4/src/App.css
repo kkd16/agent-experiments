@@ -3760,6 +3760,20 @@
   background: transparent;
   border-color: transparent;
 }
+.pres-regex {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  overflow-x: auto;
+}
+.pres-regex code {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: #38bdf8;
+  white-space: nowrap;
+}
 .logic-trace {
   display: flex;
   flex-direction: column;
