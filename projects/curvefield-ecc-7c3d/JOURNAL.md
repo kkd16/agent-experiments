@@ -144,10 +144,17 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   original **Millionaires' Problem** — who is richer, revealing nothing else — plus private equality,
   sum, product, and a sealed-bid **second-price auction** (learn the winner and price, not the bids),
   each with a transcript (OT count, AND count, garbled-table bytes) for auditing.
+- `gmw.ts` — **GMW**, the *other* MPC paradigm: secret-sharing instead of garbling. Every wire value is
+  kept XOR-shared between the two parties; XOR and NOT gates are purely local, and each AND gate is
+  resolved by a single **1-of-4 oblivious transfer** (Bob tabulates `r ⊕ ((xᴬ⊕xᴮ)∧(yᴬ⊕yᴮ))` over
+  Alice's four possible shares; she selects her row, so `cᴬ ⊕ cᴮ = x∧y`). Runs the *same* `circuit.ts`
+  circuits as the garbled path and must reconstruct the identical output — the interaction-vs-table
+  trade-off at the heart of practical MPC, shown side by side.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **278/278** checks across 52 subsystems — added Oblivious Transfer, Garbled Circuits, and 2PC).
+  (now **284/284** checks across 53 subsystems — added Oblivious Transfer, Garbled Circuits, 2PC, GMW).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty labs plus an overview (the Secure-2PC
+lab now carries both the garbled-circuit and the GMW secret-sharing paradigms).
 
 ## Ideas / backlog
 
@@ -695,11 +702,31 @@ and SHA-256, and pins it against a plaintext oracle before any UI.
 
 - [ ] **OT extension (IKNP/KOS)** — bootstrap thousands of OTs from a handful of base OTs with a
       correlation-robust hash, the reason real MPC isn't public-key-bound per bit.
-- [ ] **GMW / secret-sharing MPC** as the second paradigm (gate-by-gate on shares, n-party), so the lab
-      shows both the garbled-circuit and the secret-sharing families side by side.
+- [x] **GMW / secret-sharing MPC** as the second paradigm (gate-by-gate on XOR shares, AND via 1-of-4
+      OT) — `gmw.ts`, running the same circuits as the garbled path and cross-checked to agree.
 - [ ] **Malicious-secure garbling** — authenticated garbling / cut-and-choose, defeating a garbler who
       builds a wrong circuit (the tamper demo shows why the honest-but-curious model isn't enough).
 - [ ] **A private-set-intersection** demo on top of OT — the canonical applied-MPC headline.
+
+### Session 14 plan — GMW: secure computation the other way (secret sharing)
+
+Garbled circuits are one of two great families of MPC; the lab had only that one. This short session
+adds the other — **GMW** — so the Secure-2PC lab shows both mechanisms on the *same* circuits and proves
+they agree. Where garbling encrypts whole truth tables and evaluates once, GMW keeps every wire
+XOR-shared and works gate by gate: local XOR/NOT, and an AND resolved by a single oblivious transfer.
+
+- [x] **`gmw.ts` — 2-party semi-honest GMW.** Wire values kept as XOR shares `[sᴬ, sᴮ]`; inputs shared
+      so the other party's share is uniform; XOR/NOT local; **AND via a 1-of-4 OT** built on the merged
+      `otOneOfN` (Bob tabulates `r ⊕ ((xᴬ⊕xᴮ)∧(yᴬ⊕yᴮ))` over Alice's four shares, she selects, giving
+      `cᴬ ⊕ cᴮ = x∧y`); output reconstructed by XOR. Reuses the existing `circuit.ts` circuits verbatim.
+- [x] **A sixth panel in `/mpc`** — runs the same Millionaires' comparator under GMW (on demand, since it
+      does a real public-key OT per AND gate), reports the winner reconstructed from the shares, the
+      AND-gate/OT count, and confirms it matches both the garbled-circuit and plaintext results.
+- [x] **+6 self-test checks** in a new **MPC · GMW** group → **284/284** over 53 subsystems: every gate on
+      shares, a 2-bit comparator exhaustively, a **cross-paradigm agreement** check (GMW = garbled), and a
+      GMW private sum. Verified in Node (gates + 2-bit exhaustive + representative runs) before the UI.
+- [ ] **n-party GMW** (shares split across k parties, pairwise OTs for each AND) and a Beaver-triple
+      variant that pushes the OTs into a preprocessing phase.
 
 ## Session log
 
@@ -1065,3 +1092,18 @@ and SHA-256, and pins it against a plaintext oracle before any UI.
   vite-lib bundle harnesses (17 + 7 assertions, incl. exhaustive garble correctness, full 2PC over every
   4-bit pair, 1-of-N OT, and the auction) before wiring the UI. No new dependencies, still zero crypto
   deps. Lint + build green via verify-project.mjs.
+- 2026-07-03 (claude): **GMW — secure computation the other way (secret sharing), from scratch.** The
+  Secure-2PC lab had only one of the two great MPC families (garbled circuits); this adds the other.
+  `gmw.ts` implements semi-honest two-party **GMW**: every wire value is kept XOR-shared between Alice
+  and Bob (each input split so the other's share is uniform), XOR and NOT gates are purely local, and
+  each **AND gate is resolved by a single 1-of-4 oblivious transfer** — Bob draws his output share `r`
+  and tabulates `r ⊕ ((xᴬ⊕xᴮ)∧(yᴬ⊕yᴮ))` over Alice's four possible `(xᴬ,yᴬ)`, she selects her row via
+  the merged `otOneOfN`, and `cᴬ ⊕ cᴮ = x∧y`; the output is reconstructed by XORing the final shares.
+  It runs the *same* `circuit.ts` circuits as the garbled path, so the lab now shows both paradigms side
+  by side and proves they agree. A sixth `/mpc` panel runs the Millionaires' comparator under GMW on
+  demand (a real public-key OT per AND gate makes it a click, not a live slider), showing the winner
+  reconstructed from the shares and the AND-gate/OT count. Self-test grew 278 → **284/284** across **53
+  subsystems** with a new **MPC · GMW** group — every gate on shares, a 2-bit comparator exhaustively, a
+  cross-paradigm agreement check (GMW output = garbled-circuit output on the same statement), and a GMW
+  private sum. Verified in Node (gates + 2-bit exhaustive + representative larger runs) before wiring the
+  UI. No new dependencies, still zero crypto deps. Lint + build green via verify-project.mjs.

@@ -12,6 +12,7 @@ import {
 } from '../ecc/garble'
 import { millionairesCircuit, toBits, evalPlain, type Circuit } from '../ecc/circuit'
 import { runMillionaires, runEquality, runSum, runProduct, runAuction } from '../ecc/twopc'
+import { gmwCompute, type GmwResult } from '../ecc/gmw'
 import { utf8, bytesToHex } from '../ecc/sha256'
 import { edEncode, type EdPoint } from '../ecc/ed25519'
 import { ellipsize } from '../ui/format'
@@ -83,6 +84,15 @@ export function MpcPage() {
   const [bidA, setBidA] = useState(150)
   const [bidB, setBidB] = useState(90)
   const auction = useMemo(() => runAuction(bidA, bidB, 8), [bidA, bidB])
+
+  // ── GMW (secret-sharing MPC) — run on demand (a real OT per AND gate) ──
+  const [gmw, setGmw] = useState<GmwResult | null>(null)
+  const [gmwInputs, setGmwInputs] = useState<{ a: number; b: number; bits: number } | null>(null)
+  const runGmw = () => {
+    const bw = Math.min(bits, 8) // cap so an interactive click stays snappy
+    setGmw(gmwCompute(millionairesCircuit(bw), toBits(a, bw), toBits(b, bw)))
+    setGmwInputs({ a, b, bits: bw })
+  }
 
   // ── Circuit anatomy + integrity ──
   const [corrupt, setCorrupt] = useState(false)
@@ -290,6 +300,50 @@ export function MpcPage() {
         </div>
       </Panel>
 
+      {/* ── GMW: the other MPC paradigm ── */}
+      <Panel
+        title="6 · GMW — the other paradigm (secret sharing)"
+        sub="Garbled circuits aren't the only way. GMW keeps every wire XOR-shared between the parties and works gate by gate: XOR and NOT are local, and each AND gate is resolved by a single 1-of-4 oblivious transfer. Same circuit, different mechanism — the answers must match."
+        right={
+          <button className="btn" onClick={runGmw}>
+            ▶ run GMW on the bids above
+          </button>
+        }
+      >
+        {!gmw && (
+          <p className="note">
+            Runs the same Millionaires' comparator on Alice's and Bob's wealth from panel 2, but under
+            GMW instead of garbled circuits. It performs a real public-key oblivious transfer per AND
+            gate, so it's a click rather than a live slider.
+          </p>
+        )}
+        {gmw && gmwInputs && (
+          <>
+            <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Verdict ok={gmw.agrees}>
+                {gmw.outputBits[0] === 1 ? 'Alice is richer' : gmwInputs.a === gmwInputs.b ? 'equal wealth' : 'Bob is richer'}
+              </Verdict>
+              <span className="note" style={{ display: 'inline' }}>
+                Reconstructed from the two parties' XOR shares (sᴬ ⊕ sᴮ) — the {gmwInputs.bits}-bit
+                comparison agrees with both the garbled-circuit run and the plaintext:{' '}
+                {gmw.agrees ? 'yes' : 'no'}.
+              </span>
+            </div>
+            <table className="data" style={{ marginTop: '0.9rem' }}>
+              <tbody>
+                <tr><td>AND gates → 1-of-4 oblivious transfers</td><td className="mono">{gmw.transcript.andGates}</td></tr>
+                <tr><td>XOR + NOT gates (local, no interaction)</td><td className="mono">{gmw.transcript.xorGates + gmw.transcript.invGates}</td></tr>
+                <tr><td>oblivious-transfer rounds run</td><td className="mono">{gmw.transcript.otInstances}</td></tr>
+              </tbody>
+            </table>
+            <p className="note" style={{ marginTop: '0.7rem' }}>
+              GMW's cost is interaction — one OT round per AND gate, versus garbled circuits' single
+              round of large tables. The trade-off between the two is the heart of practical MPC.
+            </p>
+          </>
+        )}
+      </Panel>
+
       <Panel title="What the transcript proves" sub="A quick audit of the guarantees, straight from the run above.">
         <ul className="note" style={{ lineHeight: 1.7 }}>
           <li>
@@ -308,6 +362,11 @@ export function MpcPage() {
           <li>
             <strong>Cost:</strong> only AND gates cost communication (2·{LABEL_BYTES} bytes each);
             XOR and NOT are free — the reason circuits are minimized for AND count.
+          </li>
+          <li>
+            <strong>Two paradigms, one answer:</strong> the GMW panel computes the same comparator by
+            secret-sharing instead of garbling — one OT round per AND gate rather than one big table —
+            and reconstructs the identical result, the practical trade-off at the heart of MPC.
           </li>
         </ul>
       </Panel>
