@@ -119,6 +119,7 @@ import {
   dualPointOfLine,
   hamSandwich,
   seidelLP,
+  seidelLPSteps,
   lpBruteForce,
   type Line,
   type SILine,
@@ -1689,6 +1690,36 @@ function canonicalHull(hull: number[]): number[] {
     } else lpInfeas++
   }
   check(`LP: Seidel = brute force (${lpFeas} feasible, ${lpInfeas} infeasible)`, lpBad === 0, `(${lpBad} off)`)
+
+  // The Seidel trace: its final vertex is the optimum, the objective is
+  // non-increasing along it, and every running optimum stays inside the frame.
+  let traceBad = 0
+  let traceChecked = 0
+  for (let trial = 0; trial < 60; trial++) {
+    const rng = mulberry32(trial + 600)
+    const n = 3 + Math.floor(rng() * 9)
+    const cons: HalfPlane[] = []
+    for (let i = 0; i < n; i++) {
+      const ang = rng() * Math.PI * 2
+      const nx = Math.cos(ang)
+      const ny = Math.sin(ang)
+      cons.push({ nx, ny, c: nx * 0.5 + ny * 0.5 + (0.1 + rng() * 0.45) })
+    }
+    const obj: Point = { x: Math.cos(rng() * 6.28), y: Math.sin(rng() * 6.28) }
+    const tr = seidelLPSteps(cons, obj, FRAME01, trial + 1)
+    const flat = seidelLP(cons, obj, FRAME01, trial + 1)
+    if (!tr.feasible) continue
+    traceChecked++
+    if (Math.abs(tr.value - flat.value) > 1e-6) traceBad++
+    for (let i = 1; i < tr.steps.length; i++) {
+      const prev = obj.x * tr.steps[i - 1].x + obj.y * tr.steps[i - 1].y
+      const cur = obj.x * tr.steps[i].x + obj.y * tr.steps[i].y
+      if (cur > prev + 1e-6) traceBad++ // objective must be non-increasing
+    }
+    for (const p of tr.steps)
+      if (p.x < -1e-6 || p.x > 1 + 1e-6 || p.y < -1e-6 || p.y > 1 + 1e-6) traceBad++
+  }
+  check(`LP: Seidel trace ends at the optimum, is non-increasing & in-frame (${traceChecked})`, traceBad === 0, `(${traceBad} off)`)
 }
 
 export const result = { failures }

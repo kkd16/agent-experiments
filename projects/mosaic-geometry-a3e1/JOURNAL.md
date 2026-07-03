@@ -112,7 +112,7 @@ libraries.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 223 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 224 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
     CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
@@ -192,8 +192,10 @@ Next (open — natural follow-ups on this axis):
   containment, level agreement (600 probes) and frame-tiling coverage.
 - [ ] **Race arrangement point location against a slab decomposition** (O(log n) per query) and the
   Search tab's trapezoidal/Kirkpatrick locators, plotting comparisons vs n.
-- [ ] **Seidel LP with a random *objective* violation order** and an on-canvas trace of the running
-  optimum hopping vertex-to-vertex as each constraint is added.
+- [x] **On-canvas trace of Seidel's running optimum** (`seidelLPSteps`) hopping vertex-to-vertex as
+  each constraint is folded in — a dashed gold path in the LP mode, toggleable. Self-tested: the
+  trace ends at the optimum, its objective is **non-increasing** along the path, and every running
+  optimum stays inside the frame (60 programs).
 - [ ] **Levels ↔ duality bridge** — click a point on the k-level and show its dual primal line with
   exactly k points below, making the median-level ↔ ham-sandwich connection tangible.
 

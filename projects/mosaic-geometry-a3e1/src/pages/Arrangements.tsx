@@ -15,7 +15,7 @@ import {
   dualLineOfPoint,
   kthValueAt,
   hamSandwich,
-  seidelLP,
+  seidelLPSteps,
   lpBruteForce,
   halfPlaneRegion,
   type Line,
@@ -100,6 +100,7 @@ export default function Arrangements() {
   const [showUpper, setShowUpper] = usePersistentState<boolean>('arr:upper', false)
   const [showFaces, setShowFaces] = usePersistentState<boolean>('arr:faces', true)
   const [showDual, setShowDual] = usePersistentState<boolean>('arr:hamdual', true)
+  const [showTrace, setShowTrace] = usePersistentState<boolean>('arr:lptrace', true)
 
   // Zone query line (arrangement mode) — two draggable endpoints in the frame.
   const [qa, setQa] = useState<Point>({ x: 0.12, y: 0.3 })
@@ -166,7 +167,7 @@ export default function Arrangements() {
     [mode, ham],
   )
   const lp = useMemo(
-    () => (mode === 'lp' ? seidelLP(constraints, obj, FRAME, seed) : null),
+    () => (mode === 'lp' ? seidelLPSteps(constraints, obj, FRAME, seed) : null),
     [mode, constraints, obj, seed],
   )
   const lpBrute = useMemo(
@@ -479,6 +480,14 @@ export default function Arrangements() {
       ctx.lineTo(tip.x, tip.y)
       ctx.stroke()
       dot({ x: 0.5 + obj.x * 0.32, y: 0.5 + obj.y * 0.32 }, 5, '#ffd166', 'rgba(8,12,22,0.8)')
+      // Seidel's running optimum hopping vertex-to-vertex as constraints fold in.
+      if (showTrace && lp && lp.steps.length > 1) {
+        drawPath(lp.steps, 'rgba(255,209,102,0.55)', 1.6, [5, 4])
+        lp.steps.forEach((p, i) => {
+          if (i === lp.steps.length - 1) return
+          dot(p, 3.2, i === 0 ? 'rgba(255,255,255,0.8)' : 'rgba(255,209,102,0.9)')
+        })
+      }
       if (lp && lp.point) {
         // Iso-objective line through the optimum (perpendicular to the gradient).
         const opt = lp.point
@@ -495,7 +504,7 @@ export default function Arrangements() {
   }, [
     ref, size, view, mode, lines, faces, located, probe, showFaces, stats, zone, queryLine, qa, qb,
     dualPts, siLines, levelPath, lowerPath, upperPath, showLower, showUpper, ham, hs, showDual,
-    constraints, obj, lp, lpRegion,
+    constraints, obj, lp, lpRegion, showTrace,
   ])
 
   const badge = (ok: boolean, okLabel = '✓ verified', badLabel = '✗ mismatch') => (
@@ -660,8 +669,10 @@ export default function Arrangements() {
               Maximize the amber objective over {count} half-planes. Seidel's randomized incremental
               method keeps a running optimum and, whenever a new constraint is violated, slides it
               along that constraint via a 1-D sub-program — expected O(n), and it lands on the same
-              vertex a full scan of the feasible polygon would.
+              vertex a full scan of the feasible polygon would. The optimum moved{' '}
+              {Math.max(0, lp.steps.length - 1)} time{lp.steps.length === 2 ? '' : 's'} before settling.
             </p>
+            <Toggle label="Show the running-optimum trace" swatch="#ffd166" checked={showTrace} onChange={setShowTrace} />
           </Panel>
         )}
 
