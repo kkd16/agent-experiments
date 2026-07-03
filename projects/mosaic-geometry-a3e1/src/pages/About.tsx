@@ -299,7 +299,7 @@ export default function About() {
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 224 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 225 checks.
         </p>
       </article>
     </div>

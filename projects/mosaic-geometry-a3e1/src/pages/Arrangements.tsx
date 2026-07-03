@@ -8,6 +8,8 @@ import {
   arrangementStats,
   locateFace,
   levelOfPoint,
+  buildSlabStructure,
+  slabLocateLevel,
   zoneComplexity,
   kLevelPath,
   lowerEnvelope,
@@ -154,6 +156,13 @@ export default function Arrangements() {
     [mode, lines, probe],
   )
   const locateOK = located < 0 || faces[located].level === probeLevel
+  // The O(log n) slab-decomposition locator, racing the O(F) face scan above.
+  const slab = useMemo(
+    () => (mode === 'arrangement' ? buildSlabStructure(lines, FRAME) : null),
+    [mode, lines],
+  )
+  const slabRes = useMemo(() => (slab ? slabLocateLevel(slab, probe) : null), [slab, probe])
+  const slabOK = !slabRes || slabRes.level === probeLevel
   const queryLine = useMemo(() => lineThroughPoints(qa, qb), [qa, qb])
   const zone = useMemo(
     () => (mode === 'arrangement' ? zoneComplexity(lines, queryLine, FRAME) : null),
@@ -617,8 +626,15 @@ export default function Arrangements() {
               <Stat label="face under cursor" value={located >= 0 ? located : 'outside'} />
               <Stat label="its level" value={located >= 0 ? faces[located].level : '—'} />
               <Stat label="lines below cursor" value={probeLevel} />
+              <Stat label="slab query" value={slabRes ? `${slabRes.comparisons} cmp` : '—'} />
             </div>
             {badge(locateOK, '✓ face level = lines below', '✗ locate mismatch')}
+            <p className="muted">
+              Point location two ways: the O(F) scan of the {stats.F - 1} convex cells finds the face
+              (teal), while the <strong>vertical slab decomposition</strong> resolves the same level
+              in just {slabRes?.comparisons ?? 0} comparisons — O(log n) by binary-searching the slab
+              in x, then the fixed line order in y. {slabOK ? 'The two agree.' : 'Mismatch!'}
+            </p>
             <Toggle label="Fill faces by level" swatch="#7cf6c0" checked={showFaces} onChange={setShowFaces} />
           </Panel>
         )}

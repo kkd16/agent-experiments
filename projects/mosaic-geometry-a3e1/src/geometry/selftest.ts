@@ -110,6 +110,8 @@ import {
   locateFace,
   levelOfPoint,
   pointInConvex,
+  buildSlabStructure,
+  slabLocateLevel,
   zoneComplexity,
   kLevelPath,
   kthValueAt,
@@ -1585,6 +1587,28 @@ function canonicalHull(hull: number[]): number[] {
   }
   check(`arrangement: located face contains the probe & its level = lines below (${locChecked} probes)`, locBad === 0, `(${locBad} bad)`)
   check('arrangement: the convex cells tile the frame (every interior probe located)', locMiss === 0, `(${locMiss} unlocated)`)
+
+  // Vertical slab decomposition: an O(log n) locator that must return the same
+  // level as the O(n) count, in far fewer comparisons than the line count.
+  let slabBad = 0
+  let slabChecked = 0
+  let slabSubLinear = 0
+  for (let trial = 0; trial < 15; trial++) {
+    const rng = mulberry32(trial + 850)
+    const n = 6 + (trial % 8)
+    const lines = siLines(n, trial + 850).map(lineFromSI)
+    const struct = buildSlabStructure(lines, FRAME01)
+    const budget = Math.ceil(Math.log2(struct.xs.length)) + Math.ceil(Math.log2(n + 1)) + 2
+    for (let s = 0; s < 50; s++) {
+      const probe: Point = { x: 0.02 + rng() * 0.96, y: 0.02 + rng() * 0.96 }
+      const r = slabLocateLevel(struct, probe)
+      slabChecked++
+      if (r.level !== levelOfPoint(lines, probe)) slabBad++
+      if (r.comparisons > budget) slabBad++
+      if (r.comparisons < n) slabSubLinear++
+    }
+  }
+  check(`slab location: O(log n) level = O(n) count in ≤ log-many comparisons (${slabChecked} probes, ${slabSubLinear} sub-linear)`, slabBad === 0, `(${slabBad} bad)`)
 
   // k-levels are the k-th order statistic; envelopes are the min/max lines.
   let levelBad = 0
