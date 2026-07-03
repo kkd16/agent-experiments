@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The six modes</h3>
+        <h3>The nine modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a drawn curve's points as complex numbers, FFT
@@ -55,7 +55,44 @@ export default function About() {
             "rows then columns." Paint a mask over the 2-D frequency plane — keep the center to
             blur, keep the rim to find edges — and invert to rebuild the filtered picture.
           </li>
+          <li>
+            <strong>Vocoder</strong> — the FFT put to work: a <em>phase vocoder</em> time-stretches
+            and pitch-shifts sound <strong>independently</strong>. It recovers each bin's true
+            frequency from how its phase turns between frames, then re-integrates it at a new hop.
+            Stretch a note without lowering it; raise it without slowing it down.
+          </li>
+          <li>
+            <strong>Compress</strong> — JPEG is a Fourier transform in disguise. Take the discrete
+            cosine transform of each 8×8 block, quantise away the coefficients the eye won't miss,
+            and invert. Drop the quality to watch ringing and blocking appear, with honest PSNR and
+            compression-ratio numbers.
+          </li>
+          <li>
+            <strong>Cepstrum</strong> — the "spectrum of the log-spectrum." It separates a voiced
+            sound's <em>pitch</em> (a sharp peak in quefrency) from its <em>formants</em> (a smooth
+            envelope), and detects the pitch two independent ways — cepstral peak and
+            autocorrelation.
+          </li>
         </ul>
+      </div>
+
+      <div className="card">
+        <h3>The transform as an engine</h3>
+        <div className="formula">ω̂ₖ = ωₖ + princarg(Δφ − ωₖ·Hₐ) / Hₐ</div>
+        <p>
+          The last three modes stop <em>showing</em> the transform and start <em>using</em> it. The{' '}
+          <strong>phase vocoder</strong> reads a bin's true frequency ω̂ₖ from the phase it accrued
+          between two analysis hops (above), then re-integrates that frequency at a rescaled
+          synthesis hop — decoupling time from pitch. The <strong>compression</strong> lab swaps the
+          DFT for its even-symmetric cousin, the <strong>DCT-II</strong>, whose energy compaction is
+          why JPEG, MP3 and every video codec are built on it:
+        </p>
+        <div className="formula">X[k] = √(2/N)·c(k)·Σₙ x[n]·cos( π(2n+1)k / 2N )</div>
+        <p>
+          And the <strong>cepstrum</strong> exploits a single algebraic fact — a log turns the
+          product of a source spectrum and a filter spectrum into a <em>sum</em> — so a second
+          Fourier transform separates them by rate: <code>c[q] = IFFT(log|FFT(x)|)</code>.
+        </p>
       </div>
 
       <div className="card">
@@ -79,7 +116,12 @@ export default function About() {
           confirmed linear; the <strong>2-D FFT</strong> round-trips and matches a separable
           reference; <strong>Parseval's theorem</strong> (energy is conserved between domains) is
           verified; and the Morlet wavelet is confirmed to have (near) zero mean, the admissibility
-          condition that makes it a valid wavelet. Open the console to see them pass.
+          condition that makes it a valid wavelet. The new engines are guarded too: the phase
+          vocoder's identity round-trip reconstructs to over 40&nbsp;dB SNR and its window is
+          confirmed constant-overlap-add; an octave pitch-shift is checked to double the detected
+          pitch; the DCT round-trips and preserves energy (orthonormality), its 8×8 codec's
+          rate/distortion curve is monotone, and the cepstral peak lands on the true period of a
+          harmonic signal. Open the console to see all fifteen pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

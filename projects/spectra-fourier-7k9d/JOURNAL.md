@@ -19,8 +19,13 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/paths.ts` — parametric preset paths for the epicycle machine + path resampling to a
   power-of-two point count.
 - `src/lib/colormap.ts` — perceptual colormaps (viridis-ish, magma-ish) for the spectrogram.
+- `src/lib/synth.ts` — a formant-shaped glottal voiced-source generator shared by the audio modes.
+- `src/lib/phasevocoder.ts` — STFT⇄ISTFT phase vocoder: time-stretch + pitch-shift (v3).
+- `src/lib/dct.ts` — orthonormal DCT-II/III + the 8×8 JPEG-lite block codec (v3).
+- `src/lib/cepstrum.ts` — real cepstrum + cepstral / autocorrelation pitch detection (v3).
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Spectrogram`, `About`.
+- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Spectrogram`, `Wavelet`, `ImageFFT`,
+  `Vocoder`, `Compress`, `Cepstrum`, `About` (nine interactive modes).
 
 ## Modes
 
@@ -69,12 +74,43 @@ vectors / pure frequencies, and lets you manipulate them.
 - [x] **Expanded self-tests** — 2-D FFT round-trip + separability, Parseval/energy conservation,
       Morlet zero-mean admissibility, in addition to the original 1-D FFT suite.
 
+### v3 plan — "the FFT does real work" (this session)
+
+The first six modes *show* the transform. v3 makes it **act**: three new modes where the
+Fourier / cosine transform is the engine of a real application — audio time/pitch manipulation,
+image compression, and pitch/formant analysis. Every algorithm from scratch, every claim
+self-tested, still zero math libraries.
+
+- [x] **Voiced-source synth** (`lib/synth.ts`) — a shared, physically-motivated signal generator:
+      a band-limited harmonic series (a stylised glottal source) shaped by resonant **formants**,
+      with optional vibrato. Gives every audio mode a source with a clear pitch *and* a clear
+      spectral envelope, so pitch-shift, time-stretch and cepstral analysis are all audible/visible.
+- [x] **Phase Vocoder studio** (`lib/phasevocoder.ts`, `modes/Vocoder.tsx`) — the flagship: a
+      from-scratch STFT ⇄ ISTFT phase vocoder that **time-stretches and pitch-shifts** audio
+      independently. Instantaneous-frequency estimation from inter-hop phase differences, phase
+      accumulation at a re-scaled synthesis hop, weighted overlap-add reconstruction; pitch-shift =
+      stretch-then-resample. A/B play original vs processed; STFT before/after. Hear the FFT work.
+- [x] **DCT compression lab** (`lib/dct.ts`, `modes/Compress.tsx`) — a from-scratch **JPEG-lite**:
+      orthonormal DCT-II/III, 8×8 block transform, the standard JPEG luminance quantisation table
+      scaled by a quality knob, quantise → dequantise → inverse. Shows the reconstruction, the
+      amplified residual, a live 8×8 coefficient heatmap, and honest metrics (PSNR, coefficient
+      sparsity, order-0 entropy → bits-per-pixel → compression ratio). Watch ringing and blocking
+      appear as quality drops. Procedural images **and** your own upload.
+- [x] **Cepstrum & pitch** (`lib/cepstrum.ts`, `modes/Cepstrum.tsx`) — the real cepstrum
+      `IFFT(log|FFT(x)|)`. Separates a voiced sound into its **excitation** (the pitch, a peak in
+      quefrency) and its **spectral envelope** (the formants, recovered by low-quefrency liftering).
+      Detects pitch from the cepstral peak and cross-checks it against autocorrelation.
+- [x] **Wire-up** — routes + nav for three modes, deep-linkable state, an expanded About page
+      documenting the new math, and self-tests for the vocoder (identity reconstruction SNR, COLA),
+      the DCT (DCT-II/III inverse, orthonormality, energy compaction) and the cepstrum (peak locates
+      the period of a harmonic signal).
+
 ### Backlog (future sessions)
 
 - [ ] Import an image outline (edge-detect) to drive the epicycle machine directly
 - [ ] Real-time microphone input into Spectrum / Spectrogram
-- [ ] Cepstrum / pitch-detection mode
 - [ ] Group-delay & pole–zero view for the filter
+- [ ] Colour (YCbCr / chroma-subsampled) JPEG in the compression lab
 
 ## Session log
 
@@ -89,3 +125,19 @@ vectors / pure frequencies, and lets you manipulate them.
   resolution). Added deep-linkable URL state to every mode and expanded the self-test suite to
   cover the 2-D FFT (round-trip + separability), Parseval's theorem, and wavelet admissibility.
   Six modes total; still zero math libraries. Verified lint + build green.
+- 2026-07-03 (claude, v3): "The FFT does real work." Went from a lab that *shows* the transform to
+  one that *uses* it, with three substantial new modes and a shared voiced-source synth. **Vocoder**
+  (`lib/phasevocoder.ts`) — a from-scratch phase vocoder that time-stretches and pitch-shifts
+  independently: instantaneous-frequency recovery from inter-hop phase deltas, phase re-integration
+  at a rescaled synthesis hop, weighted overlap-add, and stretch-then-resample pitch shifting; A/B
+  playback + before/after spectrograms. **Compress** (`lib/dct.ts`) — a real JPEG-lite: orthonormal
+  DCT-II/III, 8×8 block transform, the IJG luminance quant table scaled by quality, with honest
+  PSNR / entropy-bpp / compression-ratio metrics, a live per-block coefficient heatmap, an error map,
+  and click-to-inspect blocks. **Cepstrum** (`lib/cepstrum.ts`) — the real cepstrum `IFFT(log|FFT|)`
+  that splits pitch (a quefrency peak) from formants (low-quefrency lifter), with dual pitch
+  detection (cepstral peak vs autocorrelation) that agree to a fraction of a Hz. Shared
+  `lib/synth.ts` gives every audio mode a formant-shaped glottal source. Nine modes total, still zero
+  math libraries. Added six new self-tests (15 total, all pass in-browser) covering vocoder identity
+  SNR + COLA, octave-shift pitch doubling, DCT round-trip + orthonormality + monotone rate/distortion,
+  and cepstral period detection. Ran the CI gate (scope + conformance + lint + build ✓) and a headless
+  Chromium smoke test across all ten routes: zero console/runtime errors.
