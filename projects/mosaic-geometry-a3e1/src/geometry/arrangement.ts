@@ -182,6 +182,72 @@ export function levelOfPoint(lines: Line[], p: Point): number {
   return below
 }
 
+// ── O(log n) point location by vertical slab decomposition ────────────────────
+
+export interface SlabStructure {
+  /** Slab boundaries (sorted x): the frame sides + every pairwise-crossing x. */
+  xs: number[]
+  /** Per slab, the non-vertical line indices sorted by y (fixed within a slab). */
+  orders: number[][]
+  lines: Line[]
+}
+
+/**
+ * Precompute the vertical slab decomposition of the arrangement: cut the plane
+ * at every intersection abscissa, and inside each slab (where no two lines
+ * cross) store the lines in bottom-to-top order. A query then binary-searches
+ * the slab by x and binary-searches the fixed order by y — O(log n) per query,
+ * the classic rival to the O(F)/O(n) scan.
+ */
+export function buildSlabStructure(lines: Line[], frame: Rect): SlabStructure {
+  const nv = lines.filter((l) => !isVertical(l))
+  const cut = new Set<number>()
+  for (let i = 0; i < nv.length; i++)
+    for (let j = i + 1; j < nv.length; j++) {
+      const p = intersectLines(nv[i], nv[j])
+      if (p && p.x > frame.minX + EPS && p.x < frame.maxX - EPS) cut.add(p.x)
+    }
+  const xs = [frame.minX, ...[...cut].sort((a, b) => a - b), frame.maxX]
+  const orders: number[][] = []
+  for (let i = 0; i + 1 < xs.length; i++) {
+    const mx = (xs[i] + xs[i + 1]) / 2
+    const idx = nv.map((_, k) => k).sort((a, b) => yAt(nv[a], mx) - yAt(nv[b], mx))
+    orders.push(idx)
+  }
+  return { xs, orders, lines: nv }
+}
+
+/**
+ * Locate the point's level (lines strictly below it) through the slab structure,
+ * counting the comparisons made — O(log slabs + log n), to race the O(n) scan.
+ */
+export function slabLocateLevel(struct: SlabStructure, p: Point): { level: number; comparisons: number } {
+  const { xs, orders, lines } = struct
+  let comparisons = 0
+  // Binary-search the slab: the interval [xs[s], xs[s+1]] containing p.x.
+  let lo = 0
+  let hi = xs.length - 2
+  if (p.x <= xs[0]) hi = 0
+  else if (p.x >= xs[xs.length - 1]) lo = xs.length - 2
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    comparisons++
+    if (xs[mid] <= p.x) lo = mid
+    else hi = mid - 1
+  }
+  const order = orders[lo] ?? []
+  // Binary-search the fixed bottom-to-top order for how many lines sit below p.
+  let a = 0
+  let b = order.length
+  while (a < b) {
+    const mid = (a + b) >> 1
+    comparisons++
+    if (yAt(lines[order[mid]], p.x) < p.y) a = mid + 1
+    else b = mid
+  }
+  return { level: a, comparisons }
+}
+
 // ── Combinatorial structure: vertices, edges, faces & Euler's formula ─────────
 
 export interface ArrangementStats {

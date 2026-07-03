@@ -112,7 +112,7 @@ libraries.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 224 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 225 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
     CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
@@ -191,8 +191,13 @@ Next (open — natural follow-ups on this axis):
   off the convex cells (O(F) scan); the Arrangement mode highlights it live under the cursor with a
   ✓-verified badge (its level always equals the number of lines below the probe). Self-tested for
   containment, level agreement (600 probes) and frame-tiling coverage.
-- [ ] **Race arrangement point location against a slab decomposition** (O(log n) per query) and the
-  Search tab's trapezoidal/Kirkpatrick locators, plotting comparisons vs n.
+- [x] **Race arrangement point location against a slab decomposition** — `buildSlabStructure` /
+  `slabLocateLevel` cut the plane at every crossing abscissa and store each slab's fixed
+  bottom-to-top line order, so a query binary-searches the slab in x then the order in y: **O(log n)**
+  per query. The Arrangement panel shows the comparison count beside the O(F) scan; self-tested to
+  return the same level as the O(n) count within a logarithmic comparison budget (750 probes).
+- [ ] Race the slab locator against the Search tab's trapezoidal/Kirkpatrick DAGs on one plot
+  (comparisons vs n across the three O(log n) structures).
 - [x] **On-canvas trace of Seidel's running optimum** (`seidelLPSteps`) hopping vertex-to-vertex as
   each constraint is folded in — a dashed gold path in the LP mode, toggleable. Self-tested: the
   trace ends at the optimum, its objective is **non-increasing** along the path, and every running
