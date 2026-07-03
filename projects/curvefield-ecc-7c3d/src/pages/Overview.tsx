@@ -165,6 +165,12 @@ const LABS = [
     desc: 'The key-exchange that outlives Shor. ML-KEM (FIPS 203, the standardised CRYSTALS-Kyber) rests on Module-LWE — a noisy t = A·s + e over Z₃₃₂₉[X]/(X²⁵⁶+1) — not a discrete log, so no quantum computer is known to break it. From-scratch Keccak, the negacyclic NTT, centered-binomial noise, and the Fujisaki–Okamoto transform for all three parameter sets, wired into the real TLS 1.3 X25519MLKEM768 hybrid handshake.',
   },
   {
+    path: '/mldsa',
+    ix: '32',
+    title: 'ML-DSA — Post-Quantum Lattice Signature',
+    desc: 'The signature that outlives Shor — the companion to ML-KEM. ML-DSA (FIPS 204, the standardised CRYSTALS-Dilithium) is a Fiat–Shamir-with-aborts scheme over Z₈₃₈₀₄₁₇[X]/(X²⁵⁶+1): commit to HighBits(A·y), answer a τ-sparse ±1 challenge with z = y + c·s1, and reject-and-retry until z leaks nothing about the secret. A full 256-point NTT, Power2Round/Decompose, the MakeHint/UseHint carry recovery, and byte-exact packing for all three parameter sets — with the abort loop laid bare.',
+  },
+  {
     path: '/vrf',
     ix: '29',
     title: 'ECVRF — Verifiable Random Functions',
@@ -192,7 +198,7 @@ const LABS = [
     path: '/verify',
     ix: '31',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs, plus GMW secret-sharing cross-checked to agree), and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, ML-DSA (FIPS 204) sign/verify round-trips at the standard byte-sizes with the rounding/hint identities pinned, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs, plus GMW secret-sharing cross-checked to agree), and Wycheproof vectors.',
   },
 ]
 

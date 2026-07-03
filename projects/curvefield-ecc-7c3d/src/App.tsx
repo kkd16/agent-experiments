@@ -28,6 +28,7 @@ import { StarkPage } from './pages/StarkPage'
 import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
 import { MlKemPage } from './pages/MlKemPage'
+import { MlDsaPage } from './pages/MlDsaPage'
 import { VrfPage } from './pages/VrfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
@@ -63,6 +64,7 @@ const ROUTES = [
   { path: '/poseidon', label: 'Poseidon' },
   { path: '/pqsig', label: 'PQ Signatures' },
   { path: '/mlkem', label: 'ML-KEM' },
+  { path: '/mldsa', label: 'ML-DSA' },
   { path: '/vrf', label: 'ECVRF' },
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
@@ -121,6 +123,7 @@ export default function App() {
       {base === '/poseidon' && <PoseidonPage />}
       {base === '/pqsig' && <HashSigPage />}
       {base === '/mlkem' && <MlKemPage />}
+      {base === '/mldsa' && <MlDsaPage />}
       {base === '/vrf' && <VrfPage />}
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
@@ -136,7 +139,8 @@ export default function App() {
         (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, Monero-style linkable
         ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
         (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
-        from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, a Signal-style
+        from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, the lattice signature
+        ML-DSA (FIPS 204 / Dilithium) with its Fiat–Shamir-with-aborts loop and hint mechanism, a Signal-style
         end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305),
         and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
         garbled circuits (free-XOR + half-gates) and the GMW secret-sharing protocol, running the
