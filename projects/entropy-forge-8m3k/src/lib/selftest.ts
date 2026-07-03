@@ -26,6 +26,9 @@ import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffi
 import { packageMerge, minLimit } from './lengthLimited.ts'
 import { canonicalCodes } from './huffman.ts'
 import { frequencies } from './entropy.ts'
+import { deflate, inflate } from './deflate.ts'
+import { gzipEncode, gzipDecode, zlibEncode, zlibDecode } from './gzip.ts'
+import { crc32, adler32 } from './crc32.ts'
 
 export interface TestCase {
   group: string
@@ -195,9 +198,132 @@ export function runSelfTest(): TestCase[] {
     } catch (e) {
       results.push({ group: 'Length-limited Huffman', name, pass: false, detail: (e as Error).message })
     }
+    // Real DEFLATE: every block strategy inflates back to the input, and the
+    // gzip/zlib containers verify their own checksums on decode.
+    try {
+      for (const strategy of ['stored', 'fixed', 'dynamic', 'auto'] as const) {
+        const r = deflate(data, { strategy })
+        const back = inflate(r.bytes)
+        results.push({
+          group: `DEFLATE · ${strategy}`,
+          name,
+          pass: bytesEqual(back, data),
+          detail: `${r.bytes.length}B${strategy === 'auto' ? ` (chose ${r.chosen})` : ''}`,
+        })
+      }
+      const gz = gzipEncode(data, { filename: 'x' })
+      const gd = gzipDecode(gz)
+      results.push({
+        group: 'gzip container',
+        name,
+        pass: bytesEqual(gd.data, data) && gd.crcOk && gd.sizeOk,
+        detail: `${gz.length}B · CRC ${gd.crcOk ? 'ok' : 'BAD'}`,
+      })
+      const zl = zlibEncode(data)
+      const zd = zlibDecode(zl)
+      results.push({
+        group: 'zlib container',
+        name,
+        pass: bytesEqual(zd.data, data) && zd.adlerOk,
+        detail: `${zl.length}B · Adler ${zd.adlerOk ? 'ok' : 'BAD'}`,
+      })
+    } catch (e) {
+      results.push({ group: 'DEFLATE / gzip', name, pass: false, detail: (e as Error).message })
+    }
   }
 
+  // Checksum known-answer vectors — the canonical test strings every CRC/Adler
+  // implementation is checked against.
+  results.push({
+    group: 'Checksums',
+    name: 'CRC-32("123456789") = 0xCBF43926',
+    pass: crc32(strToBytes('123456789')) === 0xcbf43926,
+    detail: `0x${crc32(strToBytes('123456789')).toString(16)}`,
+  })
+  results.push({
+    group: 'Checksums',
+    name: 'Adler-32("Wikipedia") = 0x11E60398',
+    pass: adler32(strToBytes('Wikipedia')) === 0x11e60398,
+    detail: `0x${adler32(strToBytes('Wikipedia')).toString(16)}`,
+  })
+
   return results
+}
+
+// ---- native interoperability (async, feature-detected) ----
+//
+// The strongest correctness proof there is: our from-scratch gzip must be
+// readable by the platform's own gunzip, and the platform's gzip readable by us.
+// Uses the Web Streams CompressionStream/DecompressionStream when present (all
+// modern browsers and Node ≥18); returns an empty list where unavailable.
+export interface InteropResult {
+  name: string
+  pass: boolean
+  detail: string
+}
+
+async function streamThrough(
+  input: Uint8Array,
+  format: 'gzip' | 'deflate' | 'deflate-raw',
+  mode: 'compress' | 'decompress',
+): Promise<Uint8Array> {
+  const Ctor =
+    mode === 'compress'
+      ? (globalThis as { CompressionStream?: typeof CompressionStream }).CompressionStream
+      : (globalThis as { DecompressionStream?: typeof DecompressionStream }).DecompressionStream
+  if (!Ctor) throw new Error('Web Streams compression API unavailable')
+  const s = new Ctor(format)
+  const writer = s.writable.getWriter()
+  void writer.write(input as unknown as BufferSource)
+  void writer.close()
+  const reader = s.readable.getReader()
+  const chunks: Uint8Array[] = []
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) chunks.push(value)
+  }
+  let n = 0
+  for (const c of chunks) n += c.length
+  const out = new Uint8Array(n)
+  let o = 0
+  for (const c of chunks) {
+    out.set(c, o)
+    o += c.length
+  }
+  return out
+}
+
+export function interopAvailable(): boolean {
+  return (
+    typeof (globalThis as { CompressionStream?: unknown }).CompressionStream !== 'undefined' &&
+    typeof (globalThis as { DecompressionStream?: unknown }).DecompressionStream !== 'undefined'
+  )
+}
+
+export async function runInterop(samples?: { name: string; data: Uint8Array }[]): Promise<InteropResult[]> {
+  const inputs = samples ?? allInputs()
+  const out: InteropResult[] = []
+  if (!interopAvailable()) return out
+  for (const { name, data } of inputs) {
+    try {
+      // our gzip → the platform's native gunzip
+      const mine = gzipEncode(data)
+      const native = await streamThrough(mine, 'gzip', 'decompress')
+      out.push({ name: `native gunzip(ours) · ${name}`, pass: bytesEqual(native, data), detail: `${mine.length}B` })
+      // the platform's native gzip → our inflater
+      const nativeGz = await streamThrough(data, 'gzip', 'compress')
+      const ours = gzipDecode(nativeGz)
+      out.push({
+        name: `ours.gunzip(native) · ${name}`,
+        pass: bytesEqual(ours.data, data) && ours.crcOk,
+        detail: `${nativeGz.length}B`,
+      })
+    } catch (e) {
+      out.push({ name: `interop · ${name}`, pass: false, detail: (e as Error).message })
+    }
+  }
+  return out
 }
 
 export interface TestSummary {

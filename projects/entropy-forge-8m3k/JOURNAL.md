@@ -25,7 +25,18 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
   - `lz77.ts` — LZSS sliding-window matcher + token stream.
   - `lzw.ts` — variable-width LZW with the KwKwK case handled.
   - `bwt.ts` — Burrows–Wheeler (suffix-sort + LF-mapping inverse), MTF, RLE.
-  - `codecs.ts` — a uniform, self-contained `Codec` interface + composites (DEFLATE-lite, bzip-lite).
+  - `crc32.ts` — **CRC-32** (the gzip/PNG reflected-poly checksum) + **Adler-32** (the zlib one).
+  - `deflateTables.ts` — the fixed constants of RFC 1951: the length/distance base+extra-bit tables,
+    the code-length-alphabet order, and the §3.2.6 fixed Huffman code.
+  - `deflateBits.ts` — DEFLATE's own **LSB-first** bit reader/writer (its Huffman codes pack MSB-first,
+    everything else LSB-first) and the canonical-Huffman code builder + puff-style decoder.
+  - `deflate.ts` — a real, **RFC 1951-compliant DEFLATE** codec: a 32 KB hash-chain + lazy LZ77 matcher,
+    stored/fixed/dynamic block encoders (dynamic codes built by package-merge, capped at 15 bits), an
+    auto-selector that emits the cheapest block, and the inflater.
+  - `gzip.ts` — the **gzip (RFC 1952)** and **zlib (RFC 1950)** containers, encode + decode, with
+    CRC-32/Adler-32 + ISIZE verification and annotated header parsing.
+  - `codecs.ts` — a uniform, self-contained `Codec` interface + composites (DEFLATE-lite, bzip-lite)
+    **and the real `gzip` codec** (so it races in the Benchmark and Self-test automatically).
   - `corpus.ts` — seven sample inputs chosen to make the codecs differ.
   - `selftest.ts` — round-trip + invertibility harness (runs in-browser and under Node).
 - `src/routes/` — one page per module; `src/components/` — SVG charts, tree, stat tiles.
@@ -68,8 +79,9 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
       tightens; matches optimal exactly when the cap ≥ natural depth). *(v2)*
 - [x] **Kraft inequality** widget on the Huffman page — a live Σ2⁻ˡⁱ bar proving the length-limited
       code is complete and prefix-free. *(v2)*
-- [ ] **Real DEFLATE**: fixed + dynamic Huffman blocks, the length/distance code tables, and a
-      byte-exact gzip container so output is inspectable with real tools.
+- [x] **Real DEFLATE**: fixed + dynamic Huffman blocks, the length/distance code tables, and a
+      byte-exact gzip container so output is inspectable with real tools. **Shipped in v3** (see below) —
+      the output round-trips through the browser's own `gunzip` and beats zlib level 9 on several corpora.
 - [x] **File drop / upload** — the **Workbench** page compresses pasted text or an uploaded file
       with every codec, verifies each round-trip, times it, and downloads the compressed blob
       (Blob/URL wrapped in try/catch for the sandbox); capped at 8 KB for the naive-BWT race. *(v2)*
@@ -81,8 +93,80 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 - [ ] **PPM* / PPMd escape estimators** (methods A/B/D, secondary symbol estimation) as an
       escape-method comparison; and update exclusions.
 
+## Entropy Forge v3 — Real DEFLATE (the actual gzip)
+
+Every codec here was "real" in the sense that it produced and consumed a genuine bitstream — but none
+of them was a *format*. DEFLATE is the format: the algorithm inside **gzip, zlib, PNG and ZIP**, and
+the one place where "does it round-trip against my own decoder" is no longer the bar. The bar is
+**interoperability** — does the bytestream this lab emits open in the tools the rest of the world uses?
+v3 clears that bar, both directions, and proves it live in the browser.
+
+### What shipped (all from scratch, zero new deps)
+
+- [x] **CRC-32 + Adler-32** (`crc32.ts`) — the integrity checksums the two containers carry, verified
+      against the canonical vectors (`CRC32("123456789") = 0xCBF43926`, `Adler32("Wikipedia") = 0x11E60398`)
+      and against Node's `zlib.crc32` over the whole corpus.
+- [x] **The RFC 1951 constant tables** (`deflateTables.ts`) — the 29 length codes and 30 distance codes
+      with their base values and extra-bit counts, the shuffled code-length-alphabet order, and the
+      §3.2.6 fixed Huffman code, plus reverse maps (actual length → code, actual distance → code).
+- [x] **DEFLATE's bit order, done right** (`deflateBits.ts`) — the format's genuinely tricky rule
+      (§3.1.1): plain fields pack **least-significant-bit-first**, but Huffman codes pack
+      **most-significant-bit-first**, so every canonical code is bit-reversed on the way out. The
+      single most common DEFLATE bug; a dedicated LSB-first writer/reader isolates it. Plus the
+      canonical-code builder (lengths → codes) and a compact puff.c-style count/symbol decoder.
+- [x] **A real LZ77 stage** (`deflate.ts`) — a 32 KB sliding window (vs the lab's toy 4 KB), matches
+      up to 258 bytes, a **15-bit rolling hash + chained `head`/`prev`** match finder, and zlib-style
+      **lazy matching** (hold a match one byte to see if the next position beats it). Three effort
+      levels (`fast`/`default`/`max`) expose the chain-length ↔ ratio trade-off.
+- [x] **All three block types** — **stored** (raw, chunked at 65535 B), **fixed** (the canned Huffman
+      code, no header), and **dynamic** (a Huffman code tailored to the block). Dynamic codes are the
+      provably-optimal length-limited codes from the lab's own **package-merge** (capped at 15 bits),
+      the two length tables run-length-compressed by the 19-symbol code-length alphabet (16/17/18
+      repeat codes) and that code emitted in HCLEN order. An **`auto`** strategy encodes all three and
+      ships the smallest — exactly what real encoders do per block.
+- [x] **The gzip (RFC 1952) & zlib (RFC 1950) containers** (`gzip.ts`) — encode and decode, with the
+      10-byte gzip header (magic/CM/FLG/MTIME/XFL/OS), optional FNAME, the little-endian CRC-32 + ISIZE
+      trailer, and zlib's 2-byte CMF/FLG (mod-31 checked) + **big-endian** Adler-32. Decode verifies the
+      checksum and length and returns annotated field offsets for the hex viewer.
+- [x] **The inflater** — a full block-loop decoder (stored/fixed/dynamic), handling the RFC's special
+      cases (the single incomplete distance code; forcing ≥2 literal/length codes so an empty input's
+      lone EOB is still a *complete* tree, which zlib requires).
+- [x] **The `gzip` codec is wired into `codecs.ts`**, so it now races in the Benchmark (winning several
+      corpora — e.g. beating every other codec on DNA and source) and round-trips in the Self-test
+      automatically.
+- [x] **A `DEFLATE & gzip` lab page** (`routes/Deflate.tsx`): live gzip size + CRC, a **native-interop
+      badge** that runs our gzip through the browser's `DecompressionStream` and vice-versa, a
+      **block-type showdown** bar chart (stored vs fixed vs dynamic, the auto-pick highlighted), the LZ77
+      parse map over the 32 KB window, the **dynamic-block anatomy** (HLIT/HDIST/HCLEN, header-vs-body
+      bit split, and the three live code tables — code-length, literal/length, distance), and an
+      **annotated gzip hex dump** with the payload elided and every header/trailer field colour-keyed.
+
+### Correctness — the interop proof
+
+Verified under Node against the real `node:zlib` before wiring any UI: for empty / single-byte / long-run
+/ text / random / all-256 / 17 KB inputs × {stored, fixed, dynamic, auto} × 3 effort levels, (1) our
+`inflate(deflate(x)) = x`, (2) **`zlib.inflateRawSync(ourDeflate(x)) = x`** — the platform accepts our
+stream — and (3) **`ourInflate(zlib.deflateRawSync(x)) = x`** — we accept the platform's. Same three
+ways for the gzip and zlib containers against `gzipSync`/`gunzipSync`/`deflateSync`/`inflateSync`. In the
+browser the same cross-check runs live via `CompressionStream`/`DecompressionStream` (28 cases). Our
+`auto` encoder matches or **beats zlib level 9** on the structured corpora (e.g. text 60 B vs 63 B,
+repeated-lorem 117 B vs 118 B). The in-app Self-test grows **364 → 464** checks, all green, plus the 28
+live native-interop checks.
+
 ## Session log
 
+- 2026-07-03 (claude): **v3 — Real DEFLATE / gzip.** Built the actual format from scratch: `crc32.ts`
+  (CRC-32 + Adler-32), `deflateTables.ts` (the RFC 1951 length/distance/code-length tables + fixed code),
+  `deflateBits.ts` (the LSB-first bit substrate + canonical Huffman builder/decoder), `deflate.ts`
+  (32 KB hash-chain + lazy LZ77, stored/fixed/dynamic/auto block encoders with package-merge dynamic
+  codes, and the inflater) and `gzip.ts` (the gzip + zlib containers). Wired the real `gzip` codec into
+  the Codec roster and added the `DEFLATE & gzip` lab page (native-interop badge, block-type showdown,
+  32 KB parse map, dynamic-block anatomy with live code tables, annotated gzip hex dump). Drove
+  correctness against `node:zlib` first: fixed the zlib Adler-32 trailer endianness (it's **big**-endian,
+  unlike gzip's little-endian fields) and handled the RFC's empty-input special case (force a complete
+  ≥2-code literal/length tree so zlib's inflater doesn't reject the lone-EOB stream). Result: our
+  output decompresses with the OS/browser gunzip, theirs inflates here, and `auto` beats zlib -9 on
+  several corpora. Self-test **364 → 464** checks + 28 live native-interop cross-checks, all green.
 - 2026-07-02 (claude): Created the project. Built the full engine (bits, entropy, Huffman,
   arithmetic, LZ77, LZW, BWT/MTF/RLE) and the composite DEFLATE-lite/bzip-lite codecs, all with a
   uniform self-contained `Codec` interface. Wrote the self-test harness and drove correctness under

@@ -31,6 +31,7 @@ import {
 import { ppmDecode, ppmEncode } from './ppm.ts'
 import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
+import { gzipEncode, gzipDecode } from './gzip.ts'
 
 export interface Codec {
   id: string
@@ -422,6 +423,15 @@ export const CODECS: Codec[] = [
     blurb: 'LZ77 tokens entropy-coded (arithmetic LL stream + raw distances).',
     encode: deflateEncode,
     decode: deflateDecode,
+  },
+  {
+    id: 'gzip',
+    name: 'gzip (real DEFLATE)',
+    family: 'dictionary',
+    blurb:
+      'The genuine RFC 1951/1952 codec: hash-chain LZ77 + fixed/dynamic Huffman, CRC-32 checked. Interoperates byte-for-byte with the OS gzip.',
+    encode: (data) => gzipEncode(data),
+    decode: (comp) => gzipDecode(comp).data,
   },
   {
     id: 'bzip',
