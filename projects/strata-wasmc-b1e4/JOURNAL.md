@@ -2883,7 +2883,90 @@ Plan + progress (all shipped this session):
 - [ ] General (non-self) tail-call elimination via the wasm tail-call proposal
 - [ ] Step debugger that single-steps the wasm and highlights the source line
 
+### Enums / `match` — follow-ups (after the 2026-07-03 ADT session)
+
+- [ ] **`enum_array(n)`** — arrays of enum handles (today an `E[]` annotation is a clear error;
+  the `ElemTy` union needs an `enum` case and the interpreter an element-kind, like `struct_array`).
+- [ ] **`match` as an expression** — `let a = match e { … };` producing a value (lower like the
+  ternary: a result temp written in each arm + a join phi), with the arms typed to a common type.
+- [ ] **Richer patterns** — literal patterns (`Num(0) => …`), nested destructuring
+  (`Add(Num(a), b) => …`), and `if`-guards on an arm.
+- [ ] **Enum-typed struct globals** via a lazy first-touch initializer (globals can't heap-allocate
+  at load time, so an enum global is rejected today).
+- [ ] **Structural `==`** for enums (by variant + field equality) as an opt-in, distinct from the
+  reference identity structs use.
+- [ ] **A `match`-exhaustiveness / tag-fold metric** in the Optimizer lab (how often SCCP proves a
+  scrutinee's variant statically and deletes the other arms).
+
 ## Session log
+
+- 2026-07-03 (claude / claude-opus-4-8): **Algebraic data types — `enum` tagged unions +
+  `match` pattern matching, end to end.** ✅ **Shipped.** The last big "makes it a real
+  language" feature, threaded through every stage and proven by the differential harness at
+  -O0…-O3 (**1300 checks, all green** across interp = wasm = from-scratch VM, up from 1248).
+  Exactly as with structs, an enum value is an i32 handle into linear memory, so it needed
+  **no new IR concept and no backend/optimizer changes** — construction is an `alloc` + a tag
+  store + a store per payload field, a `match` is a tag load + a `switch`-style branch chain +
+  per-arm field loads into the pattern's bindings, and every existing pass (SROA, SCCP, GVN,
+  inlining, DCE, stackification) handles the i32 handles unchanged. Verified: SROA scalarizes a
+  non-escaping single-construction enum and SCCP folds its tag to delete the dead arm
+  (`enum-option-sroa`); a phi-merged handle escapes SROA's no-phi rule and stays sound
+  (`enum-phi-nested`); recursive enums (`enum-expr-tree`, `enum-cons-list`) and enums nested in
+  other enums' payloads (`enum-vm`) need no special handling.
+
+  What shipped: `enum Shape { Circle(float), Rect(float,float), Empty }` decls; construction by
+  variant name (`Circle(3.0)`, bare `Empty` or `Empty()`); `match` with payload binding, `_`
+  ignored bindings, a `_` wildcard arm, and compile-time **exhaustiveness / duplicate-arm /
+  foreign-variant / unreachable-arm** checking; enums as locals, params, returns, struct fields,
+  and (recursive) payloads. Strict by design — no implicit conversions, no `null`, no `==`
+  (match instead), not a global. A type-canonicalization pass rewrites the parser's
+  `struct`-tagged annotations that actually name an enum into the enum kind (across arrays,
+  function-pointer signatures, and every `let`/`for` in a body), so the rest of the compiler
+  never second-guesses a named-handle type. The reference interpreter and the step debugger model
+  an enum as `{enum, variant, fields[]}`; the from-scratch wasm VM sees only i32 handles + memory
+  ops it already ran, so all three agree by construction. Added 3 catalog examples (an ADT/Option
+  intro, a recursive expression evaluator + pretty-printer, and a two-enum stack-machine bytecode
+  interpreter) and a 10-program adversarial battery; `tsc` + `eslint` + the CI gate all green.
+
+  Design notes (kept for the next session):
+
+  Design:
+  - **Syntax.** `enum Shape { Circle(float), Rect(float, float), Empty }` — variants are
+    comma-separated, each with 0+ positional payload fields of any value type (incl. other
+    enums/structs, so recursive `enum Expr { Num(int), Add(Expr, Expr) }` works). Construction is
+    `Circle(3.0)` (a call by the variant's name); a nullary variant is a bare `Empty` (or `Empty()`).
+    Pattern matching is a statement:
+    ```
+    match e {
+      Circle(r)  => { ... }
+      Rect(w, h) => { ... }
+      Empty      => { ... }
+      _          => { ... }   // optional wildcard
+    }
+    ```
+    with payload binding (`_` ignores a field) and compile-time **exhaustiveness** checking
+    (every variant covered, or a `_`; duplicate/foreign/unreachable arms rejected).
+  - **Memory layout.** Handle → { i32 tag @0, payload from @8 (8-byte-aligned) at natural offsets }.
+    Each construction bump-allocates only its own variant's size; a match loads the tag, branches on
+    it (a chain of `icmp eq` like `switch`), and in the matched arm loads that variant's fields —
+    all tag-guarded, so no value is ever read as the wrong variant (SROA's no-phi escape rule keeps
+    promotion sound).
+  - **Types.** New `Ty` kind `{kind:'enum',name}` (an i32 handle, like a struct). Strict: no implicit
+    conversions, no `null`, `==`/`!=` unsupported (match instead), not a global (needs the heap).
+    A type-canonicalization pass rewrites parser `struct`-named annotations that actually name an
+    enum into the enum kind (the parser can't tell them apart).
+  - **Three engines stay in lock-step.** The reference interpreter and the step debugger model an
+    enum as `{enum, tag, fields[]}`; the from-scratch wasm VM sees only i32 handles + memory ops it
+    already runs, so all three agree by construction.
+
+  Steps: (1) `enum`/`match` keywords; (2) AST + parser; (3) enum memory layout; (4) type
+  canonicalization + checker (decl collection, construction, match, exhaustiveness); (5) IR builder
+  (variant construct + match lowering); (6) reference interpreter; (7) step debugger; (8) AST/UI +
+  syntax highlight; (9) showcase examples (expression evaluator, Option/Result, a small VM /
+  state machine); (10) adversarial battery; harness green at -O0…-O3, `tsc`+`eslint`+CI gate green.
+
+  Backlog after this lands: `enum_array` (arrays of enum handles); enum-typed struct globals via a
+  lazy-init; `match` as an *expression*; nested / literal / guard patterns; `==` by structural value.
 
 - 2026-06-27 (claude / claude-opus-4-8): **Reduction vectorization** (see the dated plan above).
   Generalized the auto-vectorizer from maps to *folds*: an `i32` loop-carried accumulator over an

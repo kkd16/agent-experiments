@@ -1,5 +1,5 @@
 import { CompileError } from './diagnostics';
-import type { Block, Expr, Program, Stmt, StructDecl, Ty, VecLanes } from './ast';
+import type { Block, EnumDecl, Expr, Program, Stmt, StructDecl, Ty, VecLanes } from './ast';
 import { VEC_INFO, VEC_NAME_TO_LANES } from './ast';
 import { parse } from './parser';
 import { typecheck } from './types';
@@ -12,7 +12,18 @@ import { MATH_PRELUDE } from './ir/prelude';
 // semantics (wrapping, truncating division, saturating float->int casts) so the
 // two implementations agree bit-for-bit.
 
-export type RtValue = number | bigint | ArrayVal | string | StructVal | FnVal | VecVal | null;
+export type RtValue = number | bigint | ArrayVal | string | StructVal | EnumVal | FnVal | VecVal | null;
+
+// An enum (tagged-union) value: the enum name, the constructed variant, and its
+// payload field values (already normalized to each field's type, so a bound
+// value reads back exactly as the wasm load would). Modeled by-reference like a
+// struct — but two enum values are never compared (`match` inspects them), so
+// identity is irrelevant. Distinct from StructVal by its `variant` tag.
+export interface EnumVal {
+  enumV: string;
+  variant: string;
+  fields: RtValue[];
+}
 
 // A 128-bit SIMD vector value: the lane shape plus its lane values (numbers for
 // i32/f32/f64 lanes, BigInts for i64). Lanes are kept normalized to the lane
@@ -300,6 +311,8 @@ interface Frame {
 export class Interpreter {
   private fns = new Map<string, Extract<Program['decls'][number], { kind: 'fn' }>>();
   private structs = new Map<string, StructDecl>();
+  private enums = new Map<string, EnumDecl>();
+  private variants = new Map<string, { enumName: string; fields: Ty[] }>();
   private globals = new Map<string, RtValue>();
   output: string[] = [];
   private steps = 0;
@@ -310,6 +323,10 @@ export class Interpreter {
     for (const d of prog.decls) {
       if (d.kind === 'fn') this.fns.set(d.name, d);
       else if (d.kind === 'struct') this.structs.set(d.name, d);
+      else if (d.kind === 'enum') {
+        this.enums.set(d.name, d);
+        for (const v of d.variants) this.variants.set(v.name, { enumName: d.name, fields: v.fields });
+      }
     }
     for (const d of prog.decls) {
       if (d.kind === 'global') this.globals.set(d.name, this.evalConst(d.init));
@@ -450,6 +467,21 @@ export class Interpreter {
         if (!matched && s.default) this.execBlock(s.default, f);
         break;
       }
+      case 'match': {
+        const v = this.evalExpr(s.disc, f) as EnumVal;
+        const arm = s.arms.find((a) => a.variant === v.variant) ?? s.arms.find((a) => a.variant === null);
+        if (!arm) throw new Trap(`no match arm for variant '${v.variant}'`);
+        f.vars.push(new Map());
+        try {
+          arm.binds.forEach((b, i) => {
+            if (b !== null) f.vars[f.vars.length - 1].set(b, normalizeField(v.fields[i], arm.bindTys![i]));
+          });
+          this.execBlock(arm.body, f);
+        } finally {
+          f.vars.pop();
+        }
+        break;
+      }
       case 'for': {
         f.vars.push(new Map());
         try {
@@ -507,6 +539,13 @@ export class Interpreter {
           const v = this.findVar(e.name, f);
           if (v !== undefined) return v;
           if (this.fns.has(e.name)) return { fn: e.name };
+        }
+        // A bare nullary variant (not shadowed by a variable) constructs it.
+        if (e.ty?.kind === 'enum') {
+          const v = this.findVar(e.name, f);
+          if (v !== undefined) return v;
+          const vinfo = this.variants.get(e.name);
+          if (vinfo) return { enumV: vinfo.enumName, variant: e.name, fields: [] };
         }
         return this.getVar(e.name, f);
       }
@@ -764,6 +803,11 @@ export class Interpreter {
       const fields = new Map<string, RtValue>();
       sd.fields.forEach((fld, i) => fields.set(fld.name, normalizeField(argv[i], fld.ty)));
       return { struct: name, fields };
+    }
+    // A call to a variant name constructs a fresh enum value.
+    const vinfo = this.variants.get(name);
+    if (vinfo) {
+      return { enumV: vinfo.enumName, variant: name, fields: argv.map((a, i) => normalizeField(a, vinfo.fields[i])) };
     }
     // A user function shadows any *soft* builtin of the same name (e.g. a
     // hand-written `fn sqrt`); hard builtins can never be user-declared (they are

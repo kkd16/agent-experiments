@@ -62,3 +62,71 @@ export function computeLayouts(prog: Program): Map<string, StructLayout> {
   }
   return layouts;
 }
+
+// --- enum (tagged-union) layout ---------------------------------------------
+// An enum value is an i32 handle to a block laid out as { i32 tag @0, payload }.
+// The payload starts at offset 8 (ENUM_HEADER) so it is 8-byte aligned — every
+// payload field then sits at its natural offset within the record, exactly like
+// a struct field. A construction allocates only its own variant's size (the tag
+// guards a match from ever reading a value as the wrong variant), so a nullary
+// variant is a bare 8-byte tag word.
+
+/** Byte offset of an enum value's payload (after the tag word). */
+export const ENUM_HEADER = 8;
+
+export interface VariantLayout {
+  name: string;
+  /** discriminant stored in the header word */
+  tag: number;
+  /** payload fields at their (header-relative) byte offsets */
+  fields: FieldLayout[];
+  byIndex: FieldLayout[];
+  /** total allocation size for a value of this variant (8-byte aligned) */
+  size: number;
+}
+
+export interface EnumLayout {
+  name: string;
+  variants: Map<string, VariantLayout>;
+}
+
+export function computeVariantLayout(name: string, tag: number, fieldTys: Ty[]): VariantLayout {
+  const out: FieldLayout[] = [];
+  let offset = ENUM_HEADER;
+  fieldTys.forEach((ty, i) => {
+    const irType = fieldIRType(ty);
+    const sz = irType === 'i32' || irType === 'f32' ? 4 : 8;
+    offset = (offset + sz - 1) & ~(sz - 1);
+    out.push({ name: String(i), ty, irType, offset });
+    offset += sz;
+  });
+  const size = Math.max(ENUM_HEADER, (offset + 7) & ~7);
+  return { name, tag, fields: out, byIndex: out, size };
+}
+
+export function computeEnumLayout(name: string, variants: { name: string; fields: Ty[]; tag: number }[]): EnumLayout {
+  const map = new Map<string, VariantLayout>();
+  for (const v of variants) map.set(v.name, computeVariantLayout(v.name, v.tag, v.fields));
+  return { name, variants: map };
+}
+
+/** Build the layout table for every `enum` declaration in a program. */
+export function computeEnumLayouts(prog: Program): Map<string, EnumLayout> {
+  const enums = new Map<string, EnumLayout>();
+  for (const d of prog.decls) {
+    if (d.kind === 'enum') enums.set(d.name, computeEnumLayout(d.name, d.variants));
+  }
+  return enums;
+}
+
+/** Flatten all enums to a variant-name → { enum, layout } index (for the IR
+ * builder and interpreters, where a call/ident names a variant directly). */
+export interface VariantInfo {
+  enumName: string;
+  layout: VariantLayout;
+}
+export function variantIndex(enums: Map<string, EnumLayout>): Map<string, VariantInfo> {
+  const idx = new Map<string, VariantInfo>();
+  for (const [enumName, el] of enums) for (const [vn, vl] of el.variants) idx.set(vn, { enumName, layout: vl });
+  return idx;
+}

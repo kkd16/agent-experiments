@@ -20,6 +20,12 @@ export type Ty =
   // `name` keys into the program's struct table; the interpreter holds the same
   // value as a by-reference object, so the two share mutation semantics.
   | { kind: 'struct'; name: string }
+  // A tagged-union (algebraic data type) value, referenced by an i32 handle into
+  // linear memory exactly like a struct: word 0 is the variant tag, the payload
+  // follows. `name` keys into the program's enum table. Constructed by a variant
+  // name (`Circle(3.0)` / bare `Empty`) and consumed by `match`; unlike a struct
+  // it has no `null`, no fields, and no `==` (pattern-match to inspect it).
+  | { kind: 'enum'; name: string }
   // The type of the `null` literal: a struct handle that points nowhere. It
   // unifies with (is assignable to) any struct type and only ever compares with
   // `==`/`!=`. Lowers to the i32 constant 0.
@@ -117,6 +123,7 @@ export function tyEqual(a: Ty, b: Ty): boolean {
     return true;
   }
   if (a.kind === 'struct' && b.kind === 'struct') return a.name === b.name;
+  if (a.kind === 'enum' && b.kind === 'enum') return a.name === b.name;
   if (a.kind === 'vec' && b.kind === 'vec') return a.lanes === b.lanes;
   if (a.kind === 'fn' && b.kind === 'fn') {
     if (a.params.length !== b.params.length) return false;
@@ -132,7 +139,7 @@ export function tyName(t: Ty): string {
     const en = e.kind === 'struct' ? e.name : e.kind === 'fn' ? `(${tyName(e)})` : e.kind;
     return `${en}[]`;
   }
-  if (t.kind === 'struct') return t.name;
+  if (t.kind === 'struct' || t.kind === 'enum') return t.name;
   if (t.kind === 'vec') return VEC_INFO[t.lanes].name;
   if (t.kind === 'fn') return `fn(${t.params.map(tyName).join(', ')}) -> ${tyName(t.ret)}`;
   return t.kind;
@@ -212,8 +219,25 @@ export interface SwitchCase {
   nums?: number[];
 }
 
+// One arm of a `match`. `variant === null` is the wildcard `_` (a catch-all).
+// `binds` names the payload fields the arm destructures — one entry per field,
+// with `null` for an ignored `_` binding. The checker fills `tag` (the variant's
+// discriminant) and `bindTys` (each binding's declared type) for later phases.
+export interface MatchArm {
+  variant: string | null;
+  binds: (string | null)[];
+  body: Block;
+  span: Span;
+  tag?: number;
+  bindTys?: Ty[];
+}
+
 export type Stmt =
   | { node: 'let'; name: string; declTy: Ty | null; init: Expr; span: Span; resolvedTy?: Ty }
+  // `match disc { Variant(binds) => { … }  _ => { … } }` — destructure a tagged
+  // union. The checker resolves `disc`'s enum, validates/exhausts the arms, and
+  // annotates each arm; the builder lowers it to a tag load + a branch chain.
+  | { node: 'match'; disc: Expr; arms: MatchArm[]; span: Span; enumName?: string }
   | { node: 'assign'; name: string; value: Expr; span: Span }
   | { node: 'index-assign'; target: Expr; index: Expr; value: Expr; span: Span }
   // `target.field = value` — store into a struct field.
@@ -276,7 +300,24 @@ export interface StructDecl {
   span: Span;
 }
 
-export type Decl = FnDecl | GlobalDecl | StructDecl;
+// One variant of an `enum`: a name plus its positional payload field types (an
+// empty list for a nullary variant like `Empty`). The `tag` is its position in
+// the declaration, used as the discriminant stored in the value's header word.
+export interface EnumVariant {
+  name: string;
+  fields: Ty[];
+  span: Span;
+  tag: number;
+}
+
+export interface EnumDecl {
+  kind: 'enum';
+  name: string;
+  variants: EnumVariant[];
+  span: Span;
+}
+
+export type Decl = FnDecl | GlobalDecl | StructDecl | EnumDecl;
 
 export interface Program {
   decls: Decl[];

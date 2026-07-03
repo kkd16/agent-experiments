@@ -5,8 +5,8 @@ import type { Span } from '../diagnostics';
 import { parse } from '../parser';
 import { typecheck } from '../types';
 import { STRING_PRELUDE, FLOAT_PRELUDE, MATH_PRELUDE } from './prelude';
-import type { StructLayout } from '../struct';
-import { computeLayouts } from '../struct';
+import type { StructLayout, VariantInfo } from '../struct';
+import { computeLayouts, computeEnumLayouts, variantIndex } from '../struct';
 
 // Stage 1 of lowering: the typed AST is translated into a control-flow graph of
 // basic blocks where local variables are still referenced *by name* and may be
@@ -174,9 +174,10 @@ class FnBuilder {
   private exported: boolean;
   private pool: StringPool;
   private layouts: Map<string, StructLayout>;
+  private variants: Map<string, VariantInfo>;
   private userFns: Set<string>;
 
-  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>, userFns: Set<string>) {
+  constructor(name: string, params: { name: string; ty: IRType }[], retTy: RetType, body: Block, exported: boolean, pool: StringPool, layouts: Map<string, StructLayout>, variants: Map<string, VariantInfo>, userFns: Set<string>) {
     this.name = name;
     this.params = params;
     this.retTy = retTy;
@@ -184,6 +185,7 @@ class FnBuilder {
     this.exported = exported;
     this.pool = pool;
     this.layouts = layouts;
+    this.variants = variants;
     this.userFns = userFns;
   }
 
@@ -320,6 +322,9 @@ class FnBuilder {
       case 'switch':
         this.lowerSwitch(s);
         break;
+      case 'match':
+        this.lowerMatch(s);
+        break;
       case 'for':
         this.lowerFor(s);
         break;
@@ -417,6 +422,62 @@ class FnBuilder {
     this.switchTo(join);
   }
 
+  // A `match` lowers like a `switch` on the value's tag word: evaluate the
+  // scrutinee handle once, load its tag (the header word at offset 0), then test
+  // it against each arm's variant tag in order, branching to the arm body or the
+  // next test. Inside an arm, the payload fields are loaded from that variant's
+  // offsets into the pattern's binding locals. The checker has proven the arms
+  // exhaustive, so if no wildcard is present the final fall-through is dead.
+  private lowerMatch(s: Extract<Stmt, { node: 'match' }>): void {
+    this.usesMemory = true;
+    const hv = this.temp('i32');
+    const h = this.lowerExpr(s.disc)!;
+    this.emit({ dest: hv, ty: 'i32', kind: 'copy', sub: '', args: [h] });
+    const tag = this.def('i32', 'load', 'i32', [VAR(hv)]);
+
+    const join = this.newBlock();
+    const bodies = s.arms.map(() => this.newBlock());
+    const wildcardIdx = s.arms.findIndex((a) => a.variant === null);
+
+    s.arms.forEach((arm, i) => {
+      if (arm.variant === null) return; // the wildcard has no test — it's the fall-through target
+      const cond = this.def('i32', 'icmp', 'eq', [tag, CI(arm.tag!)]);
+      // The next test block, or (after the last testable arm) the wildcard body
+      // if there is one, else the join (the exhaustive, unreachable fall-through).
+      const rest = s.arms.slice(i + 1).some((a) => a.variant !== null);
+      const next = rest ? this.newBlock() : wildcardIdx >= 0 ? bodies[wildcardIdx] : join;
+      this.setTerm({ op: 'condbr', cond, t: bodies[i].id, f: next.id });
+      this.switchTo(next);
+    });
+    // If every arm was a wildcard (or there were none), branch straight to it.
+    if (!s.arms.some((a) => a.variant !== null)) {
+      this.setTerm({ op: 'br', target: wildcardIdx >= 0 ? bodies[wildcardIdx].id : join.id });
+    }
+
+    s.arms.forEach((arm, i) => {
+      this.switchTo(bodies[i]);
+      this.scopes.push(new Map());
+      // Bind the pattern's payload fields (skipping `_`) by loading them from the
+      // variant's field offsets on the scrutinee handle.
+      if (arm.variant !== null) {
+        const vl = this.variants.get(arm.variant)!.layout;
+        arm.binds.forEach((b, k) => {
+          if (b === null) return;
+          const fl = vl.byIndex[k];
+          const addr = fl.offset === 0 ? VAR(hv) : this.def('i32', 'ibin', 'add', [VAR(hv), CI(fl.offset)]);
+          const val = this.def(fl.irType, 'load', fl.irType, [addr]);
+          const u = this.declare(b, arm.bindTys![k]);
+          this.emit({ dest: u, ty: fl.irType, kind: 'copy', sub: '', args: [val] });
+        });
+      }
+      this.lowerBlock(arm.body);
+      this.scopes.pop();
+      this.setTerm({ op: 'br', target: join.id });
+    });
+
+    this.switchTo(join);
+  }
+
   private lowerFor(s: Extract<Stmt, { node: 'for' }>): void {
     this.scopes.push(new Map());
     if (s.init) this.lowerStmt(s.init);
@@ -465,6 +526,8 @@ class FnBuilder {
       case 'ident': {
         const u = this.resolve(e.name);
         if (u) return VAR(u);
+        // A bare name that is a nullary variant (and not a local) constructs it.
+        if (this.variants.has(e.name)) return this.lowerEnumNew(e.name, []);
         // A bare function name (not a local/param) is a function pointer: emit its
         // table slot as an i32. (The checker has already typed it as `fn(…)`.)
         if (e.ty!.kind === 'fn') return this.def('i32', 'funcaddr', e.name, []);
@@ -651,6 +714,8 @@ class FnBuilder {
     // A call to a struct name constructs a value: bump-allocate the record and
     // store each (left-to-right evaluated) argument at its field offset.
     if (this.layouts.has(name)) return this.lowerStructNew(name, e.args);
+    // A call to a variant name constructs that enum value.
+    if (this.variants.has(name)) return this.lowerEnumNew(name, e.args);
     // Low-level memory intrinsics used by the string-runtime prelude.
     if (name === '__load8' || name === '__load32') {
       this.usesMemory = true;
@@ -961,6 +1026,24 @@ class FnBuilder {
     return base;
   }
 
+  /** Construct an enum value: bump-allocate this variant's block, store its tag
+   * in the header word, then store each (left-to-right evaluated) payload
+   * argument at its field offset. Returns the i32 handle — structurally identical
+   * to a struct construction, so every later pass treats it the same way. */
+  private lowerEnumNew(variantName: string, args: Expr[]): POperand {
+    const info = this.variants.get(variantName)!;
+    const vl = info.layout;
+    this.usesMemory = true;
+    const vals = args.map((a) => this.lowerExpr(a)!);
+    const base = this.def('i32', 'alloc', '', [CI(vl.size)]);
+    this.emit({ dest: null, ty: 'void', kind: 'store', sub: 'i32', args: [base, CI(vl.tag)] });
+    vl.byIndex.forEach((fl, i) => {
+      const addr = fl.offset === 0 ? base : this.def('i32', 'ibin', 'add', [base, CI(fl.offset)]);
+      this.emit({ dest: null, ty: 'void', kind: 'store', sub: fl.irType, args: [addr, vals[i]] });
+    });
+    return base;
+  }
+
   private elemAddr(target: Expr, index: Expr): POperand {
     this.usesMemory = true;
     const base = this.lowerExpr(target)!;
@@ -987,6 +1070,8 @@ export function buildPreIR(prog: Program): PModule {
   const funcs: PFunc[] = [];
   const pool = new StringPool();
   const layouts = computeLayouts(prog);
+  const variants = variantIndex(computeEnumLayouts(prog));
+  const noVariants = new Map<string, VariantInfo>();
   let usesMemory = false;
   let usesStrings = false;
   let usesFloatFmt = false;
@@ -1002,7 +1087,7 @@ export function buildPreIR(prog: Program): PModule {
     if (d.kind !== 'fn') continue;
     const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
     const exported = hasMain ? d.name === 'main' : true;
-    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, userFns);
+    const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, exported, pool, layouts, variants, userFns);
     const { fn, usesMemory: m, usesStrings: s, usesFloatFmt: ff, usesMath: mm } = fb.build();
     usesMemory = usesMemory || m;
     usesStrings = usesStrings || s;
@@ -1035,7 +1120,7 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of preludeProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, noVariants, userFns);
       funcs.push(fb.build().fn);
     }
   }
@@ -1050,7 +1135,7 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of floatProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, userFns);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, noVariants, userFns);
       funcs.push(fb.build().fn);
     }
   }
@@ -1069,7 +1154,7 @@ export function buildPreIR(prog: Program): PModule {
     for (const d of mathProg.decls) {
       if (d.kind !== 'fn') continue;
       const params = d.params.map((p) => ({ name: p.name, ty: irTypeOf(p.ty) }));
-      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, noUserFns);
+      const fb = new FnBuilder(d.name, params, retTypeOf(d.retTy), d.body, false, pool, layouts, noVariants, noUserFns);
       funcs.push(fb.build().fn);
     }
   }

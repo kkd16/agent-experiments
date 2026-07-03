@@ -91,6 +91,14 @@ function stmtLines(s: Stmt, depth: number, out: string[]): void {
       blockLines(s.body, depth + 1, out);
       if (s.update) stmtLines(s.update, depth + 1, out);
       break;
+    case 'match':
+      out.push(`${pad}match ${exprStr(s.disc)}${ty(s.disc)}`);
+      for (const arm of s.arms) {
+        const pat = arm.variant === null ? '_' : `${arm.variant}(${arm.binds.map((b) => b ?? '_').join(', ')})`;
+        out.push(`${pad}  ${pat} =>`);
+        blockLines(arm.body, depth + 2, out);
+      }
+      break;
     case 'block': blockLines(s.block, depth + 1, out); break;
   }
 }
@@ -107,6 +115,9 @@ function astLines(prog: Program): string {
     } else if (d.kind === 'struct') {
       out.push(`struct ${d.name}`);
       for (const fld of d.fields) out.push(`  ${fld.name}: ${tyName(fld.ty)}`);
+    } else if (d.kind === 'enum') {
+      out.push(`enum ${d.name}`);
+      for (const v of d.variants) out.push(`  ${v.name}${v.fields.length ? `(${v.fields.map(tyName).join(', ')})` : ''}`);
     } else {
       out.push(`global ${d.name} = ${exprStr(d.init)}`);
     }
