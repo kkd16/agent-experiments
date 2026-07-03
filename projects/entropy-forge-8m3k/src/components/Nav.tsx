@@ -16,6 +16,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
       { route: 'adaptive', name: 'Adaptive Huffman' },
       { route: 'arithmetic', name: 'Arithmetic' },
       { route: 'rans', name: 'rANS' },
+      { route: 'tans', name: 'tANS / FSE' },
     ],
   },
   {

@@ -30,6 +30,7 @@ import {
 } from './bwt.ts'
 import { ppmDecode, ppmEncode } from './ppm.ts'
 import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
+import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { gzipEncode, gzipDecode } from './gzip.ts'
 
@@ -325,6 +326,24 @@ function ransCodecDecode(comp: Uint8Array): Uint8Array {
   return ransDecode(comp.subarray(next), length, table)
 }
 
+// ---- Static tANS codec: same transmitted table as rANS, decoded by a pure
+// finite-state machine (table lookups + shifts, no multiplies) — the FSE entropy
+// backend of Zstandard. Reaches the same quantised floor as rANS by a different
+// mechanism, so the two agree to within table-rounding on every input. ----
+function tansCodecEncode(data: Uint8Array): Uint8Array {
+  const table = tansTableFromData(data)
+  const { encoded } = tansEncode(data, table)
+  const header: number[] = []
+  putU32(header, data.length)
+  const tableBytes = serialiseTable(table)
+  return concat([Uint8Array.from(header), Uint8Array.from(tableBytes), encoded])
+}
+function tansCodecDecode(comp: Uint8Array): Uint8Array {
+  const length = getU32(comp, 0)
+  const { table, next } = deserialiseTable(comp, 4)
+  return tansDecode(comp.subarray(next), length, table)
+}
+
 // ---- PPM codec (order-4 PPMC): a context-mixing coder that models the previous
 // up-to-4 bytes with escape+exclusion, range-coded. The maxOrder is transmitted
 // so decode rebuilds the identical model. ----
@@ -391,6 +410,14 @@ export const CODECS: Codec[] = [
     blurb: 'Asymmetric numeral system — zstd/LZFSE-class entropy coder; byte-wise renorm.',
     encode: ransCodecEncode,
     decode: ransCodecDecode,
+  },
+  {
+    id: 'tans',
+    name: 'tANS / FSE',
+    family: 'entropy',
+    blurb: 'Table-driven ANS — the multiply-free finite-state entropy coder inside Zstandard.',
+    encode: tansCodecEncode,
+    decode: tansCodecDecode,
   },
   {
     id: 'ppm',

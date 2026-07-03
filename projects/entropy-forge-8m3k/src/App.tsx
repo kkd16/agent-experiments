@@ -8,6 +8,7 @@ import { Huffman } from './routes/Huffman'
 import { Adaptive } from './routes/Adaptive'
 import { Arithmetic } from './routes/Arithmetic'
 import { Rans } from './routes/Rans'
+import { Tans } from './routes/Tans'
 import { Ppm } from './routes/Ppm'
 import { Lempel } from './routes/Lempel'
 import { Deflate } from './routes/Deflate'
@@ -24,6 +25,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   adaptive: Adaptive,
   arithmetic: Arithmetic,
   rans: Rans,
+  tans: Tans,
   ppm: Ppm,
   lempel: Lempel,
   deflate: Deflate,
