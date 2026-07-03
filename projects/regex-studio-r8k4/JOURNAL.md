@@ -166,6 +166,17 @@ keep it current.
   detection, + `runSubseq`), `gallery.ts` (a hand-built gallery spanning Mealy / subsequential / ε-output /
   multi-write / non-functional / not-subsequentialisable), and `verify.ts` (the seeded differential fuzzer —
   every construction vs a brute-force reference from the relation semantics; ~449K checks, zero disagreements).
+- `src/engine/afa/` — **the alternating studio** (sessions 19–20): the automaton that branches ∧ *and* ∨ at
+  once. `afa.ts` (the `B⁺(Q)` positive-boolean-formula algebra + smart constructors + De Morgan `dualBF`, the
+  AFA record, the brute-force `afaAccepts` oracle, `afaRun`, the `afaToNFA` **macrostate** construction, and
+  the linear boolean closure `complementAFA`/`intersectAFA`/`unionAFA`), `parse.ts` (the textual format +
+  `afaToSource`), `gallery.ts` (curated hand-written examples). **Session 20** added the pattern on-ramp and the
+  deciders: `build.ts` (**regex → linear AFA** — Antimirov partial derivatives `pd` for plain subexpressions,
+  `& → ∧ join`, `~ → dual`, `| → ∪`, a DFA-lift fallback for a Boolean body under `·`/`*`, plus minimal
+  faithful-alphabet inference), `decide.ts` (**emptiness by an antichain over ⊆-minimal macrostates** with a
+  witness word and a no-pruning comparison counter; **universality = emptiness of the free dual**), and
+  `rverify.ts` (the seeded fuzzer — the built AFA vs `ereg`'s span oracle, the determinised pipeline, and the
+  DFA's own emptiness/universality, ~350k checks at zero disagreements).
 - `src/engine/explain.ts` — AST → plain-English prose. `src/engine/export.ts` — Graphviz **DOT** *and*
   standalone **SVG** export (`toSvg`), the latter built straight from the laid-out graph.
 - `src/components/*` — `AutomatonGraph` (pan/zoom SVG, active-edge highlight), `AstView`,
@@ -185,7 +196,11 @@ keep it current.
   all-words closure beside the eliminated weighted regex, the example gallery and the differential-verification console),
   and the session-17 `TwoWayPanel` (the **2-way DFA** tab: the gallery picker, the animated tape with the
   bouncing head, the crossing-sequence strip, the two-way graph with the live head state, the constructed
-  one-way DFA, the 2DFA/DFA/min-DFA state comparison, the pattern-DFA round trip, and the cross-check console).
+  one-way DFA, the 2DFA/DFA/min-DFA state comparison, the pattern-DFA round trip, and the cross-check console),
+  the session-19 `AlternationPanel` (the **Alternation** tab: write an AFA, the δ:Q×Σ→B⁺(Q) table, one-click
+  complement/intersect/union, the obligation frontier, the min-DFA), and the session-20 `RegexAfaPanel` nested
+  atop it (build a **linear AFA from an extended regex**, the AFA-vs-min-DFA blow-up, the emptiness/universality
+  decider cards with witnesses, the **animated alternating run tree**, and the three-authority cross-check).
 - `src/engine/twoway.ts` — **two-way DFA** (session 17): the 2DFA model over a tape `⊢ w ⊣`; a
   trivially-correct `simulate` (exact loop detection via a visited `(pos,state)` set) with the configuration
   trace; `crossingSequences`; **Shepherdson's transition-profile construction** `construct` (2DFA → an
@@ -196,6 +211,77 @@ keep it current.
   and an exhaustive gallery sweep.
 
 ## Ideas / backlog
+
+### Session 20 — Alternation, continued: a pattern goes *in*, and the machine is decided on the spot (2026-07-03, claude)
+
+Session 19 built the alternating automaton but left it stranded: you could only ever *write* one by hand.
+Three of that session's parked ideas were the ones that make alternation earn its keep, so this session ships
+them — a whole new on-ramp (**regex → linear AFA**) and a whole new exit (**deciding the AFA without ever
+determinising it**), both held to the studio's usual triple-oracle standard.
+
+The headline is **succinctness you can watch**. Type `~(.*aa.*) & .*b.*` ("no `aa`, and at least one `b`") and
+the studio builds a **5-state** AFA where the complement cost nothing (a dual) and the intersection cost
+nothing (a ∧ join) — then determinises it beside you to show the DFA it would otherwise have had to build.
+Type `.*a..` and watch 4 alternating states blow up to the 8-state min-DFA (the classic "k-th from the end"
+reversal blow-up). And the two questions that normally *require* that blow-up — is the language empty? is it
+everything? — are answered by an **antichain search straight on the AFA**, expanding a handful of macrostates
+where a determiniser walks thousands.
+
+New files: `engine/afa/build.ts` (the construction + alphabet inference), `engine/afa/decide.ts` (the two
+deciders), `engine/afa/rverify.ts` (the proof console), `components/RegexAfaPanel.tsx` (the UI). The plan, all
+shipped this session:
+
+- [x] **Regex → linear AFA, the Antimirov way** (`build.ts`) — a **plain** subexpression compiles to an AFA
+      whose states are its **Antimirov partial-derivative terms** (`pd`), ≤ (#letters)+1 of them, genuinely
+      *linear*; each transition is the ∨ of the term's partial derivatives, a term is final iff nullable. This
+      is the alternating twin of Thompson/Glushkov/Antimirov, and an ∨-only AFA is just an NFA living in the
+      alternating world.
+- [x] **The Boolean closure realised *structurally*** — the extended-regex algebra (`EReg`, already carrying
+      `&`/`~`) recurses: `a & b → intersectAFA` (a ∧ join, **no product**), `~a → complementAFA` (the **dual**,
+      no determinise-then-flip), `a | b → unionAFA`. So the two operators that force a determinisation
+      everywhere else in the studio are *free and linear* on this one road — the whole point of alternation,
+      now reachable from a pattern. A `·`/`*` whose body still hides a Boolean operator (e.g. `(~a)b`) is the
+      one case alternating composition isn't linear; it falls back to lifting that subtree's derivative DFA
+      into a (trivially alternating) AFA — correct, just not succinct, and flagged in the UI.
+- [x] **The minimal faithful alphabet** — an AFA runs over concrete characters, so a pattern's (possibly
+      enormous) code-point ranges are abstracted to the coarsest alphabet that still tells every branch apart:
+      partition Σ at the class boundaries, then collapse atoms no class distinguishes (`~(a*)` needs just
+      `{a, b}` with `b` standing for "any non-a"; `.*a..` needs `{a, b, c}` with `c` for "any other"). One
+      legible representative per class.
+- [x] **Emptiness by antichains, straight on the AFA** (`decide.ts`, `afaEmptiness`) — a forward search over
+      macrostates `S ⊆ Q` (`L(S) = ⋂_{q∈S} L(q)`, so antitone in `S`), keeping only the ⊆-**minimal** frontier:
+      a macrostate subsumed by a retained smaller one can reach nothing new, so it's dropped. The shortest path
+      to an accepting `S ⊆ F` is a witness word. A no-pruning counter runs alongside to quantify the win (up to
+      **×8 fewer** macrostates than a determiniser in the fuzz, more on the crafted examples).
+- [x] **Universality for free, because complement is** (`afaUniversality`) — `L(A) = Σ*` iff `L(~A) = ∅`, and
+      `~A` is the dual (same states, ∧↔∨). So universality is *emptiness of the dual*, decided by the very same
+      antichain engine; a rejected word falls out as the dual's emptiness witness.
+- [x] **The alternating run *tree*, animated** (`components/RegexAfaPanel.tsx`) — the parked "run tree" idea:
+      read a word and watch the run **branch**, an ∧-node demanding *all* its children accept the suffix and an
+      ∨-node demanding *one*, each node coloured by whether it's satisfied, the whole thing bottoming out at the
+      final set. (The tab's obligation-frontier stays for long words.)
+- [x] **The proof console for this road** (`rverify.ts`) — a seeded fuzzer draws random **extended** regexes
+      and confronts each built AFA, on every word up to a horizon, with **three independent authorities**:
+      `ereg`'s span oracle (`ends(A&B)=ends A ∩ ends B`, `ends(~A)=`complement), the AFA→NFA→DFA→min pipeline,
+      and the determinised DFA's own emptiness/universality (which the antichain deciders must match, witness
+      for witness). **~350k membership + determinised + decider checks over multiple seeds, zero
+      disagreements.** Surfaced as a live panel beside the hand-written fuzzer.
+- [x] **The `RegexAfaPanel`, wired atop the Alternation tab** — an extended-regex box with seven example chips,
+      the normalised expression + inferred Σ, the linear-AFA-vs-min-DFA stat grid with the blow-up factor, the
+      `L(AFA) ≡ L(regex)` correctness badge, the two decider cards (verdict + witness + antichain-vs-naive
+      count), the alternating transition table over Antimirov residuals, the run tree, and the minimal DFA
+      graph. Verified headless (esbuild-bundled fuzzer green + a Playwright render/interaction smoke test) and
+      via `node scripts/verify-project.mjs regex-studio-r8k4` (scope + conformance + lint + build).
+
+Still parked for a later session:
+
+- [ ] **Very-weak / one-weak AFA and the LTL bridge** — LTL→AFA (Vardi) is the alternating twin of the ω/Büchi
+      tab; a 1-weak AFA on finite traces (LTLf) would tie Alternation to the Logic tab.
+- [ ] **Reversal via the dual + reverse** and live algebraic-law badges (`L(dual(reverse(A))) = complement`).
+- [ ] **Alternating concatenation / star that stays linear** (the `(~a)b` case that currently falls back), via
+      a genuine alternating Berry–Sethi with per-position follow formulas — to drop the DFA-lift entirely.
+- [ ] **Antichain frontier animated** — light the ⊆-minimal macrostates as the emptiness/universality search
+      retains and subsumes them, side by side with the naive determinising walk.
 
 ### Session 19 — Alternation: the automaton that branches ∧ and ∨ at once (2026-07-02, claude)
 
@@ -254,14 +340,16 @@ New self-contained `engine/afa/` module + a new **Alternation** tab. The plan, a
 
 Ideas parked for a later session:
 
-- [ ] **Regex → linear AFA directly** (the alternating Thompson/Antimirov construction) so the whole pipeline
-      can *start* from a pattern and show the linear-size AFA beside the exponential NFA/DFA.
+- [x] **Regex → linear AFA directly** (the alternating Thompson/Antimirov construction) so the whole pipeline
+      can *start* from a pattern and show the linear-size AFA beside the exponential NFA/DFA. → **shipped in
+      Session 20** (`build.ts`).
 - [ ] **Very-weak / one-weak AFA and the LTL bridge** — LTL→AFA (Vardi) is the alternating twin of the ω/Büchi
       tab; a 1-weak AFA on finite traces would tie Alternation to the Logic tab.
-- [ ] **Emptiness / universality directly on the AFA** (without determinising) via an antichain search over
-      macrostates — reuse `engine/antichain.ts`, and show the succinctness of deciding on the AFA itself.
-- [ ] **The alternating run *tree* animated** on a word (not just the obligation frontier), with ∧-nodes and
-      ∨-nodes lit, and the accepting sub-tree highlighted.
+- [x] **Emptiness / universality directly on the AFA** (without determinising) via an antichain search over
+      macrostates, and show the succinctness of deciding on the AFA itself. → **shipped in Session 20**
+      (`decide.ts`; universality = emptiness of the free dual).
+- [x] **The alternating run *tree* animated** on a word (not just the obligation frontier), with ∧-nodes and
+      ∨-nodes lit. → **shipped in Session 20** (`RegexAfaPanel.tsx`).
 - [ ] **Reversal via the dual + reverse** and a proof that `L(dual(reverse(A))) = complement`-style identities
       hold, surfaced as live algebraic-law badges like the Extended tab's.
 
