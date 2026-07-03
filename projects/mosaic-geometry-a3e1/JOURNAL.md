@@ -178,8 +178,10 @@ Planned this session — all shipped:
 
 Next (open — natural follow-ups on this axis):
 
-- [ ] **Draw the dual construction inline** for the ham-sandwich cut (show the two fans of dual
-  lines and their crossing median levels in an inset) so the "why" is on screen, not just the result.
+- [x] **Draw the dual construction inline** for the ham-sandwich cut — a dual-plane **inset** shows
+  the two fans of dual lines and their two **median levels crossing** exactly at the cut's dual
+  point, so the "why" is on screen, not just the result (skipped, with a note, for the near-vertical
+  rotated case whose dual point is at infinity). Toggleable in the Ham-cut panel.
 - [ ] **Incremental line insertion animation** for the arrangement (a new line sweeping across,
   splitting the faces it meets one at a time) in the Algorithms gallery.
 - [ ] **k-level complexity readout** — plot the (still-open) combinatorial bound on the k-level size
