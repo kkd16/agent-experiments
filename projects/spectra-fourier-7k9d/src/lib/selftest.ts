@@ -6,6 +6,10 @@ import { fromReal, magnitude } from './complex'
 import { fft, ifft, dft } from './fft'
 import { fieldFromGray, fft2 } from './fft2'
 import { cwtMorlet } from './wavelet'
+import { timeStretch, pitchTimeShift, hannPeriodic, snrDb } from './phasevocoder'
+import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
+import { cepstrum } from './cepstrum'
+import { voicedSignal, pulseTrain, VOWELS } from './synth'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -143,6 +147,105 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     let maxPower = 0
     for (const row of res.power) for (let i = 0; i < row.length; i++) if (row[i] > maxPower) maxPower = row[i]
     check('Morlet wavelet has zero mean (no DC response)', maxPower < 1e-6)
+  }
+
+  // 9. Phase vocoder identity: an unmodified analysis/synthesis round-trip
+  //    reconstructs the interior of the signal to high SNR (the WOLA/COLA guard).
+  {
+    const fs = 8000
+    const sig = voicedSignal(8192, { f0: 150, fs, formants: VOWELS[0].formants })
+    const id = timeStretch(sig, 1, { fftSize: 1024, overlap: 4 })
+    check('phase vocoder identity reconstructs (SNR > 40 dB)', snrDb(sig, id, 1024) > 40)
+  }
+
+  // 10. Weighted overlap-add: the summed squared Hann at 75% overlap is constant,
+  //     so the vocoder's normalisation is well posed (the "constant overlap-add").
+  {
+    const N = 1024
+    const hop = N / 4
+    const win = hannPeriodic(N)
+    const acc = new Float64Array(N)
+    for (let s = -4; s <= 4; s++) {
+      const off = s * hop
+      for (let i = 0; i < N; i++) {
+        const j = i - off
+        if (j >= 0 && j < N) acc[i] += win[j] * win[j]
+      }
+    }
+    let mn = Infinity
+    let mx = -Infinity
+    for (let i = N / 4; i < (3 * N) / 4; i++) {
+      mn = Math.min(mn, acc[i])
+      mx = Math.max(mx, acc[i])
+    }
+    check('Hann² is constant-overlap-add at 75%', (mx - mn) / mx < 1e-6)
+  }
+
+  // 11. Pitch-shift by an octave doubles the perceived pitch while preserving
+  //     duration — checked with the cepstral pitch detector.
+  {
+    const fs = 8000
+    const sig = voicedSignal(8192, { f0: 130, fs, formants: VOWELS[2].formants })
+    const up = pitchTimeShift(sig, { fftSize: 1024, overlap: 4, semitones: 12, stretch: 1 })
+    const durOk = Math.abs(up.length / sig.length - 1) < 0.08
+    const c = cepstrum(Float64Array.from(up.subarray(0, 2048)), {
+      fftSize: 2048,
+      fs,
+      window: 'hann',
+      lifterCutoff: 30,
+      minF: 60,
+      maxF: 800,
+    })
+    check('octave pitch-shift ≈ doubles f0, keeps duration', durOk && Math.abs(c.pitchHz - 260) < 40)
+  }
+
+  // 12. DCT-II/III round-trip and orthonormality (energy preserved).
+  {
+    const x = Float64Array.from([12, -3, 7, 42, 0, -18, 5, 9])
+    const rt = idct1d(dct1d(x))
+    let rtOk = true
+    for (let i = 0; i < 8; i++) if (!approxEqual(rt[i], x[i], 1e-9)) rtOk = false
+    const X = dct1d(x)
+    let et = 0
+    let ef = 0
+    for (let i = 0; i < 8; i++) {
+      et += x[i] * x[i]
+      ef += X[i] * X[i]
+    }
+    check('DCT-II/III round-trip + energy (orthonormal)', rtOk && approxEqual(et, ef, 1e-9))
+  }
+
+  // 13. 2-D DCT round-trip over an 8×8 block.
+  {
+    const blk = new Float64Array(64)
+    for (let i = 0; i < 64; i++) blk[i] = Math.sin(i * 0.7) * 40 - 10
+    const rt = idct2d(dct2d(blk))
+    let ok = true
+    for (let i = 0; i < 64; i++) if (!approxEqual(rt[i], blk[i], 1e-8)) ok = false
+    check('2-D DCT 8×8 round-trip', ok)
+  }
+
+  // 14. JPEG-lite rate/distortion is monotone: higher quality → higher PSNR and
+  //     a lower compression ratio.
+  {
+    const w = 64
+    const h = 64
+    const img = new Float64Array(w * h)
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) img[y * w + x] = 0.5 + 0.5 * Math.sin(x * 0.3) * Math.cos(y * 0.2)
+    const hi = compressImage(img, w, h, 95)
+    const lo = compressImage(img, w, h, 15)
+    check('DCT codec: quality ↑ ⇒ PSNR ↑, ratio ↓', hi.psnr > lo.psnr && lo.ratio > hi.ratio)
+  }
+
+  // 15. Cepstrum locates the period of a harmonic pulse train (its pitch).
+  {
+    const fs = 8000
+    const N = 2048
+    const period = 40 // → 200 Hz
+    const pt = pulseTrain(N, period, 30)
+    const res = cepstrum(pt, { fftSize: N, fs, window: 'hann', lifterCutoff: 30, minF: 60, maxF: 800 })
+    check('cepstral peak = pulse-train period (pitch)', Math.abs(res.pitchQuefrency - period) < 2)
   }
 
   return { passed, failed, messages }

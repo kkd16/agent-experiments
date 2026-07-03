@@ -125,3 +125,68 @@ export function axisLabel(
   ctx.textBaseline = 'alphabetic'
   ctx.fillText(text, x, y)
 }
+
+// --- raster painting: blit a small pixel buffer scaled up to a destination rect ---
+
+export interface DrawSize {
+  width: number
+  height: number
+  dpr: number
+}
+
+/** Blit a grayscale field (0..1, row-major w×h) into `ctx`, scaled to fill the rect. */
+export function paintGray(
+  ctx: CanvasRenderingContext2D,
+  r: Rect,
+  gray: ArrayLike<number>,
+  w: number,
+  h: number,
+  smooth = false,
+) {
+  const off = document.createElement('canvas')
+  off.width = w
+  off.height = h
+  const octx = off.getContext('2d')
+  if (!octx) return
+  const img = octx.createImageData(w, h)
+  for (let i = 0; i < w * h; i++) {
+    const v = Math.max(0, Math.min(255, Math.round(gray[i] * 255)))
+    img.data[i * 4] = v
+    img.data[i * 4 + 1] = v
+    img.data[i * 4 + 2] = v
+    img.data[i * 4 + 3] = 255
+  }
+  octx.putImageData(img, 0, 0)
+  ctx.imageSmoothingEnabled = smooth
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(off, 0, 0, w, h, r.x, r.y, r.w, r.h)
+}
+
+/** Blit a normalized field (0..1) through a 256-entry RGBA LUT, scaled to the rect. */
+export function paintColormap(
+  ctx: CanvasRenderingContext2D,
+  r: Rect,
+  data: ArrayLike<number>,
+  w: number,
+  h: number,
+  lut: Uint8ClampedArray,
+  smooth = true,
+) {
+  const off = document.createElement('canvas')
+  off.width = w
+  off.height = h
+  const octx = off.getContext('2d')
+  if (!octx) return
+  const img = octx.createImageData(w, h)
+  for (let i = 0; i < w * h; i++) {
+    const li = (Math.max(0, Math.min(255, Math.round(data[i] * 255))) & 255) * 4
+    img.data[i * 4] = lut[li]
+    img.data[i * 4 + 1] = lut[li + 1]
+    img.data[i * 4 + 2] = lut[li + 2]
+    img.data[i * 4 + 3] = 255
+  }
+  octx.putImageData(img, 0, 0)
+  ctx.imageSmoothingEnabled = smooth
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(off, 0, 0, w, h, r.x, r.y, r.w, r.h)
+}

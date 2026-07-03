@@ -5,6 +5,9 @@ import FilterMode from './modes/Filter'
 import Spectrogram from './modes/Spectrogram'
 import Wavelet from './modes/Wavelet'
 import ImageFFT from './modes/ImageFFT'
+import Vocoder from './modes/Vocoder'
+import Compress from './modes/Compress'
+import Cepstrum from './modes/Cepstrum'
 import About from './modes/About'
 
 const ROUTES = [
@@ -14,6 +17,9 @@ const ROUTES = [
   { id: 'spectrogram', label: 'Spectrogram' },
   { id: 'wavelet', label: 'Wavelet' },
   { id: 'image', label: 'Image 2D' },
+  { id: 'vocoder', label: 'Vocoder' },
+  { id: 'compress', label: 'Compress' },
+  { id: 'cepstrum', label: 'Cepstrum' },
   { id: 'about', label: 'About' },
 ]
 
@@ -70,6 +76,9 @@ export default function App() {
       {active === 'spectrogram' && <Spectrogram />}
       {active === 'wavelet' && <Wavelet />}
       {active === 'image' && <ImageFFT />}
+      {active === 'vocoder' && <Vocoder />}
+      {active === 'compress' && <Compress />}
+      {active === 'cepstrum' && <Cepstrum />}
       {active === 'about' && <About />}
 
       <footer className="footer">
