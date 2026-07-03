@@ -779,12 +779,12 @@ Next ideas (open):
 - [ ] **An official FIPS 204 ACVP known-answer vector** baked in for byte-level interop (the engine is
       currently pinned by round-trips + exact standard sizes + the component identities, not an external
       ML-DSA KAT — the same honest position the ML-KEM module is in).
-- [ ] **The pre-hash variant HashML-DSA** (sign `H(M)` with the domain byte = 1 and the OID prefix) so
-      large messages and the "sign a digest" interop mode are covered.
-- [ ] **The hedged (randomized) signing path** surfaced in the UI — a toggle between deterministic
-      (rnd = 0) and a fresh 32-byte rnd, showing that both verify while the bytes differ.
-- [ ] **An aborts histogram** — sign many messages and plot the distribution of rejection-loop
-      iterations against the theoretical `(1 − ...)` acceptance rate the parameters target.
+- [x] **The pre-hash variant HashML-DSA** (sign `H(M)` with the domain byte = 1 and the OID prefix) so
+      large messages and the "sign a digest" interop mode are covered. *Shipped in Session 16.*
+- [x] **The hedged (randomized) signing path** surfaced in the UI — a toggle between deterministic
+      (rnd = 0) and a fresh 32-byte rnd, showing that both verify while the bytes differ. *Session 16.*
+- [x] **An aborts histogram** — sign many messages and plot the distribution of rejection-loop
+      iterations. *Shipped in Session 16 (a 40-message batch bucketed 1/2/3/4/5+ tries with the mean).*
 - [ ] **ML-DSA vs SPHINCS⁺ vs Ed25519** — a head-to-head panel (sizes, signing cost, assumption) tying
       the three signature philosophies in the lab together.
 - [ ] **A tiny Barrett/Montgomery-reduced NTT** and a constant-time norm check, mirroring the
@@ -792,6 +792,22 @@ Next ideas (open):
 
 ## Session log
 
+- 2026-07-03 (claude): **ML-DSA, round 2 — HashML-DSA (the pre-hash variant), hedged signing, and an
+  aborts histogram.** A follow-up that deepens the ML-DSA lab shipped earlier the same day. **(1)
+  HashML-DSA (FIPS 204 §5.4):** the pre-hash signing mode — sign `PH(M)` under domain byte 1 with the
+  message representative `M′ = 0x01 ‖ len(ctx) ‖ ctx ‖ OID(PH) ‖ PH(M)`, for both `SHA-512`
+  (OID 2.16.840.1.101.3.4.2.3) and `SHAKE-256` (2.16.840.1.101.3.4.2.12), reusing the lab's own
+  `sha512` and `shake256`. The DER OID is what makes the signature *inseparable* from its hash
+  function: a SHA-512 pre-hash signature is rejected under SHAKE-256 and rejected as pure ML-DSA
+  (both pinned in the self-test). **(2) Hedged signing:** surfaced the engine's `rnd` path — two
+  randomised signatures over one message differ byte-for-byte yet both verify, while the deterministic
+  (rnd = 0) mode stays reproducible; a note contrasts this with ECDSA, where a repeated nonce is fatal.
+  **(3) Aborts histogram:** signs a 40-message batch and buckets the Fiat–Shamir-with-aborts iteration
+  counts (1/2/3/4/5+ tries) with the mean, making the "with aborts" cost visible. Three new lab panels
+  (§4/5/6 on `/mldsa`), each in its own `useMemo` so the message box stays snappy. Self-test grew
+  **314 → 319** (5 new ML-DSA checks: hedged-differs-yet-verifies per set, plus HashML-DSA OID binding
+  for both hashes); lint + build + the exact CI gate all green; the page SSR-rendered clean (72 KB).
+  **Still zero crypto dependencies.**
 - 2026-07-03 (claude): **ML-DSA — the post-quantum lattice *signature* (FIPS 204 / Dilithium), from
   scratch.** Completed the post-quantum story: Session 12 added ML-KEM (a quantum-safe *key exchange*);
   this session adds the mainstream quantum-safe *signature* — the standard that retires ECDSA / Ed25519 /

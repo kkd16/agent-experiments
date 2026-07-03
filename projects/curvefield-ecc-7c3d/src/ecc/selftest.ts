@@ -196,6 +196,8 @@ import {
   keyGen as mldsaKeyGen,
   sign as mldsaSign,
   verify as mldsaVerify,
+  signPreHash as mldsaSignPreHash,
+  verifyPreHash as mldsaVerifyPreHash,
   sizes as mldsaSizes,
   ntt as mldsaNtt,
   invNtt as mldsaInvNtt,
@@ -1871,6 +1873,27 @@ export function runSelfTest(): TestCase[] {
       const sigCtx = mldsaSign(p, sk, msg, { ctx })
       const ctxOk = mldsaVerify(p, pk, msg, sigCtx, { ctx }) && !mldsaVerify(p, pk, msg, sigCtx)
       check('ML-DSA', `${p.name} the context string binds`, ctxOk, 'a signature made under a context verifies only under that context')
+
+      // Hedged (randomised rnd) signing: differs from deterministic yet verifies.
+      const rndA = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) rndA[i] = (i * 29 + 13) & 0xff
+      const sigHedged = mldsaSign(p, sk, msg, { rnd: rndA })
+      let anyDiff = sigHedged.length !== sig.length
+      for (let i = 0; i < sig.length; i++) if (sigHedged[i] !== sig[i]) anyDiff = true
+      check('ML-DSA', `${p.name} hedged signing differs yet verifies`, anyDiff && mldsaVerify(p, pk, msg, sigHedged), 'a fresh rnd yields a different but equally valid signature')
+    }
+
+    // HashML-DSA (FIPS 204 §5.4) — the pre-hash variant, bound to its hash OID.
+    const phKey = mldsaKeyGen(MLDSA_SETS[0], dseed(3))
+    const phMsg = utf8('sign the digest, not the message')
+    for (const phf of ['SHA-512', 'SHAKE-256'] as const) {
+      const other = phf === 'SHA-512' ? 'SHAKE-256' : 'SHA-512'
+      const psig = mldsaSignPreHash(MLDSA_SETS[0], phKey.sk, phMsg, phf)
+      const bound =
+        mldsaVerifyPreHash(MLDSA_SETS[0], phKey.pk, phMsg, psig, phf) &&
+        !mldsaVerifyPreHash(MLDSA_SETS[0], phKey.pk, phMsg, psig, other) &&
+        !mldsaVerify(MLDSA_SETS[0], phKey.pk, phMsg, psig)
+      check('ML-DSA', `HashML-DSA (${phf}) binds to its hash OID`, bound, 'verifies only under the same pre-hash — not the other hash, not pure ML-DSA')
     }
   }
 

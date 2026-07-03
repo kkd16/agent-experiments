@@ -5,8 +5,9 @@ import { randomBytes, seedRng } from '../ecc/rng'
 import { ellipsize } from '../ui/format'
 import {
   PARAM_SETS, MLDSA44, N,
-  keyGen, signTrace, verify, sizes, toSigned,
-  type MlDsaParams,
+  keyGen, sign, signTrace, verify, sizes, toSigned,
+  signPreHash, verifyPreHash, preHash,
+  type MlDsaParams, type PreHash,
 } from '../ecc/mldsa'
 
 const hx = (b: Uint8Array, head = 8, tail = 6) => ellipsize(bytesToHex(b), head, tail)
@@ -49,6 +50,7 @@ export function MlDsaPage() {
   const [message, setMessage] = useState('The quick brown fox jumps over the lazy dog')
   const [tamperMsg, setTamperMsg] = useState(false)
   const [tamperSig, setTamperSig] = useState(false)
+  const [phKind, setPhKind] = useState<PreHash>('SHA-512')
 
   const seed = useMemo(() => {
     seedRng(0xd1_5a + seedNonce * 2654435761)
@@ -78,6 +80,59 @@ export function MlDsaPage() {
 
     return { pk, sk, sig, trace, accepted, zHist }
   }, [params, seed, message, tamperMsg, tamperSig])
+
+  // Pre-hash (HashML-DSA) — sign a digest of the message under a domain byte of
+  // 1 and the hash's OID, so a SHA-512 signature can't be replayed as a SHAKE-256
+  // one (or as a pure-message signature). Recomputed only when the inputs change.
+  const ph = useMemo(() => {
+    const { pk, sk } = keyGen(params, seed)
+    const msgBytes = utf8(message)
+    const digest = preHash(msgBytes, phKind)
+    const sig = signPreHash(params, sk, msgBytes, phKind)
+    const acceptsRight = verifyPreHash(params, pk, msgBytes, sig, phKind)
+    const otherPh: PreHash = phKind === 'SHA-512' ? 'SHAKE-256' : 'SHA-512'
+    const acceptsWrongPh = verifyPreHash(params, pk, msgBytes, sig, otherPh)
+    const acceptsAsPure = verify(params, pk, msgBytes, sig)
+    return { digest, sig, acceptsRight, acceptsWrongPh, acceptsAsPure, otherPh }
+  }, [params, seed, message, phKind])
+
+  // Hedged vs deterministic — two randomised (rnd ≠ 0) signatures over the same
+  // message differ byte-for-byte yet both verify; the deterministic one (rnd = 0)
+  // is reproducible. Independent of the message box so typing stays snappy.
+  const hedge = useMemo(() => {
+    const { pk, sk } = keyGen(params, seed)
+    const m = utf8('hedged-vs-deterministic demonstration')
+    seedRng(0xbeef + seedNonce)
+    const r1 = randomBytes(32)
+    const r2 = randomBytes(32)
+    const det1 = sign(params, sk, m)
+    const det2 = sign(params, sk, m)
+    const h1 = sign(params, sk, m, { rnd: r1 })
+    const h2 = sign(params, sk, m, { rnd: r2 })
+    const eq = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i])
+    return {
+      detReproducible: eq(det1, det2),
+      hedgedDiffer: !eq(h1, h2),
+      bothVerify: verify(params, pk, m, h1) && verify(params, pk, m, h2),
+      det: det1, h1, h2,
+    }
+  }, [params, seed, seedNonce])
+
+  // Rejection-loop iteration distribution — sign a batch of distinct messages and
+  // tally how many Fiat–Shamir attempts each needed. This is the "with aborts"
+  // cost made visible; the mean sits near the parameter set's target.
+  const aborts = useMemo(() => {
+    const { sk } = keyGen(params, seed)
+    const BATCH = 40
+    const buckets = [0, 0, 0, 0, 0] // 1, 2, 3, 4, 5+ iterations
+    let total = 0
+    for (let i = 0; i < BATCH; i++) {
+      const { trace } = signTrace(params, sk, utf8(`abort-sample-${i}`))
+      total += trace.iterations
+      buckets[Math.min(4, trace.iterations - 1)]++
+    }
+    return { buckets, mean: total / BATCH, batch: BATCH }
+  }, [params, seed])
 
   const sz = sizes(params)
   const zMaxHist = Math.max(...run.zHist, 1)
@@ -266,6 +321,87 @@ export function MlDsaPage() {
             )}
           </div>
         )}
+      </Panel>
+
+      <Panel
+        title="4 · HashML-DSA — sign a digest, bound to its hash function"
+        sub="For huge messages (or when the message is streamed and hashed elsewhere) FIPS 204 §5.4 defines a pre-hash mode: sign PH(M) instead of M, under domain byte 1 and the DER OID of the hash. The OID is what stops a signature over a SHA-512 digest from being replayed as a SHAKE-256 one."
+        right={<Verdict ok={ph.acceptsRight && !ph.acceptsWrongPh && !ph.acceptsAsPure}>{ph.acceptsRight && !ph.acceptsWrongPh && !ph.acceptsAsPure ? 'bound' : 'leak'}</Verdict>}
+      >
+        <div className="seg" style={{ marginBottom: '0.8rem' }}>
+          {(['SHA-512', 'SHAKE-256'] as PreHash[]).map((k) => (
+            <button key={k} className={phKind === k ? 'on' : ''} onClick={() => setPhKind(k)}>{k}</button>
+          ))}
+        </div>
+        <dl className="kv">
+          <dt>PH(M) — {phKind} digest</dt>
+          <dd className="hexbox violet" style={{ gridColumn: '1 / -1' }}>{hx(ph.digest, 16, 10)}</dd>
+          <dt>M′ prefix</dt>
+          <dd className="hexbox" style={{ gridColumn: '1 / -1' }}>01 ‖ len(ctx) ‖ ctx ‖ OID({phKind}) ‖ PH(M)</dd>
+          <dt>signature σ</dt>
+          <dd className="hexbox lavender" style={{ gridColumn: '1 / -1' }}>{hx(ph.sig, 16, 10)}</dd>
+        </dl>
+        <div className="statline" style={{ marginTop: '0.9rem' }}>
+          <div className="stat"><b>{ph.acceptsRight ? '✓' : '✗'}</b><span>verifies under {phKind}</span></div>
+          <div className="stat"><b>{ph.acceptsWrongPh ? '✗' : '✓'}</b><span>rejected under {ph.otherPh}</span></div>
+          <div className="stat"><b>{ph.acceptsAsPure ? '✗' : '✓'}</b><span>rejected as pure ML-DSA</span></div>
+          <div className="stat"><b>{fmtBytes(sz.sig)}</b><span>same signature size</span></div>
+        </div>
+        <div className="note" style={{ marginTop: '0.7rem' }}>
+          The signature bytes are the ordinary ML-DSA object — only the message representative fed to{' '}
+          <code>μ = H(tr ‖ M′)</code> changed. Because <code>M′</code> carries the hash's OID, the
+          three verdicts above show the signature is inseparable from the exact pre-hash it was made
+          under: swap the hash function and it fails closed.
+        </div>
+      </Panel>
+
+      <Panel
+        title="5 · Deterministic vs hedged — same key, two safe randomness modes"
+        sub="ML-DSA can sign with rnd = 0 (deterministic, fully reproducible — the mode this whole page uses) or with a fresh 32-byte rnd (hedged, so a faulty RNG or a fault-injection glitch can't repeat a mask). Both are FIPS 204; both verify."
+        right={<Verdict ok={hedge.detReproducible && hedge.hedgedDiffer && hedge.bothVerify}>{hedge.detReproducible && hedge.hedgedDiffer && hedge.bothVerify ? 'both valid' : 'error'}</Verdict>}
+      >
+        <dl className="kv">
+          <dt>deterministic (rnd = 0)</dt>
+          <dd className="hexbox" style={{ gridColumn: '1 / -1' }}>{hx(hedge.det, 16, 10)}</dd>
+          <dt>hedged #1 (random rnd)</dt>
+          <dd className="hexbox violet" style={{ gridColumn: '1 / -1' }}>{hx(hedge.h1, 16, 10)}</dd>
+          <dt>hedged #2 (random rnd)</dt>
+          <dd className="hexbox lavender" style={{ gridColumn: '1 / -1' }}>{hx(hedge.h2, 16, 10)}</dd>
+        </dl>
+        <div className="statline" style={{ marginTop: '0.9rem' }}>
+          <div className="stat"><b>{hedge.detReproducible ? '✓' : '✗'}</b><span>deterministic reproducible</span></div>
+          <div className="stat"><b>{hedge.hedgedDiffer ? '✓' : '✗'}</b><span>hedged sigs differ</span></div>
+          <div className="stat"><b>{hedge.bothVerify ? '✓' : '✗'}</b><span>both hedged verify</span></div>
+        </div>
+        <div className="note" style={{ marginTop: '0.7rem' }}>
+          Unlike ECDSA — where a <em>repeated</em> nonce leaks the private key outright — ML-DSA's
+          security doesn't hinge on rnd being unique, so both modes are safe. Hedging just adds
+          defence-in-depth against a stuck RNG; determinism buys reproducibility and testability.
+        </div>
+      </Panel>
+
+      <Panel
+        title="6 · The cost of aborts — the rejection-loop distribution"
+        sub={`Signing retries until the response is safe to publish. Signing ${aborts.batch} distinct messages and tallying attempts shows the geometric-ish distribution the parameters are tuned for — most signatures land on the first or second try.`}
+        right={<span className="tag ok">mean {aborts.mean.toFixed(2)} iters</span>}
+      >
+        <div className="bars">
+          {aborts.buckets.map((count, i) => (
+            <div className="bar" key={i}>
+              <span style={{ color: 'var(--ink-dim)', minWidth: 80 }}>{i === 4 ? '5+ tries' : `${i + 1} tr${i === 0 ? 'y' : 'ies'}`}</span>
+              <div className="track">
+                <div className="fill" style={{ width: `${(count / aborts.batch) * 100}%`, background: i === 0 ? '#34d399' : i < 3 ? '#a78bfa' : '#fb7185' }} />
+              </div>
+              <span className="mono" style={{ minWidth: 40, textAlign: 'right' }}>{count}</span>
+            </div>
+          ))}
+        </div>
+        <div className="note" style={{ marginTop: '0.7rem' }}>
+          Each abort is cheap relative to the whole signature, and the acceptance probability per
+          attempt is bounded below by the parameter choice, so the loop terminates fast with
+          overwhelming probability — the expected number of tries is a small constant, not a function
+          of the message.
+        </div>
       </Panel>
 
       <Panel

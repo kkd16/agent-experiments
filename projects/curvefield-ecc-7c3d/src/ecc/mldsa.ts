@@ -32,6 +32,7 @@
 // reproducible; and every key/signature length matches the FIPS 204 Table-2 sizes.
 
 import { shake256, shake128Xof, shake256Xof } from './keccak'
+import { sha512 } from './sha512'
 
 // ── Ring parameters ───────────────────────────────────────────────────────────
 export const Q = 8380417 // 2²³ − 2¹³ + 1
@@ -727,6 +728,49 @@ export function verify(
   const ctx = opts.ctx ?? new Uint8Array(0)
   if (sig.length !== sigSize(params)) return false
   return verifyInternal(params, pk, messagePrefix(m, ctx), sig)
+}
+
+// ── HashML-DSA — the pre-hash variant (FIPS 204 §5.4, Alg. 4/5) ───────────────
+// Instead of signing the whole message, sign a digest of it. The domain byte
+// flips from 0 to 1, and the message representative embeds the DER OID of the
+// pre-hash function so a signature over a SHA-512 digest can never be mistaken
+// for one over a SHAKE-256 digest or the pure message. Same signature bytes,
+// same sizes — only the μ input differs.
+export type PreHash = 'SHA-512' | 'SHAKE-256'
+
+// DER encodings of the pre-hash OIDs (FIPS 204 §5.4):
+//   SHA-512   = 2.16.840.1.101.3.4.2.3  → 06 09 60 86 48 01 65 03 04 02 03
+//   SHAKE-256 = 2.16.840.1.101.3.4.2.12 → 06 09 60 86 48 01 65 03 04 02 0C
+const PH_OID: Record<PreHash, Uint8Array> = {
+  'SHA-512': new Uint8Array([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03]),
+  'SHAKE-256': new Uint8Array([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x0c]),
+}
+/** The 64-byte pre-hash digest PH(M). */
+export function preHash(m: Uint8Array, ph: PreHash): Uint8Array {
+  return ph === 'SHA-512' ? sha512(m) : shake256(m, 64)
+}
+/** Format M' = 0x01 ‖ len(ctx) ‖ ctx ‖ OID(PH) ‖ PH(M) for HashML-DSA. */
+function preHashPrefix(m: Uint8Array, ctx: Uint8Array, ph: PreHash): Uint8Array {
+  if (ctx.length > 255) throw new Error('ML-DSA: context string must be ≤ 255 bytes')
+  return concatBytes([new Uint8Array([1, ctx.length]), ctx, PH_OID[ph], preHash(m, ph)])
+}
+
+/** HashML-DSA.Sign — sign the digest PH(M) rather than M itself (Alg. 4). */
+export function signPreHash(
+  params: MlDsaParams, sk: Uint8Array, m: Uint8Array, ph: PreHash, opts: SignOptions = {},
+): Uint8Array {
+  const ctx = opts.ctx ?? new Uint8Array(0)
+  const rnd = opts.rnd ?? new Uint8Array(32)
+  return signInternal(params, sk, preHashPrefix(m, ctx, ph), rnd)
+}
+
+/** HashML-DSA.Verify — verify a pre-hash signature (Alg. 5). */
+export function verifyPreHash(
+  params: MlDsaParams, pk: Uint8Array, m: Uint8Array, sig: Uint8Array, ph: PreHash, opts: SignOptions = {},
+): boolean {
+  const ctx = opts.ctx ?? new Uint8Array(0)
+  if (sig.length !== sigSize(params)) return false
+  return verifyInternal(params, pk, preHashPrefix(m, ctx, ph), sig)
 }
 
 // ── Sizes (FIPS 204 Table 2) ─────────────────────────────────────────────────
