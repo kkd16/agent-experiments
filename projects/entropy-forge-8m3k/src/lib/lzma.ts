@@ -23,13 +23,50 @@
 // References followed: the LZMA specification (lzma.txt, Igor Pavlov) and the
 // reference range-coder normalisation (kTopValue renorm, the leading cache byte).
 
-// ---- model constants (the LZMA defaults: lc=3, lp=0, pb=2) ----
+// ---- model constants ----
 const K_NUM_STATES = 12
-const LC = 3 // literal context bits (high bits of the previous byte)
-const LP = 0 // literal position bits
-const PB = 2 // position bits (low bits of the stream position)
-const POS_MASK = (1 << PB) - 1
-const LIT_POS_MASK = (1 << LP) - 1
+// The LZMA defaults (lc=3, lp=0, pb=2). These are now *tunable*: lc = literal
+// context bits (high bits of the previous byte), lp = literal position bits, pb =
+// position bits (low bits of the stream position). The encoder auto-selects the
+// best (lc,lp,pb) for the data and transmits the one-byte `props` = (pb·5+lp)·9+lc
+// — exactly what xz's `--lzma2=lc=..,lp=..,pb=..` tunes and stores.
+const DEFAULT_LC = 3
+const DEFAULT_LP = 0
+const DEFAULT_PB = 2
+
+export interface LzmaCfg {
+  lc: number
+  lp: number
+  pb: number
+  posMask: number
+  litPosMask: number
+}
+function makeCfg(lc: number, lp: number, pb: number): LzmaCfg {
+  return { lc, lp, pb, posMask: (1 << pb) - 1, litPosMask: (1 << lp) - 1 }
+}
+/** Encode (lc,lp,pb) into the single LZMA properties byte. */
+export function propsByte(lc: number, lp: number, pb: number): number {
+  return (pb * 5 + lp) * 9 + lc
+}
+/** Decode the LZMA properties byte back to (lc,lp,pb). */
+export function parseProps(b: number): { lc: number; lp: number; pb: number } {
+  const lc = b % 9
+  const r = Math.floor(b / 9)
+  return { lc, lp: r % 5, pb: Math.floor(r / 5) }
+}
+
+// The presets the auto-encoder races. lc+lp ≤ 4 and pb ≤ 4 keep the props byte
+// valid and the arrays bounded (isMatch/isRep0Long are indexed by ≤4 pos bits).
+// Each preset suits a different structure: pb=0 for byte-granular text, lp for
+// column-aligned/binary data, higher lc for text with strong previous-byte order.
+const CFG_PRESETS: [number, number, number][] = [
+  [3, 0, 2], // LZMA default
+  [3, 0, 0], // no position alignment (text, logs)
+  [4, 0, 2], // more literal context (natural language)
+  [2, 0, 0], // lean literal context, no alignment
+  [0, 2, 2], // position-model literals (aligned/tabular binary)
+  [0, 0, 0], // minimal context (near-random / tiny inputs)
+]
 
 const K_MATCH_MIN_LEN = 2
 // 2 + (8 low + 8 mid + 256 high − 1) length symbols = 273, LZMA's maximum match.
@@ -235,6 +272,9 @@ function newProbs(n: number): Uint16Array {
 }
 
 class LzmaModel {
+  constructor(lc: number, lp: number) {
+    this.literal = newProbs(0x300 << (lc + lp))
+  }
   isMatch = newProbs(K_NUM_STATES << K_NUM_POS_BITS_MAX)
   isRep = newProbs(K_NUM_STATES)
   isRepG0 = newProbs(K_NUM_STATES)
@@ -248,8 +288,9 @@ class LzmaModel {
   // silently dropped by the typed array, later re-read as a zero probability.
   specPos = newProbs(1 + K_NUM_FULL_DISTANCES - K_END_POS_MODEL_INDEX)
   align = newProbs(1 << K_NUM_ALIGN_BITS)
-  // literals: (0x300) sub-coders per (posState<<lc | prevHigh) context
-  literal = newProbs(0x300 << (LC + LP))
+  // literals: (0x300) sub-coders per (litPos<<lc | prevHigh) context; sized in
+  // the constructor from the active (lc, lp).
+  literal: Uint16Array
   // two length coders (one for new matches, one for rep matches)
   len = new LenModel()
   repLen = new LenModel()
@@ -333,8 +374,9 @@ function getPosSlot(dist: number): number {
 }
 
 // literal -------------------------------------------------------------------
-function litContextBase(pos: number, prevByte: number): number {
-  const litState = (((pos & LIT_POS_MASK) << LC) + (prevByte >>> (8 - LC))) >>> 0
+function litContextBase(pos: number, prevByte: number, cfg: LzmaCfg): number {
+  const litState =
+    (((pos & cfg.litPosMask) << cfg.lc) + (cfg.lc > 0 ? prevByte >>> (8 - cfg.lc) : 0)) >>> 0
   return litState * 0x300
 }
 function encodeLiteral(
@@ -541,29 +583,63 @@ export interface LzmaResult {
   encoded: Uint8Array
   tokens: LzmaToken[]
   stats: LzmaStats
+  props: { lc: number; lp: number; pb: number } // the (auto-)selected literal/pos model
 }
 
 export const LZMA_PARAMS = {
-  LC,
-  LP,
-  PB,
+  LC: DEFAULT_LC,
+  LP: DEFAULT_LP,
+  PB: DEFAULT_PB,
   MIN_MATCH: K_MATCH_MIN_LEN,
   MAX_MATCH: K_MATCH_MAX_LEN,
   STATES: K_NUM_STATES,
+  PRESETS: CFG_PRESETS,
+}
+
+export interface LzmaOpts {
+  maxChain?: number
+  niceLen?: number
+  collectTokens?: boolean
+  // Force a specific model instead of auto-selecting. Omit to auto-tune.
+  lc?: number
+  lp?: number
+  pb?: number
+  auto?: boolean // default true when lc/lp/pb are not all given
 }
 
 // =============================================================================
-// ENCODE
+// ENCODE — auto-tunes (lc,lp,pb) over CFG_PRESETS unless one is forced, then
+// ships the properties byte + the smallest range stream.
 // =============================================================================
-export function lzmaEncode(
-  data: Uint8Array,
-  opts: { maxChain?: number; niceLen?: number; collectTokens?: boolean } = {},
-): LzmaResult {
+export function lzmaEncode(data: Uint8Array, opts: LzmaOpts = {}): LzmaResult {
+  const forced = opts.lc !== undefined && opts.lp !== undefined && opts.pb !== undefined
+  const auto = opts.auto ?? !forced
+  const collect = opts.collectTokens ?? false
+
+  if (forced && !auto) {
+    return encodeWith(data, makeCfg(opts.lc!, opts.lp!, opts.pb!), opts, collect)
+  }
+
+  // Race the presets; keep the smallest. Trials skip the token trace for speed;
+  // the winner is re-encoded with the trace if the caller asked for one.
+  let best: LzmaResult | null = null
+  for (const [lc, lp, pb] of CFG_PRESETS) {
+    const r = encodeWith(data, makeCfg(lc, lp, pb), opts, false)
+    if (!best || r.encoded.length < best.encoded.length) best = r
+  }
+  const winner = best!
+  if (collect) {
+    return encodeWith(data, makeCfg(winner.props.lc, winner.props.lp, winner.props.pb), opts, true)
+  }
+  return winner
+}
+
+// One encode pass with a fixed model config. Output = [propsByte, ...rangeStream].
+function encodeWith(data: Uint8Array, cfg: LzmaCfg, opts: LzmaOpts, collect: boolean): LzmaResult {
   const rc = new RangeEnc()
-  const m = new LzmaModel()
+  const m = new LzmaModel(cfg.lc, cfg.lp)
   const mf = new MatchFinder(data, opts.maxChain ?? 256, opts.niceLen ?? 128)
   const n = data.length
-  const collect = opts.collectTokens ?? false
   const tokens: LzmaToken[] = []
 
   let state = 0
@@ -611,7 +687,7 @@ export function lzmaEncode(
 
   let pos = 0
   while (pos < n) {
-    const posState = pos & POS_MASK
+    const posState = pos & cfg.posMask
     const main = mf.best(pos)
     const rep = bestRep(pos)
 
@@ -642,7 +718,7 @@ export function lzmaEncode(
 
     if (action === 'lit') {
       const prevByte = pos > 0 ? data[pos - 1] : 0
-      const base = litContextBase(pos, prevByte)
+      const base = litContextBase(pos, prevByte, cfg)
       rc.encodeBit(m.isMatch, (state << K_NUM_POS_BITS_MAX) + posState, 0)
       const matched = !stateIsCharState(state)
       const matchByte = matched ? data[pos - rep0 - 1] : 0
@@ -716,10 +792,14 @@ export function lzmaEncode(
     }
   }
 
-  const encoded = rc.flush()
+  const stream = rc.flush()
+  // Prefix the one-byte LZMA properties so decode is self-describing.
+  const encoded = new Uint8Array(stream.length + 1)
+  encoded[0] = propsByte(cfg.lc, cfg.lp, cfg.pb)
+  encoded.set(stream, 1)
   stats.streamBytes = encoded.length
   stats.bitsPerByte = n > 0 ? (encoded.length * 8) / n : 0
-  return { encoded, tokens, stats }
+  return { encoded, tokens, stats, props: { lc: cfg.lc, lp: cfg.lp, pb: cfg.pb } }
 }
 
 // =============================================================================
@@ -728,8 +808,10 @@ export function lzmaEncode(
 export function lzmaDecode(encoded: Uint8Array, outLen: number): Uint8Array {
   const out = new Uint8Array(outLen)
   if (outLen === 0) return out
-  const rc = new RangeDec(encoded, 0)
-  const m = new LzmaModel()
+  const { lc, lp, pb } = parseProps(encoded[0]) // read the properties byte
+  const cfg = makeCfg(lc, lp, pb)
+  const rc = new RangeDec(encoded, 1) // the range stream begins after the props byte
+  const m = new LzmaModel(lc, lp)
 
   let state = 0
   let rep0 = 0
@@ -739,11 +821,11 @@ export function lzmaDecode(encoded: Uint8Array, outLen: number): Uint8Array {
   let pos = 0
 
   while (pos < outLen) {
-    const posState = pos & POS_MASK
+    const posState = pos & cfg.posMask
     if (rc.decodeBit(m.isMatch, (state << K_NUM_POS_BITS_MAX) + posState) === 0) {
       // literal
       const prevByte = pos > 0 ? out[pos - 1] : 0
-      const base = litContextBase(pos, prevByte)
+      const base = litContextBase(pos, prevByte, cfg)
       const matched = !stateIsCharState(state)
       const matchByte = matched ? out[pos - rep0 - 1] : 0
       out[pos++] = decodeLiteral(rc, m, base, matched, matchByte)
