@@ -12,18 +12,23 @@ import {
   epicyclePositions,
 } from '../lib/paths'
 import type { Point, PresetName } from '../lib/paths'
+import { readHashParams, shareLink, readNum, readStr, readBool } from '../lib/urlState'
 
 type Source = 'preset' | 'draw'
 
 export default function Epicycles() {
+  const sp = useMemo(() => readHashParams(), [])
   const [source, setSource] = useState<Source>('preset')
-  const [preset, setPreset] = useState<PresetName>('treble')
+  const [preset, setPreset] = useState<PresetName>(() =>
+    readStr<PresetName>(sp, 'p', 'treble', PRESETS.map((x) => x.id)),
+  )
   const [drawn, setDrawn] = useState<Point[] | null>(null)
-  const [harmonics, setHarmonics] = useState(60)
-  const [speed, setSpeed] = useState(0.18)
+  const [harmonics, setHarmonics] = useState(() => readNum(sp, 'h', 60))
+  const [speed, setSpeed] = useState(() => readNum(sp, 'spd', 0.18))
   const [running, setRunning] = useState(true)
-  const [showCircles, setShowCircles] = useState(true)
-  const [showOriginal, setShowOriginal] = useState(true)
+  const [showCircles, setShowCircles] = useState(() => readBool(sp, 'circ', true))
+  const [showOriginal, setShowOriginal] = useState(() => readBool(sp, 'orig', true))
+  const [copied, setCopied] = useState(false)
 
   const { ref, size } = useDprCanvas()
 
@@ -91,6 +96,21 @@ export default function Epicycles() {
       setDrawn(normalizePath(rawRef.current))
     }
   }, [])
+
+  const onShare = () => {
+    shareLink('epicycles', {
+      p: preset,
+      h: usedHarmonics,
+      spd: speed.toFixed(2),
+      circ: showCircles,
+      orig: showOriginal,
+    }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
 
   // ----- rendering -----
   useAnimationFrame(
@@ -282,6 +302,13 @@ export default function Epicycles() {
               { label: 'Points', value: String(path.length) },
             ]}
           />
+          {source === 'preset' && (
+            <div className="btn-row">
+              <Button variant="ghost" onClick={onShare}>
+                {copied ? 'Link copied ✓' : 'Copy link'}
+              </Button>
+            </div>
+          )}
         </Panel>
       </div>
 

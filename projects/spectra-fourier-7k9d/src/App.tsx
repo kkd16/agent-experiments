@@ -3,6 +3,8 @@ import Epicycles from './modes/Epicycles'
 import Spectrum from './modes/Spectrum'
 import FilterMode from './modes/Filter'
 import Spectrogram from './modes/Spectrogram'
+import Wavelet from './modes/Wavelet'
+import ImageFFT from './modes/ImageFFT'
 import About from './modes/About'
 
 const ROUTES = [
@@ -10,6 +12,8 @@ const ROUTES = [
   { id: 'spectrum', label: 'Spectrum' },
   { id: 'filter', label: 'Filter' },
   { id: 'spectrogram', label: 'Spectrogram' },
+  { id: 'wavelet', label: 'Wavelet' },
+  { id: 'image', label: 'Image 2D' },
   { id: 'about', label: 'About' },
 ]
 
@@ -64,6 +68,8 @@ export default function App() {
       {active === 'spectrum' && <Spectrum />}
       {active === 'filter' && <FilterMode />}
       {active === 'spectrogram' && <Spectrogram />}
+      {active === 'wavelet' && <Wavelet />}
+      {active === 'image' && <ImageFFT />}
       {active === 'about' && <About />}
 
       <footer className="footer">

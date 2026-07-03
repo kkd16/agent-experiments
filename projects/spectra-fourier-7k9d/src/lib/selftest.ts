@@ -4,6 +4,8 @@
 
 import { fromReal, magnitude } from './complex'
 import { fft, ifft, dft } from './fft'
+import { fieldFromGray, fft2 } from './fft2'
+import { cwtMorlet } from './wavelet'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -76,6 +78,71 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       if (!approxEqual(fa.im[k] + fb.im[k], fsum.im[k], 1e-9)) ok = false
     }
     check('fft is linear', ok)
+  }
+
+  // 5. Parseval's theorem: Σ|x[n]|² == (1/N) Σ|X[k]|².
+  {
+    const N = 64
+    const x = Array.from({ length: N }, (_, i) => Math.sin(0.4 * i) + 0.3 * Math.cos(1.1 * i))
+    const X = fft(fromReal(x))
+    let energyTime = 0
+    for (const v of x) energyTime += v * v
+    let energyFreq = 0
+    for (let k = 0; k < N; k++) energyFreq += X.re[k] * X.re[k] + X.im[k] * X.im[k]
+    check('Parseval: energy conserved between domains', approxEqual(energyTime, energyFreq / N, 1e-6))
+  }
+
+  // 6. 2-D FFT round-trips: ifft2(fft2(x)) == x.
+  {
+    const w = 8
+    const h = 8
+    const gray = new Float64Array(w * h)
+    for (let i = 0; i < w * h; i++) gray[i] = Math.sin(i * 0.7) + 0.5 * Math.cos(i * 0.31)
+    const f = fieldFromGray(gray, w, h)
+    const orig = f.re.slice()
+    fft2(f, false)
+    fft2(f, true)
+    let ok = true
+    for (let i = 0; i < w * h; i++) {
+      if (!approxEqual(f.re[i], orig[i], 1e-9) || Math.abs(f.im[i]) > 1e-9) ok = false
+    }
+    check('ifft2(fft2(x)) == x', ok)
+  }
+
+  // 7. 2-D FFT is separable: the transform of an outer product a⊗b equals the
+  //    outer product of the 1-D transforms A⊗B.
+  {
+    const w = 8
+    const h = 8
+    const a = Array.from({ length: w }, (_, i) => Math.cos(0.3 * i))
+    const b = Array.from({ length: h }, (_, j) => Math.sin(0.2 * j) + 0.4)
+    const gray = new Float64Array(w * h)
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) gray[y * w + x] = a[x] * b[y]
+    const F = fft2(fieldFromGray(gray, w, h), false)
+    const A = fft(fromReal(a))
+    const B = fft(fromReal(b))
+    let ok = true
+    for (let l = 0; l < h; l++) {
+      for (let k = 0; k < w; k++) {
+        const er = A.re[k] * B.re[l] - A.im[k] * B.im[l]
+        const ei = A.re[k] * B.im[l] + A.im[k] * B.re[l]
+        const idx = l * w + k
+        if (!approxEqual(F.re[idx], er, 1e-6) || !approxEqual(F.im[idx], ei, 1e-6)) ok = false
+      }
+    }
+    check('2-D FFT is separable (outer product)', ok)
+  }
+
+  // 8. Morlet admissibility: a valid wavelet has zero mean, so it produces no
+  //    response to a constant (DC) signal.
+  {
+    const N = 128
+    const dc = new Float64Array(N)
+    dc.fill(1)
+    const res = cwtMorlet(dc, { fs: N, omega0: 6, scalesPerOctave: 8 })
+    let maxPower = 0
+    for (const row of res.power) for (let i = 0; i < row.length; i++) if (row[i] > maxPower) maxPower = row[i]
+    check('Morlet wavelet has zero mean (no DC response)', maxPower < 1e-6)
   }
 
   return { passed, failed, messages }

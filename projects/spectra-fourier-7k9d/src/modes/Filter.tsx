@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CanvasCard } from '../components/CanvasCard'
-import { Panel, Field, Slider, Select, Segmented, Readout } from '../components/Controls'
+import { Panel, Field, Slider, Select, Segmented, Readout, Button } from '../components/Controls'
 import { useDprCanvas, prepareContext } from '../hooks/useDprCanvas'
 import { SIGNALS, generateSignal, peak } from '../lib/dsp'
 import type { SignalName } from '../lib/dsp'
 import { makeComplex, magnitude } from '../lib/complex'
 import { fft, ifft } from '../lib/fft'
 import { fillPlotBg, grid, zeroLine, linePlot, areaPlot, axisLabel } from '../lib/draw'
+import { audio } from '../lib/audio'
+import { readHashParams, shareLink, readNum, readStr } from '../lib/urlState'
 
 const N = 1024
 const FS = 1024
 const HALF = N / 2
+const AUDIO_SR = 8000
 type FilterKind = 'low' | 'high' | 'band' | 'notch'
+type Playing = 'none' | 'in' | 'out'
 
 const FILTERS: { id: FilterKind; label: string }[] = [
   { id: 'low', label: 'Low-pass' },
@@ -21,13 +25,20 @@ const FILTERS: { id: FilterKind; label: string }[] = [
 ]
 
 export default function FilterMode() {
-  const [signal, setSignal] = useState<SignalName>('twoTone')
-  const [noise, setNoise] = useState(0.15)
-  const [freq, setFreq] = useState(20)
-  const [kind, setKind] = useState<FilterKind>('low')
-  const [cutoff, setCutoff] = useState(80)
-  const [width, setWidth] = useState(60)
-  const [trans, setTrans] = useState(14)
+  const sp = useMemo(() => readHashParams(), [])
+  const [signal, setSignal] = useState<SignalName>(() =>
+    readStr<SignalName>(sp, 'sig', 'twoTone', SIGNALS.map((s) => s.id)),
+  )
+  const [noise, setNoise] = useState(() => readNum(sp, 'noise', 0.15))
+  const [freq, setFreq] = useState(() => readNum(sp, 'freq', 20))
+  const [kind, setKind] = useState<FilterKind>(() =>
+    readStr<FilterKind>(sp, 'kind', 'low', ['low', 'high', 'band', 'notch']),
+  )
+  const [cutoff, setCutoff] = useState(() => readNum(sp, 'cut', 80))
+  const [width, setWidth] = useState(() => readNum(sp, 'bw', 60))
+  const [trans, setTrans] = useState(() => readNum(sp, 'tr', 14))
+  const [playing, setPlaying] = useState<Playing>('none')
+  const [copied, setCopied] = useState(false)
 
   const { ref: timeRef, size: timeSize } = useDprCanvas()
   const { ref: specRef, size: specSize } = useDprCanvas()
@@ -92,6 +103,36 @@ export default function FilterMode() {
     }
     return { outReal, origMag, filtMag, response, maxMag }
   }, [raw, gainAt])
+
+  // A/B playback: hear the noisy input, then the filtered output.
+  useEffect(() => {
+    if (playing === 'none') {
+      audio.stop()
+      return
+    }
+    const buf = playing === 'in' ? raw : result.outReal
+    audio.playSignal(buf, { sampleRate: AUDIO_SR, gain: 0.85 })
+  }, [playing, raw, result])
+  useEffect(() => () => audio.stop(), [])
+
+  const toggle = (which: Playing) => setPlaying((p) => (p === which ? 'none' : which))
+
+  const onShare = () => {
+    shareLink('filter', {
+      sig: signal,
+      noise: noise.toFixed(2),
+      freq,
+      kind,
+      cut: cutoff,
+      bw: width,
+      tr: trans,
+    }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
 
   // Time domain overlay.
   useEffect(() => {
@@ -176,6 +217,26 @@ export default function FilterMode() {
               { label: 'Steepness', value: trans <= 4 ? 'sharp' : trans <= 20 ? 'med' : 'soft' },
             ]}
           />
+        </Panel>
+
+        <Panel title="Listen (A / B)">
+          <div className="btn-row">
+            <Button variant={playing === 'in' ? 'primary' : 'default'} onClick={() => toggle('in')}>
+              {playing === 'in' ? '◼ Input' : '► Input'}
+            </Button>
+            <Button variant={playing === 'out' ? 'primary' : 'default'} onClick={() => toggle('out')}>
+              {playing === 'out' ? '◼ Filtered' : '► Filtered'}
+            </Button>
+          </div>
+          <p className="hint">
+            Play the noisy input, then the filtered output — a low-pass audibly scrubs the hiss;
+            a notch silences one tone.
+          </p>
+          <div className="btn-row">
+            <Button variant="ghost" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
         </Panel>
       </div>
 

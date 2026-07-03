@@ -5,7 +5,9 @@ import { useCallback, useEffect, useState } from 'react'
 // text after `#/`) and a setter that updates the hash.
 
 function currentRoute(): string {
-  const h = window.location.hash.replace(/^#\/?/, '')
+  // Strip any `?query` used for deep-linkable mode state so it never leaks into
+  // the route name (see lib/urlState).
+  const h = window.location.hash.replace(/^#\/?/, '').split('?')[0]
   return h || ''
 }
 

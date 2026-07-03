@@ -181,6 +181,39 @@ code {
   font-weight: 600;
 }
 
+/* Inline helper text under a control. */
+.hint {
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 2px 0 0;
+}
+
+.hint em {
+  color: var(--ink-dim);
+  font-style: normal;
+  font-weight: 600;
+}
+
+/* Three-up square panels for the 2-D FFT image mode. */
+.img-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 1180px) {
+  .img-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .img-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .mode {
     grid-template-columns: 1fr;
