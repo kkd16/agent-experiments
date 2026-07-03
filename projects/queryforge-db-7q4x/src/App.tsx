@@ -18,6 +18,7 @@ import { FuzzLab } from './ui/FuzzLab'
 import { StorageLab } from './ui/StorageLab'
 import { IvmLab } from './ui/IvmLab'
 import { SketchLab } from './ui/SketchLab'
+import { WcojLab } from './ui/WcojLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -39,6 +40,7 @@ const TABS = [
   { id: 'storage', label: 'Storage Lab' },
   { id: 'ivm', label: 'IVM Lab' },
   { id: 'sketch', label: 'Sketch Lab' },
+  { id: 'wcoj', label: 'WCOJ Lab' },
   { id: 'optimizer', label: 'Optimizer Lab' },
   { id: 'execution', label: 'Execution Lab' },
   { id: 'vectorize', label: 'Vectorize Lab' },
@@ -151,6 +153,7 @@ export default function App() {
           {route === 'storage' && <StorageLab />}
           {route === 'ivm' && <IvmLab />}
           {route === 'sketch' && <SketchLab />}
+          {route === 'wcoj' && <WcojLab />}
           {route === 'optimizer' && (
             <OptimizerLab engine={engine} version={version} onApply={(ddl) => run(ddl)} />
           )}

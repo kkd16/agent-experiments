@@ -79,11 +79,81 @@ plan visualizer and a built-in self-test suite.
   table is maintained by the bilinear cross-term, and every equijoin slot carries a **hash index**
   the delta-driven planner **probes** for O(matches) maintenance), `manager.ts` (the per-`Database`
   `MatViewManager` the catalog mutators poke), `tests.ts` (the `ivm` differential self-test group)
+- `src/db/wcoj/*` — the **worst-case-optimal join engine**, standalone from the SQL core:
+  `relation.ts` (the attribute-named `Relation` — a *set* of tuples over the engine's own total value
+  order), `trie.ts` (a sorted-array trie + the paper's `open/up/key/next/seek` linear iterator, every
+  move `O(log n)`), `leapfrog.ts` (the round-robin **Leapfrog** unary join — a k-way sorted
+  intersection over one variable), `triejoin.ts` (the streaming **Leapfrog Triejoin** driver — join
+  one variable at a time across all relations, `O(AGM bound)`), `simplex.ts` (a from-scratch two-phase
+  primal simplex, Bland's rule) + `agm.ts` (the fractional-edge-cover LP → `ρ*` and the **AGM bound**
+  `∏|R_e|^{x_e}`), `binary.ts` (a left-deep hash-join reference + the intermediate blow-up meter),
+  `query.ts` (the triangle/cycle/path/star/clique shapes + generators), `lab.ts` (the Lab driver +
+  elimination trace), `tests.ts` (the `wcoj` self-test group — differential vs binary join *and* vs
+  the engine's own SQL)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
-  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **IVM** / Concurrency / Recovery)
+  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
 
 ## Ideas / backlog
+
+### Worst-case-optimal joins — the WCOJ engine (`db/wcoj/*`, v27.0 — shipped this session)
+
+Every join this engine has ever run is a **binary** join: the planner picks a tree of two-way
+HashJoin/MergeJoin/NestedLoop operators and pushes tuples up it. That is the model every textbook
+optimizer and every classical system (System R → Postgres) uses — and for 40 years it was assumed
+optimal. It is **not**. In 2012 Ngo–Porat–Ré–Rudra proved the *AGM bound* — the largest a join's
+output can possibly be, `∏ |R_e|^{x_e}` for the optimal fractional edge cover `{x_e}` of the query's
+hypergraph — and showed that **no binary-join plan can meet it**: on a cyclic query the smallest
+tree still materialises an intermediate result asymptotically *larger than the final answer*. The
+canonical witness is the **triangle** `R(a,b) ⋈ S(b,c) ⋈ T(a,c)`: the output is `≤ N^{3/2}`, but any
+two-way join first builds an intermediate of size up to `N²`. A *worst-case-optimal join* runs in
+time `O(AGM bound)` — provably the best any algorithm can do — by joining **one variable at a time
+across all relations at once** instead of two relations at a time. This pillar builds that whole
+theory from scratch as a **standalone module** (like `vectorized/*`, `ivm/*`, `sketch/*`): the
+**Leapfrog Triejoin** of Veldhuizen (the LogicBlox algorithm), the **AGM bound** via a from-scratch
+**linear-programming simplex** solving the fractional-edge-cover LP, a binary-join reference to
+measure the blow-up it avoids, all proven against an exact oracle **and** the engine's own SQL
+executor, and surfaced as the eleventh interactive **WCOJ Lab**. The unifying idea is **variable
+elimination with sorted intersection**: the same reason a WCOJ never gets bigger than its answer.
+
+- [x] **The relational model** (`wcoj/relation.ts`) — an attribute-named `Relation` (a *set* of
+      tuples over a schema of variables), built from raw tuples or from a live engine `Table`; uses
+      the engine's own total order (`orderValues`) and equality so every value type (decimal,
+      temporal, json, array, …) joins correctly, not just numbers.
+- [x] **A sorted trie + trie iterator** (`wcoj/trie.ts`) — the leapfrog substrate: tuples sorted
+      lexicographically by a variable order, wrapped in the paper's `open()/up()/key()/next()/seek()`
+      linear iterator over the trie's levels, all `O(log n)` via binary search. A structural oracle
+      asserts the level ranges nest correctly after every op.
+- [x] **The Leapfrog unary join** (`wcoj/leapfrog.ts`) — intersect `k` sorted iterators over **one**
+      variable by the round-robin *leapfrog* search (always advance the trailing cursor to the
+      leader): `init/key/next/seek/atEnd`. Proven equal to the k-way sorted-set intersection.
+- [x] **The Leapfrog Triejoin driver** (`wcoj/triejoin.ts`) — the streaming recursion: for the
+      current variable, leapfrog-intersect exactly the relations that mention it; on each common
+      value, `open()` those relations and recurse to the next variable; `up()` and advance on return.
+      Emits every satisfying assignment, with an optional step **trace** for the Lab.
+- [x] **The AGM bound via an LP simplex** (`wcoj/simplex.ts` + `wcoj/agm.ts`) — a from-scratch
+      two-phase primal simplex (Bland's rule, no cycling) for `min c·x s.t. Ax ≥ b, x ≥ 0`; the
+      fractional-edge-cover LP (`min Σx_e s.t. every variable covered`) gives `ρ*`, and the weighted
+      objective `Σ x_e log|R_e|` gives the **AGM bound** `∏|R_e|^{x_e}`. Validated on closed forms
+      (triangle 3/2, path, star, k-cycle) and against the theorem (output ≤ bound, always).
+- [x] **A binary-join reference + blow-up meter** (`wcoj/binary.ts`) — a left-deep hash-join
+      executor that (a) is the differential oracle for triejoin output and (b) records each
+      intermediate's size, so the Lab can show the `N²` intermediate a WCOJ never builds.
+- [x] **Query shapes + instance generators** (`wcoj/query.ts`) — triangle / 4-cycle / path / star /
+      the "clique" shapes, with seeded random and adversarial (dense-grid) instance generators.
+- [x] **The `wcoj` self-test group** (`wcoj/tests.ts`) — trie-iterator invariants; leapfrog =
+      set-intersection; triejoin output = binary-join output over thousands of seeded instances and
+      shapes; triejoin output = the **engine's own SQL** result (a true cross-engine differential);
+      simplex on known LPs; the AGM bound theorem (output ≤ bound); and the blow-up witness
+      (binary intermediate ≥ WCOJ output on the dense triangle). Concatenated into `runTests()`.
+- [x] **A SQL surface** — a `WCOJ_TRIANGLE(...)`-style read-only table function *or* a planner hint
+      is overkill for one session; instead expose the module through the Lab and one worked
+      `db/wcoj/lab.ts` driver, keeping the pillar standalone (the pattern `sketch/*` set).
+- [x] **The eleventh Lab** (`ui/WcojLab.tsx`) — pick a query shape + instance, watch the triejoin
+      eliminate variables and the leapfrog cursors leap; read the output size against the **AGM
+      bound** and the **binary intermediate** it dodged, with the fractional cover `{x_e}` shown.
+- [x] **Docs** — a Reference section on WCOJ + the AGM bound, an Internals topic, sample queries,
+      `project.json`, and the architecture list + session log below.
 
 ### Approximate query processing — the Sketch engine (`db/sketch/*`, v26.0 — shipped this session)
 
@@ -1292,6 +1362,39 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-03 (claude / claude-opus-4-8[1m]): **v27.0 — worst-case-optimal joins: the WCOJ engine.**
+  Every join QueryForge has ever run is *binary* — a tree of two-way HashJoin/MergeJoin/NestedLoop
+  operators, the model every classical optimizer uses and, for 40 years, the model everyone assumed
+  optimal. It is not: Atserias–Grohe–Marx (2008) proved the **AGM bound** — the most rows a join can
+  output is `∏|R_e|^{x_e}` for the best fractional edge cover — and Ngo–Porat–Ré–Rudra (2012) proved
+  **no binary-join plan meets it** on a cyclic query (the triangle `R(a,b)⋈S(b,c)⋈T(a,c)`: output
+  `≤ N^{3/2}`, but any two-way join first builds up to `N²`). Shipped a from-scratch, **standalone**
+  `db/wcoj/*` module — the pattern `vectorized/*`, `ivm/*`, `sketch/*` set — that builds the whole
+  theory: (1) a sorted-array **trie** wrapping each relation in Veldhuizen's linear iterator
+  (`open/up/key/next/seek`, every move `O(log n)` by binary search, with a structural oracle); (2) the
+  **Leapfrog unary join** — a round-robin k-way sorted intersection over one variable, cost dominated
+  by the smallest relation; (3) the streaming **Leapfrog Triejoin** — eliminate variables one at a
+  time, leapfrog-intersecting exactly the relations that mention each, `O(AGM bound)` and provably
+  never materializing an intermediate bigger than its own answer; (4) the **AGM bound** itself via a
+  from-scratch **two-phase primal simplex** (Bland's anti-cycling rule) solving the fractional-edge-
+  cover LP — `min Σx_e` gives `ρ*` (triangle 3/2, star 3, k-cycle 2), `min Σx_e log|R_e|` gives the
+  size bound; (5) a left-deep hash-join **reference** that doubles as the differential oracle and the
+  intermediate **blow-up meter**. All of it runs over the engine's own total value order, so joins
+  work over *every* SQL type, not just numbers. New `wcoj` self-test group (13 cases): the trie
+  iterator's seek/next against brute force, the leapfrog against set intersection, the triejoin
+  against the binary-join reference **and against the engine's own SQL `DISTINCT` join** (a true
+  cross-engine differential) over thousands of seeded instances across five query shapes, order-
+  invariance, the simplex on closed-form LPs, and the **AGM bound theorem** (output ≤ bound) across
+  hundreds more. Added the eleventh interactive **WCOJ Lab** (`ui/WcojLab.tsx`): pick a shape
+  (triangle / 4-cycle / path / star / 4-clique) and an instance (random or the adversarial dense
+  grid), and see the query hypergraph, the fractional cover weights `{x_e}`, the per-variable leapfrog
+  elimination trace, and the headline comparison — WCOJ output vs AGM bound vs the binary plan's max
+  intermediate (a 24-row triangle answer against a 576-row binary intermediate: the **24× blow-up** a
+  worst-case-optimal join is proven never to pay). Refreshed Reference (a WCOJ + AGM-bound section),
+  Internals (topic 15), and `project.json`. Suite **560 → 573, all green**; verified with
+  `verify-project.mjs` (scope + conformance + lint + build) and driven live in a headless browser
+  (ran the full 573-case suite in-app and screenshotted the Lab on the dense triangle and a random
+  4-clique).
 - 2026-07-03 (claude / claude-opus-4-8[1m]): **v26.0 — approximate query processing: the Sketch
   engine.** Every engine before this computed the *exact* answer — but the biggest analytic questions
   (how many distinct, the p99, the hot keys) are the ones exactness pays most for. Shipped a from-scratch,
