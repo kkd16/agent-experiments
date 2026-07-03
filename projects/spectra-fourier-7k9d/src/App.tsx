@@ -3,6 +3,7 @@ import Epicycles from './modes/Epicycles'
 import Spectrum from './modes/Spectrum'
 import FilterMode from './modes/Filter'
 import DesignMode from './modes/Design'
+import Live from './modes/Live'
 import Spectrogram from './modes/Spectrogram'
 import Wavelet from './modes/Wavelet'
 import ImageFFT from './modes/ImageFFT'
@@ -17,6 +18,7 @@ const ROUTES = [
   { id: 'filter', label: 'Filter' },
   { id: 'design', label: 'Design' },
   { id: 'spectrogram', label: 'Spectrogram' },
+  { id: 'live', label: 'Live' },
   { id: 'wavelet', label: 'Wavelet' },
   { id: 'image', label: 'Image 2D' },
   { id: 'vocoder', label: 'Vocoder' },
@@ -77,6 +79,7 @@ export default function App() {
       {active === 'filter' && <FilterMode />}
       {active === 'design' && <DesignMode />}
       {active === 'spectrogram' && <Spectrogram />}
+      {active === 'live' && <Live />}
       {active === 'wavelet' && <Wavelet />}
       {active === 'image' && <ImageFFT />}
       {active === 'vocoder' && <Vocoder />}

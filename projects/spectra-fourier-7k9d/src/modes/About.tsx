@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The ten modes</h3>
+        <h3>The eleven modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a drawn curve's points as complex numbers, FFT
@@ -51,6 +51,12 @@ export default function About() {
             <strong>Spectrogram</strong> — a short-time Fourier transform slides a fixed window
             across the signal, producing a time × frequency heatmap. It exposes the time/frequency
             trade-off at the heart of signal processing.
+          </li>
+          <li>
+            <strong>Live</strong> — the whole thing in <em>real time</em>. Every animation frame
+            grabs a block of audio from your <strong>microphone</strong> (or a synthetic voice),
+            windows it and runs the same from-scratch FFT, producing a live spectrum, a scrolling
+            spectrogram, and a pitch <strong>tuner</strong> that names the note you're hearing.
           </li>
           <li>
             <strong>Wavelet</strong> — the continuous wavelet transform dilates a little wave (the
@@ -164,7 +170,9 @@ export default function About() {
           response types is confirmed stable, a linear-phase FIR's group delay is verified constant,
           the Durand–Kerner root finder is checked against a known factorisation, and — the real
           proof — the FFT of each filter's impulse response is confirmed to match its analytic
-          transfer function. Open the console to see all twenty-three pass.
+          transfer function. Even the live analyser's helpers are covered — equal-temperament note
+          mapping (A4 = 440 Hz) and sub-bin parabolic peak refinement. Open the console to see all
+          twenty-five pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

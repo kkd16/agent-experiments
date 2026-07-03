@@ -28,9 +28,12 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/filterdesign.ts` — the filter-design engine: Butterworth / Chebyshev I·II analog
   prototypes, `lp2lp/hp/bp/bs` transforms, a pre-warped bilinear transform, zpk→SOS, a biquad
   cascade, the RBJ cookbook, a windowed-sinc FIR, and response / group-delay / impulse eval (v4).
+- `src/lib/mic.ts` — a defensive real-time microphone tap (AnalyserNode used only as a
+  time-domain buffer; our own FFT does the analysis); degrades gracefully when denied (v5).
+- `src/lib/note.ts` — equal-temperament frequency→note mapping + sub-bin parabolic peak refine (v5).
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Wavelet`, `ImageFFT`,
-  `Vocoder`, `Compress`, `Cepstrum`, `About` (ten interactive modes).
+- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Live`, `Wavelet`,
+  `ImageFFT`, `Vocoder`, `Compress`, `Cepstrum`, `About` (eleven interactive modes).
 
 ## Modes
 
@@ -148,10 +151,28 @@ frequency-domain masking of the Filter mode. New from-scratch numerics (`cplx.ts
 - [x] **About** — a new "Designing a filter on the z-plane" section (H(z), bilinear transform, the
       exact group-delay formula) and the Design bullet; nav + routing wired.
 
+### Shipped in v5 — the **Live** analyser (real-time microphone)
+
+An eleventh mode: the whole lab, in real time, on live audio.
+
+- [x] **Microphone tap** (`lib/mic.ts`) — `getUserMedia` + an AudioContext whose AnalyserNode is
+      used *only* as a rolling time-domain buffer; the actual spectrum is our from-scratch FFT. Fully
+      defensive: a denied permission or a sandboxed thumbnail reports unavailable, never throws.
+- [x] **Note detection** (`lib/note.ts`) — equal-temperament frequency→note (A4 = 440 Hz) with a
+      signed cents reading, and **sub-bin parabolic peak refinement** for accurate pitch.
+- [x] **Live mode** (`modes/Live.tsx`) — per-frame windowed FFT driving a live waveform, a live
+      magnitude **spectrum** (peak-marked), and a **scrolling spectrogram** (offscreen-canvas scroll +
+      newest column, colormapped, low-freq-at-bottom). A **pitch tuner** names the note and shows a
+      needle for cents. Synthetic gliding-voice fallback so the mode is alive even with no mic (and in
+      the sandboxed catalog thumbnail); microphone/synthetic toggle, colormap, max-frequency, noise
+      floor and pause controls.
+- [x] **Two new self-tests** (25 total) — note mapping (A4/C4/+10 cents) and sub-bin peak refinement.
+- [x] **About + nav** — a Live bullet and eleven-mode heading; route wired.
+
 ### Backlog (future sessions)
 
 - [ ] Import an image outline (edge-detect) to drive the epicycle machine directly
-- [ ] Real-time microphone input into Spectrum / Spectrogram
+- [x] Real-time microphone input into Spectrum / Spectrogram → **shipped as the Live mode**
 - [x] Group-delay & pole–zero view for the filter → **superseded by the full Design studio**
 - [ ] Colour (YCbCr / chroma-subsampled) JPEG in the compression lab
 - [ ] **Elliptic (Cauer) filters** in Design — Jacobi elliptic functions for the steepest skirt
@@ -204,3 +225,17 @@ frequency-domain masking of the Filter mode. New from-scratch numerics (`cplx.ts
   its analytic transfer function. Ran the CI gate (scope + conformance + lint + build ✓) and drove
   every response type in headless Chromium (Butterworth/Chebyshev/FIR/biquad + a z-plane drag): zero
   console/runtime errors. Ten modes, still zero math libraries.
+- 2026-07-03 (claude, v5): "The FFT, live." Added an eleventh mode — **Live**, a real-time
+  analyser. New `lib/mic.ts` taps the microphone via getUserMedia + an AudioContext, using the
+  AnalyserNode purely as a time-domain buffer so our own from-scratch FFT still does every spectrum
+  (defensive throughout — a denied mic or sandboxed thumbnail degrades to a synthetic gliding voice
+  instead of throwing). New `lib/note.ts` maps a frequency to its equal-temperament note (A4=440) with
+  a signed cents reading and sub-bin parabolic peak refinement. `modes/Live.tsx` runs a per-frame
+  windowed FFT into a live waveform, a peak-marked magnitude spectrum, a scrolling colormapped
+  spectrogram (offscreen-canvas scroll + newest column), and a pitch tuner with a cents needle;
+  microphone/synthetic toggle, colormap, max-frequency, noise-floor and pause controls. Added two
+  self-tests (25 total, all green). Ran the CI gate (scope + conformance + lint + build ✓) and drove
+  it in headless Chromium two ways: the synthetic path detected a gliding C♯4 with harmonic ridges in
+  the spectrogram, and a 440 Hz WAV fed through Chromium's fake-audio device was correctly read by the
+  live mic tap as A4 (439.3 Hz, −3 cents) — zero console/runtime errors. Eleven modes, still zero math
+  libraries.

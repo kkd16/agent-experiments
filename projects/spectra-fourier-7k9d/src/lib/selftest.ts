@@ -18,6 +18,7 @@ import {
   impulseResponse,
   type DesignParams,
 } from './filterdesign'
+import { freqToNote, refinePeak } from './note'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -378,6 +379,38 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       }
     }
     check('all classic IIR designs (3 families × 4 types) are stable', allStable)
+  }
+
+  // ---- Live analyser helpers ----
+
+  // 24. Equal-temperament note mapping: A4 = 440 Hz, C4 ≈ 261.63 Hz, and a
+  //     slightly-sharp A is reported as positive cents.
+  {
+    const a4 = freqToNote(440)
+    const c4 = freqToNote(261.6256)
+    const sharpA = freqToNote(440 * Math.pow(2, 10 / 1200)) // +10 cents
+    const ok =
+      a4?.name === 'A4' &&
+      Math.abs(a4.cents) <= 0 &&
+      c4?.name === 'C4' &&
+      sharpA?.name === 'A4' &&
+      Math.abs((sharpA?.cents ?? 0) - 10) <= 1 &&
+      freqToNote(0) === null
+    check('freqToNote: A4=440, C4≈261.6, +10 cents detected', ok)
+  }
+
+  // 25. Parabolic peak refinement recovers a between-bins frequency: a tone at
+  //     2.5 bins should be located near 2.5·binHz, closer than a bare argmax.
+  {
+    const binHz = 10
+    const mag = new Float64Array(8)
+    // a symmetric hump peaking between bins 2 and 3 (true peak 2.5)
+    for (let k = 0; k < 8; k++) mag[k] = Math.exp(-Math.pow(k - 2.5, 2) / 0.8)
+    // argmax is bin 2 or 3; refine from the higher of the two
+    let kmax = 0
+    for (let k = 1; k < 8; k++) if (mag[k] > mag[kmax]) kmax = k
+    const f = refinePeak(mag, kmax, binHz)
+    check('refinePeak: sub-bin interpolation lands near 25 Hz', Math.abs(f - 25) < 1.2)
   }
 
   return { passed, failed, messages }
