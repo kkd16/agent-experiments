@@ -37,6 +37,7 @@ import {
   equalityCircuit,
   sumCircuit,
   productCircuit,
+  auctionCircuit,
 } from './circuit'
 import { edEncode, type EdPoint } from './ed25519'
 import { bytesToHex } from './sha256'
@@ -164,6 +165,18 @@ export function runProduct(a: number, b: number, bits: number): ProductResult {
   const circuit = productCircuit(bits)
   const r = secureCompute(circuit, toBits(a, bits), toBits(b, bits))
   return { ...r, product: fromBits(r.outputBits) }
+}
+
+export interface AuctionResult extends TwoPcResult {
+  aliceWins: boolean
+  price: number
+}
+
+/** Sealed-bid second-price auction: learn the winner and the price, not the bids. */
+export function runAuction(aliceBid: number, bobBid: number, bits: number): AuctionResult {
+  const circuit = auctionCircuit(bits)
+  const r = secureCompute(circuit, toBits(aliceBid, bits), toBits(bobBid, bits))
+  return { ...r, aliceWins: r.outputBits[0] === 1, price: fromBits(r.outputBits.slice(1)) }
 }
 
 /** The size, in bytes, of the labels that flow (for the UI's cost readout). */

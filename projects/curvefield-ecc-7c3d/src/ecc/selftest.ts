@@ -192,7 +192,7 @@ import {
   Q as MLKEM_Q,
 } from './mlkem'
 import { hybridClientKeyGen, hybridServerRespond, hybridClientFinish } from './hybridkem'
-import { obliviousTransfer } from './ot'
+import { obliviousTransfer, otOneOfN } from './ot'
 import { garbleCircuit, publicTables, evaluateCircuit, inputLabel, type Label } from './garble'
 import {
   CircuitBuilder,
@@ -203,7 +203,7 @@ import {
   evalPlain,
   type Circuit,
 } from './circuit'
-import { runMillionaires, runEquality, runSum, runProduct } from './twopc'
+import { runMillionaires, runEquality, runSum, runProduct, runAuction } from './twopc'
 
 export interface TestCase {
   name: string
@@ -1772,6 +1772,15 @@ export function runSelfTest(): TestCase[] {
       const r = obliviousTransfer(m0, m1, 0)
       check('MPC · OT', 'the unchosen ciphertext hides its message', bytesToHex(r.e1) !== bytesToHex(m1), 'e₁ is a one-time pad under a key the receiver never learns')
     }
+    {
+      // 1-of-N OT (built from ⌈log₂N⌉ base OTs): every index opens its own message.
+      const msgs = Array.from({ length: 5 }, (_, j) => utf8(`option-${j}-payload`))
+      let ok = true
+      for (let c = 0; c < msgs.length; c++) {
+        if (bytesToHex(otOneOfN(msgs, c).received) !== bytesToHex(msgs[c])) ok = false
+      }
+      check('MPC · OT', '1-of-N OT opens exactly the chosen index', ok, '1-of-5 OT from ⌈log₂5⌉ = 3 base 1-of-2 OTs')
+    }
 
     // Garble + evaluate every truth row of each elementary gate.
     const gateCircuit = (type: 'AND' | 'XOR' | 'INV'): Circuit => {
@@ -1828,6 +1837,10 @@ export function runSelfTest(): TestCase[] {
     check('MPC · 2PC', 'private sum reveals only a + b', sum.sum === 155 && sum.agrees, '100 + 55 = 155 via a garbled adder')
     const prod = runProduct(9, 7, 6)
     check('MPC · 2PC', 'private product reveals only a · b', prod.product === 63 && prod.agrees, '9 · 7 = 63 via a garbled multiplier')
+    const auc = runAuction(150, 90, 8)
+    check('MPC · 2PC', 'sealed-bid auction: winner + second price', auc.aliceWins && auc.price === 90 && auc.agrees, 'Alice (150) beats Bob (90); price = the lower bid, 90 — bids never revealed')
+    const aucTie = runAuction(70, 70, 8)
+    check('MPC · 2PC', 'sealed-bid auction resolves a tie', !aucTie.aliceWins && aucTie.price === 70 && aucTie.agrees, 'equal bids → not strictly higher, price = 70')
   }
 
   return t
