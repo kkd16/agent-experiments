@@ -92,6 +92,7 @@ import {
   CLASSICAL_CORRELATED, productState, randomMixed, wernerConcurrenceExact, wernerNegativityExact,
   wernerChshExact, bbpsswStep, bbpsswSimulate, bbpsswAcceptance, wernerFidelity,
   monogamy, GHZ3, W3, ghzWInterpolate,
+  optimalWitness, randomSeparable, expect as entExpect,
 } from './entanglement';
 import { maximizeElliptope, minimizeDual, minEigenvalue } from './sdp';
 import { npaLevel1, chshSOSCertificate, complementarySlackness, TSIRELSON, bellCostMatrix, CHSH_FUNCTIONAL } from './npa';
@@ -2081,6 +2082,21 @@ export function runTests(): TestResult[] {
       }
       add('Entanglement', 'CKW monogamy C²(A|BC) ≥ C²_AB+C²_AC; τ(GHZ)=1, τ(W)=0, C_AB(W)=⅔',
         named && held && minSlack > -1e-9, `min slack ${minSlack.toExponential(1)}`);
+    }
+    // (7) The optimal witness separates entangled ρ (Tr(Wρ)=λ_min<0) from every separable σ (Tr(Wσ)≥0).
+    {
+      let valErr = 0, minSep = Infinity;
+      const entOK = optimalWitness(wernerState(0.8)).value < -1e-6 && !optimalWitness(wernerState(0.2)).exists
+        && Math.abs(optimalWitness(RHO_PHI_PLUS).value + 0.5) < 1e-6;
+      for (let s = 1; s < 30; s++) {
+        const rho = randomMixed(s);
+        const w = optimalWitness(rho);
+        valErr = Math.max(valErr, Math.abs(w.value - w.lambdaMin));
+        if (!w.exists) continue;
+        for (let t = 1; t < 40; t++) minSep = Math.min(minSep, entExpect(randomSeparable(t), w.W));
+      }
+      add('Entanglement', 'Optimal witness: Tr(Wρ)=λ_min<0 on entangled, Tr(Wσ)≥0 on all separable',
+        entOK && valErr < 1e-9 && minSep > -1e-9, `val err ${valErr.toExponential(1)}, min Tr(Wσ) ${minSep.toExponential(1)}`);
     }
   }
 

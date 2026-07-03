@@ -7,6 +7,7 @@ import {
   wernerSweep, WERNER_THRESHOLDS,
   bbpsswCascade, bbpsswStep, bbpsswSimulate,
   monogamy, GHZ3, W3, ghzWInterpolate,
+  optimalWitness, randomSeparable, expect as traceProduct,
 } from '../quantum/entanglement';
 
 export default function EntanglementLab() {
@@ -26,6 +27,7 @@ export default function EntanglementLab() {
 
       <InspectorCard />
       <HierarchyCard />
+      <WitnessCard />
       <DistillationCard />
       <MonogamyCard />
     </div>
@@ -236,6 +238,78 @@ function HierarchyCard() {
           <rect x={190} y={0} width={10} height={3} fill="#f472b6" /><text x={204} y={4} fontSize={8.5} fill="#f472b6" fontFamily="monospace">CHSH / 2√2</text>
         </g>
       </svg>
+    </Card>
+  );
+}
+
+// ─────────────────────────────── Card B2 — the entanglement witness ───────────────────────────────
+
+function WitnessCard() {
+  const [p, setP] = useState(0.75);
+  const rho = useMemo(() => wernerState(p), [p]);
+  const wit = useMemo(() => optimalWitness(rho), [rho]);
+  // evaluate Tr(Wσ) over a cloud of random separable states — the witness must be ≥ 0 on all of them
+  const cloud = useMemo(() => {
+    if (!wit.exists) return [] as number[];
+    return Array.from({ length: 80 }, (_, i) => traceProduct(randomSeparable(i + 1), wit.W));
+  }, [wit]);
+  const minSep = cloud.length ? Math.min(...cloud) : 0;
+  const maxSep = cloud.length ? Math.max(...cloud) : 1;
+
+  const W = 760, H = 120, padL = 120, padR = 20, padT = 20, padB = 34;
+  const cw = W - padL - padR;
+  const lo = Math.min(wit.value, minSep) - 0.05, hi = Math.max(maxSep, 0.05) + 0.05;
+  const xOf = (v: number) => padL + ((v - lo) / (hi - lo)) * cw;
+
+  return (
+    <Card title="The entanglement witness — a hyperplane separating ρ from the separable set" accent="#f472b6">
+      <p style={{ color: '#475569', fontSize: 11, margin: '0 0 12px', lineHeight: 1.55 }}>
+        PPT has a geometric dual. When ρ is entangled its partial transpose has a negative eigenvalue λ with
+        eigenvector |η⟩, and <b style={{ color: '#f472b6' }}>W = |η⟩⟨η|<sup>T_B</sup></b> is an observable that
+        is <b>≥ 0 on every separable state</b> (because σ<sup>T_B</sup> stays positive) yet reads{' '}
+        <b style={{ color: '#f472b6' }}>Tr(Wρ) = λ &lt; 0</b> on the entangled ρ — a single measurable operator
+        that certifies entanglement without full tomography. Below: the witness built from the Werner state
+        ρ(p), evaluated on ρ (pink) and on a cloud of 80 random separable states (grey) — all on the correct
+        side of the zero hyperplane.
+      </p>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#94a3b8', marginBottom: 3 }}>
+          <span>build the witness from ρ(p)</span>
+          <span style={{ fontFamily: 'monospace', color: '#f472b6' }}>p = {p.toFixed(2)}</span>
+        </div>
+        <input type="range" min={0} max={1} step={0.01} value={p} onChange={(e) => setP(parseFloat(e.target.value))} style={{ width: '100%', accentColor: '#db2777' }} />
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <Stat label="witness exists?" value={wit.exists ? 'yes (NPT)' : 'no — separable'} ok={wit.exists} />
+        <Stat label="Tr(Wρ)" value={wit.value.toFixed(4)} accent={wit.value < 0 ? '#f472b6' : '#94a3b8'} />
+        <Stat label="= λ_min(ρ^T_B)" value={wit.lambdaMin.toFixed(4)} />
+        {wit.exists && <Stat label="min Tr(Wσ), separable" value={minSep.toFixed(4)} ok={minSep > -1e-9} />}
+      </div>
+
+      {wit.exists ? (
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: 'rgba(2,6,23,0.5)', border: '1px solid #1e293b', borderRadius: 8 }}>
+          {/* separable region shading (Tr(Wσ) ≥ 0) */}
+          <rect x={xOf(0)} y={padT} width={W - padR - xOf(0)} height={H - padT - padB} fill="rgba(52,211,153,0.05)" />
+          <rect x={padL} y={padT} width={xOf(0) - padL} height={H - padT - padB} fill="rgba(244,114,182,0.05)" />
+          {/* zero hyperplane */}
+          <line x1={xOf(0)} y1={padT - 4} x2={xOf(0)} y2={H - padB + 4} stroke="#e2e8f0" strokeWidth={1.3} />
+          <text x={xOf(0)} y={padT - 8} textAnchor="middle" fontSize={9} fill="#e2e8f0">Tr(W·) = 0</text>
+          {/* separable cloud */}
+          {cloud.map((v, i) => <circle key={i} cx={xOf(v)} cy={padT + 10 + (i % 5) * 12} r={2.6} fill="rgba(148,163,184,0.7)" />)}
+          {/* the entangled state */}
+          <circle cx={xOf(wit.value)} cy={(padT + H - padB) / 2} r={5.5} fill="#f472b6" stroke="#fff" strokeWidth={1} />
+          <text x={xOf(wit.value)} y={H - padB + 22} textAnchor="middle" fontSize={9} fill="#f472b6" fontFamily="monospace">ρ (entangled)</text>
+          <text x={(xOf(0) + W - padR) / 2} y={H - padB + 22} textAnchor="middle" fontSize={9} fill="#34d399">separable states →</text>
+          {/* axis labels */}
+          <text x={padL - 8} y={(padT + H - padB) / 2 + 3} textAnchor="end" fontSize={9} fill="#64748b">Tr(W·)</text>
+        </svg>
+      ) : (
+        <p style={{ color: '#64748b', fontSize: 11, margin: 0 }}>
+          ρ(p) at p = {p.toFixed(2)} is separable (p ≤ ⅓) — its partial transpose stays positive, so there is no
+          separating hyperplane to draw. Raise p above ⅓ to enter the entangled region and the witness appears.
+        </p>
+      )}
     </Card>
   );
 }
