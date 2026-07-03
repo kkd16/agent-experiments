@@ -191,6 +191,30 @@ export function wesolowskiProve(x: bigint, T: number, N: bigint, y?: bigint): We
   return { ell, pi }
 }
 
+/**
+ * Streaming prover — the same π = x^⌊2^T/ℓ⌋ in O(1) memory, WITHOUT ever forming
+ * the T-bit integer 2^T. This is the trick that makes Wesolowski practical for
+ * the huge T a real VDF uses. Track rᵢ = 2^i mod ℓ; the i-th quotient bit is
+ * bᵢ = ⌊2·rᵢ₋₁/ℓ⌋ ∈ {0,1}, and π accumulates as π ← π²·x^(bᵢ). One can show the
+ * final exponent telescopes to exactly ⌊2^T/ℓ⌋ (proof: eₜ = Σbᵢ2^(T−i) = Q_T).
+ * Two O(T) passes (one to get y for ℓ, one to build π), constant extra space.
+ */
+export function wesolowskiProveStreaming(x: bigint, T: number, N: bigint, y?: bigint): WesolowskiProof {
+  const base = mod(x, N)
+  const Y = y ?? evalVDF(base, T, N)
+  const ell = wesolowskiChallenge(N, base, Y, T)
+  let pi = 1n
+  let r = 1n
+  for (let i = 0; i < T; i++) {
+    const rp = r << 1n
+    const bit = rp >= ell
+    r = bit ? rp - ell : rp
+    pi = (pi * pi) % N
+    if (bit) pi = (pi * base) % N
+  }
+  return { ell, pi }
+}
+
 /** Verify with a single exponentiation by ℓ (plus r = 2^T mod ℓ, computed fast). */
 export function wesolowskiVerify(x: bigint, y: bigint, T: number, N: bigint, proof: WesolowskiProof): boolean {
   const ell = wesolowskiChallenge(N, x, y, T)
@@ -323,6 +347,35 @@ export function beaconChain(seed: Uint8Array, T: number, N: bigint, rounds: numb
     const beta = sha256(concat(utf8('curvefield/vdf/beacon-out'), bigToBytes(output, byteLen(N))))
     out.push({ input, output, beta, proof, verified })
     current = beta
+  }
+  return out
+}
+
+// ── Application 3: a checkpointed / continuous VDF ───────────────────────────
+// A plain VDF only proves the FULL delay at the very end. A continuous VDF emits
+// verifiable milestones along the way: at each checkpoint T_j it publishes
+// y_j = x^(2^(T_j)) with its own Wesolowski proof against the SAME input x. A
+// light client watching the chain confirms progress in real time — "the
+// evaluator really has done T_j steps" — without redoing any squaring, and the
+// checkpoints are monotone (each y_j is y_{j-1} squared the intervening steps).
+export interface Checkpoint {
+  T: number // cumulative squarings at this milestone
+  y: bigint // x^(2^T)
+  proof: WesolowskiProof
+  verified: boolean
+}
+
+export function vdfCheckpoints(x: bigint, totalT: number, k: number, N: bigint): Checkpoint[] {
+  const base = mod(x, N)
+  const out: Checkpoint[] = []
+  let y = base
+  let done = 0
+  for (let j = 1; j <= k; j++) {
+    const target = Math.round((totalT * j) / k)
+    for (; done < target; done++) y = (y * y) % N
+    // stream the proof so no giant 2^T integer is ever formed, even for large T
+    const proof = wesolowskiProveStreaming(base, target, N, y)
+    out.push({ T: target, y, proof, verified: wesolowskiVerify(base, y, target, N, proof) })
   }
   return out
 }

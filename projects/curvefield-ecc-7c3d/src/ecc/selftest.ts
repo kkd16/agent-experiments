@@ -86,6 +86,7 @@ import {
   evalVDF,
   evalTrapdoor,
   wesolowskiProve,
+  wesolowskiProveStreaming,
   wesolowskiVerify,
   pietrzakProve,
   pietrzakVerify,
@@ -95,6 +96,7 @@ import {
   timeLock,
   timeUnlock,
   beaconChain,
+  vdfCheckpoints,
 } from './vdf'
 import { expandMessageXmd, hashToCurveG1, hashToCurveG2 } from './hash2curve'
 import { compressG1, compressG2, decompressG1, decompressG2, toBytesG1, toBytesG2 } from './blsenc'
@@ -2059,6 +2061,15 @@ export function runSelfTest(): TestCase[] {
       check('VDF · Wesolowski', 'rejects a forged π', !wesolowskiVerify(x, y, T, Nvdf, { ell: pf.ell, pi: (pf.pi + 1n) % Nvdf }), 'no valid opening without the work')
       check('VDF · Wesolowski', 'rejects a mauled output y', !wesolowskiVerify(x, (y + 1n) % Nvdf, T, Nvdf, pf), 'y is bound into ℓ')
       check('VDF · Wesolowski', 'rejects the wrong delay T', !wesolowskiVerify(x, y, T * 2, Nvdf, pf), 'T is bound into ℓ')
+      // Streaming prover (O(1) memory, no 2^T integer) reproduces the reference π byte-for-byte.
+      let streamOk = true
+      for (const Ts of [1, 8, 257, 4096, 65536]) {
+        const xs = vdfGen(BigInt(Ts) + 3n, Nvdf)
+        const ref = wesolowskiProve(xs, Ts, Nvdf)
+        const st = wesolowskiProveStreaming(xs, Ts, Nvdf)
+        if (st.ell !== ref.ell || st.pi !== ref.pi) streamOk = false
+      }
+      check('VDF · Wesolowski', 'streaming prover = reference π (no 2^T integer)', streamOk, 'O(1)-memory quotient-bit accumulation matches ⌊2^T/ℓ⌋ for T up to 2^16')
     }
 
     // Pietrzak halving proof: right length, accepts, rejects a flipped midpoint.
@@ -2099,6 +2110,17 @@ export function runSelfTest(): TestCase[] {
       const allVerify = chain.every((r) => r.verified)
       const distinct = new Set(chain.map((r) => r.output.toString())).size === 4
       check('VDF · beacon', 'each delayed round carries a valid proof', allVerify && distinct, '4 chained VDF outputs, each Wesolowski-verified and distinct')
+    }
+
+    // Continuous VDF: monotone checkpoints, each proof verifies, final = full eval.
+    {
+      const x = vdfGen(42n, Nvdf)
+      const totalT = 4000
+      const cps = vdfCheckpoints(x, totalT, 5, Nvdf)
+      const monotone = cps.every((c, i) => i === 0 || c.T > cps[i - 1].T)
+      const allVerify = cps.every((c) => c.verified && c.y === evalVDF(x, c.T, Nvdf))
+      const finalOk = cps.length === 5 && cps[4].T === totalT && cps[4].y === evalVDF(x, totalT, Nvdf)
+      check('VDF · continuous', 'checkpoints are monotone, each proof-carrying, final = full eval', monotone && allVerify && finalOk, '5 verifiable milestones up to T = 4000, each y = x^(2^T)')
     }
   }
 

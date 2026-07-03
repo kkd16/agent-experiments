@@ -7,13 +7,16 @@ import {
   evalTrapdoor,
   bitLength,
   wesolowskiProve,
+  wesolowskiProveStreaming,
   wesolowskiVerify,
   pietrzakProve,
   pietrzakVerify,
   timeLock,
   openWith,
   beaconChain,
+  vdfCheckpoints,
   type TimeLockPuzzle,
+  type Checkpoint,
 } from '../ecc/vdf'
 import { bytesToHex, utf8 } from '../ecc/sha256'
 import { ellipsize } from '../ui/format'
@@ -235,9 +238,107 @@ export function VdfPage() {
       </Panel>
 
       <ProofSizePanel maxT={16} />
+      <ScalingPanel x={x} T={T} y={y} />
       <TimeLockPanel />
       <BeaconPanel />
     </main>
+  )
+}
+
+// ── Panel: scaling the proof — streaming prover & continuous checkpoints ─────
+function ScalingPanel({ x, T, y }: { x: bigint; T: number; y: bigint }) {
+  // Streaming prover matches the reference byte-for-byte, in O(1) memory.
+  const stream = useMemo(() => {
+    const ref = wesolowskiProve(x, T, N, y)
+    const st = wesolowskiProveStreaming(x, T, N, y)
+    return { match: st.ell === ref.ell && st.pi === ref.pi, pi: st.pi }
+  }, [x, T, y])
+
+  // Continuous checkpoints — computed on demand (a larger T than the live panels).
+  const [ct, setCt] = useState(15) // total T = 2^ct
+  const [k, setK] = useState(6)
+  const [cps, setCps] = useState<Checkpoint[] | null>(null)
+  const runCheckpoints = () => setCps(vdfCheckpoints(x, 2 ** ct, k, N))
+
+  return (
+    <Panel
+      title="Scaling the proof — streaming prover & continuous checkpoints"
+      sub="Two techniques that make a VDF practical at the huge T a real deployment uses."
+    >
+      <div className="flow-step">
+        <strong>Streaming Wesolowski prover — O(1) memory</strong>
+        <p className="note">
+          The naive prover forms the T-bit integer 2<sup>T</sup> to divide by ℓ. The streaming prover
+          never does: it tracks rᵢ = 2<sup>i</sup> mod ℓ and accumulates π ← π²·x<sup>bᵢ</sup> with the
+          quotient bit bᵢ = ⌊2rᵢ₋₁/ℓ⌋, so the exponent telescopes to exactly ⌊2<sup>T</sup>/ℓ⌋. Constant
+          extra space, no giant integer — this is what lets Chia grind T ≈ 10<sup>9</sup>.
+        </p>
+        <p style={{ margin: 0 }}>
+          <Verdict ok={stream.match}>
+            {stream.match
+              ? 'streaming π = reference π, byte-for-byte ✓'
+              : 'mismatch (should never happen)'}
+          </Verdict>
+        </p>
+      </div>
+
+      <div className="flow-step" style={{ marginTop: '0.8rem' }}>
+        <strong>Continuous VDF — verifiable milestones</strong>
+        <p className="note">
+          A plain VDF only certifies the delay at the very end. A continuous VDF publishes proof-carrying
+          checkpoints along the way: at each T<sub>j</sub> it emits y<sub>j</sub> = x^(2^(T<sub>j</sub>))
+          with its own Wesolowski proof, so a light client confirms progress in real time without redoing
+          a single squaring.
+        </p>
+        <div className="grid cols-2" style={{ gap: '1rem', alignItems: 'end' }}>
+          <div className="field">
+            <label>
+              <span>total delay T = 2^t</span>
+              <span className="val">2^{ct} = {(2 ** ct).toLocaleString()}</span>
+            </label>
+            <input type="range" min={10} max={18} value={ct} onChange={(e) => { setCt(Number(e.target.value)); setCps(null) }} />
+          </div>
+          <div className="field">
+            <label>
+              <span>checkpoints</span>
+              <span className="val">{k}</span>
+            </label>
+            <input type="range" min={2} max={10} value={k} onChange={(e) => { setK(Number(e.target.value)); setCps(null) }} />
+          </div>
+        </div>
+        <button className="btn" style={{ marginTop: '0.6rem' }} onClick={runCheckpoints}>
+          ▶ evaluate with {k} checkpoints
+        </button>
+        {cps && (
+          <table className="data" style={{ marginTop: '0.8rem' }}>
+            <thead>
+              <tr>
+                <th>milestone</th>
+                <th>cumulative T</th>
+                <th>progress</th>
+                <th>y = x^(2^T)</th>
+                <th>proof</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cps.map((c, i) => (
+                <tr key={i}>
+                  <td className="mono">#{i + 1}</td>
+                  <td className="mono">{c.T.toLocaleString()}</td>
+                  <td style={{ width: '22%' }}>
+                    <div style={{ height: '9px', borderRadius: '4px', background: 'rgba(255,255,255,0.08)' }}>
+                      <div style={{ height: '100%', width: `${Math.round((c.T / (2 ** ct)) * 100)}%`, background: 'linear-gradient(90deg,#b794f6,#5eead4)', borderRadius: '4px' }} />
+                    </div>
+                  </td>
+                  <td className="mono">{short(c.y)}</td>
+                  <td><Verdict ok={c.verified}>{c.verified ? 'verified' : 'bad'}</Verdict></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </Panel>
   )
 }
 

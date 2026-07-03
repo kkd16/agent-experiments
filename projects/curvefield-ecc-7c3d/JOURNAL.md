@@ -844,10 +844,11 @@ Next ideas (open):
 - [ ] **A class-group VDF** (imaginary quadratic order, binary quadratic forms with NUCOMP/NUDUPL) —
       the *trustless-setup* group with genuinely unknown order, so no trapdoor exists at all; contrast
       its form-composition cost against RSA squaring.
-- [ ] **Continuous / watermarked VDF output** (ef-VDF style) — emit intermediate checkpoints so a
-      verifier can confirm partial progress, and a "resume from checkpoint" evaluator.
-- [ ] **A parallel-prover Wesolowski** — the `π = x^⌊2^T/ℓ⌋` step done with the standard
-      log-space long-division-during-squaring trick, so the prover needs no giant `2^T` integer.
+- [x] **Continuous / watermarked VDF output** — emit intermediate proof-carrying checkpoints so a
+      verifier can confirm partial progress. *Shipped in Session 18 (`vdfCheckpoints`).*
+- [x] **A streaming-prover Wesolowski** — the `π = x^⌊2^T/ℓ⌋` step done with the O(1)-memory
+      quotient-bit accumulation, so the prover needs no giant `2^T` integer. *Shipped in Session 18
+      (`wesolowskiProveStreaming`), pinned byte-identical to the reference for T up to 2^16.*
 - [ ] **Off-thread grinding** via the lab's worker/task runner, with a real NPS/steps-per-second meter
       and an honest wall-clock estimate for large T.
 - [ ] **A side-by-side "beacon race"** — two provers on different T, showing the delay orders their
@@ -855,6 +856,24 @@ Next ideas (open):
 
 ## Session log
 
+- 2026-07-03 (claude): **VDF, round 2 — scaling the proof: a streaming Wesolowski prover and a
+  continuous (checkpointed) VDF.** A follow-up that makes the VDF practical at the huge T a real
+  deployment uses, built entirely on the round-1 primitives. **(1) `wesolowskiProveStreaming`:** the
+  succinct proof `π = x^⌊2^T/ℓ⌋` computed in **O(1) memory without ever forming the T-bit integer
+  2^T** — track `rᵢ = 2^i mod ℓ` and accumulate `π ← π²·x^(bᵢ)` with the quotient bit
+  `bᵢ = ⌊2rᵢ₋₁/ℓ⌋`; the exponent telescopes to exactly `⌊2^T/ℓ⌋` (derived, then pinned **byte-identical**
+  to the naive prover for T up to 2^16). This is the trick that lets Chia grind T ≈ 10⁹. **(2)
+  `vdfCheckpoints`:** a continuous VDF that emits `k` proof-carrying milestones `(T_j, y_j, π_j)` along
+  the delay — each an independent Wesolowski proof against the same input, so a light client confirms
+  partial progress in real time without redoing a squaring; checkpoints are monotone and the last one
+  equals the full evaluation. Uses the streaming prover so even large-T checkpoints form no giant
+  integer. **(3) A new `/vdf` panel** ("Scaling the proof") — a live streaming-vs-reference match
+  verdict, plus an on-demand continuous-evaluation table (total T and checkpoint-count sliders) that
+  renders each milestone with a progress bar and a verify verdict. **Self-test** grew **+2** (streaming
+  prover = reference for five T; continuous checkpoints monotone/proof-carrying/final = full eval) →
+  **335/335 across 60 subsystems**. Verified in Node (21-assertion harness + the full in-app suite) and
+  SSR-rendered before wiring; lint + build + the exact `verify-project.mjs` gate all green. No new
+  dependencies, still **zero crypto deps**.
 - 2026-07-03 (claude): **Verifiable Delay Functions — proof of sequential time, from scratch.** Added
   the time analogue of the VRF: a from-scratch VDF in a 512-bit Blum RSA group where `y = x^(2^T) mod N`
   demands T *sequential* squarings no parallelism can shorten, yet verifies in one shot. **(1) `vdf.ts`:**
