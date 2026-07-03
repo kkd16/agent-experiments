@@ -23,6 +23,12 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     range-coded; carries a per-symbol trace (coding order + escape count) for the visualiser.
   - `adaptiveHuffman.ts` — **FGK** adaptive Huffman: dynamic tree with the sibling property + an
     NYT escape; snapshot()-able for the step-by-step tree view.
+  - `logistic.ts` — the **stretch/squash** integer log-odds transform (lpaq's 33-knot spline + its
+    inverse table); the domain all context-mixing math happens in.
+  - `cm.ts` — **context mixing (PAQ/lpaq)**: a bit-level Predictor (order-0..6 + word + longest-match
+    models, each an adaptive StateMap), a context-selected **logistic mixer**, two **SSE** stages, and
+    a carryless 32-bit **binary arithmetic coder**. Encode and decode share the Predictor, so it
+    round-trips by construction; carries an instrumented `cmAnalyze` pass for the visualiser.
   - `suffixArray.ts` — linear-time **SA-IS** suffix array (+ brute-force oracle) and a sentinel-
     based BWT that scales to kilobytes and inverts without a primary index.
   - `lz77.ts` — LZSS sliding-window matcher + token stream.
@@ -97,6 +103,13 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 - [ ] **rANS interleaving / adaptive rANS** (two interleaved states for ILP) for a speed story.
 - [ ] **PPM* / PPMd escape estimators** (methods A/B/D, secondary symbol estimation) as an
       escape-method comparison; and update exclusions.
+- [x] **Context mixing (PAQ/lpaq)** — the state-of-the-art family. A bit-level logistic mixer over
+      order-0..6 + word + longest-match models, two SSE stages, and a binary arithmetic coder.
+      Shipped in **v5** (see below): the strongest all-rounder in the lab, with its own visualiser
+      (learning curve, mixer trust weights, per-model accuracy, prediction ribbon, match trace). *(v5)*
+- [ ] **CM tuning pass**: an 8-bit nonstationary state-machine counter (lpaq's `nex` table) instead
+      of the running-mean StateMap; a two-layer mixer; an indirect/sparse model; a run model. Each is a
+      few percent and a clean incremental follow-up on the v5 architecture.
 
 ## Entropy Forge v3 — Real DEFLATE (the actual gzip)
 
@@ -158,8 +171,73 @@ browser the same cross-check runs live via `CompressionStream`/`DecompressionStr
 repeated-lorem 117 B vs 118 B). The in-app Self-test grows **364 → 464** checks, all green, plus the 28
 live native-interop checks.
 
+## Entropy Forge v5 — Context mixing (the PAQ engine)
+
+Every coder here so far models *symbols*: it estimates the next byte (or the next LZ token) and codes
+it. Context mixing throws that out and models the next **bit**, but with *many* models at once, and
+adds the one component none of the others have — a learner that decides, online and per-context, which
+models to believe. This is the architecture behind **PAQ**, **cmix** and **lpaq**: the strongest
+general-purpose compressors ever measured. v5 builds it from scratch, and it walks into the Benchmark
+as the best all-rounder in the lab.
+
+### The mechanism (all from scratch, zero new deps)
+
+- [x] **The logistic substrate** (`logistic.ts`) — `stretch`/`squash`, the integer log-odds transform
+      (the lpaq 33-knot spline + its inverse table). CM never averages probabilities; it averages them
+      in the log-odds domain, where independent evidence adds linearly. Everything is integer and
+      table-driven, because encode and decode must compute *bit-identical* predictions.
+- [x] **The model panel** (`cm.ts`) — eight predictors of P(next bit = 1): six byte-context models
+      (orders 0,1,2,3,4,6), a **word model** (a rolling hash of the current run of letters, reset on a
+      boundary), and a **match model** that finds where the current 4-byte context last occurred and
+      predicts the byte that followed, with a confidence that climbs with the match length. Each context
+      model is a **StateMap**: a 22-bit adaptive probability with a saturating count, so the learning
+      rate is ∝ 1/n — a fresh context adapts fast, a well-seen one holds steady (a nonstationary running
+      estimate).
+- [x] **The logistic mixer** — the heart of CM. It combines the eight stretched predictions with a
+      weighted sum and squashes the result; after each bit it takes an **online logistic-regression
+      step**, nudging each weight to reduce the error. So a model that keeps being right gains influence
+      and a noisy one fades — automatically, per input. The weight set is **context-selected** (by the
+      partial byte and whether a match is live, 512 sets), so the mixer trusts different models in
+      different places.
+- [x] **Two SSE stages** — adaptive probability maps (secondary symbol estimation): they take the mixed
+      probability and a context and correct its calibration by interpolating over 33 learned buckets.
+      The last few percent.
+- [x] **A carryless 32-bit binary arithmetic coder** — the fpaq0/lpaq scheme, driven one bit at a time
+      by the final 12-bit probability; encoder and decoder are exact mirrors. Nothing is transmitted but
+      the length + coded stream — the decoder rebuilds the identical panel and replays every update, so
+      correctness is *structural*.
+- [x] **The `cm` codec is wired into `codecs.ts`**, so it races in the Benchmark and round-trips in the
+      Self-test automatically, and a **Context mixing** lab page (`routes/ContextMixing.tsx`): a live
+      **bits-per-byte learning curve** (the cost per byte falling as the models sharpen), the mixer's
+      **signed per-model trust weights** (a diverging bar per model), **per-model accuracy**, a
+      **bit-by-bit prediction ribbon** (green where the panel bet correctly, red where it was
+      surprised, height = confidence), and the **match length climbing** over repetitive data — plus a
+      size race against PPM, gzip and order-1 arithmetic.
+
+### Correctness & result
+
+Driven under Node before wiring any UI: round-trips every corpus + edge input (empty, single byte,
+all-256, long run, pseudo-random) on the first try, plus a **400-case fuzz** (random lengths to ~900 B
+over alphabets of 1–12 symbols) with zero mismatches. On the seven-corpus benchmark it is the **best
+all-rounder** — it wins `lorem`, `json`, `source` and even `random` outright, and lands within a byte
+or two of PPM on `declaration`, `dna` and `repetitive`. In-app Self-test grows **506 → 534** checks
+(14 CM codec round-trips + 14 CM primitive round-trips), all green. Still zero runtime deps beyond
+React.
+
 ## Session log
 
+- 2026-07-03 (claude): **v5 — Context mixing (the PAQ engine).** Built the state-of-the-art
+  compression family from scratch: `logistic.ts` (the stretch/squash log-odds substrate) and `cm.ts`
+  (a bit-level Predictor = order-0..6 + word + match models, each an adaptive StateMap; a
+  context-selected logistic mixer trained by online logistic regression; two SSE / adaptive-probability-map
+  stages; and a carryless 32-bit binary arithmetic coder). Because encode and decode call the identical
+  Predictor and replay the identical updates, a correct predictor is automatically a correct codec —
+  proved by round-tripping every corpus + edge input and a 400-case fuzz under Node with zero
+  mismatches. Wired the `cm` codec into the roster (it races in the Benchmark and Self-test) and built
+  the **Context mixing** lab page (bits-per-byte learning curve, signed mixer trust weights, per-model
+  accuracy, a bit-by-bit prediction ribbon, and the match-length trace). On the benchmark it is the
+  best all-rounder — winning most corpora outright and within a byte or two of PPM on the rest.
+  Self-test **506 → 534**, all green. Also added `.prose-list` styling and surfaced CM on the Overview.
 - 2026-07-03 (claude): **v4 — tANS / FSE, the multiply-free entropy coder.** Added `tans.ts`: a
   from-scratch static **table-driven ANS** — the Finite State Entropy coder inside **Zstandard** and
   Apple's LZFSE. It reuses rANS's normalised M=2^12 frequency table (so the two share a model), then

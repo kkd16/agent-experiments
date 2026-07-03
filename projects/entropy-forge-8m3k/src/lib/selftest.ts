@@ -23,6 +23,7 @@ import { ppmDecode, ppmEncode } from './ppm.ts'
 import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
 import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
+import { cmEncode, cmDecode } from './cm.ts'
 import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
 import { packageMerge, minLimit } from './lengthLimited.ts'
 import { canonicalCodes } from './huffman.ts'
@@ -186,6 +187,15 @@ export function runSelfTest(): TestCase[] {
       results.push({ group: 'Adaptive-Huffman (primitive)', name, pass: bytesEqual(ad, data), detail: `${ae.symbolsSeen} first-seen` })
     } catch (e) {
       results.push({ group: 'Adaptive-Huffman (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // Context-mixing (PAQ) primitive: the panel + mixer + SSE + binary coder must
+    // round-trip exactly — encode and decode replay the identical model updates.
+    try {
+      const ce = cmEncode(data)
+      const cd = cmDecode(ce.encoded, data.length)
+      results.push({ group: 'Context-mixing (primitive)', name, pass: bytesEqual(cd, data), detail: `${ce.encoded.length}B` })
+    } catch (e) {
+      results.push({ group: 'Context-mixing (primitive)', name, pass: false, detail: (e as Error).message })
     }
     // SA-IS suffix array matches the brute-force oracle, and SA-BWT round-trips
     try {

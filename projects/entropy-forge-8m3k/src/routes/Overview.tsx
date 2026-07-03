@@ -14,6 +14,7 @@ const MODULES = [
   { route: 'rans', name: 'rANS', desc: 'Asymmetric numeral systems — the entropy coder inside zstd & LZFSE.' },
   { route: 'tans', name: 'tANS / FSE', desc: 'Table-driven ANS — the multiply-free finite-state entropy coder inside Zstandard.' },
   { route: 'ppm', name: 'PPM', desc: 'Context modelling with escapes; watch more context hit diminishing returns.' },
+  { route: 'cm', name: 'Context mixing (PAQ)', desc: 'A logistic mixer over many models — the state-of-the-art family, usually the best all-rounder here.' },
   { route: 'lempel', name: 'LZ77 & LZW', desc: 'Exploit repetition with back-references and self-building dictionaries.' },
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
@@ -111,6 +112,9 @@ export function Overview() {
             coded — <strong>PPM</strong> conditions on the longest matching context,{' '}
             <strong>LZ77/LZW</strong> replace repeats with references, and the{' '}
             <strong>Burrows–Wheeler transform</strong> reorders data so a cheap local model suffices.
+            At the far end, <strong>context mixing</strong> (the PAQ family) runs <em>many</em> models
+            at once and blends their bit-level predictions with a mixer that learns whom to trust — the
+            architecture behind the strongest compressors ever measured.
           </p>
           <p>
             gzip is LZ77 + Huffman; bzip2 is BWT + move-to-front + Huffman; modern coders pair LZ

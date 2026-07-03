@@ -33,6 +33,7 @@ import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable
 import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { gzipEncode, gzipDecode } from './gzip.ts'
+import { cmEncode, cmDecode } from './cm.ts'
 
 export interface Codec {
   id: string
@@ -372,6 +373,20 @@ function adaptiveHuffmanCodecDecode(comp: Uint8Array): Uint8Array {
   return adaptiveHuffmanDecode(comp.subarray(4), getU32(comp, 0))
 }
 
+// ---- Context-mixing codec (PAQ/lpaq class): a logistic mixer over order-0..6,
+// word and match models, refined by two SSE stages and coded a bit at a time by a
+// binary arithmetic coder. Nothing is transmitted but the length + coded stream —
+// the decoder rebuilds the identical model and replays the identical updates. ----
+function cmCodecEncode(data: Uint8Array): Uint8Array {
+  const { encoded } = cmEncode(data)
+  const header: number[] = []
+  putU32(header, data.length)
+  return concat([Uint8Array.from(header), encoded])
+}
+function cmCodecDecode(comp: Uint8Array): Uint8Array {
+  return cmDecode(comp.subarray(4), getU32(comp, 0))
+}
+
 export const CODECS: Codec[] = [
   {
     id: 'huffman',
@@ -426,6 +441,15 @@ export const CODECS: Codec[] = [
     blurb: 'Prediction by partial matching (PPMC): escape + exclusion over 0..4-byte contexts.',
     encode: ppmCodecEncode,
     decode: ppmCodecDecode,
+  },
+  {
+    id: 'cm',
+    name: 'Context mixing (PAQ)',
+    family: 'entropy',
+    blurb:
+      'A logistic mixer over order-0..6 + word + match models, SSE-refined and bit-arithmetic-coded — the state-of-the-art family. Usually the best all-rounder here.',
+    encode: cmCodecEncode,
+    decode: cmCodecDecode,
   },
   {
     id: 'lz77',
