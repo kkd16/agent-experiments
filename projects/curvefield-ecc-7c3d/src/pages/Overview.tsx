@@ -183,10 +183,16 @@ const LABS = [
     desc: 'The whole lab, assembled into the Signal protocol — the E2EE behind WhatsApp and Signal. X3DH agrees a secret with an offline recipient; the Double Ratchet then gives every message forward secrecy and heals the session after a key compromise, over a from-scratch ChaCha20-Poly1305. A live Alice⇄Bob chat you can tamper with, reorder, and compromise.',
   },
   {
+    path: '/mpc',
+    ix: '25',
+    title: 'Secure Two-Party Computation',
+    desc: "Compute a function of two secrets and reveal only the answer. Yao's protocol built from scratch: a Chou–Orlandi oblivious transfer on this lab's Ed25519 group, then garbled circuits with free-XOR and half-gates (an AND costs the proven-minimal two ciphertexts; XOR and NOT are free). Run the original Millionaires' Problem — who is richer, without disclosing wealth — plus private equality, sum, and product, with a live single-byte-tamper integrity demo.",
+  },
+  {
     path: '/verify',
     ix: '31',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs), and Wycheproof vectors.',
   },
 ]
 
