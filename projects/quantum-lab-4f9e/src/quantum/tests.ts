@@ -4,6 +4,9 @@ import {
   dtwRun, coinMatrix, classicalLineWalk, positionStats, buildGraph, ctqwEngine,
   ctqwLimiting, classicalCTRW, laplacian, spatialSearch, skwHypercubeSearch,
 } from './walks';
+import {
+  buildGluedTrees, columnReducedA, columnSizes, reductionError, fullGluedEngine, scalingLaw,
+} from './gluedtrees';
 import { matMul, dagger } from './Matrix';
 import { QuantumState } from './QuantumState';
 import { DensityMatrix, simulateDensity } from './DensityMatrix';
@@ -1909,6 +1912,79 @@ export function runTests(): TestResult[] {
       const lim = ctqwLimiting(eng, 0);
       const sum = lim.reduce((a, b) => a + b, 0);
       add('Quantum walks', 'CTQW limiting (time-averaged) distribution is normalised', Math.abs(sum - 1) < 1e-9, `Σ P∞ = ${sum.toFixed(8)}`);
+    }
+  }
+
+  // --- Glued trees: an exponential quantum speedup (20.0) ---------------------------------
+  {
+    // (1) Graph structure: node count, root degree 2, interior degree 3, columns, connectivity.
+    {
+      let ok = true; const details: string[] = [];
+      for (const h of [1, 2, 3, 4]) {
+        const g = buildGluedTrees(h, 0);
+        const deg = g.adjacency.map((row) => row.reduce((a, b) => a + b, 0));
+        const nOK = g.n === (1 << (h + 2)) - 2;
+        const degOK = deg.every((d, v) => (v === g.entrance || v === g.exit ? d === 2 : d === 3));
+        const colOK = g.columnSize.every((s, c) => s === columnSizes(h)[c]);
+        const seen = new Array<boolean>(g.n).fill(false); const q = [g.entrance]; seen[g.entrance] = true; let cnt = 1;
+        while (q.length) { const u = q.shift()!; for (let b = 0; b < g.n; b++) if (g.adjacency[u][b] && !seen[b]) { seen[b] = true; cnt++; q.push(b); } }
+        const good = nOK && degOK && colOK && cnt === g.n;
+        ok = ok && good; details.push(`h${h}:${g.n}${good ? '✓' : '✗'}`);
+      }
+      add('Glued trees', 'Structure: |V|=2^{h+2}−2, roots deg 2, interior deg 3, correct columns, connected', ok, details.join(' '));
+    }
+    // (2) The reduced line is a uniform √2 hopping chain with a single defect of 2 at the glue.
+    {
+      let ok = true;
+      for (const h of [2, 3, 5]) {
+        const A = columnReducedA(h); const cols = 2 * h + 2;
+        for (let c = 0; c + 1 < cols; c++) {
+          const want = c === h ? 2 : Math.SQRT2;
+          if (Math.abs(A[c][c + 1] - want) > 1e-12 || Math.abs(A[c + 1][c] - want) > 1e-12) ok = false;
+        }
+      }
+      add('Glued trees', 'Column-reduced adjacency is a √2 line with a single central defect of 2', ok, 'hops = √2, glue = 2');
+    }
+    // (3) The column reduction is EXACT vs the full graph — quantum AND classical heat kernel.
+    {
+      let worst = 0; const details: string[] = [];
+      for (const h of [2, 3, 4]) {
+        const g = buildGluedTrees(h, 0);
+        const err = reductionError(g, [0.7, 1.9, 3.1, 4.6]);
+        worst = Math.max(worst, err.quantum, err.classical);
+        details.push(`h${h}:q${err.quantum.toExponential(0)}/c${err.classical.toExponential(0)}`);
+      }
+      add('Glued trees', 'Column reduction is exact (full graph ≡ 2h+2 line) for quantum and classical', worst < 1e-9, details.join(' '));
+    }
+    // (4) A random gluing is 2-regular across the cut and still reduces exactly.
+    {
+      const g = buildGluedTrees(3, 777);
+      let reg = true;
+      for (let v = 0; v < g.n; v++) if (g.coord[v].level === g.height) {
+        let cross = 0; for (let b = 0; b < g.n; b++) if (g.adjacency[v][b] && g.tree[b] !== g.tree[v]) cross++;
+        if (cross !== 2) reg = false;
+      }
+      const err = reductionError(g, [1, 2.5, 4]);
+      add('Glued trees', 'A fresh random gluing is 2-regular across the cut and still reduces exactly', reg && err.quantum < 1e-9 && err.classical < 1e-9, `2-regular=${reg}, err q${err.quantum.toExponential(0)}/c${err.classical.toExponential(0)}`);
+    }
+    // (5) CTQW on the glued trees conserves probability.
+    {
+      const full = fullGluedEngine(buildGluedTrees(4, 0));
+      const p = full.quantumProb(3.3); const sum = p.reduce((a, b) => a + b, 0);
+      add('Glued trees', 'Continuous-time quantum walk on the glued trees conserves probability', Math.abs(sum - 1) < 1e-9, `Σp = ${sum.toFixed(10)}`);
+    }
+    // (6) The exponential separation: quantum P(exit) > ½ in O(h) time, classical peak = Θ(2^{−h}).
+    {
+      const sc = scalingLaw(9, 500);
+      let ok = true;
+      for (const s of sc) {
+        const cScaled = s.cPeak * (1 << s.height); // → the constant ≈ 0.236
+        ok = ok && s.qPeak > 0.5 && cScaled > 0.2 && cScaled < 0.3 && s.qPeakTime < 1.2 * (s.height + 1);
+      }
+      const first = sc[0], last = sc[sc.length - 1];
+      const grows = (last.qPeak / last.cPeak) > 50 * (first.qPeak / first.cPeak);
+      add('Glued trees', 'Exponential separation: quantum P(exit)>½ in O(h) time; classical peak = Θ(2^{−h})', ok && grows,
+        `h${first.height}:q${first.qPeak.toFixed(2)}/c${first.cPeak.toExponential(1)} … h${last.height}:q${last.qPeak.toFixed(2)}/c${last.cPeak.toExponential(1)} (ratio ${(last.qPeak / last.cPeak).toExponential(1)})`);
     }
   }
 
