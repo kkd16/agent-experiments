@@ -183,6 +183,12 @@ const LABS = [
     desc: 'Proof of sequential time — the delay analogue of the VRF. y = x^(2^T) mod N takes T squarings no parallel machine can shorten, yet verifies in a heartbeat: both the succinct Wesolowski proof and the log-size Pietrzak halving proof, from scratch in an RSA group. Plus a Rivest–Shamir–Wagner time-lock puzzle (encrypt to the future) and an unbiasable delay beacon — the RANDAO+VDF / Chia proof-of-time shape.',
   },
   {
+    path: '/cgvdf',
+    ix: '33',
+    title: 'Class-Group VDF — no trusted setup',
+    desc: 'The VDF next door has a trapdoor: whoever made N = p·q knows φ(N) and can skip the delay. This one removes it by squaring in the class group of an imaginary quadratic order Cl(Δ) — a group of genuinely unknown order (h(Δ) ≈ √|Δ|, as hard as factoring to compute) whose discriminant is just a public seed hash, so no one holds a shortcut and no ceremony is trusted. Binary quadratic forms + Gauss composition built from scratch, then the full Wesolowski proof over them — the engine under Chia’s consensus.',
+  },
+  {
     path: '/ring',
     ix: '30',
     title: 'Linkable Ring Signatures & Stealth Addresses',

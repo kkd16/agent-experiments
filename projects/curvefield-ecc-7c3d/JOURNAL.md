@@ -150,6 +150,21 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   Alice's four possible shares; she selects her row, so `cᴬ ⊕ cᴮ = x∧y`). Runs the *same* `circuit.ts`
   circuits as the garbled path and must reconstruct the identical output — the interaction-vs-table
   trade-off at the heart of practical MPC, shown side by side.
+- `vdf.ts` — **Verifiable Delay Functions** in an RSA group: `y = x^(2^T) mod N` by T sequential
+  squarings, the succinct **Wesolowski** proof (hash-to-prime ℓ, `π = x^⌊2^T/ℓ⌋`, streaming O(1)-memory
+  prover) and the log-size **Pietrzak** halving proof, plus an RSW time-lock puzzle, a delay beacon, and
+  continuous proof-carrying checkpoints.
+- `classgroup.ts` — the **class group of an imaginary quadratic order** `Cl(Δ)`, from scratch on
+  `BigInt`: binary quadratic forms `(a,b,c)` with `Δ = b² − 4ac < 0`, **Gauss reduction** (the ρ
+  operator, coordinates bounded by `√(|Δ|/3)`), **Gauss composition** (Cohen Alg. 5.4.7), squaring,
+  inverse, the principal form, `g^e` by square-and-multiply, trustless discriminant generation
+  (`Δ = −p`, `p ≡ 3 mod 4`, hashed from a public seed), and a canonical prime-form generator. A group of
+  genuinely **unknown order with no trusted setup** — validated against the group axioms on the full
+  Cayley table of small discriminants and the known class numbers.
+- `cgvdf.ts` — the **class-group VDF**: the Wesolowski proof-of-sequential-time over `Cl(Δ)` (the engine
+  under Chia's consensus). `y = g^(2^T)` by T class-group squarings, `π = g^⌊2^T/ℓ⌋` verified by
+  `π^ℓ ∘ g^r = y`, a streaming prover, and a no-trusted-setup delay beacon. Same shape as `vdf.ts` but
+  with the trapdoor removed, because nobody knows `h(Δ)`.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
   (now **284/284** checks across 53 subsystems — added Oblivious Transfer, Garbled Circuits, 2PC, GMW).
 
@@ -841,9 +856,9 @@ Shipped:
 
 Next ideas (open):
 
-- [ ] **A class-group VDF** (imaginary quadratic order, binary quadratic forms with NUCOMP/NUDUPL) —
-      the *trustless-setup* group with genuinely unknown order, so no trapdoor exists at all; contrast
-      its form-composition cost against RSA squaring.
+- [x] **A class-group VDF** (imaginary quadratic order, binary quadratic forms) — the *trustless-setup*
+      group with genuinely unknown order, so no trapdoor exists at all; contrast its form-composition
+      cost against RSA squaring. *Shipped in Session 19 (`classgroup.ts` + `cgvdf.ts`, route `/cgvdf`).*
 - [x] **Continuous / watermarked VDF output** — emit intermediate proof-carrying checkpoints so a
       verifier can confirm partial progress. *Shipped in Session 18 (`vdfCheckpoints`).*
 - [x] **A streaming-prover Wesolowski** — the `π = x^⌊2^T/ℓ⌋` step done with the O(1)-memory
@@ -854,8 +869,94 @@ Next ideas (open):
 - [ ] **A side-by-side "beacon race"** — two provers on different T, showing the delay orders their
       outputs and that a late joiner cannot front-run the draw.
 
+### Session 19 plan — the Class-Group VDF: proof of sequential time with *no trusted setup*
+
+The RSA-group VDF from Sessions 17–18 has a philosophical hole the module comments admit but the lab
+never *closed*: whoever generates `N = p·q` knows `φ(N)` and can skip the delay, so its security rests
+on a **trusted setup** (an RSA ceremony, or trust that the factors are lost). The fix that real systems
+use — Chia's proof-of-time runs here — is to square in the **class group of an imaginary quadratic
+order** `Cl(Δ)`: a finite abelian group whose order is the class number `h(Δ) ≈ √|Δ|`, computing it is
+believed as hard as factoring, and `Δ` is a *public* number hashed from a seed. No ceremony, no
+trapdoor, no trust. This session builds that group from scratch — a genuinely different algebraic
+domain from every elliptic-curve module in the lab — and reruns the whole Wesolowski machine over it.
+
+The correctness bar was set deliberately high: class-group composition is notoriously easy to get
+subtly wrong, so the arithmetic was validated **exhaustively against the group axioms on the full
+Cayley table** of small discriminants (a wrong `compose` cannot survive closure + associativity over
+every triple) *and* against the known class numbers `h(−23)=3, h(−47)=5, h(−71)=7, h(−199)=9,
+h(−3299)=27`, before any of it touched the VDF or the UI.
+
+Shipped:
+
+- [x] **`classgroup.ts` — binary quadratic forms as a group, from scratch on `BigInt`.** A form
+      `(a, b, c)` is `f(x,y) = ax² + bxy + cy²` of discriminant `Δ = b² − 4ac < 0`. Implements:
+      **normalisation + Gauss reduction** to the canonical representative (the ρ operator
+      `(a,b,c) ↦ (c,−b,a)` iterated until `|b| ≤ a ≤ c`), keeping every coordinate below `√(|Δ|/3)`;
+      **Gauss composition** (Cohen, *A Course in Comp. Alg. Number Theory*, Alg. 5.4.7) with its 3-way
+      `gcd` and Bézout bookkeeping; **squaring**, **inverse** (the reflection `(a,−b,c)`), the
+      **principal (identity) form**, and **`g^e` by square-and-multiply**.
+- [x] **Trustless discriminant generation** (`generateDiscriminant`) — hash a public seed to a prime
+      `p ≡ 3 (mod 4)` and take `Δ = −p`, so `Δ ≡ 1 (mod 4)` is a *fundamental* discriminant and `|Δ|`
+      is prime. Anyone can reproduce and audit `Δ` from the seed; nothing up the sleeve, no order known
+      to anyone. Plus a **canonical generator** (`primeForm`): the smallest odd prime form `(q, b, c)`
+      with `(Δ|q) = 1`, `b² ≡ Δ (mod 4q)`, `b` odd.
+- [x] **`cgvdf.ts` — the Wesolowski VDF over `Cl(Δ)`.** `evalVDF` = `T` sequential class-group
+      squarings (`y = g^(2^T)`, the delay); `wesolowskiProve` sends the single form `π = g^⌊2^T/ℓ⌋` with
+      `ℓ = H_prime(Δ ‖ g ‖ y ‖ T)`; `wesolowskiVerify` checks `π^ℓ ∘ g^r = y` in two class-group
+      exponentiations, O(1) in T. The **streaming prover** (`wesolowskiProveStreaming`) rebuilds `π` in
+      O(1) memory without ever forming the T-bit integer `2^T`, pinned form-identical to the reference.
+      A **delay beacon** (`beaconChain`) chains `βᵢ₊₁ = SHA256(VDF(βᵢ))`, each round proof-carrying — a
+      RANDAO+VDF beacon with no trusted setup underneath.
+- [x] **A new lab page** (`ClassGroupVdfPage.tsx`, route `/cgvdf`) with seven panels: a **live seed → Δ**
+      box (type any public seed, watch a fresh fundamental discriminant + generator get hashed out); the
+      **group law** in action (`gⁱ ∘ gʲ = g^(i+j)` with two exponent sliders); the **delay** (T = 2^t
+      slider, live `y = g^(2^T)`, and a verdict that `|a|` stays `≤ √(|Δ|/3)` across every step); the
+      **Wesolowski proof** with a live forge-π tamper toggle; the **streaming prover** match; a
+      **"where the trust lives"** RSA-group-vs-class-group comparison table (order, trapdoor, setup,
+      element size, who can shortcut); and the **delay beacon** with per-round proof verdicts.
+- [x] **Self-test** grew by **~27 checks** in a new **VDF · class group** group: the full-Cayley-table
+      group axioms on five discriminants (`h` up to 27, matching the known class numbers), a
+      256-bit-`Δ` sanity gate, the exponent law, Wesolowski accept + three rejections (forged π, mauled
+      y, wrong T) at `T ∈ {8, 256, 1024}`, streaming = reference, the `√(|Δ|/3)` coordinate bound across
+      200 squarings, a fully-verifying beacon, and a *second, independently-hashed* Δ end-to-end.
+      Validated in Node (exhaustive axiom oracle + the in-app section) before the UI; lint + build + the
+      exact CI gate all green. Still **zero crypto dependencies**.
+
+Next ideas (open):
+
+- [ ] **NUCOMP / NUDUPL** — the partial-reduction fast paths for composition and squaring (Jacobson–van
+      der Poorten). Cohen composition + full reduction is already correct and, because reduction bounds
+      coordinates, cheap; NUCOMP/NUDUPL cut the constant factor by reducing *during* the multiply. A
+      natural cross-checked drop-in against the current `compose`/`square`.
+- [ ] **Pietrzak in the class group** — the halving proof needs a low-order-free group; `Cl(Δ)` for a
+      fundamental `Δ` has odd class number often enough, but the general fix (work in the group of
+      squares, or Boneh–Bünz–Fisch's adjustments) is worth a panel contrasting it with Wesolowski.
+- [ ] **A real class-number computation** for a *small* Δ (the analytic class number formula, or
+      counting reduced forms) so the "order is √|Δ| and unknown at scale" claim is visceral — tiny Δ:
+      compute h; big Δ: watch it become infeasible.
+- [ ] **Larger Δ (≥ 1024-bit) off-thread** via the lab's worker, with an NPS meter, to show the
+      class-group squaring cost honestly next to RSA squaring.
+- [ ] **A class-group RSW time-lock** — lock a message to the future with *no* trapdoor holder at all
+      (unlike the RSA capsule, which the creator can open instantly): here even the creator must grind.
+
 ## Session log
 
+- 2026-07-03 (claude): **The Class-Group VDF — proof of sequential time with no trusted setup.** Closed
+  the one philosophical gap in the RSA-group VDF: its trapdoor. Built the **class group of an imaginary
+  quadratic order** `Cl(Δ)` from scratch — a genuinely new algebraic domain for the lab, not another
+  elliptic curve — as binary quadratic forms `(a,b,c)` under **Gauss composition + reduction**
+  (`classgroup.ts`), then reran the full **Wesolowski VDF** over it (`cgvdf.ts`): `y = g^(2^T)` by T
+  sequential class-group squarings, a one-form succinct proof `π = g^⌊2^T/ℓ⌋` verified by
+  `π^ℓ ∘ g^r = y`, a streaming O(1)-memory prover, and a delay beacon. The decisive property: the group
+  order is the class number `h(Δ) ≈ √|Δ|`, believed as hard as factoring to compute, and `Δ` is a
+  **public seed hash** — so unlike RSA there is no `φ(N)` anyone knows and *no ceremony to trust*. The
+  arithmetic was validated the hard way before anything else: **the group axioms on the full Cayley
+  table** of small discriminants (closure + associativity over every triple + identity + inverses) and
+  the **known class numbers** `h(−23)=3 … h(−3299)=27`. New `/cgvdf` page (seed → Δ, the group law, the
+  delay with a live coordinate-bound verdict, the Wesolowski proof with a forge toggle, a
+  where-the-trust-lives comparison table, and the beacon) and ~27 new self-test checks in a
+  **VDF · class group** group. Node-validated (exhaustive axiom oracle) + lint + build + the exact CI
+  gate all green. Zero crypto dependencies.
 - 2026-07-03 (claude): **VDF, round 2 — scaling the proof: a streaming Wesolowski prover and a
   continuous (checkpointed) VDF.** A follow-up that makes the VDF practical at the huge T a real
   deployment uses, built entirely on the round-1 primitives. **(1) `wesolowskiProveStreaming`:** the
