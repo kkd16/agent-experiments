@@ -25,6 +25,7 @@ import { Groth16Page } from './pages/Groth16Page'
 import { BulletproofsPage } from './pages/BulletproofsPage'
 import { PlonkPage } from './pages/PlonkPage'
 import { StarkPage } from './pages/StarkPage'
+import { GkrPage } from './pages/GkrPage'
 import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
 import { MlKemPage } from './pages/MlKemPage'
@@ -63,6 +64,7 @@ const ROUTES = [
   { path: '/bulletproofs', label: 'Bulletproofs' },
   { path: '/plonk', label: 'PLONK' },
   { path: '/stark', label: 'STARK' },
+  { path: '/gkr', label: 'GKR & Sum-Check' },
   { path: '/poseidon', label: 'Poseidon' },
   { path: '/pqsig', label: 'PQ Signatures' },
   { path: '/mlkem', label: 'ML-KEM' },
@@ -124,6 +126,7 @@ export default function App() {
       {base === '/bulletproofs' && <BulletproofsPage />}
       {base === '/plonk' && <PlonkPage />}
       {base === '/stark' && <StarkPage />}
+      {base === '/gkr' && <GkrPage />}
       {base === '/poseidon' && <PoseidonPage />}
       {base === '/pqsig' && <HashSigPage />}
       {base === '/mlkem' && <MlKemPage />}

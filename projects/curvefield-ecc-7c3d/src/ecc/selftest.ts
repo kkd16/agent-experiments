@@ -161,7 +161,23 @@ import {
   mdsInvertible as posMdsInvertible,
   ROUNDS as POS_ROUNDS,
 } from './poseidon'
-import { pow as goldPow2 } from './goldilocks'
+import { pow as goldPow2, mul as goldMul } from './goldilocks'
+import {
+  productClaim as scProductClaim,
+  productOracle as scProductOracle,
+  sumcheckProve,
+  sumcheckVerify,
+  mleEval as mleEvalGkr,
+} from './sumcheck'
+import { exampleCircuit, evaluate as gkrEvaluate, gkrProve, gkrVerify } from './gkr'
+import {
+  matMul,
+  matmulProve,
+  matmulVerify,
+  countTriangles,
+  trianglesProve,
+  trianglesVerify,
+} from './sumcheck_apps'
 import {
   poseidonStarkProve,
   poseidonStarkVerify,
@@ -2227,6 +2243,64 @@ export function runSelfTest(): TestCase[] {
     const g2 = cgPrimeForm(D2)
     const y2 = cgEval(g2, 300, D2)
     check('VDF · class group', 'a second, independent Δ verifies end-to-end', cgVerify(g2, y2, 300, D2, cgProve(g2, 300, D2, y2)) && cgFormEq(cgReduce(g2, D2), g2), '200-bit Δ, T = 300 — the construction is not tuned to one modulus')
+  }
+
+  // ── GKR & the sum-check protocol ──
+  {
+    // Sum-check on a product of two multilinear polynomials over a 4-var hypercube.
+    const v = 4
+    const n = 1 << v
+    const A = Array.from({ length: n }, (_, i) => goldFp(BigInt(i * i * 7 + 3)))
+    const B = Array.from({ length: n }, (_, i) => goldFp(BigInt(i * 13 + 5)))
+    const claim = scProductClaim([A, B], v)
+    const scProof = sumcheckProve(claim, new StarkTranscript('selftest/sumcheck'))
+    let brute = 0n
+    for (let i = 0; i < n; i++) brute = goldAdd(brute, goldMul(A[i], B[i]))
+    check('GKR · sum-check', 'prover sum = brute-force Σ over the 2⁴ hypercube', scProof.claimedSum === brute, 'the claimed value is the true sum of A·B over 16 points')
+    const scV = sumcheckVerify(v, 2, scProof.claimedSum, scProof.rounds, scProductOracle([A, B]), new StarkTranscript('selftest/sumcheck'))
+    check('GKR · sum-check', 'verifier accepts the honest proof with one oracle call', scV.ok && scV.failedRound === -1, `4 round-checks + 1 MLE evaluation vs 16-term sum`)
+    const scBad = sumcheckVerify(v, 2, goldFp(scProof.claimedSum + 1n), scProof.rounds, scProductOracle([A, B]), new StarkTranscript('selftest/sumcheck'))
+    check('GKR · sum-check', 'verifier rejects a forged claimed sum (H+1)', !scBad.ok, `soundness: the first identity s₁(0)+s₁(1)=H fails`)
+    // The multilinear extension reproduces the hypercube corners.
+    const tbl = [3n, 5n, 8n, 13n]
+    const mleOk = mleEvalGkr(tbl, [0n, 0n]) === 3n && mleEvalGkr(tbl, [1n, 0n]) === 5n && mleEvalGkr(tbl, [0n, 1n]) === 8n && mleEvalGkr(tbl, [1n, 1n]) === 13n
+    check('GKR · sum-check', 'multilinear extension interpolates every hypercube corner', mleOk, 'MLE(table) agrees with the table on {0,1}²')
+
+    // GKR on the lab's example two-layer circuit.
+    const circ = exampleCircuit([2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n])
+    const gvals = gkrEvaluate(circ)
+    const evalOk = gvals[0][0] === 15n && gvals[0][1] === 714n && gvals[0][2] === 21n && gvals[0][3] === 882n
+    check('GKR · sum-check', 'example circuit evaluates to the expected output', evalOk, 'output = [15, 714, 21, 882] from 12 gates')
+    const gp = gkrProve(circ)
+    const gv = gkrVerify(circ, gp.output, gp)
+    check('GKR · sum-check', 'GKR verifier certifies the output re-running zero gates', gv.ok && gv.checks > 0, `${gp.gateOps} prover gate-ops vs ${gv.checks} verifier algebraic checks`)
+    const forged = gp.output.map((x, i) => (i === 0 ? goldFp(x + 1n) : x))
+    const gvBad = gkrVerify(circ, forged, gp)
+    check('GKR · sum-check', 'GKR verifier rejects a single forged output wire', !gvBad.ok, gvBad.reason)
+    const circ2 = exampleCircuit([11n, 0n, 7n, 1n, 9n, 2n, 3n, 100n])
+    const gp2 = gkrProve(circ2)
+    check('GKR · sum-check', 'a second, independent input verifies end-to-end', gkrVerify(circ2, gp2.output, gp2).ok, 'the protocol is not tuned to one witness')
+
+    // Verified matrix multiplication: C̃(r,s) = Σ_x Ã(r,x)·B̃(x,s).
+    const mA = [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n]
+    const mB = [2n, 0n, 1n, 3n, 1n, 1n, 0n, 2n, 4n, 2n, 5n, 1n, 0n, 3n, 2n, 1n]
+    const mC = matMul(mA, mB, 4)
+    check('GKR · sum-check', 'matrix product C = A·B computed over the field', mC[0] === 16n, 'C[0,0] = 1·2+2·1+3·4+4·0 = 16')
+    const mp = matmulProve(mA, mB, 4)
+    check('GKR · sum-check', 'sum-check certifies a 4×4 product from log-n interaction', matmulVerify(mA, mB, mp.C, 4, mp).ok, 'verifier never recomputes the 64 inner-product terms')
+    const mBad = mp.C.map((v, i) => (i === 5 ? goldFp(v + 1n) : v))
+    check('GKR · sum-check', 'matmul verifier rejects a single forged product entry', !matmulVerify(mA, mB, mBad, 4, mp).ok, 'a wrong C shifts (r,s) and the transcript diverges')
+
+    // Triangle counting: (1/6)·Σ Ã(x,y)Ã(y,z)Ã(z,x).
+    const N = 4
+    const adj = new Array(N * N).fill(0)
+    const edge = (a: number, b: number) => { adj[a * N + b] = 1; adj[b * N + a] = 1 }
+    edge(0, 1); edge(1, 2); edge(0, 2); edge(2, 3)
+    const triCount = countTriangles(adj, N)
+    check('GKR · sum-check', 'brute-force triangle count on a 4-vertex graph', triCount === 1, 'one triangle {0,1,2}; the 2–3 edge closes none')
+    const tp = trianglesProve(adj, N)
+    check('GKR · sum-check', 'sum-check certifies the triangle count (Ã evaluated at 3 points)', trianglesVerify(adj, N, triCount, tp).ok, '6·1 = Σ over the 4³ vertex triples')
+    check('GKR · sum-check', 'triangle verifier rejects an inflated count', !trianglesVerify(adj, N, triCount + 1, tp).ok, 'soundness of the counting argument')
   }
 
   return t

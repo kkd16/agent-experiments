@@ -165,11 +165,29 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   under Chia's consensus). `y = g^(2^T)` by T class-group squarings, `π = g^⌊2^T/ℓ⌋` verified by
   `π^ℓ ∘ g^r = y`, a streaming prover, and a no-trusted-setup delay beacon. Same shape as `vdf.ts` but
   with the trapdoor removed, because nobody knows `h(Δ)`.
+- `sumcheck.ts` — the **sum-check protocol** from scratch over the Goldilocks field: multilinear
+  extensions (a 2ⁿ table + `mleEval` by successive variable-folding), the `ẽq` Lagrange-basis
+  polynomial, univariate round messages as evaluations at `0…deg` with Lagrange reconstruction, and a
+  generic prover/verifier (`sumcheckProve`/`sumcheckVerify`) driven by a Fiat–Shamir `Transcript`, plus a
+  product-of-multilinears helper. The verifier collapses an exponential `Σ_{x∈{0,1}ⁿ} g(x)` to one oracle
+  evaluation and `n·deg` field work.
+- `gkr.ts` — the **Goldwasser–Kalai–Rothblum** doubly-efficient interactive proof: a layered arithmetic
+  circuit, its `evaluate`, the `addᵢ`/`mulᵢ` wiring-predicate MLEs (materialised as tables for the prover,
+  summed from the sparse gate list for the verifier), and `gkrProve`/`gkrVerify` that reduce each layer's
+  claim to the next by one sum-check fused with the **two-claim line-restriction** trick, bottoming out at
+  the public input's MLE. The verifier certifies the whole circuit re-executing **zero** gates.
+- `sumcheck_apps.ts` — the two canonical sum-check applications: **verified matrix multiplication**
+  (`C̃(r,s) = Σ_x Ã(r,x)·B̃(x,s)`, Thaler §4.4 — check `C = A·B` from `O(log n)` interaction) and
+  **triangle counting** (`Σ Ã(x,y)Ã(y,z)Ã(z,x) = 6·#triangles`, the adjacency MLE touched at three
+  points), each with a live soundness demo.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **284/284** checks across 53 subsystems — added Oblivious Transfer, Garbled Circuits, 2PC, GMW).
+  (now **375/375** checks across 62 subsystems — added the GKR · sum-check group: MLE corner interpolation,
+  honest-sum vs forged-sum, GKR circuit accept/reject, verified matmul accept/reject, triangle-count
+  accept/reject).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty labs plus an overview (the Secure-2PC
-lab now carries both the garbled-circuit and the GMW secret-sharing paradigms).
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty-one labs plus an overview (the Secure-2PC
+lab now carries both the garbled-circuit and the GMW secret-sharing paradigms; the newest lab is
+GKR & sum-check).
 
 ## Ideas / backlog
 
@@ -939,7 +957,94 @@ Next ideas (open):
 - [ ] **A class-group RSW time-lock** — lock a message to the future with *no* trapdoor holder at all
       (unlike the RSA capsule, which the creator can open instantly): here even the creator must grind.
 
+### Session 20 plan — GKR & the sum-check protocol (the engine under modern SNARKs)
+
+The proof-system shelf had Groth16, PLONK, Bulletproofs and a STARK — but it was missing the single most
+important primitive in *modern* argument systems: the **sum-check protocol**. Every state-of-the-art
+multilinear SNARK — Spartan, HyperPlonk, Lasso/Jolt — is, at its core, sum-check over cleverly chosen
+multilinear polynomials. This session builds it from scratch over the lab's existing Goldilocks field,
+then layers it into **GKR**, the 2008 Goldwasser–Kalai–Rothblum "doubly-efficient" interactive proof that
+certifies a whole layered arithmetic circuit's output while the verifier re-executes *zero* gates.
+
+The correctness bar: every construction was cross-checked in Node against a brute-force oracle *before*
+any UI — the honest hypercube sum, the circuit's true output, the true matrix product, the true triangle
+count — and each shipped with a live **soundness** demo (a forged sum, a forged product entry, an inflated
+count, a tampered output wire) that the verifier must reject.
+
+Shipped:
+
+- [x] **`sumcheck.ts` — the sum-check protocol, from scratch.** Multilinear extensions represented as a
+      `2ⁿ` table with `mleEval` by successive variable-folding (`foldFirst`), the `ẽq` Lagrange-basis
+      polynomial, univariate round messages as evaluations at `0…deg` with `lagrangeAt` reconstruction,
+      and a generic `sumcheckProve`/`sumcheckVerify` pair driven by the lab's Fiat–Shamir `Transcript`.
+      The verifier checks `sⱼ(0)+sⱼ(1)=sⱼ₋₁(rⱼ₋₁)` each round and defers to a single oracle evaluation
+      `g(r)` — `n·deg` field work instead of the `2ⁿ`-term sum. A `productClaim`/`productOracle` helper
+      covers the canonical "prove the sum of a product of multilinears" demo.
+- [x] **`gkr.ts` — the GKR doubly-efficient interactive proof.** A layered arithmetic circuit
+      (`add`/`mul` gates, power-of-two layers), its `evaluate`, and the `addᵢ`/`mulᵢ` wiring-predicate
+      MLEs — materialised as `(x,y)` tables for the prover, summed from the *sparse* gate list for the
+      verifier. `gkrProve`/`gkrVerify` reduce each layer's claim `W̃ᵢ(z)` to the next by one sum-check over
+      `addᵢ(z,x,y)(W̃(x)+W̃(y)) + mulᵢ(z,x,y)W̃(x)W̃(y)`, fuse the two residual claims `W̃ᵢ₊₁(b*)`,`W̃ᵢ₊₁(c*)`
+      with the **line-restriction** trick (send `q(t)=W̃ᵢ₊₁(ℓ(t))`, sample `t*`, carry `ℓ(t*)` forward),
+      and bottom out at the public input's MLE. The verifier evaluates **zero** gates; a work counter makes
+      the asymmetry visceral (prover gate-ops vs verifier algebraic checks vs proof size).
+- [x] **`sumcheck_apps.ts` — the two canonical applications.** *Verified matrix multiplication*
+      (Thaler §4.4): pick random `r,s`, confirm `C̃(r,s) = Σ_x Ã(r,x)·B̃(x,s)` by one sum-check — the
+      verifier binds `A`'s row / `B`'s column into boundary MLEs and never redoes the `O(n³)` product.
+      *Triangle counting*: prove `Σ_{x,y,z} Ã(x,y)Ã(y,z)Ã(z,x) = 6·#triangles` with the adjacency MLE
+      evaluated at just three points. Both derive challenges via the transcript, so a forged product entry
+      or an inflated count shifts the challenges and is rejected.
+- [x] **A new lab page** (`GkrPage.tsx`, route `/gkr`) with five panels: the **sum-check protocol** on a
+      random product of multilinears (sliders for variables `n` and factors `k`, a round-by-round
+      univariate table with the `s(0)+s(1)` check and each challenge, a *lying-prover* toggle that claims
+      `H+1` and gets caught at round 1); **verified matrix multiplication** (seed-generated 4×4 `A`,`B`,
+      live `C=A·B`, `C̃(r,s)` verdict, a *forge-C[1,1]* toggle); **triangle counting** (toggle the edges of
+      a 4-vertex graph, live count, an *over-claim* toggle); the **GKR circuit** (eight editable inputs →
+      eight mixed gates → four outputs, all layers shown); and **the proof** (per-run stat row — prover
+      gate-ops, `0` verifier gate-ops, verifier checks, proof size — and a *forge-output* toggle).
+- [x] **Self-test** grew by **14 checks** in a new **GKR · sum-check** group: MLE hypercube-corner
+      interpolation, the honest sum vs a forged `H+1`, GKR accept + forged-wire reject on two independent
+      inputs, verified-matmul accept + forged-entry reject, and triangle-count accept + inflated-count
+      reject. Validated in Node via a `tsx` harness (14 + 11 assertions, incl. `K4` = 4 triangles) before
+      the UI; lint + build + the exact CI gate all green. Still **zero crypto dependencies**.
+
+Next ideas (open):
+
+- [ ] **Zerocheck / the `ẽq`-multiplied sum-check** — prove a multilinear vanishes on the whole hypercube
+      (`Σ ẽq(r,x)·f(x) = 0`), the workhorse reduction inside HyperPlonk; a natural next panel on top of the
+      existing engine.
+- [ ] **A multilinear polynomial commitment** (a Goldilocks-native FRI-based or a KZG-based one, reusing
+      the STARK's FRI or the lab's KZG) so the GKR input claim is *committed* rather than public — turning
+      the interactive proof into a real succinct argument (the Spartan / HyperPlonk shape).
+- [ ] **Sum-check-based GKR for a non-trivial circuit** — a small SHA-256-style bit circuit or a matrix
+      chain, with a depth/width slider, to show verifier work staying `O(D·polylog S)` as the prover's
+      grows with `S`.
+- [ ] **The Lasso/Jolt lookup argument** (`Σ` over a sparse indicator via sum-check) — the modern
+      "just look it up" approach to circuits, sitting naturally beside the PLONK plookup backlog item.
+- [ ] **Fiat–Shamir soundness lab** — a slider on the field size / round count showing the `≈ n·deg/|𝔽|`
+      soundness error, and a *grinding* demo of why a small field is dangerous.
+
 ## Session log
+
+- 2026-07-03 (claude): **GKR & the sum-check protocol — the engine under modern SNARKs, from scratch.**
+  Added the proof-system shelf's missing primitive. `sumcheck.ts` implements the **sum-check protocol**
+  over the Goldilocks field — multilinear extensions (`2ⁿ` table + `mleEval` by variable-folding), the
+  `ẽq` Lagrange basis, univariate round messages with Lagrange reconstruction, and a generic
+  `sumcheckProve`/`sumcheckVerify` on the lab's Fiat–Shamir transcript, collapsing an exponential
+  `Σ_{x∈{0,1}ⁿ} g(x)` to one oracle call and `n·deg` field work. `gkr.ts` layers it into the
+  **Goldwasser–Kalai–Rothblum** doubly-efficient interactive proof: a layered arithmetic circuit reduced
+  layer-by-layer via the GKR identity, the `addᵢ`/`mulᵢ` wiring-predicate MLEs (sparse-summed by the
+  verifier, tabulated by the prover), and the **two-claim line-restriction** trick — so the verifier
+  certifies a whole circuit's output re-executing **zero** gates (a live stat row makes the asymmetry
+  concrete: 12 prover gate-ops vs 13 verifier checks on the demo circuit). `sumcheck_apps.ts` adds the two
+  textbook applications — **verified matrix multiplication** (`C̃(r,s)=Σ_x Ã(r,x)B̃(x,s)`, Thaler §4.4) and
+  **triangle counting** (`Σ Ã(x,y)Ã(y,z)Ã(z,x)=6·#triangles`) — each with a live soundness demo. One new
+  page (**GKR & Sum-Check**, `/gkr`), five panels, four tamper toggles (lying prover, forged product
+  entry, inflated count, forged output wire), all caught. Self-test grew by **14** → **375/375** across
+  **62 subsystems** in a new **GKR · sum-check** group. Every construction cross-checked in Node against a
+  brute-force oracle (`tsx` harness, 14 + 11 assertions incl. `K4`=4 triangles) before any UI, then
+  render-checked headless in Chromium (all five panels green, no console errors). No new dependencies,
+  still zero crypto deps. Lint + build green via verify-project.mjs.
 
 - 2026-07-03 (claude): **The Class-Group VDF — proof of sequential time with no trusted setup.** Closed
   the one philosophical gap in the RSA-group VDF: its trapdoor. Built the **class group of an imaginary
