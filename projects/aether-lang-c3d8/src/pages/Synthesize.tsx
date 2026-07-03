@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { GALLERY, parseSpec, synthesize } from '../lang/synth.ts'
-import type { SynthResult } from '../lang/synth.ts'
+import { GALLERY, parseSpec, runSynthSelfTests, synthesize } from '../lang/synth.ts'
+import type { SynthResult, SynthSelfResult } from '../lang/synth.ts'
 import { setPendingCode } from '../share.ts'
 import { navigate } from '../router.ts'
 
@@ -53,6 +53,13 @@ export default function Synthesize() {
     navigate('/')
   }
 
+  // Append a distinguishing example, then re-run — the CEGIS disambiguation loop.
+  const addExample = (line: string): void => {
+    const next = `${spec.replace(/\s+$/, '')}\n${line}`
+    setSpec(next)
+    run(next)
+  }
+
   const exampleCount = useMemo(() => spec.split('\n').filter((l) => l.includes('=>')).length, [spec])
 
   // Deep-link support: `?run=<gallery id>` auto-synthesizes that task on mount.
@@ -61,7 +68,6 @@ export default function Synthesize() {
     if (!task) return
     const h = setTimeout(() => run(task.spec), 0)
     return () => clearTimeout(h)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -73,8 +79,12 @@ export default function Synthesize() {
         bottom-up enumerative synthesizer (the family behind Escher / EUSolver — no solver, no
         library) reads the <em>types</em> off your examples, grows a bank of candidate terms with
         observational-equivalence pruning, and even synthesizes the lambdas passed to{' '}
-        <code>map</code>/<code>filter</code>/<code>foldr</code>. Whatever it finds is then
-        re-checked through the <strong>real compiler</strong> before you see it.
+        <code>map</code>/<code>filter</code>/<code>foldr</code>. It handles{' '}
+        <strong>several arguments</strong> (<code>a, b =&gt; c</code> — no tupling),{' '}
+        <strong>ranks</strong> every program that fits by AST size then real VM-step cost, and{' '}
+        <strong>warns you when your examples are ambiguous</strong> — showing an input two candidates
+        disagree on so you can pin the function down. Whatever it picks is re-checked through the{' '}
+        <strong>real compiler</strong> before you see it.
       </p>
 
       <div className="synth-layout">
@@ -98,12 +108,13 @@ export default function Synthesize() {
               {running ? 'searching…' : '✦ Synthesize'}
             </button>
             <span className="synth-note">
-              inputs &amp; outputs are ordinary Aether values: <code>[1, 2, 3]</code>,{' '}
-              <code>(2, 3)</code>, <code>true</code>, <code>&quot;hi&quot;</code>
+              values are ordinary Aether: <code>[1, 2, 3]</code>, <code>(2, 3)</code>,{' '}
+              <code>true</code>, <code>&quot;hi&quot;</code> · separate multiple arguments with commas:{' '}
+              <code>2, 3 =&gt; 5</code>
             </span>
           </div>
 
-          {outcome && <ResultView outcome={outcome} onOpen={openInPlayground} />}
+          {outcome && <ResultView outcome={outcome} onOpen={openInPlayground} onAddExample={addExample} />}
         </section>
 
         <aside className="synth-gallery">
@@ -126,16 +137,68 @@ export default function Synthesize() {
           </div>
         </aside>
       </div>
+
+      <SelfCheck />
     </div>
+  )
+}
+
+/** A live engine self-check: runs the whole search + real-compiler verification
+ * over a battery of specs and proves the synthesizer still works, end to end. */
+function SelfCheck() {
+  const [rows, setRows] = useState<SynthSelfResult[] | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const runIt = (): void => {
+    setBusy(true)
+    setRows(null)
+    setTimeout(() => {
+      setRows(runSynthSelfTests())
+      setBusy(false)
+    }, 20)
+  }
+
+  const passed = rows ? rows.filter((r) => r.ok).length : 0
+  const allOk = rows !== null && passed === rows.length
+
+  return (
+    <section className="synth-selfcheck">
+      <div className="synth-selfcheck-head">
+        <button className="btn" onClick={runIt} disabled={busy}>
+          {busy ? 'running…' : '▶ Run engine self-check'}
+        </button>
+        {rows && (
+          <span className={`synth-selfcheck-tally ${allOk ? 'ok' : 'bad'}`}>
+            {passed}/{rows.length} passing
+          </span>
+        )}
+        <span className="synth-note">
+          each row runs the full search and re-verifies the found program through the real compiler
+        </span>
+      </div>
+      {rows && (
+        <ul className="synth-selfcheck-list">
+          {rows.map((r, i) => (
+            <li key={i} className={`synth-selfcheck-row ${r.ok ? 'ok' : 'bad'}`}>
+              <span className="synth-selfcheck-mark">{r.ok ? '✓' : '✗'}</span>
+              <span className="synth-selfcheck-name">{r.name}</span>
+              <span className="synth-selfcheck-detail">{r.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 
 function ResultView({
   outcome,
   onOpen,
+  onAddExample,
 }: {
   outcome: Outcome
   onOpen: (src: string) => void
+  onAddExample: (line: string) => void
 }) {
   if (outcome.error) {
     return (
@@ -174,6 +237,7 @@ function ResultView({
       <div className="synth-stats">
         <Stat label="AST size" value={r.size === null ? '—' : String(r.size)} />
         <Stat label="candidates" value={String(r.candidates)} />
+        <Stat label="solutions" value={String(r.alternatives.length + 1)} />
         <Stat label="time" value={`${r.millis} ms`} />
       </div>
 
@@ -198,6 +262,52 @@ function ResultView({
         </tbody>
       </table>
 
+      {r.ambiguity && (
+        <div className="synth-ambig">
+          <div className="synth-ambig-head">
+            <span className="synth-ambig-badge">△ Ambiguous</span>
+            these programs all fit your examples but <strong>disagree</strong> on{' '}
+            <code>{r.ambiguity.inputSrc}</code>
+          </div>
+          <div className="synth-ambig-opts">
+            {r.ambiguity.options.map((o, i) => (
+              <div className="synth-ambig-opt" key={i}>
+                <code className="synth-ambig-prog">{lastLine(o.program)}</code>
+                <span className="synth-ambig-arrow">→</span>
+                <code className="synth-ambig-out">{o.outputSrc}</code>
+                <button
+                  className="synth-mini-btn"
+                  title="Add this as an example and search again"
+                  onClick={() => onAddExample(`${r.ambiguity!.inputSrc} => ${o.outputSrc}`)}
+                >
+                  + pick this
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="synth-ambig-note">
+            Add the intended answer to disambiguate — the search will re-run and narrow the space.
+          </p>
+        </div>
+      )}
+
+      {r.alternatives.length > 0 && (
+        <div className="synth-alts">
+          <div className="synth-alts-head">Other programs that fit (ranked)</div>
+          <ul className="synth-alts-list">
+            {r.alternatives.map((a, i) => (
+              <li className="synth-alt" key={i}>
+                <code className="synth-alt-prog">{lastLine(a.program)}</code>
+                <span className="synth-alt-meta">
+                  size {a.size}
+                  {a.steps !== null ? ` · ${a.steps} steps` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {r.verified && r.playgroundSrc && (
         <button className="btn" onClick={() => onOpen(r.playgroundSrc as string)}>
           Open in playground → (run it on all three backends)
@@ -205,6 +315,12 @@ function ResultView({
       )}
     </div>
   )
+}
+
+/** Programs may carry helper `let`s on earlier lines; the clause is the last line. */
+function lastLine(program: string): string {
+  const lines = program.split('\n')
+  return lines[lines.length - 1]
 }
 
 function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

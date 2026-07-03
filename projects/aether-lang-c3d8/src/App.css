@@ -2484,3 +2484,198 @@ body {
   color: var(--fg-faint);
   line-height: 1.35;
 }
+
+/* ── Ambiguity (anti-overfitting) panel ─────────────────────────────── */
+.synth-ambig {
+  margin: 0 1.15rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  overflow: hidden;
+}
+.synth-ambig-head {
+  padding: 0.7rem 0.85rem;
+  font-size: 0.86rem;
+  color: var(--fg-dim);
+  line-height: 1.45;
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 25%, var(--line));
+}
+.synth-ambig-head code {
+  font-family: var(--mono);
+  color: var(--amber);
+}
+.synth-ambig-badge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: #171205;
+  background: var(--amber);
+}
+.synth-ambig-opts {
+  display: flex;
+  flex-direction: column;
+}
+.synth-ambig-opt {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.85rem;
+  border-top: 1px dashed color-mix(in srgb, var(--amber) 20%, var(--line));
+}
+.synth-ambig-opt:first-child {
+  border-top: none;
+}
+.synth-ambig-prog {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--fg);
+}
+.synth-ambig-arrow {
+  color: var(--fg-faint);
+}
+.synth-ambig-out {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--cyan);
+  font-weight: 600;
+}
+.synth-mini-btn {
+  margin-left: auto;
+  padding: 0.22rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--amber);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+.synth-mini-btn:hover {
+  background: var(--amber);
+  color: #171205;
+}
+.synth-ambig-note {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+  border-top: 1px solid color-mix(in srgb, var(--amber) 25%, var(--line));
+}
+
+/* ── Ranked alternatives ────────────────────────────────────────────── */
+.synth-alts {
+  margin: 0 1.15rem 1rem;
+}
+.synth-alts-head {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-faint);
+  margin-bottom: 0.4rem;
+}
+.synth-alts-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.synth-alt {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-1);
+}
+.synth-alt-prog {
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  color: var(--fg-dim);
+}
+.synth-alt-meta {
+  margin-left: auto;
+  font-size: 0.76rem;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+/* ── Engine self-check ──────────────────────────────────────────────── */
+.synth-selfcheck {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+.synth-selfcheck-head {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.synth-selfcheck-tally {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 6px;
+}
+.synth-selfcheck-tally.ok {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+.synth-selfcheck-tally.bad {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+.synth-selfcheck-list {
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
+}
+@media (min-width: 720px) {
+  .synth-selfcheck-list {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.synth-selfcheck-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-1);
+  font-size: 0.85rem;
+}
+.synth-selfcheck-mark {
+  font-weight: 700;
+}
+.synth-selfcheck-row.ok .synth-selfcheck-mark {
+  color: var(--green);
+}
+.synth-selfcheck-row.bad .synth-selfcheck-mark {
+  color: var(--red);
+}
+.synth-selfcheck-name {
+  color: var(--fg);
+  font-weight: 500;
+}
+.synth-selfcheck-detail {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}

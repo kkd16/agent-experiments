@@ -269,14 +269,22 @@ export function litSrc(v: Value): string {
 const asInt = (v: Value | undefined): number | undefined =>
   v && (v.tag === 'int' || v.tag === 'float') ? v.n : undefined
 
-// Every synthesized variable is named `x` (the argument) or `h`/`acc` (lambda
-// parameters), and no component keyword contains those as a whole word — so a
-// term reads a variable iff its rendered source mentions one.
-const HASVAR = /\b(?:x|h|acc)\b/
+// A term reads a variable iff its rendered source mentions one of the names in
+// scope. For a single-argument goal that's `x` (plus the lambda params `h`/`acc`);
+// a multi-argument goal (`fn a b -> …`) puts several argument names in scope, so
+// the regex is rebuilt per run by `setVarNames`. No component keyword contains any
+// of these as a whole word, so the whole-word test stays exact.
+let VAR_RE = /\b(?:x|h|acc)\b/
+
+/** Reset the in-scope variable names (the goal's argument names + lambda params). */
+function setVarNames(argNames: string[]): void {
+  const names = [...argNames, 'h', 'acc'].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  VAR_RE = new RegExp(`\\b(?:${names.join('|')})\\b`)
+}
 
 /** Build a term, deriving `vec` and `usesVar` from the pieces. */
 function term(src: string, atom: boolean, ty: STy, size: number, fn: Sem, rows: Env[]): Term {
-  return { src, atom, ty, size, fn, vec: evalVec(fn, rows), usesVar: HASVAR.test(src) }
+  return { src, atom, ty, size, fn, vec: evalVec(fn, rows), usesVar: VAR_RE.test(src) }
 }
 
 function mkBinInt(
@@ -353,6 +361,10 @@ interface GrowOpts {
   deadline: number
   /** the search target — matched against each freshly built term */
   goal?: (t: Term) => boolean
+  /** called for *every* freshly built term that meets the goal (before the
+   * per-type cap can evict it) — lets the driver harvest all solutions, not
+   * just the first, for ranking and ambiguity detection */
+  collect?: (t: Term) => void
   /** synthesize a unary lambda `elemTy -> resultTy` (for map / filter) */
   hofInner: (elemTy: STy, resultTy: STy) => HofFn[]
   /** synthesize a binary lambda `elemTy -> accTy -> accTy` (for foldr / foldl) */
@@ -449,7 +461,10 @@ function growPass(bank: Bank, opts: GrowOpts): { added: number; hit: Term | null
   let hit: Term | null = null
   const perType = new Map<string, number>()
   for (const t of additions) {
-    if (!hit && opts.goal && opts.goal(t)) hit = t
+    if (opts.goal && opts.goal(t)) {
+      if (!hit) hit = t
+      opts.collect?.(t)
+    }
     const k = tyKey(t.ty)
     const n = perType.get(k) ?? bank.ofKey(k).length
     if (n >= opts.perTypeCap) continue
@@ -685,9 +700,11 @@ interface HofFn {
 // ---------------------------------------------------------------------------
 
 export interface Example {
-  input: Value
+  /** one value per goal argument (length 1 for a single-argument goal) */
+  inputs: Value[]
   output: Value
-  inputSrc: string
+  /** the source text of each argument, for rendering + re-running */
+  inputSrcs: string[]
   outputSrc: string
 }
 
@@ -696,12 +713,33 @@ export interface Spec {
   typeHint: string | null
 }
 
+/** One ranked candidate program that reproduces every example. */
+export interface Candidate {
+  program: string
+  size: number
+  /** VM instruction count summed over the examples (null if not measured) */
+  steps: number | null
+}
+
+/**
+ * A distinguishing witness proving the examples are ambiguous: an input on which
+ * two candidate programs (each consistent with every example) disagree.
+ */
+export interface Ambiguity {
+  /** the rendered input the candidates disagree on (`a, b` for multi-arg) */
+  inputSrc: string
+  /** each distinct answer at that input, and the smallest program giving it */
+  options: { outputSrc: string; program: string }[]
+}
+
 export interface SynthResult {
   ok: boolean
   program: string | null
   /** a self-contained snippet (helpers + `solve` + a sample call) for the Playground */
   playgroundSrc: string | null
   paramName: string
+  /** the goal's argument names (`['x']`, or `['x','y']` for a multi-argument goal) */
+  paramNames: string[]
   type: string | null
   goalType: string
   size: number | null
@@ -711,11 +749,19 @@ export interface SynthResult {
   verified: boolean
   message: string
   rows: { input: string; expected: string; got: string; ok: boolean }[]
+  /** other distinct programs that also fit, ranked after the chosen one */
+  alternatives: Candidate[]
+  /** a distinguishing input if the examples are ambiguous, else null */
+  ambiguity: Ambiguity | null
 }
 
-const OUTER_X = 0 // env index of the argument variable
+const OUTER_X = 0 // env index of the (first) argument variable
 const IN_HEAD = 1 // inner lambda parameters
 const IN_ACC = 2
+
+/** Argument names for a k-argument goal — none clash with `h`/`acc` or a component. */
+const ARG_NAMES = ['x', 'y', 'z', 'w', 'u', 'v']
+const MAX_ARGS = ARG_NAMES.length
 
 /** Small deterministic probe values per type for the inner (lambda) search. */
 function probeValues(t: STy): Value[] {
@@ -873,6 +919,11 @@ function cartesian(lists: Value[][], f: (vals: Value[]) => void): void {
   rec(0, [])
 }
 
+/** How long to keep searching *after* the first solution, to harvest alternatives. */
+const HARVEST_MS = 700
+/** How many distinct solutions to collect before stopping the harvest. */
+const HARVEST_TARGET = 48
+
 export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthResult {
   const t0 = nowMs()
   const limits = { ...DEFAULT_LIMITS, ...limitsIn }
@@ -881,6 +932,7 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     program: null,
     playgroundSrc: null,
     paramName: 'x',
+    paramNames: ['x'],
     type: null,
     goalType: '',
     size: null,
@@ -890,46 +942,72 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     verified: false,
     message: '',
     rows: [],
+    alternatives: [],
+    ambiguity: null,
   }
 
   if (spec.examples.length === 0) return { ...empty, message: 'Add at least one example (input => output).' }
 
-  // goal shape
-  let inShape: STy = TANY
+  // Every example must supply the same number of arguments.
+  const argCount = spec.examples[0].inputs.length
+  if (argCount < 1) return { ...empty, message: 'Each example needs at least one input.' }
+  if (argCount > MAX_ARGS) return { ...empty, message: `At most ${MAX_ARGS} arguments are supported.` }
+  for (const ex of spec.examples)
+    if (ex.inputs.length !== argCount)
+      return { ...empty, message: `All examples must take the same number of arguments (${argCount}).` }
+  const argNames = ARG_NAMES.slice(0, argCount)
+  setVarNames(argNames)
+
+  // goal shape — one input shape per argument, plus the output shape
+  const inShapes: STy[] = argNames.map(() => TANY as STy)
   let outShape: STy = TANY
   try {
     for (const ex of spec.examples) {
-      inShape = mergeTy(inShape, shapeOf(ex.input))
+      for (let i = 0; i < argCount; i++) inShapes[i] = mergeTy(inShapes[i], shapeOf(ex.inputs[i]))
       outShape = mergeTy(outShape, shapeOf(ex.output))
     }
   } catch (e) {
     return { ...empty, message: (e as Error).message }
   }
-  inShape = groundTy(inShape)
+  for (let i = 0; i < argCount; i++) inShapes[i] = groundTy(inShapes[i])
   outShape = groundTy(outShape)
-  const goalType = `${styToString(inShape)} -> ${styToString(outShape)}`
+  const goalType = [...inShapes.map(styToString), styToString(outShape)].join(' -> ')
 
   const rows: Env[] = spec.examples.map((ex) => {
     const env: Env = []
-    env[OUTER_X] = ex.input
+    for (let i = 0; i < argCount; i++) env[i] = ex.inputs[i]
     return env
   })
   const targets = spec.examples.map((ex) => ex.output)
 
-  // integer constants worth trying: those literally appearing in outputs
-  const extraInts = collectInts(targets)
+  // integer constants worth trying: those literally appearing in the examples
+  const extraInts = collectInts([...targets, ...spec.examples.flatMap((ex) => ex.inputs)])
 
   const bank = new Bank()
-  const xFn: Sem = (env) => env[OUTER_X]
-  bank.add(term('x', true, inShape, 1, xFn, rows))
+  for (let i = 0; i < argCount; i++) {
+    const idx = i
+    bank.add(term(argNames[i], true, inShapes[i], 1, (env) => env[idx], rows))
+  }
   seedConstants(bank, outShape, rows, extraInts)
-  seedConstants(bank, inShape, rows, extraInts)
+  for (const s of inShapes) seedConstants(bank, s, rows, extraInts)
 
-  const argReps = spec.examples.map((ex) => ex.input)
+  const argReps = spec.examples.map((ex) => ex.inputs[0])
   const innerSearch = makeInner(argReps)
   const deadline = t0 + limits.timeBudgetMs
   const outKey = tyKey(outShape)
   const goal = (t: Term): boolean => tyKey(t.ty) === outKey && vecMatches(t.vec, targets)
+
+  // Harvest *all* solutions (not just the first) so we can rank them and detect
+  // ambiguity. Distinct by rendered source; capped so a flood of trivial
+  // siblings can't crowd the buffer.
+  const collected: Term[] = []
+  const collectedSrc = new Set<string>()
+  const collect = (t: Term): void => {
+    if (collectedSrc.has(t.src) || collectedSrc.size >= 400) return
+    collectedSrc.add(t.src)
+    collected.push(t)
+  }
+
   const opts: GrowOpts = {
     rows,
     maxTermSize: limits.maxTermSize,
@@ -938,34 +1016,42 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     allowHof: true,
     deadline,
     goal,
+    collect,
     hofInner: (el, res) => innerSearch([el], res),
     hofInner2: (el, acc) => innerSearch([el, acc], acc),
   }
 
   // Maybe a seeded/constant term already matches.
-  let hit: Term | null = null
-  for (const t of bank.of(outShape))
-    if (vecMatches(t.vec, targets)) {
-      hit = t
-      break
-    }
+  for (const t of bank.of(outShape)) if (goal(t)) collect(t)
+
+  let firstHit = collected.length > 0
+  let deadline2 = firstHit ? Math.min(deadline, nowMs() + HARVEST_MS) : deadline
   let round = 0
-  while (!hit && round < limits.maxRounds && bank.size < limits.maxCandidates && nowMs() < deadline) {
+  while (round < limits.maxRounds && bank.size < limits.maxCandidates && nowMs() < deadline2) {
     const res = growPass(bank, opts)
-    hit = res.hit
+    if (res.hit && !firstHit) {
+      firstHit = true
+      deadline2 = Math.min(deadline, nowMs() + HARVEST_MS)
+    }
     round++
     if (res.added === 0) break
+    if (firstHit && collected.length >= HARVEST_TARGET) break
   }
   // Only if no straight-line program exists do we resort to learning a
   // piecewise `if` — this keeps clean solutions from being upstaged by an
   // over-fit conditional that merely happens to match the examples.
-  if (!hit) hit = learnConditional(bank, outShape, rows, targets)
+  if (collected.length === 0) {
+    const cond = learnConditional(bank, outShape, rows, targets)
+    if (cond) collect(cond)
+  }
 
   const millis = Math.round(nowMs() - t0)
-  if (!hit) {
+  if (collected.length === 0) {
     return {
       ...empty,
       goalType,
+      paramName: argNames[0],
+      paramNames: argNames,
       candidates: bank.size,
       classes: bank.size,
       millis,
@@ -973,27 +1059,186 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     }
   }
 
-  const body = hit.src
-  const def = definition(body)
+  // Rank the harvested solutions: prefer ones that actually compile + run, then
+  // smaller ASTs, then fewer VM steps (a genuine dynamic-cost tie-break).
+  const distinct = uniqueBy(collected, (t) => t.src).sort((a, b) => a.size - b.size).slice(0, 24)
+  const ranked = distinct.slice(0, 8).map((t) => ({ t, steps: measureSteps(argNames, t.src, spec.examples) }))
+  ranked.sort((a, b) => {
+    const ac = a.steps === null ? 1 : 0
+    const bc = b.steps === null ? 1 : 0
+    if (ac !== bc) return ac - bc
+    if (a.t.size !== b.t.size) return a.t.size - b.t.size
+    return (a.steps ?? 0) - (b.steps ?? 0)
+  })
+  const best = ranked[0].t
+
+  const alternatives: Candidate[] = ranked
+    .slice(1)
+    .filter((r) => r.t.src !== best.src)
+    .slice(0, 4)
+    .map((r) => ({ program: prettyProgram(argNames, r.t.src), size: r.t.size, steps: r.steps }))
+
+  // Anti-overfitting: do any two consistent programs disagree on an unseen input?
+  const ambiguity = detectAmbiguity(distinct.slice(0, 12), inShapes, argNames)
+
+  const body = best.src
+  const def = definition(argNames, body)
   const verify = verifyProgram(def, spec.examples)
   const sample = spec.examples[0]
+  const sampleCall = sample.inputSrcs.map((s) => `(${s})`).join(' ')
   return {
     ok: verify.ok,
-    program: prettyProgram(body),
-    playgroundSrc: `${def.replace(/ in solve$/, ' in')}\nsolve (${sample.inputSrc})`,
-    paramName: 'x',
+    program: prettyProgram(argNames, body),
+    playgroundSrc: `${def.replace(/ in solve$/, ' in')}\nsolve ${sampleCall}`,
+    paramName: argNames[0],
+    paramNames: argNames,
     type: verify.type ?? goalType,
     goalType,
-    size: hit.size,
+    size: best.size,
     candidates: bank.size,
-    classes: bank.size,
+    classes: collectedSrc.size,
     millis,
     verified: verify.ok,
     message: verify.ok
-      ? `Found in ${millis} ms after ${bank.size} candidates.`
+      ? `Found in ${millis} ms after ${bank.size} candidates${
+          alternatives.length ? ` (and ${alternatives.length} more that fit)` : ''
+        }.`
       : `Found a candidate but the compiler rejected it: ${verify.message}`,
     rows: verify.rows,
+    alternatives,
+    ambiguity,
   }
+}
+
+/** Deduplicate, keeping first occurrence, by a string key. */
+function uniqueBy<T>(xs: T[], key: (x: T) => string): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const x of xs) {
+    const k = key(x)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(x)
+  }
+  return out
+}
+
+/**
+ * Run a candidate through the real pipeline on each example and sum the VM
+ * instruction count — a *dynamic* cost used to break AST-size ties (so an O(n)
+ * fold outranks an O(n²) one of equal source size). Returns null if the program
+ * fails to compile or run, which also lets ranking prefer programs that stand up
+ * to the genuine compiler.
+ */
+function measureSteps(argNames: string[], body: string, examples: Example[]): number | null {
+  const def = definition(argNames, body).replace(/ in solve$/, ' in')
+  let total = 0
+  for (const ex of examples.slice(0, 4)) {
+    const call = `${def} solve ${ex.inputSrcs.map((s) => `(${s})`).join(' ')}`
+    const res = runPipeline(call, { execute: true })
+    if (res.error || !res.run || res.run.error || res.run.result === null) return null
+    if (!sameValue(res.run.result, ex.output)) return null
+    total += res.run.steps
+  }
+  return total
+}
+
+// ---------------------------------------------------------------------------
+// Anti-overfitting: a distinguishing input (CEGIS witness).
+//
+// Every harvested program agrees on the given examples by construction. If two
+// of them nevertheless disagree on some *other* input, the examples don't pin
+// the function down — so we surface that input and both interpretations, and the
+// user labels it to disambiguate. This is what kills the classic over-fit (a
+// spurious `x % 2` that only coincides with `sign` on the handful of examples).
+// ---------------------------------------------------------------------------
+
+/** Richer per-type probes, tuned to expose disagreements between candidates. */
+function distinguishProbe(t: STy): Value[] {
+  switch (t.k) {
+    case 'int':
+      return [0, 1, 2, 3, 5, 7, -1, -2, -4].map(vint)
+    case 'bool':
+      return [vbool(true), vbool(false)]
+    case 'str':
+      return [vstr(''), vstr('a'), vstr('ab'), vstr('abc')]
+    case 'unit':
+      return [{ tag: 'unit' }]
+    case 'list': {
+      const p = distinguishProbe(t.el)
+      const one = p[Math.min(1, p.length - 1)]
+      const two = p[Math.min(2, p.length - 1)]
+      const arrs: Value[][] = [[], [p[0]], [one], [p[0], one], [one, p[0]], [p[0], one, two]]
+      return arrs.map(listFromArray)
+    }
+    case 'tuple': {
+      const per = t.items.map((it) => distinguishProbe(it).slice(0, 3))
+      const out: Value[] = []
+      boundedCartesian(per, 12, (vals) => out.push({ tag: 'tuple', items: vals }))
+      return out
+    }
+    default:
+      return [vint(0)]
+  }
+}
+
+/** Cartesian product of `lists`, calling `f` for at most `cap` tuples. */
+function boundedCartesian(lists: Value[][], cap: number, f: (vals: Value[]) => void): void {
+  let n = 0
+  const rec = (i: number, acc: Value[]): void => {
+    if (n >= cap) return
+    if (i === lists.length) {
+      n++
+      f(acc)
+      return
+    }
+    for (const v of lists[i]) {
+      if (n >= cap) return
+      rec(i + 1, [...acc, v])
+    }
+  }
+  rec(0, [])
+}
+
+function detectAmbiguity(cands: Term[], inShapes: STy[], argNames: string[]): Ambiguity | null {
+  if (cands.length < 2) return null
+  // Only weigh *near-minimal* programs against each other: a distinguishing input
+  // is only interesting if a comparably-simple alternative disagrees, not a
+  // baroque over-fit that no one would prefer. `cands` arrives smallest-first.
+  const bound = cands[0].size + 2
+  cands = cands.filter((c) => c.size <= bound)
+  if (cands.length < 2) return null
+  const perArg = inShapes.map(distinguishProbe)
+  let result: Ambiguity | null = null
+  boundedCartesian(perArg, 400, (vals) => {
+    if (result) return
+    const env: Env = []
+    for (let i = 0; i < vals.length; i++) env[i] = vals[i]
+    // group candidates by their (defined) output at this input
+    const byOut = new Map<string, Term>()
+    for (const c of cands) {
+      let v: Value | undefined
+      try {
+        v = c.fn(env)
+      } catch {
+        v = undefined
+      }
+      if (v === undefined) continue
+      const k = valueToString(v)
+      if (!byOut.has(k)) byOut.set(k, c)
+    }
+    if (byOut.size < 2) return
+    // a genuine disagreement — take up to three interpretations, smallest first
+    const opts = [...byOut.entries()]
+      .map(([out, c]) => ({ out, c }))
+      .sort((a, b) => a.c.size - b.c.size)
+      .slice(0, 3)
+    result = {
+      inputSrc: vals.map(litSrc).join(', '),
+      options: opts.map(({ out, c }) => ({ outputSrc: out, program: prettyProgram(argNames, c.src) })),
+    }
+  })
+  return result
 }
 
 /** Source helpers the emitted program may reference (`fst`/`snd` on pairs). */
@@ -1010,15 +1255,15 @@ function neededHelpers(body: string): string[] {
 }
 
 /** A self-contained, runnable definition of `solve` (ending in `solve`). */
-function definition(body: string): string {
+function definition(argNames: string[], body: string): string {
   const pre = neededHelpers(body)
-  return [...pre, `let solve = fn x -> ${body} in solve`].join('\n')
+  return [...pre, `let solve = fn ${argNames.join(' ')} -> ${body} in solve`].join('\n')
 }
 
-/** The headline the UI shows — helper `let`s plus a clausal `solve x = …`. */
-function prettyProgram(body: string): string {
+/** The headline the UI shows — helper `let`s plus a clausal `solve x y = …`. */
+function prettyProgram(argNames: string[], body: string): string {
   const pre = neededHelpers(body)
-  return [...pre, `solve x = ${body}`].join('\n')
+  return [...pre, `solve ${argNames.join(' ')} = ${body}`].join('\n')
 }
 
 function vecMatches(vec: (Value | undefined)[], targets: Value[]): boolean {
@@ -1112,8 +1357,10 @@ function verifyProgram(program: string, examples: Example[]): VerifyOut {
   let allOk = true
   let message = ''
   for (const ex of examples) {
-    // `program` is `let solve = fn x -> body in solve`; apply it to the input.
-    const call = `${program.replace(/ in solve$/, ' in')} solve (${ex.inputSrc})`
+    // `program` is `let solve = fn x y -> body in solve`; apply it to the args.
+    const call = `${program.replace(/ in solve$/, ' in')} solve ${ex.inputSrcs
+      .map((s) => `(${s})`)
+      .join(' ')}`
     const res = runPipeline(call, { execute: true })
     let got = '⟨error⟩'
     let ok = false
@@ -1125,7 +1372,7 @@ function verifyProgram(program: string, examples: Example[]): VerifyOut {
       ok = sameValue(res.run.result, ex.output)
     }
     if (!ok) allOk = false
-    rows.push({ input: ex.inputSrc, expected: ex.outputSrc, got, ok })
+    rows.push({ input: ex.inputSrcs.join(', '), expected: ex.outputSrc, got, ok })
   }
   return { ok: allOk && !tRes.error, type, message, rows }
 }
@@ -1153,14 +1400,22 @@ export function parseSpec(text: string): { spec: Spec | null; error: string | nu
     const arrow = splitArrow(line)
     if (!arrow) return { spec: null, error: `Expected "input => output": ${line}` }
     const [lhs, rhs] = arrow
-    const inV = evalExpr(lhs)
-    if (inV.error) return { spec: null, error: `Bad input ${lhs}: ${inV.error}` }
+    // The left side is one or more arguments separated by *top-level* commas
+    // (commas inside (), [] or a string stay together, so `(2, 3)` is one tuple
+    // argument while `2, 3` is two arguments).
+    const inputSrcs = splitTopLevel(lhs)
+    const inputs: Value[] = []
+    for (const src of inputSrcs) {
+      const inV = evalExpr(src)
+      if (inV.error) return { spec: null, error: `Bad input ${src}: ${inV.error}` }
+      inputs.push(inV.value as Value)
+    }
     const outV = evalExpr(rhs)
     if (outV.error) return { spec: null, error: `Bad output ${rhs}: ${outV.error}` }
     examples.push({
-      input: inV.value as Value,
+      inputs,
       output: outV.value as Value,
-      inputSrc: lhs,
+      inputSrcs,
       outputSrc: rhs,
     })
   }
@@ -1172,6 +1427,31 @@ function splitArrow(line: string): [string, string] | null {
   const i = line.indexOf('=>')
   if (i < 0) return null
   return [line.slice(0, i).trim(), line.slice(i + 2).trim()]
+}
+
+/** Split on commas that are not nested in (), [] or a string literal. */
+function splitTopLevel(src: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let inStr = false
+  let start = 0
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (inStr) {
+      if (c === '\\') i++
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') inStr = true
+    else if (c === '(' || c === '[') depth++
+    else if (c === ')' || c === ']') depth--
+    else if (c === ',' && depth === 0) {
+      parts.push(src.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  parts.push(src.slice(start).trim())
+  return parts.filter((p) => p.length > 0)
 }
 
 function evalExpr(src: string): { value: Value | null; error: string | null } {
@@ -1334,4 +1614,134 @@ export const GALLERY: GalleryTask[] = [
 [1] => false
 [3, 4] => false`,
   },
+  {
+    id: 'add2',
+    title: 'Add two numbers',
+    blurb: 'Two arguments — no tupling.',
+    spec: `-- Int -> Int -> Int
+2, 3 => 5
+10, 1 => 11
+0, 0 => 0
+7, -2 => 5`,
+  },
+  {
+    id: 'max2',
+    title: 'Larger of two',
+    blurb: 'Discovers the library `max` on two args.',
+    spec: `-- Int -> Int -> Int
+3, 5 => 5
+9, 2 => 9
+4, 4 => 4
+-1, -6 => -1`,
+  },
+  {
+    id: 'scale',
+    title: 'Scale then offset',
+    blurb: 'Three arguments: a·x + b.',
+    spec: `-- Int -> Int -> Int -> Int
+2, 3, 1 => 7
+1, 0, 5 => 5
+3, 2, 2 => 8`,
+  },
+  {
+    id: 'consFront',
+    title: 'Prepend an element',
+    blurb: 'An Int and a List argument, no tupling.',
+    spec: `-- Int -> List Int -> List Int
+0, [1, 2] => [0, 1, 2]
+5, [] => [5]
+9, [8, 7] => [9, 8, 7]`,
+  },
+  {
+    id: 'member',
+    title: 'Is x in the list?',
+    blurb: 'Two args: an element and a list → Bool.',
+    spec: `-- Int -> List Int -> Bool
+3, [1, 2, 3] => true
+0, [1, 2] => false
+5, [5] => true
+0, [0] => true
+4, [1, 2] => false`,
+  },
+  {
+    id: 'ambiguous',
+    title: 'Ambiguous by design',
+    blurb: 'Identity and squaring agree here — watch the ambiguity warning fire.',
+    spec: `-- Int -> Int
+0 => 0
+1 => 1`,
+  },
 ]
+
+// ---------------------------------------------------------------------------
+// Engine self-check. Runs a battery of specs end-to-end (the full search + the
+// real-compiler verification) and asserts the expected outcome, so the app can
+// prove the synthesizer still works after any change — and so it can be driven
+// headlessly from Node. Pure logic, no DOM.
+// ---------------------------------------------------------------------------
+
+export interface SynthSelfCase {
+  name: string
+  spec: string
+  /** 'found' → a verified program; 'none' → nothing should be found */
+  expect: 'found' | 'none'
+  /** if set, the reported ambiguity flag must equal this */
+  ambiguous?: boolean
+}
+
+export interface SynthSelfResult {
+  name: string
+  ok: boolean
+  detail: string
+}
+
+export const SYNTH_SELF_CASES: SynthSelfCase[] = [
+  { name: 'double (arithmetic)', spec: '3 => 6\n5 => 10\n0 => 0', expect: 'found' },
+  { name: 'sum (foldr)', spec: '[] => 0\n[5] => 5\n[1,2,3] => 6', expect: 'found' },
+  { name: 'reverse (library)', spec: '[1,2,3] => [3,2,1]\n[] => []\n[9,8] => [8,9]', expect: 'found' },
+  { name: 'double each (map)', spec: '[] => []\n[1,2,3] => [2,4,6]\n[5] => [10]', expect: 'found' },
+  { name: 'keep evens (filter)', spec: '[1,2,3,4] => [2,4]\n[7] => []\n[2,4,6] => [2,4,6]', expect: 'found' },
+  { name: 'abs (learned if)', spec: '3 => 3\n0 => 0\n-4 => 4\n-1 => 1', expect: 'found' },
+  { name: 'add (two args)', spec: '2,3 => 5\n10,1 => 11\n0,0 => 0\n7,-2 => 5', expect: 'found' },
+  { name: 'max (two args)', spec: '3,5 => 5\n9,2 => 9\n4,4 => 4\n-1,-6 => -1', expect: 'found' },
+  { name: 'first of two (proj)', spec: '4,9 => 4\n1,2 => 1\n8,3 => 8', expect: 'found' },
+  { name: 'ambiguity detected', spec: '0 => 0\n1 => 1', expect: 'found', ambiguous: true },
+  // Negation covers the whole Bool domain, so no distinguishing input exists.
+  { name: 'no ambiguity on negation', spec: 'true => false\nfalse => true', expect: 'found', ambiguous: false },
+  { name: 'impossible spec', spec: '1 => "a"\n2 => 5', expect: 'none' },
+]
+
+/** Run the self-check battery; each row reports pass/fail with a detail string. */
+export function runSynthSelfTests(cases: SynthSelfCase[] = SYNTH_SELF_CASES): SynthSelfResult[] {
+  return cases.map((c) => {
+    const parsed = parseSpec(c.spec)
+    if (!parsed.spec) {
+      // A spec that fails to parse only "passes" when we expected nothing found.
+      return { name: c.name, ok: c.expect === 'none', detail: `parse: ${parsed.error}` }
+    }
+    let r: SynthResult
+    try {
+      r = synthesize(parsed.spec)
+    } catch (e) {
+      return { name: c.name, ok: false, detail: `threw: ${(e as Error).message}` }
+    }
+    if (c.expect === 'none') {
+      const ok = !r.ok
+      return { name: c.name, ok, detail: ok ? 'correctly found nothing' : `unexpected: ${r.program}` }
+    }
+    if (!r.ok || !r.verified) {
+      return { name: c.name, ok: false, detail: r.message || 'not found / not verified' }
+    }
+    if (c.ambiguous !== undefined) {
+      const got = r.ambiguity !== null
+      if (got !== c.ambiguous) {
+        return {
+          name: c.name,
+          ok: false,
+          detail: `ambiguity expected ${c.ambiguous}, got ${got}`,
+        }
+      }
+    }
+    return { name: c.name, ok: true, detail: `${(r.program ?? '').split('\n').pop()} · ${r.millis}ms` }
+  })
+}

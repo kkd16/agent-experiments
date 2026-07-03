@@ -81,13 +81,53 @@ Shipped this session:
 - [x] **`Synthesize` workbench page** — editable examples, a 16-task gallery, live search stats,
       an inferred type, a per-example check table, `?run=<id>` deep-links, and "open in Playground"
 
-Deferred (future, building on Aether 25.0 synthesis):
+### Program synthesis (Aether 26.0 — Sketch v2: multi-argument, ranked, self-aware)
 
-- [ ] **Anti-overfitting by counter-example** — after a program is found, generate a *distinguishing*
-      input on which two surviving candidates disagree and ask which is intended (CEGIS-style),
-      instead of trusting the given examples alone (would kill the `sign ⟶ x % 2` coincidence).
-- [ ] **Multi-argument goals without tupling** — synthesize `fn a b -> …` directly rather than
-      forcing the user to pass a pair and project with `fst`/`snd`.
+The 25.0 synthesizer found *one* program and trusted it. 26.0 turns it into a tool that knows
+its own limits: it handles several arguments, harvests *every* program that fits and ranks them
+by real cost, and — the headline — tells you when your examples don't actually pin the function
+down. All in `src/lang/synth.ts` (the driver) + `src/pages/Synthesize.tsx` (the workbench); the
+core enumerator is untouched, so every 25.0 property still holds.
+
+The plan (all shipped this session):
+
+- [x] **Multi-argument goals without tupling** — a spec line splits on *top-level* commas
+      (`splitTopLevel`, respecting `()`/`[]`/strings), so `2, 3 => 5` is two arguments while
+      `(2, 3) => 5` stays one tuple. `Example` now carries `inputs[]`/`inputSrcs[]`; the goal type
+      reads `Int -> Int -> Int`, each argument is seeded as its own bank variable (`x`,`y`,`z`,…),
+      and the emitted program is `fn x y -> …`. The `usesVar` constant-pruning regex is rebuilt per
+      run (`setVarNames`) from the live argument names so pruning still fires. Because the HOF
+      `apply` already *slices* the outer env, the nested-lambda search needed **no** change — the
+      inner params never collide with the extra outer slots. `2,3⇒5` ⟹ `x + y`; `3,5⇒5` ⟹ `max x y`;
+      `2,3,1⇒7` ⟹ `z + (x * y)`; `0,[1,2]⇒[0,1,2]` ⟹ `x :: y`.
+- [x] **Harvest all solutions, not just the first** — `growPass` gained a `collect` hook fired for
+      *every* goal-matching term before the per-type cap can evict it; the driver keeps searching for
+      a short window (`HARVEST_MS`) past the first hit to gather distinct-by-source alternatives.
+- [x] **Cost-ranked results** — the harvested set is ranked by AST size, then by **real measured
+      VM-step cost** (`measureSteps` runs each candidate through the genuine pipeline and sums
+      `run.steps` over the examples), so an O(n) fold outranks an O(n²) one of equal source size, and
+      a program that fails the real compiler sinks to the bottom. The workbench lists the runners-up
+      with their size + step counts.
+- [x] **Anti-overfitting by a distinguishing input (CEGIS witness)** — the headline. Every harvested
+      program agrees on the examples by construction; `detectAmbiguity` probes the *near-minimal*
+      ones (size ≤ min+2) over a richer type-directed input set (`distinguishProbe` +
+      `boundedCartesian`) and, the instant two of them produce different defined outputs on some
+      unseen input, surfaces that input and each interpretation. The workbench shows a "△ Ambiguous"
+      panel with the witness and one-click **+ pick this** buttons that append the chosen
+      `input => output` and re-run — the interactive CEGIS disambiguation loop. This is what catches
+      the classic over-fit (a spurious `x % 2` that only coincides with the real answer on the
+      handful of examples): a full-domain spec like `true⇒false, false⇒true` reports *no* ambiguity,
+      while `0⇒0, 1⇒1` correctly flags that identity and squaring are indistinguishable there.
+- [x] **Live engine self-check** — `runSynthSelfTests` (exported, pure logic, Node-runnable) drives
+      12 specs end-to-end through the full search *and* the real-compiler verification, asserting the
+      outcome (found / not-found / ambiguity flag). Surfaced on the workbench as a "▶ Run engine
+      self-check" strip (12/12 passing) so the page proves the synthesizer still works after any edit.
+- [x] **Workbench v2** — the gallery gains five multi-argument / ambiguity demos (`add2`, `max2`,
+      `scale`, `consFront`, `member`, `ambiguous`); the result view shows the solution count, the
+      ranked alternatives, the ambiguity panel, and multi-argument check rows.
+
+Still deferred (future, building on 26.0):
+
 - [ ] **Recursion beyond the fold schemes** — a structural-recursion template (paramorphism /
       general `let rec`) so functions that are not a single fold (`zip`, `intercalate`) come into range.
 - [ ] **Inner conditionals in synthesized lambdas** — let a `foldl` body itself be piecewise
@@ -95,12 +135,13 @@ Deferred (future, building on Aether 25.0 synthesis):
       library `max`/`min` shortcut.
 - [ ] **ADT-aware generation** — read user `type` declarations and add their constructors + `match`
       to the component set, so synthesis reaches `Option`/`Tree`-shaped programs.
-- [ ] **Cost-ranked results** — when several programs fit, present the top few by VM-step cost (reuse
-      the optimizer's step counter) rather than only the first/smallest by AST size.
 - [ ] **Property goals, not just examples** — accept a `prop`-style predicate (reusing the
       property-testing generators) as an alternative specification and synthesize against it.
 - [ ] **Send a found program straight into the property tester** — one click to fuzz the synthesized
       function against its own inferred invariants, closing the loop with the existing `property.ts`.
+- [ ] **Auto-CEGIS** — instead of asking the user to label the distinguishing input, an optional
+      oracle (a reference implementation or a `prop`) that answers it automatically and loops until the
+      program is unique.
 
 - [x] Lexer, Pratt parser, full AST with source spans
 - [x] Hindley–Milner type inference with let-polymorphism
