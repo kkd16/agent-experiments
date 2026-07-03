@@ -5,15 +5,20 @@ import {
   spatialSearch, scanGamma, skwHypercubeSearch,
   type CoinType, type CoinStart, type GraphFamily,
 } from '../quantum/walks';
+import {
+  buildGluedTrees, reduceGluedTrees, fullGluedEngine, aggregateColumns,
+  exitCurve, columnSpacetime, scalingLaw, gluedTimeWindow,
+} from '../quantum/gluedtrees';
 
 /**
- * Quantum Walks lab — three modes:
+ * Quantum Walks lab — four modes:
  *   • Discrete-time coined walk on a line: the ballistic two-horned distribution vs classical √t.
  *   • Continuous-time walk on a graph: e^{−iAt} with perfect state transfer and a quantum-vs-classical
  *     transport overlay.
  *   • Quantum spatial search (Childs–Goldstone): the continuous-time cousin of Grover, O(√N).
+ *   • The glued trees: the one provably *exponential* quantum speedup, with the exact column reduction.
  */
-type Mode = 'discrete' | 'continuous' | 'search';
+type Mode = 'discrete' | 'continuous' | 'search' | 'glued';
 
 export default function WalkLab() {
   const [mode, setMode] = useState<Mode>('discrete');
@@ -31,7 +36,7 @@ export default function WalkLab() {
         is computed exactly by diagonalising it with the lab's own Hermitian eigensolver.
       </p>
       <div style={{ display: 'flex', gap: 4, marginBottom: 18 }}>
-        {([['discrete', '⟷ Discrete-time (coined)'], ['continuous', '🕸️ Continuous-time (graph)'], ['search', '🔍 Spatial search']] as [Mode, string][]).map(([m, lbl]) => (
+        {([['discrete', '⟷ Discrete (coined)'], ['continuous', '🕸️ Continuous (graph)'], ['search', '🔍 Spatial search'], ['glued', '🌳 Glued trees']] as [Mode, string][]).map(([m, lbl]) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -47,6 +52,7 @@ export default function WalkLab() {
       {mode === 'discrete' && <DiscreteCard />}
       {mode === 'continuous' && <ContinuousCard />}
       {mode === 'search' && <SearchCard />}
+      {mode === 'glued' && <GluedTreesCard />}
     </div>
   );
 }
@@ -500,6 +506,271 @@ function GammaScanPlot({ gammas, peaks, critical }: { gammas: number[]; peaks: n
       <text x={w - 8} y={h - 3} fontSize={7} fill="#475569" textAnchor="end">γ {gMax.toExponential(0)}</text>
     </svg>
   );
+}
+
+// ==================================================================================== Glued trees
+function GluedTreesCard() {
+  const [height, setHeight] = useState(4);
+  const [seed, setSeed] = useState(0); // 0 = deterministic alternating cycle; >0 = seeded random cycle
+  const [glowSource, setGlowSource] = useState<'quantum' | 'classical'>('quantum');
+  const [t, setT] = useState(4.2);
+  const [playing, setPlaying] = useState(false);
+
+  const model = useMemo(() => {
+    const g = buildGluedTrees(height, seed);
+    const red = reduceGluedTrees(height);
+    const full = fullGluedEngine(g);
+    const ec = exitCurve(height, 400);
+    const st = columnSpacetime(height, 140);
+    const tMax = gluedTimeWindow(height);
+    // Exactness certificate: full-graph column aggregation vs the reduced line, reusing `full`.
+    const errTimes = [0.6, tMax * 0.3, ec.qPeakTime, tMax * 0.7, tMax * 0.98];
+    let qErr = 0, cErr = 0;
+    for (const tt of errTimes) {
+      const qF = aggregateColumns(g, full.quantumProb(tt)), cF = aggregateColumns(g, full.classicalProb(tt));
+      const qR = red.quantumColProb(tt), cR = red.classicalColProb(tt);
+      for (let i = 0; i < qR.length; i++) { qErr = Math.max(qErr, Math.abs(qF[i] - qR[i])); cErr = Math.max(cErr, Math.abs(cF[i] - cR[i])); }
+    }
+    return { g, red, full, ec, st, tMax, qErr, cErr };
+  }, [height, seed]);
+
+  const scaling = useMemo(() => scalingLaw(12, 500), []);
+
+  // Snap the clock to the quantum arrival time (depends only on height — the reduction is
+  // gluing-independent) whenever the graph changes. Done in the change handlers, not an effect.
+  const gotoPeak = (hh: number) => setT(exitCurve(hh, 200).qPeakTime);
+  const changeHeight = (hh: number) => { setPlaying(false); setHeight(hh); gotoPeak(hh); };
+  const setGluing = (s: number) => { setSeed(s); gotoPeak(height); };
+
+  // Optional animated sweep of the clock across the crossing window (functional update — no ref).
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0, last = performance.now();
+    const speed = model.tMax / 6; // cross in ~6 seconds
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      setT((prev) => { const nt = prev + dt * speed; return nt > model.tMax ? 0 : nt; });
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, model.tMax]);
+
+  const tc = Math.min(t, model.tMax);
+  const glow = useMemo(
+    () => (glowSource === 'quantum' ? model.full.quantumProb(tc) : model.full.classicalProb(tc)),
+    [model, tc, glowSource],
+  );
+  const qExitNow = model.full.quantumExit(tc), cExitNow = model.full.classicalExit(tc);
+  const { ec } = model;
+  const ratio = ec.cPeak > 0 ? ec.qPeak / ec.cPeak : Infinity;
+
+  return (
+    <Card title="The glued trees — an exponential quantum speedup, built as a walk and proven exact" accent="#34d399">
+      <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 10px', lineHeight: 1.6 }}>
+        Two binary trees are glued leaf-to-leaf by a random cycle. Drop a walker at the{' '}
+        <b style={{ color: '#fff' }}>entrance</b> (◇, left root) and time how long it takes to reach the{' '}
+        <b style={{ color: '#fbbf24' }}>exit</b> (●, right root). A <b style={{ color: '#94a3b8' }}>classical</b>{' '}
+        walk is trapped — there are exponentially more nodes in the middle, so it is pulled inward and the
+        exit probability stays <code style={{ color: '#67e8f9' }}>Θ(2<sup>−h</sup>)</code> forever. A{' '}
+        <b style={{ color: '#34d399' }}>quantum</b> walk crosses in time <code style={{ color: '#67e8f9' }}>O(h)</code>,
+        because in the <b style={{ color: '#a78bfa' }}>column basis</b> the adjacency matrix becomes a
+        near-uniform line of <code style={{ color: '#67e8f9' }}>2h+2</code> sites — a quantum wire the
+        wavepacket flies down ballistically (Childs–Cleve–Deotto–Farhi–Gutmann–Spielman, 2003).
+      </p>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <Slider label="tree height h" min={2} max={6} step={1} value={height} onChange={changeHeight} color="#059669" accent="#6ee7b7" fmt={(v) => `${v}`} />
+        <Seg label="walker" value={glowSource} onChange={(v) => setGlowSource(v as 'quantum' | 'classical')} options={[['quantum', 'quantum'], ['classical', 'classical']]} />
+        <Seg label="gluing" value={seed === 0 ? 'det' : 'rnd'} onChange={(v) => setGluing(v === 'det' ? 0 : 101 + height)} options={[['det', 'ordered'], ['rnd', 'random']]} />
+        {seed !== 0 && <button onClick={() => setGluing(1 + (seed * 1103515245 + 12345) % 99991)} style={reseedBtn}>↻ reseed</button>}
+      </div>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <Slider label="time t" min={0} max={model.tMax} step={model.tMax / 400} value={tc} onChange={(v) => { setPlaying(false); setT(v); }} color="#7c3aed" accent="#c4b5fd" fmt={(v) => v.toFixed(2)} />
+        <button onClick={() => setPlaying((p) => !p)} style={{ ...reseedBtn, borderColor: playing ? '#34d399' : 'rgba(30,58,95,0.6)', color: playing ? '#6ee7b7' : '#64748b' }}>{playing ? '❚❚ pause' : '▶ sweep'}</button>
+        <button onClick={() => { setPlaying(false); setT(model.ec.qPeakTime); }} style={reseedBtn}>⤒ jump to arrival</button>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Metric label="vertices" value={`${model.g.n}`} color="#67e8f9" />
+        <Metric label={`P(exit) ${glowSource === 'quantum' ? '(shown)' : ''}`} value={qExitNow.toFixed(4)} color="#34d399" />
+        <Metric label="P(exit) classical" value={cExitNow < 1e-3 ? cExitNow.toExponential(2) : cExitNow.toFixed(4)} color="#94a3b8" />
+        <Metric label="q peak / at t" value={`${ec.qPeak.toFixed(3)} @ ${ec.qPeakTime.toFixed(1)}`} color="#6ee7b7" />
+        <Metric label="classical ceiling" value={ec.cPeak.toExponential(2)} color="#94a3b8" />
+        <Metric label="separation q/c" value={`${ratio > 999 ? ratio.toExponential(1) : ratio.toFixed(0)}×`} color="#fbbf24" />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 12 }}>
+        <div>
+          <Label>The glued trees at t = {tc.toFixed(2)} — node glow = {glowSource} probability (◇ entrance, ● exit)</Label>
+          <GluedGraphView g={model.g} probs={glow} />
+        </div>
+        <div>
+          <Label>P(exit, t): quantum (green) crosses, classical (grey) flatlines near 0</Label>
+          <ExitProbPlot ec={ec} tNow={tc} tMax={model.tMax} />
+          <Label>Exactness certificate — full graph vs the 2h+2 reduced line</Label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Metric label="max col err · quantum" value={model.qErr.toExponential(1)} color={model.qErr < 1e-9 ? '#34d399' : '#f87171'} />
+            <Metric label="max col err · classical" value={model.cErr.toExponential(1)} color={model.cErr < 1e-9 ? '#34d399' : '#f87171'} />
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
+        <div>
+          <Label>Quantum column space-time — the wavepacket sweeps to the exit column (▶ right)</Label>
+          <ColumnHeatmap data={model.st.quantum} height={height} accent="quantum" />
+        </div>
+        <div>
+          <Label>Classical column space-time — mass piles in the middle, never reaches the exit</Label>
+          <ColumnHeatmap data={model.st.classical} height={height} accent="classical" />
+        </div>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <Label>The separation, scaled: peak P(exit) vs tree height — quantum ~ 1/poly, classical ~ 2<sup>−h</sup> (log axis)</Label>
+        <ScalingPlot scaling={scaling} current={height} />
+      </div>
+      <p style={{ fontSize: 10, color: '#475569', margin: '10px 0 0', lineHeight: 1.5 }}>
+        The reduced line has hopping <b style={{ color: '#a78bfa' }}>√2</b> between every column except a
+        single defect of <b style={{ color: '#a78bfa' }}>2</b> at the central glue — computed from
+        ⟨col<sub>c+1</sub>|A|col<sub>c</sub>⟩ = (edges between columns)/√(N<sub>c</sub>N<sub>c+1</sub>). Because
+        every vertex inside a column shares the same degree, the same subspace reduces the{' '}
+        <i>classical</i> heat kernel too — so both reductions are provably exact (the certificate above
+        is at the eigensolver's floor, ~10<sup>−14</sup>), even under a fresh random gluing. The classical
+        ceiling <code style={{ color: '#67e8f9' }}>≈ 0.236·2<sup>−h</sup></code> is exponentially small at
+        every time; the quantum walk lands on the exit with probability &gt; ½ in time linear in h.
+      </p>
+    </Card>
+  );
+}
+
+const reseedBtn: React.CSSProperties = {
+  padding: '4px 10px', borderRadius: 6, fontSize: 10, cursor: 'pointer', fontFamily: 'monospace',
+  border: '1px solid rgba(30,58,95,0.6)', background: 'transparent', color: '#64748b',
+};
+
+function GluedGraphView({ g, probs }: { g: ReturnType<typeof buildGluedTrees>; probs: number[] }) {
+  const S = 320, pad = 14;
+  const px = (x: number) => pad + x * (S - 2 * pad);
+  const py = (y: number) => pad + y * (S - 2 * pad);
+  const pmax = Math.max(...probs, 1e-9);
+  const rNode = g.height >= 6 ? 2.2 : g.height >= 5 ? 3 : 4;
+  return (
+    <svg width="100%" viewBox={`0 0 ${S} ${S}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b', aspectRatio: '1', marginBottom: 8 }}>
+      {g.edges.map(([i, j], k) => (
+        <line key={k} x1={px(g.layout[i].x)} y1={py(g.layout[i].y)} x2={px(g.layout[j].x)} y2={py(g.layout[j].y)} stroke="#152238" strokeWidth={0.7} />
+      ))}
+      {g.layout.map((pos, i) => {
+        const v = probs[i] / pmax;
+        const isEnd = i === g.entrance || i === g.exit;
+        const r = (isEnd ? rNode + 1.5 : rNode) + 9 * Math.sqrt(v);
+        const [rr, gg, bb] = ramp(Math.sqrt(v));
+        return (
+          <g key={i}>
+            {v > 0.03 && <circle cx={px(pos.x)} cy={py(pos.y)} r={r + 3} fill={`rgba(${rr},${gg},${bb},0.28)`} />}
+            <circle cx={px(pos.x)} cy={py(pos.y)} r={r} fill={`rgb(${rr},${gg},${bb})`}
+              stroke={i === g.entrance ? '#fff' : i === g.exit ? '#fbbf24' : 'none'} strokeWidth={isEnd ? 1.6 : 0} />
+          </g>
+        );
+      })}
+      <text x={px(g.layout[g.entrance].x)} y={py(g.layout[g.entrance].y) - 8} fontSize={11} fill="#fff" textAnchor="middle">◇</text>
+      <text x={px(g.layout[g.exit].x)} y={py(g.layout[g.exit].y) - 8} fontSize={11} fill="#fbbf24" textAnchor="middle">●</text>
+    </svg>
+  );
+}
+
+function ExitProbPlot({ ec, tNow, tMax }: { ec: ReturnType<typeof exitCurve>; tNow: number; tMax: number }) {
+  const w = 320, h = 150, pad = 30;
+  const yMax = Math.max(ec.qPeak, 0.05) * 1.1;
+  const sx = (t: number) => pad + (t / tMax) * (w - pad - 8);
+  const sy = (v: number) => 8 + (1 - v / yMax) * (h - 26);
+  const path = (arr: number[]) => ec.times.map((t, i) => `${i === 0 ? 'M' : 'L'}${sx(t).toFixed(1)},${sy(arr[i]).toFixed(1)}`).join(' ');
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b', marginBottom: 10 }}>
+      {[yMax, yMax / 2, 0].map((v, i) => (
+        <g key={i}>
+          <line x1={pad} y1={sy(v)} x2={w - 8} y2={sy(v)} stroke="#1e293b" strokeWidth={1} />
+          <text x={pad - 3} y={sy(v) + 3} fontSize={7} fill="#475569" textAnchor="end">{v.toFixed(2)}</text>
+        </g>
+      ))}
+      <line x1={sx(ec.qPeakTime)} y1={6} x2={sx(ec.qPeakTime)} y2={h - 16} stroke="#34d399" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
+      <line x1={sx(tNow)} y1={6} x2={sx(tNow)} y2={h - 16} stroke="#c4b5fd" strokeWidth={1} opacity={0.6} />
+      <path d={path(ec.classical)} fill="none" stroke="#94a3b8" strokeWidth={1.4} />
+      <path d={path(ec.quantum)} fill="none" stroke="#34d399" strokeWidth={1.8} />
+      {[0, tMax / 2, tMax].map((t, i) => <text key={i} x={sx(t)} y={h - 3} fontSize={7} fill="#475569" textAnchor="middle">{t.toFixed(0)}</text>)}
+      <text x={w - 8} y={h - 3} fontSize={8} fill="#64748b" textAnchor="end">t</text>
+    </svg>
+  );
+}
+
+function ColumnHeatmap({ data, height, accent }: { data: number[][]; height: number; accent: 'quantum' | 'classical' }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const rows = data.length, cols = data[0]?.length ?? 1;
+    cv.width = cols; cv.height = rows;
+    const ctx = cv.getContext('2d'); if (!ctx) return;
+    let max = 1e-9;
+    for (const row of data) for (const v of row) if (v > max) max = v;
+    const img = ctx.createImageData(cols, rows);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const [rr, gg, bb] = ramp(Math.sqrt(Math.max(0, data[r][c]) / max));
+      const o = 4 * (r * cols + c);
+      img.data[o] = rr; img.data[o + 1] = gg; img.data[o + 2] = bb; img.data[o + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [data]);
+  const mid = height + 0.5; // boundary between the two leaf columns
+  const cols = 2 * height + 2;
+  return (
+    <div style={{ position: 'relative', marginBottom: 6 }}>
+      <canvas ref={ref} style={{ width: '100%', height: 168, imageRendering: 'pixelated', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', display: 'block' }} />
+      <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${(mid / cols) * 100}%`, width: 1, background: 'rgba(251,191,36,0.35)' }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: '#475569', marginTop: 2 }}>
+        <span>entrance col</span><span style={{ color: '#fbbf24' }}>glue</span><span>exit col →</span>
+      </div>
+      <div style={{ position: 'absolute', top: 3, right: 5, fontSize: 8, color: accent === 'quantum' ? '#6ee7b7' : '#94a3b8' }}>t ↓</div>
+    </div>
+  );
+}
+
+function ScalingPlot({ scaling, current }: { scaling: ReturnType<typeof scalingLaw>; current: number }) {
+  const w = 640, h = 190, pad = 40;
+  const hs = scaling.map((s) => s.height);
+  const hMin = Math.min(...hs), hMax = Math.max(...hs);
+  // log10 axis spanning the classical floor to 1
+  const lo = Math.min(...scaling.map((s) => s.cPeak)) * 0.5, hi = 1;
+  const ly = (v: number) => Math.log10(Math.max(v, lo * 0.5));
+  const yLo = ly(lo), yHi = ly(hi);
+  const sx = (hh: number) => pad + ((hh - hMin) / (hMax - hMin)) * (w - pad - 12);
+  const sy = (v: number) => 10 + (1 - (ly(v) - yLo) / (yHi - yLo)) * (h - 34);
+  const line = (key: 'qPeak' | 'cPeak') => scaling.map((s, i) => `${i === 0 ? 'M' : 'L'}${sx(s.height).toFixed(1)},${sy(s[key]).toFixed(1)}`).join(' ');
+  const decades: number[] = [];
+  for (let e = Math.ceil(yLo); e <= Math.floor(yHi); e++) decades.push(e);
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b' }}>
+      {decades.map((e, i) => (
+        <g key={i}>
+          <line x1={pad} y1={sy(10 ** e)} x2={w - 12} y2={sy(10 ** e)} stroke="#1e293b" strokeWidth={1} />
+          <text x={pad - 4} y={sy(10 ** e) + 3} fontSize={8} fill="#475569" textAnchor="end">10{sup(e)}</text>
+        </g>
+      ))}
+      <line x1={sx(current)} y1={8} x2={sx(current)} y2={h - 22} stroke="#c4b5fd" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+      <path d={line('cPeak')} fill="none" stroke="#94a3b8" strokeWidth={2} />
+      <path d={line('qPeak')} fill="none" stroke="#34d399" strokeWidth={2} />
+      {scaling.map((s, i) => (
+        <g key={i}>
+          <circle cx={sx(s.height)} cy={sy(s.qPeak)} r={2.4} fill="#34d399" />
+          <circle cx={sx(s.height)} cy={sy(s.cPeak)} r={2.4} fill="#94a3b8" />
+          <text x={sx(s.height)} y={h - 8} fontSize={8} fill="#475569" textAnchor="middle">{s.height}</text>
+        </g>
+      ))}
+      <text x={sx(hMax)} y={sy(scaling[scaling.length - 1].qPeak) - 6} fontSize={9} fill="#34d399" textAnchor="end">quantum ~ 1/poly(h)</text>
+      <text x={sx(hMax)} y={sy(scaling[scaling.length - 1].cPeak) + 12} fontSize={9} fill="#94a3b8" textAnchor="end">classical ~ 2⁻ʰ</text>
+      <text x={w - 12} y={h - 8} fontSize={8} fill="#64748b" textAnchor="end">tree height h</text>
+    </svg>
+  );
+}
+
+function sup(e: number): string {
+  const map: Record<string, string> = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  return String(e).split('').map((c) => map[c] ?? c).join('');
 }
 
 // ================================================================================= shared UI atoms

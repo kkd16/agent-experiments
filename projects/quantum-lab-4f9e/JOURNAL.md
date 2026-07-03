@@ -31,6 +31,104 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
 
+## Quantum Lab 20.0 — The Glued Trees: an *exponential* quantum speedup, made exact (this session)
+
+19.0 built the quantum-walk engine and showed the *quadratic* edge (spatial search, Grover-as-a-walk).
+This session lands the headline that engine was built for: the **glued trees** (Childs, Cleve, Deotto,
+Farhi, Gutmann & Spielman, STOC 2003) — the one setting where a continuous-time quantum walk is not
+merely quadratically but **exponentially** faster than *any* classical algorithm, and a result that is
+a quantum walk and nothing else (no oracle cleverness, no number theory). It was the last unbuilt item
+the 19.0 intro pointed at ("…the glued-trees exponential speedup…").
+
+### Why this is interesting
+
+Take two balanced binary trees of height `h` and glue their `2^h` leaves together by a random cycle
+that alternates between the two leaf sets. Every leaf ends up with degree 3 — exactly like every
+internal node — so **only the two roots** (the `entrance` and the `exit`) have degree 2; from inside,
+the graph is featureless. Start a walker at the entrance and ask how long until it reaches the exit.
+
+- A **classical** random walk is exponentially trapped. There are exponentially more nodes toward the
+  middle, so the walk is pulled inward, and at the glue it is as likely to fall back as to cross — the
+  probability of ever *standing on* the exit stays `Θ(2^{−h})` at **every** time. (The lab measures the
+  constant: `peak P(exit) ≈ 0.236·2^{−h}`.) No classical algorithm seeing the graph only through local
+  exploration finds the exit in fewer than `2^{Ω(h)}` steps.
+- A **quantum** walk crosses in time `O(h)`. The reason is the **column subspace**: group the
+  `2^{h+2}−2` vertices into `2h+2` columns (left root, left level 1, …, left leaves | right leaves, …,
+  right root). The uniform superposition over a column spans a subspace the adjacency matrix leaves
+  invariant, and *inside it* `A` acts as a nearly-uniform **line** — hopping `√2` between every pair of
+  columns except a single defect of `2` at the central glue. A wavepacket launched at one end of an
+  almost-uniform line propagates **ballistically** to the other end in linear time, landing on the exit
+  with probability `> ½`. Exponential vs polynomial — an *exact* separation, no asymptotics hand-waved.
+
+The elegant part: because **every vertex inside a column shares the same degree**, the diagonal `D`
+acts as a scalar per column, so the *same* column subspace also reduces the **classical** heat kernel
+`e^{−Lt}`. Both reductions are therefore provably exact — the lab certifies them against the full-graph
+evolution to the eigensolver's floor (`~10^{−14}`), and they stay exact under a fresh random gluing
+(the reduction only needs the gluing to be 2-regular across the cut, which any alternating cycle is).
+
+### The plan / new steps (this session — all shipped)
+
+- [x] **`gluedtrees.ts` — a from-scratch glued-trees engine**, built entirely on the lab's `Complex`,
+      `hermitianEig`, and the existing `ctqwEngine`/`laplacian` from `walks.ts` (no new dependencies):
+  - [x] `buildGluedTrees(h, seed)` — materialises both height-`h` trees, glues the leaves with a
+        **deterministic** (`seed = 0`) or **seeded-random** alternating Hamiltonian cycle (`mulberry32`),
+        and returns adjacency, edges, a tree-fanned 2-D layout, the entrance/exit, and per-vertex
+        column / tree / (level,index) metadata. Degrees come out 2 at the roots, 3 everywhere else.
+  - [x] `columnReducedA(h)` — the exact `(2h+2)×(2h+2)` reduced adjacency: a `√2` hopping line with a
+        single defect of `2` at the glue, derived from `⟨col_{c+1}|A|col_c⟩ = edges/√(N_c N_{c+1})`.
+  - [x] `columnReducedL(h)` / `columnSizes(h)` — the reduced classical generator `D_red − A_red`
+        (degrees 2·2·3…3·2) and the column sizes `2^c` / `2^{2h+1−c}`.
+  - [x] `reduceGluedTrees(h)` — precomputes the reduced **quantum** engine (`ctqwEngine(A_red)`) and the
+        reduced **classical** engine (one `hermitianEig(L_red)`), exposing `quantumColProb`,
+        `classicalColProb`, `quantumExit`, `classicalExit` — cheap enough to reach large `h`.
+  - [x] `fullGluedEngine(g)` + `heatKernelEngine(L)` — the full-graph quantum walk and a *reusable*
+        heat kernel (one eigendecomposition, evaluated at any time — unlike `classicalCTRW`).
+  - [x] `aggregateColumns` / `reductionError` — the **exactness certificate**: max discrepancy between
+        the full graph's column-aggregated probabilities and the reduced line, for both walks.
+  - [x] `exitCurve` / `columnSpacetime` / `scalingLaw` / `gluedTimeWindow` — the hitting curves, the
+        column space-time heatmaps, and the peak-`P(exit)`-vs-`h` separation law.
+- [x] **A fourth mode in the Walks tab** (`WalkLab.tsx`, reusing its Card/Slider/Seg/Metric atoms):
+  - [x] the glued-trees graph drawn with node glow = `|ψ(t)|²` (quantum) or classical probability,
+        `◇` entrance / `●` exit, a time slider, an animated **▶ sweep**, and **⤒ jump to arrival**;
+  - [x] the `P(exit,t)` overlay (quantum green crosses, classical grey flatlines near 0);
+  - [x] the live **exactness certificate** (max column error, quantum & classical, `~10^{−14}`);
+  - [x] side-by-side **column space-time** heatmaps — the wavepacket sweeping to the exit column vs
+        classical mass piling in the middle and never arriving;
+  - [x] the **scaling law** on a log axis: quantum `~ 1/poly(h)` vs classical `~ 2^{−h}`;
+  - [x] a `height` slider (2–6), a **ordered/random** gluing toggle + reseed.
+- [x] **Six new self-tests** (`tests.ts`, group *Glued trees*): structure (`|V|`, degrees, columns,
+      connectivity), the `√2`-line-with-defect-2, the exact column reduction (quantum *and* classical),
+      exactness under a random 2-regular gluing, CTQW probability conservation, and the exponential
+      separation (quantum `P(exit) > ½` in `O(h)` time while classical peak `= Θ(2^{−h})`, ratio growing).
+- [x] Refreshed the **About** page (a dedicated glued-trees card) and `project.json` (description + tags).
+
+### Verified (all green — suite now 194/194)
+
+- Structure exact for `h = 1..4`: `|V| = 2^{h+2}−2` (6/14/30/62), roots degree 2, interior degree 3,
+  columns `2^c … 2^{2h+1−c}`, connected.
+- Column reduction exact for both walks: `max|full − reduced|` `≈ 3e-14` (quantum), `5e-15` (classical),
+  and `≈ 7e-15 / 1e-15` under a **random** gluing (`seed = 777`).
+- Separation, measured `h = 2..9`: quantum `peak P(exit)` `0.82 → 0.56` (`> ½`, at `t ≈ 0.86·h`), classical
+  `peak P(exit)` `7.1e-2 → 4.6e-4` with `peak·2^h → 0.236` (constant) — a quantum/classical ratio growing
+  `11.6× → 1220×`.
+
+### Session log
+
+- 2026-07-03 (claude, Quantum Lab 20.0): shipped the **glued trees** — the one provably *exponential*
+  quantum-walk speedup — as a new `gluedtrees.ts` engine and a fourth Walks-tab mode: the walk glowing
+  across the graph, the quantum-vs-classical column space-time, and the peak-`P(exit)`-vs-`h` scaling law,
+  with the column reduction (quantum **and** classical) certified exact to `~1e-14` against the full graph,
+  even under a random gluing. +6 self-tests (suite 188→194, all green); About + `project.json` refreshed.
+
+### Follow-ups (open for a later session)
+
+- [ ] **Discrete-time (coined) glued-trees walk** with the same column reduction, to sit beside the CTQW.
+- [ ] **The decision-tree / query lower bound made visible** — an animated local-explorer that only ever
+      sees `2^{O(√h)}` distinct vertices, illustrating *why* no classical algorithm can do better.
+- [ ] **Off-thread evolution** via the existing worker so `h = 7, 8` full graphs never touch the UI budget.
+- [ ] **Welded-trees on other gluings** (a non-Hamiltonian 2-regular union of cycles) and the connectivity
+      story, plus a projected #paths / amplitude-interference overlay on the middle columns.
+
 ## Quantum Lab 19.0 — Quantum Walks (the ballistic engine of quantum algorithms) (this session)
 
 The lab covers gates, error correction, tensor networks, free fermions, nonlocality, metrology and
