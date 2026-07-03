@@ -359,6 +359,50 @@ export function columnSpacetime(height: number, rows = 120): { quantum: number[]
   return { quantum, classical, tMax };
 }
 
+/**
+ * Why the crossing is ballistic, quantified. The reduced line is (bar the single glue defect) a
+ * uniform tight-binding chain with hopping J = √2, whose dispersion is E(k) = 2J·cos k and whose
+ * group velocity v_g(k) = dE/dk = −2J·sin k peaks at |v_g| = 2J = 2√2. A wavepacket therefore covers
+ * the 2h+1 bonds from entrance to exit in time ≈ (2h+1)/(2√2) — LINEAR in h. The defect and packet
+ * spreading add a small constant slowdown, so the measured arrival time tracks the same slope.
+ */
+export const REDUCED_HOP = Math.SQRT2;
+export const MAX_GROUP_VELOCITY = 2 * Math.SQRT2;
+
+/** The band structure of the (uniform part of the) reduced line, sampled over k ∈ [0, π]. */
+export function dispersion(samples = 128): { k: number[]; energy: number[]; groupVel: number[] } {
+  const k: number[] = [], energy: number[] = [], groupVel: number[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const kk = (i * Math.PI) / samples;
+    k.push(kk); energy.push(2 * REDUCED_HOP * Math.cos(kk)); groupVel.push(-2 * REDUCED_HOP * Math.sin(kk));
+  }
+  return { k, energy, groupVel };
+}
+
+export interface ArrivalScaling {
+  points: { height: number; measured: number; predicted: number }[];
+  /** Least-squares slope of the measured arrival time vs height (≈ 1/√2 ≈ 0.71 for a clean line). */
+  slope: number;
+}
+
+/**
+ * Measured quantum arrival time vs the ballistic prediction (2h+1)/(2√2), across heights — the exact
+ * evidence that the crossing time is O(h), not exponential. Returns the two curves and the fitted slope.
+ */
+export function arrivalScaling(maxHeight: number, samples = 500): ArrivalScaling {
+  const points: { height: number; measured: number; predicted: number }[] = [];
+  for (let h = 2; h <= maxHeight; h++) {
+    points.push({ height: h, measured: exitCurve(h, samples).qPeakTime, predicted: (2 * h + 1) / MAX_GROUP_VELOCITY });
+  }
+  // least-squares slope of measured vs height
+  const nP = points.length;
+  const mh = points.reduce((a, p) => a + p.height, 0) / nP;
+  const mm = points.reduce((a, p) => a + p.measured, 0) / nP;
+  let num = 0, den = 0;
+  for (const p of points) { num += (p.height - mh) * (p.measured - mm); den += (p.height - mh) ** 2; }
+  return { points, slope: den > 0 ? num / den : 0 };
+}
+
 export interface ScalingPoint { height: number; qPeak: number; qPeakTime: number; cPeak: number; }
 
 /**

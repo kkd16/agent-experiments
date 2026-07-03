@@ -8,6 +8,7 @@ import {
 import {
   buildGluedTrees, reduceGluedTrees, fullGluedEngine, aggregateColumns,
   exitCurve, columnSpacetime, scalingLaw, gluedTimeWindow,
+  arrivalScaling, MAX_GROUP_VELOCITY,
 } from '../quantum/gluedtrees';
 
 /**
@@ -535,6 +536,7 @@ function GluedTreesCard() {
   }, [height, seed]);
 
   const scaling = useMemo(() => scalingLaw(12, 500), []);
+  const arrival = useMemo(() => arrivalScaling(12, 500), []);
 
   // Snap the clock to the quantum arrival time (depends only on height — the reduction is
   // gluing-independent) whenever the graph changes. Done in the change handlers, not an effect.
@@ -622,9 +624,19 @@ function GluedTreesCard() {
           <ColumnHeatmap data={model.st.classical} height={height} accent="classical" />
         </div>
       </div>
-      <div style={{ marginTop: 14 }}>
-        <Label>The separation, scaled: peak P(exit) vs tree height — quantum ~ 1/poly, classical ~ 2<sup>−h</sup> (log axis)</Label>
-        <ScalingPlot scaling={scaling} current={height} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12, marginTop: 14 }}>
+        <div>
+          <Label>The separation, scaled: peak P(exit) vs tree height — quantum ~ 1/poly, classical ~ 2<sup>−h</sup> (log axis)</Label>
+          <ScalingPlot scaling={scaling} current={height} />
+        </div>
+        <div>
+          <Label>Why ballistic? Arrival time is O(h), tracking (2h+1)/2√2</Label>
+          <ArrivalPlot arrival={arrival} current={height} />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+            <Metric label="group velocity 2√2" value={MAX_GROUP_VELOCITY.toFixed(3)} color="#6ee7b7" />
+            <Metric label="arrival slope dt/dh" value={arrival.slope.toFixed(3)} color="#c4b5fd" />
+          </div>
+        </div>
       </div>
       <p style={{ fontSize: 10, color: '#475569', margin: '10px 0 0', lineHeight: 1.5 }}>
         The reduced line has hopping <b style={{ color: '#a78bfa' }}>√2</b> between every column except a
@@ -764,6 +776,34 @@ function ScalingPlot({ scaling, current }: { scaling: ReturnType<typeof scalingL
       <text x={sx(hMax)} y={sy(scaling[scaling.length - 1].qPeak) - 6} fontSize={9} fill="#34d399" textAnchor="end">quantum ~ 1/poly(h)</text>
       <text x={sx(hMax)} y={sy(scaling[scaling.length - 1].cPeak) + 12} fontSize={9} fill="#94a3b8" textAnchor="end">classical ~ 2⁻ʰ</text>
       <text x={w - 12} y={h - 8} fontSize={8} fill="#64748b" textAnchor="end">tree height h</text>
+    </svg>
+  );
+}
+
+function ArrivalPlot({ arrival, current }: { arrival: ReturnType<typeof arrivalScaling>; current: number }) {
+  const w = 320, h = 190, pad = 30;
+  const pts = arrival.points;
+  const hs = pts.map((p) => p.height);
+  const hMin = Math.min(...hs), hMax = Math.max(...hs);
+  const yMax = Math.max(...pts.map((p) => p.measured)) * 1.1;
+  const sx = (hh: number) => pad + ((hh - hMin) / (hMax - hMin)) * (w - pad - 10);
+  const sy = (v: number) => 10 + (1 - v / yMax) * (h - 34);
+  const predLine = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${sx(p.height).toFixed(1)},${sy(p.predicted).toFixed(1)}`).join(' ');
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: 'rgba(2,6,23,0.5)', borderRadius: 6, border: '1px solid #1e293b' }}>
+      {[yMax, yMax / 2, 0].map((v, i) => (
+        <g key={i}>
+          <line x1={pad} y1={sy(v)} x2={w - 10} y2={sy(v)} stroke="#1e293b" strokeWidth={1} />
+          <text x={pad - 3} y={sy(v) + 3} fontSize={7} fill="#475569" textAnchor="end">{v.toFixed(0)}</text>
+        </g>
+      ))}
+      <line x1={sx(current)} y1={8} x2={sx(current)} y2={h - 22} stroke="#c4b5fd" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+      <path d={predLine} fill="none" stroke="#64748b" strokeWidth={1.4} strokeDasharray="4 3" />
+      {pts.map((p, i) => <circle key={i} cx={sx(p.height)} cy={sy(p.measured)} r={2.4} fill="#34d399" />)}
+      <text x={w - 10} y={sy(pts[pts.length - 1].predicted) + 12} fontSize={8} fill="#64748b" textAnchor="end">(2h+1)/2√2</text>
+      <text x={pad + 4} y={sy(pts[Math.min(2, pts.length - 1)].measured) - 6} fontSize={8} fill="#34d399">measured tₐ</text>
+      <text x={w - 10} y={h - 8} fontSize={8} fill="#64748b" textAnchor="end">tree height h</text>
+      <text x={sx(hMin)} y={h - 8} fontSize={8} fill="#475569">{hMin}</text>
     </svg>
   );
 }
