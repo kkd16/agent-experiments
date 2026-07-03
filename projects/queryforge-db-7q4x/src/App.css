@@ -2682,3 +2682,41 @@ body {
 .sk-foot { font: 12px/1.6 var(--sans); color: var(--txt-faint); padding-top: 4px; }
 .sk-foot code { font: 11px var(--mono); color: var(--txt-dim); }
 @media (max-width: 900px) { .sk-controls { gap: 16px; } }
+
+/* ---- WCOJ Lab -------------------------------------------------------------- */
+.wcoj-reroll { border: 1px solid var(--line-2); background: var(--bg-2); color: var(--txt-dim); font: 12.5px var(--mono); padding: 5px 12px; border-radius: 8px; cursor: pointer; }
+.wcoj-reroll:hover { color: var(--txt); border-color: var(--accent); }
+.wcoj-split { display: flex; flex-wrap: wrap; gap: 26px; align-items: flex-start; }
+.wcoj-sub { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--txt-faint); margin-bottom: 8px; }
+.wcoj-graph { width: 260px; height: 220px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+.wcoj-node { fill: var(--bg-3); stroke: var(--txt-dim); stroke-width: 1.5; }
+.wcoj-node-label { font: 700 12px var(--mono); fill: var(--txt); }
+.wcoj-blurb { margin-top: 10px; max-width: 260px; font: 12px/1.5 var(--sans); color: var(--txt-dim); }
+.wcoj-atoms { flex: 1; min-width: 280px; }
+.wcoj-table { border-collapse: collapse; width: 100%; font: 12.5px var(--sans); }
+.wcoj-table th { text-align: left; font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .03em; color: var(--txt-faint); padding: 4px 10px; border-bottom: 1px solid var(--line); }
+.wcoj-table td { padding: 4px 10px; border-bottom: 1px solid var(--line); color: var(--txt-dim); }
+.wcoj-table td.mono { font: 12.5px var(--mono); color: var(--txt); }
+.wcoj-table td.num { text-align: right; font: 12.5px var(--mono); }
+.wcoj-table td.num.accent { color: var(--accent-2); }
+.wcoj-cover { margin-top: 12px; font: 12.5px var(--sans); color: var(--txt-dim); }
+.wcoj-cover strong { color: var(--txt); font: 700 13px var(--mono); }
+.wcoj-bars { width: 100%; max-width: 560px; }
+.wcoj-bar-label { font: 11.5px var(--sans); fill: var(--txt-dim); }
+.wcoj-bar { }
+.wcoj-bar.good { fill: var(--green); }
+.wcoj-bar.bound { fill: var(--accent-2); }
+.wcoj-bar.bad { fill: var(--amber); }
+.wcoj-bar-val { font: 11px var(--mono); fill: var(--txt); dominant-baseline: middle; }
+.wcoj-steps { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 12px var(--mono); color: var(--txt-dim); }
+.wcoj-step-size { color: var(--accent-2); }
+.wcoj-elim { display: flex; flex-direction: column; gap: 8px; }
+.wcoj-level { display: flex; gap: 12px; align-items: stretch; }
+.wcoj-level-var { flex: 0 0 30px; display: flex; align-items: center; justify-content: center; font: 700 15px var(--mono); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); border-radius: 8px; }
+.wcoj-level-body { flex: 1; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; }
+.wcoj-cand { display: flex; gap: 10px; font: 12px var(--mono); }
+.wcoj-cand-atom { flex: 0 0 44px; color: var(--txt-faint); }
+.wcoj-cand-vals { color: var(--txt-dim); }
+.wcoj-inter { display: flex; gap: 10px; font: 12px var(--mono); margin-top: 3px; padding-top: 4px; border-top: 1px dashed var(--line-2); }
+.wcoj-inter-tag { flex: 0 0 74px; color: var(--green); font-weight: 600; }
+.wcoj-inter-vals { color: var(--txt); }

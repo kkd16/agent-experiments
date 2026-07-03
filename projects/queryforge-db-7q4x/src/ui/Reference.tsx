@@ -109,6 +109,15 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Worst-case-optimal joins  —  the WCOJ Lab',
+    entries: [
+      { syntax: 'the problem with binary joins', note: 'Every join the planner emits is a tree of two-way operators (HashJoin/MergeJoin/NestedLoop). Atserias–Grohe–Marx (2008) and Ngo–Porat–Ré–Rudra (2012) proved that on a CYCLIC query no binary-join tree is optimal: the smallest plan still materializes an intermediate result asymptotically larger than the final answer. The witness is the triangle R(a,b) ⋈ S(b,c) ⋈ T(a,c) — the answer is ≤ N^{3/2}, but any two-way join first builds up to N² rows.' },
+      { syntax: 'the AGM bound', note: 'The largest a join’s output can be is ∏_e |R_e|^{x_e} over the optimal fractional edge cover {x_e} — weights on the atoms so every variable is covered (Σ_{e∋v} x_e ≥ 1). QueryForge solves that linear program with a from-scratch two-phase simplex (src/db/wcoj/simplex.ts). Minimizing Σx_e gives the fractional cover number ρ* (triangle 3/2, star 3, k-cycle 2).' },
+      { syntax: 'Leapfrog Triejoin', note: 'A worst-case-optimal join (Veldhuizen, the LogicBlox algorithm) runs in O(AGM bound): it eliminates variables one at a time, and at each variable leapfrog-intersects the sorted trie iterators of exactly the relations that mention it. It never builds an intermediate bigger than its own answer. Implemented from scratch in src/db/wcoj/* over the engine’s own value order, proven equal to the binary-join reference AND the SQL executor across thousands of seeded instances.' },
+      { syntax: 'explore it', note: 'The WCOJ Lab renders the query hypergraph, the fractional cover weights, the elimination trace, and — on the adversarial dense grid — the binary intermediate blow-up (e.g. 576 rows for a 24-row triangle answer) that a worst-case-optimal join provably dodges.' },
+    ],
+  },
+  {
     title: 'Subqueries',
     entries: [
       { syntax: 'WHERE x > (SELECT …)', note: 'Scalar subquery — must return one row / one column (0 rows → NULL).' },
