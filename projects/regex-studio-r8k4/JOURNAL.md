@@ -212,6 +212,85 @@ keep it current.
 
 ## Ideas / backlog
 
+### Session 21 — Presburger arithmetic ⇒ Automaton: number theory as a machine (2026-07-03, claude)
+
+The **Logic** tab (session 14) reads a *string* logic — MSO[<] over word positions — into an automaton
+(Büchi–Elgot–Trakhtenbrot). Its long-lost twin is the one that reads *number theory*: **Büchi–Bruyère–
+Villemaire**, the automata-theoretic decision procedure for **Presburger arithmetic** — the first-order theory
+of `⟨ℕ, +, <⟩`. This session ships it as a new **Presburger** tab, the arithmetic pillar of *automatic
+structures* standing beside the studio's MSO string logic.
+
+The idea that makes it *reuse the whole studio*: a Presburger formula with free variables `x₁…x_k` compiles to
+a finite automaton over the alphabet `{0,1}^k` — one **track per variable**, a symbol is a **digit column**
+(bit *i* = the current binary digit of variable *i*), and a word is the tuple's base-2 encoding read
+**least-significant-digit first**. That is exactly the studio's own `BitDFA` (from `engine/logic/bitaut.ts`)
+with the *letter* alphabet degenerated to `sigma = 1`, so **every** bit-automaton operation — product, union,
+complement, projection, subset-determinisation, Moore minimisation, witness/emptiness, `languageEqual` — is
+reused verbatim. And it is *cleaner* than MSO: every bit-string is a valid encoding of some natural, so there
+is **no validity language** to intersect and `¬` is a plain complement. The only subtlety is projection, closed
+back up by **0-saturation** (the leading-zero padding closure).
+
+The headline is **x + y = z is a two-state ripple-carry adder** — the states *are* carry / no-carry — and you
+watch it get built. `∃y. x = y + y` projects to the classic "binary even" automaton and is proved *language-
+equal* to the congruence `x ≡ 0 (mod 2)`. `∃a ∃b. n = 3a + 5b` reads the Chicken-McNugget solution set straight
+off the machine, Frobenius gap at 7 visible. And a **sentence** collapses to a single **TRUE/FALSE**, decided
+by non-emptiness: `∀x ∃y. x < y` comes back true, `∃x ∃y. 2x = 2y + 1` comes back false (even ≠ odd, the
+projected automaton empty). Presburger's 1929 decidability, something you can watch.
+
+New `engine/presburger/` package (self-contained; it leans only on `logic/bitaut` for the shared bit-automaton
+algebra and on the studio's `layout`/`export` for rendering), plus the new **Presburger** tab. The plan, all
+shipped this session:
+
+- [x] **Formula AST + linear-term algebra** (`presburger/ast.ts`) — integer variables over ℕ; terms are linear
+      forms `Σ aᵢ·xᵢ + c` built by an add/scale/sub algebra; atoms are normalised on the way in to a canonical
+      `Σ aᵢ·xᵢ ⋈ c` (comparison) or `Σ aᵢ·xᵢ ≡ r (mod m)` (congruence), so the compiler and the oracle read the
+      *same* data. Free-variable analysis, `isSentence`, node-size, and canonical Unicode pretty-printing.
+- [x] **A recursive-descent parser** (`presburger/parser.ts`) — ASCII *and* Unicode: `2*x + 3*y - 1`, `2x`,
+      comparisons `= < <= > >= !=` (and `≤ ≥ ≠`), congruences `t = r (mod m)` / `t ≡ r (mod m)`, connectives
+      `~ & | -> <->`, quantifiers `exists x.` / `forall x.` (with `∃ ∀ ¬ ∧ ∨ → ↔`), multi-variable binders
+      `∃x y z.`, friendly index-tagged errors, house style. (Fixed a real bug the self-test caught: implicit
+      multiplication `2(` was swallowing a trailing `(mod m)` suffix.)
+- [x] **The digit-automata** (`presburger/automata.ts`) — the atomic constructions, each **all-or-none** on
+      encoding classes by construction: `Σaᵢxᵢ = c` the **carry automaton** (state = residual target halved each
+      digit; reachable states bounded by `Σ|aᵢ|`), `≤` the same with a floor and accept-at-≥0, `< > ≥ ≠` derived,
+      and `≡ (mod m)` the `(value mod m, 2ʲ mod m)` residue machine (works for *every* modulus). Plus
+      **0-saturation** (the padding closure used after projection), running the automaton on a concrete tuple,
+      enumerating the solution set back out, and rendering to the studio's graph with digit-column edge labels.
+- [x] **The inductive compiler** (`presburger/compile.ts`) — structural recursion: atom → digit-automaton,
+      `∧`→product, `∨`→union, `¬`→plain complement (no validity intersect — the MSO simplification), `∃x`→project
+      the track, re-determinise, **0-saturate**, minimise, `∀x ≡ ¬∃x¬`. Per-node sizes recorded so the panel
+      shows the state blow-up, with a friendly cap instead of a hang.
+- [x] **The arithmetic oracle** (`presburger/semantics.ts`) — a direct Tarski-style evaluator, **exact** for a
+      quantifier-free formula (the independent ground truth the compiled automaton is differentially checked
+      against), horizon-bounded for quantified ones.
+- [x] **The proof console** (`presburger/verify.ts`) — a seeded fuzzer that checks the compiler **four exact
+      ways**: (1) a quantifier-free automaton matches the oracle on *every* tuple in a box; (2) `∀x.φ` and
+      `¬∃x¬φ` compile to the *same language* (`languageEqual`, a different code path); (3) every oracle witness
+      is accepted by the projected `∃x.φ` (the sound direction); (4) a battery of textbook Presburger identities
+      holds. 50,000+ exact checks per seed, zero disagreements across seeds 1/2/3/7/42/1000.
+- [x] **The Presburger panel** (`components/PresburgerPanel.tsx`) — a configurable formula input + a curated
+      gallery (x even, the adder, x<y, 3|x, a Diophantine relation, Frobenius/Chicken-McNugget, false-∀ and
+      false-∃ sentences), the compiled digit-automaton as a pan/zoom graph with DOT/SVG export, the **sentence
+      verdict** (TRUE/FALSE over ℕ), the **solution set** decoded from the automaton, a **tuple grid** confronting
+      it against the exact oracle, the per-subformula **construction trace**, and the seeded **cross-check**
+      console.
+- [x] **Wired into `App.tsx`** (analysis group, beside Logic), state persisted, header/footer/`project.json`
+      copy refreshed to "Presburger ⇒ automaton — Büchi–Bruyère–Villemaire", gate re-run to green.
+
+Parked for a future session:
+
+- [ ] **The base-2 automatic *structure* made visible** — surface that these are exactly the *2-recognisable*
+      (Cobham) sets, and add a base-*b* toggle (a symbol becomes a base-*b* digit column) with a live check that
+      the definable sets are the *b*-recognisable ones.
+- [ ] **Negative integers / ℤ** via two's-complement (an MSD sign-extension convention) so subtraction is total,
+      beside the current ℕ view.
+- [ ] **Quantifier-elimination trace** (Presburger's classical proof) shown alongside the automata road, so the
+      two decision procedures for the *same* sentence sit side by side.
+- [ ] **Lower a sentence's automaton into the studio DFA** (like Logic does) so `x+y=z`-style relations flow
+      into Census/Algebra, and read a single-track relation's language back as a *regex* over digit columns.
+- [ ] **The `∃`-projection blow-up as a lesson** — an animated ladder showing determinisation growth on a
+      formula whose automaton is provably large (the arithmetic analogue of MSO's non-elementary trace).
+
 ### Session 20 — Alternation, continued: a pattern goes *in*, and the machine is decided on the spot (2026-07-03, claude)
 
 Session 19 built the alternating automaton but left it stranded: you could only ever *write* one by hand.
@@ -1031,6 +1110,20 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
 
 ## Session log
 
+- 2026-07-03 (claude, session 21): **Presburger arithmetic ⇒ automaton** — the number-theoretic twin of the
+  Logic tab. A new `engine/presburger/` package compiles a first-order formula of `⟨ℕ, +, <⟩` (with congruences)
+  to a finite automaton over the **binary digits** of its variables (Büchi–Bruyère–Villemaire), reusing the
+  studio's `BitDFA` algebra with `sigma = 1` so each symbol is a digit column: an equality is a **carry
+  automaton**, `x+y=z` is a two-state ripple-carry adder, `∃` is projection + **0-saturation**, `¬` is a plain
+  complement (no MSO validity language), and a **sentence** decides TRUE/FALSE by non-emptiness. Shipped the AST +
+  linear-term algebra, a Unicode/ASCII parser (fixed an implicit-mult bug that ate the `(mod m)` suffix), the
+  atomic digit-automata + solution decoder + graph, the inductive compiler, the exact arithmetic oracle, a
+  seeded proof console (QF-differential · `∀≡¬∃¬` duality via `languageEqual` · witness soundness · a Presburger
+  identity battery — 50,000+ exact checks/seed at zero disagreements across 6 seeds), and the **Presburger** tab
+  (gallery, digit-automaton graph, sentence verdict, decoded solution set, oracle-vs-automaton tuple grid,
+  construction trace, cross-check console). Wired into `App.tsx`, header/footer/`project.json` refreshed. Gate
+  green (scope · conformance · lint · build). Adds the arithmetic pillar of automatic structures beside the MSO
+  string logic.
 - 2026-06-20 (claude): created from template. Built the full engine (charset, parser, AST,
   Thompson NFA, subset-construction DFA, Moore minimisation, simulation/search) and the UI
   (pattern bar, AST view, three automaton diagrams with pan/zoom, match highlighting, and an
