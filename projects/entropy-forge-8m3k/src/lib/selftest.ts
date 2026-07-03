@@ -21,6 +21,7 @@ import { lz77Decode, lz77Encode } from './lz77.ts'
 import { lzwDecode, lzwEncode } from './lzw.ts'
 import { ppmDecode, ppmEncode } from './ppm.ts'
 import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable } from './rans.ts'
+import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
 import { packageMerge, minLimit } from './lengthLimited.ts'
@@ -140,6 +141,33 @@ export function runSelfTest(): TestCase[] {
       results.push({ group: 'rANS (primitive)', name, pass: bytesEqual(back, data), detail: `${rr.bytesOut}B state stream` })
     } catch (e) {
       results.push({ group: 'rANS (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // tANS / FSE primitive: round-trips through a rebuilt table, AND — sharing
+    // rANS's normalised model — lands within a whisker of rANS's size (both hit
+    // the same quantised entropy floor by different machinery).
+    try {
+      const tbl = tansTableFromData(data)
+      const tr = tansEncode(data, tbl)
+      const { table: rebuilt } = deserialiseTable(Uint8Array.from(serialiseTable(tbl)), 0)
+      const back = tansDecode(tr.encoded, data.length, rebuilt)
+      const rr = ransEncode(data, tableFromData(data))
+      // Both stream payloads code the same quantised floor; a few bytes of
+      // state-flush difference is all that separates them.
+      const close = Math.abs(tr.encoded.length - rr.encoded.length) <= 8
+      results.push({
+        group: 'tANS (primitive)',
+        name,
+        pass: bytesEqual(back, data),
+        detail: `${tr.encoded.length}B stream`,
+      })
+      results.push({
+        group: 'tANS ≈ rANS (same floor)',
+        name,
+        pass: close,
+        detail: `tANS ${tr.encoded.length}B vs rANS ${rr.encoded.length}B`,
+      })
+    } catch (e) {
+      results.push({ group: 'tANS (primitive)', name, pass: false, detail: (e as Error).message })
     }
     // PPM primitive at several orders (context modelling round-trips at each order)
     for (const order of [0, 2, 4]) {

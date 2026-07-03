@@ -16,6 +16,9 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     per step); the substrate PPM drives.
   - `rans.ts` — static **rANS** (range Asymmetric Numeral System): freq normalisation to M=2^12,
     byte-wise state renorm, (de)serialised table; the zstd/LZFSE-class entropy backend.
+  - `tans.ts` — static **tANS / FSE** (table-driven ANS): the *multiply-free* finite-state entropy
+    coder inside Zstandard. Shares rANS's normalised model, adds the FSE symbol-spread + encode/decode
+    transition tables (Yann Collet's construction), and codes with lookups + shifts only.
   - `ppm.ts` — **PPMC** (prediction by partial matching): orders 0..N with escape + full exclusion,
     range-coded; carries a per-symbol trace (coding order + escape count) for the visualiser.
   - `adaptiveHuffman.ts` — **FGK** adaptive Huffman: dynamic tree with the sibling property + an
@@ -89,7 +92,9 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 - [ ] **Step controls** on the arithmetic + LZ pages (play/pause/scrub) to animate coding.
 - [ ] **Lower bound annotations**: mark each codec's own theoretical floor (order-k) on the
       benchmark bars, not just order-0.
-- [ ] **rANS interleaving / adaptive rANS** and a tANS (table-driven) variant for a speed story.
+- [x] **tANS (table-driven) variant** — shipped in v4 (see below): the multiply-free FSE coder,
+      cross-checked to land within a few bytes of rANS on every input (same quantised floor). *(v4)*
+- [ ] **rANS interleaving / adaptive rANS** (two interleaved states for ILP) for a speed story.
 - [ ] **PPM* / PPMd escape estimators** (methods A/B/D, secondary symbol estimation) as an
       escape-method comparison; and update exclusions.
 
@@ -155,6 +160,23 @@ live native-interop checks.
 
 ## Session log
 
+- 2026-07-03 (claude): **v4 — tANS / FSE, the multiply-free entropy coder.** Added `tans.ts`: a
+  from-scratch static **table-driven ANS** — the Finite State Entropy coder inside **Zstandard** and
+  Apple's LZFSE. It reuses rANS's normalised M=2^12 frequency table (so the two share a model), then
+  builds the FSE machinery: the symbol **spread** (an odd-stride permutation of the 4096 states),
+  Yann Collet's **encode transition tables** (`deltaNbBits`/`deltaFindState` + the state table, with
+  the `freq==1` and power-of-two `highbit` special cases handled), and the **decode tables**
+  (per-state symbol / bits-to-read / next-state base). The whole codec is a finite-state machine —
+  **no multiplies**, only lookups, shifts and bit I/O. Being LIFO like all ANS, the encoder records
+  its bit-writes and lays them into the stream in reverse, so a plain forward MSB-first reader inverts
+  it exactly. Verified under Node: round-trips every input on the first try, and — the headline
+  invariant — its coded payload lands **within a few bytes of rANS** on every corpus (both hit the same
+  quantised floor; tANS is often a touch smaller thanks to a smaller state flush). Wired the `tans`
+  codec into the roster (races in Benchmark + Self-test) and added a **tANS / FSE** page: a
+  "same floor, four ways" size chart (floor vs tANS vs rANS vs arithmetic), the symbol-spread strip,
+  the live finite-state-machine transition table, and a bits-read-per-state histogram. Self-test
+  **464 → 506** checks (adds tANS round-trips + the tANS≈rANS parity check across all inputs), all
+  green. Still zero runtime deps beyond React.
 - 2026-07-03 (claude): **v3 — Real DEFLATE / gzip.** Built the actual format from scratch: `crc32.ts`
   (CRC-32 + Adler-32), `deflateTables.ts` (the RFC 1951 length/distance/code-length tables + fixed code),
   `deflateBits.ts` (the LSB-first bit substrate + canonical Huffman builder/decoder), `deflate.ts`

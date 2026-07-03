@@ -12,6 +12,7 @@ const MODULES = [
   { route: 'adaptive', name: 'Adaptive Huffman', desc: 'The FGK tree that learns as bytes arrive — scrub it mutating live.' },
   { route: 'arithmetic', name: 'Arithmetic Coding', desc: 'Spend fractional bits per symbol; reach the entropy bound.' },
   { route: 'rans', name: 'rANS', desc: 'Asymmetric numeral systems — the entropy coder inside zstd & LZFSE.' },
+  { route: 'tans', name: 'tANS / FSE', desc: 'Table-driven ANS — the multiply-free finite-state entropy coder inside Zstandard.' },
   { route: 'ppm', name: 'PPM', desc: 'Context modelling with escapes; watch more context hit diminishing returns.' },
   { route: 'lempel', name: 'LZ77 & LZW', desc: 'Exploit repetition with back-references and self-building dictionaries.' },
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
