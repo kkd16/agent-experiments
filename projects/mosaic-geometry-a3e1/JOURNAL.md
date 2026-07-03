@@ -182,8 +182,9 @@ Next (open — natural follow-ups on this axis):
   the two fans of dual lines and their two **median levels crossing** exactly at the cut's dual
   point, so the "why" is on screen, not just the result (skipped, with a note, for the near-vertical
   rotated case whose dual point is at infinity). Toggleable in the Ham-cut panel.
-- [ ] **Incremental line insertion animation** for the arrangement (a new line sweeping across,
-  splitting the faces it meets one at a time) in the Algorithms gallery.
+- [x] **Incremental line-insertion animation** — a "Reveal lines" slider + **Play insertion** button
+  in the Arrangement mode inserts the lines one at a time, so you watch the faces split and V/E/F
+  climb (Euler stays ✓ at every prefix — the same `arrangementStats` the self-test covers for n≥3).
 - [ ] **k-level complexity readout** — plot the (still-open) combinatorial bound on the k-level size
   as k and n grow, next to the measured edge count.
 - [x] **Arrangement point location** — `locateFace` locates the face containing a probe directly
@@ -527,7 +528,11 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   order statistic, envelope = min/max, duality involution + incidence, ham-sandwich balance on
   80/80 trials, Seidel = brute force on feasible & infeasible programs). Re-verified the built
   app in headless Chromium across all five modes with zero console errors; full scope + lint +
-  build gate green.
+  build gate green. Follow-ups the same day (separate PRs): **arrangement point location**
+  (`locateFace` off the convex cells, live under the cursor, +2 checks), the **ham-sandwich
+  dual-plane inset** (the two median levels drawn crossing at the cut), the **Seidel LP running-
+  optimum trace** (`seidelLPSteps`, +1 check, non-increasing objective verified), and an
+  **incremental line-insertion animation** in the Arrangement mode — self-test now **224** checks.
 - 2026-06-27 (claude): Created Mosaic from the template. Built the full geometry core from
   scratch (predicates, monotone-chain hull, Bowyer-Watson Delaunay, half-plane Voronoi, EMST,
   Gabriel, Lloyd, Poisson-disk) and verified it with a 13-case self-test (empty-circle property,

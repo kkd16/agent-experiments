@@ -107,6 +107,9 @@ export default function Arrangements() {
   const [qb, setQb] = useState<Point>({ x: 0.88, y: 0.72 })
   // Hovered probe (arrangement point-location) — tracks the cursor.
   const [probe, setProbe] = useState<Point>({ x: 0.5, y: 0.5 })
+  // Incremental line-insertion reveal (arrangement mode).
+  const [reveal, setReveal] = useState(7)
+  const [playing, setPlaying] = useState(false)
   // Objective direction (LP mode) — a draggable handle on the unit circle.
   const [objAngle, setObjAngle] = useState(0.9)
 
@@ -123,7 +126,13 @@ export default function Arrangements() {
 
   // Regenerate data whenever the generator inputs change.
   const siLines = useMemo(() => genSILines(count, seed), [count, seed])
-  const lines = useMemo<Line[]>(() => siLines.map(lineFromSI), [siLines])
+  const allLines = useMemo<Line[]>(() => siLines.map(lineFromSI), [siLines])
+  // In the arrangement, only the first `reveal` lines are inserted (for the
+  // incremental-insertion animation); every other mode uses the full set.
+  const lines = useMemo<Line[]>(
+    () => (mode === 'arrangement' ? allLines.slice(0, Math.min(reveal, allLines.length)) : allLines),
+    [mode, allLines, reveal],
+  )
   const constraints = useMemo(() => genConstraints(count, seed), [count, seed])
   const obj = useMemo<Point>(() => ({ x: Math.cos(objAngle), y: Math.sin(objAngle) }), [objAngle])
 
@@ -184,6 +193,14 @@ export default function Arrangements() {
       : lp.feasible === lpBrute.feasible && (!lp.feasible || Math.abs(lp.value - lpBrute.value) < 1e-6)
 
   const view = mode === 'duality' ? DUAL_VIEW : FRAME
+
+  // The play timer inserts one more line every tick until all are revealed.
+  // (Resets to full on generate/reseed happen in those handlers, not here.)
+  useEffect(() => {
+    if (!playing || reveal >= count) return
+    const id = setTimeout(() => setReveal((r) => Math.min(count, r + 1)), 280)
+    return () => clearTimeout(id)
+  }, [playing, reveal, count])
 
   // ── Pointer interaction ─────────────────────────────────────────────────────
   const pick = useCallback(
@@ -252,6 +269,8 @@ export default function Arrangements() {
     const next = seed + 1
     setSeed(next)
     if (mode === 'ham') setHam(genTwoSets(next, ham.red.length, ham.blue.length))
+    setReveal(count)
+    setPlaying(false)
   }
 
   // ── Rendering ───────────────────────────────────────────────────────────────
@@ -583,10 +602,17 @@ export default function Arrangements() {
             </div>
             {badge(stats.eulerOK, '✓ V − E + F = 2', '✗ Euler broken')}
             <p className="muted">
-              The {count} lines split the frame into {stats.F - 1} faces at {stats.V} vertices and{' '}
-              {stats.E} edges. The zone of the amber line touches {zone?.faces.length ?? 0} faces
+              The {lines.length} lines split the frame into {stats.F - 1} faces at {stats.V} vertices
+              and {stats.E} edges. The zone of the amber line touches {zone?.faces.length ?? 0} faces
               spanning {zone?.edges ?? 0} edges — the zone theorem's O(n) bound in action.
             </p>
+            <Slider label="Reveal lines" value={reveal} min={1} max={count} step={1} onChange={(v) => { setReveal(v); setPlaying(false) }} />
+            <div className="row">
+              <Button onClick={() => { setReveal(1); setPlaying(true) }}>
+                {playing && reveal < count ? 'Inserting…' : 'Play insertion'}
+              </Button>
+              <Button variant="ghost" onClick={() => { setReveal(count); setPlaying(false) }}>All</Button>
+            </div>
             <div className="metrics">
               <Stat label="face under cursor" value={located >= 0 ? located : 'outside'} />
               <Stat label="its level" value={located >= 0 ? faces[located].level : '—'} />
@@ -678,7 +704,7 @@ export default function Arrangements() {
 
         <Panel title="Generate" hint={`seed ${seed}`}>
           {mode !== 'duality' && mode !== 'ham' && (
-            <Slider label={mode === 'lp' ? 'Constraints' : 'Lines'} value={count} min={3} max={mode === 'lp' ? 16 : 14} step={1} onChange={setCount} />
+            <Slider label={mode === 'lp' ? 'Constraints' : 'Lines'} value={count} min={3} max={mode === 'lp' ? 16 : 14} step={1} onChange={(v) => { setCount(v); setReveal(v); setPlaying(false) }} />
           )}
           <div className="row">
             <Button variant="primary" onClick={reseed}>New seed</Button>
