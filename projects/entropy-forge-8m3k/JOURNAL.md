@@ -44,6 +44,13 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     auto-selector that emits the cheapest block, and the inflater.
   - `gzip.ts` — the **gzip (RFC 1952)** and **zlib (RFC 1950)** containers, encode + decode, with
     CRC-32/Adler-32 + ISIZE verification and annotated header parsing.
+  - `lzma.ts` — a genuine, from-scratch **LZMA** (the 7-Zip / xz coder): a binary **range coder**
+    (11-bit adaptive probabilities, kTopValue renorm, the leading cache byte), the **12-state context
+    machine**, the **rep0..rep3 distance MRU** recoded almost for free, bit-tree **posSlot + direct +
+    align** distance coding, the low/mid/high **length coder**, **matched-literal** modelling, and an
+    **HC4 match finder** (hash2/hash3 heads + hash4 chain) with a lazy, rep-preferring parse. Carries a
+    token trace + stats for the visualiser. Decoder is length-driven (no end marker) and replays the
+    identical model updates, so it inverts by construction.
   - `codecs.ts` — a uniform, self-contained `Codec` interface + composites (DEFLATE-lite, bzip-lite)
     **and the real `gzip` codec** (so it races in the Benchmark and Self-test automatically).
   - `corpus.ts` — seven sample inputs chosen to make the codecs differ.
@@ -110,6 +117,31 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 - [ ] **CM tuning pass**: an 8-bit nonstationary state-machine counter (lpaq's `nex` table) instead
       of the running-mean StateMap; a two-layer mixer; an indirect/sparse model; a run model. Each is a
       few percent and a clean incremental follow-up on the v5 architecture.
+- [x] **LZMA (the 7-Zip / xz coder)** — the strongest dictionary coder in the field. A from-scratch
+      binary range coder, 12-state context machine, rep0..rep3 distance MRU, bit-tree distance/length
+      coders, matched-literal modelling, and an HC4 match finder with a lazy rep-preferring parse.
+      Shipped in **v6** (see below) with its own visualiser (packet stream, distance-source breakdown,
+      state-machine table) and wired into the Benchmark + Self-test. *(v6)*
+
+### LZMA roadmap (v6 follow-ups — the honest next steps)
+
+- [ ] **Optimal parse** (LZMA's `GetOptimum`): a price-based forward dynamic program over a small
+      window instead of the current lazy greedy. This is where LZMA's last few percent live — the
+      current parse already leads the dictionary coders, but the optimal parse would close most of the
+      gap to the context mixers on prose. Needs a bit-price estimator over the live probability model.
+- [ ] **Short-rep packets in the encoder** — the decoder already handles the `IsRep0Long=0` length-1
+      rep; teach the parser to emit it when a single byte matches at `rep0` and a literal would cost
+      more, priced against the literal coder. A small, safe ratio win on structured data.
+- [ ] **Tunable `lc`/`lp`/`pb`** exposed on the LZMA page (currently fixed at 3/0/2). Different data
+      likes different literal-context vs position-bit splits; a live control that re-encodes and shows
+      the ratio would make the trade-off tangible (and is what `xz --lzma2=lc=..,pb=..` tunes).
+- [ ] **A step-through of the range coder** on the LZMA page — watch `low`/`range` narrow bit-by-bit
+      and the cache/carry ripple, the way the Arithmetic page animates the WNC interval.
+- [ ] **LZMA2 chunk framing + a dictionary-reset control** — the container xz actually ships, so an
+      `.xz`-shaped stream (with the real `lc/lp/pb` byte and uncompressed-chunk fallback) becomes
+      inspectable, mirroring what the gzip page does for DEFLATE.
+- [ ] **Delta + BCJ pre-filters** (the xz filter chain): a delta filter for tabular/audio data and a
+      simple x86 BCJ call/jump filter, each shown improving LZMA's ratio on the data it targets.
 
 ## Entropy Forge v3 — Real DEFLATE (the actual gzip)
 
@@ -224,8 +256,86 @@ or two of PPM on `declaration`, `dna` and `repetitive`. In-app Self-test grows *
 (14 CM codec round-trips + 14 CM primitive round-trips), all green. Still zero runtime deps beyond
 React.
 
+## Entropy Forge v6 — LZMA (the 7-Zip / xz coder)
+
+The lab had the two halves of a modern compressor sitting side by side but never joined: real LZ77
+dictionary matching (`lz77.ts`, `deflate.ts`) and a family of adaptive entropy coders (arithmetic,
+rANS, tANS, the PAQ mixer). **LZMA is what you get when you stop Huffman-coding the LZ token stream
+and instead feed *every* decision — is-this-a-match, is-it-a-repeat, the length, the distance, the
+literal byte — into one adaptive binary range coder with a rich, stateful context.** It is the
+algorithm inside **7-Zip and xz**, and until v6 it was the obvious missing crown of the lab.
+
+### What shipped (all from scratch, zero new deps)
+
+- [x] **A binary range coder** (`lzma.ts`) — the LZMA variant, distinct from the WNC interval coder
+      already in the lab: a 32-bit `range`, a 33-bit `low` with carry propagated through a **cache byte
+      + cacheSize** run (the reference's leading-zero-byte trick), 11-bit adaptive bit probabilities
+      nudged by `>> 5` toward each observed bit, and `kTopValue` (2²⁴) renormalisation. Encoder and
+      decoder are exact mirrors; `encodeDirectBits`/`decodeDirectBits` handle equiprobable bits.
+- [x] **The 12-state context machine** — every packet's probabilities are selected by a state that
+      remembers whether the last few packets were literals or matches (states 0–6 vs 7–11); after-match
+      states switch on **matched-literal** coding. The four `stateUpdate*` transitions mirror the spec.
+- [x] **The rep0..rep3 distance MRU** — the four most-recent match distances are kept in a
+      move-to-front list and recoded with a handful of context bits (`IsRep`, `IsRepG0/1/2`,
+      `IsRep0Long`) instead of the full distance machinery. This is *the* reason LZMA crushes data that
+      revisits offsets; the visualiser shows the rep-vs-new-distance split explicitly.
+- [x] **Bit-tree distance coding** — a 6-bit **posSlot** (magnitude bucket) per length class, then the
+      low bits as a reverse **specPos** tree (near distances) or **direct bits + a 4-bit align tree**
+      (far distances). *(This is where the one subtle bug lived: the `specPos` table is sized
+      `1 + kNumFullDistances − kEndPosModelIndex = 115`; one slot short and a typed-array OOB write is
+      silently dropped, re-read later as a zero probability that collapses `range` to 0 — caught by the
+      offline fuzz, not the corpus.)*
+- [x] **The low/mid/high length coder** — a `choice`/`choice2` split over an 8/8/256 bit-tree spanning
+      match lengths 2..273, one instance for new matches and one for rep matches.
+- [x] **An HC4 match finder** — hash2 + hash3 **head** tables and a hash4 **chain** (bounded depth +
+      niceLen), exactly the structure real LZMA "fast" mode uses, plus a rep-length probe at each of the
+      four rep distances. The parse is **lazy** (hold a match if the next position beats it) and
+      **rep-preferring** (a rep that ties a new match wins, because it is far cheaper).
+- [x] **A length-driven decoder** — it knows `outLen` from the codec header (as every codec here does)
+      and stops there, so no end marker is needed; it replays the identical context selections and
+      probability updates the encoder made, so the stream inverts by construction.
+- [x] **The `lzma` codec is wired into `codecs.ts`** — it races in the Benchmark and round-trips in the
+      Self-test automatically, and a new **Server log** corpus sample (fixed-layout lines with recurring
+      field offsets) was added to show the rep list at work.
+- [x] **An `LZMA` lab page** (`routes/Lzma.tsx`): a size race against the other from-scratch coders,
+      the **packet stream** (each token a slice coloured grey/teal/violet-blue-green-amber for
+      literal/new-match/rep0..3, width ∝ output bytes, hover for detail), the **packet composition** and
+      **distance-source** breakdowns, the live **12-state transition table** with the current state
+      highlighted, and a plain-language "how a packet is coded" walk-through.
+
+### Correctness & result
+
+Driven under Node before any UI: round-trips every corpus + edge input on the first try, plus a
+**3,000-case fuzz** (random lengths to ~2,500 B across five structure classes — full-random, small
+alphabet, periodic-with-noise, runs, repeated-block) with **zero mismatches**, and two extra invariants
+checked on every case — the stream opens with the reference's **leading zero byte** and the encoder is
+**deterministic** (encode twice → identical bytes, which is what lets decode replay it). On the
+eight-corpus benchmark LZMA is the **best dictionary coder** — it wins `repetitive` outright (6% vs
+gzip's 9%) and leads gzip/DEFLATE/bzip on `dna`, `json`, `source` and `serverlog`; on tiny prose the
+header-free context mixers (CM/PPM) still edge it, which is the honest and expected result at these
+sizes. On larger structured inputs it is dominant (offline: a 7.8 KB repeated-JSON blob → 1.1%, a 5 KB
+single-run → 0.6%). In-app Self-test grows **534 → 617** checks (14 LZMA codec round-trips + LZMA
+primitive round-trips + leading-byte/determinism checks across the corpus and edge cases), all green.
+Still zero runtime deps beyond React.
+
 ## Session log
 
+- 2026-07-03 (claude): **v6 — LZMA, the 7-Zip / xz coder.** Joined the lab's two halves — LZ77
+  dictionary matching and adaptive entropy coding — into the algorithm that does them together. Built
+  `lzma.ts` from scratch: a binary **range coder** (11-bit adaptive probs, kTopValue renorm, cache-byte
+  carry), the **12-state context machine**, the **rep0..rep3 distance MRU** recoded almost for free,
+  bit-tree **posSlot + direct + align** distance coding, the low/mid/high **length coder**,
+  **matched-literal** modelling, and an **HC4 match finder** (hash2/3 heads + hash4 chain) with a lazy,
+  rep-preferring parse; the decoder is length-driven and replays the identical model updates, so it
+  inverts by construction. Found and fixed one genuinely subtle bug — the `specPos` table was one slot
+  short, so a far-distance match wrote past a typed array, the drop re-read as a zero probability, and
+  `range` collapsed to 0 into an infinite renormalisation loop; the 3,000-case fuzz caught it where the
+  corpus didn't. Wired the `lzma` codec into the roster, added a **Server log** corpus sample to
+  showcase the rep list, and built the **LZMA** page (packet stream, distance-source breakdown, live
+  12-state table, coded-packet walk-through). On the benchmark it is the best dictionary coder — winning
+  the repetitive corpus outright and leading gzip/DEFLATE on the structured ones. Self-test **534 →
+  617**, all green. Left a six-item LZMA roadmap (optimal parse, short-rep packets, tunable lc/lp/pb, a
+  range-coder step-through, LZMA2 framing, delta/BCJ pre-filters). Zero new deps.
 - 2026-07-03 (claude): **v5 — Context mixing (the PAQ engine).** Built the state-of-the-art
   compression family from scratch: `logistic.ts` (the stretch/squash log-odds substrate) and `cm.ts`
   (a bit-level Predictor = order-0..6 + word + match models, each an adaptive StateMap; a

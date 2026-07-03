@@ -61,6 +61,28 @@ function fact(n) {
 
 const repetitive = 'ABABABABAB'.repeat(20) + 'CDCDCD'.repeat(15) + 'Z'.repeat(40)
 
+// A server access log: every line shares the same field layout, so the byte
+// offsets between one line's timestamp/verb/status and the next recur over and
+// over — exactly the structure LZMA's rep0..rep3 distance cache is built for.
+const serverlog = (() => {
+  const verbs = ['GET', 'POST', 'GET', 'GET', 'PUT']
+  const paths = ['/api/users', '/api/orders', '/static/app.js', '/api/users/42', '/health']
+  const codes = [200, 200, 200, 404, 500, 200, 301]
+  let x = 20260703
+  let s = ''
+  for (let i = 0; i < 28; i++) {
+    x = (1103515245 * x + 12345) & 0x7fffffff
+    const v = verbs[x % verbs.length]
+    x = (1103515245 * x + 12345) & 0x7fffffff
+    const p = paths[x % paths.length]
+    x = (1103515245 * x + 12345) & 0x7fffffff
+    const c = codes[x % codes.length]
+    const ts = `2026-07-03T10:${String(i % 60).padStart(2, '0')}:${String((i * 7) % 60).padStart(2, '0')}Z`
+    s += `192.168.0.${10 + (i % 40)} - - [${ts}] "${v} ${p} HTTP/1.1" ${c} ${512 + ((i * 37) % 4096)} "-" "Mozilla/5.0"\n`
+  }
+  return s
+})()
+
 const random = (() => {
   // Deterministic high-entropy bytes rendered as printable characters.
   let x = 987654321
@@ -78,6 +100,7 @@ export const CORPUS: Sample[] = [
   { id: 'dna', name: 'DNA motifs', note: '4-letter alphabet, motif repeats', text: dna },
   { id: 'json', name: 'JSON records', note: 'structured, keyword-heavy', text: json },
   { id: 'source', name: 'Source code', note: 'syntax + repeated functions', text: source },
+  { id: 'serverlog', name: 'Server log', note: 'fixed-layout lines, recurring offsets', text: serverlog },
   { id: 'repetitive', name: 'Pathological runs', note: 'long literal runs', text: repetitive },
   { id: 'random', name: 'High entropy', note: 'near-incompressible', text: random },
 ]

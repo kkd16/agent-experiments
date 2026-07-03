@@ -24,6 +24,7 @@ import { ransDecode, ransEncode, tableFromData, serialiseTable, deserialiseTable
 import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { cmEncode, cmDecode } from './cm.ts'
+import { lzmaEncode, lzmaDecode } from './lzma.ts'
 import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
 import { packageMerge, minLimit } from './lengthLimited.ts'
 import { canonicalCodes } from './huffman.ts'
@@ -196,6 +197,32 @@ export function runSelfTest(): TestCase[] {
       results.push({ group: 'Context-mixing (primitive)', name, pass: bytesEqual(cd, data), detail: `${ce.encoded.length}B` })
     } catch (e) {
       results.push({ group: 'Context-mixing (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // LZMA (the 7-Zip / xz coder): the binary range coder + 12-state context
+    // machine + rep-distance MRU list must round-trip, the stream must open with
+    // the reference's leading zero byte, and the encoder must be deterministic
+    // (encode twice → identical bytes, the invariant that lets decode replay it).
+    try {
+      const le = lzmaEncode(data, { collectTokens: false })
+      const lb = lzmaDecode(le.encoded, data.length)
+      const roundTrips = bytesEqual(lb, data)
+      const leadOk = data.length === 0 || le.encoded[0] === 0
+      const le2 = lzmaEncode(data)
+      const deterministic = bytesEqual(le.encoded, le2.encoded)
+      results.push({
+        group: 'LZMA (primitive)',
+        name,
+        pass: roundTrips,
+        detail: `${data.length}B → ${le.encoded.length}B · ${le.stats.reps} rep / ${le.stats.matches} match / ${le.stats.literals} lit`,
+      })
+      results.push({
+        group: 'LZMA · leading byte + determinism',
+        name,
+        pass: leadOk && deterministic,
+        detail: `${leadOk ? 'lead ok' : 'BAD lead'} · ${deterministic ? 'deterministic' : 'NONDETERMINISTIC'}`,
+      })
+    } catch (e) {
+      results.push({ group: 'LZMA (primitive)', name, pass: false, detail: (e as Error).message })
     }
     // SA-IS suffix array matches the brute-force oracle, and SA-BWT round-trips
     try {
