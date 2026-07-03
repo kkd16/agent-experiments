@@ -6,6 +6,7 @@ import {
 } from './walks';
 import {
   buildGluedTrees, columnReducedA, columnSizes, reductionError, fullGluedEngine, scalingLaw,
+  arrivalScaling, dispersion, MAX_GROUP_VELOCITY,
 } from './gluedtrees';
 import { matMul, dagger } from './Matrix';
 import { QuantumState } from './QuantumState';
@@ -1985,6 +1986,22 @@ export function runTests(): TestResult[] {
       const grows = (last.qPeak / last.cPeak) > 50 * (first.qPeak / first.cPeak);
       add('Glued trees', 'Exponential separation: quantum P(exit)>½ in O(h) time; classical peak = Θ(2^{−h})', ok && grows,
         `h${first.height}:q${first.qPeak.toFixed(2)}/c${first.cPeak.toExponential(1)} … h${last.height}:q${last.qPeak.toFixed(2)}/c${last.cPeak.toExponential(1)} (ratio ${(last.qPeak / last.cPeak).toExponential(1)})`);
+    }
+    // (7) The crossing is ballistic: reduced-line group velocity 2√2, arrival time linear in h.
+    {
+      const d = dispersion(200);
+      const vmax = Math.max(...d.groupVel.map(Math.abs));
+      const vOK = Math.abs(vmax - MAX_GROUP_VELOCITY) < 1e-9 && Math.abs(MAX_GROUP_VELOCITY - 2 * Math.SQRT2) < 1e-12;
+      // dispersion is E(k)=2√2·cos k: check the band edges and centre.
+      const bandOK = Math.abs(d.energy[0] - 2 * Math.SQRT2) < 1e-9 && Math.abs(d.energy[d.energy.length - 1] + 2 * Math.SQRT2) < 1e-9;
+      const a = arrivalScaling(10, 500);
+      // linear O(h): slope near the ballistic 1/√2, and small residual to a straight line.
+      const slopeOK = a.slope > 0.6 && a.slope < 0.9;
+      const b = a.points.reduce((acc, p) => acc + p.measured, 0) / a.points.length - a.slope * (a.points.reduce((acc, p) => acc + p.height, 0) / a.points.length);
+      let maxRes = 0;
+      for (const p of a.points) maxRes = Math.max(maxRes, Math.abs(p.measured - (a.slope * p.height + b)));
+      add('Glued trees', 'Crossing is ballistic: reduced-line v_g = 2√2, arrival time linear in h (t_a ≈ h/√2)',
+        vOK && bandOK && slopeOK && maxRes < 0.25, `v_g=${vmax.toFixed(4)}, slope=${a.slope.toFixed(3)}, max residual=${maxRes.toFixed(3)}`);
     }
   }
 

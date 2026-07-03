@@ -95,14 +95,20 @@ evolution to the eigensolver's floor (`~10^{−14}`), and they stay exact under 
   - [x] side-by-side **column space-time** heatmaps — the wavepacket sweeping to the exit column vs
         classical mass piling in the middle and never arriving;
   - [x] the **scaling law** on a log axis: quantum `~ 1/poly(h)` vs classical `~ 2^{−h}`;
+  - [x] the **"why ballistic?" panel** — the reduced line's group velocity `v_g = 2√2` and the measured
+        arrival time `t_a(h)` tracking the ballistic prediction `(2h+1)/2√2` (a linear O(h) law);
   - [x] a `height` slider (2–6), a **ordered/random** gluing toggle + reseed.
-- [x] **Six new self-tests** (`tests.ts`, group *Glued trees*): structure (`|V|`, degrees, columns,
+- [x] **`dispersion` + `arrivalScaling`** in the engine — the reduced line is a √2 tight-binding chain
+      with band `E(k) = 2√2·cos k`, peak group velocity `2√2`, so a wavepacket crosses the `2h+1` bonds in
+      `≈ (2h+1)/2√2` — the exact mechanistic reason the crossing is `O(h)`, not exponential.
+- [x] **Seven new self-tests** (`tests.ts`, group *Glued trees*): structure (`|V|`, degrees, columns,
       connectivity), the `√2`-line-with-defect-2, the exact column reduction (quantum *and* classical),
-      exactness under a random 2-regular gluing, CTQW probability conservation, and the exponential
-      separation (quantum `P(exit) > ½` in `O(h)` time while classical peak `= Θ(2^{−h})`, ratio growing).
+      exactness under a random 2-regular gluing, CTQW probability conservation, the exponential separation
+      (quantum `P(exit) > ½` in `O(h)` time while classical peak `= Θ(2^{−h})`, ratio growing), and the
+      ballistic law (`v_g = 2√2`, arrival time linear in `h` with slope `≈ 1/√2`).
 - [x] Refreshed the **About** page (a dedicated glued-trees card) and `project.json` (description + tags).
 
-### Verified (all green — suite now 194/194)
+### Verified (all green — suite now 195/195)
 
 - Structure exact for `h = 1..4`: `|V| = 2^{h+2}−2` (6/14/30/62), roots degree 2, interior degree 3,
   columns `2^c … 2^{2h+1−c}`, connected.
@@ -111,6 +117,8 @@ evolution to the eigensolver's floor (`~10^{−14}`), and they stay exact under 
 - Separation, measured `h = 2..9`: quantum `peak P(exit)` `0.82 → 0.56` (`> ½`, at `t ≈ 0.86·h`), classical
   `peak P(exit)` `7.1e-2 → 4.6e-4` with `peak·2^h → 0.236` (constant) — a quantum/classical ratio growing
   `11.6× → 1220×`.
+- Ballistic mechanism: reduced-line group velocity `v_g = 2√2 = 2.8284`, and the measured arrival time is
+  linear in `h` (least-squares slope `0.755 ≈ 1/√2`, max residual `0.05`), tracking `(2h+1)/2√2`.
 
 ### Session log
 
@@ -118,7 +126,7 @@ evolution to the eigensolver's floor (`~10^{−14}`), and they stay exact under 
   quantum-walk speedup — as a new `gluedtrees.ts` engine and a fourth Walks-tab mode: the walk glowing
   across the graph, the quantum-vs-classical column space-time, and the peak-`P(exit)`-vs-`h` scaling law,
   with the column reduction (quantum **and** classical) certified exact to `~1e-14` against the full graph,
-  even under a random gluing. +6 self-tests (suite 188→194, all green); About + `project.json` refreshed.
+  even under a random gluing. +7 self-tests (suite 188→195, all green); About + `project.json` refreshed.
 
 ### Follow-ups (open for a later session)
 
