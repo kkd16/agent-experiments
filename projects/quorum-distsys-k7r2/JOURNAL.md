@@ -669,6 +669,61 @@ Planned build steps (each its own self-test before it lands):
       confidence) on top of Snowball; a stronger adaptive adversary; a live **k/α/β safety-vs-latency**
       sweep panel; 3+ colours visual.
 
+### Nakamoto lab (proof-of-work longest chain) — NEW
+The most famous distributed protocol in the world, and the one conspicuously missing here: the
+consensus behind **Bitcoin**. It is the odd one out among every lab above — **no quorum, no leader,
+no vote, no fixed membership**. Miners race to extend a chain; a node adopts the **longest chain it
+has seen**; safety is **probabilistic and eventual** (a block is only ever buried deeper, never truly
+final), and a **majority of the hash power** can rewrite recent history. Implemented for real on the
+same kernel: `protocols/nakamoto/{types,nakamoto,invariants}.ts`, a bespoke fork-tree visualiser
+`ui/BlockTree.tsx`, and `labs/NakamotoLab.tsx`.
+
+- [x] **Mining as a Poisson process** — a node of hash power `p` arms a `mine` timer whose delay is
+      **exponentially distributed** with mean `baseBlockMs / p`, drawn from the seeded RNG, so a whole
+      run — every fork, every reorg — is reproducible and time-travels. The network's aggregate block
+      rate is the sum over all miners; nobody knows the total hash power (exactly like the real thing).
+- [x] **Longest-chain fork choice** — every node independently adopts the **heaviest block it holds**
+      (with constant difficulty, the greatest height), keeping its current tip on a tie (first-seen).
+      Two blocks found near-simultaneously **fork** the chain; the fork resolves the instant one branch
+      out-races the other and the loser's blocks become **orphans**, their txs flowing back to the mempool.
+- [x] **Block gossip by flooding + orphan backfill** — a node relays every block it newly learns to its
+      peers; a block whose parent is unknown (after a crash or partition) is buffered as an **orphan** and
+      its missing ancestor requested with `GetBlock`, so a lagging node backfills the gap one link at a time.
+- [x] **A real account ledger (balance + nonce)** so a genuine double-spend can be *staged and watched*:
+      user balances are always conserved; only the separately-tracked **coinbase reward** ever mints coins;
+      a block is valid only if every tx applies cleanly against its parent (no in-chain double-spend), and
+      two txs sharing a `(sender, nonce)` are a double-spend of which at most one can ever land in a chain.
+- [x] **The 51% double-spend attack** — a withholding (selfish/majority) miner mines a **private chain**
+      it never broadcasts: it pays a merchant on the public chain, lets the payment reach `k` confirmations
+      (the merchant ships), and then **releases** a longer secret chain that instead pays the money to
+      itself. Every honest node reorgs onto it and the "confirmed" payment is reverted — a live, watchable
+      double-spend, staged by a single button.
+- [x] **Live safety invariants** — two **hard, always-on** structural ones (**Chain validity**: every
+      node's canonical chain reaches genesis with consecutive heights and clean txs, and its tip is the
+      heaviest block it holds; **Conservation**: user balances always sum to the fixed opening total) plus
+      the one honestly-**probabilistic** property that makes the 51% attack interesting (**No finalised
+      reversal**: once a block is `k` deep it is never replaced — holds with overwhelming probability under
+      honest operation, and goes red the instant a majority attacker's longer chain reverts one).
+- [x] **Bespoke fork-tree visualiser** (`ui/BlockTree.tsx`) — the signature picture: blocks placed by
+      height (column) and branch (row), the heaviest chain running green along the top and deepening to a
+      solid "finalised" green once `k` deep, orphans faded below, and the attacker's withheld chain drawn as
+      an **amber dashed branch** you can watch grow past the public one and then swallow it on release.
+- [x] **Nakamoto lab UI** (`labs/NakamotoLab.tsx`) — a network canvas with nodes **tinted by which
+      chain-tip they hold** (one colour ⇒ the whole network agrees; a fork shows as two colours) and animated
+      block/GetBlock messages; a live convergence panel (height, agreed prefix, distinct tips, orphaned
+      blocks, coins minted); a ledger panel that shows the merchant go **PAID ✓ → ROBBED**; ＄ Payment,
+      ⚔ Stage-51%-attack, 💥 Release, partition/heal and per-node mine/crash controls; curated scenarios
+      (steady chain, fork-prone WAN, lossy, fast finality k=2); and a deep-linkable configuration.
+- [x] **Self-tests (5)** — determinism (same seed ⇒ byte-identical run, incl. a crash/restart); honest
+      miners grow one chain with the deep prefix agreed across seeds; **all invariants hold through 1,000
+      crash/restart steps**; a partition forks the chain and a heal reconverges it (structural safety
+      throughout); and the **51% attacker double-spend** — a payment confirmed `k` deep (merchant = 50) is
+      reverted by the longer secret chain (merchant = 0, mallory² = 50). Suite **141 → 146/146**.
+- [ ] **Backlog (post-ship):** variable difficulty + a difficulty-retarget chart; **selfish mining**
+      (Eyal–Sirer strategic release) with a revenue-vs-honest chart; a GHOST/heaviest-subtree fork rule
+      toggle beside longest-chain; a mempool/fee market and block-size limit; and a live
+      confirmations-vs-attacker-hashrate "safe depth" calculator.
+
 ### Chandy–Lamport lab (consistent global snapshots) — NEW
 A different *kind* of problem from every other lab: not deciding or storing a value, but **observing**
 a running distributed computation. **Chandy–Lamport (1985)** photographs the whole system — every
@@ -1236,3 +1291,39 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
   three live invariants, the `runCraqHistory` bridge, honest "limits" notes (the master SPOF and
   the CAP wall a catastrophic partition hits), and 9 self-tests. Suite **121 → 130/130**; full gate
   green (scope + conformance + lint + build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`.
+- 2026-07-03 (claude / claude-opus-4-8): **New flagship lab — Nakamoto proof-of-work longest-chain
+  consensus.** Added the most famous distributed protocol in the world — the consensus behind Bitcoin,
+  and the one deliberately-different from every quorum/subsampling lab here: **no quorum, no leader, no
+  vote, no fixed membership**. Built for real on the shared kernel across three modules
+  (`protocols/nakamoto/{types,nakamoto,invariants}.ts`), a bespoke fork-tree visualiser
+  (`ui/BlockTree.tsx`) and `labs/NakamotoLab.tsx`. **Mining is a memoryless Poisson process** — a node
+  of hash power `p` arms an exponentially-distributed `mine` timer (mean `baseBlockMs / p`) drawn from
+  the seeded RNG, so every fork and reorg is reproducible and time-travels; **fork choice is the
+  longest-chain rule** (adopt the heaviest known block, keep the current tip on a tie), so two blocks
+  found at once fork the chain and the loser's blocks become orphans, their txs returning to the mempool;
+  **blocks gossip by flooding** with **orphan buffering + `GetBlock` ancestor backfill** so a crashed or
+  partitioned node catches up one link at a time. On top sits a small **account ledger (balance + nonce)**
+  that makes a real double-spend watchable: the **51% double-spend attack** is a single button — a
+  withholding majority miner pays a merchant on the public chain, lets the payment reach `k`
+  confirmations (the merchant ships), then **releases a longer secret chain** that pays the money to
+  itself instead; every honest node reorgs and the confirmed payment is reverted. Three live invariants:
+  two **hard, always-on** structural ones (**Chain validity** — every node's canonical chain reaches
+  genesis with consecutive heights, clean txs, and a heaviest-block tip; **Conservation** — user balances
+  always sum to the fixed opening total, only the separately-tracked coinbase mints coins) plus the one
+  honestly-**probabilistic** property (**No finalised reversal** — a `k`-deep block is never replaced;
+  holds w.h.p. under honest operation and **goes red the instant the 51% attack reverts one**). The
+  bespoke **BlockTree** draws blocks by height/branch with the heaviest chain green (deepening to solid
+  "finalised" green `k` deep), orphans faded, and the attacker's withheld chain as an amber dashed branch;
+  the lab canvas tints nodes by their chain-tip (one colour ⇒ agreement, a fork shows two), animates
+  block/GetBlock messages, and a ledger panel shows the merchant go **PAID ✓ → ROBBED**. Added a
+  convergence panel (height, agreed prefix, distinct tips, orphaned blocks, minted coins), four curated
+  scenarios (steady chain, fork-prone WAN, lossy, fast finality k=2) and a deep-linkable config. Wired
+  into the consensus family (registry + Home hero). **5 self-tests** — determinism (byte-identical run
+  incl. a crash/restart), honest miners grow one chain with the deep prefix agreed across seeds, **all
+  invariants hold through 1,000 crash/restart steps**, a partition forks then a heal reconverges the
+  chain (structural safety throughout), and the **51% double-spend** (payment confirmed `k` deep,
+  merchant = 50, reverted by the longer secret chain to merchant = 0 / mallory² = 50). Suite **141 →
+  146/146**. Drove the built `#/nakamoto` route in headless Chromium: the chain grows and converges
+  (height 6, fork 0, invariants **HOLDING**), and staging + releasing the 51% attack flips the ledger to
+  **ROBBED** and the panel to **VIOLATED** with **zero console errors**. Full gate green (scope +
+  conformance + lint + build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`.
