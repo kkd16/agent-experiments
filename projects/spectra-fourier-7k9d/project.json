@@ -1,8 +1,8 @@
 {
   "title": "Spectra — Fourier Lab",
-  "description": "An interactive Fourier lab: draw shapes redrawn by rotating vectors, then explore spectra, frequency-domain filtering, and spectrograms on a from-scratch FFT.",
+  "description": "A six-mode interactive Fourier lab on a from-scratch FFT: draw shapes redrawn by rotating vectors, build and HEAR spectra, filter noise in the frequency domain (A/B audio), read spectrograms, compare a Morlet wavelet scalogram against the STFT, and paint masks over a real 2-D image FFT. Deep-linkable; no math libraries.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["fourier", "fft", "dsp", "visualization", "canvas", "react"],
+  "tags": ["fourier", "fft", "dsp", "wavelet", "2d-fft", "image-processing", "web-audio", "visualization", "canvas", "react"],
   "createdAt": "2026-07-03"
 }

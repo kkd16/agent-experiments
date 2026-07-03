@@ -15,6 +15,12 @@ import type { SignalName, WindowName, Partial } from '../lib/dsp'
 import { rfft } from '../lib/fft'
 import { magnitude, phase } from '../lib/complex'
 import { fillPlotBg, grid, zeroLine, linePlot, areaPlot, axisLabel } from '../lib/draw'
+import { audio } from '../lib/audio'
+import { readHashParams, shareLink, readNum, readStr, readBool } from '../lib/urlState'
+
+// Playback sample rate lifts the abstract bin-frequency into the audible band
+// (bin k ≈ k·AUDIO_SR/N Hz), so dragging Frequency tracks an audible pitch.
+const AUDIO_SR = 8000
 
 const N = 1024
 const FS = 1024 // sample rate; makes bin k ≈ k Hz
@@ -24,13 +30,27 @@ type SigSource = 'test' | 'additive'
 const DEFAULT_PARTIALS: number[] = [1, 0, 0.5, 0, 0.33, 0, 0.25, 0]
 
 export default function Spectrum() {
-  const [sigSource, setSigSource] = useState<SigSource>('test')
-  const [signal, setSignal] = useState<SignalName>('square')
-  const [freq, setFreq] = useState(24)
-  const [noise, setNoise] = useState(0)
-  const [win, setWin] = useState<WindowName>('hann')
-  const [db, setDb] = useState(false)
-  const [amps, setAmps] = useState<number[]>(DEFAULT_PARTIALS)
+  const sp = useMemo(() => readHashParams(), [])
+  const [sigSource, setSigSource] = useState<SigSource>(() =>
+    readStr<SigSource>(sp, 'src', 'test', ['test', 'additive']),
+  )
+  const [signal, setSignal] = useState<SignalName>(() =>
+    readStr<SignalName>(sp, 'sig', 'square', SIGNALS.map((s) => s.id)),
+  )
+  const [freq, setFreq] = useState(() => readNum(sp, 'freq', 24))
+  const [noise, setNoise] = useState(() => readNum(sp, 'noise', 0))
+  const [win, setWin] = useState<WindowName>(() =>
+    readStr<WindowName>(sp, 'win', 'hann', WINDOWS.map((w) => w.id)),
+  )
+  const [db, setDb] = useState(() => readBool(sp, 'db', false))
+  const [amps, setAmps] = useState<number[]>(() => {
+    const a = sp.get('amps')
+    if (!a) return DEFAULT_PARTIALS
+    const arr = a.split(',').map(Number).filter((x) => Number.isFinite(x))
+    return arr.length >= 4 ? arr : DEFAULT_PARTIALS
+  })
+  const [playing, setPlaying] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const { ref: timeRef, size: timeSize } = useDprCanvas()
   const { ref: magRef, size: magSize } = useDprCanvas()
@@ -46,6 +66,34 @@ export default function Spectrum() {
     }
     return generateSignal(signal, N, { freq, fs: FS, amp: 1, noise, seed: 1337 })
   }, [sigSource, signal, freq, noise, amps])
+
+  // Audition the signal. The effect owns playback so retriggering on a parameter
+  // change stays seamless; toggling the button only flips `playing`.
+  useEffect(() => {
+    if (!playing) {
+      audio.stop()
+      return
+    }
+    audio.playSignal(raw, { sampleRate: AUDIO_SR, gain: 0.85 })
+  }, [playing, raw])
+  useEffect(() => () => audio.stop(), [])
+
+  const onShare = () => {
+    shareLink('spectrum', {
+      src: sigSource,
+      sig: signal,
+      freq,
+      noise: noise.toFixed(2),
+      win,
+      db,
+      amps: amps.map((a) => a.toFixed(2)).join(','),
+    }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
 
   // Analyze.
   const result = useMemo(() => {
@@ -212,6 +260,20 @@ export default function Spectrum() {
               { label: 'Bins', value: String(HALF) },
             ]}
           />
+        </Panel>
+
+        <Panel title="Listen &amp; share">
+          <div className="btn-row">
+            <Button variant={playing ? 'default' : 'primary'} onClick={() => setPlaying((p) => !p)}>
+              {playing ? '◼ Stop' : '► Play'}
+            </Button>
+            <Button variant="ghost" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
+          <p className="hint">
+            Hear the timbre change as you drag the harmonic sliders — same math, now audible.
+          </p>
         </Panel>
       </div>
 

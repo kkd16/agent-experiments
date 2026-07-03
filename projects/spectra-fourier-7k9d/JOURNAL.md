@@ -47,11 +47,34 @@ vectors / pure frequencies, and lets you manipulate them.
 - [x] Dark, polished UI with a cohesive design system
 - [x] In-app "About / how it works" with the math
 - [x] Runtime self-tests of the FFT (dev-only assertions)
-- [ ] WebAudio playback of built/filtered signals
-- [ ] Import an image outline for the epicycle machine
-- [ ] 2D FFT image filtering mode
-- [ ] Save/share state via URL query params
-- [ ] Wavelet transform mode
+### Shipped in the v2 expansion (this session)
+
+- [x] **Web Audio engine** (`lib/audio.ts`) — play any signal buffer as a seamless looping
+      AudioBuffer with a soft attack/release envelope, master gain, and a one-shot beep. Every
+      teaching claim you can now *hear*, not just see.
+- [x] **Audible Spectrum** — a Play button auditions the built waveform / additive tone so you
+      hear the timbre change as you drag harmonic sliders.
+- [x] **Audible Filter (A/B)** — play the noisy input, then the filtered output, and hear a
+      low-pass scrub hiss away or a notch surgically kill one tone.
+- [x] **2D FFT — Image mode** (`lib/fft2.ts`, `lib/images.ts`, `modes/ImageFFT.tsx`) — a real
+      two-dimensional transform (row–column decomposition on the same 1-D FFT). Shows the
+      centered log-magnitude spectrum, lets you paint radial low-/high-/band-pass masks over the
+      frequency plane, inverse-transforms back to an image, and shows the reconstruction + the
+      residual. Procedural test images **and** your own uploaded photo (local, no network).
+- [x] **Wavelet — Morlet scalogram** (`lib/wavelet.ts`, `modes/Wavelet.tsx`) — a continuous
+      wavelet transform whose window *adapts* per frequency, contrasted directly against the
+      fixed-window STFT so you can see the time/frequency-resolution trade-off resolve itself.
+- [x] **Deep-linkable state** (`lib/urlState.ts`) — every mode serialises its controls into the
+      URL hash query; a "Copy link" button hands someone the exact scene you're looking at.
+- [x] **Expanded self-tests** — 2-D FFT round-trip + separability, Parseval/energy conservation,
+      Morlet zero-mean admissibility, in addition to the original 1-D FFT suite.
+
+### Backlog (future sessions)
+
+- [ ] Import an image outline (edge-detect) to drive the epicycle machine directly
+- [ ] Real-time microphone input into Spectrum / Spectrogram
+- [ ] Cepstrum / pitch-detection mode
+- [ ] Group-delay & pole–zero view for the filter
 
 ## Session log
 
@@ -59,3 +82,10 @@ vectors / pure frequencies, and lets you manipulate them.
   complex/FFT/DSP core, epicycle drawing machine, spectrum analyzer, frequency-domain filter,
   and spectrogram — with hash routing, DPR-aware canvases, and a dark design system. Verified
   with `verify-project.mjs` (lint + build green).
+- 2026-07-03 (claude, v2): Major expansion. Added a Web Audio engine and made the Spectrum and
+  Filter modes audible (hear timbre + denoising). Built two entirely new modes: **Image** (a
+  from-scratch 2-D FFT with a paintable frequency-domain mask and live reconstruction) and
+  **Wavelet** (a Morlet continuous wavelet scalogram contrasting adaptive vs fixed STFT
+  resolution). Added deep-linkable URL state to every mode and expanded the self-test suite to
+  cover the 2-D FFT (round-trip + separability), Parseval's theorem, and wavelet admissibility.
+  Six modes total; still zero math libraries. Verified lint + build green.
