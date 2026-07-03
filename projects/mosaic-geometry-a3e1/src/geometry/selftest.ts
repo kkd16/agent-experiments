@@ -100,6 +100,27 @@ import {
 import { convexMinkowski, minkowskiSum, earClip } from './minkowski'
 import { bentleyOttmann, bruteForceIntersections, reportIntersections, type Segment } from './segments'
 import { isConvex, planPath, segmentIsFree } from './planning'
+import {
+  lineFromSI,
+  lineThroughPoints,
+  intersectLines,
+  clipLineToRect,
+  arrangementFaces,
+  arrangementStats,
+  zoneComplexity,
+  kLevelPath,
+  kthValueAt,
+  lowerEnvelope,
+  upperEnvelope,
+  dualLineOfPoint,
+  dualPointOfLine,
+  hamSandwich,
+  seidelLP,
+  lpBruteForce,
+  type Line,
+  type SILine,
+  type HalfPlane,
+} from './arrangement'
 
 let failures = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -1494,6 +1515,155 @@ function canonicalHull(hull: number[]): number[] {
   const fat = planPath({ x: 1, y: 5 }, { x: 8, y: 5 }, gap, fatRobot)
   check('C-space growth: thin robot passes a 0.8-wide gap, fat robot is blocked',
     thin.result.reachable && !fat.result.reachable, `(thin ${thin.result.reachable}, fat ${fat.result.reachable})`)
+}
+
+// ── Arrangements, duality, levels, ham-sandwich & linear programming ──────────
+{
+  const FRAME01: Rect = { minX: 0, minY: 0, maxX: 1, maxY: 1 }
+  const siLines = (n: number, seed: number): SILine[] => {
+    const rng = mulberry32(seed)
+    const out: SILine[] = []
+    for (let i = 0; i < n; i++) out.push({ m: (rng() - 0.5) * 3, b: rng() * 1.2 - 0.1 })
+    return out
+  }
+
+  // Euler's formula V − E + F = 2 on random arrangements, and an independent
+  // prediction of the face count (1 + chords + interior crossings).
+  let eulerBad = 0
+  let faceBad = 0
+  for (let trial = 0; trial < 40; trial++) {
+    const n = 3 + (trial % 9)
+    const lines: Line[] = siLines(n, trial + 1).map(lineFromSI)
+    const stats = arrangementStats(lines, FRAME01)
+    if (!stats.eulerOK) eulerBad++
+    let chords = 0
+    for (const l of lines) if (clipLineToRect(l, FRAME01)) chords++
+    let interior = 0
+    for (let i = 0; i < lines.length; i++)
+      for (let j = i + 1; j < lines.length; j++) {
+        const x = intersectLines(lines[i], lines[j])
+        if (x && x.x > 1e-9 && x.x < 1 - 1e-9 && x.y > 1e-9 && x.y < 1 - 1e-9) interior++
+      }
+    if (arrangementFaces(lines, FRAME01).length !== 1 + chords + interior) faceBad++
+  }
+  check('arrangement: Euler V − E + F = 2 on 40 random line sets', eulerBad === 0, `(${eulerBad} bad)`)
+  check('arrangement: face count = 1 + chords + interior crossings', faceBad === 0, `(${faceBad} bad)`)
+
+  // Zone theorem: the zone of a line has O(n) edges.
+  let maxZoneRatio = 0
+  for (let trial = 0; trial < 20; trial++) {
+    const rng = mulberry32(trial + 50)
+    const n = 6 + (trial % 6)
+    const lines = siLines(n, trial + 50).map(lineFromSI)
+    const q = lineThroughPoints({ x: rng(), y: rng() }, { x: rng(), y: rng() })
+    maxZoneRatio = Math.max(maxZoneRatio, zoneComplexity(lines, q, FRAME01).edges / n)
+  }
+  check('arrangement: zone complexity is O(n) (≤ 8n over 20 trials)', maxZoneRatio <= 8, `(max ${maxZoneRatio.toFixed(2)}n)`)
+
+  // k-levels are the k-th order statistic; envelopes are the min/max lines.
+  let levelBad = 0
+  let envBad = 0
+  {
+    const L = siLines(9, 77)
+    for (let k = 0; k < 9; k++) {
+      const path = kLevelPath(L, k, 0, 1)
+      for (let i = 0; i + 1 < path.length; i++) {
+        const xm = (path[i].x + path[i + 1].x) / 2
+        const ym = (path[i].y + path[i + 1].y) / 2
+        if (Math.abs(ym - kthValueAt(L, k, xm)) > 1e-6) levelBad++
+      }
+    }
+    const lo = lowerEnvelope(L, 0, 1)
+    const hi = upperEnvelope(L, 0, 1)
+    for (let i = 0; i + 1 < lo.length; i++) {
+      const xm = (lo[i].x + lo[i + 1].x) / 2
+      const minV = Math.min(...L.map((l) => l.m * xm + l.b))
+      if (Math.abs((lo[i].y + lo[i + 1].y) / 2 - minV) > 1e-6) envBad++
+    }
+    for (let i = 0; i + 1 < hi.length; i++) {
+      const xm = (hi[i].x + hi[i + 1].x) / 2
+      const maxV = Math.max(...L.map((l) => l.m * xm + l.b))
+      if (Math.abs((hi[i].y + hi[i + 1].y) / 2 - maxV) > 1e-6) envBad++
+    }
+  }
+  check('levels: k-level polyline equals the k-th order statistic', levelBad === 0, `(${levelBad} off)`)
+  check('levels: lower/upper envelopes equal the min/max line', envBad === 0, `(${envBad} off)`)
+
+  // Duality: an involution that turns collinearity into concurrency.
+  let invBad = 0
+  {
+    const rng = mulberry32(123)
+    for (let i = 0; i < 60; i++) {
+      const p: Point = { x: rng() * 2 - 1, y: rng() * 2 - 1 }
+      const back = dualPointOfLine(dualLineOfPoint(p))
+      if (Math.abs(back.x - p.x) > 1e-9 || Math.abs(back.y - p.y) > 1e-9) invBad++
+    }
+  }
+  check('duality: point ↦ line ↦ point is the identity', invBad === 0, `(${invBad})`)
+  {
+    // Three points on y = 0.7x + 0.2 dualize to lines meeting at (0.7, −0.2).
+    const pts: Point[] = [0.1, 0.4, 0.85].map((x) => ({ x, y: 0.7 * x + 0.2 }))
+    const dl = pts.map(dualLineOfPoint).map(lineFromSI)
+    const i01 = intersectLines(dl[0], dl[1])
+    const i12 = intersectLines(dl[1], dl[2])
+    const concurrent = !!i01 && !!i12 && Math.abs(i01.x - i12.x) < 1e-6 && Math.abs(i01.y - i12.y) < 1e-6
+    const atDual = !!i01 && Math.abs(i01.x - 0.7) < 1e-6 && Math.abs(i01.y - -0.2) < 1e-6
+    check('duality: collinear points ↦ concurrent lines at the dual of their line', concurrent && atDual)
+  }
+
+  // Ham-sandwich: one line bisects both sets (including near-vertical cuts that
+  // force the rotation fallback), verified by an actual above/below count.
+  let hamBad = 0
+  let hamSolved = 0
+  let hamRotated = 0
+  for (let trial = 0; trial < 80; trial++) {
+    const rng = mulberry32(trial + 200)
+    const nR = 4 + Math.floor(rng() * 12)
+    const nB = 4 + Math.floor(rng() * 12)
+    const red: Point[] = []
+    const blue: Point[] = []
+    for (let i = 0; i < nR; i++) red.push({ x: rng() * 2 - 1, y: rng() * 2 - 1 })
+    for (let i = 0; i < nB; i++) blue.push({ x: rng() * 2 - 1, y: rng() * 2 - 1 })
+    const cut = hamSandwich(red, blue)
+    if (!cut) {
+      hamBad++
+      continue
+    }
+    hamSolved++
+    if (cut.rotated) hamRotated++
+    if (!cut.balanced) hamBad++
+  }
+  check(`ham-sandwich: one line bisects both sets on ${hamSolved}/80 trials (${hamRotated} via rotation)`, hamBad === 0 && hamSolved === 80, `(${hamBad} bad)`)
+
+  // Seidel's 2-D LP agrees with a brute-force scan of the feasible polygon's
+  // vertices — on both feasible and deliberately infeasible programs.
+  let lpBad = 0
+  let lpFeas = 0
+  let lpInfeas = 0
+  for (let trial = 0; trial < 90; trial++) {
+    const rng = mulberry32(trial + 400)
+    const n = 3 + Math.floor(rng() * 9)
+    // Tight programs (index 3 of 4) squeeze constraints toward the centre so a
+    // fraction come out infeasible — exercising both branches.
+    const tight = trial % 4 === 3
+    const cons: HalfPlane[] = []
+    for (let i = 0; i < n; i++) {
+      const ang = rng() * Math.PI * 2
+      const nx = Math.cos(ang)
+      const ny = Math.sin(ang)
+      const slack = tight ? rng() * 0.12 - 0.05 : 0.1 + rng() * 0.45
+      cons.push({ nx, ny, c: nx * 0.5 + ny * 0.5 + slack })
+    }
+    const obj: Point = { x: Math.cos(rng() * 6.28), y: Math.sin(rng() * 6.28) }
+    const lp = seidelLP(cons, obj, FRAME01, trial + 1)
+    const bf = lpBruteForce(cons, obj, FRAME01)
+    if (lp.feasible !== bf.feasible) lpBad++
+    else if (lp.feasible) {
+      lpFeas++
+      if (Math.abs(lp.value - bf.value) > 1e-6) lpBad++
+    } else lpInfeas++
+  }
+  check(`LP: Seidel = brute force (${lpFeas} feasible, ${lpInfeas} infeasible)`, lpBad === 0, `(${lpBad} off)`)
 }
 
 export const result = { failures }

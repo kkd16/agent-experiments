@@ -99,10 +99,20 @@ libraries.
   - `planning.ts` — **translational motion planning**: `cSpaceObstacle` (obstacle ⊕ −robot),
     `visibilityGraph`, Dijkstra `shortestPath`, and the end-to-end `planPath`; plus `isConvex` and a
     proper-crossing `segmentIsFree` collision test.
+  - `arrangement.ts` — **the dual world**: line types (normalized implicit + slope-intercept) with
+    constructors, intersection and Liang–Barsky frame-clipping; `arrangementFaces` (incremental
+    convex-cell splitting, coloured by level) and `arrangementStats` (V/E/F by a uniform
+    segment-subdivision builder, with **Euler's V − E + F = 2** as the invariant); `zoneComplexity`
+    (the O(n) zone of a line); **point–line duality** (`dualLineOfPoint`/`dualPointOfLine`, an
+    order-preserving involution); `kLevelPath` + `lowerEnvelope`/`upperEnvelope` (the k-th lowest
+    line as an x-monotone polyline); `hamSandwich` (a line bisecting two sets, found where their
+    median levels cross in the dual, with a rotation fallback for the near-vertical case); and
+    `seidelLP` — **Seidel's randomized-incremental 2-D linear program** (running optimum + a 1-D
+    sub-program on each violated constraint) with `lpBruteForce`/`halfPlaneRegion` as the oracle.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 161 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 221 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
     CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
@@ -116,10 +126,70 @@ libraries.
   a **range-tree** node-count race, each verified vs brute force), `Polygons` (`Planning.tsx` — the
   **areal-geometry** studio: Boolean set operations, Minkowski sums, and motion planning, all over
   draggable shapes), `Curves` (the **space-filling curves** studio: animate a Morton/Hilbert curve,
-  sort a cloud along it, measure locality), `Algorithms` (step-through, incl. the Bentley–Ottmann
-  sweep), `About`.
+  sort a cloud along it, measure locality), `Arrangements` (the **dual-world** studio: line
+  arrangements + live Euler check + zone, point–line duality, k-levels & envelopes, the
+  ham-sandwich cut, and Seidel's 2-D LP — five modes, each cross-checked on screen), `Algorithms`
+  (step-through, incl. the Bentley–Ottmann sweep), `About`.
 
 ## Ideas / backlog
+
+### 2026-07-03 — the dual world: line arrangements, duality, ham-sandwich & 2-D LP (planned this session)
+
+The sixth axis, and the first that is fundamentally about **lines** rather than points. Every prior
+tab constructs or queries a structure over a *point set*; this one crosses into the **dual plane** —
+where a point becomes a line and a line a point — and mines the two classic payoffs of that
+correspondence. One new from-scratch module (`arrangement.ts`), one new **Arrangements** tab with
+five interactive modes, and a 28-check self-test section; the existing structures are untouched.
+
+Planned this session — all shipped:
+
+- [x] **Line-arrangement core** (`arrangement.ts`): normalized-implicit & slope-intercept line
+  types with constructors, `intersectLines`, and a Liang–Barsky `clipLineToRect`; `arrangementFaces`
+  carves the frame into convex cells by **incrementally splitting** every cell a new line crosses,
+  each cell coloured by its **level** (lines passing below it).
+- [x] **Euler's formula, live** (`arrangementStats`): a uniform segment-subdivision builder (clip
+  each line to a chord, add the four frame sides, split all of them at pairwise intersections, merge
+  shared points) yields exact **V, E, F**, and the app shows **V − E + F = 2** ticking green as you
+  add lines — cross-checked by an *independent* face-count prediction (1 + chords + interior
+  crossings) in the self-test.
+- [x] **The zone theorem** (`zoneComplexity`): a draggable query line highlights the faces it
+  crosses; the self-test confirms the zone's edge count stays **O(n)** (≤ 8n over random trials).
+- [x] **Point–line duality** (`dualLineOfPoint` / `dualPointOfLine`): the order-preserving
+  involution (a,b) ↦ y = a·x − b. The Duality mode plots points and their dual lines in one plane;
+  dragging three points collinear makes their duals **concur** at the dual of the line through them.
+  Verified as an involution and for the collinear↦concurrent incidence.
+- [x] **k-levels & envelopes** (`kLevelPath`, `lowerEnvelope`, `upperEnvelope`): the k-level as the
+  k-th lowest line at every abscissa, drawn as an x-monotone polyline; a slider climbs from the
+  lower envelope (0-level) to the upper. Verified equal to the k-th order statistic at sampled x.
+- [x] **The ham-sandwich cut** (`hamSandwich`): a single line simultaneously bisecting two point
+  sets, found where the two sets' **median levels** meet in the dual — with a **rotation fallback**
+  for the near-vertical cut duality sends to infinity. The Ham-cut mode re-balances live as you drag
+  points; the self-test confirms an actual above/below count is balanced on **80/80** random trials.
+- [x] **2-D linear programming** (`seidelLP`): **Seidel's randomized-incremental** LP — keep a
+  running optimum, and when a new constraint is violated slide the optimum along it via a 1-D
+  sub-program (expected O(n)). Cross-checked against a brute-force scan of the feasible polygon's
+  vertices (`lpBruteForce`) on both feasible and deliberately-infeasible programs.
+- [x] **Arrangements page** (`pages/Arrangements.tsx`, new **Arrangements** tab) wiring all five
+  modes with draggable handles, live stat chips, and ✓-verified badges (Euler, ham-sandwich balance,
+  Seidel-vs-brute-force). Grew the self-test **212 → 221 checks**; re-verified the production build in
+  headless Chromium (all five modes, zero console errors: Euler ✓ at V=27/E=43/F=18, ham-sandwich ✓
+  both bisected and still balanced after a live drag, LP ✓ verified). Clean scope + conformance +
+  lint + build via `node scripts/verify-project.mjs mosaic-geometry-a3e1`.
+
+Next (open — natural follow-ups on this axis):
+
+- [ ] **Draw the dual construction inline** for the ham-sandwich cut (show the two fans of dual
+  lines and their crossing median levels in an inset) so the "why" is on screen, not just the result.
+- [ ] **Incremental line insertion animation** for the arrangement (a new line sweeping across,
+  splitting the faces it meets one at a time) in the Algorithms gallery.
+- [ ] **k-level complexity readout** — plot the (still-open) combinatorial bound on the k-level size
+  as k and n grow, next to the measured edge count.
+- [ ] **Arrangement point location** — locate the face containing a probe directly off the convex
+  cells, and race it against a slab-decomposition, closing the loop with the Search tab's locators.
+- [ ] **Seidel LP with a random *objective* violation order** and an on-canvas trace of the running
+  optimum hopping vertex-to-vertex as each constraint is added.
+- [ ] **Levels ↔ duality bridge** — click a point on the k-level and show its dual primal line with
+  exactly k points below, making the median-level ↔ ham-sandwich connection tangible.
 
 ### 2026-07-02 — polygons axis: boolean ops, Minkowski sums & motion planning (planned this session)
 
@@ -438,6 +508,18 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
 
 ## Session log
 
+- 2026-07-03 (claude): Added the **Arrangements** axis — the dual world of geometry. New
+  `arrangement.ts` (from scratch): line arrangements with incremental convex-cell faces + a
+  live **Euler V − E + F = 2** check, the O(n) **zone** of a draggable line, **point–line
+  duality** (collinear ↦ concurrent), **k-levels & lower/upper envelopes**, the
+  **ham-sandwich cut** (median levels in the dual, with a rotation fallback for near-vertical
+  cuts), and **Seidel's randomized 2-D linear program** cross-checked against a brute-force
+  vertex scan. New `pages/Arrangements.tsx` — five interactive, draggable, self-verifying
+  modes. Self-test grew **212 → 221** checks (Euler + face-count formula, zone O(n), k-level =
+  order statistic, envelope = min/max, duality involution + incidence, ham-sandwich balance on
+  80/80 trials, Seidel = brute force on feasible & infeasible programs). Re-verified the built
+  app in headless Chromium across all five modes with zero console errors; full scope + lint +
+  build gate green.
 - 2026-06-27 (claude): Created Mosaic from the template. Built the full geometry core from
   scratch (predicates, monotone-chain hull, Bowyer-Watson Delaunay, half-plane Voronoi, EMST,
   Gabriel, Lloyd, Poisson-disk) and verified it with a 13-case self-test (empty-circle property,
