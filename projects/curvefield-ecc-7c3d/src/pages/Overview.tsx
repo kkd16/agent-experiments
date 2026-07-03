@@ -159,14 +159,20 @@ const LABS = [
     desc: 'The one signature family here that survives a quantum computer — resting on nothing but a hash. One idea, a hash chain, carried from a pencil-and-paper Lamport OTS through Winternitz (WOTS⁺) and a reusable Merkle key (XMSS, RFC 8391) all the way to the stateless scheme NIST standardised as SLH-DSA (SPHINCS⁺, FIPS 205).',
   },
   {
-    path: '/vrf',
+    path: '/mlkem',
     ix: '28',
+    title: 'ML-KEM — Post-Quantum Lattice KEM',
+    desc: 'The key-exchange that outlives Shor. ML-KEM (FIPS 203, the standardised CRYSTALS-Kyber) rests on Module-LWE — a noisy t = A·s + e over Z₃₃₂₉[X]/(X²⁵⁶+1) — not a discrete log, so no quantum computer is known to break it. From-scratch Keccak, the negacyclic NTT, centered-binomial noise, and the Fujisaki–Okamoto transform for all three parameter sets, wired into the real TLS 1.3 X25519MLKEM768 hybrid handshake.',
+  },
+  {
+    path: '/vrf',
+    ix: '29',
     title: 'ECVRF — Verifiable Random Functions',
     desc: 'A public-key function whose output is unpredictable yet publicly verifiable — the randomness beacon behind Algorand and Chainlink. Both Edwards25519 ciphersuites of RFC 9381 (try-and-increment and Elligator2), from scratch and pinned byte-for-byte to the standard’s vectors, driving a verifiable leader-election lottery.',
   },
   {
     path: '/ring',
-    ix: '29',
+    ix: '30',
     title: 'Linkable Ring Signatures & Stealth Addresses',
     desc: 'The cryptography that hides a sender yet still forbids double-spends — Monero’s core. bLSAG and the concise CLSAG built on key images I = x·Hₚ(P), plus CryptoNote stealth one-time keys, assembled into a complete private payment with a ring of decoys.',
   },
@@ -178,9 +184,9 @@ const LABS = [
   },
   {
     path: '/verify',
-    ix: '30',
+    ix: '31',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, and Wycheproof vectors.',
   },
 ]
 

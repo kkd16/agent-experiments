@@ -179,6 +179,19 @@ import {
   runPostCompromiseDemo,
 } from './signal'
 import { x3dhInitiate, x3dhRespond, generateKeyPair as x25519Keypair } from './x3dh'
+import { sha3_256, sha3_512, shake128, shake256 } from './keccak'
+import {
+  PARAM_SETS,
+  keyGen as mlkemKeyGen,
+  encaps as mlkemEncaps,
+  decaps as mlkemDecaps,
+  kemSizes,
+  ntt as mlkemNtt,
+  invNtt as mlkemInvNtt,
+  nttMul as mlkemNttMul,
+  Q as MLKEM_Q,
+} from './mlkem'
+import { hybridClientKeyGen, hybridServerRespond, hybridClientFinish } from './hybridkem'
 
 export interface TestCase {
   name: string
@@ -1654,6 +1667,81 @@ export function runSelfTest(): TestCase[] {
     check('Ratchet', 'out-of-order delivery still decrypts (3,1,2)', runOutOfOrderDemo().ok, 'skipped message keys are stashed until they arrive')
     check('Ratchet', 'forward secrecy: a used key is deleted', runForwardSecrecyDemo().ok, 'replaying a delivered message fails')
     check('Ratchet', 'post-compromise security: a stolen state heals out', runPostCompromiseDemo().ok, 'one round trip locks the thief back out')
+  }
+
+  // ── SHA-3 / SHAKE known-answer tests (FIPS 202) ──
+  {
+    check('SHA-3', 'SHA3-256("")', bytesToHex(sha3_256(utf8(''))) === 'a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a', 'empty → a7ffc6f8…')
+    check('SHA-3', 'SHA3-256("abc")', bytesToHex(sha3_256(utf8('abc'))) === '3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532', '"abc" → 3a985da7…')
+    check('SHA-3', 'SHA3-512("")', bytesToHex(sha3_512(utf8(''))) === 'a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26', 'empty → a69f73cc…')
+    check('SHA-3', 'SHAKE128("", 32)', bytesToHex(shake128(utf8(''), 32)) === '7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26', 'the XOF absorbs and squeezes correctly')
+    check('SHA-3', 'SHAKE256("", 32)', bytesToHex(shake256(utf8(''), 32)) === '46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f', 'a second rate, same sponge')
+  }
+
+  // ── ML-KEM (FIPS 203) — the from-scratch lattice KEM ──
+  {
+    // The NTT inverts exactly, and its base multiply is a genuine negacyclic
+    // convolution mod X²⁵⁶+1 — the property the whole scheme's speed rests on.
+    const f = new Int16Array(256)
+    const g = new Int16Array(256)
+    for (let i = 0; i < 256; i++) {
+      f[i] = (i * 37 + 11) % MLKEM_Q
+      g[i] = (i * 101 + 7) % MLKEM_Q
+    }
+    const back = mlkemInvNtt(mlkemNtt(f))
+    let inverts = true
+    for (let i = 0; i < 256; i++) inverts = inverts && ((back[i] % MLKEM_Q) + MLKEM_Q) % MLKEM_Q === f[i]
+    check('ML-KEM', 'NTT⁻¹(NTT(f)) = f', inverts, 'the forward and inverse transforms are exact inverses')
+
+    // Schoolbook negacyclic convolution to pin nttMul against.
+    const conv = new Int16Array(256)
+    const acc = new Array<number>(512).fill(0)
+    for (let i = 0; i < 256; i++) for (let j = 0; j < 256; j++) acc[i + j] = (acc[i + j] + f[i] * g[j]) % MLKEM_Q
+    for (let i = 0; i < 256; i++) conv[i] = (((acc[i] - (acc[i + 256] || 0)) % MLKEM_Q) + MLKEM_Q) % MLKEM_Q
+    const viaNtt = mlkemInvNtt(mlkemNttMul(mlkemNtt(f), mlkemNtt(g)))
+    let mulOk = true
+    for (let i = 0; i < 256; i++) mulOk = mulOk && ((viaNtt[i] % MLKEM_Q) + MLKEM_Q) % MLKEM_Q === conv[i]
+    check('ML-KEM', 'base multiply = negacyclic convolution', mulOk, 'the pointwise NTT product matches the degree-256 schoolbook multiply')
+
+    const seed = (b: number) => {
+      const a = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) a[i] = (i * 61 + b * 97 + 3) & 0xff
+      return a
+    }
+    for (const p of PARAM_SETS) {
+      const { ek, dk } = mlkemKeyGen(p, seed(1), seed(2))
+      const enc = mlkemEncaps(p, ek, seed(3))
+      const dec = mlkemDecaps(p, dk, enc.ciphertext)
+      const agree = bytesToHex(dec.sharedSecret) === bytesToHex(enc.sharedSecret) && !dec.rejected
+      check('ML-KEM', `${p.name} round-trips`, agree, 'KeyGen→Encaps→Decaps derive the same 32-byte shared secret')
+
+      const sz = kemSizes(p)
+      const sizesOk = ek.length === sz.ek && dk.length === sz.dk && enc.ciphertext.length === sz.ct
+      check('ML-KEM', `${p.name} byte-sizes match FIPS 203`, sizesOk, `ek ${ek.length} · dk ${dk.length} · ct ${enc.ciphertext.length} bytes`)
+
+      // Implicit rejection: a mauled ciphertext must not reproduce K.
+      const bad = enc.ciphertext.slice()
+      bad[9] ^= 0x01
+      const rej = mlkemDecaps(p, dk, bad)
+      const rejectedCleanly = rej.rejected && bytesToHex(rej.sharedSecret) !== bytesToHex(enc.sharedSecret)
+      check('ML-KEM', `${p.name} implicit rejection`, rejectedCleanly, 'FO re-encryption catches the tamper and returns the pseudorandom fallback')
+    }
+
+    // Hybrid X25519MLKEM768 — the TLS 1.3 handshake, both halves from scratch.
+    const hd = (b: number) => {
+      const a = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) a[i] = (i * 41 + b * 131 + 5) & 0xff
+      return a
+    }
+    const client = hybridClientKeyGen(hd(1), hd(2), hd(3))
+    const server = hybridServerRespond(client.clientShare, hd(4), hd(5))
+    const finish = hybridClientFinish(client, server.serverShare)
+    check('Hybrid KEM', 'X25519MLKEM768 both sides agree', bytesToHex(server.sessionKey) === bytesToHex(finish.sessionKey), 'concat(ss_mlkem ‖ ss_x25519) → the same 32-byte session key')
+    check('Hybrid KEM', 'combined secret is 64 bytes', server.sharedSecret.length === 64, '32-byte ML-KEM secret ‖ 32-byte X25519 secret')
+    const badServer = server.serverShare.slice()
+    badServer[server.serverShare.length - 3] ^= 1 // maul the server's X25519 public
+    const brokenX = hybridClientFinish(client, badServer)
+    check('Hybrid KEM', 'a broken X25519 half breaks agreement', bytesToHex(brokenX.sessionKey) !== bytesToHex(server.sessionKey), 'both primitives must succeed — the security is the AND of the two')
   }
 
   return t

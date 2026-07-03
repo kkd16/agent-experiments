@@ -103,10 +103,27 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   `stealth` one-time output keys (`P = H(r·A)·B + B_spend`, spent with `x = H(a·R) + b`). The linking
   image lets a ledger reject a double-spend without learning the signer. Hash-to-point is `ecvrf.ts`'s
   Elligator2 map; correctness/anonymity/linkability all checked live.
+- `keccak.ts` — from-scratch **Keccak-f[1600]** and the **SHA-3 / SHAKE** family (FIPS 202): the
+  θ/ρ/π/χ/ι permutation on 25 BigInt lanes (ρ offsets and π map generated from the canonical
+  (x,y)←(y,2x+3y) walk so nothing is transcribed by hand), a streaming sponge, and `sha3_256`,
+  `sha3_512`, `shake128`, `shake256`, plus a `shake128Xof` squeeze-stream. The lab's first non-SHA-2
+  hash — everything lattice rests on it. Pinned to the FIPS 202 digests of `""`/`"abc"`.
+- `mlkem.ts` — **ML-KEM** (FIPS 203, the standardised **CRYSTALS-Kyber**): the lab's first *lattice*
+  scheme, resting on **Module-LWE** rather than a discrete log, so it survives Shor. The negacyclic
+  **number-theoretic transform** over `Z₃₃₂₉[X]/(X²⁵⁶+1)` (zeta/gamma tables from bit-reversed powers
+  of 17, base multiply pinned to a schoolbook convolution), centered-binomial noise, `Compress`/
+  `Decompress` ciphertext coding, `ByteEncode`/`ByteDecode`, uniform matrix rejection sampling from a
+  SHAKE128 XOF, the **K-PKE** IND-CPA core, and the **Fujisaki–Okamoto** transform (re-encrypt +
+  implicit rejection) that lifts it to IND-CCA2. All three parameter sets (512/768/1024) with the
+  exact FIPS 203 key/ciphertext byte-sizes.
+- `hybridkem.ts` — **X25519MLKEM768**, the hybrid handshake TLS 1.3 actually deploys (IANA 0x11ec,
+  default in Chrome / OpenSSL 3.5): a classical X25519 ECDH and an ML-KEM-768 encapsulation run side
+  by side, their secrets concatenated `ss_mlkem ‖ ss_x25519`, so the session survives a break of
+  either primitive. Both halves are the lab's own from-scratch code.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **218/218** checks across 39 subsystems).
+  (now **260/260** checks across 49 subsystems — added SHA-3, ML-KEM, and Hybrid KEM).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-eight labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-nine labs plus an overview.
 
 ## Ideas / backlog
 
@@ -562,6 +579,51 @@ Open follow-ups (next sessions):
 - [ ] **Deniability demo** — show that either party could have forged the transcript (the shared-key
       symmetry that gives the protocol its off-the-record deniability).
 
+### Session 12 plan — ML-KEM: the post-quantum lattice KEM (FIPS 203 / Kyber)
+
+Every scheme in the lab so far dies to Shor: ECDH, ECDSA, Schnorr, the BLS pairing, the SNARKs —
+all discrete-log or factoring, all quantum-broken. The one post-quantum family here, the hash-based
+signatures (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), only *signs*; nothing establishes a **secret key**
+that a quantum adversary can't recover. This session adds the missing half: **ML-KEM**, NIST's
+standardised lattice key-encapsulation mechanism, on the hard problem of Module-LWE. It's also the
+lab's first scheme with no elliptic curve at all — a genuinely different rock to stand on.
+
+Shipped:
+
+- [x] **Keccak / SHA-3 (FIPS 202) from scratch** (`keccak.ts`) — Keccak-f[1600] (θ/ρ/π/χ/ι on 25
+      BigInt lanes, ρ/π generated from the canonical lane walk), a streaming sponge, and
+      SHA3-256/512 + SHAKE128/256 + a SHAKE128 XOF stream. Pinned to the FIPS 202 `""`/`"abc"` digests.
+- [x] **The number-theoretic transform** over `Z₃₃₂₉[X]/(X²⁵⁶+1)` — forward/inverse NTT (Cooley–Tukey
+      butterflies over bit-reversed powers of ζ=17), plus the degree-2 base multiply. Pinned two ways:
+      `NTT⁻¹(NTT(f)) = f`, and the base multiply reproduces a schoolbook **negacyclic** convolution.
+- [x] **Sampling & coding** — uniform matrix rejection sampling from a SHAKE128 XOF (`SampleNTT`),
+      centered-binomial noise (`SamplePolyCBD_η`), `Compress`/`Decompress`, `ByteEncode`/`ByteDecode`.
+- [x] **K-PKE** (the IND-CPA core: `t = A·s + e`, decrypt by cancelling `A·s` and rounding) and the
+      **Fujisaki–Okamoto** transform (re-derive randomness from the message, re-encrypt, **implicit
+      rejection** on mismatch) that lifts it to **IND-CCA2**.
+- [x] **All three parameter sets** (ML-KEM-512/768/1024) with the **exact** FIPS 203 key/ciphertext
+      byte-sizes (ek 800/1184/1568, ct 768/1088/1568, dk 1632/2400/3168), verified by full round-trips
+      and by catching a mauled ciphertext (implicit rejection returns `J(z ‖ c)`, never the real key).
+- [x] **X25519MLKEM768 hybrid handshake** (`hybridkem.ts`) — the exact TLS 1.3 construction, both
+      halves from scratch: `concat(ss_mlkem, ss_x25519)`, breaking only if *both* primitives fall.
+- [x] **A new lab page** (`MlKemPage.tsx`, route `/mlkem`) — parameter-set switch, the short-secret
+      centered-binomial histogram, KeyGen / Encaps / Decaps walked byte by byte, a live
+      implicit-rejection toggle, a size-comparison panel vs X25519, and the hybrid-handshake flow.
+- [x] **Self-test** grew by 19 checks across 3 new groups (SHA-3, ML-KEM, Hybrid KEM) → **260/260**.
+
+Next ideas (open):
+
+- [ ] **ML-DSA (FIPS 204, Dilithium)** — the lattice *signature* to pair with the KEM: power2round,
+      decompose/high-bits/low-bits, the rejection-sampling signing loop, and the hint mechanism.
+- [ ] **An official FIPS 203 ACVP known-answer vector** baked in for byte-level interop (currently the
+      engine is pinned by round-trip + exact standard sizes + SHA-3 KATs, not an external ML-KEM KAT).
+- [ ] **Decapsulation-failure probability** panel — dial the noise up and watch δ climb; the reason
+      the parameters are what they are.
+- [ ] **A Montgomery/Barrett-reduced NTT** and a constant-time compare, with a timing-leak demo,
+      mirroring the side-channel story the ECDLP labs tell.
+- [ ] **ML-KEM inside the Sealed channel** — replace (or hybridise) the X3DH root key with an ML-KEM
+      encapsulation, giving the Signal lab a post-quantum handshake (the PQXDH direction Signal shipped).
+
 ## Session log
 
 - 2026-07-02 (claude): **Sealed — the secure channel: X3DH + Double Ratchet (the Signal protocol),
@@ -872,3 +934,28 @@ Open follow-ups (next sessions):
   reference, then hand-transcribed into from-scratch code — no runtime dependency added, still zero
   crypto deps), and a headless-Chromium render check confirmed both new routes paint all-green with
   zero app JS errors. Lint + build green via verify-project.mjs.
+- 2026-07-03 (claude): **ML-KEM — the post-quantum lattice KEM (FIPS 203 / Kyber), from scratch.**
+  Added the lab's first *lattice* scheme and its first non-SHA-2 hash, closing the biggest gap on the
+  shelf: everything here was quantum-broken except the hash-based *signatures*, and nothing
+  established a quantum-safe *secret key*. Three new engine modules, each pinned before any UI.
+  (1) `keccak.ts`: **Keccak-f[1600]** + **SHA-3 / SHAKE** (FIPS 202) — the θ/ρ/π/χ/ι permutation on 25
+  BigInt lanes (ρ offsets and the π map generated from the canonical (x,y)←(y,2x+3y) walk, so there is
+  nothing to mistranscribe), a streaming sponge, and `sha3_256`/`sha3_512`/`shake128`/`shake256` plus a
+  `shake128Xof` squeeze-stream — pinned to the FIPS 202 digests of `""`/`"abc"` and a cross-check that
+  the streaming XOF equals the one-shot across a rate boundary. (2) `mlkem.ts`: **ML-KEM** on
+  Module-LWE — the negacyclic **NTT** over `Z₃₃₂₉[X]/(X²⁵⁶+1)` with the degree-2 base multiply (pinned
+  both by `NTT⁻¹(NTT(f))=f` and by reproducing a schoolbook negacyclic convolution), centered-binomial
+  noise, `Compress`/`Decompress` coding, uniform matrix rejection sampling from a SHAKE128 XOF, the
+  **K-PKE** IND-CPA core, and the **Fujisaki–Okamoto** transform (re-encrypt + **implicit rejection**)
+  that lifts it to **IND-CCA2** — for all three parameter sets, matching the FIPS 203 key/ciphertext
+  byte-sizes exactly (ek 800/1184/1568, ct 768/1088/1568, dk 1632/2400/3168) and demonstrating IND-CCA2
+  by catching a mauled ciphertext without leaking the real key. (3) `hybridkem.ts`: **X25519MLKEM768**,
+  the exact TLS 1.3 hybrid handshake (IANA 0x11ec, default in Chrome / OpenSSL 3.5), concatenating a
+  classical X25519 secret with the ML-KEM one so the session survives a break of either — both halves
+  the lab's own from-scratch code. One new lab page (**ML-KEM**, `/mlkem`): a parameter-set switch, the
+  short-secret centered-binomial histogram, KeyGen/Encaps/Decaps byte by byte, a live implicit-rejection
+  toggle, a size comparison vs X25519, and the hybrid-handshake flow. Self-test grew 241 → **260/260**
+  across **49 subsystems** (SHA-3, ML-KEM, Hybrid KEM). Every module verified in Node via a strip-types
+  harness (NTT invert + convolution identity, KEM round-trips + exact sizes + implicit rejection for all
+  three sets, hybrid agreement + tamper) before wiring the UI — no new dependencies, still zero crypto
+  deps. Lint + build green via verify-project.mjs.

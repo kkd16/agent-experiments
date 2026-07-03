@@ -27,6 +27,7 @@ import { PlonkPage } from './pages/PlonkPage'
 import { StarkPage } from './pages/StarkPage'
 import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
+import { MlKemPage } from './pages/MlKemPage'
 import { VrfPage } from './pages/VrfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
@@ -60,6 +61,7 @@ const ROUTES = [
   { path: '/stark', label: 'STARK' },
   { path: '/poseidon', label: 'Poseidon' },
   { path: '/pqsig', label: 'PQ Signatures' },
+  { path: '/mlkem', label: 'ML-KEM' },
   { path: '/vrf', label: 'ECVRF' },
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
@@ -116,6 +118,7 @@ export default function App() {
       {base === '/stark' && <StarkPage />}
       {base === '/poseidon' && <PoseidonPage />}
       {base === '/pqsig' && <HashSigPage />}
+      {base === '/mlkem' && <MlKemPage />}
       {base === '/vrf' && <VrfPage />}
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
@@ -129,8 +132,10 @@ export default function App() {
         PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, a transparent hash-only STARK
         (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, Monero-style linkable
         ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
-        (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), and a Signal-style end-to-end encrypted channel (X3DH +
-        Double Ratchet over a from-scratch ChaCha20-Poly1305) — zero crypto dependencies.
+        (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
+        from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, and a Signal-style
+        end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305) —
+        zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>
