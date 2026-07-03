@@ -21,6 +21,8 @@ import StarView from './views/StarView'
 import type { StarTab } from './views/StarView'
 import SymbolicView from './views/SymbolicView'
 import type { SymbolicTab } from './views/SymbolicView'
+import PresburgerView from './views/PresburgerView'
+import type { PresburgerTab } from './views/PresburgerView'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -38,6 +40,7 @@ import {
   DEFAULT_MODEL as SYM_DEFAULT_MODEL,
   DEFAULT_BOOL as SYM_DEFAULT_BOOL,
 } from './engine/bdd/examples'
+import { DEFAULT_FORMULA as PRESBURGER_DEFAULT_FORMULA } from './engine/presburger/examples'
 import { BUILD_TEMPLATES } from './engine/edit'
 
 const VALID_TABS: ExploreTab[] = ['ast', 'nfa', 'dfa', 'min', 'der', 'mn']
@@ -50,6 +53,7 @@ const VALID_LOGIC_TABS: LogicTab[] = ['formula', 'buchi', 'kripke', 'check', 've
 const VALID_BRANCHING_TABS: BranchingTab[] = ['formula', 'label', 'check', 'verify', 'about']
 const VALID_STAR_TABS: StarTab[] = ['formula', 'decompose', 'check', 'verify', 'about']
 const VALID_SYMBOLIC_TABS: SymbolicTab[] = ['bdd', 'relation', 'check', 'verify', 'about']
+const VALID_PRESBURGER_TABS: PresburgerTab[] = ['construct', 'automaton', 'solutions', 'verify', 'about']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
@@ -71,6 +75,7 @@ const DEFAULT_STATE: AppState = {
   branching: { formula: CTL_DEFAULT_FORMULA, model: CTL_DEFAULT_MODEL, tab: 'check' },
   star: { formula: STAR_DEFAULT_FORMULA, model: STAR_DEFAULT_MODEL, tab: 'decompose' },
   symbolic: { formula: SYM_DEFAULT_FORMULA, model: SYM_DEFAULT_MODEL, bool: SYM_DEFAULT_BOOL, tab: 'bdd' },
+  presburger: { formula: PRESBURGER_DEFAULT_FORMULA, tab: 'construct', input: '' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -86,6 +91,7 @@ function clean(s: AppState): AppState {
   const brtab = VALID_BRANCHING_TABS.includes(s.branching.tab as BranchingTab) ? s.branching.tab : 'check'
   const startab = VALID_STAR_TABS.includes(s.star.tab as StarTab) ? s.star.tab : 'decompose'
   const symtab = VALID_SYMBOLIC_TABS.includes(s.symbolic.tab as SymbolicTab) ? s.symbolic.tab : 'bdd'
+  const prtab = VALID_PRESBURGER_TABS.includes(s.presburger.tab as PresburgerTab) ? s.presburger.tab : 'construct'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -102,6 +108,7 @@ function clean(s: AppState): AppState {
     branching: { ...s.branching, tab: brtab },
     star: { ...s.star, tab: startab },
     symbolic: { ...s.symbolic, tab: symtab },
+    presburger: { ...s.presburger, tab: prtab },
   }
 }
 
@@ -161,7 +168,9 @@ export default function App() {
                                 ? 'CTL*: the logic above both — Emerson–Lei model checking, branching labelling glued to LTL automata'
                                 : state.mode === 'symbolic'
                                   ? 'symbolic model checking: a from-scratch ROBDD engine — encode the system as BDDs & run the CTL fixpoints symbolically'
-                                  : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                                  : state.mode === 'presburger'
+                                    ? 'Presburger arithmetic, decided by automata: compile a linear-integer formula into the DFA of its solutions, LSBF'
+                                    : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -255,6 +264,14 @@ export default function App() {
             >
               Symbolic
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'presburger'}
+              className={`mode-btn${state.mode === 'presburger' ? ' active' : ''}`}
+              onClick={() => setMode('presburger')}
+            >
+              Arithmetic
+            </button>
           </div>
           <button
             className="share-btn"
@@ -273,7 +290,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'symbolic' ? (
+      {state.mode === 'presburger' ? (
+        <PresburgerView
+          formula={state.presburger.formula}
+          onFormula={(formula) => setState((s) => ({ ...s, presburger: { ...s.presburger, formula } }))}
+          input={state.presburger.input}
+          onInput={(input) => setState((s) => ({ ...s, presburger: { ...s.presburger, input } }))}
+          tab={state.presburger.tab as PresburgerTab}
+          onTab={(tab) => setState((s) => ({ ...s, presburger: { ...s.presburger, tab } }))}
+        />
+      ) : state.mode === 'symbolic' ? (
         <SymbolicView
           formula={state.symbolic.formula}
           onFormula={(formula) => setState((s) => ({ ...s, symbolic: { ...s.symbolic, formula } }))}

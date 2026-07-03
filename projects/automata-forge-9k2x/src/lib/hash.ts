@@ -17,6 +17,7 @@ export type Mode =
   | 'branching'
   | 'star'
   | 'symbolic'
+  | 'presburger'
 
 export interface AppState {
   mode: Mode
@@ -31,6 +32,7 @@ export interface AppState {
   branching: { formula: string; model: string; tab: string }
   star: { formula: string; model: string; tab: string }
   symbolic: { formula: string; model: string; bool: string; tab: string }
+  presburger: { formula: string; tab: string; input: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -96,6 +98,12 @@ export function encodeHash(s: AppState): string {
     q.set('b', s.symbolic.bool)
     q.set('t', s.symbolic.tab)
     return `#/symbolic?${q.toString()}`
+  }
+  if (s.mode === 'presburger') {
+    q.set('f', s.presburger.formula)
+    q.set('t', s.presburger.tab)
+    if (s.presburger.input) q.set('i', s.presburger.input)
+    return `#/arith?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -221,6 +229,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           model: q.get('m') ?? fallback.symbolic.model,
           bool: q.get('b') ?? fallback.symbolic.bool,
           tab: q.get('t') ?? fallback.symbolic.tab,
+        },
+      }
+    }
+    if (path === 'arith') {
+      return {
+        ...fallback,
+        mode: 'presburger',
+        presburger: {
+          formula: q.get('f') ?? fallback.presburger.formula,
+          tab: q.get('t') ?? fallback.presburger.tab,
+          input: q.get('i') ?? '',
         },
       }
     }
