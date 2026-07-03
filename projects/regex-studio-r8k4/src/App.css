@@ -4902,3 +4902,206 @@
   white-space: pre;
   margin-top: 8px;
 }
+
+/* ── regex → AFA (the linear alternating construction) ─────────────────────── */
+.rafa {
+  margin: 6px 0 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: 12px;
+  background: rgba(45, 212, 191, 0.04);
+}
+.rafa .pane-head h3 {
+  color: var(--afa);
+}
+.rafa .pattern-slash {
+  color: var(--muted);
+  font-family: var(--mono);
+  padding: 0 2px;
+}
+.rafa-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.rafa-examples .chip {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+}
+.rafa-examples .chip:hover {
+  color: var(--text);
+  border-color: var(--afa);
+}
+.rafa-norm {
+  margin: 12px 0 8px;
+}
+.rafa-norm code {
+  color: var(--afa);
+}
+.rafa-ok {
+  color: var(--muted);
+}
+.rafa-warn {
+  color: #f4a261;
+}
+.rafa-h4 {
+  margin: 20px 0 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+.rafa-divider {
+  text-align: center;
+  margin: 26px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* the two deciders */
+.rafa-decide {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.rafa-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+}
+.rafa-card-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.rafa-card-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.rafa-verdict {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 8px;
+  display: inline-block;
+}
+.rafa-verdict.pos {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+}
+.rafa-verdict.neg {
+  color: #f0abfc;
+  background: rgba(240, 171, 252, 0.1);
+}
+.rafa-witness {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.rafa-witness code {
+  color: var(--afa);
+  font-size: 13px;
+}
+.rafa-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.rafa-metrics strong {
+  color: var(--text);
+}
+.rafa-tiny {
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+/* the alternating run tree */
+.rafa-tree {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #0a0d14;
+  margin: 8px 0;
+  line-height: 2.1;
+}
+.rafa-tree-root {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.rt-init {
+  color: var(--afa);
+  margin-right: 4px;
+}
+.rt-conn,
+.rt-state-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.rt-op {
+  color: var(--muted);
+  padding: 0 3px;
+  font-weight: 700;
+}
+.rt-paren {
+  color: var(--border);
+}
+.rt-true-node > .rt-op,
+.rt-true-node.rt-leaf {
+  color: #34d399;
+}
+.rt-false-node > .rt-op,
+.rt-false-node.rt-leaf {
+  color: #6b7280;
+}
+.rt-leaf {
+  padding: 0 3px;
+}
+.rt-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.rt-state.rt-on {
+  color: #052e26;
+  background: var(--afa);
+  border-color: var(--afa-deep, #14b8a6);
+}
+.rt-state.rt-off {
+  color: var(--muted);
+  background: transparent;
+}
+.rt-arrow {
+  opacity: 0.7;
+  font-size: 11px;
+  margin-left: 2px;
+}
+.rt-children {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  padding-left: 6px;
+  border-left: 2px solid var(--border-soft);
+}
+.rt-terminal {
+  font-weight: 600;
+}

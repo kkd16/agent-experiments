@@ -18,6 +18,7 @@ import {
 import { dfaToGraph } from '../engine/graphdata';
 import { layoutGraph } from '../engine/layout';
 import { AutomatonGraph } from './AutomatonGraph';
+import { RegexAfaPanel } from './RegexAfaPanel';
 
 const ACCENT = '#2dd4bf';
 
@@ -67,6 +68,13 @@ export function AlternationPanel({
           construction + minimiser then reduce — and cross-check, word for word, against the brute-force alternating
           semantics.
         </p>
+      </div>
+
+      {/* the flagship: build a linear AFA straight from a pattern */}
+      <RegexAfaPanel />
+
+      <div className="rafa-divider">
+        <span>· · · or write an alternating automaton by hand · · ·</span>
       </div>
 
       {/* gallery */}
