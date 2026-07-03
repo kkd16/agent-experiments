@@ -35,6 +35,7 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] The Werner hierarchy: separable ⊃ entangled ⊃ steerable ⊃ Bell-nonlocal at the exact thresholds ⅓, ½, 1/√2
 - [x] Entanglement distillation (BBPSSW) as a cobweb, cross-checked against an exact 16-D protocol simulation
 - [x] Monogamy of entanglement (Coffman–Kundu–Wootters) & the 3-tangle (GHZ vs W)
+- [x] Optimal entanglement witness W=|η⟩⟨η|^{T_B} — the hyperplane dual to PPT, separating ρ from the separable set
 
 ## Quantum Lab 21.0 — Mixed-state entanglement as a resource (this session)
 
@@ -83,10 +84,14 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   (C) **distillation** as a live **cobweb plot** converging to F=1, with the closed-form vs 16-D-simulation
   cross-check; (D) **monogamy** with the CKW stacked bar (pairwise + pairwise + τ = C²(A|BC)) and a GHZ→W
   interpolation slider.
+- [x] **Optimal entanglement witness** (`optimalWitness`) — `W = |η⟩⟨η|^{T_B}` from the negative
+  partial-transpose eigenvector: an observable `≥ 0` on every separable state yet `Tr(Wρ) = λ < 0` on the
+  entangled ρ, rendered as a fifth card drawing the separating hyperplane against a cloud of random separable
+  states (`randomSeparable`).
 - [x] Wired the tab into `App.tsx` (type, nav, render), added the **Mixed-State Entanglement** About pillar,
-  and added **6 new self-tests** to the suite (**195 → 201**).
+  and added **7 new self-tests** to the suite (**195 → 202**).
 
-### Verified (all green — suite now 201/201)
+### Verified (all green — suite now 202/202)
 
 - Wootters concurrence, EoF, negativity, log-negativity and CHSH on `|Φ⁺⟩` hit `1, 1, ½, 1, 2√2` exactly;
   product and classically-correlated mixtures give `C = N = 0` and read PPT-separable.
@@ -99,6 +104,8 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   below it correctly.
 - CKW monogamy holds for every random 3-qubit pure state tested; `τ(GHZ)=1` with no pairwise entanglement,
   `τ(W)=0` with `C_AB=C_AC=⅔`.
+- The optimal witness satisfies `Tr(Wρ)=λ_min(ρ^{T_B})` to ~1e-16, is negative on entangled Werner states
+  (and `−½` on `|Φ⁺⟩`), and stays `≥ 0` across ~1000 (entangled-W)×(random-separable) evaluations.
 - Runtime-verified in a real browser (headless Chromium): the tab renders, all four cards interact, and the
   distillation cross-check reads `sim F′ = closed-form F′` exactly. `pnpm lint` + `tsc` + `pnpm build` all pass
   (the exact CI gate).
@@ -113,8 +120,8 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   criterion).
 - [ ] **The DEJMPS protocol** (the phase-error-optimised cousin of BBPSSW) and a yield-vs-fidelity Pareto
   curve; the hashing-bound distillable-entanglement lower bound `1−S(ρ)` drawn against the two protocols.
-- [ ] **Entanglement witnesses** — the optimal linear witness `Tr(Wρ)<0` from the negative PPT eigenvector,
-  the geometric picture that a hyperplane separates ρ from the separable set.
+- [ ] **Non-decomposable witnesses & bound entanglement** — lift the witness beyond the PPT-derived
+  (decomposable) ones to detect the PPT-entangled states that only appear in 3×3 and higher.
 
 ### Session log
 
@@ -125,11 +132,12 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   (`EntanglementLab.tsx`, 🔗) touching no existing code: an inspector with a ρ heatmap and the three-way
   agreeing verdict; the Werner `separable ⊃ entangled ⊃ steerable ⊃ Bell-nonlocal` hierarchy at `⅓, ½, 1/√2`;
   BBPSSW distillation as a cobweb climbing to F=1 with the closed form cross-checked against an exact 16-D
-  simulation of the bilateral-CNOT protocol on ρ⊗ρ (~5e-16); and CKW monogamy with the 3-tangle separating
-  GHZ (τ=1) from W (τ=0). Validated the whole engine in a throwaway oracle first — the Werner closed forms,
-  the PPT⇔concurrence equivalence over random states, and the distillation simulation — then ported it and
-  added 6 self-tests. Suite **195 → 201**, all green; runtime-checked in headless Chromium; lint + tsc + build
-  pass.
+  simulation of the bilateral-CNOT protocol on ρ⊗ρ (~5e-16); CKW monogamy with the 3-tangle separating
+  GHZ (τ=1) from W (τ=0); and the optimal entanglement witness W=|η⟩⟨η|^{T_B}, the hyperplane dual to PPT
+  drawn separating ρ from a cloud of separable states. Validated the whole engine in a throwaway oracle first
+  — the Werner closed forms, the PPT⇔concurrence equivalence over random states, the distillation simulation,
+  and the witness's ≥0-on-separable property — then ported it and added 7 self-tests. Suite **195 → 202**, all
+  green; runtime-checked in headless Chromium; lint + tsc + build pass.
 
 ## Quantum Lab 20.0 — The Glued Trees: an *exponential* quantum speedup, made exact (this session)
 

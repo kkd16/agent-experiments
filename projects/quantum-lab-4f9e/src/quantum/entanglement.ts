@@ -213,6 +213,44 @@ export function fidelityToPhiPlus(rho: Matrix): number {
   return expect(rho, RHO_PHI_PLUS);
 }
 
+// ─────────────────────────────── the optimal entanglement witness ───────────────────────────────
+
+export interface Witness {
+  exists: boolean; // an entanglement witness exists iff ρ is NPT (entangled)
+  W: Matrix; // the witness operator W = |η⟩⟨η|^{T_B}
+  value: number; // Tr(Wρ) — negative exactly when ρ is entangled
+  lambdaMin: number; // the min eigenvalue of ρ^{T_B} (equals value by construction)
+}
+
+/**
+ * The optimal entanglement witness dual to the PPT test. If ρ has a negative partial-transpose
+ * eigenvalue λ with eigenvector |η⟩, then W = |η⟩⟨η|^{T_B} is a Hermitian operator with
+ * Tr(Wσ) ≥ 0 for EVERY separable σ (because σ^{T_B} stays positive) yet Tr(Wρ) = ⟨η|ρ^{T_B}|η⟩ = λ < 0
+ * — a hyperplane in the space of operators that separates the entangled ρ from the convex separable set.
+ */
+export function optimalWitness(rho: Matrix): Witness {
+  const eig = hermitianEig(partialTransposeB(rho));
+  const idx = eig.values.length - 1; // values sorted descending ⇒ last is the minimum
+  const lambdaMin = eig.values[idx];
+  const eta = eig.vectors.map((row) => row[idx]); // the eigenvector column
+  const W = partialTransposeB(ketBra(eta)); // W = |η⟩⟨η|^{T_B}
+  return { exists: lambdaMin < -1e-9, W, value: expect(rho, W), lambdaMin };
+}
+
+/** A reproducible random SEPARABLE two-qubit state: a convex mix of random product states. */
+export function randomSeparable(seed: number, terms = 4): Matrix {
+  let a = (seed * 40503 + 12345) >>> 0;
+  const rng = () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const out: Matrix = Array.from({ length: 4 }, () => Array.from({ length: 4 }, () => C(0)));
+  let wsum = 0;
+  for (let k = 0; k < terms; k++) {
+    const w = rng() + 1e-3; wsum += w;
+    const rho = productState(rng() * Math.PI, rng() * Math.PI); // a random pure product state
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i][j] = out[i][j].add(rho[i][j].scale(w));
+  }
+  return out.map((row) => row.map((z) => z.scale(1 / wsum)));
+}
+
 // ─────────────────────────────── the Werner-state hierarchy ───────────────────────────────
 
 /** The four exact thresholds of the Werner/isotropic family, in the visibility p. */
