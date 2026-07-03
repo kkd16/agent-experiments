@@ -186,7 +186,7 @@ const LABS = [
     path: '/mpc',
     ix: '25',
     title: 'Secure Two-Party Computation',
-    desc: "Compute a function of two secrets and reveal only the answer. Yao's protocol built from scratch: a Chou–Orlandi oblivious transfer on this lab's Ed25519 group, then garbled circuits with free-XOR and half-gates (an AND costs the proven-minimal two ciphertexts; XOR and NOT are free). Run the original Millionaires' Problem — who is richer, without disclosing wealth — plus private equality, sum, and product, with a live single-byte-tamper integrity demo.",
+    desc: "Compute a function of two secrets and reveal only the answer. Yao's protocol built from scratch: a Chou–Orlandi oblivious transfer on this lab's Ed25519 group (with a 1-of-N variant), then garbled circuits with free-XOR and half-gates (an AND costs the proven-minimal two ciphertexts; XOR and NOT are free). Run the original Millionaires' Problem — who is richer, without disclosing wealth — plus private equality, sum, product, and a sealed-bid second-price auction, with a live single-byte-tamper integrity demo.",
   },
   {
     path: '/verify',

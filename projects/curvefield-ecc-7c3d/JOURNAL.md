@@ -125,11 +125,13 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   receiver replies `R = x·B + c·S` for a private choice bit `c`, and the branch keys `H(y·(R − j·S))`
   agree with the receiver's `H(x·S)` only at `j = c` — so the sender never learns `c` and the receiver
   can open only the chosen ciphertext (a transcript-bound one-time pad). Plus a **batched** form (one
-  reusable setup `S`, one OT per input bit) for the garbled-circuit evaluator.
+  reusable setup `S`, one OT per input bit) for the garbled-circuit evaluator, and a **1-of-N** OT built
+  from ⌈log₂N⌉ base OTs (Naor–Pinkas bit-decomposition — the receiver learns only its chosen index).
 - `circuit.ts` — a **boolean-circuit** builder and gadget library. Only `{AND, XOR, INV}` gates (the
   basis garbling is cheap on); everything else — OR, MUX, full/ripple adders, an MSB→LSB comparator, an
   equality test, and a schoolbook multiplier — compiles down to them. Named circuits for the demos
-  (Millionaires' `a > b`, equality, sum, product) plus a plaintext reference evaluator for cross-checks.
+  (Millionaires' `a > b`, equality, sum, product, and a sealed-bid **second-price auction**) plus a
+  plaintext reference evaluator for cross-checks.
 - `garble.ts` — **Yao's garbled circuits** with the two headline optimizations: **free-XOR**
   (Kolesnikov–Schneider '08 — a global offset Δ makes XOR and NOT cost *zero* ciphertext) and
   **half-gates** (Zahur–Rosulek–Evans '15 — an AND costs exactly two 128-bit ciphertexts, the proven
@@ -140,9 +142,10 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   the encrypted tables + her own input labels; Bob fetches his input labels by **oblivious transfer**
   (learning nothing else, Alice learning none of his bits); Bob evaluates and decodes. Runs Yao's
   original **Millionaires' Problem** — who is richer, revealing nothing else — plus private equality,
-  sum, and product, each with a transcript (OT count, AND count, garbled-table bytes) for auditing.
+  sum, product, and a sealed-bid **second-price auction** (learn the winner and price, not the bids),
+  each with a transcript (OT count, AND count, garbled-table bytes) for auditing.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **275/275** checks across 52 subsystems — added Oblivious Transfer, Garbled Circuits, and 2PC).
+  (now **278/278** checks across 52 subsystems — added Oblivious Transfer, Garbled Circuits, and 2PC).
 
 UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty labs plus an overview.
 
@@ -672,16 +675,23 @@ and SHA-256, and pins it against a plaintext oracle before any UI.
       input bits → evaluate → decode, wrapped as `runMillionaires` / `runEquality` / `runSum` /
       `runProduct`, each returning a transcript (OT count, AND count, garbled-table bytes) and an
       agreement flag against the plaintext computation.
-- [x] **`MpcPage.tsx` — a new lab (`/mpc`).** Four live panels: an OT demo (pick two messages + a
+- [x] **1-of-N oblivious transfer** (`otOneOfN`) — the Naor–Pinkas bit-decomposition: a key pair per
+      index bit, each message padded by the XOR of the keys its bits select, and ⌈log₂N⌉ base 1-of-2 OTs
+      that hand the receiver exactly its chosen index's keys. Self-verified exhaustively for N∈{2,3,4,5,8}.
+- [x] **Sealed-bid second-price (Vickrey) auction** (`auctionCircuit` / `runAuction`) — a garbled
+      comparator + per-bit multiplexer that reveals the winner and the price paid (min of the two bids)
+      while hiding the bids themselves; the incentive-compatible auction as a 2PC.
+- [x] **`MpcPage.tsx` — a new lab (`/mpc`).** Five live panels: an OT demo (pick two messages + a
       choice bit, watch only the chosen one open); the Millionaires' Problem on sliders with a full
-      transcript; a garbled-gate anatomy view with a single-byte-tamper integrity demo; and the same
-      protocol swapped onto equality / sum / product.
-- [x] **+15 self-test checks** across three new groups (Oblivious Transfer, Garbled Circuits, 2PC) →
-      **275/275** over 52 subsystems — OT branch correctness, every elementary gate's truth table, all
-      three demo circuits garbled exactly over **all 4-bit input pairs**, and full end-to-end 2PC runs.
-- [x] **Verified in Node** via a vite-lib bundle harness (17 assertions incl. exhaustive garble
-      correctness and full 2PC over every 4-bit pair) *before* wiring the UI. Lint + build green via
-      `verify-project.mjs`; zero new dependencies, still zero crypto deps.
+      transcript; a garbled-gate anatomy view with a single-byte-tamper integrity demo; the same
+      protocol swapped onto equality / sum / product; and the sealed-bid auction.
+- [x] **+18 self-test checks** across three new groups (Oblivious Transfer, Garbled Circuits, 2PC) →
+      **278/278** over 52 subsystems — OT branch correctness (incl. 1-of-N), every elementary gate's
+      truth table, all three demo circuits garbled exactly over **all 4-bit input pairs**, full
+      end-to-end 2PC runs, and the auction (win + tie).
+- [x] **Verified in Node** via vite-lib bundle harnesses (17 + 7 assertions incl. exhaustive garble
+      correctness, full 2PC over every 4-bit pair, 1-of-N OT, and the auction) *before* wiring the UI.
+      Lint + build green via `verify-project.mjs`; zero new dependencies, still zero crypto deps.
 
 - [ ] **OT extension (IKNP/KOS)** — bootstrap thousands of OTs from a handful of base OTs with a
       correlation-robust hash, the reason real MPC isn't public-key-bound per bit.
@@ -1042,12 +1052,16 @@ and SHA-256, and pins it against a plaintext oracle before any UI.
   permute select bits, and labels from the lab's SHA-256; the half-gate generator/evaluator formulas
   were derived and then verified from the inside. (4) `twopc.ts`: the whole protocol wired together —
   garble → send tables + Alice's labels → OT for Bob's input bits → evaluate → decode — exposed as
-  `runMillionaires`/`runEquality`/`runSum`/`runProduct`, each returning an auditable transcript and an
-  agreement flag vs the plaintext. One new lab page (**Secure 2PC**, `/mpc`): an OT demo, Yao's
-  Millionaires' Problem on sliders with a full cost transcript, a garbled-gate anatomy view with a live
-  single-byte-tamper integrity demo, and the same protocol swapped onto equality/sum/product. Self-test
-  grew 260 → **275/275** across **52 subsystems** (Oblivious Transfer, Garbled Circuits, 2PC) — OT branch
-  correctness, every elementary gate's truth table, all three demo circuits garbled exactly over *every*
-  4-bit input pair, and full end-to-end 2PC runs. Verified in Node via a vite-lib bundle harness (17
-  assertions, incl. exhaustive garble correctness + full 2PC over every 4-bit pair) before wiring the UI.
-  No new dependencies, still zero crypto deps. Lint + build green via verify-project.mjs.
+  `runMillionaires`/`runEquality`/`runSum`/`runProduct`, plus a **1-of-N OT** (`otOneOfN`, Naor–Pinkas
+  bit-decomposition from ⌈log₂N⌉ base OTs) and a sealed-bid **second-price (Vickrey) auction**
+  (`auctionCircuit`/`runAuction` — reveal the winner and the price, min of the two bids, not the bids),
+  each returning an auditable transcript and an agreement flag vs the plaintext. One new lab page
+  (**Secure 2PC**, `/mpc`), five panels: an OT demo, Yao's Millionaires' Problem on sliders with a full
+  cost transcript, a garbled-gate anatomy view with a live single-byte-tamper integrity demo, the same
+  protocol swapped onto equality/sum/product, and the sealed-bid auction. Self-test grew 260 →
+  **278/278** across **52 subsystems** (Oblivious Transfer, Garbled Circuits, 2PC) — OT branch correctness
+  (incl. 1-of-N), every elementary gate's truth table, all three demo circuits garbled exactly over
+  *every* 4-bit input pair, full end-to-end 2PC runs, and the auction (win + tie). Verified in Node via
+  vite-lib bundle harnesses (17 + 7 assertions, incl. exhaustive garble correctness, full 2PC over every
+  4-bit pair, 1-of-N OT, and the auction) before wiring the UI. No new dependencies, still zero crypto
+  deps. Lint + build green via verify-project.mjs.

@@ -218,6 +218,22 @@ export function sumCircuit(bits: number): Circuit {
   return bld.build(rippleAdd(bld, a, b))
 }
 
+/**
+ * Sealed-bid (Vickrey) auction between two bidders. Outputs the winner bit
+ * (1 iff Alice's bid is strictly higher) followed by the price — the *lower*
+ * of the two bids (the second-highest, what a second-price auction charges) —
+ * revealing only the outcome, never the winning bid.
+ */
+export function auctionCircuit(bits: number): Circuit {
+  const bld = new CircuitBuilder()
+  const a = bld.aliceInputs_(bits)
+  const b = bld.bobInputs_(bits)
+  const aliceWins = greaterThan(bld, a, b)
+  // price = min(a, b): if Alice wins, charge Bob's bid b; else charge Alice's a.
+  const price = a.map((_, i) => bld.mux(aliceWins, b[i], a[i]))
+  return bld.build([aliceWins, ...price])
+}
+
 /** Private product: 2n-bit product of two n-bit values (little-endian). */
 export function productCircuit(bits: number): Circuit {
   const bld = new CircuitBuilder()

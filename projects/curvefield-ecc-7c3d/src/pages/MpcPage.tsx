@@ -11,7 +11,7 @@ import {
   type Label,
 } from '../ecc/garble'
 import { millionairesCircuit, toBits, evalPlain, type Circuit } from '../ecc/circuit'
-import { runMillionaires, runEquality, runSum, runProduct } from '../ecc/twopc'
+import { runMillionaires, runEquality, runSum, runProduct, runAuction } from '../ecc/twopc'
 import { utf8, bytesToHex } from '../ecc/sha256'
 import { edEncode, type EdPoint } from '../ecc/ed25519'
 import { ellipsize } from '../ui/format'
@@ -78,6 +78,11 @@ export function MpcPage() {
     if (fn === 'sum') return runSum(xi, yi, fnBits)
     return runProduct(xi, yi, fnBits)
   }, [fn, xi, yi, fnBits])
+
+  // ── Sealed-bid (second-price) auction ──
+  const [bidA, setBidA] = useState(150)
+  const [bidB, setBidB] = useState(90)
+  const auction = useMemo(() => runAuction(bidA, bidB, 8), [bidA, bidB])
 
   // ── Circuit anatomy + integrity ──
   const [corrupt, setCorrupt] = useState(false)
@@ -260,6 +265,27 @@ export function MpcPage() {
             {fnResult.transcript.numOts} OTs · {fnResult.transcript.andGates} AND gates ·{' '}
             {fnResult.transcript.tableBytes} bytes garbled · matches the plaintext computation:{' '}
             {fnResult.agrees ? 'yes' : 'no'}.
+          </span>
+        </div>
+      </Panel>
+
+      {/* ── Sealed-bid auction ── */}
+      <Panel
+        title="5 · A sealed-bid second-price auction"
+        sub="Two bidders learn who won and the price they pay — the lower of the two bids — without either revealing their bid. Vickrey's incentive-compatible auction, run as a garbled circuit."
+      >
+        <div className="grid cols-2" style={{ gap: '1rem' }}>
+          <Slider label="Alice's bid (0–255)" value={bidA} min={0} max={255} onChange={setBidA} />
+          <Slider label="Bob's bid (0–255)" value={bidB} min={0} max={255} onChange={setBidB} />
+        </div>
+        <div style={{ marginTop: '0.8rem', display: 'flex', gap: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <Verdict ok={auction.agrees}>
+            {bidA === bidB ? 'tie — no strict winner' : auction.aliceWins ? 'Alice wins' : 'Bob wins'} · price {auction.price}
+          </Verdict>
+          <span className="note" style={{ display: 'inline' }}>
+            The winner pays the <em>second-highest</em> bid ({auction.price}), computed as min(a, b) via a
+            garbled comparator + multiplexer. Neither the winning bid nor the loser's exact number leaks
+            beyond the price — {auction.transcript.andGates} AND gates, {auction.transcript.tableBytes} bytes garbled.
           </span>
         </div>
       </Panel>

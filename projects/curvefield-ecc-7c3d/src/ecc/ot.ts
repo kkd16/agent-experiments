@@ -15,7 +15,7 @@
 import { sha256, concat, utf8 } from './sha256'
 import { ED_B, edMul, edPointAdd, edSub, edEncode, type EdPoint } from './ed25519'
 import { L25519 } from './ed25519'
-import { randomScalar } from './rng'
+import { randomScalar, randomBytes } from './rng'
 
 const q = L25519
 
@@ -138,4 +138,58 @@ export function batchOtEncrypt(sender: BatchOtSender, Rs: EdPoint[], pairs: [Uin
 /** Receiver decrypts each chosen branch. */
 export function batchOtDecrypt(S: EdPoint, Rs: EdPoint[], xs: bigint[], choices: (0 | 1)[], cts: [Uint8Array, Uint8Array][]): Uint8Array[] {
   return cts.map((ct, i) => otReceiverDecrypt(S, Rs[i], xs[i], choices[i], ct[0], ct[1]))
+}
+
+// ── 1-out-of-N OT from ⌈log₂N⌉ base 1-of-2 OTs ──────────────────────────────
+// The Naor–Pinkas bit-decomposition trick: the sender draws a key pair per index
+// bit and pads message j by the XOR of the keys its bits select; the receiver
+// learns exactly the keys for its own choice's bits through log N base OTs, so it
+// can reconstruct only the chosen message's pad. Everything else stays sealed.
+
+export interface OtNRun {
+  received: Uint8Array
+  choice: number
+  numBaseOts: number
+  ciphertexts: Uint8Array[]
+}
+
+const bitOf = (j: number, i: number): 0 | 1 => ((j >> i) & 1) as 0 | 1
+
+export function otOneOfN(messages: Uint8Array[], choice: number): OtNRun {
+  const n = messages.length
+  const k = Math.max(1, Math.ceil(Math.log2(n)))
+
+  // Sender: a fresh 32-byte key pair per index bit.
+  const K0: Uint8Array[] = []
+  const K1: Uint8Array[] = []
+  for (let i = 0; i < k; i++) {
+    K0.push(randomBytes(32))
+    K1.push(randomBytes(32))
+  }
+
+  // Pad each message by the XOR of the keys selected by its index bits.
+  const pad = (j: number, len: number): Uint8Array => {
+    const p = new Uint8Array(len)
+    for (let i = 0; i < k; i++) {
+      const ks = kdfStream(bitOf(j, i) ? K1[i] : K0[i], len)
+      for (let b = 0; b < len; b++) p[b] ^= ks[b]
+    }
+    return p
+  }
+  const ciphertexts = messages.map((m, j) => xorInto(m, pad(j, m.length)))
+
+  // Receiver fetches the keys for its own choice's bits via base OTs.
+  const recvKeys: Uint8Array[] = []
+  for (let i = 0; i < k; i++) {
+    recvKeys.push(obliviousTransfer(K0[i], K1[i], bitOf(choice, i)).received)
+  }
+
+  // Reconstruct the chosen pad and decrypt only that message.
+  const c = ciphertexts[choice]
+  const p = new Uint8Array(c.length)
+  for (let i = 0; i < k; i++) {
+    const ks = kdfStream(recvKeys[i], c.length)
+    for (let b = 0; b < c.length; b++) p[b] ^= ks[b]
+  }
+  return { received: xorInto(c, p), choice, numBaseOts: k, ciphertexts }
 }
