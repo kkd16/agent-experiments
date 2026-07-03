@@ -192,6 +192,18 @@ import {
   Q as MLKEM_Q,
 } from './mlkem'
 import { hybridClientKeyGen, hybridServerRespond, hybridClientFinish } from './hybridkem'
+import { obliviousTransfer } from './ot'
+import { garbleCircuit, publicTables, evaluateCircuit, inputLabel, type Label } from './garble'
+import {
+  CircuitBuilder,
+  millionairesCircuit,
+  equalityCircuit,
+  sumCircuit,
+  toBits,
+  evalPlain,
+  type Circuit,
+} from './circuit'
+import { runMillionaires, runEquality, runSum, runProduct } from './twopc'
 
 export interface TestCase {
   name: string
@@ -1742,6 +1754,80 @@ export function runSelfTest(): TestCase[] {
     badServer[server.serverShare.length - 3] ^= 1 // maul the server's X25519 public
     const brokenX = hybridClientFinish(client, badServer)
     check('Hybrid KEM', 'a broken X25519 half breaks agreement', bytesToHex(brokenX.sessionKey) !== bytesToHex(server.sessionKey), 'both primitives must succeed — the security is the AND of the two')
+  }
+
+  // ── 34. Secure two-party computation (OT + Yao's garbled circuits) ──
+  {
+    // Oblivious transfer: the receiver opens exactly the chosen branch, and the
+    // other ciphertext is not the plaintext (the sender's pad is unrecoverable).
+    for (const c of [0, 1] as const) {
+      const m0 = utf8('branch-zero-message!')
+      const m1 = utf8('branch-one-message!!')
+      const r = obliviousTransfer(m0, m1, c)
+      check('MPC · OT', `choice c=${c} opens the chosen message`, bytesToHex(r.received) === bytesToHex(c === 0 ? m0 : m1), 'Chou–Orlandi 1-of-2 OT on Ed25519')
+    }
+    {
+      const m0 = utf8('AAAAAAAAAAAAAAAA')
+      const m1 = utf8('BBBBBBBBBBBBBBBB')
+      const r = obliviousTransfer(m0, m1, 0)
+      check('MPC · OT', 'the unchosen ciphertext hides its message', bytesToHex(r.e1) !== bytesToHex(m1), 'e₁ is a one-time pad under a key the receiver never learns')
+    }
+
+    // Garble + evaluate every truth row of each elementary gate.
+    const gateCircuit = (type: 'AND' | 'XOR' | 'INV'): Circuit => {
+      const bld = new CircuitBuilder()
+      const x = bld.aliceInput()
+      const y = bld.bobInput()
+      const out = type === 'AND' ? bld.and(x, y) : type === 'XOR' ? bld.xor(x, y) : bld.inv(x)
+      return bld.build([out])
+    }
+    const garbleEval = (circ: Circuit, ab: number[], bb: number[]): number[] => {
+      const gc = garbleCircuit(circ)
+      const active: Label[] = new Array(circ.numWires)
+      circ.aliceInputs.forEach((w, i) => (active[w] = inputLabel(gc, w, ab[i])))
+      circ.bobInputs.forEach((w, i) => (active[w] = inputLabel(gc, w, bb[i])))
+      return evaluateCircuit(circ, publicTables(gc), active).bits
+    }
+    for (const type of ['AND', 'XOR', 'INV'] as const) {
+      const circ = gateCircuit(type)
+      let ok = true
+      for (let a = 0; a < 2; a++)
+        for (let b = 0; b < 2; b++) {
+          if (garbleEval(circ, [a], [b])[0] !== evalPlain(circ, [a], [b])[0]) ok = false
+        }
+      check('MPC · Garble', `${type} gate garbles to its truth table`, ok, 'free-XOR / half-gate garbling decodes correctly')
+    }
+
+    // Whole circuits, exhaustive over all 4-bit input pairs, vs the plaintext.
+    const exhaustive = (mk: (bits: number) => Circuit): boolean => {
+      const bits = 4
+      const lim = 1 << bits
+      for (let a = 0; a < lim; a++)
+        for (let b = 0; b < lim; b++) {
+          const circ = mk(bits)
+          const out = garbleEval(circ, toBits(a, bits), toBits(b, bits))
+          const exp = evalPlain(circ, toBits(a, bits), toBits(b, bits))
+          if (out.length !== exp.length || out.some((v, i) => v !== exp[i])) return false
+        }
+      return true
+    }
+    check('MPC · Garble', 'comparator circuit exact on all 4-bit pairs', exhaustive(millionairesCircuit), '256 garble→evaluate runs, each equals a > b')
+    check('MPC · Garble', 'equality circuit exact on all 4-bit pairs', exhaustive(equalityCircuit), '256 runs, each equals a == b')
+    check('MPC · Garble', 'adder circuit exact on all 4-bit pairs', exhaustive(sumCircuit), '256 runs, each equals a + b')
+
+    // Full end-to-end protocol (OT + garbling) on representative inputs.
+    const mBob = runMillionaires(96, 140, 8)
+    check('MPC · 2PC', "Millionaires': Bob (140) richer than Alice (96)", !mBob.aliceRicher && mBob.agrees, 'the secure output matches the plaintext comparison')
+    const mAlice = runMillionaires(200, 50, 8)
+    check('MPC · 2PC', "Millionaires': Alice (200) richer than Bob (50)", mAlice.aliceRicher && mAlice.agrees, 'output = 1 iff Alice > Bob')
+    const eq = runEquality(0xab, 0xab, 8)
+    check('MPC · 2PC', 'private equality detects a match', eq.equal && eq.agrees, 'a == b learned without revealing a or b')
+    const eqNo = runEquality(0xab, 0xac, 8)
+    check('MPC · 2PC', 'private equality detects a mismatch', !eqNo.equal && eqNo.agrees, 'a ≠ b, output 0')
+    const sum = runSum(100, 55, 8)
+    check('MPC · 2PC', 'private sum reveals only a + b', sum.sum === 155 && sum.agrees, '100 + 55 = 155 via a garbled adder')
+    const prod = runProduct(9, 7, 6)
+    check('MPC · 2PC', 'private product reveals only a · b', prod.product === 63 && prod.agrees, '9 · 7 = 63 via a garbled multiplier')
   }
 
   return t

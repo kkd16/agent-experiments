@@ -31,6 +31,7 @@ import { MlKemPage } from './pages/MlKemPage'
 import { VrfPage } from './pages/VrfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
+import { MpcPage } from './pages/MpcPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -65,6 +66,7 @@ const ROUTES = [
   { path: '/vrf', label: 'ECVRF' },
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
+  { path: '/mpc', label: 'Secure 2PC' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -122,6 +124,7 @@ export default function App() {
       {base === '/vrf' && <VrfPage />}
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
+      {base === '/mpc' && <MpcPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">
@@ -133,9 +136,10 @@ export default function App() {
         (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, Monero-style linkable
         ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
         (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
-        from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, and a Signal-style
-        end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305) —
-        zero crypto dependencies.
+        from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, a Signal-style
+        end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305),
+        and secure two-party computation (Chou–Orlandi oblivious transfer + Yao's garbled circuits
+        with free-XOR and half-gates, running the Millionaires' Problem) — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>

@@ -120,10 +120,31 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   default in Chrome / OpenSSL 3.5): a classical X25519 ECDH and an ML-KEM-768 encapsulation run side
   by side, their secrets concatenated `ss_mlkem ‖ ss_x25519`, so the session survives a break of
   either primitive. Both halves are the lab's own from-scratch code.
+- `ot.ts` — **Oblivious transfer**, the atom of secure computation. The **Chou–Orlandi "simplest OT"**
+  (Asiacrypt 2015) 1-of-2 on this lab's Ed25519 prime-order group: the sender publishes `S = y·B`, the
+  receiver replies `R = x·B + c·S` for a private choice bit `c`, and the branch keys `H(y·(R − j·S))`
+  agree with the receiver's `H(x·S)` only at `j = c` — so the sender never learns `c` and the receiver
+  can open only the chosen ciphertext (a transcript-bound one-time pad). Plus a **batched** form (one
+  reusable setup `S`, one OT per input bit) for the garbled-circuit evaluator.
+- `circuit.ts` — a **boolean-circuit** builder and gadget library. Only `{AND, XOR, INV}` gates (the
+  basis garbling is cheap on); everything else — OR, MUX, full/ripple adders, an MSB→LSB comparator, an
+  equality test, and a schoolbook multiplier — compiles down to them. Named circuits for the demos
+  (Millionaires' `a > b`, equality, sum, product) plus a plaintext reference evaluator for cross-checks.
+- `garble.ts` — **Yao's garbled circuits** with the two headline optimizations: **free-XOR**
+  (Kolesnikov–Schneider '08 — a global offset Δ makes XOR and NOT cost *zero* ciphertext) and
+  **half-gates** (Zahur–Rosulek–Evans '15 — an AND costs exactly two 128-bit ciphertexts, the proven
+  minimum), with **point-and-permute** select bits. Garble → evaluate → decode over 128-bit labels
+  derived from the lab's own SHA-256. The half-gate formulas are verified from the inside (every gate's
+  truth table, and whole circuits exhaustively) rather than transcribed on faith.
+- `twopc.ts` — the whole **secure two-party computation** protocol assembled: Alice garbles and sends
+  the encrypted tables + her own input labels; Bob fetches his input labels by **oblivious transfer**
+  (learning nothing else, Alice learning none of his bits); Bob evaluates and decodes. Runs Yao's
+  original **Millionaires' Problem** — who is richer, revealing nothing else — plus private equality,
+  sum, and product, each with a transcript (OT count, AND count, garbled-table bytes) for auditing.
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **260/260** checks across 49 subsystems — added SHA-3, ML-KEM, and Hybrid KEM).
+  (now **275/275** checks across 52 subsystems — added Oblivious Transfer, Garbled Circuits, and 2PC).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — twenty-nine labs plus an overview.
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty labs plus an overview.
 
 ## Ideas / backlog
 
@@ -624,6 +645,52 @@ Next ideas (open):
 - [ ] **ML-KEM inside the Sealed channel** — replace (or hybridise) the X3DH root key with an ML-KEM
       encapsulation, giving the Signal lab a post-quantum handshake (the PQXDH direction Signal shipped).
 
+### Session 13 plan — Secure two-party computation (oblivious transfer + Yao's garbled circuits)
+
+Every module so far protects a *value* — a signature you can't forge, a ciphertext you can't read, a
+proof that reveals nothing. None of them lets two mutually-distrustful parties **compute together on
+inputs they never share**. That whole pillar — secure multiparty computation — was missing. This
+session builds it from the ground up, the classic Yao two-party stack, on the lab's own Ed25519 group
+and SHA-256, and pins it against a plaintext oracle before any UI.
+
+- [x] **`ot.ts` — oblivious transfer.** The **Chou–Orlandi "simplest OT"** 1-of-2 on the Ed25519
+      prime-order subgroup: sender `S = y·B`; receiver `R = x·B + c·S`; branch keys
+      `k_j = H(S, R, y·R − j·y·S)` that equal the receiver's `H(x·S)` only at `j = c`. Messages are
+      one-time-padded with a counter-mode SHA-256 stream keyed on a transcript-bound point, so the
+      sender learns nothing about `c` and the receiver can open only its chosen branch. Plus a batched
+      variant (shared setup `S`, one instance per bit) for the garbler.
+- [x] **`circuit.ts` — a boolean-circuit compiler.** A tiny SSA-style builder over `{AND, XOR, INV}`,
+      with derived OR / XNOR / MUX and gadgets: full adder, ripple-carry adder, an MSB→LSB unsigned
+      comparator, an equality test, and a schoolbook multiplier. Named circuits (Millionaires', sum,
+      equality, product) and a plaintext reference evaluator + bit↔int helpers for cross-checking.
+- [x] **`garble.ts` — Yao's garbled circuits, modern.** Free-XOR (global offset Δ, lsb = 1) makes
+      XOR/NOT free; half-gates (ZRE'15) make AND cost exactly two ciphertexts; point-and-permute picks
+      the row from the label's colour bit. `garbleCircuit → evaluateCircuit → decode` over 128-bit
+      labels from the lab's SHA-256, with the half-gate generator/evaluator formulas derived and then
+      **verified from the inside** (every gate truth table; whole circuits exhaustively).
+- [x] **`twopc.ts` — the full protocol.** Garble → send tables + Alice's labels → OT for each of Bob's
+      input bits → evaluate → decode, wrapped as `runMillionaires` / `runEquality` / `runSum` /
+      `runProduct`, each returning a transcript (OT count, AND count, garbled-table bytes) and an
+      agreement flag against the plaintext computation.
+- [x] **`MpcPage.tsx` — a new lab (`/mpc`).** Four live panels: an OT demo (pick two messages + a
+      choice bit, watch only the chosen one open); the Millionaires' Problem on sliders with a full
+      transcript; a garbled-gate anatomy view with a single-byte-tamper integrity demo; and the same
+      protocol swapped onto equality / sum / product.
+- [x] **+15 self-test checks** across three new groups (Oblivious Transfer, Garbled Circuits, 2PC) →
+      **275/275** over 52 subsystems — OT branch correctness, every elementary gate's truth table, all
+      three demo circuits garbled exactly over **all 4-bit input pairs**, and full end-to-end 2PC runs.
+- [x] **Verified in Node** via a vite-lib bundle harness (17 assertions incl. exhaustive garble
+      correctness and full 2PC over every 4-bit pair) *before* wiring the UI. Lint + build green via
+      `verify-project.mjs`; zero new dependencies, still zero crypto deps.
+
+- [ ] **OT extension (IKNP/KOS)** — bootstrap thousands of OTs from a handful of base OTs with a
+      correlation-robust hash, the reason real MPC isn't public-key-bound per bit.
+- [ ] **GMW / secret-sharing MPC** as the second paradigm (gate-by-gate on shares, n-party), so the lab
+      shows both the garbled-circuit and the secret-sharing families side by side.
+- [ ] **Malicious-secure garbling** — authenticated garbling / cut-and-choose, defeating a garbler who
+      builds a wrong circuit (the tamper demo shows why the honest-but-curious model isn't enough).
+- [ ] **A private-set-intersection** demo on top of OT — the canonical applied-MPC headline.
+
 ## Session log
 
 - 2026-07-02 (claude): **Sealed — the secure channel: X3DH + Double Ratchet (the Signal protocol),
@@ -959,3 +1026,28 @@ Next ideas (open):
   harness (NTT invert + convolution identity, KEM round-trips + exact sizes + implicit rejection for all
   three sets, hybrid agreement + tamper) before wiring the UI — no new dependencies, still zero crypto
   deps. Lint + build green via verify-project.mjs.
+- 2026-07-03 (claude): **Secure two-party computation — oblivious transfer + Yao's garbled circuits,
+  from scratch.** Added the lab's first *secure-computation* pillar: until now every module protected a
+  value (an unforgeable signature, an unreadable ciphertext, a revealing-nothing proof), but nothing let
+  two distrustful parties **compute together on inputs they never share**. Four new engine modules, each
+  pinned against a plaintext oracle before any UI. (1) `ot.ts`: **Chou–Orlandi 1-of-2 oblivious
+  transfer** on this lab's Ed25519 prime-order group — sender `S = y·B`, receiver `R = x·B + c·S`, and
+  transcript-bound branch keys that agree with the receiver's `H(x·S)` only on the branch it secretly
+  chose, so the sender learns nothing about `c` and the other message stays sealed; plus a batched form
+  (one reusable `S`, one OT per bit) for the garbler. (2) `circuit.ts`: a boolean-circuit builder over
+  `{AND, XOR, INV}` with derived OR/MUX and gadgets — full/ripple adders, an MSB→LSB comparator, an
+  equality test, a schoolbook multiplier — plus a plaintext reference evaluator. (3) `garble.ts`:
+  **Yao's garbled circuits** with **free-XOR** (a global Δ making XOR/NOT cost zero ciphertext) and
+  **half-gates** (ZRE'15 — an AND is exactly two 128-bit ciphertexts, the proven minimum), point-and-
+  permute select bits, and labels from the lab's SHA-256; the half-gate generator/evaluator formulas
+  were derived and then verified from the inside. (4) `twopc.ts`: the whole protocol wired together —
+  garble → send tables + Alice's labels → OT for Bob's input bits → evaluate → decode — exposed as
+  `runMillionaires`/`runEquality`/`runSum`/`runProduct`, each returning an auditable transcript and an
+  agreement flag vs the plaintext. One new lab page (**Secure 2PC**, `/mpc`): an OT demo, Yao's
+  Millionaires' Problem on sliders with a full cost transcript, a garbled-gate anatomy view with a live
+  single-byte-tamper integrity demo, and the same protocol swapped onto equality/sum/product. Self-test
+  grew 260 → **275/275** across **52 subsystems** (Oblivious Transfer, Garbled Circuits, 2PC) — OT branch
+  correctness, every elementary gate's truth table, all three demo circuits garbled exactly over *every*
+  4-bit input pair, and full end-to-end 2PC runs. Verified in Node via a vite-lib bundle harness (17
+  assertions, incl. exhaustive garble correctness + full 2PC over every 4-bit pair) before wiring the UI.
+  No new dependencies, still zero crypto deps. Lint + build green via verify-project.mjs.
