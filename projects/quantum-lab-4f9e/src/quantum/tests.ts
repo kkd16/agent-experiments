@@ -87,6 +87,12 @@ import {
   magicSquareAlgebra, magicClassicalMax, magicQuantumWin, MAGIC_CLASSICAL,
   merminQuantumValue, merminQuantumBound, merminClassicalMax, MERMIN_CLASSICAL_BOUND,
 } from './nonlocality';
+import {
+  concurrence, entanglementOfFormation, pptAnalysis, chshMax, wernerState, RHO_PHI_PLUS,
+  CLASSICAL_CORRELATED, productState, randomMixed, wernerConcurrenceExact, wernerNegativityExact,
+  wernerChshExact, bbpsswStep, bbpsswSimulate, bbpsswAcceptance, wernerFidelity,
+  monogamy, GHZ3, W3, ghzWInterpolate,
+} from './entanglement';
 import { maximizeElliptope, minimizeDual, minEigenvalue } from './sdp';
 import { npaLevel1, chshSOSCertificate, complementarySlackness, TSIRELSON, bellCostMatrix, CHSH_FUNCTIONAL } from './npa';
 import { certifiedMinEntropy, guessingProbability } from './randomness';
@@ -2002,6 +2008,79 @@ export function runTests(): TestResult[] {
       for (const p of a.points) maxRes = Math.max(maxRes, Math.abs(p.measured - (a.slope * p.height + b)));
       add('Glued trees', 'Crossing is ballistic: reduced-line v_g = 2√2, arrival time linear in h (t_a ≈ h/√2)',
         vOK && bandOK && slopeOK && maxRes < 0.25, `v_g=${vmax.toFixed(4)}, slope=${a.slope.toFixed(3)}, max residual=${maxRes.toFixed(3)}`);
+    }
+  }
+
+  // --- Mixed-state entanglement (concurrence, PPT/negativity, distillation, monogamy) ---
+  {
+    // (1) The Bell pair maximises every measure.
+    {
+      const C = concurrence(RHO_PHI_PLUS), E = entanglementOfFormation(RHO_PHI_PLUS);
+      const ppt = pptAnalysis(RHO_PHI_PLUS), S = chshMax(RHO_PHI_PLUS);
+      const ok = close(C, 1) && close(E, 1) && close(ppt.negativity, 0.5) && close(ppt.logNegativity, 1)
+        && !ppt.separable && close(S, 2 * Math.SQRT2);
+      add('Entanglement', '|Φ⁺⟩ saturates C=1, E_F=1, N=½, log-neg=1, CHSH=2√2', ok,
+        `C=${C.toFixed(4)}, N=${ppt.negativity.toFixed(4)}, S=${S.toFixed(4)}`);
+    }
+    // (2) Separable states carry no entanglement (product + classically-correlated mixture).
+    {
+      const prod = productState(0.8, 2.1), cc = CLASSICAL_CORRELATED;
+      const ok = concurrence(prod) < 1e-9 && pptAnalysis(prod).separable
+        && concurrence(cc) < 1e-9 && pptAnalysis(cc).negativity < 1e-9 && pptAnalysis(cc).separable;
+      add('Entanglement', 'Separable states (product, classical mixture) have C = N = 0 and are PPT', ok,
+        `C_cc=${concurrence(cc).toExponential(1)}`);
+    }
+    // (3) The Werner family matches its closed forms to machine precision.
+    {
+      let wc = 0, wn = 0, ws = 0, wf = 0;
+      for (let i = 0; i <= 40; i++) {
+        const p = i / 40, rho = wernerState(p);
+        wc = Math.max(wc, Math.abs(concurrence(rho) - wernerConcurrenceExact(p)));
+        wn = Math.max(wn, Math.abs(pptAnalysis(rho).negativity - wernerNegativityExact(p)));
+        ws = Math.max(ws, Math.abs(chshMax(rho) - wernerChshExact(p)));
+        wf = Math.max(wf, Math.abs(wernerFidelity(p) - (1 + 3 * p) / 4));
+      }
+      add('Entanglement', 'Werner ρ(p): C=(3p−1)/2, N=(3p−1)/4, CHSH=2√2·p (exact over p-grid)',
+        wc < 1e-9 && wn < 1e-9 && ws < 1e-9 && wf < 1e-12,
+        `errs C=${wc.toExponential(1)}, N=${wn.toExponential(1)}, S=${ws.toExponential(1)}`);
+    }
+    // (4) PPT ⇔ separable ⇔ C=0 (Horodecki, 2×2) over random density matrices; N>0 ⇔ C>0.
+    {
+      let consistent = true, worst = 0;
+      for (let t = 0; t < 200; t++) {
+        const rho = randomMixed(t + 1), C = concurrence(rho), ppt = pptAnalysis(rho);
+        if ((C > 1e-6) === ppt.separable && Math.abs(C) > 1e-6) consistent = false;
+        if ((C > 1e-6) !== (ppt.negativity > 1e-6) && Math.min(C, ppt.negativity) > 1e-8) worst = Math.max(worst, 1);
+      }
+      add('Entanglement', 'Peres–Horodecki: PPT ⇔ separable ⇔ C=0; N>0 ⇔ C>0 (200 random states)',
+        consistent && worst === 0);
+    }
+    // (5) BBPSSW distillation: the closed-form map = an exact 16-dim simulation of the protocol.
+    {
+      let worst = 0;
+      for (let i = 3; i <= 20; i++) {
+        const p = i / 21, rho = wernerState(p), F = wernerFidelity(p);
+        const sim = bbpsswSimulate(rho);
+        worst = Math.max(worst, Math.abs(sim.Fout - bbpsswStep(F)), Math.abs(sim.accept - bbpsswAcceptance(F)));
+      }
+      const fp = Math.abs(bbpsswStep(0.5) - 0.5) < 1e-12;
+      const climbs = bbpsswStep(0.7) > 0.7 && bbpsswStep(0.9) > 0.9 && bbpsswStep(0.4) < 0.4;
+      add('Entanglement', 'BBPSSW recurrence = exact 16-dim bilateral-CNOT simulation; ½ unstable fixed point',
+        worst < 1e-9 && fp && climbs, `sim−formula max err ${worst.toExponential(1)}`);
+    }
+    // (6) Monogamy (CKW): GHZ is all tangle, W is all pairwise, and the inequality holds for random states.
+    {
+      const g = monogamy(GHZ3), w = monogamy(W3);
+      const named = close(g.tangle, 1) && g.cAB < 1e-9 && g.cAC < 1e-9
+        && Math.abs(w.tangle) < 1e-8 && close(w.cAB, 2 / 3) && close(w.cAC, 2 / 3);
+      let held = true, minSlack = Infinity;
+      for (let t = 0; t < 120; t++) {
+        const m = monogamy(ghzWInterpolate((t % 41) / 40));
+        if (!m.satisfied) held = false;
+        minSlack = Math.min(minSlack, m.cSq_Abc - m.cAB * m.cAB - m.cAC * m.cAC);
+      }
+      add('Entanglement', 'CKW monogamy C²(A|BC) ≥ C²_AB+C²_AC; τ(GHZ)=1, τ(W)=0, C_AB(W)=⅔',
+        named && held && minSlack > -1e-9, `min slack ${minSlack.toExponential(1)}`);
     }
   }
 

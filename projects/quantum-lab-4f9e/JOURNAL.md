@@ -30,6 +30,106 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Entanglement entropy visualization per bipartition
 - [x] Dark space-themed UI with framer-motion animations
 - [x] About page with physics explanations
+- [x] Mixed-state entanglement: Wootters concurrence + entanglement of formation (√ρ·ρ̃·√ρ eigenvalue formula)
+- [x] Negativity, logarithmic negativity & the Peres–Horodecki PPT criterion (necessary+sufficient in 2×2)
+- [x] The Werner hierarchy: separable ⊃ entangled ⊃ steerable ⊃ Bell-nonlocal at the exact thresholds ⅓, ½, 1/√2
+- [x] Entanglement distillation (BBPSSW) as a cobweb, cross-checked against an exact 16-D protocol simulation
+- [x] Monogamy of entanglement (Coffman–Kundu–Wootters) & the 3-tangle (GHZ vs W)
+
+## Quantum Lab 21.0 — Mixed-state entanglement as a resource (this session)
+
+The Bell (15.0) and Device-Independent (16.0) pillars study the *correlations* entanglement produces.
+But the lab had no theory of entanglement *itself* — no way, given an arbitrary noisy two-qubit state,
+to answer "how much entanglement is in here?" or even "is there any?". `Schmidt.ts` handled pure states;
+`DensityMatrix` gave entropy of a subsystem — but for a genuinely **mixed** ρ the bipartite entropy is
+*not* an entanglement measure (a classically-correlated mixture has entropy without a shred of
+entanglement). This session builds the missing resource theory, all from scratch on the lab's own complex
+Jacobi eigensolver, and — like every pillar here — pins every headline number to a closed form.
+
+### Why this is interesting
+
+- **Entanglement is a resource with a *number*.** The **Wootters concurrence** is the exact solution to a
+  hard variational problem (the entanglement of formation, a minimisation over all pure-state
+  decompositions) that collapses, for two qubits, to a one-line eigenvalue formula
+  `C = max(0, λ₁−λ₂−λ₃−λ₄)`. That it exists at all is a small miracle; implementing it robustly (the
+  matrix `ρρ̃` is *not* Hermitian) needed the trick of diagonalising the spectrally-identical Hermitian
+  `√ρ·ρ̃·√ρ` instead.
+- **A clean yes/no for entanglement.** The **Peres–Horodecki PPT criterion** — positive under partial
+  transpose — is *necessary and sufficient* for separability in 2×2 (and only there). So three independent
+  computations (`C>0`, negativity `>0`, a negative partial-transpose eigenvalue) must always agree; the lab
+  checks that over hundreds of random density matrices.
+- **The strict hierarchy.** Sweeping the Werner state `ρ(p)=p|Φ⁺⟩⟨Φ⁺|+(1−p)I/4` walks through
+  `separable ⊃ entangled ⊃ steerable ⊃ Bell-nonlocal` at the exact rational thresholds `⅓, ½, 1/√2` — the
+  famous fact that being entangled is *not* enough to be nonlocal, made into a live figure.
+- **You can purify it.** The **BBPSSW distillation** recurrence turns many weak pairs into fewer strong ones
+  with local operations + a bilateral CNOT + post-selection; `F=½` is the unstable fixed point and above it
+  the fidelity climbs to a pure Bell pair. The closed-form map is cross-checked against an *exact
+  16-dimensional simulation of the physical protocol* on ρ⊗ρ — agreement to ~5e-16.
+- **It is monogamous.** The **Coffman–Kundu–Wootters** inequality `C²(A|BC) ≥ C²_AB + C²_AC` says A cannot be
+  maximally entangled with two partners at once; the slack is the permutation-invariant **3-tangle** τ,
+  which distinguishes the two inequivalent classes of tripartite entanglement (`τ=1` for GHZ, `0` for W).
+
+### The plan / new steps (this session — all shipped)
+
+- [x] **`src/quantum/entanglement.ts`** — a from-scratch two-qubit entanglement toolkit: Wootters
+  concurrence (via `√ρ·ρ̃·√ρ`), entanglement of formation, partial transpose, negativity & log-negativity,
+  the PPT verdict, the Horodecki `S_max = 2√(t₁+t₂)` CHSH bound, the Werner family + its exact closed forms,
+  the BBPSSW map + acceptance + cascade, an exact 16-D simulation of the bilateral-CNOT protocol
+  (`bbpsswSimulate`), and CKW monogamy / the 3-tangle for 3-qubit pure states.
+- [x] **`src/components/EntanglementLab.tsx`** — a four-card 🔗 Entanglement tab: (A) a **two-qubit
+  inspector** with a ρ heatmap and every measure at once on a menu of states (Bell, singlet, Werner(p),
+  product, classical mixture, maximally mixed, random), with the three-way separable/entangled verdict shown
+  to agree; (B) the **Werner hierarchy** figure with the four shaded regions and the three exact thresholds;
+  (C) **distillation** as a live **cobweb plot** converging to F=1, with the closed-form vs 16-D-simulation
+  cross-check; (D) **monogamy** with the CKW stacked bar (pairwise + pairwise + τ = C²(A|BC)) and a GHZ→W
+  interpolation slider.
+- [x] Wired the tab into `App.tsx` (type, nav, render), added the **Mixed-State Entanglement** About pillar,
+  and added **6 new self-tests** to the suite (**195 → 201**).
+
+### Verified (all green — suite now 201/201)
+
+- Wootters concurrence, EoF, negativity, log-negativity and CHSH on `|Φ⁺⟩` hit `1, 1, ½, 1, 2√2` exactly;
+  product and classically-correlated mixtures give `C = N = 0` and read PPT-separable.
+- The Werner closed forms `C=(3p−1)/2`, `N=(3p−1)/4`, `CHSH=2√2·p` match the numeric routines to **<1e-9**
+  across the whole `p`-grid (worst ~1e-15).
+- **PPT ⇔ separable ⇔ C=0** and **N>0 ⇔ C>0** hold over 200 random density matrices (the 2×2 Horodecki
+  theorem, verified not assumed).
+- The BBPSSW closed-form map and acceptance equal an **exact 16-dimensional simulation** of the
+  bilateral-CNOT-and-measure protocol to **~5e-16**; `F=½` is the fixed point, and the map climbs above / falls
+  below it correctly.
+- CKW monogamy holds for every random 3-qubit pure state tested; `τ(GHZ)=1` with no pairwise entanglement,
+  `τ(W)=0` with `C_AB=C_AC=⅔`.
+- Runtime-verified in a real browser (headless Chromium): the tab renders, all four cards interact, and the
+  distillation cross-check reads `sim F′ = closed-form F′` exactly. `pnpm lint` + `tsc` + `pnpm build` all pass
+  (the exact CI gate).
+
+### Follow-ups (open for a later session)
+
+- [ ] **Steering, computed not quoted** — the `p>½` projective-steering threshold is currently the analytic
+  value; build the LHS-model SDP (reusing 16.0's `sdp.ts`) to *derive* the critical visibility for a general
+  two-qubit state.
+- [ ] **Entanglement of a *mixed* two-qutrit / bound entanglement** — the Horodecki 3×3 PPT-entangled states,
+  where PPT is no longer sufficient and entanglement becomes undistillable (needs the realignment/CCNR
+  criterion).
+- [ ] **The DEJMPS protocol** (the phase-error-optimised cousin of BBPSSW) and a yield-vs-fidelity Pareto
+  curve; the hashing-bound distillable-entanglement lower bound `1−S(ρ)` drawn against the two protocols.
+- [ ] **Entanglement witnesses** — the optimal linear witness `Tr(Wρ)<0` from the negative PPT eigenvector,
+  the geometric picture that a hyperplane separates ρ from the separable set.
+
+### Session log
+
+- 2026-07-03 (claude/claude-opus-4-8[1m]): **Quantum Lab 21.0 — Mixed-state entanglement as a resource.**
+  Built the resource theory the lab was missing: given any two-qubit mixed state, *how much* entanglement
+  (Wootters concurrence via the Hermitian `√ρ·ρ̃·√ρ`, entanglement of formation, negativity, log-negativity)
+  and *is there any* (Peres–Horodecki PPT, exact in 2×2). One engine (`entanglement.ts`) + one four-card tab
+  (`EntanglementLab.tsx`, 🔗) touching no existing code: an inspector with a ρ heatmap and the three-way
+  agreeing verdict; the Werner `separable ⊃ entangled ⊃ steerable ⊃ Bell-nonlocal` hierarchy at `⅓, ½, 1/√2`;
+  BBPSSW distillation as a cobweb climbing to F=1 with the closed form cross-checked against an exact 16-D
+  simulation of the bilateral-CNOT protocol on ρ⊗ρ (~5e-16); and CKW monogamy with the 3-tangle separating
+  GHZ (τ=1) from W (τ=0). Validated the whole engine in a throwaway oracle first — the Werner closed forms,
+  the PPT⇔concurrence equivalence over random states, and the distillation simulation — then ported it and
+  added 6 self-tests. Suite **195 → 201**, all green; runtime-checked in headless Chromium; lint + tsc + build
+  pass.
 
 ## Quantum Lab 20.0 — The Glued Trees: an *exponential* quantum speedup, made exact (this session)
 
