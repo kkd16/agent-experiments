@@ -16,6 +16,7 @@ import { GossipLab } from './GossipLab';
 import { VClockLab } from './VClockLab';
 import { CommitLab } from './CommitLab';
 import { SnowLab } from './SnowLab';
+import { NakamotoLab } from './NakamotoLab';
 import { SnapshotLab } from './SnapshotLab';
 import { MutexLab } from './MutexLab';
 import { BrbLab } from './BrbLab';
@@ -175,6 +176,15 @@ export const LABS: LabDef[] = [
     icon: '❄',
     tag: 'metastable · probabilistic',
     Component: SnowLab,
+  },
+  {
+    id: 'nakamoto',
+    title: 'Nakamoto (proof of work)',
+    blurb:
+      'The consensus behind Bitcoin — and the odd one out here: no quorum, no leader, no vote, no fixed membership. Miners race to extend the chain (finding a block is a memoryless Poisson process weighted by hash power), and every node just adopts the longest chain it has seen. Two blocks found at once fork the chain; the fork resolves when one branch out-races the other, orphaning the loser. Safety is probabilistic — a block is only ever buried deeper, never truly final — so stage a 51% double-spend: pay a merchant, let the payment confirm, then reveal a longer secret chain that pays the money to yourself instead, and watch the "no finalised reversal" invariant break.',
+    icon: '⛏',
+    tag: 'proof-of-work · probabilistic',
+    Component: NakamotoLab,
   },
   {
     id: 'brb',

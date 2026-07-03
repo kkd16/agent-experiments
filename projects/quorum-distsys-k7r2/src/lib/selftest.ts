@@ -61,6 +61,9 @@ import { headOf, tailOf, type CraqCmd, type CraqState } from '../protocols/craq/
 import { createSnow } from '../protocols/snow/snow';
 import { snowInvariants, snowGauge } from '../protocols/snow/invariants';
 import { DEFAULT_SNOW_CONFIG, type SnowCmd, type SnowState, type Variant, type Colour } from '../protocols/snow/types';
+import { createNakamoto } from '../protocols/nakamoto/nakamoto';
+import { nakInvariants, nakGauge } from '../protocols/nakamoto/invariants';
+import { DEFAULT_NAK_CONFIG, ledgerOf, chainOf, heightOf, type NakCmd, type NakState, type Tx } from '../protocols/nakamoto/types';
 import { createSnapshot } from '../protocols/snapshot/snapshot';
 import { snapInvariants, snapGauge } from '../protocols/snapshot/invariants';
 import { DEFAULT_SNAP_CONFIG, type SnapCmd, type SnapState } from '../protocols/snapshot/types';
@@ -2929,6 +2932,161 @@ export function runSelfTests(): TestResult[] {
       }
     }
     return [ok, ok ? 'agreement held and every replica decided across 12 lossy runs' : worst];
+  });
+
+  // ---- Nakamoto (proof-of-work longest chain) ----
+  const nakKernel = (
+    seed: number,
+    ids: string[],
+    cfg: Partial<typeof DEFAULT_NAK_CONFIG> = {},
+    net = { minLatency: 15, maxLatency: 45, dropRate: 0 },
+  ) => {
+    const k = new Kernel<NakState, NakCmd>({
+      seed,
+      protocol: createNakamoto({ ...DEFAULT_NAK_CONFIG, ...cfg }),
+      nodeIds: ids,
+      network: net,
+    });
+    for (const id of ids) k.command(id, { type: 'setMining', on: true });
+    return k;
+  };
+  const nakStructBad = (k: Kernel<NakState, NakCmd>): string => {
+    const bad = nakInvariants(k.views()).slice(0, 2).find((iv) => !iv.ok); // Chain validity + Conservation
+    return bad ? `${bad.name}: ${bad.detail}` : '';
+  };
+  const nakAnyBad = (k: Kernel<NakState, NakCmd>): string => {
+    const bad = nakInvariants(k.views()).find((iv) => !iv.ok);
+    return bad ? `${bad.name}: ${bad.detail}` : '';
+  };
+  const nakState = (k: Kernel<NakState, NakCmd>, id: string): NakState => k.views().find((v) => v.id === id)!.state;
+
+  t('Nakamoto', 'Determinism: same seed ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = nakKernel(77, ['A', 'B', 'C', 'D', 'E']);
+      for (let i = 0; i < 220; i++) {
+        k.advance(20);
+        if (i === 60) k.command('A', { type: 'submitTx', tx: { id: 'x', from: 'alice', to: 'bob', amount: 5, nonce: 0 } });
+        if (i === 120) k.crash('C');
+        if (i === 160) k.restart('C');
+      }
+      return k.serialize();
+    };
+    const a = run();
+    const b = run();
+    return [a === b, a === b ? 'identical serialization across two runs' : 'runs diverged'];
+  });
+
+  t('Nakamoto', 'Honest miners grow one chain (deep prefix agreed)', () => {
+    let worst = '';
+    let ok = true;
+    for (const seed of [1, 42, 99]) {
+      const k = nakKernel(seed, ['A', 'B', 'C', 'D', 'E'], { k: 6 });
+      for (let i = 0; i < 400; i++) k.advance(20);
+      const g = nakGauge(k.views());
+      const bad = nakAnyBad(k);
+      if (bad || g.height < 6 || g.deepestFork > 3 || g.reverted) {
+        ok = false;
+        worst = bad || `seed ${seed}: height ${g.height}, fork ${g.deepestFork}`;
+        break;
+      }
+    }
+    return [ok, ok ? 'chain grew and nodes agreed on all but the tip across 3 seeds' : worst];
+  });
+
+  t('Nakamoto', 'All invariants hold through 1,000 crash/restart steps', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+    const k = nakKernel(11, ids, { k: 6 });
+    const chaos = new Rng(999);
+    let bad = '';
+    for (let i = 0; i < 1000 && !bad; i++) {
+      k.advance(20);
+      bad = nakAnyBad(k);
+      if (bad) {
+        bad = `step ${i}: ${bad}`;
+        break;
+      }
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 4) k.crash(chaos.pick(up)!);
+      else if (roll < 0.06 && down.length) k.restart(chaos.pick(down)!);
+    }
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    for (let i = 0; i < 100; i++) k.advance(20);
+    if (!bad) bad = nakAnyBad(k);
+    return [!bad, !bad ? 'chain validity, conservation & no-reversal held throughout and after heal' : bad];
+  });
+
+  t('Nakamoto', 'Partition forks the chain; heal reconverges it', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const k = nakKernel(5, ids, { k: 6 });
+    for (let i = 0; i < 120; i++) k.advance(20);
+    const preH = nakGauge(k.views()).commonPrefix;
+    k.partition([['A', 'B', 'C'], ['D', 'E', 'F']]);
+    let structOk = true;
+    for (let i = 0; i < 180 && structOk; i++) {
+      k.advance(20);
+      if (nakStructBad(k)) structOk = false;
+    }
+    const forked = nakGauge(k.views()).distinctTips >= 2;
+    k.healNetwork();
+    for (let i = 0; i < 400 && structOk; i++) {
+      k.advance(20);
+      if (nakStructBad(k)) structOk = false;
+    }
+    const g = nakGauge(k.views());
+    const ok = structOk && forked && g.deepestFork <= 3 && g.height > preH;
+    const detail = ok
+      ? `forked into ${g.distinctTips >= 1 ? '2' : '?'} chains then reconverged to #${g.commonPrefix} @ height ${g.height}`
+      : !structOk
+        ? 'structural invariant broke'
+        : !forked
+          ? 'partition did not fork the chain'
+          : `did not reconverge (fork ${g.deepestFork})`;
+    return [ok, detail];
+  });
+
+  t('Nakamoto', '51% attacker double-spends: a finalised payment is reverted', () => {
+    const ids = ['A', 'B', 'C', 'D', 'E'];
+    const atk = 'E';
+    const k = nakKernel(3, ids, { k: 3 });
+    const pay: Tx = { id: 'pay', from: 'mallory', to: 'merchant', amount: 50, nonce: 0, tag: 'pay' };
+    for (const id of ids) if (id !== atk) k.command(id, { type: 'submitTx', tx: pay });
+    const evil: Tx = { id: 'evil', from: 'mallory', to: 'mallory2', amount: 50, nonce: 0, tag: 'double-spend' };
+    k.command(atk, { type: 'setAttackTx', tx: evil });
+    k.command(atk, { type: 'setPower', power: 12 }); // majority hash power
+    k.command(atk, { type: 'setAttacker', on: true });
+
+    // Run until an honest node treats the payment as k-deep (the merchant ships).
+    let shipped = false;
+    for (let i = 0; i < 800 && !shipped; i++) {
+      k.advance(20);
+      for (const id of ids) {
+        if (id === atk) continue;
+        const s = nakState(k, id);
+        const chain = chainOf(s.blocks, s.tip);
+        const b = chain.find((bl) => bl.txs.some((tx) => tx.tag === 'pay'));
+        if (b && heightOf(s.blocks, s.tip) - b.height >= 3) {
+          shipped = true;
+          break;
+        }
+      }
+    }
+    const before = ledgerOf(nakState(k, 'A').blocks, nakState(k, 'A').tip).ledger;
+    const merchantPaid = before['merchant'].balance;
+
+    // Reveal the longer secret chain; the honest network reorgs onto it.
+    k.command(atk, { type: 'release' });
+    for (let i = 0; i < 500; i++) k.advance(20);
+    const g = nakGauge(k.views());
+    const after = ledgerOf(nakState(k, 'A').blocks, nakState(k, 'A').tip).ledger;
+    const ok = shipped && merchantPaid === 50 && g.reverted && after['merchant'].balance === 0 && after['mallory2'].balance === 50;
+    return [
+      ok,
+      ok
+        ? 'payment confirmed (merchant=50) then reverted by the longer secret chain (merchant=0, mallory²=50) — double-spend'
+        : `shipped=${shipped} paidBefore=${merchantPaid} merchantAfter=${after['merchant'].balance} mallory2After=${after['mallory2'].balance} reverted=${g.reverted}`,
+    ];
   });
 
   return out;

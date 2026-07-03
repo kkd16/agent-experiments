@@ -20,7 +20,8 @@ export function Home() {
           <code>(N,R,W)</code> quorums, sloppy quorums + hinted handoff and vector-clock siblings, a
           Chord DHT, CRDTs, gossip / SWIM failure detection, vector clocks and atomic commit — plus
           <b> Snow / Avalanche</b> metastable consensus that reaches agreement by random subsampling
-          instead of quorums, <b>Chandy–Lamport</b> consistent global snapshots of a running
+          instead of quorums, <b>Nakamoto</b> proof-of-work longest-chain consensus (the engine behind
+          Bitcoin — with a live 51% double-spend attack), <b>Chandy–Lamport</b> consistent global snapshots of a running
           computation, <b>Lamport</b> logical-clock mutual exclusion, and <b>Bracha</b> Byzantine
           reliable broadcast. And a from-scratch <b>linearizability checker</b> — the Wing &amp; Gong
           decision procedure — that certifies a concurrent history (textbook, random, or a real ABD run)
