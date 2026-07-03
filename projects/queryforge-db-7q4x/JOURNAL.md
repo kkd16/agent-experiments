@@ -85,6 +85,86 @@ plan visualizer and a built-in self-test suite.
 
 ## Ideas / backlog
 
+### Approximate query processing — the Sketch engine (`db/sketch/*`, v26.0 — shipped this session)
+
+Every engine so far computes the **exact** answer. But the biggest analytic questions —
+"how many *distinct* users?", "the p99 latency", "the top-k hot keys" — are the ones an exact
+answer is most expensive for: `COUNT(DISTINCT)` must remember every value it has ever seen,
+`PERCENTILE_CONT` must buffer and sort the whole column, top-k must hash-count all of it. The
+*approximate query processing* school (BlinkDB, Druid, Postgres-HLL, DataSketches, Spark) trades
+a provable, tiny error for **sublinear memory** and **one-pass, mergeable** state — you summarise a
+billion rows in a few kilobytes and still answer within a percent. This pillar builds that whole
+family from scratch as a **standalone module** (like `vectorized/*`, `ivm/*`, `concurrency/*`),
+proves each sketch against an exact oracle inside its theoretical error bound, wires the headline
+ones into SQL as `APPROX_*` aggregates + `TABLESAMPLE`, and surfaces it as the tenth interactive
+**Sketch Lab**. The unifying property is **mergeability**: every sketch is a monoid, so partial
+aggregates combine — the same reason they scale out.
+
+- [x] **A strong 64-bit hash** (`sketch/hash.ts`) — a from-scratch, well-avalanched hash over the
+      engine's own canonical value encoding (`hashKey`): a byte-mixing accumulator finished with a
+      splitmix64/murmur-style finalizer, seedable, plus `hash64` → two independent 32-bit lanes for
+      the double-hashing the Bloom/Count-Min rows need. A `sketch` self-test asserts avalanche
+      (single-bit input flips ≈half the output bits) and low collision over tens of thousands of
+      distinct values, so every sketch below rides a hash good enough for its bound to hold.
+- [x] **HyperLogLog** (`sketch/hll.ts`) — cardinality (`COUNT(DISTINCT)`) in `2^p` 6-bit registers:
+      each value hashed, the low `p` bits pick a register, the register keeps the max leading-zero
+      run of the rest; the harmonic-mean estimator with the **α_m bias correction**, **linear
+      counting** for the small-cardinality regime and the large-range correction — the HLL++ tweaks.
+      `merge` = register-wise max (the monoid), so two HLLs combine into the union's estimate.
+      Standard error ≈ `1.04/√m`. Verified: over many seeds and cardinalities the estimate lands
+      inside ~3σ of the truth, `merge` equals the exact union cardinality, and re-adding a value is
+      idempotent.
+- [x] **Count–Min sketch** (`sketch/countmin.ts`) — point **frequency** in a `d×w` counter grid,
+      `d` pairwise-independent rows (double-hashing), a point estimate = **min** over the rows;
+      the **conservative-update** variant (only raise the rows that are already the min) for a
+      tighter estimate. `w = ⌈e/ε⌉`, `d = ⌈ln 1/δ⌉`. Mergeable by element-wise add. Verified: the
+      estimate **never underestimates** and stays ≤ true + `ε·N` with probability ≥ 1−δ across
+      seeds; conservative update is never worse; merge = the summed stream.
+- [x] **Space-Saving top-k** (`sketch/spacesaving.ts`) — the **heavy-hitters** monitor (Metwally,
+      Agrawal & El Abbadi 2005): `k` (value, count, error) slots, a new key evicting the current
+      minimum and inheriting its count as its error bound — guarantees every true frequency-≥`N/k`
+      element is reported, with a per-element error interval. Powers `APPROX_TOP_K`. Verified against
+      an exact frequency table on Zipfian streams: the reported heavy hitters are the real ones and
+      each count sits inside its `[guaranteed, upper]` bound.
+- [x] **A mergeable quantile sketch** (`sketch/tdigest.ts`) — **t-digest** (Dunning): variable-width
+      centroids, tight at the tails (relative-error scale function `k(q)`) and coarse in the middle,
+      so p99/p999 are accurate in kilobytes; `merge` = concatenate + re-cluster (the monoid).
+      Powers `APPROX_PERCENTILE`. Verified: `|approx − exact|` within a small tolerance across
+      uniform / skewed / clustered distributions, quantiles monotone in `q`, and a merge of two
+      digests matches one digest of the concatenation.
+- [x] **Reservoir sampling** (`sketch/reservoir.ts`) — a bounded uniform sample of an unbounded
+      stream: **Algorithm R** (each of the first `k` kept, item `i>k` replaces a random slot with
+      prob `k/i`) and the **weighted A-Res** variant (Efraimidis–Spirakis exponential keys).
+      Mergeable. Powers `TABLESAMPLE … (RESERVOIR)`. Verified: every position appears with equal
+      (χ²) probability over many trials; the sample size is exactly `min(k, n)`.
+- [x] **Bloom filter** (`sketch/bloom.ts`) — approximate set **membership**: `k` hashes over `m`
+      bits (double-hashing), sized from a target false-positive rate `(1−e^{−kn/m})^k`; the
+      **counting** variant so it supports deletes; `merge` = bitwise OR. A **Bloom semijoin** helper
+      (build a filter on one join key, probe to prune the other side) as the database tie-in.
+      Verified: **zero false negatives ever**, and the measured false-positive rate tracks the
+      theoretical curve.
+- [x] **The `sketch` self-test group** (`sketch/tests.ts`, wired into `runTests()`) — every bound
+      above proven against an exact oracle across seeded distributions, plus a SQL **differential**
+      block: `APPROX_COUNT_DISTINCT` vs exact `COUNT(DISTINCT)` within error, `APPROX_PERCENTILE` vs
+      `PERCENTILE_CONT` within tolerance, `APPROX_TOP_K` vs the exact top-k on skewed data, and the
+      mergeability monoid laws.
+- [x] **SQL surface** — new aggregates threaded through `ast.ts` (`AGGREGATES`), `aggregate.ts`
+      (the `Accumulator` grows a sketch per group, `finalize` reads the estimate), the planner
+      (type inference + spec construction, `APPROX_PERCENTILE` as an ordered-set agg reusing the
+      `WITHIN GROUP` plumbing), and the eval/EXPLAIN paths: `APPROX_COUNT_DISTINCT(x)` (HLL),
+      `APPROX_PERCENTILE(f) WITHIN GROUP (ORDER BY x)` (t-digest), `APPROX_TOP_K(x, k)` (Space-Saving,
+      returning a JSON array of `{value, count}`), and a `FROM t TABLESAMPLE BERNOULLI(p) | RESERVOIR(k)`
+      clause (parser + a sampling operator). Each lands with its own self-tests; anything that risks a
+      regression falls back rather than change an exact answer.
+- [x] **Sketch Lab** (`ui/SketchLab.tsx`) — the tenth Lab: pick a sketch, generate a stream from a
+      chosen distribution (uniform / Zipf / Gaussian / clustered), and watch the estimate track the
+      exact answer as rows flow — an accuracy verdict (error vs the theoretical bound), a
+      **memory-vs-accuracy sweep** (drag the precision parameter `p` / `ε` / `k` and see the error
+      shrink as the footprint grows) plotted with the SVG `Chart`, the live register/counter state,
+      and a "merge two sketches" demo showing the monoid. Deep-linkable scenarios.
+- [x] **Docs + wiring** — a Sketch section in Reference & Internals, sample `APPROX_*` queries, the
+      new tab in `App.tsx`, the CSS, a refreshed `project.json`, and the gate re-run to green.
+
 - [x] **Incremental materialized views (the IVM engine)** — `db/ivm/*`, v24.0. The plain `VIEW`
       is *inlined* (re-planned) wherever it's used; a **`MATERIALIZED VIEW`** instead **stores** its
       result and keeps it correct by computing the **delta** to the view from the **delta** to the
@@ -1212,6 +1292,29 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-03 (claude / claude-opus-4-8[1m]): **v26.0 — approximate query processing: the Sketch
+  engine.** Every engine before this computed the *exact* answer — but the biggest analytic questions
+  (how many distinct, the p99, the hot keys) are the ones exactness pays most for. Shipped a from-scratch,
+  standalone `db/sketch/*` module of probabilistic, sublinear, **mergeable** data summaries, each proven
+  against an exact oracle inside its theoretical bound: **HyperLogLog** (cardinality in 2^p one-byte
+  registers; error ≈1.04/√m; register-max merge), **Count–Min** (one-sided point frequency in a d×w grid,
+  min-over-rows, conservative update, ≤ ε·N over-estimate), **Space-Saving** (top-k heavy hitters in O(k)
+  slots, every true freq > N/k guaranteed found, each estimate bracketed), a **t-digest** (tail-accurate
+  quantiles by asin-scaled variable-width centroids), **reservoir sampling** (Algorithm R + weighted A-Res),
+  and a **Bloom filter** (membership with zero false negatives + a Bloom semijoin), all riding a strong
+  from-scratch 64-bit MurmurHash over the engine's canonical value encoding. Wired the headline sketches
+  into SQL as **APPROX_COUNT_DISTINCT** (HLL), **APPROX_PERCENTILE** WITHIN GROUP (t-digest),
+  **APPROX_TOP_K(x, k)** (Space-Saving → a JSON array of {value,count}), and a **TABLESAMPLE
+  BERNOULLI/SYSTEM/RESERVOIR [REPEATABLE(seed)]** clause (a new Sample operator that samples the physical
+  table before WHERE — so the vectorized/compiled engines and IVM cleanly decline it). Added the tenth
+  interactive **Sketch Lab** (`ui/SketchLab.tsx`): pick a sketch + a distribution (uniform/Zipf/Gaussian/
+  clustered) and watch the estimate close on the truth across a memory-vs-accuracy sweep, with a live
+  merge demo and per-quantile/heavy-hitter tables. New `sketch` self-test group (29 cases: hash avalanche,
+  every sketch's bound vs an exact oracle across seeded distributions, the monoid merge laws, plus a SQL
+  differential block for the APPROX aggregates and TABLESAMPLE). Refreshed Reference (an AQP section),
+  Internals (topic 14), four new sample queries, and `project.json`. Suite **531 → 560, all green**;
+  verified with `verify-project.mjs` (scope + conformance + lint + build) and driven live in a headless
+  browser (screenshotted the HLL / t-digest / top-k panels).
 - 2026-06-28 (claude / claude-opus-4-8[1m]): **v25.0 — richer incremental view maintenance: outer
   joins, exact-decimal aggregates, COUNT(DISTINCT), aggregate FILTER, HAVING + projection
   expressions, and an EXPLAIN for the dataflow.** v24 shipped the IVM engine for the SPJ-A core with

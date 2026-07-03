@@ -17,6 +17,9 @@ import {
   DIV_DEFAULT_SCALE,
   type DecimalValue,
 } from './decimal'
+import { HyperLogLog } from './sketch/hll'
+import { TDigest } from './sketch/tdigest'
+import { SpaceSaving } from './sketch/spacesaving'
 import type { Row } from './catalog'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
@@ -43,6 +46,9 @@ export type AggName =
   | 'JSON_AGG'
   | 'JSON_OBJECT_AGG'
   | 'ARRAY_AGG'
+  | 'APPROX_COUNT_DISTINCT'
+  | 'APPROX_PERCENTILE'
+  | 'APPROX_TOP_K'
 
 export interface AggSpec {
   name: AggName
@@ -60,6 +66,8 @@ export interface AggSpec {
   fraction?: number
   /** Sort direction of the WITHIN GROUP (ORDER BY …) key, for ordered-set aggs. */
   dir?: 'ASC' | 'DESC'
+  /** k for APPROX_TOP_K — the number of heavy hitters to track/return. */
+  topk?: number
 }
 
 function needsList(name: AggName): boolean {
@@ -98,12 +106,19 @@ class Accumulator {
   private jsonSeen = 0
   // ARRAY_AGG keeps every value in arrival order (including NULLs).
   private arr: SqlValue[] | null
+  // Sketch state for the approximate aggregates — bounded memory, one pass.
+  private hll: HyperLogLog | null = null
+  private tdigest: TDigest | null = null
+  private spaceSaving: SpaceSaving | null = null
   constructor(spec: AggSpec) {
     this.seen = spec.distinct ? new Set() : null
     this.list = needsList(spec.name) ? [] : null
     this.jsonArr = spec.name === 'JSON_AGG' ? [] : null
     this.jsonObj = spec.name === 'JSON_OBJECT_AGG' ? {} : null
     this.arr = spec.name === 'ARRAY_AGG' ? [] : null
+    if (spec.name === 'APPROX_COUNT_DISTINCT') this.hll = new HyperLogLog(14)
+    else if (spec.name === 'APPROX_PERCENTILE') this.tdigest = new TDigest(200)
+    else if (spec.name === 'APPROX_TOP_K') this.spaceSaving = new SpaceSaving(Math.max(1, (spec.topk ?? 10) * 4))
   }
   update(spec: AggSpec, row: Row): void {
     if (spec.filter && spec.filter(row) !== true) return
@@ -144,8 +159,13 @@ class Accumulator {
       this.seen.add(k)
     }
     this.count++
+    // Approximate aggregates fold the value into a bounded sketch instead of
+    // buffering it — one pass, sublinear memory.
+    if (this.hll) this.hll.add(v)
+    if (this.spaceSaving) this.spaceSaving.add(v)
     const num =
       typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : isDecimal(v) ? decToNumber(v) : null
+    if (this.tdigest && num !== null) this.tdigest.add(num)
     if (num !== null) {
       this.sum += num
       this.nc++
@@ -271,6 +291,23 @@ class Accumulator {
           if (!best || e.n > best.n || (e.n === best.n && orderValues(e.v, best.v) < 0)) best = e
         }
         return best ? best.v : null
+      }
+      case 'APPROX_COUNT_DISTINCT':
+        // HyperLogLog estimate; COUNT-like, so an empty group is 0, not NULL.
+        return this.hll ? Math.round(this.hll.estimate()) : 0
+      case 'APPROX_PERCENTILE': {
+        // t-digest quantile; DESC flips the fraction (mirrors PERCENTILE_CONT).
+        if (!this.tdigest || this.tdigest.count() === 0) return null
+        const frac = clampFraction(spec.fraction)
+        const q = spec.dir === 'DESC' ? 1 - frac : frac
+        return this.tdigest.quantile(q)
+      }
+      case 'APPROX_TOP_K': {
+        // Space-Saving heavy hitters as a JSON array of {value, count}.
+        if (!this.spaceSaving || this.spaceSaving.count() === 0) return null
+        const k = Math.max(1, spec.topk ?? 10)
+        const hitters: Json[] = this.spaceSaving.topK(k).map((h) => ({ value: toJson(h.value), count: h.count }))
+        return makeJson(hitters)
       }
     }
   }

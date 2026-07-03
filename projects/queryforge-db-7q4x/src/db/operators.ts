@@ -12,6 +12,9 @@ import type { IndexKey } from './storage/btree'
 import type { Schema } from './schema'
 import type { Evaluator } from './eval'
 import { ginCandidates, tsMatch, asTsVector, type TsQuery } from './fts'
+import { Rng } from './fuzz/rng'
+import { Reservoir } from './sketch/reservoir'
+import type { TableSample } from './ast'
 
 /** Per-operator memory accounting, attached to spillable operators after they
  *  run (EXPLAIN ANALYZE) or predicted from estimates (plain EXPLAIN). Drives the
@@ -641,6 +644,87 @@ export class Filter implements Operator {
       estCost: this.estCost,
       actualRows: this.actualRows,
       extra: [],
+      children: [this.child.plan()],
+    }
+  }
+}
+
+/**
+ * TABLESAMPLE — an approximate sample of a base relation's rows.
+ *
+ *  • BERNOULLI(p) / SYSTEM(p): keep each row independently with probability p/100
+ *    (a streaming coin flip; with single-cell pages SYSTEM's block sampling
+ *    degenerates to the same per-row draw, so we treat them alike).
+ *  • RESERVOIR(k): a bounded uniform sample of exactly min(k, n) rows, drained
+ *    into a reservoir at open() (Algorithm R).
+ *
+ * REPEATABLE(seed) fixes the PRNG so the sample is reproducible; without it a
+ * fixed default seed keeps the engine deterministic (and self-tests replayable).
+ */
+export class Sample implements Operator {
+  readonly schema: Schema
+  estRows: number
+  estCost: number
+  actualRows = 0
+  private readonly child: Operator
+  private readonly spec: TableSample
+  private readonly rng: Rng
+  private readonly prob: number
+  private buffer: Row[] | null = null // materialized reservoir sample
+  private bufIdx = 0
+
+  constructor(child: Operator, spec: TableSample) {
+    this.child = child
+    this.spec = spec
+    this.schema = child.schema
+    this.rng = new Rng((spec.seed ?? 0x5a5a5a5a) >>> 0)
+    this.prob = spec.method === 'RESERVOIR' ? 1 : Math.max(0, Math.min(1, spec.arg / 100))
+    this.estRows =
+      spec.method === 'RESERVOIR'
+        ? Math.min(spec.arg, child.estRows)
+        : Math.max(1, Math.round(child.estRows * this.prob))
+    this.estCost = child.estCost + child.estRows * CPU_OP
+  }
+  open() {
+    this.child.open()
+    if (this.spec.method === 'RESERVOIR') {
+      const res = new Reservoir<Row>(Math.max(1, Math.floor(this.spec.arg)), (this.spec.seed ?? 0x5a5a5a5a) >>> 0)
+      for (let row = this.child.next(); row !== null; row = this.child.next()) res.add(row)
+      this.buffer = res.sample()
+      this.bufIdx = 0
+    }
+  }
+  next(): Row | null {
+    if (this.buffer) {
+      if (this.bufIdx >= this.buffer.length) return null
+      this.actualRows++
+      return this.buffer[this.bufIdx++]
+    }
+    for (;;) {
+      const row = this.child.next()
+      if (row === null) return null
+      if (this.rng.next() < this.prob) {
+        this.actualRows++
+        return row
+      }
+    }
+  }
+  close() {
+    this.child.close()
+    this.buffer = null
+  }
+  plan(): PlanNode {
+    const detail =
+      this.spec.method === 'RESERVOIR'
+        ? `RESERVOIR(${this.spec.arg} rows)`
+        : `${this.spec.method}(${this.spec.arg}%)`
+    return {
+      op: 'Sample',
+      detail,
+      estRows: this.estRows,
+      estCost: this.estCost,
+      actualRows: this.actualRows,
+      extra: this.spec.seed !== undefined ? [`repeatable seed ${this.spec.seed}`] : [],
       children: [this.child.plan()],
     }
   }

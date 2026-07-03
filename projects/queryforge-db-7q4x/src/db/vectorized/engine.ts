@@ -169,6 +169,7 @@ export function prepareVectorized(
   if (stmt.having) return { reason: 'HAVING' }
   if (stmt.groupingSets) return { reason: 'GROUPING SETS / ROLLUP / CUBE' }
   if (!stmt.from || !stmt.from.table) return { reason: 'FROM must be a single base table' }
+  if (stmt.from.sample) return { reason: 'TABLESAMPLE' }
 
   const tableName = stmt.from.table
   if (!db.hasTable(tableName)) return { reason: `unknown table "${tableName}"` }

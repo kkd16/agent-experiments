@@ -100,6 +100,15 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Approximate query processing  —  sketches',
+    entries: [
+      { syntax: 'APPROX_COUNT_DISTINCT(x)', note: 'HyperLogLog cardinality — distinct count in a fixed ~16 KB regardless of scale, within ≈0.8% (vs exact COUNT(DISTINCT), which must remember every value). Works per group under GROUP BY.' },
+      { syntax: 'APPROX_PERCENTILE(f) WITHIN GROUP (ORDER BY x)', note: 'A t-digest quantile — tail-accurate (p99/p999) in kilobytes, tracking PERCENTILE_CONT within a fraction of a percent.' },
+      { syntax: 'APPROX_TOP_K(x, k)', note: 'Space-Saving heavy hitters — the k most frequent values as a JSON array of {value, count}, one pass, O(k) memory. Any value with true frequency > N/k is guaranteed to be found.' },
+      { syntax: 'FROM t TABLESAMPLE BERNOULLI(p) | SYSTEM(p) | RESERVOIR(k) [REPEATABLE(seed)]', note: 'An approximate scan of the physical table before WHERE: BERNOULLI/SYSTEM keep each row with probability p%, RESERVOIR returns exactly k uniform rows. REPEATABLE(seed) makes the draw reproducible; the plan shows a Sample operator. Explore all of this in the Sketch Lab.' },
+    ],
+  },
+  {
     title: 'Subqueries',
     entries: [
       { syntax: 'WHERE x > (SELECT …)', note: 'Scalar subquery — must return one row / one column (0 rows → NULL).' },

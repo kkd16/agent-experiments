@@ -1020,4 +1020,45 @@ SET work_mem = 8;
 EXPLAIN ANALYZE SELECT g, COUNT(*), SUM(v) FROM big_agg GROUP BY g ORDER BY g;
 RESET work_mem;`,
   },
+  {
+    title: 'APPROX_COUNT_DISTINCT — HyperLogLog vs exact COUNT(DISTINCT)',
+    sql: `-- HyperLogLog estimates distinct cardinality in a fixed ~16 KB, no matter how
+-- many distinct values — where exact COUNT(DISTINCT) must remember every one.
+-- Here the estimate lands within a fraction of a percent of the truth.
+CREATE TABLE events (id INTEGER, user_id INTEGER, region TEXT);
+INSERT INTO events (id, user_id, region)
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 20000)
+  SELECT n, n % 8000, CASE n % 4 WHEN 0 THEN 'us' WHEN 1 THEN 'eu' WHEN 2 THEN 'apac' ELSE 'latam' END FROM s;
+SELECT
+  COUNT(DISTINCT user_id)          AS exact_users,
+  APPROX_COUNT_DISTINCT(user_id)   AS approx_users,
+  region,
+  APPROX_COUNT_DISTINCT(user_id)   AS approx_users_per_region
+FROM events GROUP BY region ORDER BY region;`,
+  },
+  {
+    title: 'APPROX_PERCENTILE & APPROX_TOP_K — t-digest + Space-Saving',
+    sql: `-- APPROX_PERCENTILE (a t-digest) tracks PERCENTILE_CONT at the tail in kilobytes;
+-- APPROX_TOP_K (Space-Saving) returns the heavy hitters as JSON {value,count}.
+CREATE TABLE latency (id INTEGER, ms REAL, endpoint TEXT);
+INSERT INTO latency (id, ms, endpoint)
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 20000)
+  SELECT n, (n * 7 % 1000) + (n % 50) * 20, '/api/' || (CASE WHEN n % 10 < 6 THEN 'search' WHEN n % 10 < 9 THEN 'cart' ELSE 'checkout' END) FROM s;
+SELECT
+  PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY ms) AS exact_p99,
+  APPROX_PERCENTILE(0.99) WITHIN GROUP (ORDER BY ms) AS approx_p99,
+  APPROX_TOP_K(endpoint, 3) AS hot_endpoints
+FROM latency;`,
+  },
+  {
+    title: 'TABLESAMPLE — an approximate scan (BERNOULLI / RESERVOIR)',
+    sql: `-- TABLESAMPLE draws a sample of the physical table before the WHERE. BERNOULLI(p)
+-- keeps each row with probability p%; RESERVOIR(k) returns exactly k uniform rows.
+-- REPEATABLE(seed) makes the draw reproducible; EXPLAIN shows the Sample operator.
+CREATE TABLE wide (id INTEGER, bucket INTEGER);
+INSERT INTO wide (id, bucket)
+  WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 10000)
+  SELECT n, n % 5 FROM s;
+SELECT bucket, COUNT(*) AS sampled FROM wide TABLESAMPLE BERNOULLI(10) REPEATABLE(42) GROUP BY bucket ORDER BY bucket;`,
+  },
 ]

@@ -56,6 +56,7 @@ import {
   MergeJoin,
   NestedLoopJoin,
   Project,
+  Sample,
   SeqScan,
   SetOpExec,
   Sort,
@@ -364,7 +365,8 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
     case 'cast':
       return e.type
     case 'func':
-      if (e.name === 'COUNT' || e.name === 'GROUPING' || e.name === 'GROUPING_ID') return 'INTEGER'
+      if (e.name === 'COUNT' || e.name === 'GROUPING' || e.name === 'GROUPING_ID' || e.name === 'APPROX_COUNT_DISTINCT')
+        return 'INTEGER'
       // Ordered-set aggregates that return one of the ordered values keep that
       // value's type; PERCENTILE_CONT interpolates and is always REAL.
       if (e.name === 'PERCENTILE_DISC' || e.name === 'MODE') {
@@ -383,6 +385,7 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
         [
           'TO_JSON', 'JSON', 'JSON_BUILD_OBJECT', 'JSON_BUILD_ARRAY', 'JSON_OBJECT_KEYS',
           'JSON_EXTRACT_PATH', 'JSON_STRIP_NULLS', 'JSONB_SET', 'JSON_SET', 'JSON_AGG', 'JSON_OBJECT_AGG',
+          'APPROX_TOP_K',
         ].includes(e.name)
       )
         return 'JSON'
@@ -414,7 +417,7 @@ export function inferType(e: Expr, schema: Schema, ctx: CompileCtx): ColumnType 
           'POW', 'POWER', 'MOD', 'EXP', 'LN', 'LOG', 'LOG10', 'PI', 'SIN', 'COS', 'TAN', 'ASIN',
           'ACOS', 'ATAN', 'ATAN2', 'RADIANS', 'DEGREES', 'RANDOM', 'JULIANDAY',
           'STDDEV', 'STDDEV_SAMP', 'STDDEV_POP', 'VARIANCE', 'VAR_SAMP', 'VAR_POP', 'MEDIAN',
-          'PERCENTILE_CONT',
+          'PERCENTILE_CONT', 'APPROX_PERCENTILE',
         ].includes(e.name)
       )
         return 'REAL'
@@ -1794,7 +1797,10 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
   // For a chain of two or more INNER joins, search left-deep join orders with a
   // Selinger-style subset DP and keep the cheapest. Outer joins / CROSS chains
   // aren't freely reorderable, so they fall through to the written-order planner.
-  const reordered = env.optimize !== false && canReorderJoins(stmt) ? planJoinOrder(stmt, env, statTables, wherePreds, consumed) : null
+  const reordered =
+    env.optimize !== false && canReorderJoins(stmt) && !stmt.from?.sample
+      ? planJoinOrder(stmt, env, statTables, wherePreds, consumed)
+      : null
   if (reordered) {
     op = reordered.op
     schema = reordered.schema
@@ -1804,12 +1810,16 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
     statTables.set(base.alias.toLowerCase(), base.table)
     schema = tableSchema(base.table, base.alias)
 
+    // TABLESAMPLE draws its sample from the *physical* table, before any WHERE —
+    // so a sampled base relation forgoes index access (which would sample the
+    // already-filtered rows) and wraps the raw scan in a Sample operator.
+    const sample = stmt.from!.sample
     if (basePreserved) {
       const baseApplicable = wherePreds.filter((p) => !consumed.has(p) && resolvableIn(p, schema, env))
       // Covering-index detection only for a single base table (no joins / derived
       // relation), where every column reference belongs to this table.
       const cover = stmt.joins.length === 0 && !stmt.from!.subquery ? coveringColumns(stmt) : null
-      const idx = env.optimize === false ? null : chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
+      const idx = sample || env.optimize === false ? null : chooseIndexAccess(base.table, schema, baseApplicable, statTables, cover?.ok ? cover.names : null)
       if (idx) {
         op = idx.op
         // A covering (index-only) scan emits only the indexed columns, so adopt
@@ -1819,9 +1829,11 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       } else {
         op = new SeqScan(base.table, schema)
       }
+      if (sample) op = new Sample(op, sample)
       op = applyPushdown(op, schema, wherePreds, consumed, env, false, statTables)
     } else {
       op = new SeqScan(base.table, schema)
+      if (sample) op = new Sample(op, sample)
     }
 
     // --- joins --------------------------------------------------------------
@@ -1922,7 +1934,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
           throw new SqlError(`${e.name} requires WITHIN GROUP (ORDER BY <expr>)`, 'bind')
         }
         let fraction: number | undefined
-        if (e.name === 'PERCENTILE_CONT' || e.name === 'PERCENTILE_DISC') {
+        if (e.name === 'PERCENTILE_CONT' || e.name === 'PERCENTILE_DISC' || e.name === 'APPROX_PERCENTILE') {
           const fv = e.args.length ? evalConst(e.args[0]) : undefined
           if (typeof fv !== 'number') {
             throw new SqlError(`${e.name} expects a numeric fraction between 0 and 1`, 'bind')
@@ -1945,6 +1957,16 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
       const arg2 =
         e.name === 'JSON_OBJECT_AGG' && e.args[1] ? compileExpr(e.args[1], preCtx) : undefined
 
+      // APPROX_TOP_K(x, k): the 2nd argument is a constant k (heavy hitters to return).
+      let topk: number | undefined
+      if (e.name === 'APPROX_TOP_K') {
+        const kv = e.args.length > 1 ? evalConst(e.args[1]) : undefined
+        if (typeof kv !== 'number' || !Number.isFinite(kv) || kv < 1) {
+          throw new SqlError('APPROX_TOP_K(x, k) requires a positive integer k', 'bind')
+        }
+        topk = Math.floor(kv)
+      }
+
       return {
         name: e.name as AggName,
         star: e.star,
@@ -1953,6 +1975,7 @@ function planCore(stmt: SelectStmt, env: PlanEnv, embedOrderLimit: boolean): Ope
         arg2,
         label: exprLabel(e),
         sep,
+        topk,
         filter: e.filter ? compileExpr(e.filter, preCtx) : undefined,
       }
     })

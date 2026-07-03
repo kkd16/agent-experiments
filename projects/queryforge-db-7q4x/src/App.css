@@ -2632,3 +2632,53 @@ body {
 .ivm-log-none { color: var(--txt-faint); }
 .ivm-log-bad { color: var(--red); font-weight: 700; }
 @media (max-width: 900px) { .ivm-cols { grid-template-columns: 1fr; } }
+
+/* ── Sketch Lab ─────────────────────────────────────────────────────────── */
+.sk-lab { display: flex; flex-direction: column; gap: 18px; max-width: 980px; }
+.sk-head h2 { margin: 0 0 6px; font: 700 20px var(--sans); color: var(--txt); }
+.sk-head p { margin: 0; font: 13.5px/1.6 var(--sans); color: var(--txt-dim); max-width: 820px; }
+.sk-head em { color: var(--txt); font-style: normal; font-weight: 600; }
+.sk-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.sk-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 13px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--bg-1); cursor: pointer; transition: border-color .12s, background .12s; }
+.sk-tab:hover { border-color: var(--accent); }
+.sk-tab.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-1)); }
+.sk-tab-label { font: 600 13px var(--sans); color: var(--txt); }
+.sk-tab-tag { font: 11px var(--mono); color: var(--txt-faint); }
+.sk-tab.active .sk-tab-tag { color: var(--accent); }
+.sk-controls { display: flex; flex-wrap: wrap; gap: 26px; padding: 14px 16px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 10px; }
+.sk-control { display: flex; flex-direction: column; gap: 6px; }
+.sk-control > label { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--txt-faint); }
+.sk-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.sk-seg button { border: none; background: var(--bg-2); color: var(--txt-dim); font: 12.5px var(--sans); padding: 5px 11px; cursor: pointer; border-right: 1px solid var(--line-2); }
+.sk-seg button:last-child { border-right: none; }
+.sk-seg button:hover { color: var(--txt); }
+.sk-seg button.active { background: var(--accent); color: #06101f; font-weight: 600; }
+.sk-hint { font: 11.5px var(--mono); color: var(--txt-faint); }
+.sk-panel { display: flex; flex-direction: column; gap: 16px; padding: 18px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 12px; }
+.sk-stat-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.sk-stat { display: flex; flex-direction: column; gap: 3px; padding: 10px 14px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; min-width: 150px; }
+.sk-stat-k { font: 11px var(--sans); text-transform: uppercase; letter-spacing: .03em; color: var(--txt-faint); }
+.sk-stat-v { font: 700 19px var(--mono); color: var(--txt); }
+.sk-stat-v.accent { color: var(--accent-2); }
+.sk-chart { display: flex; flex-direction: column; gap: 6px; }
+.sk-chart-y { font: 11.5px var(--sans); color: var(--txt-dim); }
+.sk-svg { width: 100%; height: auto; }
+.sk-bar { fill: var(--accent); opacity: .55; }
+.sk-bar.best { fill: var(--green); opacity: 1; }
+.sk-bar-val { fill: var(--txt); font: 600 10.5px var(--mono); }
+.sk-axis { fill: var(--txt-dim); font: 11px var(--sans); }
+.sk-axis-mem { fill: var(--txt-faint); font: 10px var(--mono); }
+.sk-table { width: 100%; border-collapse: collapse; font: 12.5px var(--mono); }
+.sk-table th { text-align: left; font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .03em; color: var(--txt-faint); padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line-2); }
+.sk-table td { padding: 6px 12px 6px 0; color: var(--txt-dim); border-bottom: 1px solid var(--line); }
+.sk-table td.accent { color: var(--accent-2); font-weight: 600; }
+.sk-table td.good { color: var(--green); }
+.sk-table td.bad { color: var(--amber); }
+.sk-table td.dim { color: var(--txt-faint); }
+.sk-verdict { font: 13px/1.6 var(--sans); color: var(--txt-dim); padding: 12px 14px; border-radius: 9px; border-left: 3px solid var(--green); background: color-mix(in srgb, var(--green) 8%, var(--bg-2)); }
+.sk-verdict.warn { border-left-color: var(--amber); background: color-mix(in srgb, var(--amber) 8%, var(--bg-2)); }
+.sk-verdict strong { color: var(--txt); }
+.sk-verdict code { font: 11.5px var(--mono); background: var(--bg-3); padding: 1px 5px; border-radius: 4px; color: var(--accent-2); }
+.sk-foot { font: 12px/1.6 var(--sans); color: var(--txt-faint); padding-top: 4px; }
+.sk-foot code { font: 11px var(--mono); color: var(--txt-dim); }
+@media (max-width: 900px) { .sk-controls { gap: 16px; } }
