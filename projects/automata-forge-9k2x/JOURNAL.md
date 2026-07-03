@@ -807,8 +807,70 @@ agree with the v9 explicit checker at **every** state. Everything stays library-
 - [x] Also run headless during development (`node --experimental-strip-types`, extensionless-import
       resolver hook): all 7 green, then the runner kept out of `src` so it doesn't ship.
 
+## v12 — arithmetic decided by automata: a from-scratch Presburger solver (planned + built this session)
+
+The lab already turns *logics* into automata — LTL/CTL/CTL\* into Büchi/labelling engines. The one
+classical result that turns an **arithmetic** theory into automata was still missing: **Presburger
+arithmetic** (first-order linear integer arithmetic — `+`, integer constants, `<`, `=`, `∧∨¬→↔`, and
+`∃`/`∀` over ℕ) is **decidable** (Presburger, 1929), and the cleanest modern decision procedure is
+automata-theoretic: read a tuple of naturals **least-significant-bit-first** as a word over the
+bit-vector alphabet `{0,1}ᵏ`, and *every* formula is a regular language of such words. Atoms are tiny
+carry-automata; `∧∨¬` are the DFA boolean algebra the lab already owns; `∃x` is **track projection →
+NFA → subset determinize → 0-saturate**; `∀x = ¬∃¬`. A closed formula collapses to the empty alphabet:
+its automaton is nonempty **iff the sentence is true**. This is the engine inside MONA / the
+Boudet–Comon / Wolper–Boigelot NDD line, built here from scratch and made visible.
+
+### Plan (all shipped this session unless noted)
+
+- [x] `engine/presburger/automaton.ts` — the bit-vector DFA core: a `PDfa` (total, **0-stable**:
+      `w∈L ⇔ w·0∈L`, so trailing high-order zeros never matter and a language *is* a set of naturals),
+      a generic `fromSym` reachability builder, Moore `minimize`, `product` (`∧∨→↔`), `complement`,
+      `projectExists` (drop a track → NFA → subset → `saturateZero`), `isEmpty`/`shortestWitness`,
+      `accepts`, and `enumerate` (shortest solution tuples, LSBF-decoded).
+- [x] `engine/presburger/atoms.ts` — the atomic constructions. `buildLinear(a, op, c)` for every
+      `Σ aᵢxᵢ {≤,<,≥,>,=,≠} c` (the LSBF **carry automaton**: state = the running bound, `s→⌊(s−a·b)/2⌋`
+      for `≤`, the parity-gated `(s−a·b)/2` for `=`), and `buildCongruence(a, c, m)` for `Σ aᵢxᵢ ≡ c (mod m)`
+      (state = `(residue, 2ⁱ mod m)`). Every atom is provably 0-stable and finite-state.
+- [x] `engine/presburger/formula.ts` — the surface AST (linear terms, comparisons, `d | t` divisibility,
+      `¬∧∨→↔`, `∃`/`∀`), free-variable analysis, and a pretty-printer.
+- [x] `engine/presburger/parser.ts` — a hand-written tokenizer + precedence-climbing parser accepting
+      **both** ASCII (`E x. A y. ...`, `<=`, `->`, `|`) and unicode (`∃ ∀ ≤ ≥ ≠ → ↔ ∧ ∨ ¬`), with linearity
+      checking (`x*y` is a friendly error) and exact-column diagnostics.
+- [x] `engine/presburger/build.ts` — the recursive compiler `formula → PDfa` that threads the
+      variable-track **scope** through quantifiers and captures a **construction trace** (every
+      subformula → its minimized automaton + the operation that made it) for the visualizer.
+- [x] `engine/presburger/semantics.ts` — an independent **brute-force oracle**: direct evaluation of a
+      formula over an assignment (bounded quantifier domains), the ground truth the automaton is graded against.
+- [x] `engine/presburger/examples.ts` — a gallery: evenness `∃y. x=2y`, `x+y=z`, the Frobenius/
+      Chicken-McNugget set `∃a∃b. x=3a+5b` (everything but 1,2,4,7), `x<y`, divisibility, a **false**
+      sentence `∃x. 2x=1`, and true sentences `∀x∃y. y=x+1` / `∀x. (2|x) ∨ (2|x+1)`.
+- [x] `engine/presburger/selftest.ts` — the differential suite: **exhaustive** quantifier-free
+      solution-set agreement automaton≡oracle over `[0,2⁷)ᵏ`, existential agreement against a
+      bounded-witness oracle, De Morgan / double-negation / idempotence algebra, totality+determinism
+      +0-stability invariants on every produced machine, and the known-answer battery (evens, Frobenius,
+      `2x=1` unsatisfiable, `2|x` = the mod-2 automaton).
+- [x] `engine/presburger/diagram.ts` — a `PDfa → GraphModel` adapter (bit-vector edge labels compressed
+      to subcubes like `1·`, the reject sink hidden) so the shared pan/zoom/export renderer draws it for free.
+- [x] `views/PresburgerView.tsx` (+ css) — the twelfth mode, **Arithmetic**: a formula editor with inline
+      errors + example picker, and tabs **Construct** (the step-by-step build tree, each subformula's
+      automaton), **Automaton** (the final machine + a bit-vector alphabet legend), **Solutions**
+      (shortest solution tuples + a live membership tester that encodes integers to a word and animates
+      the run — or, for a sentence, a TRUE/FALSE verdict), **Verify** (the live self-test), and **About**.
+- [x] Wire the `arith` permalink mode into `App.tsx` + `lib/hash.ts` (full `#/arith?…` round-trip).
+
+### Verification headline
+
+The construction is graded, live, against an oracle that shares **no code** with it: across hundreds of
+random quantifier-free formulas the automaton accepts a length-≤7 word **iff** the direct semantics say
+the decoded tuple satisfies the formula — an exhaustive `[0,128)ᵏ` differential — plus existential
+agreement, the boolean-algebra laws, per-machine structural invariants (total, deterministic, 0-stable,
+minimal) and the known-answer battery. The undecidable neighbour (multiplication → Gödel) is one axis away.
+
 ## Future ideas (not yet built)
 
+- [ ] **Presburger over ℤ** (two's-complement / sign-extension encoding) beside the current ℕ construction.
+- [ ] **ω-automata for the reals** (Boigelot–Bronne–Rassart RVA) — the same idea one dimension up.
+- [ ] **A quantifier-elimination view** (Cooper's algorithm) shown beside the automata procedure.
 - [x] **Symbolic (BDD) CTL model checking** — shipped in **v11** (Symbolic mode): a from-scratch ROBDD
       engine (hash-consing, `ite`, quantification, relational product, `satCount`) and BDD-based CTL
       fixpoints, differential-tested to agree with the v9 explicit checker at every state (see v11 above).
