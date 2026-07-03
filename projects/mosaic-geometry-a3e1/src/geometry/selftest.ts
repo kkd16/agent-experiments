@@ -107,6 +107,9 @@ import {
   clipLineToRect,
   arrangementFaces,
   arrangementStats,
+  locateFace,
+  levelOfPoint,
+  pointInConvex,
   zoneComplexity,
   kLevelPath,
   kthValueAt,
@@ -1559,6 +1562,28 @@ function canonicalHull(hull: number[]): number[] {
     maxZoneRatio = Math.max(maxZoneRatio, zoneComplexity(lines, q, FRAME01).edges / n)
   }
   check('arrangement: zone complexity is O(n) (≤ 8n over 20 trials)', maxZoneRatio <= 8, `(max ${maxZoneRatio.toFixed(2)}n)`)
+
+  // Point location off the convex cells: the located face contains the probe and
+  // its level equals the number of lines below the probe; interior probes always
+  // land in some face (the cells tile the frame).
+  let locBad = 0
+  let locMiss = 0
+  let locChecked = 0
+  for (let trial = 0; trial < 15; trial++) {
+    const rng = mulberry32(trial + 700)
+    const lines = siLines(4 + (trial % 6), trial + 700).map(lineFromSI)
+    const cells = arrangementFaces(lines, FRAME01)
+    for (let s = 0; s < 40; s++) {
+      const probe: Point = { x: 0.03 + rng() * 0.94, y: 0.03 + rng() * 0.94 }
+      const idx = locateFace(cells, probe)
+      if (idx < 0) { locMiss++; continue }
+      locChecked++
+      if (!pointInConvex(cells[idx].polygon, probe)) locBad++
+      if (cells[idx].level !== levelOfPoint(lines, probe)) locBad++
+    }
+  }
+  check(`arrangement: located face contains the probe & its level = lines below (${locChecked} probes)`, locBad === 0, `(${locBad} bad)`)
+  check('arrangement: the convex cells tile the frame (every interior probe located)', locMiss === 0, `(${locMiss} unlocated)`)
 
   // k-levels are the k-th order statistic; envelopes are the min/max lines.
   let levelBad = 0

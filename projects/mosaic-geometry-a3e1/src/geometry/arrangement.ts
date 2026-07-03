@@ -151,6 +151,27 @@ export function arrangementFaces(lines: Line[], frame: Rect): Face[] {
   return cells.map((polygon) => ({ polygon, level: levelOfPoint(lines, centroidOf(polygon)) }))
 }
 
+/** Whether p lies inside the convex, CCW-wound polygon (edges included). */
+export function pointInConvex(poly: Point[], p: Point): boolean {
+  if (poly.length < 3) return false
+  for (let i = 0, n = poly.length; i < n; i++) {
+    const a = poly[i]
+    const b = poly[(i + 1) % n]
+    if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < -1e-9) return false
+  }
+  return true
+}
+
+/**
+ * Locate the arrangement face containing p by a direct scan of the convex cells
+ * — the O(F) point-location baseline for an arrangement. Returns the face index
+ * or −1 (outside the frame). Its level always equals `levelOfPoint`.
+ */
+export function locateFace(faces: Face[], p: Point): number {
+  for (let i = 0; i < faces.length; i++) if (pointInConvex(faces[i].polygon, p)) return i
+  return -1
+}
+
 /** How many (non-vertical) lines pass strictly below the point. */
 export function levelOfPoint(lines: Line[], p: Point): number {
   let below = 0
