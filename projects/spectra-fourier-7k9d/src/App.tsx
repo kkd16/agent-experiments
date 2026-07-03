@@ -1,0 +1,77 @@
+import { useHashRoute } from './hooks/useHashRoute'
+import Epicycles from './modes/Epicycles'
+import Spectrum from './modes/Spectrum'
+import FilterMode from './modes/Filter'
+import Spectrogram from './modes/Spectrogram'
+import About from './modes/About'
+
+const ROUTES = [
+  { id: 'epicycles', label: 'Epicycles' },
+  { id: 'spectrum', label: 'Spectrum' },
+  { id: 'filter', label: 'Filter' },
+  { id: 'spectrogram', label: 'Spectrogram' },
+  { id: 'about', label: 'About' },
+]
+
+function BrandMark() {
+  return (
+    <svg className="brand-mark" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="48" y2="48">
+          <stop offset="0" stopColor="#5eead4" />
+          <stop offset="0.55" stopColor="#38bdf8" />
+          <stop offset="1" stopColor="#a78bfa" />
+        </linearGradient>
+      </defs>
+      <circle cx="24" cy="24" r="20" stroke="url(#g)" strokeWidth="2" opacity="0.5" />
+      <circle cx="34" cy="19" r="9" stroke="url(#g)" strokeWidth="2" opacity="0.8" />
+      <circle cx="30" cy="27" r="4" stroke="url(#g)" strokeWidth="2" />
+      <circle cx="24" cy="24" r="2.4" fill="#eef1ff" />
+      <line x1="24" y1="24" x2="34" y2="19" stroke="url(#g)" strokeWidth="1.6" />
+      <line x1="34" y1="19" x2="30" y2="27" stroke="url(#g)" strokeWidth="1.6" />
+    </svg>
+  )
+}
+
+export default function App() {
+  const [route, navigate] = useHashRoute('epicycles')
+  const active = ROUTES.some((r) => r.id === route) ? route : 'epicycles'
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <BrandMark />
+          <div className="brand-text">
+            <span className="brand-name">Spectra</span>
+            <span className="brand-sub">Fourier Analysis &amp; Synthesis Lab</span>
+          </div>
+        </div>
+        <nav className="nav">
+          {ROUTES.map((r) => (
+            <button
+              key={r.id}
+              className={r.id === active ? 'nav-link active' : 'nav-link'}
+              onClick={() => navigate(r.id)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      {active === 'epicycles' && <Epicycles />}
+      {active === 'spectrum' && <Spectrum />}
+      {active === 'filter' && <FilterMode />}
+      {active === 'spectrogram' && <Spectrogram />}
+      {active === 'about' && <About />}
+
+      <footer className="footer">
+        <span>Spectra — a from-scratch FFT lab. All transforms computed live in your browser.</span>
+        <span>
+          <a href="#/about">How it works →</a>
+        </span>
+      </footer>
+    </div>
+  )
+}
