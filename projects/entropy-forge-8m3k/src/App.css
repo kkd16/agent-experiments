@@ -166,3 +166,16 @@ svg text { font-family: var(--mono); }
 .testrow .name { flex: 1; }
 .dot-ok { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); flex: 0 0 auto; }
 .dot-bad { width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 6px var(--red); flex: 0 0 auto; }
+
+/* Image Studio (PNG) — a checkerboard behind images so alpha reads clearly. */
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, #2a3242 25%, transparent 25%),
+    linear-gradient(-45deg, #2a3242 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2a3242 75%),
+    linear-gradient(-45deg, transparent 75%, #2a3242 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-color: #1b2130;
+}
+.checkerboard canvas { image-rendering: pixelated; }

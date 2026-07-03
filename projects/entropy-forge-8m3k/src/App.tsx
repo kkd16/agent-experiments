@@ -14,6 +14,7 @@ import { ContextMixing } from './routes/ContextMixing'
 import { Lempel } from './routes/Lempel'
 import { Deflate } from './routes/Deflate'
 import { Lzma } from './routes/Lzma'
+import { Png } from './routes/Png'
 import { Burrows } from './routes/Burrows'
 import { Suffix } from './routes/Suffix'
 import { Workbench } from './routes/Workbench'
@@ -33,6 +34,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   lempel: Lempel,
   deflate: Deflate,
   lzma: Lzma,
+  png: Png,
   burrows: Burrows,
   suffix: Suffix,
   workbench: Workbench,

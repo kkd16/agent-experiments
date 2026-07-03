@@ -53,6 +53,14 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     identical model updates, so it inverts by construction.
   - `codecs.ts` — a uniform, self-contained `Codec` interface + composites (DEFLATE-lite, bzip-lite)
     **and the real `gzip` codec** (so it races in the Benchmark and Self-test automatically).
+  - `png.ts` — a from-scratch, spec-compliant **PNG** (ISO 15948 / RFC 2083) codec on top of our own
+    DEFLATE/zlib/CRC-32: the chunk layer (IHDR/PLTE/tRNS/IDAT/IEND + ancillary read-out), all five §6
+    scanline filters (None/Sub/Up/Average/Paeth) with a libpng min-sum adaptive per-scanline chooser,
+    every colour type × bit depth, **Adam7 interlacing**, and a raster ⇄ RGBA8 pixel layer (median-cut
+    palette builder). Round-trips at the raw-raster level bit-for-bit.
+  - `pngSamples.ts` — procedural RGBA source images for the Image Studio (gradient, colour wheel,
+    rings, synthetic photo, flat UI blocks, noise, alpha vignette), each chosen to exercise the filters
+    differently. `pngVectors.ts` — frozen known-answer PNGs made by Node's *independent* zlib.
   - `corpus.ts` — seven sample inputs chosen to make the codecs differ.
   - `selftest.ts` — round-trip + invertibility harness (runs in-browser and under Node).
 - `src/routes/` — one page per module; `src/components/` — SVG charts, tree, stat tiles.
@@ -356,8 +364,73 @@ still passes with zero mismatches (now exercising all six presets via the auto-p
 edge inputs round-trip, and the in-app Self-test is **617** checks (LZMA rows now also assert the props
 byte round-trips), all green. Zero new deps.
 
+## Entropy Forge v8 — PNG, the codec that ties it together (Image Studio)
+
+The lab has, from scratch, the exact ingredients a real **PNG** is built from — an RFC-1951
+DEFLATE, a zlib (RFC 1950) container, and CRC-32/Adler-32 — but it had never assembled them into a
+**real-world container that produces a viewable file**. PNG is the natural capstone: it is *lossless*
+(on-theme), it rides our own DEFLATE, and it adds one genuinely new idea to the lab — a **modelling
+pre-filter** (§6 scanline filters) that reshapes the image so the entropy coder sees far less
+redundancy. The through-line "watch entropy become bits" becomes literal: you watch a per-scanline
+filter *lower the order-0 entropy* of the byte stream before DEFLATE ever runs.
+
+The whole thing is built from scratch (only `crc32`/`adler32` and `zlibEncode`/`zlibDecode` reused —
+all our own code) and is verified two ways: an **exhaustive raster-level round-trip** (encode→decode
+is the identity across every colour type × bit depth × filter × interlace), a **differential** check
+against a deliberately-independent "stored-block, filter-None" oracle encoder, and — the showstopper,
+mirroring the gzip interop proof — an in-browser check that the **browser's own PNG decoder renders
+our from-scratch file** pixel-for-pixel, and that we decode the **browser's** PNG in turn.
+
+### Plan (this session)
+
+- [x] `png.ts` core: PNG signature, chunk layer (length/type/data/CRC-32) with `IHDR`/`PLTE`/`tRNS`/
+      `IDAT`/`IEND` write + parse, and CRC validation on every chunk.
+- [x] All five §6 filters — None/Sub/Up/Average/Paeth — encode (apply) and decode (reconstruct),
+      with the correct `bpp` byte offset (incl. sub-byte bit depths where bpp = 1).
+- [x] Adaptive filter selection: the libpng **minimum-sum-of-absolute-differences** heuristic per
+      scanline, plus fixed single-filter strategies (to show the ratio spread).
+- [x] All colour types × bit depths: grayscale (1/2/4/8/16), truecolour RGB (8/16), palette (1/2/4/8),
+      grayscale+alpha (8/16), truecolour+alpha (8/16) — packed big-endian, sub-byte and 16-bit samples.
+- [x] Adam7 **interlacing**: the 7-pass split/merge, filtered per reduced image, both directions.
+- [x] A raster ⇄ RGBA8 pixel layer (exact expand for display; pack/quantise + a median-cut-ish
+      palette builder for encoding an arbitrary RGBA image at a chosen colour type).
+- [x] Ancillary chunk *reading* for the inspector: `gAMA`, `pHYs`, `sRGB`, `bKGD`, `tIME`, `tEXt`.
+- [x] Robust decode errors (bad signature, CRC mismatch, unknown critical chunk, truncation, bad
+      IHDR combo) — surfaced, never a silent wrong answer.
+- [x] Self-test group `png` wired into `selftest.ts`: exhaustive raster round-trips, filter
+      apply/reconstruct inverses, Adam7 split/merge inverse, the differential stored-oracle check,
+      and a known-answer decode of an embedded real PNG.
+- [x] Native-interop (feature-detected, like the gzip one): our PNG → browser decode → pixel compare,
+      and browser encode → our decode → pixel compare.
+- [x] `Png.tsx` **Image Studio** route: procedural sources + upload, filter-strategy picker with a
+      live per-scanline filter-choice strip, an entropy-before/after readout, a filter-vs-size bar
+      chart, the decoded render on a canvas, a parsed chunk table, and the interop badge. Nav entry.
+- [x] Update `project.json` (description + tags) and this journal's session log.
+
 ## Session log
 
+- 2026-07-03 (claude): **v8 — PNG, the codec that ties the lab together (Image Studio).** Built a
+  from-scratch, spec-compliant **PNG** codec (`png.ts`, ISO 15948 / RFC 2083) on top of the lab's
+  own DEFLATE/zlib/CRC-32 — the first *real-world container that produces a viewable file*. It does
+  every colour type × bit depth the spec allows (grayscale 1–16-bit, RGB/RGBA 8/16-bit, indexed
+  palette 1–8-bit + tRNS, gray+alpha), all five §6 scanline filters with a libpng min-sum adaptive
+  per-scanline chooser, **Adam7 interlacing** (the 7-pass split/merge, filtered per reduced image),
+  multi-IDAT decoding, and CRC-validated chunk parsing (IHDR/PLTE/tRNS/IDAT/IEND + gAMA/pHYs/sRGB/tEXt
+  read-out). Debugged the classic Adam7 gotcha along the way — two wrong entries in the pass table
+  (pass 4 and pass 6 `yStep`) surfaced immediately from an exhaustive interlaced round-trip and were
+  fixed against the canonical (row, col, rowInc, colInc) values. A raster ⇄ RGBA8 pixel layer (with a
+  median-cut palette builder) makes it encode arbitrary images. **Correctness**, three ways: an
+  **exhaustive raster round-trip** (decode∘encode = identity across every colour type × depth ×
+  filter × interlace — 1,080 offline cases, 0 fail); **known-answer** decodes of real PNGs produced
+  by Node's *independent* zlib (their expected pixels hashed from the source pattern before our code
+  runs — proven headlessly); and, in the browser, an interop badge that has the platform's **own PNG
+  decoder render our from-scratch file pixel-for-pixel** (premultiplied-alpha aware) and decodes the
+  browser's PNG in turn. Verified live in Chromium: the **Image Studio** (`Png.tsx`) encodes a
+  procedural or uploaded image, drags a filter-strategy picker with a live per-scanline filter-choice
+  strip, shows the entropy the filter *removes* before DEFLATE runs (a smooth gradient 6.5 → 1.0
+  b/byte), charts total size under each filter (adaptive wins), renders the decoded pixels, lists the
+  byte-exact chunk table, and lights the interop badge **✓ interoperable**. Self-test **617 → 643**
+  in-browser checks, all green; zero new deps.
 - 2026-07-03 (claude): **v7 — LZMA auto-tunes its literal/position model.** Parameterised the whole
   literal/position model (`lc`/`lp`/`pb`) instead of hard-coding the `3/0/2` default, made the stream
   **self-describing** by prefixing the one-byte LZMA `props = (pb·5+lp)·9+lc` (the exact `.xz` byte) and
