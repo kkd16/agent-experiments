@@ -93,8 +93,38 @@ class Parser {
     if (this.check('fn')) return this.parseFn();
     if (this.check('let')) return this.parseGlobal();
     if (this.check('struct')) return this.parseStruct();
+    if (this.check('enum')) return this.parseEnum();
     const t = this.peek();
-    throw new CompileError(`expected a function, global, or struct declaration, found '${t.text || t.type}'`, t.span, 'parse');
+    throw new CompileError(`expected a function, global, struct, or enum declaration, found '${t.text || t.type}'`, t.span, 'parse');
+  }
+
+  // enum Name { Circle(float), Rect(float, float), Empty }  — variants are
+  // comma-separated (a trailing comma is allowed). A variant is a name with an
+  // optional parenthesized list of positional payload types (any value type,
+  // including another enum/struct for recursive shapes). A bare name is a
+  // nullary variant.
+  private parseEnum(): import('./ast').EnumDecl {
+    const start = this.expect('enum').span;
+    const nameTok = this.expect('ident');
+    this.expect('{');
+    const variants: import('./ast').EnumVariant[] = [];
+    let tag = 0;
+    while (!this.check('}') && !this.check('eof')) {
+      const v = this.expect('ident');
+      const fields: Ty[] = [];
+      if (this.accept('(')) {
+        if (!this.check(')')) {
+          do {
+            fields.push(this.parseType());
+          } while (this.accept(','));
+        }
+        this.expect(')');
+      }
+      variants.push({ name: v.text, fields, span: v.span, tag: tag++ });
+      if (!this.accept(',')) break;
+    }
+    this.expect('}');
+    return { kind: 'enum', name: nameTok.text, variants, span: this.spanFrom(start) };
   }
 
   // struct Name { f1: T1; f2: T2; … }  — fields are `name: type` separated by
@@ -246,6 +276,8 @@ class Parser {
         return this.parseDoWhile();
       case 'switch':
         return this.parseSwitch();
+      case 'match':
+        return this.parseMatch();
       case 'for':
         return this.parseFor();
       case 'return':
@@ -369,6 +401,39 @@ class Parser {
     }
     this.expect('}');
     return { node: 'switch', disc, cases, default: dflt, span: this.spanFrom(start) };
+  }
+
+  // match disc { Circle(r) => { … }  Rect(w, h) => { … }  _ => { … } }
+  // Each arm is a pattern (a variant name with an optional binding list, or the
+  // wildcard `_`) followed by `=>` and a block. Bindings are identifiers, or `_`
+  // to ignore that payload field. The checker validates variants + exhaustiveness.
+  private parseMatch(): Stmt {
+    const start = this.expect('match').span;
+    const disc = this.parseExpr();
+    this.expect('{');
+    const arms: import('./ast').MatchArm[] = [];
+    while (!this.check('}') && !this.check('eof')) {
+      const armStart = this.peek().span;
+      const head = this.expect('ident');
+      let variant: string | null = head.text;
+      const binds: (string | null)[] = [];
+      if (head.text === '_') {
+        variant = null; // wildcard — no binding list allowed
+      } else if (this.accept('(')) {
+        if (!this.check(')')) {
+          do {
+            const b = this.expect('ident');
+            binds.push(b.text === '_' ? null : b.text);
+          } while (this.accept(','));
+        }
+        this.expect(')');
+      }
+      this.expect('=>');
+      const body = this.parseBlock();
+      arms.push({ variant, binds, body, span: this.spanFrom(armStart) });
+    }
+    this.expect('}');
+    return { node: 'match', disc, arms, span: this.spanFrom(start) };
   }
 
   private parseFor(): Stmt {

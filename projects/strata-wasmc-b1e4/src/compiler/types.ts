@@ -2,6 +2,8 @@ import { CompileError } from './diagnostics';
 import type {
   BinaryOp,
   Block,
+  ElemTy,
+  EnumDecl,
   Expr,
   Program,
   ScalarTy,
@@ -26,6 +28,90 @@ export interface SymbolTable {
   globals: Map<string, Ty>;
   /** every declared `struct`, keyed by name (preserves field order) */
   structs: Map<string, StructDecl>;
+  /** every declared `enum`, keyed by name (preserves variant order) */
+  enums: Map<string, EnumDecl>;
+  /** every variant of every enum, keyed by variant name (globally unique) */
+  variants: Map<string, VariantSig>;
+}
+
+export interface VariantSig {
+  enumName: string;
+  tag: number;
+  fields: Ty[];
+}
+
+// The parser can't tell a `struct` name from an `enum` name — both are user type
+// identifiers, and an enum may be declared after its use — so every type
+// annotation naming a user type is parsed as `{kind:'struct'}`. This pass, run
+// before checking, rewrites any such annotation that actually names a declared
+// enum into the `enum` kind, recursing through arrays and function-pointer
+// signatures and every `let`/`for` declaration inside function bodies. After it,
+// the rest of the compiler never has to second-guess a `struct`-tagged type.
+export function canonicalizeTypes(prog: Program): void {
+  const enumNames = new Set<string>();
+  for (const d of prog.decls) if (d.kind === 'enum') enumNames.add(d.name);
+  if (enumNames.size === 0) return;
+
+  const fixTy = (ty: Ty): Ty => {
+    if (ty.kind === 'struct') return enumNames.has(ty.name) ? { kind: 'enum', name: ty.name } : ty;
+    if (ty.kind === 'array') return { kind: 'array', elem: fixElem(ty.elem) };
+    if (ty.kind === 'fn') return { kind: 'fn', params: ty.params.map(fixTy), ret: fixTy(ty.ret) };
+    return ty;
+  };
+  // An array's element type has no `enum` variant (arrays of enums aren't
+  // supported yet); a struct-named enum element is left as-is so `validateTy`
+  // reports it with a precise "arrays of enums" error. A function-pointer element
+  // still fixes its own signature.
+  const fixElem = (e: ElemTy): ElemTy => {
+    if (e.kind === 'fn') return { ...e, params: e.params.map(fixTy), ret: fixTy(e.ret) };
+    return e;
+  };
+
+  const fixBlock = (b: Block): void => {
+    for (const s of b.stmts) fixStmt(s);
+  };
+  const fixStmt = (s: Stmt): void => {
+    switch (s.node) {
+      case 'let':
+        if (s.declTy) s.declTy = fixTy(s.declTy);
+        break;
+      case 'if':
+        fixBlock(s.then);
+        if (s.otherwise) fixBlock(s.otherwise);
+        break;
+      case 'while':
+        fixBlock(s.body);
+        break;
+      case 'switch':
+        for (const c of s.cases) fixBlock(c.body);
+        if (s.default) fixBlock(s.default);
+        break;
+      case 'match':
+        for (const a of s.arms) fixBlock(a.body);
+        break;
+      case 'for':
+        if (s.init) fixStmt(s.init);
+        fixBlock(s.body);
+        break;
+      case 'block':
+        fixBlock(s.block);
+        break;
+    }
+  };
+
+  for (const d of prog.decls) {
+    if (d.kind === 'fn') {
+      for (const p of d.params) p.ty = fixTy(p.ty);
+      d.retTy = fixTy(d.retTy);
+      fixBlock(d.body);
+    } else if (d.kind === 'global') {
+      if (d.declTy) d.declTy = fixTy(d.declTy);
+    } else if (d.kind === 'struct') {
+      for (const f of d.fields) f.ty = fixTy(f.ty);
+    } else if (d.kind === 'enum') {
+      for (const v of d.variants) v.fields = v.fields.map(fixTy);
+    }
+  }
 }
 
 // Builtins available without declaration. `print`/`int`/`float` are special-
@@ -139,7 +225,7 @@ const RESERVED_NAMES = new Set<string>([
 ]);
 
 class Checker {
-  syms: SymbolTable = { functions: new Map(), globals: new Map(), structs: new Map() };
+  syms: SymbolTable = { functions: new Map(), globals: new Map(), structs: new Map(), enums: new Map(), variants: new Map() };
   private scope = new Scope();
   private retTy: Ty = T_VOID;
   private loopDepth = 0;
@@ -149,6 +235,33 @@ class Checker {
   }
 
   check(prog: Program): SymbolTable {
+    // Rewrite any `struct`-tagged annotation that actually names an enum into the
+    // enum kind, so type comparisons below line up with construction/`match`.
+    canonicalizeTypes(prog);
+    // Pass 0a: collect enum + variant names first (so struct fields, function
+    // signatures and variant payloads can all refer to any enum, including
+    // forward / mutually-recursive references). Variant names are global and must
+    // be unique — a construction / pattern names a variant directly.
+    for (const d of prog.decls) {
+      if (d.kind === 'enum') {
+        if (!this.lowLevel && d.name.startsWith('__'))
+          throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
+        if (RESERVED_NAMES.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name))
+          throw new CompileError(`'${d.name}' is a reserved name and cannot name an enum`, d.span, 'type');
+        if (this.syms.enums.has(d.name))
+          throw new CompileError(`duplicate enum '${d.name}'`, d.span, 'type');
+        if (d.variants.length === 0)
+          throw new CompileError(`enum '${d.name}' must have at least one variant`, d.span, 'type');
+        this.syms.enums.set(d.name, d);
+        for (const v of d.variants) {
+          if (RESERVED_NAMES.has(v.name) || ARRAY_INTRINSICS.has(v.name) || STR_BUILTINS.has(v.name) || BIT_BUILTINS.has(v.name) || v.name.startsWith('__'))
+            throw new CompileError(`'${v.name}' is a reserved name and cannot name a variant`, v.span, 'type');
+          if (this.syms.variants.has(v.name))
+            throw new CompileError(`duplicate variant name '${v.name}' (variant names must be unique across all enums)`, v.span, 'type');
+          this.syms.variants.set(v.name, { enumName: d.name, tag: v.tag, fields: v.fields });
+        }
+      }
+    }
     // Pass 0: collect struct names (so field types and constructors can refer to
     // any struct, including forward / mutually-recursive references), then
     // validate each struct's fields once every name is known.
@@ -158,6 +271,8 @@ class Checker {
           throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
         if (RESERVED_NAMES.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name))
           throw new CompileError(`'${d.name}' is a reserved name and cannot name a struct`, d.span, 'type');
+        if (this.syms.enums.has(d.name) || this.syms.variants.has(d.name))
+          throw new CompileError(`'${d.name}' already names an enum or variant`, d.span, 'type');
         if (this.syms.structs.has(d.name))
           throw new CompileError(`duplicate struct '${d.name}'`, d.span, 'type');
         this.syms.structs.set(d.name, d);
@@ -166,12 +281,17 @@ class Checker {
     for (const d of prog.decls) {
       if (d.kind === 'struct') this.checkStructDecl(d);
     }
+    // Every variant's payload types are validated now that all struct + enum
+    // names are known (a payload may name any struct or enum, incl. its own).
+    for (const d of prog.decls) {
+      if (d.kind === 'enum') for (const v of d.variants) for (const ft of v.fields) this.validateTy(ft, v.span);
+    }
     // Pass 1: collect signatures so functions can be mutually recursive.
     for (const d of prog.decls) {
       if (d.kind === 'fn') {
         if (!this.lowLevel && d.name.startsWith('__'))
           throw new CompileError(`names beginning with '__' are reserved`, d.span, 'type');
-        if (this.syms.functions.has(d.name) || this.syms.structs.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || VEC_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
+        if (this.syms.functions.has(d.name) || this.syms.structs.has(d.name) || this.syms.enums.has(d.name) || this.syms.variants.has(d.name) || ARRAY_INTRINSICS.has(d.name) || STR_BUILTINS.has(d.name) || BIT_BUILTINS.has(d.name) || VEC_BUILTINS.has(d.name) || d.name === 'print' || d.name === 'long')
           throw new CompileError(`duplicate or reserved function name '${d.name}'`, d.span, 'type');
         for (const p of d.params) this.validateTy(p.ty, p.span);
         this.validateTy(d.retTy, d.span);
@@ -189,6 +309,7 @@ class Checker {
         if (declared.kind === 'void') throw new CompileError(`global '${d.name}' cannot be void`, d.span, 'type');
         if (declared.kind === 'fn') throw new CompileError(`a function pointer cannot be stored in a global (use a local or a parameter)`, d.span, 'type');
         if (declared.kind === 'vec') throw new CompileError(`a SIMD vector cannot be a global (vectors are value-only — use a local or a parameter)`, d.span, 'type');
+        if (declared.kind === 'enum') throw new CompileError(`an enum cannot be a global (it is heap-constructed — build it inside a function)`, d.span, 'type');
         if (declared.kind === 'null') throw new CompileError(`global '${d.name}' needs an explicit struct type for its null value (e.g. \`let ${d.name}: T = null;\`)`, d.span, 'type');
         if (declared.kind === 'array' && declared.elem.kind === 'struct' && declared.elem.name === '')
           throw new CompileError(`struct_array(...) needs an explicit element type — annotate the global`, d.span, 'type');
@@ -223,6 +344,12 @@ class Checker {
   private validateTy(ty: Ty, span: import('./diagnostics').Span): void {
     if (ty.kind === 'struct' && !this.syms.structs.has(ty.name))
       throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
+    if (ty.kind === 'enum' && !this.syms.enums.has(ty.name))
+      throw new CompileError(`unknown type '${ty.name}'`, span, 'type');
+    // An array element parsed as a struct name that actually names an enum can't
+    // be represented (arrays of enums aren't supported yet) — report it clearly.
+    if (ty.kind === 'array' && ty.elem.kind === 'struct' && this.syms.enums.has(ty.elem.name))
+      throw new CompileError(`arrays of enums are not supported yet — box the enum in a struct, or store its tag`, span, 'type');
     if (ty.kind === 'array' && ty.elem.kind === 'struct' && ty.elem.name !== '' && !this.syms.structs.has(ty.elem.name))
       throw new CompileError(`unknown type '${ty.elem.name}'`, span, 'type');
     if (ty.kind === 'array' && (ty.elem as Ty).kind === 'vec')
@@ -335,6 +462,51 @@ class Checker {
         if (s.default) this.checkBlock(s.default);
         break;
       }
+      case 'match': {
+        const dt = this.checkExpr(s.disc);
+        if (dt.kind !== 'enum')
+          throw new CompileError(`match requires an enum value, found ${tyName(dt)}`, s.disc.span, 'type');
+        const def = this.syms.enums.get(dt.name)!;
+        s.enumName = dt.name;
+        const covered = new Set<string>();
+        let sawWildcard = false;
+        for (const arm of s.arms) {
+          if (sawWildcard)
+            throw new CompileError(`unreachable match arm: a '_' wildcard already covers the rest`, arm.span, 'type');
+          if (arm.variant === null) {
+            sawWildcard = true;
+            if (arm.binds.length !== 0)
+              throw new CompileError(`the '_' wildcard arm takes no bindings`, arm.span, 'type');
+            this.checkBlock(arm.body);
+            continue;
+          }
+          const vs = this.syms.variants.get(arm.variant);
+          if (!vs || vs.enumName !== dt.name)
+            throw new CompileError(`'${arm.variant}' is not a variant of enum '${dt.name}'`, arm.span, 'type');
+          if (covered.has(arm.variant))
+            throw new CompileError(`duplicate match arm for variant '${arm.variant}'`, arm.span, 'type');
+          covered.add(arm.variant);
+          if (arm.binds.length !== vs.fields.length)
+            throw new CompileError(`variant '${arm.variant}' has ${vs.fields.length} field(s) but the pattern binds ${arm.binds.length}`, arm.span, 'type');
+          arm.tag = vs.tag;
+          arm.bindTys = vs.fields;
+          // Each named binding is a fresh local of the field's type, scoped to
+          // the arm body (an `_` binding is ignored, binding nothing).
+          this.scope.push();
+          arm.binds.forEach((b, i) => {
+            if (b !== null) this.scope.declare(b, vs.fields[i], arm.span);
+          });
+          this.checkBlock(arm.body);
+          this.scope.pop();
+        }
+        // Exhaustiveness: every variant must be covered, or a wildcard present.
+        if (!sawWildcard) {
+          const missing = def.variants.filter((v) => !covered.has(v.name)).map((v) => v.name);
+          if (missing.length > 0)
+            throw new CompileError(`non-exhaustive match on '${dt.name}': missing ${missing.join(', ')} (add each variant, or a '_' arm)`, s.span, 'type');
+        }
+        break;
+      }
       case 'for': {
         this.scope.push();
         if (s.init) this.checkStmt(s.init);
@@ -434,6 +606,14 @@ class Checker {
         if (local) return local;
         const g = this.syms.globals.get(e.name);
         if (g) return g;
+        // A bare name that is a nullary enum variant *constructs* that variant
+        // (`Empty`). Variants with payload must be called (`Circle(3.0)`).
+        const nv = this.syms.variants.get(e.name);
+        if (nv) {
+          if (nv.fields.length !== 0)
+            throw new CompileError(`variant '${e.name}' takes ${nv.fields.length} field(s) — construct it with '${e.name}(…)'`, e.span, 'type');
+          return { kind: 'enum', name: nv.enumName };
+        }
         // A bare function name used as a value *decays* to a function pointer
         // (like C / Go). Only user functions are first-class; builtins are not.
         const fsig = this.syms.functions.get(e.name);
@@ -554,6 +734,10 @@ class Checker {
         throw new CompileError(`'${op}' requires matching numeric or string operands, found ${tyName(lt)} and ${tyName(rt)}`, e.span, 'type');
       case '==':
       case '!=': {
+        // Enums are inspected with `match`, not compared: two constructions of the
+        // same variant are distinct handles, so `==` would be a silent footgun.
+        if (lt.kind === 'enum' || rt.kind === 'enum')
+          throw new CompileError(`'${op}' is not defined for enums — use a 'match' to inspect ${tyName(lt.kind === 'enum' ? lt : rt)}`, e.span, 'type');
         // Struct handles (and `null`) compare by reference identity.
         const refKind = (t: Ty): boolean => t.kind === 'struct' || t.kind === 'null';
         if (refKind(lt) && refKind(rt)) {
@@ -623,6 +807,19 @@ class Checker {
           throw new CompileError(`field '${f.name}' of '${name}' expects ${tyName(f.ty)}, got ${tyName(at)}`, e.args[i].span, 'type');
       });
       return { kind: 'struct', name };
+    }
+    // A call to a variant name constructs that variant: positional arguments fill
+    // its payload fields in order and the result is a value of the owning enum.
+    const variant = this.syms.variants.get(name);
+    if (variant) {
+      if (e.args.length !== variant.fields.length)
+        throw new CompileError(`variant '${name}' has ${variant.fields.length} field(s) but got ${e.args.length} argument(s)`, e.span, 'type');
+      variant.fields.forEach((ft, i) => {
+        const at = this.checkExpr(e.args[i]);
+        if (!this.coercible(at, ft))
+          throw new CompileError(`field ${i + 1} of '${name}' expects ${tyName(ft)}, got ${tyName(at)}`, e.args[i].span, 'type');
+      });
+      return { kind: 'enum', name: variant.enumName };
     }
     // builtins
     // --- SIMD vector builtins ------------------------------------------------

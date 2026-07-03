@@ -1446,6 +1446,167 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'enum-adt',
+    title: 'Algebraic data types & match',
+    blurb: 'A real `enum` (tagged union): variants carry typed payloads, `match` destructures them with exhaustiveness checking, and the whole thing is just an i32 handle + a tag word — reusing the struct machinery with no new backend.',
+    source: `// Strata enums are algebraic data types: a value is exactly one of several named
+// variants, each carrying its own typed payload. You take one apart with 'match',
+// which binds the payload and is checked for exhaustiveness at compile time (drop
+// an arm and the program won't compile — try it).
+//
+// Under the hood an enum value is an i32 handle into linear memory, laid out as a
+// tag word followed by the variant's payload — the same handle model structs use,
+// so the reference interpreter, the from-scratch VM and the compiled WebAssembly
+// all agree bit-for-bit at every optimization level.
+
+enum Shape {
+  Circle(float),
+  Rect(float, float),
+  Triangle(float, float),
+  Empty,
+}
+
+fn area(s: Shape) -> float {
+  match s {
+    Circle(r)      => { return 3.14159265358979 * r * r; }
+    Rect(w, h)     => { return w * h; }
+    Triangle(b, h) => { return 0.5 * b * h; }
+    Empty          => { return 0.0; }
+  }
+}
+
+// An Option type — the classic reason ADTs exist: make "no value" a value you
+// can't forget to handle. 'largest' returns None when nothing has positive area.
+enum MaybeArea { Some(float), None }
+
+fn largest(a: Shape, b: Shape, c: Shape) -> MaybeArea {
+  let best = area(a);
+  if (area(b) > best) { best = area(b); }
+  if (area(c) > best) { best = area(c); }
+  if (best <= 0.0) { return None; }
+  return Some(best);
+}
+
+fn main() {
+  print(area(Circle(2.0)));         // pi * 4
+  print(area(Rect(3.0, 4.0)));      // 12
+  print(area(Triangle(6.0, 5.0)));  // 15
+  print(area(Empty));               // 0
+
+  match largest(Circle(2.0), Rect(3.0, 4.0), Triangle(6.0, 5.0)) {
+    Some(x) => { print(x); }        // the biggest area
+    None    => { print(-1.0); }
+  }
+  match largest(Empty, Empty, Empty) {
+    Some(x) => { print(x); }
+    None    => { print(-1.0); }     // nothing had positive area
+  }
+}
+`,
+  },
+  {
+    id: 'enum-calc',
+    title: 'Expression evaluator (recursive enum)',
+    blurb: 'A recursive `enum` is an abstract syntax tree: an arithmetic expression built from Num/Add/Mul/Neg variants whose payloads are themselves expressions, then evaluated and pretty-printed by two recursive `match`es.',
+    source: `// A variant's payload can be another value of the same enum, so an enum is a
+// recursive tree with no extra machinery — a payload field is just an i32 handle,
+// exactly like a recursive struct. Here that tree is an arithmetic expression.
+
+enum Expr {
+  Num(int),
+  Add(Expr, Expr),
+  Sub(Expr, Expr),
+  Mul(Expr, Expr),
+  Neg(Expr),
+}
+
+// Evaluate the tree by matching each node and recursing into its children.
+fn eval(e: Expr) -> int {
+  match e {
+    Num(n)    => { return n; }
+    Add(a, b) => { return eval(a) + eval(b); }
+    Sub(a, b) => { return eval(a) - eval(b); }
+    Mul(a, b) => { return eval(a) * eval(b); }
+    Neg(x)    => { return -eval(x); }
+  }
+}
+
+// Render the tree back to a fully-parenthesized string — a second recursive
+// match, this one folding the tree into text with the string library.
+fn show(e: Expr) -> str {
+  match e {
+    Num(n)    => { return str(n); }
+    Add(a, b) => { return "(" + show(a) + " + " + show(b) + ")"; }
+    Sub(a, b) => { return "(" + show(a) + " - " + show(b) + ")"; }
+    Mul(a, b) => { return "(" + show(a) + " * " + show(b) + ")"; }
+    Neg(x)    => { return "-" + show(x); }
+  }
+}
+
+fn main() {
+  // (2 + 3) * -(4 - 9)  ==  25
+  let e = Mul(Add(Num(2), Num(3)), Neg(Sub(Num(4), Num(9))));
+  print(show(e) + " = " + str(eval(e)));
+
+  // 3x^2 + 2x + 1 at x = 5, built Horner-style  ==  86
+  let x = Num(5);
+  let poly = Add(Mul(x, Add(Mul(Num(3), x), Num(2))), Num(1));
+  print(show(poly) + " = " + str(eval(poly)));
+}
+`,
+  },
+  {
+    id: 'enum-vm',
+    title: 'A stack machine from two enums',
+    blurb: 'Two enums compose into a bytecode interpreter: `Op` is one instruction, `Prog` is a recursive list of ops, and a `match`-driven loop runs the program on a struct-backed stack — recursive/nested enums, structs, and arrays working together.',
+    source: `// Enums compose: one enum's payload can be another enum. Here 'Op' is a single
+// stack-machine instruction and 'Prog' is a linked list of them (Step carries an
+// Op *and* the rest of the program). The interpreter is just a match per op.
+
+enum Op { Push(int), Add, Sub, Mul, Neg, Dup }
+enum Prog { Step(Op, Prog), Halt }
+
+// A tiny operand stack backed by a struct-wrapped array (mutation through the
+// handle is visible to the caller, so push/pop update the shared stack).
+struct Stack { data: int[]; top: int; }
+fn push(s: Stack, v: int) { s.data[s.top] = v; s.top = s.top + 1; }
+fn pop(s: Stack) -> int { s.top = s.top - 1; return s.data[s.top]; }
+
+fn exec(op: Op, s: Stack) {
+  match op {
+    Push(n) => { push(s, n); }
+    Add     => { let b = pop(s); let a = pop(s); push(s, a + b); }
+    Sub     => { let b = pop(s); let a = pop(s); push(s, a - b); }
+    Mul     => { let b = pop(s); let a = pop(s); push(s, a * b); }
+    Neg     => { push(s, -pop(s)); }
+    Dup     => { let a = pop(s); push(s, a); push(s, a); }
+  }
+}
+
+// Run the program by walking the instruction list — a match that either executes
+// one op and recurses on the rest, or halts.
+fn run(p: Prog, s: Stack) {
+  match p {
+    Step(op, rest) => { exec(op, s); run(rest, s); }
+    Halt           => {}
+  }
+}
+
+fn main() {
+  let s = Stack(int_array(64), 0);
+  // Compute (3 + 4) * 2 - 5 = 9, then square it with Dup + Mul  ==  81
+  let prog =
+    Step(Push(3), Step(Push(4), Step(Add,
+    Step(Push(2), Step(Mul,
+    Step(Push(5), Step(Sub,
+    Step(Dup, Step(Mul,
+    Halt)))))))));
+  run(prog, s);
+  print(pop(s));
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

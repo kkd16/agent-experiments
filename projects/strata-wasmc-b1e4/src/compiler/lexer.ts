@@ -151,7 +151,7 @@ export function tokenize(source: string): Token[] {
 
     // multi-char operators (longest match first)
     const two = source.slice(i, i + 2);
-    const twoCharOps: TokenType[] = ['->', '==', '!=', '<=', '>=', '&&', '||', '<<', '>>'];
+    const twoCharOps: TokenType[] = ['->', '=>', '==', '!=', '<=', '>=', '&&', '||', '<<', '>>'];
     if ((twoCharOps as string[]).includes(two)) {
       push(two as TokenType, i, i + 2);
       i += 2;

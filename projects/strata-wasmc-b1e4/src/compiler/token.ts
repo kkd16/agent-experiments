@@ -25,6 +25,8 @@ export type TokenType =
   | 'true'
   | 'false'
   | 'struct'
+  | 'enum'
+  | 'match'
   | 'null'
   // punctuation & operators
   | '('
@@ -38,6 +40,7 @@ export type TokenType =
   | ':'
   | '.'
   | '->'
+  | '=>'
   | '='
   | '+'
   | '-'
@@ -90,5 +93,7 @@ export const KEYWORDS: Record<string, TokenType> = {
   true: 'true',
   false: 'false',
   struct: 'struct',
+  enum: 'enum',
+  match: 'match',
   null: 'null',
 };

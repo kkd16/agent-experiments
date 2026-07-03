@@ -3228,4 +3228,196 @@ fn main() {
   print(hyp(a, b) + hyp(a, b));
 }`,
   },
+
+  // --- enums (tagged unions) + match --------------------------------------
+  {
+    // Payload binding, a nullary variant, and a wildcard, all in one match.
+    name: 'enum-basic',
+    source: `enum Shape { Circle(int), Rect(int, int), Dot }
+fn area(s: Shape) -> int {
+  match s {
+    Circle(r)  => { return 3 * r * r; }
+    Rect(w, h) => { return w * h; }
+    _          => { return 0; }
+  }
+}
+fn main() {
+  print(area(Circle(4)));
+  print(area(Rect(3, 5)));
+  print(area(Dot));
+}`,
+  },
+  {
+    // A bare nullary variant as a value (no parens) and as a match pattern.
+    name: 'enum-nullary',
+    source: `enum Dir { North, East, South, West }
+fn turn(d: Dir) -> Dir {
+  match d {
+    North => { return East; }
+    East  => { return South; }
+    South => { return West; }
+    West  => { return North; }
+  }
+}
+fn code(d: Dir) -> int {
+  match d { North => { return 0; } East => { return 1; } South => { return 2; } West => { return 3; } }
+}
+fn main() {
+  let d = North;
+  for (let i = 0; i < 6; i = i + 1) { print(code(d)); d = turn(d); }
+}`,
+  },
+  {
+    // A recursive enum: an expression tree evaluated by a recursive match. The
+    // Add/Mul/Neg payloads are themselves Expr handles (recursion needs no new
+    // machinery — a payload field is just an i32 handle like a struct field).
+    name: 'enum-expr-tree',
+    source: `enum Expr { Num(int), Add(Expr, Expr), Mul(Expr, Expr), Neg(Expr) }
+fn eval(e: Expr) -> int {
+  match e {
+    Num(n)    => { return n; }
+    Add(a, b) => { return eval(a) + eval(b); }
+    Mul(a, b) => { return eval(a) * eval(b); }
+    Neg(x)    => { return -eval(x); }
+  }
+}
+fn main() {
+  // (2 + 3) * -(4) + 10  = -10
+  let e = Add(Mul(Add(Num(2), Num(3)), Neg(Num(4))), Num(10));
+  print(eval(e));
+  print(eval(Neg(Neg(Num(7)))));
+}`,
+  },
+  {
+    // A single non-escaping construction matched in the same function — SROA
+    // should scalarize the alloc and SCCP fold the tag, deleting the dead arm.
+    // The result must still equal -O0 at every level.
+    name: 'enum-option-sroa',
+    source: `enum Opt { Some(int), None }
+fn checked_half(x: int) -> Opt { if (x % 2 == 0) { return Some(x / 2); } return None; }
+fn describe(x: int) -> int {
+  let o: Opt = checked_half(x);
+  match o { Some(v) => { return v + 1; } None => { return -1; } }
+}
+fn main() {
+  let sum = 0;
+  for (let i = 0; i < 12; i = i + 1) { sum = sum + describe(i); }
+  print(sum);
+}`,
+  },
+  {
+    // A str payload printed inside an arm (exercises a heap-pointer field), plus
+    // an ignored `_` binding.
+    name: 'enum-result-str',
+    source: `enum Res { Ok(int, str), Err(str) }
+fn run(x: int) -> Res {
+  if (x < 0) { return Err("negative"); }
+  return Ok(x * x, "squared");
+}
+fn report(x: int) {
+  match run(x) {
+    Ok(v, _) => { print(v); }
+    Err(m)   => { print(m); }
+  }
+}
+fn main() { report(5); report(-1); report(9); }`,
+  },
+  {
+    // Mixed-type payload (int, long, float) — each field lands at its natural,
+    // aligned offset; the match binds and uses all three types.
+    name: 'enum-mixed-payload',
+    source: `enum Rec { Triple(int, long, float), Empty }
+fn total(r: Rec) -> float {
+  match r {
+    Triple(a, b, c) => { return float(a) + float(b) + c; }
+    Empty           => { return 0.0; }
+  }
+}
+fn main() {
+  print(total(Triple(3, 4000000000L, 1.5)));
+  print(total(Empty));
+}`,
+  },
+  {
+    // An enum stored in (and read back from) a struct field, then matched.
+    name: 'enum-in-struct',
+    source: `enum Cell { Empty, Wall, Cost(int) }
+struct Tile { c: Cell; visited: int; }
+fn weight(t: Tile) -> int {
+  match t.c { Empty => { return 1; } Wall => { return 1000; } Cost(n) => { return n; } }
+}
+fn main() {
+  let a = Tile(Cost(7), 0);
+  let b = Tile(Wall, 1);
+  a.c = Empty;
+  print(weight(a));
+  print(weight(b));
+  print(weight(Tile(Cost(42), 0)));
+}`,
+  },
+  {
+    // A cons-list built recursively and folded by matching — a recursive enum
+    // whose payload holds the tail handle. Also nests a match in a helper.
+    name: 'enum-cons-list',
+    source: `enum List { Cons(int, List), Nil }
+fn range(n: int) -> List {
+  let acc: List = Nil;
+  for (let i = 0; i < n; i = i + 1) { acc = Cons(i, acc); }
+  return acc;
+}
+fn sum(l: List) -> int {
+  match l { Cons(h, t) => { return h + sum(t); } Nil => { return 0; } }
+}
+fn length(l: List) -> int {
+  match l { Cons(_, t) => { return 1 + length(t); } Nil => { return 0; } }
+}
+fn main() {
+  let l = range(10);
+  print(sum(l));       // 0+1+...+9 = 45
+  print(length(l));    // 10
+  print(sum(Nil));
+}`,
+  },
+  {
+    // A match whose scrutinee is a phi of two different constructions (so the
+    // handle escapes SROA), and a nested match inside an arm.
+    name: 'enum-phi-nested',
+    source: `enum Tok { Plus, Minus, Val(int) }
+fn apply(acc: int, t: Tok) -> int {
+  match t {
+    Plus    => { return acc; }
+    Minus   => { return -acc; }
+    Val(n)  => {
+      let t2: Tok = n > 0 ? Plus : Minus;
+      match t2 { Plus => { return acc + n; } Minus => { return acc - n; } Val(_) => { return acc; } }
+    }
+  }
+}
+fn main() {
+  let acc = 0;
+  acc = apply(acc, Val(5));
+  acc = apply(acc, Val(-3));
+  acc = apply(acc, Minus);
+  acc = apply(acc, Val(10));
+  print(acc);
+}`,
+  },
+  {
+    // Only a wildcard arm (covers every variant) — the degenerate exhaustive
+    // match; plus a match used purely for its side effects (no return).
+    name: 'enum-wildcard-only',
+    source: `enum Color { Red, Green, Blue, Other(int) }
+fn main() {
+  let colors: int = 0;
+  for (let i = 0; i < 4; i = i + 1) {
+    let c: Color = i == 0 ? Red : i == 1 ? Green : i == 2 ? Blue : Other(i * 10);
+    match c {
+      Red      => { colors = colors + 1; }
+      Green    => { colors = colors + 10; }
+      _        => { colors = colors + 100; }
+    }
+  }
+  print(colors);
+}`,
+  },
 ];

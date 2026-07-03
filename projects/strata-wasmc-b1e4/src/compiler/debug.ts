@@ -1,6 +1,6 @@
-import type { Block, Expr, Program, Stmt, StructDecl, Ty } from './ast';
+import type { Block, EnumDecl, Expr, Program, Stmt, StructDecl, Ty } from './ast';
 import type { Span } from './diagnostics';
-import type { ArrayVal, FnVal, RtValue, StructVal } from './interp';
+import type { ArrayVal, EnumVal, FnVal, RtValue, StructVal } from './interp';
 import { Trap, asI64, callBuiltin, formatBool, formatFloat, formatInt, formatLong, I64_MIN, i32 } from './interp';
 
 // A generator-based, single-stepping tree-walking interpreter — the engine
@@ -79,6 +79,10 @@ function fmtVal(v: RtValue, ty?: Ty): string {
     const more = sv.fields.size > 6 ? ', …' : '';
     return `${sv.struct} { ${parts.join(', ')}${more} }`;
   }
+  if (typeof v === 'object' && (v as EnumVal).variant !== undefined) {
+    const ev = v as EnumVal;
+    return ev.fields.length ? `${ev.variant}(${ev.fields.map((x) => fmtVal(x)).join(', ')})` : ev.variant;
+  }
   if (typeof v === 'object' && (v as ArrayVal).arr) {
     const a = v as ArrayVal;
     const head = a.data.slice(0, 8).map((x) =>
@@ -100,6 +104,8 @@ function fmtVal(v: RtValue, ty?: Ty): string {
 export class Debugger {
   private fns = new Map<string, Extract<Program['decls'][number], { kind: 'fn' }>>();
   private structs = new Map<string, StructDecl>();
+  private enums = new Map<string, EnumDecl>();
+  private variants = new Map<string, { enumName: string; fields: Ty[] }>();
   private globals = new Map<string, RVar>();
   private frames: RFrame[] = [];
   output: string[] = [];
@@ -115,6 +121,10 @@ export class Debugger {
     for (const d of prog.decls) {
       if (d.kind === 'fn') this.fns.set(d.name, d);
       else if (d.kind === 'struct') this.structs.set(d.name, d);
+      else if (d.kind === 'enum') {
+        this.enums.set(d.name, d);
+        for (const v of d.variants) this.variants.set(v.name, { enumName: d.name, fields: v.fields });
+      }
     }
     for (const d of prog.decls) {
       if (d.kind === 'global') {
@@ -307,6 +317,21 @@ export class Debugger {
         if (!matched && s.default) yield* this.execBlock(s.default, f);
         break;
       }
+      case 'match': {
+        const v = (yield* this.evalExpr(s.disc, f)) as EnumVal;
+        const arm = s.arms.find((a) => a.variant === v.variant) ?? s.arms.find((a) => a.variant === null);
+        if (!arm) throw new Trap(`no match arm for variant '${v.variant}'`);
+        f.scopes.push(new Map());
+        try {
+          arm.binds.forEach((b, i) => {
+            if (b !== null) f.scopes[f.scopes.length - 1].set(b, { v: v.fields[i], ty: arm.bindTys![i] });
+          });
+          yield* this.execBlock(arm.body, f);
+        } finally {
+          f.scopes.pop();
+        }
+        break;
+      }
       case 'for': {
         f.scopes.push(new Map());
         try {
@@ -362,6 +387,11 @@ export class Debugger {
         if (rv) return rv.v;
         // A bare function name decays to a function pointer.
         if (e.ty?.kind === 'fn' && this.fns.has(e.name)) return { fn: e.name };
+        // A bare nullary variant constructs it.
+        if (e.ty?.kind === 'enum') {
+          const vinfo = this.variants.get(e.name);
+          if (vinfo) return { enumV: vinfo.enumName, variant: e.name, fields: [] };
+        }
         throw new Trap(`read of undefined '${e.name}'`);
       }
       case 'callptr': {
@@ -537,6 +567,8 @@ export class Debugger {
       sd.fields.forEach((fld, i) => fields.set(fld.name, argv[i]));
       return { struct: e.callee, fields };
     }
+    const vinfo = this.variants.get(e.callee);
+    if (vinfo) return { enumV: vinfo.enumName, variant: e.callee, fields: argv };
     const argKinds = e.args.map((a) => a.ty?.kind);
     const b = callBuiltin(e.callee, argv, argKinds, this.output);
     if (b.handled) return b.value;
