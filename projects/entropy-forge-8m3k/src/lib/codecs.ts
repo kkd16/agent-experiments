@@ -34,6 +34,7 @@ import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { gzipEncode, gzipDecode } from './gzip.ts'
 import { cmEncode, cmDecode } from './cm.ts'
+import { lzmaEncode, lzmaDecode } from './lzma.ts'
 
 export interface Codec {
   id: string
@@ -387,6 +388,22 @@ function cmCodecDecode(comp: Uint8Array): Uint8Array {
   return cmDecode(comp.subarray(4), getU32(comp, 0))
 }
 
+// ---- LZMA codec (the 7-Zip / xz algorithm): LZ77 dictionary matching driven
+// through a single adaptive binary range coder — a 12-state context machine,
+// an MRU list of the four most-recent distances (rep0..rep3) recoded almost for
+// free, bit-tree length/distance coders and matched-literal modelling. Nothing
+// is transmitted but the length + coded stream; the decoder rebuilds the model
+// and replays the identical bit decisions. Usually the best dictionary coder here. ----
+function lzmaCodecEncode(data: Uint8Array): Uint8Array {
+  const { encoded } = lzmaEncode(data)
+  const header: number[] = []
+  putU32(header, data.length)
+  return concat([Uint8Array.from(header), encoded])
+}
+function lzmaCodecDecode(comp: Uint8Array): Uint8Array {
+  return lzmaDecode(comp.subarray(4), getU32(comp, 0))
+}
+
 export const CODECS: Codec[] = [
   {
     id: 'huffman',
@@ -483,6 +500,15 @@ export const CODECS: Codec[] = [
       'The genuine RFC 1951/1952 codec: hash-chain LZ77 + fixed/dynamic Huffman, CRC-32 checked. Interoperates byte-for-byte with the OS gzip.',
     encode: (data) => gzipEncode(data),
     decode: (comp) => gzipDecode(comp).data,
+  },
+  {
+    id: 'lzma',
+    name: 'LZMA (7-Zip / xz)',
+    family: 'dictionary',
+    blurb:
+      'LZ77 matching driven through one adaptive binary range coder — a 12-state context machine, rep0..rep3 recycled distances, bit-tree length/distance coders and matched-literal modelling. The strongest dictionary coder here; leads outright on repetitive/structured data.',
+    encode: lzmaCodecEncode,
+    decode: lzmaCodecDecode,
   },
   {
     id: 'bzip',
