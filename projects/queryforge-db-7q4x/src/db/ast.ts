@@ -441,12 +441,23 @@ export interface TableFuncRef {
   name: string
   args: Expr[]
 }
+/** `TABLESAMPLE method(arg) [REPEATABLE(seed)]` on a base table. */
+export interface TableSample {
+  /** BERNOULLI/SYSTEM take a percentage in [0,100]; RESERVOIR takes a row count k. */
+  method: 'BERNOULLI' | 'SYSTEM' | 'RESERVOIR'
+  arg: number
+  /** REPEATABLE(seed) — fixes the PRNG so the sample is reproducible. */
+  seed?: number
+}
+
 export interface FromItem {
   table?: string
   subquery?: SelectStmt
   /** A set-returning table function source — `FROM json_array_elements(j) t`. */
   tableFunc?: TableFuncRef
   alias?: string
+  /** `TABLESAMPLE …` — draw an approximate sample of this base table's rows. */
+  sample?: TableSample
   /** Optional column aliases — `FROM (…) t (x, y)` (incl. VALUES constructors). */
   columnAliases?: string[]
   /** `LATERAL` — this item may reference columns of the FROM items to its left,
@@ -657,11 +668,13 @@ export const AGGREGATES = new Set([
   'PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE',
   'JSON_AGG', 'JSON_OBJECT_AGG',
   'ARRAY_AGG',
+  // Approximate (sketch-backed) aggregates — sublinear-memory, one-pass answers.
+  'APPROX_COUNT_DISTINCT', 'APPROX_PERCENTILE', 'APPROX_TOP_K',
 ])
 
 /** Ordered-set aggregates: their value to aggregate comes from a
  *  `WITHIN GROUP (ORDER BY …)` clause rather than the parenthesized arguments. */
-export const ORDERED_SET_AGGREGATES = new Set(['PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE'])
+export const ORDERED_SET_AGGREGATES = new Set(['PERCENTILE_CONT', 'PERCENTILE_DISC', 'MODE', 'APPROX_PERCENTILE'])
 
 export function isAggregate(name: string): boolean {
   return AGGREGATES.has(name.toUpperCase())

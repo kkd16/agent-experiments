@@ -360,6 +360,7 @@ export function analyzeView(select: SelectStmt): IvmAnalysis {
   if (select.limit !== undefined || select.offset !== undefined) reject('LIMIT/OFFSET (a top-N is not linear)')
   if (select.groupingSets) reject('GROUPING SETS / ROLLUP / CUBE')
   if (!select.from || !select.from.table) reject('the FROM clause must be a base table (no subqueries or table functions)')
+  if (select.from.sample) reject('a TABLESAMPLE source is non-deterministic and cannot be incrementally maintained')
 
   // Relations: FROM table, then each join. Base tables only, INNER/CROSS may
   // repeat a table (a *self-join* — the dataflow handles it with the bilinear

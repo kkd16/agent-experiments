@@ -24,6 +24,7 @@ import type {
   ExplainStmt,
   ForeignKeyDef,
   FromItem,
+  TableSample,
   JoinClause,
   JoinType,
   MergeWhen,
@@ -1494,8 +1495,39 @@ class Parser {
       return { tableFunc, alias, columnAliases, lateral }
     }
     const table = this.parseIdent('table name')
+    const sample = this.tryParseTableSample()
     const { alias, columnAliases } = this.parseOptionalAliasWithColumns()
-    return { table, alias, columnAliases, lateral }
+    return { table, alias, columnAliases, lateral, sample }
+  }
+
+  /** Optional `TABLESAMPLE BERNOULLI|SYSTEM|RESERVOIR ( arg ) [REPEATABLE ( seed )]`. */
+  private tryParseTableSample(): TableSample | undefined {
+    if (!this.at('TABLESAMPLE')) return undefined
+    this.next()
+    const methodTok = this.next()
+    const method = (methodTok.kind === 'ident' ? identName(methodTok) : methodTok.value).toUpperCase()
+    if (method !== 'BERNOULLI' && method !== 'SYSTEM' && method !== 'RESERVOIR') {
+      throw this.err('TABLESAMPLE method must be BERNOULLI, SYSTEM or RESERVOIR')
+    }
+    this.expect('(')
+    const argExpr = this.parseExpr()
+    if (argExpr.kind !== 'literal' || typeof argExpr.value !== 'number') {
+      throw this.err(`TABLESAMPLE ${method} requires a numeric argument`)
+    }
+    const arg = argExpr.value
+    this.expect(')')
+    let seed: number | undefined
+    if (this.at('REPEATABLE')) {
+      this.next()
+      this.expect('(')
+      const seedExpr = this.parseExpr()
+      if (seedExpr.kind !== 'literal' || typeof seedExpr.value !== 'number') {
+        throw this.err('REPEATABLE requires a numeric seed')
+      }
+      seed = seedExpr.value
+      this.expect(')')
+    }
+    return { method, arg, seed }
   }
 
   /** A FROM source that's a function call (`ident(` or a function keyword). */

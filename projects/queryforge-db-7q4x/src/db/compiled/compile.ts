@@ -327,6 +327,7 @@ function analyze(stmt: SelectStmt, db: Database): Matched {
   if (stmt.groupingSets) reason('GROUPING SETS / ROLLUP / CUBE')
   if (!stmt.from || !stmt.from.table) reason('FROM must be a single base table')
   if (stmt.from.subquery || stmt.from.tableFunc || stmt.from.lateral) reason('a derived-table / table-function / LATERAL FROM')
+  if (stmt.from.sample) reason('TABLESAMPLE')
 
   // Build the relation list: FROM (probe/driver) + each INNER JOIN (build side).
   const relations: CompiledRelation[] = []
