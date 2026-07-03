@@ -16,6 +16,7 @@ const MODULES = [
   { route: 'lempel', name: 'LZ77 & LZW', desc: 'Exploit repetition with back-references and self-building dictionaries.' },
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
+  { route: 'deflate', name: 'DEFLATE & gzip', desc: 'The real RFC 1951/1952 codec — its output round-trips through the browser’s own gunzip.' },
   { route: 'benchmark', name: 'Benchmark', desc: 'Race every codec on shared corpora against the entropy floor.' },
   { route: 'selftest', name: 'Self-test', desc: 'Every codec round-trips every input — proven live.' },
 ]

@@ -10,6 +10,7 @@ import { Arithmetic } from './routes/Arithmetic'
 import { Rans } from './routes/Rans'
 import { Ppm } from './routes/Ppm'
 import { Lempel } from './routes/Lempel'
+import { Deflate } from './routes/Deflate'
 import { Burrows } from './routes/Burrows'
 import { Suffix } from './routes/Suffix'
 import { Workbench } from './routes/Workbench'
@@ -25,6 +26,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   rans: Rans,
   ppm: Ppm,
   lempel: Lempel,
+  deflate: Deflate,
   burrows: Burrows,
   suffix: Suffix,
   workbench: Workbench,

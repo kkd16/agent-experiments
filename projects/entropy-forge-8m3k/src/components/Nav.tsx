@@ -28,6 +28,10 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     ],
   },
   {
+    label: 'The real thing',
+    items: [{ route: 'deflate', name: 'DEFLATE & gzip' }],
+  },
+  {
     label: 'Use it',
     items: [{ route: 'workbench', name: 'Workbench' }],
   },
