@@ -592,6 +592,81 @@ export function seidelLP(
   return { point: best, value: obj.x * best.x + obj.y * best.y, feasible: true }
 }
 
+/**
+ * Seidel's LP again, but recording the **running optimum** after each constraint
+ * is folded in — the sequence of vertices the optimum hops through as the
+ * feasible region shrinks. The objective is non-increasing along the trace (a
+ * superset of constraints can only lower the max), which the self-test checks.
+ */
+export function seidelLPSteps(
+  constraints: HalfPlane[],
+  obj: Point,
+  frame: Rect,
+  seed = 1,
+): LPResult & { steps: Point[] } {
+  const box: HalfPlane[] = [
+    { nx: 1, ny: 0, c: frame.maxX },
+    { nx: -1, ny: 0, c: -frame.minX },
+    { nx: 0, ny: 1, c: frame.maxY },
+    { nx: 0, ny: -1, c: -frame.minY },
+  ]
+  let best = rectPolygon(frame)[0]
+  let bestVal = -Infinity
+  for (const corner of rectPolygon(frame)) {
+    const v = obj.x * corner.x + obj.y * corner.y
+    if (v > bestVal) {
+      bestVal = v
+      best = corner
+    }
+  }
+  const steps: Point[] = [best]
+  const active: HalfPlane[] = [...box]
+  const order = constraints.map((_, i) => i)
+  let s = seed >>> 0
+  const rand = () => {
+    s = (s * 1664525 + 1013904223) >>> 0
+    return s / 4294967296
+  }
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1))
+    ;[order[i], order[j]] = [order[j], order[i]]
+  }
+  for (const oi of order) {
+    const h = constraints[oi]
+    if (h.nx * best.x + h.ny * best.y <= h.c + 1e-9) {
+      active.push(h)
+      continue
+    }
+    const q0 = { x: h.c * h.nx, y: h.c * h.ny }
+    const dir = { x: -h.ny, y: h.nx }
+    let tlo = -Infinity
+    let thi = Infinity
+    let feasible = true
+    for (const g of active) {
+      const num = g.nx * q0.x + g.ny * q0.y - g.c
+      const den = g.nx * dir.x + g.ny * dir.y
+      if (Math.abs(den) < 1e-12) {
+        if (num > 1e-9) {
+          feasible = false
+          break
+        }
+      } else {
+        const t = -num / den
+        if (den > 0) thi = Math.min(thi, t)
+        else tlo = Math.max(tlo, t)
+      }
+    }
+    if (!feasible || tlo > thi + 1e-9) return { point: null, value: -Infinity, feasible: false, steps }
+    const along = obj.x * dir.x + obj.y * dir.y
+    const t = along > 0 ? thi : along < 0 ? tlo : (tlo + thi) / 2
+    const tc = Math.max(tlo, Math.min(thi, t))
+    best = { x: q0.x + dir.x * tc, y: q0.y + dir.y * tc }
+    steps.push(best)
+    active.push(h)
+  }
+  return { point: best, value: obj.x * best.x + obj.y * best.y, feasible: true, steps }
+}
+
 /** Brute-force LP optimum: the best vertex of the feasible polygon (the oracle). */
 export function lpBruteForce(constraints: HalfPlane[], obj: Point, frame: Rect): LPResult {
   const region = halfPlaneRegion(constraints, frame)
