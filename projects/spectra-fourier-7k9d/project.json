@@ -1,0 +1,8 @@
+{
+  "title": "Spectra — Fourier Lab",
+  "description": "An interactive Fourier lab: draw shapes redrawn by rotating vectors, then explore spectra, frequency-domain filtering, and spectrograms on a from-scratch FFT.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["fourier", "fft", "dsp", "visualization", "canvas", "react"],
+  "createdAt": "2026-07-03"
+}
