@@ -132,9 +132,10 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
 - [ ] **Short-rep packets in the encoder** — the decoder already handles the `IsRep0Long=0` length-1
       rep; teach the parser to emit it when a single byte matches at `rep0` and a literal would cost
       more, priced against the literal coder. A small, safe ratio win on structured data.
-- [ ] **Tunable `lc`/`lp`/`pb`** exposed on the LZMA page (currently fixed at 3/0/2). Different data
-      likes different literal-context vs position-bit splits; a live control that re-encodes and shows
-      the ratio would make the trade-off tangible (and is what `xz --lzma2=lc=..,pb=..` tunes).
+- [x] **Tunable `lc`/`lp`/`pb`** — shipped in **v7** (see below): the encoder now auto-races six
+      (lc,lp,pb) presets and ships the smallest, storing its choice in the one-byte LZMA properties;
+      the LZMA page shows every preset's size with the winner highlighted. This is what
+      `xz --lzma2=lc=..,lp=..,pb=..` tunes. *(v7)*
 - [ ] **A step-through of the range coder** on the LZMA page — watch `low`/`range` narrow bit-by-bit
       and the cache/carry ripple, the way the Arithmetic page animates the WNC interval.
 - [ ] **LZMA2 chunk framing + a dictionary-reset control** — the container xz actually ships, so an
@@ -318,8 +319,54 @@ single-run → 0.6%). In-app Self-test grows **534 → 617** checks (14 LZMA cod
 primitive round-trips + leading-byte/determinism checks across the corpus and edge cases), all green.
 Still zero runtime deps beyond React.
 
+## Entropy Forge v7 — LZMA auto-tunes its literal/position model
+
+v6 shipped LZMA with the reference default model (`lc=3, lp=0, pb=2`). But those three numbers are
+the knob real LZMA encoders actually turn: **`lc`** = how many high bits of the previous byte context
+each literal (0–8), **`lp`** = how many low bits of the *position* condition a literal (aligned/tabular
+data), **`pb`** = how many low position bits select the match/length probabilities. Different data
+wants different splits, and `xz` exposes exactly this as `--lzma2=lc=..,lp=..,pb=..`.
+
+### What shipped
+
+- [x] **Fully parameterised model** — `lc`/`lp`/`pb` are threaded through the literal-coder sizing
+      (`0x300 << (lc+lp)`), the literal context (`(pos & litPosMask) << lc | prevByte >> (8−lc)`) and
+      the position mask, instead of being compile-time constants.
+- [x] **The one-byte LZMA properties** — `props = (pb·5 + lp)·9 + lc`, the exact byte `.lzma`/`.xz`
+      store, is now prefixed to the stream and parsed back on decode, so the codec is **self-describing**:
+      the decoder reads the model from the data, not from a hard-coded constant. (The range stream's own
+      leading zero byte now lives at index 1; the self-test checks both it and the props round-trip.)
+- [x] **An auto-tuner** — the encoder races six presets — `3/0/2` (default), `3/0/0` (text/logs, no
+      position alignment), `4/0/2` (natural language), `2/0/0`, `0/2/2` (aligned/tabular binary),
+      `0/0/0` (near-random/tiny) — and ships the smallest, re-encoding the winner with the token trace
+      only if a visualiser asked for one. Correctness is unaffected (the decoder replays whatever model
+      the props byte names), so the round-trip + fuzz guarantees carry straight over.
+- [x] **The LZMA page shows it** — a new *Auto-tuned literal/position model* panel lists every preset's
+      size and props byte with the winner highlighted; the stat row and the coded-packet walk-through now
+      report the selected `lc/lp/pb`.
+
+### Result
+
+Every corpus got smaller or stayed equal, for one transmitted byte: `declaration` 67→**65%**, `json`
+22→**21%**, `source` 21→**20%**, `random` 96→**90%** (the near-incompressible case, where dropping to
+`lc=0` sheds the literal model's warm-up cost), and the text corpora settle on `pb=0`/`lc=0` at these
+sizes where the range coder's own adaptivity already carries the context. LZMA remains the best
+dictionary coder and widens its lead over gzip/DEFLATE. Re-verified end to end: the **3,000-case fuzz**
+still passes with zero mismatches (now exercising all six presets via the auto-path), the full corpus +
+edge inputs round-trip, and the in-app Self-test is **617** checks (LZMA rows now also assert the props
+byte round-trips), all green. Zero new deps.
+
 ## Session log
 
+- 2026-07-03 (claude): **v7 — LZMA auto-tunes its literal/position model.** Parameterised the whole
+  literal/position model (`lc`/`lp`/`pb`) instead of hard-coding the `3/0/2` default, made the stream
+  **self-describing** by prefixing the one-byte LZMA `props = (pb·5+lp)·9+lc` (the exact `.xz` byte) and
+  parsing it back on decode, and added an **auto-tuner** that races six presets and ships the smallest.
+  Because the decoder rebuilds whatever model the props byte names, correctness is untouched — the
+  3,000-case fuzz (now through the auto-path) and the 617-check Self-test stay green. The LZMA page grew
+  an *Auto-tuned model* panel (every preset's size + props byte, winner highlighted) and reports the
+  chosen `lc/lp/pb`. Every corpus shrank or held for one transmitted byte (declaration 67→65%, json
+  22→21%, random 96→90%). Zero new deps.
 - 2026-07-03 (claude): **v6 — LZMA, the 7-Zip / xz coder.** Joined the lab's two halves — LZ77
   dictionary matching and adaptive entropy coding — into the algorithm that does them together. Built
   `lzma.ts` from scratch: a binary **range coder** (11-bit adaptive probs, kTopValue renorm, cache-byte

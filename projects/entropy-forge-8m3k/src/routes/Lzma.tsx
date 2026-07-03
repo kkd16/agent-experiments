@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { PageHeader, Panel, Stat } from '../components/ui'
 import { InputPanel } from '../components/InputPanel'
 import { HBarChart } from '../components/charts'
-import { lzmaEncode, LZMA_PARAMS, type LzmaToken } from '../lib/lzma'
+import { lzmaEncode, LZMA_PARAMS, propsByte, type LzmaToken } from '../lib/lzma'
 import { CODECS } from '../lib/codecs'
 import { analyze } from '../lib/entropy'
 import { strToBytes } from '../lib/bits'
@@ -36,6 +36,18 @@ export function Lzma() {
 
   const enc = useMemo(() => lzmaEncode(data, { collectTokens: true }), [data])
   const floor = useMemo(() => analyze(data), [data])
+
+  // The auto-tuner races these (lc,lp,pb) presets and ships the smallest; show
+  // every preset's size so the winning model — and the spread — is visible.
+  const presetSizes = useMemo(
+    () =>
+      LZMA_PARAMS.PRESETS.map(([lc, lp, pb]) => {
+        const r = lzmaEncode(data, { lc, lp, pb, auto: false })
+        return { lc, lp, pb, bytes: 4 + r.encoded.length, props: propsByte(lc, lp, pb) }
+      }),
+    [data],
+  )
+  const bestPresetBytes = Math.min(...presetSizes.map((p) => p.bytes))
 
   // Race LZMA against the other dictionary/transform coders + the entropy floor.
   const rivalSizes = useMemo(() => {
@@ -108,12 +120,18 @@ export function Lzma() {
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <Stat label="Input" value={data.length} unit="B" />
-        <Stat label="LZMA" value={lzmaBytes} unit="B" accent sub={`${enc.stats.bitsPerByte.toFixed(3)} bits/byte`} />
+        <Stat
+          label="LZMA"
+          value={lzmaBytes}
+          unit="B"
+          accent
+          sub={`model lc/lp/pb = ${enc.props.lc}/${enc.props.lp}/${enc.props.pb}`}
+        />
         <Stat
           label="ratio"
           value={data.length > 0 ? ((lzmaBytes / data.length) * 100).toFixed(1) : '—'}
           unit="%"
-          sub="of the original"
+          sub={`${enc.stats.bitsPerByte.toFixed(3)} bits/byte`}
         />
         <Stat
           label="vs best rival"
@@ -128,6 +146,54 @@ export function Lzma() {
         note="every rival is a full from-scratch codec in this lab, each verified by a round-trip decode"
       >
         <HBarChart bars={sizeBars} unit=" B" valueFmt={(v) => v.toFixed(0)} />
+      </Panel>
+
+      <Panel
+        title="Auto-tuned literal / position model"
+        note="the encoder races these (lc, lp, pb) presets and ships the smallest, storing its choice in the one-byte LZMA properties — exactly what xz's --lzma2=lc=..,lp=..,pb=.. tunes. lc = previous-byte context bits, lp = literal-position bits, pb = position bits."
+      >
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>lc</th>
+                <th>lp</th>
+                <th>pb</th>
+                <th>props byte</th>
+                <th>size</th>
+                <th>vs best</th>
+              </tr>
+            </thead>
+            <tbody>
+              {presetSizes.map((p) => {
+                const chosen = p.lc === enc.props.lc && p.lp === enc.props.lp && p.pb === enc.props.pb
+                return (
+                  <tr key={p.props} style={chosen ? { background: 'var(--panel-hi)' } : undefined}>
+                    <td className="num">{p.lc}</td>
+                    <td className="num">{p.lp}</td>
+                    <td className="num">{p.pb}</td>
+                    <td className="mono">
+                      0x{p.props.toString(16).padStart(2, '0')}
+                    </td>
+                    <td className="num" style={{ fontWeight: chosen ? 700 : 400, color: chosen ? 'var(--green)' : 'var(--text)' }}>
+                      {p.bytes} B{chosen && ' ●'}
+                    </td>
+                    <td className="num" style={{ color: 'var(--text-dim)' }}>
+                      {p.bytes === bestPresetBytes ? '—' : `+${p.bytes - bestPresetBytes}`}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="muted" style={{ fontSize: 13, marginTop: 10 }}>
+          The single properties byte costs 1 B but lets the decoder rebuild the exact model, so the
+          choice pays for itself whenever a preset beats the default by more than a byte. Text and logs
+          often prefer <span className="mono">pb=0</span> (no position alignment); tabular or binary
+          data likes <span className="mono">lp&gt;0</span>; strong natural language likes higher{' '}
+          <span className="mono">lc</span>.
+        </div>
       </Panel>
 
       <Panel
@@ -171,7 +237,8 @@ export function Lzma() {
           <p>
             At each position the coder emits one bit for <span className="mono">IsMatch[state, posState]</span>. A{' '}
             <strong>0</strong> means a literal follows — its eight bits are coded MSB-first through a
-            context of the previous byte's high {LZMA_PARAMS.LC} bits, and if the last packet was a
+            context of the previous byte's high {enc.props.lc} bits (the auto-selected{' '}
+            <span className="mono">lc</span>), and if the last packet was a
             match, each bit is additionally predicted by the corresponding bit of the byte that would
             have been copied (<em>matched-literal</em> mode). A <strong>1</strong> means a match, and a
             second bit <span className="mono">IsRep</span> splits <em>new distance</em> from{' '}
