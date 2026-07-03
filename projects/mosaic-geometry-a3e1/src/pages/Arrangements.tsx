@@ -13,6 +13,7 @@ import {
   lowerEnvelope,
   upperEnvelope,
   dualLineOfPoint,
+  kthValueAt,
   hamSandwich,
   seidelLP,
   lpBruteForce,
@@ -98,6 +99,7 @@ export default function Arrangements() {
   const [showLower, setShowLower] = usePersistentState<boolean>('arr:lower', true)
   const [showUpper, setShowUpper] = usePersistentState<boolean>('arr:upper', false)
   const [showFaces, setShowFaces] = usePersistentState<boolean>('arr:faces', true)
+  const [showDual, setShowDual] = usePersistentState<boolean>('arr:hamdual', true)
 
   // Zone query line (arrangement mode) — two draggable endpoints in the frame.
   const [qa, setQa] = useState<Point>({ x: 0.12, y: 0.3 })
@@ -399,6 +401,70 @@ export default function Arrangements() {
       if (hs) {
         strokeChord(hs.line, hs.balanced ? 'rgba(124,246,192,0.95)' : 'rgba(255,120,120,0.95)', 2.6)
       }
+      // Dual-plane inset: the "why". Each set is a fan of dual lines; the cut is
+      // where their two median levels cross — that crossing point is hs.dual.
+      if (showDual && hs && hs.dual) {
+        const iw = Math.min(300, width * 0.36)
+        const ih = iw
+        const ix = width - iw - 12
+        const iy = 12
+        ctx.save()
+        ctx.fillStyle = 'rgba(6,10,20,0.86)'
+        ctx.strokeStyle = 'rgba(150,170,220,0.35)'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.rect(ix, iy, iw, ih)
+        ctx.fill()
+        ctx.stroke()
+        ctx.clip()
+        const rL = ham.red.map(dualLineOfPoint)
+        const bL = ham.blue.map(dualLineOfPoint)
+        const kR = Math.floor(ham.red.length / 2)
+        const kB = Math.floor(ham.blue.length / 2)
+        const cx = hs.dual.x
+        const x0 = cx - 1.7
+        const x1 = cx + 1.7
+        let yMin = hs.dual.y
+        let yMax = hs.dual.y
+        for (let s = 0; s <= 10; s++) {
+          const x = x0 + ((x1 - x0) * s) / 10
+          yMin = Math.min(yMin, kthValueAt(rL, kR, x), kthValueAt(bL, kB, x))
+          yMax = Math.max(yMax, kthValueAt(rL, kR, x), kthValueAt(bL, kB, x))
+        }
+        const padY = (yMax - yMin) * 0.15 + 1e-6
+        const vr: Rect = { minX: x0, minY: yMin - padY, maxX: x1, maxY: yMax + padY }
+        const pad = 12
+        const sx = (iw - pad * 2) / (vr.maxX - vr.minX)
+        const sy = (ih - pad * 2) / (vr.maxY - vr.minY)
+        const q = (p: Point): Point => ({ x: ix + pad + (p.x - vr.minX) * sx, y: iy + ih - pad - (p.y - vr.minY) * sy })
+        const line = (path: Point[], col: string, lw: number) => {
+          if (path.length < 2) return
+          ctx.strokeStyle = col
+          ctx.lineWidth = lw
+          ctx.beginPath()
+          path.forEach((p, i) => {
+            const w = q(p)
+            if (i === 0) ctx.moveTo(w.x, w.y)
+            else ctx.lineTo(w.x, w.y)
+          })
+          ctx.stroke()
+        }
+        // Faint fans of dual lines.
+        for (const sl of rL) { const ch = clipLineToRect(lineFromSI(sl), vr); if (ch) line(ch, 'rgba(255,107,107,0.22)', 1) }
+        for (const sl of bL) { const ch = clipLineToRect(lineFromSI(sl), vr); if (ch) line(ch, 'rgba(91,157,255,0.22)', 1) }
+        // The two median levels, bold, and their crossing.
+        line(kLevelPath(rL, kR, x0, x1), 'rgba(255,107,107,0.95)', 2.2)
+        line(kLevelPath(bL, kB, x0, x1), 'rgba(91,157,255,0.95)', 2.2)
+        const dp = q(hs.dual)
+        ctx.beginPath()
+        ctx.arc(dp.x, dp.y, 4.5, 0, Math.PI * 2)
+        ctx.fillStyle = '#7cf6c0'
+        ctx.fill()
+        ctx.restore()
+        ctx.fillStyle = 'rgba(200,215,255,0.7)'
+        ctx.font = '11px ui-sans-serif, system-ui, sans-serif'
+        ctx.fillText('dual plane — median levels cross at the cut', ix + 8, iy + ih - 8)
+      }
     } else if (mode === 'lp') {
       // Feasible region, its bounding constraints, the objective, the optimum.
       fillPoly(lpRegion, 'rgba(96,205,255,0.12)', 'rgba(96,205,255,0.6)', 1.5)
@@ -428,7 +494,7 @@ export default function Arrangements() {
     }
   }, [
     ref, size, view, mode, lines, faces, located, probe, showFaces, stats, zone, queryLine, qa, qb,
-    dualPts, siLines, levelPath, lowerPath, upperPath, showLower, showUpper, ham, hs,
+    dualPts, siLines, levelPath, lowerPath, upperPath, showLower, showUpper, ham, hs, showDual,
     constraints, obj, lp, lpRegion,
   ])
 
@@ -572,6 +638,12 @@ export default function Arrangements() {
               once. Found in the dual: each set becomes a fan of lines, and the cut is where their
               two median levels meet{hs.rotated ? ' (recovered by rotating past a near-vertical cut)' : ''}.
             </p>
+            <Toggle
+              label={hs.dual ? 'Show dual construction' : 'Dual construction (n/a — vertical cut)'}
+              swatch="#7cf6c0"
+              checked={showDual}
+              onChange={setShowDual}
+            />
           </Panel>
         )}
 
