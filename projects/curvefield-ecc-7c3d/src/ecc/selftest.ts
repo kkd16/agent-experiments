@@ -204,6 +204,7 @@ import {
   type Circuit,
 } from './circuit'
 import { runMillionaires, runEquality, runSum, runProduct, runAuction } from './twopc'
+import { gmwCompute } from './gmw'
 
 export interface TestCase {
   name: string
@@ -1841,6 +1842,42 @@ export function runSelfTest(): TestCase[] {
     check('MPC · 2PC', 'sealed-bid auction: winner + second price', auc.aliceWins && auc.price === 90 && auc.agrees, 'Alice (150) beats Bob (90); price = the lower bid, 90 — bids never revealed')
     const aucTie = runAuction(70, 70, 8)
     check('MPC · 2PC', 'sealed-bid auction resolves a tie', !aucTie.aliceWins && aucTie.price === 70 && aucTie.agrees, 'equal bids → not strictly higher, price = 70')
+  }
+
+  // ── 35. GMW — secret-sharing MPC (the other paradigm; AND via 1-of-4 OT) ──
+  {
+    // Every elementary gate on XOR shares.
+    const gate = (type: 'AND' | 'XOR' | 'INV'): Circuit => {
+      const bld = new CircuitBuilder()
+      const x = bld.aliceInput()
+      const y = bld.bobInput()
+      const out = type === 'AND' ? bld.and(x, y) : type === 'XOR' ? bld.xor(x, y) : bld.inv(x)
+      return bld.build([out])
+    }
+    for (const type of ['AND', 'XOR', 'INV'] as const) {
+      const circ = gate(type)
+      let ok = true
+      for (let a = 0; a < 2; a++)
+        for (let b = 0; b < 2; b++) {
+          const r = gmwCompute(circ, [a], [b])
+          if (r.outputBits[0] !== evalPlain(circ, [a], [b])[0] || !r.agrees) ok = false
+        }
+      check('MPC · GMW', `${type} gate on XOR shares`, ok, type === 'XOR' || type === 'INV' ? 'local, no interaction' : 'resolved by one 1-of-4 oblivious transfer')
+    }
+    // A 2-bit comparator, exhaustive (kept small — GMW runs a real OT per AND gate).
+    let cmp = true
+    for (let a = 0; a < 4; a++)
+      for (let b = 0; b < 4; b++) {
+        const r = gmwCompute(millionairesCircuit(2), toBits(a, 2), toBits(b, 2))
+        if ((r.outputBits[0] === 1) !== a > b || !r.agrees) cmp = false
+      }
+    check('MPC · GMW', 'comparator exact on all 2-bit pairs', cmp, '16 GMW runs, each equals a > b (shares reconstructed by XOR)')
+    // Cross-paradigm: GMW and garbled circuits must agree on the same statement.
+    const gmwMil = gmwCompute(millionairesCircuit(6), toBits(40, 6), toBits(9, 6))
+    const garbledMil = runMillionaires(40, 9, 6)
+    check('MPC · GMW', 'GMW agrees with garbled circuits', gmwMil.agrees && gmwMil.outputBits[0] === garbledMil.outputBits[0], 'two different MPC mechanisms, one answer (Alice 40 > Bob 9)')
+    const gmwSum = gmwCompute(sumCircuit(6), toBits(20, 6), toBits(19, 6))
+    check('MPC · GMW', 'GMW private sum', gmwSum.agrees && gmwSum.outputBits.reduce((n, b, i) => n + (b << i), 0) === 39, '20 + 19 = 39 on secret shares')
   }
 
   return t

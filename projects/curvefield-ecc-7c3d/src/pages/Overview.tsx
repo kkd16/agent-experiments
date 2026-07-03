@@ -186,13 +186,13 @@ const LABS = [
     path: '/mpc',
     ix: '25',
     title: 'Secure Two-Party Computation',
-    desc: "Compute a function of two secrets and reveal only the answer. Yao's protocol built from scratch: a Chou–Orlandi oblivious transfer on this lab's Ed25519 group (with a 1-of-N variant), then garbled circuits with free-XOR and half-gates (an AND costs the proven-minimal two ciphertexts; XOR and NOT are free). Run the original Millionaires' Problem — who is richer, without disclosing wealth — plus private equality, sum, product, and a sealed-bid second-price auction, with a live single-byte-tamper integrity demo.",
+    desc: "Compute a function of two secrets and reveal only the answer. Yao's protocol built from scratch: a Chou–Orlandi oblivious transfer on this lab's Ed25519 group (with a 1-of-N variant), then garbled circuits with free-XOR and half-gates (an AND costs the proven-minimal two ciphertexts; XOR and NOT are free). Run the original Millionaires' Problem — who is richer, without disclosing wealth — plus private equality, sum, product, and a sealed-bid second-price auction, with a live single-byte-tamper integrity demo. Then see the same circuits computed a second way, by the GMW secret-sharing protocol, and agree.",
   },
   {
     path: '/verify',
     ix: '31',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs), and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, RFC 8439 ChaCha20-Poly1305, RFC 5869 HKDF, X3DH / Double Ratchet, secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs, plus GMW secret-sharing cross-checked to agree), and Wycheproof vectors.',
   },
 ]
 

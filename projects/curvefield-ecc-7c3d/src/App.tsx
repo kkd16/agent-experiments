@@ -138,8 +138,9 @@ export default function App() {
         (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
         from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, a Signal-style
         end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305),
-        and secure two-party computation (Chou–Orlandi oblivious transfer + Yao's garbled circuits
-        with free-XOR and half-gates, running the Millionaires' Problem) — zero crypto dependencies.
+        and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
+        garbled circuits (free-XOR + half-gates) and the GMW secret-sharing protocol, running the
+        Millionaires' Problem — zero crypto dependencies.
         <br />
         An educational lab. Do not use these keys to guard anything real.
       </footer>
