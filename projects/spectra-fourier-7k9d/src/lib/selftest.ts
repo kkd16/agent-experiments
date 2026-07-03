@@ -10,6 +10,14 @@ import { timeStretch, pitchTimeShift, hannPeriodic, snrDb } from './phasevocoder
 import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
 import { cepstrum } from './cepstrum'
 import { voicedSignal, pulseTrain, VOWELS } from './synth'
+import { polyRoots } from './poly'
+import { cx, cabs } from './cplx'
+import {
+  designFilter,
+  freqResponse,
+  impulseResponse,
+  type DesignParams,
+} from './filterdesign'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -246,6 +254,130 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const pt = pulseTrain(N, period, 30)
     const res = cepstrum(pt, { fftSize: N, fs, window: 'hann', lifterCutoff: 30, minF: 60, maxF: 800 })
     check('cepstral peak = pulse-train period (pitch)', Math.abs(res.pitchQuefrency - period) < 2)
+  }
+
+  // ---- Filter design engine ----
+
+  const baseParams: DesignParams = {
+    family: 'butter',
+    response: 'low',
+    order: 4,
+    fs: 1000,
+    cutoff: 100,
+    cutoffHi: 200,
+    rippleDb: 1,
+    stopDb: 40,
+    biquadType: 'lowpass',
+    q: 0.707,
+    gainDb: 6,
+    taps: 63,
+    window: 'hamming',
+  }
+  const nearest = (hz: Float64Array, target: number) => {
+    let bi = 0
+    let bd = Infinity
+    for (let i = 0; i < hz.length; i++) {
+      const d = Math.abs(hz[i] - target)
+      if (d < bd) {
+        bd = d
+        bi = i
+      }
+    }
+    return bi
+  }
+
+  // 16. Durand–Kerner recovers the roots of a known polynomial.
+  {
+    // (x−2)(x+3) = x² + x − 6
+    const roots = polyRoots([cx(1), cx(1), cx(-6)])
+    const vals = roots.map((r) => r.re).sort((a, b) => a - b)
+    const allReal = roots.every((r) => Math.abs(r.im) < 1e-6)
+    check('polyRoots factors x²+x−6 → {−3, 2}', allReal && approxEqual(vals[0], -3, 1e-6) && approxEqual(vals[1], 2, 1e-6))
+  }
+
+  // 17. Butterworth low-pass is −3 dB at its cutoff (the prewarped bilinear
+  //     transform preserves the critical frequency exactly).
+  {
+    const d = designFilter({ ...baseParams, family: 'butter', order: 6, cutoff: 150 })
+    const fr = freqResponse(d, 4096)
+    const i = nearest(fr.hz, 150)
+    check('Butterworth LP is −3 dB at cutoff', Math.abs(fr.magDb[i] - -3.0103) < 0.15)
+  }
+
+  // 18. A low-pass passes DC (unity) and rejects Nyquist; the design is stable.
+  {
+    const d = designFilter({ ...baseParams, family: 'butter', order: 5, cutoff: 120 })
+    const fr = freqResponse(d, 2048)
+    const dcOk = Math.abs(fr.mag[0] - 1) < 0.02
+    const nyqOk = fr.magDb[fr.magDb.length - 1] < -40
+    check('LP: unity at DC, deep reject at Nyquist, stable', dcOk && nyqOk && d.stable)
+  }
+
+  // 19. Butterworth magnitude is monotonically non-increasing (the maximally-flat
+  //     property — no ripple anywhere).
+  {
+    const d = designFilter({ ...baseParams, family: 'butter', order: 8, cutoff: 130 })
+    const fr = freqResponse(d, 1024)
+    let monotone = true
+    for (let i = 1; i < fr.mag.length; i++) if (fr.mag[i] > fr.mag[i - 1] + 1e-4) monotone = false
+    check('Butterworth magnitude is monotone (maximally flat)', monotone)
+  }
+
+  // 20. Chebyshev-I stays inside its passband ripple bound and is stable.
+  {
+    const rippleDb = 1
+    const d = designFilter({ ...baseParams, family: 'cheby1', order: 6, cutoff: 140, rippleDb })
+    const fr = freqResponse(d, 4096)
+    const iCut = nearest(fr.hz, 140)
+    let maxPass = -Infinity
+    let minPass = Infinity
+    for (let i = 0; i <= iCut; i++) {
+      maxPass = Math.max(maxPass, fr.magDb[i])
+      minPass = Math.min(minPass, fr.magDb[i])
+    }
+    // Ripple confined to [−ripple−slack, +slack].
+    check('Chebyshev-I passband ripple ≈ spec', d.stable && maxPass < 0.1 && minPass > -rippleDb - 0.25)
+  }
+
+  // 21. A linear-phase FIR has constant group delay of (numTaps−1)/2 samples.
+  {
+    const taps = 65
+    const d = designFilter({ ...baseParams, family: 'fir', response: 'low', taps, cutoff: 150, window: 'hann' })
+    const fr = freqResponse(d, 512)
+    // sample the mid-band group delay (away from nulls where phase is ill-defined)
+    let ok = true
+    for (let i = 5; i < 120; i++) if (Math.abs(fr.groupDelay[i] - (taps - 1) / 2) > 0.25) ok = false
+    check('FIR linear phase ⇒ constant group delay (N−1)/2', ok)
+  }
+
+  // 22. The z-plane transfer function agrees with the time-domain filter: the FFT
+  //     of the impulse response reproduces the analytic frequency response.
+  {
+    const d = designFilter({ ...baseParams, family: 'cheby2', order: 5, response: 'high', cutoff: 160, stopDb: 45 })
+    const L = 2048
+    const imp = impulseResponse(d, L)
+    const spec = magnitude(fft(fromReal(imp)))
+    const fr = freqResponse(d, L / 2 + 1)
+    let maxErr = 0
+    // compare across the band, skipping deep-stopband bins where both are tiny
+    for (let k = 1; k < L / 2; k++) {
+      if (fr.mag[k] < 0.05) continue
+      maxErr = Math.max(maxErr, Math.abs(spec[k] - fr.mag[k]))
+    }
+    check('impulse-response FFT == analytic H(e^jω)', maxErr < 0.03)
+  }
+
+  // 23. Every classic IIR design across all four response types is stable
+  //     (all poles strictly inside the unit circle).
+  {
+    let allStable = true
+    for (const family of ['butter', 'cheby1', 'cheby2'] as const) {
+      for (const response of ['low', 'high', 'band', 'notch'] as const) {
+        const d = designFilter({ ...baseParams, family, response, order: 4, cutoff: 120, cutoffHi: 220 })
+        if (!d.stable || d.poles.some((p) => cabs(p) >= 1)) allStable = false
+      }
+    }
+    check('all classic IIR designs (3 families × 4 types) are stable', allStable)
   }
 
   return { passed, failed, messages }

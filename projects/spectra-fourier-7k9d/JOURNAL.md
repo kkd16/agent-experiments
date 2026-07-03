@@ -23,9 +23,14 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/phasevocoder.ts` — STFT⇄ISTFT phase vocoder: time-stretch + pitch-shift (v3).
 - `src/lib/dct.ts` — orthonormal DCT-II/III + the 8×8 JPEG-lite block codec (v3).
 - `src/lib/cepstrum.ts` — real cepstrum + cepstral / autocorrelation pitch detection (v3).
+- `src/lib/cplx.ts` — a scalar complex value type for pole-by-pole filter math (v4).
+- `src/lib/poly.ts` — polynomial algebra + a Durand–Kerner all-roots finder (v4).
+- `src/lib/filterdesign.ts` — the filter-design engine: Butterworth / Chebyshev I·II analog
+  prototypes, `lp2lp/hp/bp/bs` transforms, a pre-warped bilinear transform, zpk→SOS, a biquad
+  cascade, the RBJ cookbook, a windowed-sinc FIR, and response / group-delay / impulse eval (v4).
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Spectrogram`, `Wavelet`, `ImageFFT`,
-  `Vocoder`, `Compress`, `Cepstrum`, `About` (nine interactive modes).
+- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Wavelet`, `ImageFFT`,
+  `Vocoder`, `Compress`, `Cepstrum`, `About` (ten interactive modes).
 
 ## Modes
 
@@ -105,12 +110,56 @@ self-tested, still zero math libraries.
       the DCT (DCT-II/III inverse, orthonormality, energy compaction) and the cepstrum (peak locates
       the period of a harmonic signal).
 
+### Shipped in v4 — the **Design** studio (interactive filter designer)
+
+A tenth mode, and the deepest yet: a real digital-filter design lab that goes far beyond the
+frequency-domain masking of the Filter mode. New from-scratch numerics (`cplx.ts`, `poly.ts`,
+`filterdesign.ts`) and a rich interactive UI (`modes/Design.tsx`).
+
+- [x] **Scalar complex library** (`lib/cplx.ts`) — an immutable `Cx` value type with add/mul/div/
+      sqrt/exp/polar, distinct from the FFT's struct-of-arrays core, for clear pole-by-pole math.
+- [x] **Polynomial engine + root finder** (`lib/poly.ts`) — polynomial multiply / eval / derivative,
+      build-from-roots, and a **Durand–Kerner (Weierstrass)** simultaneous root finder that factors a
+      coefficient vector into all its complex roots with no external math.
+- [x] **Analog prototypes** — **Butterworth** (maximally-flat pole circle), **Chebyshev I** (equiripple
+      passband on an ellipse) and **Chebyshev II** (inverse Chebyshev: reciprocal poles + imaginary-axis
+      stopband zeros), each normalised and gain-corrected for even/odd order.
+- [x] **Analog frequency transforms** — `lp2lp` / `lp2hp` / `lp2bp` / `lp2bs` on the zpk representation
+      (band types correctly double the order), the scipy-faithful pipeline.
+- [x] **Bilinear transform** `s → z` with **frequency pre-warping**, so the requested cutoff lands
+      exactly (verified −3 dB at cutoff for Butterworth).
+- [x] **zpk → second-order sections** by conjugate pairing, and a **transposed direct-form-II** biquad
+      cascade that actually runs the filter on a signal in the time domain.
+- [x] **RBJ biquad cookbook** — low/high-pass, band-pass, notch, peaking EQ, low/high shelf — the audio
+      EQ workhorses, with Q and gain controls.
+- [x] **Windowed-sinc FIR** (low/high/band/stop, Hann/Hamming/Blackman/rect) with automatic passband
+      normalisation, and its ~N zeros recovered onto the z-plane via the root finder.
+- [x] **Interactive z-plane** — poles (×) and zeros (○) drawn on the unit circle with a stability tint;
+      **drag any of them by hand** (conjugate pairs mirror automatically), double-click to delete, add
+      pole/zero pairs, adjust overall gain. Dragging a preset seamlessly forks it into a manual design.
+- [x] **Live response readouts** — magnitude (dB) with a cutoff marker, unwrapped **phase**, exact
+      **group delay** from the pole/zero geometry (robustly auto-scaled), and the **impulse + step**
+      response — all recomputed live, plus order/stability/roll-off stats.
+- [x] **A/B audio** — run any test signal (+ noise) through the design and hear input vs output; full
+      deep-linkable URL state and a copy-link button.
+- [x] **Eight new self-tests** (23 total) — Durand–Kerner factorisation, Butterworth −3 dB-at-cutoff +
+      maximal flatness, Chebyshev ripple bound, unity-DC / deep-Nyquist reject, FIR constant group
+      delay `(N−1)/2`, all 12 classic designs stable, and impulse-response-FFT == analytic H(e^jω).
+- [x] **About** — a new "Designing a filter on the z-plane" section (H(z), bilinear transform, the
+      exact group-delay formula) and the Design bullet; nav + routing wired.
+
 ### Backlog (future sessions)
 
 - [ ] Import an image outline (edge-detect) to drive the epicycle machine directly
 - [ ] Real-time microphone input into Spectrum / Spectrogram
-- [ ] Group-delay & pole–zero view for the filter
+- [x] Group-delay & pole–zero view for the filter → **superseded by the full Design studio**
 - [ ] Colour (YCbCr / chroma-subsampled) JPEG in the compression lab
+- [ ] **Elliptic (Cauer) filters** in Design — Jacobi elliptic functions for the steepest skirt
+- [ ] **Filter spec designer** — enter passband/stopband edges + ripple/atten and auto-pick the
+      minimum order (Butterworth/Chebyshev order estimators) with the spec mask drawn on the plot
+- [ ] **Cascade a Design filter into the other modes** — apply the current design to the Spectrum /
+      Spectrogram source so you can watch it act on real signals across the lab
+- [ ] **Parks–McClellan (Remez) equiripple FIR** as an optimal alternative to windowed sinc
 
 ## Session log
 
@@ -141,3 +190,17 @@ self-tested, still zero math libraries.
   SNR + COLA, octave-shift pitch doubling, DCT round-trip + orthonormality + monotone rate/distortion,
   and cepstral period detection. Ran the CI gate (scope + conformance + lint + build ✓) and a headless
   Chromium smoke test across all ten routes: zero console/runtime errors.
+- 2026-07-03 (claude, v4): "The FFT designs, not just measures." Added a tenth and deepest mode —
+  **Design**, a real interactive digital-filter designer. Three new from-scratch numeric libraries:
+  `cplx.ts` (scalar complex value type), `poly.ts` (polynomial algebra + a **Durand–Kerner** root
+  finder), and `filterdesign.ts` (Butterworth / Chebyshev I / Chebyshev II analog prototypes, the
+  `lp2lp/hp/bp/bs` analog transforms, a pre-warped **bilinear transform**, zpk→SOS pairing, a
+  transposed direct-form-II biquad cascade, the **RBJ biquad cookbook**, and a windowed-sinc **FIR**
+  designer). The UI (`modes/Design.tsx`) puts poles and zeros on an **interactive z-plane you can drag
+  by hand** — conjugate pairs mirror, double-click deletes, presets fork into manual edits — and
+  recomputes the magnitude, unwrapped phase, exact **group delay** (from the pole/zero geometry), and
+  impulse/step responses live, with A/B audio and full URL state. Added eight self-tests (23 total,
+  all green in-browser) including the decisive one: the FFT of each filter's impulse response matches
+  its analytic transfer function. Ran the CI gate (scope + conformance + lint + build ✓) and drove
+  every response type in headless Chromium (Butterworth/Chebyshev/FIR/biquad + a z-plane drag): zero
+  console/runtime errors. Ten modes, still zero math libraries.
