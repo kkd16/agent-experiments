@@ -98,6 +98,28 @@ import {
   beaconChain,
   vdfCheckpoints,
 } from './vdf'
+import {
+  reduce as cgReduce,
+  compose as cgCompose,
+  square as cgSquare,
+  power as cgPower,
+  identity as cgIdentity,
+  inverse as cgInverse,
+  isReduced as cgIsReduced,
+  formEq as cgFormEq,
+  discriminant as cgDisc,
+  primeForm as cgPrimeForm,
+  generateDiscriminant as cgGenDisc,
+  type Form as CgForm,
+} from './classgroup'
+import {
+  CG,
+  evalVDF as cgEval,
+  wesolowskiProve as cgProve,
+  wesolowskiProveStreaming as cgProveStreaming,
+  wesolowskiVerify as cgVerify,
+  beaconChain as cgBeacon,
+} from './cgvdf'
 import { expandMessageXmd, hashToCurveG1, hashToCurveG2 } from './hash2curve'
 import { compressG1, compressG2, decompressG1, decompressG2, toBytesG1, toBytesG2 } from './blsenc'
 import {
@@ -2122,6 +2144,89 @@ export function runSelfTest(): TestCase[] {
       const finalOk = cps.length === 5 && cps[4].T === totalT && cps[4].y === evalVDF(x, totalT, Nvdf)
       check('VDF · continuous', 'checkpoints are monotone, each proof-carrying, final = full eval', monotone && allVerify && finalOk, '5 verifiable milestones up to T = 4000, each y = x^(2^T)')
     }
+  }
+
+  // ── 33. Class-group VDF — proof-of-sequential-time with no trusted setup ──
+  {
+    // Enumerate all reduced forms of a small discriminant and check the group
+    // axioms on the FULL Cayley table — the strongest possible test of Gauss
+    // composition. A wrong compose would break closure or associativity.
+    const enumerate = (D: bigint): CgForm[] => {
+      const out: CgForm[] = []
+      const aMax = BigInt(Math.floor(Math.sqrt(Number(-D) / 3)))
+      for (let a = 1n; a <= aMax; a++)
+        for (let b = -a; b <= a; b++) {
+          const num = b * b - D
+          if (num % (4n * a) !== 0n) continue
+          const c = num / (4n * a)
+          if (c < a) continue
+          const f = { a, b, c }
+          if (cgIsReduced(f)) out.push(f)
+        }
+      return out
+    }
+    // Known class numbers: h(−23)=3, h(−47)=5, h(−71)=7, h(−199)=9, h(−3299)=27.
+    for (const [D, h] of [[-23n, 3], [-47n, 5], [-71n, 7], [-199n, 9], [-3299n, 27]] as [bigint, number][]) {
+      const forms = enumerate(D)
+      const id = cgIdentity(D)
+      const inSet = (f: CgForm) => forms.some((q) => cgFormEq(q, f))
+      let axioms = forms.length === h && inSet(id)
+      for (const f of forms)
+        for (const g of forms) {
+          const p = cgCompose(f, g, D)
+          axioms = axioms && cgIsReduced(p) && inSet(p) && cgFormEq(p, cgCompose(g, f, D))
+          axioms = axioms && cgFormEq(cgCompose(f, id, D), f)
+          axioms = axioms && cgFormEq(cgCompose(f, cgInverse(f, D), D), id)
+        }
+      // associativity over all triples
+      for (const f of forms) for (const g of forms) for (const w of forms) axioms = axioms && cgFormEq(cgCompose(cgCompose(f, g, D), w, D), cgCompose(f, cgCompose(g, w, D), D))
+      check('VDF · class group', `h(${D}) = ${h}: Gauss composition is a group (full Cayley table)`, axioms, `closure · associativity · identity · inverses on all ${forms.length}² pairs`)
+    }
+
+    // The lab's default nothing-up-my-sleeve discriminant + generator.
+    const D = CG.D
+    const g = CG.g
+    check('VDF · class group', 'Δ is a public 256-bit fundamental discriminant', D < 0n && (-D).toString(2).length === 256 && ((D % 4n) + 4n) % 4n === 1n && vdfIsPrime(-D), `Δ = −p, p a 256-bit prime, Δ ≡ 1 (mod 4) — hashed from a seed, no trusted setup`)
+    check('VDF · class group', 'generator is a reduced form of discriminant Δ', cgDisc(g) === D && cgIsReduced(g), `g = (${g.a}, ${g.b}, …), b² − 4ac = Δ`)
+
+    // Exponent law: g^i ∘ g^j = g^(i+j), and g^(2^T) = T squarings.
+    let expOk = true
+    for (let i = 0n; i < 8n; i++) for (let j = 0n; j < 8n; j++) expOk = expOk && cgFormEq(cgCompose(cgPower(g, i, D), cgPower(g, j, D), D), cgPower(g, i + j, D))
+    check('VDF · class group', 'square-and-multiply respects the exponent law', expOk && cgFormEq(cgPower(g, 1n << 10n, D), cgEval(g, 10, D)), 'g^i ∘ g^j = g^(i+j), and g^(2¹⁰) equals 10 sequential squarings')
+
+    // Wesolowski proof: roundtrip, streaming-prover equivalence, forgery reject.
+    for (const T of [8, 256, 1024]) {
+      const y = cgEval(g, T, D)
+      const ref = cgProve(g, T, D, y)
+      const st = cgProveStreaming(g, T, D, y)
+      check('VDF · class group', `T = ${T}: streaming prover = reference π (no 2^T integer)`, cgFormEq(ref.pi, st.pi) && ref.ell === st.ell, 'O(1)-memory quotient-bit accumulation matches ⌊2^T/ℓ⌋')
+      check('VDF · class group', `T = ${T}: Wesolowski verify accepts (π^ℓ ∘ g^r = y)`, cgVerify(g, y, T, D, ref), 'two class-group exponentiations certify all T squarings')
+      check('VDF · class group', `T = ${T}: rejects a forged π`, !cgVerify(g, y, T, D, { ell: ref.ell, pi: cgCompose(ref.pi, g, D) }), 'no valid opening without the sequential work')
+      check('VDF · class group', `T = ${T}: rejects a mauled output y`, !cgVerify(g, cgSquare(y, D), T, D, ref), 'y is bound into the Fiat–Shamir prime ℓ')
+      check('VDF · class group', `T = ${T}: rejects the wrong delay T`, !cgVerify(g, y, T * 2, D, ref), 'T is bound into ℓ')
+    }
+
+    // Reduction keeps coordinates bounded by ~√|Δ| no matter how far we square.
+    let big = g
+    let bounded = true
+    const bound = BigInt(Math.ceil(Math.sqrt(Number(-D) / 3)))
+    for (let i = 0; i < 200; i++) {
+      big = cgSquare(big, D)
+      const a = big.a < 0n ? -big.a : big.a
+      bounded = bounded && a <= bound && cgIsReduced(big)
+    }
+    check('VDF · class group', 'reduction bounds |a| ≤ √(|Δ|/3) through 200 squarings', bounded, 'form coordinates never blow up — constant per-step cost forever')
+
+    // Delay-based randomness beacon, all rounds proof-carrying and distinct.
+    const chain = cgBeacon(utf8('genesis'), 128, D, g, 3)
+    const distinct = new Set(chain.map((r) => bytesToHex(r.beta))).size === 3
+    check('VDF · class group', 'delay beacon: each round Wesolowski-verified & distinct', chain.every((r) => r.verified) && distinct, '3 chained class-group VDF outputs, no trusted setup anywhere')
+
+    // Generality: a second, independently-hashed discriminant also verifies.
+    const D2 = cgGenDisc(utf8('curvefield/class-group/selftest-alt'), 200)
+    const g2 = cgPrimeForm(D2)
+    const y2 = cgEval(g2, 300, D2)
+    check('VDF · class group', 'a second, independent Δ verifies end-to-end', cgVerify(g2, y2, 300, D2, cgProve(g2, 300, D2, y2)) && cgFormEq(cgReduce(g2, D2), g2), '200-bit Δ, T = 300 — the construction is not tuned to one modulus')
   }
 
   return t
