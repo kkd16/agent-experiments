@@ -23,6 +23,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     label: 'Modelling coders',
     items: [
       { route: 'ppm', name: 'PPM' },
+      { route: 'cm', name: 'Context mixing' },
       { route: 'lempel', name: 'LZ77 & LZW' },
       { route: 'burrows', name: 'Burrows–Wheeler' },
       { route: 'suffix', name: 'Suffix Array' },

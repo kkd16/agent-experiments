@@ -10,6 +10,7 @@ import { Arithmetic } from './routes/Arithmetic'
 import { Rans } from './routes/Rans'
 import { Tans } from './routes/Tans'
 import { Ppm } from './routes/Ppm'
+import { ContextMixing } from './routes/ContextMixing'
 import { Lempel } from './routes/Lempel'
 import { Deflate } from './routes/Deflate'
 import { Burrows } from './routes/Burrows'
@@ -27,6 +28,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   rans: Rans,
   tans: Tans,
   ppm: Ppm,
+  cm: ContextMixing,
   lempel: Lempel,
   deflate: Deflate,
   burrows: Burrows,

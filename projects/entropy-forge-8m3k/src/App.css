@@ -140,6 +140,9 @@ table.data tr:last-child td { border-bottom: none; }
 
 /* ============================ Misc helpers ============================ */
 .muted { color: var(--text-dim); }
+.prose-list { margin: 2px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.prose-list li { color: var(--text-mid); font-size: 13.5px; line-height: 1.55; }
+.prose-list li b { color: var(--text); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .spread { justify-content: space-between; }
 .tag { font-family: var(--mono); font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
