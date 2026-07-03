@@ -80,6 +80,22 @@ import { setup as kzgSetup, commit as kzgCommit, open as kzgOpen, verify as kzgV
 import { secp256k1 as secpCurve } from './secp256k1'
 import { R as BLS_SCALAR } from './bls12381'
 import { seedRng, randomBytes } from './rng'
+import {
+  RSA as VDF_RSA,
+  toGenerator as vdfGen,
+  evalVDF,
+  evalTrapdoor,
+  wesolowskiProve,
+  wesolowskiVerify,
+  pietrzakProve,
+  pietrzakVerify,
+  isProbablePrime as vdfIsPrime,
+  hashToPrime as vdfHashToPrime,
+  bitLength as vdfBitLen,
+  timeLock,
+  timeUnlock,
+  beaconChain,
+} from './vdf'
 import { expandMessageXmd, hashToCurveG1, hashToCurveG2 } from './hash2curve'
 import { compressG1, compressG2, decompressG1, decompressG2, toBytesG1, toBytesG2 } from './blsenc'
 import {
@@ -2018,6 +2034,72 @@ export function runSelfTest(): TestCase[] {
     check('MPC · GMW', 'GMW agrees with garbled circuits', gmwMil.agrees && gmwMil.outputBits[0] === garbledMil.outputBits[0], 'two different MPC mechanisms, one answer (Alice 40 > Bob 9)')
     const gmwSum = gmwCompute(sumCircuit(6), toBits(20, 6), toBits(19, 6))
     check('MPC · GMW', 'GMW private sum', gmwSum.agrees && gmwSum.outputBits.reduce((n, b, i) => n + (b << i), 0) === 39, '20 + 19 = 39 on secret shares')
+  }
+
+  // ── 54. Verifiable Delay Functions ──
+  {
+    const Nvdf = VDF_RSA.N
+    const phi = VDF_RSA.phi
+    // Trapdoor evaluation reproduces the honest T-squaring chain, several T.
+    let evalOk = true
+    for (const T of [1, 2, 8, 64, 257, 1024]) {
+      const x = vdfGen(BigInt(T) + 12345n, Nvdf)
+      if (evalVDF(x, T, Nvdf) !== evalTrapdoor(x, T, Nvdf, phi)) evalOk = false
+    }
+    check('VDF', 'y = x^(2^T): squaring chain = trapdoor shortcut', evalOk, 'honest T squarings and e = 2^T mod φ(N) agree for T ∈ {1..1024}')
+
+    // Wesolowski: accepts an honest proof, rejects a forged π, a mauled y, wrong T.
+    {
+      const T = 1024
+      const x = vdfGen(99n, Nvdf)
+      const y = evalVDF(x, T, Nvdf)
+      const pf = wesolowskiProve(x, T, Nvdf, y)
+      check('VDF · Wesolowski', 'ℓ is a ~128-bit Fiat–Shamir prime', vdfIsPrime(pf.ell) && vdfBitLen(pf.ell) >= 120, `ℓ = ${pf.ell.toString(16).slice(0, 12)}… (${vdfBitLen(pf.ell)}-bit)`)
+      check('VDF · Wesolowski', 'verify accepts (π^ℓ·x^r = y)', wesolowskiVerify(x, y, T, Nvdf, pf), 'one exponentiation certifies 1024 squarings')
+      check('VDF · Wesolowski', 'rejects a forged π', !wesolowskiVerify(x, y, T, Nvdf, { ell: pf.ell, pi: (pf.pi + 1n) % Nvdf }), 'no valid opening without the work')
+      check('VDF · Wesolowski', 'rejects a mauled output y', !wesolowskiVerify(x, (y + 1n) % Nvdf, T, Nvdf, pf), 'y is bound into ℓ')
+      check('VDF · Wesolowski', 'rejects the wrong delay T', !wesolowskiVerify(x, y, T * 2, Nvdf, pf), 'T is bound into ℓ')
+    }
+
+    // Pietrzak halving proof: right length, accepts, rejects a flipped midpoint.
+    {
+      const T = 1024 // 2^10
+      const x = vdfGen(7n, Nvdf)
+      const y = evalVDF(x, T, Nvdf)
+      const pf = pietrzakProve(x, T, Nvdf, y)
+      check('VDF · Pietrzak', 'proof is log₂T midpoints', pf.mus.length === 10, `${pf.mus.length} midpoints for T = 2^10`)
+      check('VDF · Pietrzak', 'verify accepts the halving chain', pietrzakVerify(x, y, T, Nvdf, pf), 'every folded challenge re-derives; y = x² closes')
+      const bad = { mus: pf.mus.map((m, i) => (i === 5 ? (m + 1n) % Nvdf : m)) }
+      check('VDF · Pietrzak', 'rejects a flipped midpoint', !pietrzakVerify(x, y, T, Nvdf, bad), 'one bad μ breaks every level below it')
+      check('VDF · Pietrzak', 'rejects a mauled output y', !pietrzakVerify(x, (y * 2n) % Nvdf, T, Nvdf, pf), 'the final y = x² check fails')
+    }
+
+    // hash-to-prime is deterministic and actually prime.
+    {
+      const seed = utf8('curvefield-vdf-selftest')
+      const p1 = vdfHashToPrime(seed, 128)
+      const p2 = vdfHashToPrime(seed, 128)
+      check('VDF', 'hash-to-prime is deterministic & prime', p1 === p2 && vdfIsPrime(p1), `${p1.toString(16).slice(0, 12)}… is a repeatable 128-bit prime`)
+    }
+
+    // RSW time-lock puzzle: trapdoor lock, grind unlock, round-trips; wrong T fails.
+    {
+      const msg = utf8('Rivest–Shamir–Wagner, 1996 — open me in the future.')
+      const T = 2048
+      const puzzle = timeLock(msg, T, Nvdf, phi, 3n)
+      const opened = timeUnlock(puzzle)
+      check('VDF · time-lock', 'RSW lock (trapdoor) → grind unlock round-trips', bytesToHex(opened) === bytesToHex(msg), `${msg.length}-byte capsule recovered after ${T} squarings`)
+      const wrong = timeUnlock({ ...puzzle, T: T - 1 })
+      check('VDF · time-lock', 'the wrong work factor cannot open it', bytesToHex(wrong) !== bytesToHex(msg), 'one squaring short → wrong key → garbage')
+    }
+
+    // Delay beacon: every round carries a proof that verifies; chain evolves.
+    {
+      const chain = beaconChain(utf8('genesis'), 256, Nvdf, 4)
+      const allVerify = chain.every((r) => r.verified)
+      const distinct = new Set(chain.map((r) => r.output.toString())).size === 4
+      check('VDF · beacon', 'each delayed round carries a valid proof', allVerify && distinct, '4 chained VDF outputs, each Wesolowski-verified and distinct')
+    }
   }
 
   return t

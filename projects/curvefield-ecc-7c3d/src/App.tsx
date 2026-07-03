@@ -30,6 +30,7 @@ import { HashSigPage } from './pages/HashSigPage'
 import { MlKemPage } from './pages/MlKemPage'
 import { MlDsaPage } from './pages/MlDsaPage'
 import { VrfPage } from './pages/VrfPage'
+import { VdfPage } from './pages/VdfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
 import { MpcPage } from './pages/MpcPage'
@@ -66,6 +67,7 @@ const ROUTES = [
   { path: '/mlkem', label: 'ML-KEM' },
   { path: '/mldsa', label: 'ML-DSA' },
   { path: '/vrf', label: 'ECVRF' },
+  { path: '/vdf', label: 'VDF' },
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
   { path: '/mpc', label: 'Secure 2PC' },
@@ -125,6 +127,7 @@ export default function App() {
       {base === '/mlkem' && <MlKemPage />}
       {base === '/mldsa' && <MlDsaPage />}
       {base === '/vrf' && <VrfPage />}
+      {base === '/vdf' && <VdfPage />}
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
       {base === '/mpc' && <MpcPage />}
@@ -136,7 +139,8 @@ export default function App() {
         RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
         signing, zero-knowledge Σ-protocols, KZG polynomial commitments, a Groth16 and a universal
         PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, a transparent hash-only STARK
-        (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, Monero-style linkable
+        (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, verifiable delay functions
+        (Wesolowski + Pietrzak proofs with an RSW time-lock puzzle), Monero-style linkable
         ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
         (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
         from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, the lattice signature

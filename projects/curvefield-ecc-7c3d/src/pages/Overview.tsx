@@ -177,6 +177,12 @@ const LABS = [
     desc: 'A public-key function whose output is unpredictable yet publicly verifiable — the randomness beacon behind Algorand and Chainlink. Both Edwards25519 ciphersuites of RFC 9381 (try-and-increment and Elligator2), from scratch and pinned byte-for-byte to the standard’s vectors, driving a verifiable leader-election lottery.',
   },
   {
+    path: '/vdf',
+    ix: '31',
+    title: 'Verifiable Delay Functions',
+    desc: 'Proof of sequential time — the delay analogue of the VRF. y = x^(2^T) mod N takes T squarings no parallel machine can shorten, yet verifies in a heartbeat: both the succinct Wesolowski proof and the log-size Pietrzak halving proof, from scratch in an RSA group. Plus a Rivest–Shamir–Wagner time-lock puzzle (encrypt to the future) and an unbiasable delay beacon — the RANDAO+VDF / Chia proof-of-time shape.',
+  },
+  {
     path: '/ring',
     ix: '30',
     title: 'Linkable Ring Signatures & Stealth Addresses',

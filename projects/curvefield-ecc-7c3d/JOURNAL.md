@@ -790,8 +790,89 @@ Next ideas (open):
 - [ ] **A tiny Barrett/Montgomery-reduced NTT** and a constant-time norm check, mirroring the
       side-channel story the ECDLP labs tell.
 
+### Session 17 plan — Verifiable Delay Functions (proof of sequential *time*)
+
+The lab had verifiable *randomness* (ECVRF) and verifiable *computation* (Groth16 / PLONK / STARK),
+but not verifiable **time** — the primitive that certifies real wall-clock sequential work was spent.
+A VDF is the delay analogue of the VRF: where the VRF makes an output *unpredictable yet checkable*,
+the VDF makes *elapsed sequential effort* **unforgeable yet checkable**. It is the missing rock under
+an unbiasable randomness beacon (Chia's proof-of-time, Ethereum's planned RANDAO+VDF). This session
+builds it from scratch in an RSA group of (publicly) known order — on purpose, so the trapdoor
+shortcut and the time-lock puzzle can both be demonstrated — with **both** canonical proof systems and
+pinned end-to-end in the live self-test before any UI.
+
+Shipped:
+
+- [x] **`vdf.ts` — the sequential core.** `evalVDF(x, T, N)` computes `y = x^(2^T) mod N` by T
+      *sequential* squarings (the delay no parallelism can shorten), and `evalTrapdoor(x, T, N, φ)`
+      reaches the same `y` in log-time via `e = 2^T mod φ(N)` — the shortcut whose mere existence is
+      why a real VDF modulus must be a number nobody has factored. Fixed 512-bit **Blum** modulus
+      `N = p·q` (p ≡ q ≡ 3 mod 4); statements use a QR generator `x = seed² mod N` (squaring lands in
+      QR_N, where −1 has no root — the clean setting for the halving proof).
+- [x] **Wesolowski proof (2019) — succinct, O(1).** A deterministic **hash-to-prime** (`hashToPrime`,
+      backed by a fixed-witness Miller–Rabin) derives a ~128-bit Fiat–Shamir prime
+      `ℓ = H(N ‖ x ‖ y ‖ T)` the prover cannot choose; then `2^T = q·ℓ + r`, `π = x^q`, and the
+      verifier checks `π^ℓ · x^r = y` in a *single* exponentiation. Proof is one group element (64 B)
+      whatever T is.
+- [x] **Pietrzak proof (2019) — the halving protocol, O(log T).** Send the midpoint `μ = x^(2^(T/2))`;
+      a Fiat–Shamir challenge folds `(x, y, T)` into `(x^r·μ, μ^r·y, T/2)`, a smaller claim true iff
+      the original was; recurse to `y = x²`. The proof is `log₂T` midpoints; the prover pays only ~2×
+      the evaluation (no giant-exponent division). Out-of-range/trivial midpoints are rejected.
+- [x] **RSW time-lock puzzle (Rivest–Shamir–Wagner, 1996 — the LCS35 capsule).** `timeLock` uses the
+      trapdoor to lock a message *instantly* (`key = a^(2^T)` via `2^T mod φ`); `timeUnlock` recovers it
+      only by grinding the full squaring chain. Same delay, security flipped: here the wait *is* the
+      lock. Keystream is SHA-256 counter-mode over the recovered group element.
+- [x] **A delay-based randomness beacon.** `beaconChain` chains `βᵢ₊₁ = SHA256(VDF(βᵢ))`, each round
+      carrying a Wesolowski proof — unpredictable until someone spends the delay, unbiasable because
+      every candidate output costs the full T squarings (the RANDAO+VDF / Chia proof-of-time shape).
+- [x] **A new lab page** (`VdfPage.tsx`, route `/vdf`) with six panels: the statement (seed → QR
+      input, T = 2^t slider) with honest-grind-vs-trapdoor agreement; the Wesolowski proof with a live
+      forge-the-π tamper toggle; the Pietrzak halving table with a flip-a-midpoint toggle; a proof-size
+      trade-off chart (Wesolowski 1 elt vs Pietrzak log₂T elts); a **live** time-lock puzzle with an
+      animated, chunked squaring grind and a progress bar (lock instant, open slow); and the beacon
+      chain with per-round proof verdicts.
+- [x] **Self-test** grew by **14 checks** across new **VDF / VDF · Wesolowski / VDF · Pietrzak /
+      VDF · time-lock / VDF · beacon** groups — trapdoor = squaring-chain over many T, Wesolowski
+      accept + reject (forged π, mauled y, wrong T) with ℓ shown prime, Pietrzak accept + reject
+      (flipped midpoint, mauled y) with the right proof length, hash-to-prime determinism, the RSW
+      round-trip (and wrong-work-factor failure), and a fully-verifying beacon chain. Verified in Node
+      (62-assertion harness + the full in-app suite) before the UI; lint + build + the exact CI gate
+      all green. Still **zero crypto dependencies**.
+
+Next ideas (open):
+
+- [ ] **A class-group VDF** (imaginary quadratic order, binary quadratic forms with NUCOMP/NUDUPL) —
+      the *trustless-setup* group with genuinely unknown order, so no trapdoor exists at all; contrast
+      its form-composition cost against RSA squaring.
+- [ ] **Continuous / watermarked VDF output** (ef-VDF style) — emit intermediate checkpoints so a
+      verifier can confirm partial progress, and a "resume from checkpoint" evaluator.
+- [ ] **A parallel-prover Wesolowski** — the `π = x^⌊2^T/ℓ⌋` step done with the standard
+      log-space long-division-during-squaring trick, so the prover needs no giant `2^T` integer.
+- [ ] **Off-thread grinding** via the lab's worker/task runner, with a real NPS/steps-per-second meter
+      and an honest wall-clock estimate for large T.
+- [ ] **A side-by-side "beacon race"** — two provers on different T, showing the delay orders their
+      outputs and that a late joiner cannot front-run the draw.
+
 ## Session log
 
+- 2026-07-03 (claude): **Verifiable Delay Functions — proof of sequential time, from scratch.** Added
+  the time analogue of the VRF: a from-scratch VDF in a 512-bit Blum RSA group where `y = x^(2^T) mod N`
+  demands T *sequential* squarings no parallelism can shorten, yet verifies in one shot. **(1) `vdf.ts`:**
+  the squaring core plus a trapdoor shortcut (`e = 2^T mod φ(N)`) that motivates why a real modulus must
+  be unfactored; **both** proof systems — **Wesolowski** (a deterministic hash-to-prime `ℓ` via
+  fixed-witness Miller–Rabin, proof `π = x^⌊2^T/ℓ⌋`, verified by `π^ℓ·x^r = y` in one exponentiation) and
+  **Pietrzak** (the Fiat–Shamir halving protocol, `log₂T` midpoints folded down to `y = x²`); an **RSW
+  time-lock puzzle** (lock instantly with the trapdoor, open only by grinding); and a **delay beacon**
+  (`βᵢ₊₁ = SHA256(VDF(βᵢ))`, each round proof-carrying — the RANDAO+VDF / Chia shape). **(2) `VdfPage.tsx`
+  (`/vdf`):** six panels — the statement with honest-vs-trapdoor agreement, the Wesolowski proof with a
+  forge-π toggle, the Pietrzak halving table with a flip-a-midpoint toggle, a proof-size trade-off chart,
+  a **live animated** time-lock grind (chunked squaring + progress bar), and the beacon chain with
+  per-round verdicts. **(3) Self-test** grew **+14** across five new VDF subsystems (trapdoor = squaring
+  chain over many T; Wesolowski/Pietrzak accept and reject forgeries, mauled outputs, and the wrong
+  delay; hash-to-prime determinism; RSW round-trip + wrong-work-factor failure; a verifying beacon
+  chain) → all **333/333 across 59 subsystems**. Overview card, nav, and footer updated. Verified in
+  Node (a 62-assertion harness *and* the full in-app suite) before wiring the UI; lint + build + the
+  exact `verify-project.mjs` gate all green. No new dependencies, still **zero crypto deps**.
 - 2026-07-03 (claude): **ML-DSA, round 2 — HashML-DSA (the pre-hash variant), hedged signing, and an
   aborts histogram.** A follow-up that deepens the ML-DSA lab shipped earlier the same day. **(1)
   HashML-DSA (FIPS 204 §5.4):** the pre-hash signing mode — sign `PH(M)` under domain byte 1 with the
