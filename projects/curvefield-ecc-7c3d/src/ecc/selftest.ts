@@ -191,6 +191,25 @@ import {
   nttMul as mlkemNttMul,
   Q as MLKEM_Q,
 } from './mlkem'
+import {
+  PARAM_SETS as MLDSA_SETS,
+  keyGen as mldsaKeyGen,
+  sign as mldsaSign,
+  verify as mldsaVerify,
+  sizes as mldsaSizes,
+  ntt as mldsaNtt,
+  invNtt as mldsaInvNtt,
+  nttMul as mldsaNttMul,
+  power2Round,
+  decompose,
+  makeHint,
+  applyHint,
+  highBits,
+  sampleInBall,
+  toSigned as mldsaToSigned,
+  Q as MLDSA_Q,
+  D as MLDSA_D,
+} from './mldsa'
 import { hybridClientKeyGen, hybridServerRespond, hybridClientFinish } from './hybridkem'
 import { obliviousTransfer, otOneOfN } from './ot'
 import { garbleCircuit, publicTables, evaluateCircuit, inputLabel, type Label } from './garble'
@@ -1755,6 +1774,104 @@ export function runSelfTest(): TestCase[] {
     badServer[server.serverShare.length - 3] ^= 1 // maul the server's X25519 public
     const brokenX = hybridClientFinish(client, badServer)
     check('Hybrid KEM', 'a broken X25519 half breaks agreement', bytesToHex(brokenX.sessionKey) !== bytesToHex(server.sessionKey), 'both primitives must succeed — the security is the AND of the two')
+  }
+
+  // ── ML-DSA (FIPS 204) — the from-scratch lattice signature ──
+  {
+    // The 256-point NTT over q = 8380417 inverts exactly, and its pointwise
+    // product is a genuine negacyclic convolution mod X²⁵⁶+1.
+    const f = new Int32Array(256)
+    const g = new Int32Array(256)
+    for (let i = 0; i < 256; i++) {
+      f[i] = (i * 5779 + 11) % MLDSA_Q
+      g[i] = (i * 104729 + 7) % MLDSA_Q
+    }
+    const back = mldsaInvNtt(mldsaNtt(f))
+    let inverts = true
+    for (let i = 0; i < 256; i++) inverts = inverts && (((back[i] % MLDSA_Q) + MLDSA_Q) % MLDSA_Q) === f[i]
+    check('ML-DSA', 'NTT⁻¹(NTT(f)) = f', inverts, 'the full 256-point forward and inverse transforms are exact inverses')
+
+    const acc = new Array<number>(512).fill(0)
+    for (let i = 0; i < 256; i++) for (let j = 0; j < 256; j++) acc[i + j] = (acc[i + j] + f[i] * g[j]) % MLDSA_Q
+    const conv = new Int32Array(256)
+    for (let i = 0; i < 256; i++) conv[i] = (((acc[i] - (acc[i + 256] || 0)) % MLDSA_Q) + MLDSA_Q) % MLDSA_Q
+    const viaNtt = mldsaInvNtt(mldsaNttMul(mldsaNtt(f), mldsaNtt(g)))
+    let mulOk = true
+    for (let i = 0; i < 256; i++) mulOk = mulOk && (((viaNtt[i] % MLDSA_Q) + MLDSA_Q) % MLDSA_Q) === conv[i]
+    check('ML-DSA', 'base multiply = negacyclic convolution', mulOk, 'the pointwise NTT product matches the degree-256 schoolbook multiply')
+
+    // Rounding identities: Power2Round reconstructs t, and the hint recovers the
+    // high bits of r+z from r alone (the whole verifier trick).
+    let p2Ok = true
+    for (let t = 0; t < 4096; t++) {
+      const v = (t * 2654435761) % MLDSA_Q
+      const [r1, r0] = power2Round(v)
+      if ((((r1 * (1 << MLDSA_D) + r0) % MLDSA_Q) + MLDSA_Q) % MLDSA_Q !== v) p2Ok = false
+      if (Math.abs(r0) > (1 << (MLDSA_D - 1))) p2Ok = false
+    }
+    check('ML-DSA', 'Power2Round reconstructs t & bounds t0', p2Ok, 'r = r1·2¹³ + r0 with |r0| ≤ 2¹²')
+
+    for (const g2 of [(MLDSA_Q - 1) / 88, (MLDSA_Q - 1) / 32]) {
+      let hintOk = true
+      for (let t = 0; t < 3000; t++) {
+        const r = (t * 1442695041) % MLDSA_Q
+        const z = ((t * 48271) % 200) - 100
+        const want = highBits((((r + z) % MLDSA_Q) + MLDSA_Q) % MLDSA_Q, g2)
+        const got = applyHint(makeHint(z, r, g2), r, g2)
+        if (got !== want) hintOk = false
+        // Decompose is a valid split too.
+        const [d1, d0] = decompose(r, g2)
+        if ((((d1 * 2 * g2 + d0) % MLDSA_Q) + MLDSA_Q) % MLDSA_Q !== r % MLDSA_Q) hintOk = false
+      }
+      check('ML-DSA', `UseHint(MakeHint) = HighBits(r+z)  γ2=${g2}`, hintOk, 'the one-bit hint recovers the discarded carry, and Decompose splits exactly')
+    }
+
+    // SampleInBall: exactly τ nonzero coefficients, every one ±1.
+    const cseed = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) cseed[i] = (i * 73 + 19) & 0xff
+    const cpoly = sampleInBall(cseed, 39)
+    let nz = 0
+    let allPm1 = true
+    for (let i = 0; i < 256; i++) if (cpoly[i] !== 0) { nz++; const s = mldsaToSigned(cpoly[i]); if (s !== 1 && s !== -1) allPm1 = false }
+    check('ML-DSA', 'SampleInBall yields τ signed units', nz === 39 && allPm1, `${nz} nonzero coefficients, each exactly ±1`)
+
+    // Full KeyGen → Sign → Verify for every parameter set, plus the negatives.
+    const dseed = (b: number) => {
+      const a = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) a[i] = (i * 53 + b * 191 + 7) & 0xff
+      return a
+    }
+    for (const p of MLDSA_SETS) {
+      const { pk, sk } = mldsaKeyGen(p, dseed(1))
+      const sz = mldsaSizes(p)
+      const sizesOk = pk.length === sz.pk && sk.length === sz.sk
+      check('ML-DSA', `${p.name} key byte-sizes match FIPS 204`, sizesOk, `pk ${pk.length} · sk ${sk.length} bytes`)
+
+      const msg = utf8('curvefield ⇒ ML-DSA lattice signature')
+      const sig = mldsaSign(p, sk, msg)
+      check('ML-DSA', `${p.name} signature size matches FIPS 204`, sig.length === sz.sig, `σ ${sig.length} bytes`)
+      check('ML-DSA', `${p.name} verify accepts a genuine signature`, mldsaVerify(p, pk, msg, sig), 'commitment recomputes and the challenge reproduces')
+
+      const badMsg = utf8('curvefield ⇒ ML-DSA lattice signaturE')
+      check('ML-DSA', `${p.name} rejects a tampered message`, !mldsaVerify(p, pk, badMsg, sig), 'one changed byte breaks the Fiat–Shamir binding')
+
+      const badSig = sig.slice()
+      badSig[p.lambda / 4 + 4] ^= 0x01
+      check('ML-DSA', `${p.name} rejects a mauled signature`, !mldsaVerify(p, pk, msg, badSig), 'flipping a response byte fails verification')
+
+      const other = mldsaKeyGen(p, dseed(2))
+      check('ML-DSA', `${p.name} rejects a wrong public key`, !mldsaVerify(p, other.pk, msg, sig), 'a signature verifies only under its own key')
+
+      const sig2 = mldsaSign(p, sk, msg)
+      let same = sig.length === sig2.length
+      for (let i = 0; i < sig.length && same; i++) same = sig[i] === sig2[i]
+      check('ML-DSA', `${p.name} deterministic signing is reproducible`, same, 'rnd = 0 gives byte-for-byte identical signatures')
+
+      const ctx = utf8('curvefield-app')
+      const sigCtx = mldsaSign(p, sk, msg, { ctx })
+      const ctxOk = mldsaVerify(p, pk, msg, sigCtx, { ctx }) && !mldsaVerify(p, pk, msg, sigCtx)
+      check('ML-DSA', `${p.name} the context string binds`, ctxOk, 'a signature made under a context verifies only under that context')
+    }
   }
 
   // ── 34. Secure two-party computation (OT + Yao's garbled circuits) ──

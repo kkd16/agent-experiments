@@ -152,3 +152,12 @@ export function shake256(m: Uint8Array, outLen: number): Uint8Array {
 export function shake128Xof(m: Uint8Array): { read: (n: number) => Uint8Array } {
   return makeSponge(168, m, 0x1f)
 }
+
+/**
+ * A streaming SHAKE256 XOF — read arbitrarily many bytes on demand. ML-DSA's
+ * SampleInBall leans on this: it absorbs the 32/48/64-byte challenge seed once,
+ * reads 8 sign bytes, then draws one rejection byte at a time. Rate 1088 bits.
+ */
+export function shake256Xof(m: Uint8Array): { read: (n: number) => Uint8Array } {
+  return makeSponge(136, m, 0x1f)
+}

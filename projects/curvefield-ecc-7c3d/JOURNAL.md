@@ -644,8 +644,9 @@ Shipped:
 
 Next ideas (open):
 
-- [ ] **ML-DSA (FIPS 204, Dilithium)** — the lattice *signature* to pair with the KEM: power2round,
+- [x] **ML-DSA (FIPS 204, Dilithium)** — the lattice *signature* to pair with the KEM: power2round,
       decompose/high-bits/low-bits, the rejection-sampling signing loop, and the hint mechanism.
+      *Shipped in Session 15 — see the plan block and session-log entry below.*
 - [ ] **An official FIPS 203 ACVP known-answer vector** baked in for byte-level interop (currently the
       engine is pinned by round-trip + exact standard sizes + SHA-3 KATs, not an external ML-KEM KAT).
 - [ ] **Decapsulation-failure probability** panel — dial the noise up and watch δ climb; the reason
@@ -728,8 +729,92 @@ XOR-shared and works gate by gate: local XOR/NOT, and an AND resolved by a singl
 - [ ] **n-party GMW** (shares split across k parties, pairwise OTs for each AND) and a Beaver-triple
       variant that pushes the OTs into a preprocessing phase.
 
+### Session 15 plan — ML-DSA: the post-quantum lattice *signature* (FIPS 204 / Dilithium)
+
+Session 12 gave the lab a quantum-safe way to **agree on a key** (ML-KEM); the only post-quantum
+*signatures* here were the hash-based family (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), which are large and
+stateful-or-huge. The mainstream NIST signature standard is a **lattice** scheme on the same
+Module-LWE/SIS rock as ML-KEM: **ML-DSA**, standardised from CRYSTALS-Dilithium. It is a genuinely
+harder object than the KEM — a *Fiat–Shamir with aborts* identification scheme — so it exercises
+rounding, rejection sampling, and a hint mechanism none of the other modules needed. This session
+builds it from scratch on the lab's own Keccak, for all three parameter sets, and pins it in the live
+self-test before any UI.
+
+Shipped:
+
+- [x] **`mldsa.ts` — the whole FIPS 204 engine from scratch** on the ring `Z₈₃₈₀₄₁₇[X]/(X²⁵⁶+1)`.
+      Because `q ≡ 1 (mod 512)` the ring splits *completely*, so the NTT is a full 256-point radix-2
+      transform and multiplication is 256 scalar products — pinned two ways (`NTT⁻¹∘NTT = id` and the
+      pointwise product = a schoolbook **negacyclic** convolution), reusing the exact anchor the ML-KEM
+      NTT uses. All coefficient math is plain `Number` (products stay under `q² < 2⁵³`).
+- [x] **The rounding & hint machinery** — `Power2Round` (split off the low `d=13` bits), `Decompose` /
+      `HighBits` / `LowBits` about `α = 2γ2`, and `MakeHint` / `UseHint`. Pinned by the two identities
+      that make the verifier work: `r = r1·2¹³ + r0` with `|r0| ≤ 2¹²`, and
+      `UseHint(MakeHint(z,r), r) = HighBits(r+z)` over thousands of random inputs at both γ2 values.
+- [x] **The samplers** — `RejNTTPoly`/`ExpandA` (uniform matrix from SHAKE128), `RejBoundedPoly`/
+      `ExpandS` (±η secrets from SHAKE256), `ExpandMask` (the masking vector `y`), and `SampleInBall`
+      (the τ-sparse ±1 challenge, verified to have *exactly* τ signed units). Added a streaming
+      `shake256Xof` to `keccak.ts` for the ball sampler's absorb-once / squeeze-on-demand pattern.
+- [x] **Bit-packing to the byte** — `SimpleBitPack`/`BitPack` and the hint's position-list encoding,
+      composed into `pkEncode`/`skEncode`/`sigEncode` and their decoders (the hint decoder *validates*:
+      strictly-increasing positions, in-bounds, zero padding — a malformed hint is rejected, not trusted).
+- [x] **KeyGen / Sign / Verify (Alg. 6/7/8)** with the final-standard domain separation
+      (`ξ ‖ k ‖ l` into KeyGen's `H`), the **Fiat–Shamir-with-aborts** signing loop (retry until `‖z‖∞`,
+      `‖r0‖∞`, `‖c·t0‖∞`, and the hint weight all pass), and the external `ctx`-string prefix. Signing
+      is **deterministic** (rnd = 0) so the whole lab is reproducible.
+- [x] **All three parameter sets** (ML-DSA-44/65/87) with the **exact** FIPS 204 Table-2 byte-sizes —
+      pk 1312/1952/2592, sk 2560/4032/4896, sig 2420/3309/4627 — verified in the self-test alongside
+      full sign→verify round-trips, tampered-message / mauled-signature / wrong-key rejection,
+      deterministic-signing reproducibility, and context-string binding.
+- [x] **A new lab page** (`MlDsaPage.tsx`, route `/mldsa`) — parameter-set switch, KeyGen with a
+      byte-grid public key, a **Sign** panel that lays the Fiat–Shamir-with-aborts loop bare (live
+      iteration count, the list of *why* each attempt was rejected, the τ-sparse ±1 challenge drawn as a
+      256-cell strip, the response `z`'s near-uniform histogram), an editable message, a **Verify** panel
+      with independent message-tamper and signature-maul toggles, and an Ed25519-vs-ML-DSA size chart.
+- [x] **Self-test** grew by **30 checks** in a new `ML-DSA` group → **314/314**; lint + build + the exact
+      CI gate all green; the page SSR-rendered clean before commit.
+
+Next ideas (open):
+
+- [ ] **An official FIPS 204 ACVP known-answer vector** baked in for byte-level interop (the engine is
+      currently pinned by round-trips + exact standard sizes + the component identities, not an external
+      ML-DSA KAT — the same honest position the ML-KEM module is in).
+- [ ] **The pre-hash variant HashML-DSA** (sign `H(M)` with the domain byte = 1 and the OID prefix) so
+      large messages and the "sign a digest" interop mode are covered.
+- [ ] **The hedged (randomized) signing path** surfaced in the UI — a toggle between deterministic
+      (rnd = 0) and a fresh 32-byte rnd, showing that both verify while the bytes differ.
+- [ ] **An aborts histogram** — sign many messages and plot the distribution of rejection-loop
+      iterations against the theoretical `(1 − ...)` acceptance rate the parameters target.
+- [ ] **ML-DSA vs SPHINCS⁺ vs Ed25519** — a head-to-head panel (sizes, signing cost, assumption) tying
+      the three signature philosophies in the lab together.
+- [ ] **A tiny Barrett/Montgomery-reduced NTT** and a constant-time norm check, mirroring the
+      side-channel story the ECDLP labs tell.
+
 ## Session log
 
+- 2026-07-03 (claude): **ML-DSA — the post-quantum lattice *signature* (FIPS 204 / Dilithium), from
+  scratch.** Completed the post-quantum story: Session 12 added ML-KEM (a quantum-safe *key exchange*);
+  this session adds the mainstream quantum-safe *signature* — the standard that retires ECDSA / Ed25519 /
+  BLS. It is a much harder object than the KEM: a **Fiat–Shamir-with-aborts** identification scheme over
+  `Z₈₃₈₀₄₁₇[X]/(X²⁵⁶+1)`, needing rounding, rejection sampling, and a hint mechanism nothing else in the
+  lab used. One new engine module + one streaming-XOF addition + one lab. **(1) `mldsa.ts` (~700 LOC):**
+  the full FIPS 204 stack — a complete 256-point NTT (`q ≡ 1 mod 512`, so the ring splits fully; pinned
+  by `NTT⁻¹∘NTT = id` and pointwise = **negacyclic** convolution); `Power2Round` / `Decompose` /
+  `HighBits` / `LowBits` / `MakeHint` / `UseHint` (pinned by `r = r1·2¹³ + r0`, `|r0| ≤ 2¹²`, and
+  `UseHint(MakeHint(z,r),r) = HighBits(r+z)` at both γ2); the samplers `ExpandA` (SHAKE128),
+  `ExpandS` / `ExpandMask` (SHAKE256), and `SampleInBall` (exactly τ signed units); byte-exact
+  `SimpleBitPack`/`BitPack` and a *validating* hint decoder; and `KeyGen`/`Sign`/`Verify` (Alg. 6/7/8)
+  with the final-standard `ξ ‖ k ‖ l` domain separation, the abort-retry signing loop, deterministic
+  (rnd = 0) signatures, and an external `ctx`-string prefix. All three parameter sets (44/65/87) hit the
+  **exact** FIPS 204 Table-2 sizes — pk 1312/1952/2592, sk 2560/4032/4896, sig 2420/3309/4627.
+  **(2) `keccak.ts`:** added a streaming `shake256Xof` for `SampleInBall`'s absorb-once/squeeze pattern.
+  **(3) `MlDsaPage.tsx` (route `/mldsa`):** a lab that lays the Fiat–Shamir-with-aborts loop bare — live
+  iteration count, the *reasons* each attempt was rejected, the τ-sparse ±1 challenge as a 256-cell
+  strip, the response `z`'s near-uniform histogram, an editable message, independent message-tamper /
+  signature-maul toggles on Verify, and an Ed25519-vs-ML-DSA size chart. Self-test grew by **30 checks**
+  in a new `ML-DSA` group → **314/314**; a Node harness confirmed all 30 pass at runtime; lint + build +
+  the exact CI gate all green; the page SSR-rendered clean (66 KB, no throw) before commit. Nav/route
+  wired; ML-DSA sits next to ML-KEM. **Zero new dependencies — still zero crypto deps.**
 - 2026-07-02 (claude): **Sealed — the secure channel: X3DH + Double Ratchet (the Signal protocol),
   from scratch.** Closed the one missing dimension of the lab: *confidentiality*. Every prior module
   proves who signed something or that a statement is true; none kept a message secret. This session
