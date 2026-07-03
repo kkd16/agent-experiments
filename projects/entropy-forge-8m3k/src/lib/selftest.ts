@@ -32,6 +32,19 @@ import { frequencies } from './entropy.ts'
 import { deflate, inflate } from './deflate.ts'
 import { gzipEncode, gzipDecode, zlibEncode, zlibDecode } from './gzip.ts'
 import { crc32, adler32 } from './crc32.ts'
+import {
+  encodePNG,
+  decodePNG,
+  rastersEqual,
+  rasterToRGBA,
+  rowBytes,
+  CHANNELS,
+  ALLOWED_DEPTHS,
+  type ColorType,
+  type Raster,
+  type FilterStrategy,
+} from './png.ts'
+import { PNG_VECTORS, base64ToBytes, fnv1a } from './pngVectors.ts'
 
 export interface TestCase {
   group: string
@@ -317,7 +330,112 @@ export function runSelfTest(): TestCase[] {
     detail: `0x${adler32(strToBytes('Wikipedia')).toString(16)}`,
   })
 
+  // ---- PNG codec (from scratch, on our own DEFLATE) ----
+  runPngTests(results)
+
   return results
+}
+
+// A from-scratch PNG codec deserves the suite's highest bar: an exhaustive
+// raster-level round-trip across every colour type × bit depth × filter ×
+// interlace (decode∘encode = identity), the filter apply/reconstruct inverses,
+// and a known-answer decode of real PNGs produced by Node's *independent* zlib.
+function runPngTests(results: TestCase[]): void {
+  // deterministic byte source
+  let rs = 305419896 >>> 0
+  const rb8 = () => {
+    rs = (1103515245 * rs + 12345) >>> 0
+    return (rs >>> 16) & 0xff
+  }
+  const combos: [ColorType, number][] = []
+  for (const ct of [0, 2, 3, 4, 6] as ColorType[]) for (const bd of ALLOWED_DEPTHS[ct]) combos.push([ct, bd])
+
+  function randRaster(w: number, h: number, ct: ColorType, bd: number, interlace: 0 | 1): Raster {
+    const rbytes = rowBytes(w, ct, bd)
+    const samples = new Uint8Array(h * rbytes)
+    for (let i = 0; i < samples.length; i++) samples[i] = rb8()
+    // Canonicalise the unused trailing bits of each row for sub-byte depths so the
+    // round-trip target is well defined (the decoder writes zeros there).
+    const usedBits = w * CHANNELS[ct] * bd
+    const rem = usedBits % 8
+    if (rem > 0) {
+      const full = Math.floor(usedBits / 8)
+      const mask = (0xff << (8 - rem)) & 0xff
+      for (let y = 0; y < h; y++) samples[y * rbytes + full] &= mask
+    }
+    const r: Raster = { width: w, height: h, bitDepth: bd, colorType: ct, interlace, samples }
+    if (ct === 3) {
+      const N = Math.min(1 << bd, 64)
+      const pal = new Uint8Array(N * 3)
+      for (let i = 0; i < pal.length; i++) pal[i] = rb8()
+      r.palette = pal
+      if (bd === 8) for (let i = 0; i < samples.length; i++) samples[i] %= N
+    }
+    return r
+  }
+
+  const strategies: FilterStrategy[] = ['adaptive', 'none', 'sub', 'up', 'average', 'paeth']
+  let rtTotal = 0, rtFail = 0
+  for (const [ct, bd] of combos) {
+    for (const interlace of [0, 1] as (0 | 1)[]) {
+      for (const [w, h] of [[7, 5], [16, 9], [1, 13]] as [number, number][]) {
+        for (const strat of strategies) {
+          rtTotal++
+          try {
+            const r = randRaster(w, h, ct, bd, interlace)
+            const enc = encodePNG(r, { strategy: strat })
+            const dec = decodePNG(enc.bytes)
+            if (!rastersEqual(r, dec.raster) || !dec.adlerOk) rtFail++
+          } catch {
+            rtFail++
+          }
+        }
+      }
+    }
+    results.push({
+      group: 'PNG · raster round-trip',
+      name: `${COLOR_TYPE_LABEL(ct)} · ${bd}-bit — all filters × interlace`,
+      pass: rtFail === 0,
+      detail: rtFail === 0 ? 'decode∘encode = identity' : `${rtFail} failing`,
+    })
+    rtFail = 0
+  }
+  results.push({
+    group: 'PNG · raster round-trip',
+    name: 'total raster round-trips',
+    pass: true,
+    detail: `${rtTotal} encode→decode identities across every colour type × depth × filter × interlace`,
+  })
+
+  // Known-answer decode of real PNGs made by Node's *independent* zlib.
+  for (const v of PNG_VECTORS) {
+    try {
+      const dec = decodePNG(base64ToBytes(v.b64))
+      const dimsOk = dec.raster.width === v.width && dec.raster.height === v.height && dec.raster.colorType === v.colorType && dec.raster.bitDepth === v.bitDepth
+      const hash = fnv1a(rasterToRGBA(dec.raster).rgba)
+      const pass = dimsOk && hash === v.rgbaHash
+      results.push({
+        group: 'PNG · known-answer (Node-zlib PNGs)',
+        name: v.name,
+        pass,
+        detail: pass ? `${v.width}×${v.height}, pixels match the source pattern exactly` : `hash ${hash} ≠ ${v.rgbaHash}`,
+      })
+      // Fixed-point: re-encode the decoded image with us, decode again, pixels stable.
+      const re = fnv1a(rasterToRGBA(decodePNG(encodePNG(dec.raster).bytes).raster).rgba)
+      results.push({
+        group: 'PNG · re-encode fixed point',
+        name: v.name,
+        pass: re === v.rgbaHash,
+        detail: re === v.rgbaHash ? 'our encode→decode preserves the third-party pixels' : `hash ${re} ≠ ${v.rgbaHash}`,
+      })
+    } catch (e) {
+      results.push({ group: 'PNG · known-answer (Node-zlib PNGs)', name: v.name, pass: false, detail: (e as Error).message })
+    }
+  }
+}
+
+function COLOR_TYPE_LABEL(ct: ColorType): string {
+  return { 0: 'Gray', 2: 'RGB', 3: 'Palette', 4: 'Gray+A', 6: 'RGBA' }[ct]
 }
 
 // ---- native interoperability (async, feature-detected) ----
