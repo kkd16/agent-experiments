@@ -603,6 +603,51 @@ code {
   color: var(--accent);
 }
 
+/* ---------- live tuner ---------- */
+.tuner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tuner-track {
+  position: relative;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+}
+
+.tuner-center {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  transform: translateX(-1px);
+  background: rgba(94, 234, 212, 0.5);
+}
+
+.tuner-needle {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 4px;
+  border-radius: 3px;
+  transform: translateX(-2px);
+  transition: left 0.09s linear, opacity 0.2s ease;
+  box-shadow: 0 0 10px rgba(94, 234, 212, 0.5);
+}
+
+.tuner-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.4px;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
