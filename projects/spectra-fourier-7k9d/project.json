@@ -1,8 +1,8 @@
 {
   "title": "Spectra — Fourier Lab",
-  "description": "A nine-mode interactive Fourier lab on a from-scratch FFT — now it doesn't just show the transform, it puts it to work. Draw shapes redrawn by rotating vectors, build and HEAR spectra, filter noise in the frequency domain, read spectrograms, compare a Morlet wavelet against the STFT, paint masks over a real 2-D image FFT, TIME-STRETCH and PITCH-SHIFT audio with a phase vocoder, compress images with a from-scratch JPEG-lite DCT codec, and pull pitch from formants with the cepstrum. Deep-linkable; no math libraries.",
+  "description": "A ten-mode interactive Fourier & DSP lab on a from-scratch FFT — now it doesn't just show the transform, it DESIGNS with it. Draw shapes redrawn by rotating vectors, build and HEAR spectra, filter noise in the frequency domain, read spectrograms, and — new — DESIGN digital filters on an interactive z-plane: drag poles and zeros by hand and watch magnitude, phase, group delay, impulse response and sound recompute live from a from-scratch bilinear transform (Butterworth, Chebyshev, FIR, biquad). Plus a Morlet wavelet vs STFT, a real 2-D image FFT, a phase-vocoder time-stretch/pitch-shift, a JPEG-lite DCT codec, and cepstral pitch detection. Deep-linkable; no math libraries.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["fourier", "fft", "dct", "dsp", "phase-vocoder", "pitch-shift", "jpeg", "compression", "cepstrum", "wavelet", "web-audio", "canvas", "react"],
+  "tags": ["fourier", "fft", "dsp", "filter-design", "z-plane", "bilinear-transform", "butterworth", "chebyshev", "biquad", "group-delay", "dct", "phase-vocoder", "wavelet", "web-audio", "canvas", "react"],
   "createdAt": "2026-07-03"
 }

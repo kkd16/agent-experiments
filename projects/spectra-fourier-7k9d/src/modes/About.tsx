@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The nine modes</h3>
+        <h3>The ten modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a drawn curve's points as complex numbers, FFT
@@ -39,6 +39,13 @@ export default function About() {
             <strong>Filter</strong> — filtering is just multiplication in the frequency domain.
             Multiply each bin by a response curve, invert, and the noise or unwanted tones are
             gone. Play the input and the filtered output back-to-back to hear the difference.
+          </li>
+          <li>
+            <strong>Design</strong> — a real <em>filter designer</em>. Choose a classic recipe
+            (Butterworth, Chebyshev I/II, a windowed-sinc FIR, or an audio biquad) and watch its
+            poles and zeros land on the <strong>z-plane</strong> — then drag them by hand and see the
+            magnitude, phase, group delay, impulse response and sound all recompute live from a
+            from-scratch bilinear transform.
           </li>
           <li>
             <strong>Spectrogram</strong> — a short-time Fourier transform slides a fixed window
@@ -96,6 +103,36 @@ export default function About() {
       </div>
 
       <div className="card">
+        <h3>Designing a filter on the z-plane</h3>
+        <div className="formula">H(z) = k · ∏ᵢ(z − zᵢ) / ∏ⱼ(z − pⱼ)</div>
+        <p>
+          A digital filter is fully described by where it puts its <strong>zeros</strong> (which pull
+          the response down) and its <strong>poles</strong> (which push it up) inside the complex{' '}
+          <code>z</code>-plane. Evaluate <code>H(z)</code> around the unit circle{' '}
+          <code>z = e^(jω)</code> and you get the frequency response; a pole near the circle makes a
+          resonant peak, a zero on it makes a perfect null. A filter is <strong>stable</strong> only
+          when every pole sits strictly inside the circle.
+        </p>
+        <p>
+          The <strong>Design</strong> mode builds the classic filters the textbook way: it lays down
+          an analog prototype (Butterworth's maximally-flat pole circle, or a Chebyshev ellipse that
+          trades passband ripple for a steeper skirt), applies the analog low-pass →
+          high/band/stop frequency transform, then maps the whole s-plane into the z-plane with the{' '}
+          <strong>bilinear transform</strong> <code>s = (z−1)/(z+1)</code> — pre-warping the cutoff so
+          it lands exactly where you asked. FIR filters take the parallel route: a windowed sinc,
+          whose many zeros we recover for the plane by factoring the tap polynomial with a
+          from-scratch Durand–Kerner root finder.
+        </p>
+        <div className="formula">τ(ω) = −dφ/dω = Σⱼ Re[ z/(z−pⱼ) ] − Σᵢ Re[ z/(z−zᵢ) ]</div>
+        <p>
+          <strong>Group delay</strong> — how long each frequency is held up as it passes through — is
+          the negative slope of the phase, computed here exactly from the pole/zero geometry above.
+          A linear-phase FIR delays every frequency by the same <code>(N−1)/2</code> samples (a flat
+          line); an IIR filter's delay bulges near its cutoff, the price of its efficiency.
+        </p>
+      </div>
+
+      <div className="card">
         <h3>Beyond one dimension</h3>
         <div className="formula">X[k,l] = Σₘ Σₙ x[m,n] · e^(−2πi(km/M + ln/N))</div>
         <p>
@@ -121,7 +158,13 @@ export default function About() {
           confirmed constant-overlap-add; an octave pitch-shift is checked to double the detected
           pitch; the DCT round-trips and preserves energy (orthonormality), its 8×8 codec's
           rate/distortion curve is monotone, and the cepstral peak lands on the true period of a
-          harmonic signal. Open the console to see all fifteen pass.
+          harmonic signal. The <strong>filter designer</strong> is held to the same bar: a
+          Butterworth low-pass is checked to be exactly −3&nbsp;dB at its cutoff and monotone
+          everywhere, Chebyshev's ripple stays inside spec, every classic design across all four
+          response types is confirmed stable, a linear-phase FIR's group delay is verified constant,
+          the Durand–Kerner root finder is checked against a known factorisation, and — the real
+          proof — the FFT of each filter's impulse response is confirmed to match its analytic
+          transfer function. Open the console to see all twenty-three pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

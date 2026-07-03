@@ -2,6 +2,7 @@ import { useHashRoute } from './hooks/useHashRoute'
 import Epicycles from './modes/Epicycles'
 import Spectrum from './modes/Spectrum'
 import FilterMode from './modes/Filter'
+import DesignMode from './modes/Design'
 import Spectrogram from './modes/Spectrogram'
 import Wavelet from './modes/Wavelet'
 import ImageFFT from './modes/ImageFFT'
@@ -14,6 +15,7 @@ const ROUTES = [
   { id: 'epicycles', label: 'Epicycles' },
   { id: 'spectrum', label: 'Spectrum' },
   { id: 'filter', label: 'Filter' },
+  { id: 'design', label: 'Design' },
   { id: 'spectrogram', label: 'Spectrogram' },
   { id: 'wavelet', label: 'Wavelet' },
   { id: 'image', label: 'Image 2D' },
@@ -73,6 +75,7 @@ export default function App() {
       {active === 'epicycles' && <Epicycles />}
       {active === 'spectrum' && <Spectrum />}
       {active === 'filter' && <FilterMode />}
+      {active === 'design' && <DesignMode />}
       {active === 'spectrogram' && <Spectrogram />}
       {active === 'wavelet' && <Wavelet />}
       {active === 'image' && <ImageFFT />}
