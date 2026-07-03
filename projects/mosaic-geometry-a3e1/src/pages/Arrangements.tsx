@@ -6,6 +6,8 @@ import {
   clipLineToRect,
   arrangementFaces,
   arrangementStats,
+  locateFace,
+  levelOfPoint,
   zoneComplexity,
   kLevelPath,
   lowerEnvelope,
@@ -100,6 +102,8 @@ export default function Arrangements() {
   // Zone query line (arrangement mode) — two draggable endpoints in the frame.
   const [qa, setQa] = useState<Point>({ x: 0.12, y: 0.3 })
   const [qb, setQb] = useState<Point>({ x: 0.88, y: 0.72 })
+  // Hovered probe (arrangement point-location) — tracks the cursor.
+  const [probe, setProbe] = useState<Point>({ x: 0.5, y: 0.5 })
   // Objective direction (LP mode) — a draggable handle on the unit circle.
   const [objAngle, setObjAngle] = useState(0.9)
 
@@ -126,9 +130,18 @@ export default function Arrangements() {
     [mode, lines],
   )
   const faces = useMemo(
-    () => (mode === 'arrangement' && showFaces ? arrangementFaces(lines, FRAME) : []),
-    [mode, showFaces, lines],
+    () => (mode === 'arrangement' ? arrangementFaces(lines, FRAME) : []),
+    [mode, lines],
   )
+  const located = useMemo(
+    () => (mode === 'arrangement' ? locateFace(faces, probe) : -1),
+    [mode, faces, probe],
+  )
+  const probeLevel = useMemo(
+    () => (mode === 'arrangement' ? levelOfPoint(lines, probe) : 0),
+    [mode, lines, probe],
+  )
+  const locateOK = located < 0 || faces[located].level === probeLevel
   const queryLine = useMemo(() => lineThroughPoints(qa, qb), [qa, qb])
   const zone = useMemo(
     () => (mode === 'arrangement' ? zoneComplexity(lines, queryLine, FRAME) : null),
@@ -212,8 +225,9 @@ export default function Arrangements() {
     if (hit) drag.current = hit
   }
   const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drag.current) return
     const p = toWorld(e.clientX, e.clientY)
+    if (mode === 'arrangement') setProbe(p) // locate the face live as the cursor moves
+    if (!drag.current) return
     const d = drag.current
     if (d.kind === 'obj') setObjAngle(Math.atan2(p.y - 0.5, p.x - 0.5))
     else if (d.kind === 'qa') setQa(p)
@@ -338,11 +352,25 @@ export default function Arrangements() {
       for (const l of lines) strokeChord(l, 'rgba(140,180,255,0.5)', 1.3)
       // Zone: faces the query line crosses, brightened.
       if (zone) for (const f of zone.faces) fillPoly(f.polygon, 'rgba(255,209,102,0.16)')
+      // The face located under the cursor — point location off the convex cells.
+      if (located >= 0) fillPoly(faces[located].polygon, 'rgba(124,246,192,0.22)', 'rgba(124,246,192,0.9)', 1.8)
       strokeChord(queryLine, 'rgba(255,209,102,0.95)', 2.2, [7, 4])
       dot(qa, 5, '#ffd166', 'rgba(8,12,22,0.7)')
       dot(qb, 5, '#ffd166', 'rgba(8,12,22,0.7)')
       // Vertices of the arrangement.
       if (stats) for (const v of stats.vertices) dot(v, 2.2, 'rgba(200,215,255,0.8)')
+      // Probe crosshair.
+      {
+        const q = P(probe)
+        ctx.strokeStyle = '#7cf6c0'
+        ctx.lineWidth = 1.4
+        ctx.beginPath()
+        ctx.moveTo(q.x - 7, q.y)
+        ctx.lineTo(q.x + 7, q.y)
+        ctx.moveTo(q.x, q.y - 7)
+        ctx.lineTo(q.x, q.y + 7)
+        ctx.stroke()
+      }
     } else if (mode === 'duality') {
       // Each point and its dual line share the plane; a moving point rotates its
       // line about the dual of whatever line the points currently sample.
@@ -399,7 +427,7 @@ export default function Arrangements() {
       }
     }
   }, [
-    ref, size, view, mode, lines, faces, showFaces, stats, zone, queryLine, qa, qb,
+    ref, size, view, mode, lines, faces, located, probe, showFaces, stats, zone, queryLine, qa, qb,
     dualPts, siLines, levelPath, lowerPath, upperPath, showLower, showUpper, ham, hs,
     constraints, obj, lp, lpRegion,
   ])
@@ -484,6 +512,12 @@ export default function Arrangements() {
               {stats.E} edges. The zone of the amber line touches {zone?.faces.length ?? 0} faces
               spanning {zone?.edges ?? 0} edges — the zone theorem's O(n) bound in action.
             </p>
+            <div className="metrics">
+              <Stat label="face under cursor" value={located >= 0 ? located : 'outside'} />
+              <Stat label="its level" value={located >= 0 ? faces[located].level : '—'} />
+              <Stat label="lines below cursor" value={probeLevel} />
+            </div>
+            {badge(locateOK, '✓ face level = lines below', '✗ locate mismatch')}
             <Toggle label="Fill faces by level" swatch="#7cf6c0" checked={showFaces} onChange={setShowFaces} />
           </Panel>
         )}

@@ -112,7 +112,7 @@ libraries.
   - `lloyd.ts` — one relaxation step toward a centroidal Voronoi tessellation.
   - `random.ts` — seeded PRNG (mulberry32) + uniform / jittered-grid / Bridson Poisson-disk.
   - `compute.ts` — aggregates everything for a point set, with per-stage timings.
-  - `selftest.ts` — 221 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
+  - `selftest.ts` — 223 correctness checks (empty-circle, Voronoi tiling, graph nesting, calipers
     vs brute force, MEC containment, alpha-shape limits, codec round-trip, Fortune↔Bowyer-Watson
     duality, β-skeleton limits, k-NN monotonicity, Ruppert angle bound + Delaunay preservation,
     CDT area/count conservation + constraint enforcement, power/farthest reductions, **k-d NN/kNN/range
@@ -139,7 +139,7 @@ The sixth axis, and the first that is fundamentally about **lines** rather than 
 tab constructs or queries a structure over a *point set*; this one crosses into the **dual plane** —
 where a point becomes a line and a line a point — and mines the two classic payoffs of that
 correspondence. One new from-scratch module (`arrangement.ts`), one new **Arrangements** tab with
-five interactive modes, and a 28-check self-test section; the existing structures are untouched.
+five interactive modes, and an 11-check self-test section; the existing structures are untouched.
 
 Planned this session — all shipped:
 
@@ -171,7 +171,7 @@ Planned this session — all shipped:
   vertices (`lpBruteForce`) on both feasible and deliberately-infeasible programs.
 - [x] **Arrangements page** (`pages/Arrangements.tsx`, new **Arrangements** tab) wiring all five
   modes with draggable handles, live stat chips, and ✓-verified badges (Euler, ham-sandwich balance,
-  Seidel-vs-brute-force). Grew the self-test **212 → 221 checks**; re-verified the production build in
+  Seidel-vs-brute-force). Grew the self-test **212 → 223 checks**; re-verified the production build in
   headless Chromium (all five modes, zero console errors: Euler ✓ at V=27/E=43/F=18, ham-sandwich ✓
   both bisected and still balanced after a live drag, LP ✓ verified). Clean scope + conformance +
   lint + build via `node scripts/verify-project.mjs mosaic-geometry-a3e1`.
@@ -184,8 +184,12 @@ Next (open — natural follow-ups on this axis):
   splitting the faces it meets one at a time) in the Algorithms gallery.
 - [ ] **k-level complexity readout** — plot the (still-open) combinatorial bound on the k-level size
   as k and n grow, next to the measured edge count.
-- [ ] **Arrangement point location** — locate the face containing a probe directly off the convex
-  cells, and race it against a slab-decomposition, closing the loop with the Search tab's locators.
+- [x] **Arrangement point location** — `locateFace` locates the face containing a probe directly
+  off the convex cells (O(F) scan); the Arrangement mode highlights it live under the cursor with a
+  ✓-verified badge (its level always equals the number of lines below the probe). Self-tested for
+  containment, level agreement (600 probes) and frame-tiling coverage.
+- [ ] **Race arrangement point location against a slab decomposition** (O(log n) per query) and the
+  Search tab's trapezoidal/Kirkpatrick locators, plotting comparisons vs n.
 - [ ] **Seidel LP with a random *objective* violation order** and an on-canvas trace of the running
   optimum hopping vertex-to-vertex as each constraint is added.
 - [ ] **Levels ↔ duality bridge** — click a point on the k-level and show its dual primal line with
@@ -515,7 +519,7 @@ axis — **weighted** geometry and a second hull algorithm — every piece from 
   **ham-sandwich cut** (median levels in the dual, with a rotation fallback for near-vertical
   cuts), and **Seidel's randomized 2-D linear program** cross-checked against a brute-force
   vertex scan. New `pages/Arrangements.tsx` — five interactive, draggable, self-verifying
-  modes. Self-test grew **212 → 221** checks (Euler + face-count formula, zone O(n), k-level =
+  modes. Self-test grew **212 → 223** checks (Euler + face-count formula, zone O(n), k-level =
   order statistic, envelope = min/max, duality involution + incidence, ham-sandwich balance on
   80/80 trials, Seidel = brute force on feasible & infeasible programs). Re-verified the built
   app in headless Chromium across all five modes with zero console errors; full scope + lint +
