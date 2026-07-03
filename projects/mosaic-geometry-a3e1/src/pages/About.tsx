@@ -207,6 +207,47 @@ export default function About() {
           </li>
         </ul>
 
+        <h2>Arrangements &amp; the dual world</h2>
+        <p>
+          A fifth axis flips the whole studio over: instead of points and the structures they induce,
+          work with <em>lines</em>. The <strong>Arrangements</strong> tab is five explorers sharing one
+          idea — <strong>point–line duality</strong>, the order-preserving involution that sends a point
+          (a, b) to the line y = a·x − b and back. Everything here is built from scratch and checked on
+          screen.
+        </p>
+        <ul>
+          <li>
+            <strong>Arrangement of lines</strong> — n lines carve the frame into a planar subdivision of
+            convex faces, coloured by their <em>level</em> (how many lines pass below). Faces are found by
+            incrementally splitting cells; the vertices, edges and faces are counted independently and{' '}
+            <strong>Euler's V − E + F = 2</strong> is verified live. Drag a query line and its{' '}
+            <em>zone</em> — the faces it crosses — lights up, illustrating the zone theorem's O(n) bound.
+          </li>
+          <li>
+            <strong>Duality</strong> — plot points and their dual lines in one plane. Slide a point and its
+            line rotates; line three points up and their duals become <em>concurrent</em>, meeting exactly
+            at the dual of the line through them. Incidence and above/below order are preserved — the engine
+            behind the next two tools.
+          </li>
+          <li>
+            <strong>k-levels &amp; envelopes</strong> — the k-level is the locus with exactly k lines below
+            it, i.e. the k-th lowest line at every abscissa. Sweep k from the <em>lower envelope</em> (0) to
+            the <em>upper</em> and watch the monotone curve climb the arrangement.
+          </li>
+          <li>
+            <strong>Ham-sandwich cut</strong> — a single straight line that <em>simultaneously bisects two
+            point sets</em>. Dualize each set to a fan of lines; the cut is where their two median levels
+            meet. Drag any point and the line re-balances live, its red/blue split verified by a direct
+            count (with a rotation fallback for the near-vertical case duality pushes to infinity).
+          </li>
+          <li>
+            <strong>Linear programming</strong> — maximize a draggable objective over a set of half-planes
+            by <strong>Seidel's randomized incremental algorithm</strong>: keep a running optimum and, when
+            a new constraint is violated, slide it along that constraint via a 1-D sub-program. Expected
+            O(n), and it lands on the very vertex a full scan of the feasible polygon would — checked live.
+          </li>
+        </ul>
+
         <h2>The predicates</h2>
         <p>
           Everything rests on two determinants. The <em>orientation</em> test tells whether three
@@ -253,11 +294,12 @@ export default function About() {
           <li>Open the <strong>Algorithms</strong> tab to step through the hull, Quickhull, Delaunay, enclosing-circle, Fortune sweep, power-cell, k-d tree, and quadtree builds.</li>
           <li>Open the <strong>Search</strong> tab, turn on the k-d partition, and move the probe to watch nearest-neighbour search prune — then flip on <em>Approximate</em> and raise ε to trade accuracy for visits, or drag a window to race the range tree's canonical subtrees against the k-d scan.</li>
           <li>Open the <strong>Curves</strong> tab, hit <em>Play</em> to sweep a Hilbert curve through the grid, then switch to the point tour and compare its locality against Z-order.</li>
+          <li>Open the <strong>Arrangements</strong> tab: watch Euler's formula hold as you add lines, drag three points collinear in <em>Duality</em> to make their duals concur, climb the <em>k-levels</em>, drag a <em>ham-sandwich</em> cut, and aim a <em>linear program</em>'s objective at its optimum.</li>
         </ul>
 
         <p className="colophon">
           Built with React + TypeScript and an HTML5 canvas. No geometry libraries — every algorithm
-          here is implemented from scratch and exercised by an in-repo test suite of 161 checks.
+          here is implemented from scratch and exercised by an in-repo test suite of 221 checks.
         </p>
       </article>
     </div>
