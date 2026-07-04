@@ -6,7 +6,7 @@
 // glass fans violet farther than red — the physics of a rainbow. Pure and DOM-free.
 import type { Vec3 } from '../math/vec.ts'
 import { buildMesh } from '../geometry/mesh.ts'
-import { scaling, multiply, translation } from '../math/mat4.ts'
+import { scaling, multiply, translation, rotationX } from '../math/mat4.ts'
 import { RTScene } from './rtscene.ts'
 import type { RTInstance } from './rtscene.ts'
 import { BVH } from './bvh.ts'
@@ -203,6 +203,23 @@ export function runPhotonSelfTest(): PhotonTest[] {
     const hueSpread = redN > 50 && blueN > 50
     const ok = nV > nR && devV > devR && hueSpread
     add('Spectral dispersion (violet bends past red)', ok, `n(440)=${nV.toFixed(4)} > n(650)=${nR.toFixed(4)}; deviation ${devV.toFixed(4)} > ${devR.toFixed(4)}; deposits span hue (${redN.toLocaleString()} red / ${blueN.toLocaleString()} blue)`)
+  }
+
+  // 8 — reflective caustics: a polished metal reflector is a *mirror*, so light bounces off it
+  // onto the floor (L(S⁺)D just like glass). The mirror gate is opt-in — a metal ring deposits 0
+  // caustic photons with it off (metal is not a refractor) and many, all specular, with it on.
+  {
+    const metal: Material = { albedo: [0.95, 0.82, 0.5], specular: 0.9, shininess: 220, rim: 0, metallic: 1, roughness: 0.04 }
+    const scene = new RTScene([
+      groundPlane(8),
+      { mesh: buildMesh('torus'), model: multiply(translation(0, 0.95, 0), multiply(rotationX(1.32), scaling(1.15, 1.15, 1.15))), material: metal, texture: null, normalMap: null },
+    ])
+    const bvh = new BVH(scene)
+    const light: Light = { type: 'dir', direction: [0.42, -0.52, -0.42], color: [1, 0.93, 0.78], intensity: 3.4 }
+    const off = new PhotonMap(); off.build(scene, bvh, [light], opts({ photons: 80_000, radius: 0.11, mirror: false }))
+    const on = new PhotonMap(); on.build(scene, bvh, [light], opts({ photons: 300_000, radius: 0.11, mirror: true }))
+    const ok = off.stats.stored === 0 && on.stats.stored > 1000 && on.stats.specularHits === on.stats.stored
+    add('Reflective caustics (mirror gate)', ok, `metal ring: mirror off → ${off.stats.stored} photons; mirror on → ${on.stats.stored.toLocaleString()} (all ${on.stats.specularHits === on.stats.stored ? 'specular' : 'MIXED'})`)
   }
 
   return tests

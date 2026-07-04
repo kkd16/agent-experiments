@@ -563,6 +563,7 @@ export default function Controls(props: Props) {
           <div className="toggles">
             <Toggle label="Photon caustics" value={rt.caustics.enabled} onChange={(v) => setCaust({ enabled: v })} />
             <Toggle label="Spectral (rainbow)" value={rt.caustics.spectral} onChange={(v) => setCaust({ spectral: v })} />
+            <Toggle label="Reflective (metal)" value={rt.caustics.mirror} onChange={(v) => setCaust({ mirror: v })} />
           </div>
           {rt.caustics.enabled && (
             <>
@@ -605,7 +606,7 @@ export default function Controls(props: Props) {
               <p className="blurb">
                 {photonTests.filter((t) => t.pass).length}/{photonTests.length} checks passed — kernel
                 normalisation, grid ≡ brute force, irradiance reproduction, the specular gate, flux
-                focusing, √N convergence, and spectral dispersion.
+                focusing, √N convergence, spectral dispersion, and reflective (mirror) caustics.
               </p>
               {photonTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
