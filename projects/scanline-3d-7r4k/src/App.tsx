@@ -51,7 +51,7 @@ const DEFAULT_SETTINGS: RenderSettings = {
 
 // Scenes that are built for global illumination — selecting one flips to the ray
 // tracer so they don't read as a flat rasterized box.
-const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula', 'causticSphere', 'causticRing', 'rainbow'])
+const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula', 'causticSphere', 'causticRing', 'rainbow', 'metalCaustic'])
 
 // Scenes built for the v12 photon-mapped caustics — selecting one switches to the ray
 // tracer AND turns the caustic pass on with fitting photon settings.
@@ -59,6 +59,7 @@ const CAUSTIC_SCENES: Record<string, Partial<CausticOptions>> = {
   causticSphere: { radius: 0.13, kernel: 'cone', photons: 300_000, intensity: 1.1 },
   causticRing: { radius: 0.1, kernel: 'cone', photons: 320_000, intensity: 1.2 },
   rainbow: { radius: 0.09, kernel: 'cone', photons: 500_000, spectral: true, intensity: 1.3 },
+  metalCaustic: { radius: 0.11, kernel: 'cone', photons: 320_000, mirror: true, intensity: 1.1 },
 }
 
 // Scenes built for the v10 spectral path tracer — selecting one switches to the ray tracer

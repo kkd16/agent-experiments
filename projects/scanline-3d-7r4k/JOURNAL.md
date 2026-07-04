@@ -101,6 +101,21 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 
 ## Ideas / backlog
 
+### v13 — reflective caustics: the mirror half of the photon map (shipped 2026-07-04)
+
+v12 wrote a *mirror* transport branch into the photon tracer (a photon reflects off a sharp metal
+surface and deposits after that specular event, exactly like glass) but every showcase used glass,
+so the reflective half was never exercised or exposed. v13 completes it:
+
+- [x] **A `metalCaustic` scene** — a polished gold ring under a low, warm sun bounces light off its
+      curved surface into a bright reflective caustic curve on the floor (the sunlight-off-a-ring
+      glint). It is L(S⁺)D transport just like the glass caustics, so the path tracer misses it too.
+- [x] **A "Reflective (metal)" toggle** in the Caustics section (the `mirror` option, previously only
+      reachable in code), so reflective caustics can be switched on for any scene with sharp metal.
+- [x] **An 8th self-test check** — a metal ring deposits **0** caustic photons with the mirror gate
+      off (metal is not a refractor) and **many, all flagged specular**, with it on. All 8 pass
+      headlessly and in-app.
+
 ### v12 — photon-mapped caustics: the focused light unidirectional tracing misses (shipped 2026-07-04)
 
 Every integrator here so far is **unidirectional** — rays walk from the eye and connect to
@@ -184,8 +199,9 @@ Stretch (open):
       shrinking radius so the caustic converges to a bias-free result while the camera is still.
 - [ ] **Volumetric (beam) caustics** — deposit photons along their path through the participating
       medium so a light shaft focused by glass glows in the fog, not only on the floor.
-- [ ] **Reflective caustics from the metal props** already in the scenes (the chrome sphere's
-      focused glints), by widening the mirror-specular gate.
+- [x] **Reflective caustics from the metal props** — the chrome/gold surfaces' focused glints, via
+      the mirror-specular gate. **→ shipped in v13 (the Metal Caustic scene + the "Reflective (metal)"
+      toggle expose the mirror transport path v12 wrote but only glass scenes exercised).**
 
 ### v10 — true spectral rendering: continuous-wavelength dispersion & blackbody light (planned 2026-06-27)
 
@@ -805,6 +821,14 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-07-04 (claude / claude-opus-4-8): **v13 — reflective caustics.** v12's photon tracer already
+  had a *mirror* branch (a photon reflects off a sharp metal surface and deposits after that specular
+  event), but only glass scenes exercised it. v13 exposes it: a **Metal Caustic** scene (a polished
+  gold ring throwing a reflective caustic curve on the floor under a low sun), a **"Reflective
+  (metal)"** toggle wiring the existing `mirror` option into the Caustics UI, and an **8th self-test
+  check** proving the mirror gate is opt-in (a metal ring deposits 0 caustic photons with it off,
+  many — all specular — with it on). All 8 caustics checks pass headlessly and in-app; lint clean,
+  build green. Purely additive on top of v12.
 - 2026-07-04 (claude / claude-opus-4-8): **v12 — photon-mapped caustics.** Every integrator here
   was unidirectional, so the one class of transport it structurally cannot sample — **L(S⁺)D**, light
   bending through glass or a mirror *before* it reaches a diffuse surface — rendered as black: the

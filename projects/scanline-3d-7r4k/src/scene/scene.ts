@@ -760,6 +760,36 @@ const causticRing = (): SceneConfig => {
   }
 }
 
+// A metal caustic — the reflective half of the photon-mapping pillar. A polished gold ring
+// under a low, warm sun bounces light off its curved surface and throws a bright reflective
+// caustic curve onto the floor (the sunlight-off-a-wedding-ring glint). Reflective caustics
+// are L(S⁺)D transport just like the glass ones — light hits a specular *mirror* before the
+// diffuse floor — so the path tracer misses them too; the photon map's mirror gate draws them.
+// Turn on "Reflective (metal)" in the Caustics section (the scene does it for you).
+const metalCaustic = (): SceneConfig => {
+  const gold: Material = mat([0.95, 0.82, 0.5], 0.9, 220, 0, 1, 0.04)
+  return {
+    name: 'Metal Caustic',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.86, 0.86, 0.88], 0.08, 14, 0, 0, 0.85),
+    objects: [
+      { id: 'ring', meshKind: 'torus', position: [0, 0.95, 0], scale: 1.15, spin: 0, tiltSpin: 0, baseRotation: [1.32, 0, 0.2], material: gold, texture: 'none', normalMap: 'none' },
+    ],
+    lights: [
+      { type: 'dir', direction: normalize([0.42, -0.52, -0.42]) as Vec3, color: [1, 0.93, 0.78], intensity: 3.4 },
+    ],
+    ambient: [0.1, 0.11, 0.15],
+    bgTop: [0.07, 0.09, 0.14],
+    bgBottom: [0.14, 0.14, 0.19],
+    fogColor: [0.1, 0.12, 0.16],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 0.3, 0], yaw: 0.62, pitch: 0.4, distance: 5.8 },
+  }
+}
+
 // A rainbow — the v10 backlog wish, delivered: a dense-flint prism refracts a collimated sun and
 // paints a real *dispersed* spectrum band onto a white floor. Because a photon carries a single
 // wavelength through the glass, each colour bends by its own SF10 index — violet most, red least —
@@ -809,6 +839,7 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   causticSphere,
   causticRing,
   rainbow,
+  metalCaustic,
   implicit: implicitScene,
   custom: customScene,
 }
@@ -832,6 +863,7 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'causticSphere', label: 'Caustic Sphere' },
   { key: 'causticRing', label: 'Caustic Ring' },
   { key: 'rainbow', label: 'Rainbow' },
+  { key: 'metalCaustic', label: 'Metal Caustic' },
   { key: 'implicit', label: 'Implicit (SDF)' },
   { key: 'custom', label: 'Custom OBJ' },
 ]
