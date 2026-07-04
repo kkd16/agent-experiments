@@ -483,8 +483,100 @@ like the codecs are.
       *un*correctable one either flagged or provably beyond the guarantee) and add the Nav group + the
       Overview surface. Update `project.json` (title/description/tags) and this journal's session log.
 
+## Entropy Forge v10 — Polar codes (the code that *reaches* the limit)
+
+The channel-coding pillar shipped four code families, ending with **LDPC** — the code that
+*approaches* capacity with a clever sparse graph and iterative belief propagation. But there is a
+deeper result, and the lab was missing it: **polar codes** (Arıkan 2009), the first codes ever
+**proven** to *reach* the Shannon limit as the block length grows — and, with LDPC, one of the two
+codes standardised for **5G-NR** (LDPC carries the data channel; polar carries the **control**
+channel). Where LDPC's magic is a graph, polar's is a **recursive algebraic transform** and an
+exact, sequential decoder. Adding it makes the pillar tell the whole modern story: *approach* the
+limit (LDPC) and *achieve* it (polar), the two 5G codes side by side.
+
+The idea is **channel polarisation**. Combine two copies of a channel W with the 2×2 kernel
+F = [[1,0],[1,1]] and split the result into two *synthetic* bit-channels: the one decoded first is
+**worse** than W, the one decoded second (knowing the first) is **better**. Recurse n times over
+N = 2ⁿ copies and the synthetic channels **polarise** — a fraction → capacity C become nearly
+perfect, the rest → 0 nearly useless. Ride the message on the good ones, freeze the bad ones to 0.
+The encoder is the n-fold Kronecker power Gₙ = F⊗ⁿ, an in-place **butterfly** shaped exactly like an
+FFT (O(N log N), no matrix). The decoder is **Successive Cancellation** (SC): a depth-first pass over
+that same butterfly, turning channel LLRs into one hard bit at a time. **SC-List** (SCL) keeps the L
+best partial decodings; **CRC-aided SCL** — the 5G decoder — appends a CRC and lets the list pick the
+survivor that checks out, which is what lifts short polar codes past LDPC. It reuses the pillar's
+existing `channel.ts` LLR convention verbatim, so a received word flows straight in.
+
+### Plan (this session)
+
+- [x] `polar.ts` — the engine, framework-free and Node-testable:
+  - [x] **The transform** `polarTransform` — x = u·Gₙ, Gₙ = F⊗ⁿ, by the log₂N-stage in-place
+        butterfly (verified against a brute-force generator rebuilt from basis vectors, N up to 32).
+  - [x] **Construction** — ranking the N synthetic channels by reliability and freezing the worst
+        N−K: the exact **Bhattacharyya recursion** for the BEC (Z⁻ = 2Z−Z², Z⁺ = Z², where the BEC
+        capacity is exactly 1−Z), and the **Gaussian-approximation** (density-evolution mean-LLR)
+        construction for the BI-AWGN via the Chung–Richardson–Urbanke φ/φ⁻¹. The channel index the
+        recursion produces coincides exactly with the natural bit order SC decides — proven for N=2,4
+        and checked in the self-test.
+  - [x] **SC decoder** `scDecode` — the recursive f (min-sum "−") / g ("+") pass with partial sums
+        stitched back up the butterfly; the L=1 oracle for the list decoder.
+  - [x] **SC-List decoder** `sclDecode` — L parallel paths forking at every info bit, pruned by the
+        exact `ln(1+e^{−(1−2b)λ})` path metric, with depth-indexed per-path LLR/partial-sum stacks
+        eager-copied on each fork; picks the minimum-metric survivor.
+  - [x] **CRC-aided SCL** — a from-scratch bit-wise CRC (`appendCrc`/`crcValid`, CRC-8/CRC-6); the
+        list keeps only survivors whose trailing CRC recomputes from their payload. The 5G decoder.
+- [x] `Polar.tsx` — the interactive page:
+  - [x] **Channel polarisation figure** — the N synthetic channels sorted by capacity into the
+        signature staircase, sharpening toward a step at C as N rises (N and ε sliders, BEC exact).
+  - [x] **Encoder butterfly** — the (8,4) XOR network drawn stage-by-stage, info u-nodes teal,
+        frozen grey, codeword amber: the "encoder is an FFT" made literal.
+  - [x] **Live pipeline** — random payload → CRC → polar encode → **BI-AWGN** channel → decode three
+        ways (SC / SCL / CA-SCL), with a flipped-bit strip and per-decoder recovered/failed badges;
+        N, rate, channel Eb/N0, design Eb/N0 and list size L all live.
+  - [x] **BLER waterfall** — frame-error rate vs Eb/N0 for a (128,64) code under SC, SCL(L=8) and
+        CA-SCL(L=8) against uncoded BPSK — the list buys ~½ dB and the CRC steepens the cliff, the
+        exact reason 5G chose CA-SCL.
+- [x] Wire `polar` into `App.tsx`, the `Nav` "Channel coding" group, and the Overview surface.
+- [x] **11 new self-test proofs** in `selftest.ts` (transform = Gₙ, SC/SCL/CA-SCL noiseless
+      round-trips to (256,128), AWGN monotonicity SC ≥ SCL ≥ CA-SCL block-errors, polarisation +
+      capacity conservation, CRC consistency + single-flip detection). Self-test **668 → 679**, all
+      green under Node.
+
+### Polar roadmap (honest next steps — not yet built)
+
+- [ ] **Systematic polar encoding** (Arıkan 2011) — recover the message directly from the codeword
+      positions, improving BER and making the info bits visible in the transmitted word.
+- [ ] **The 5G-NR reliability sequence** (the standardised nested Q_Nmax=1024 order) as a third
+      construction alongside GA/BEC, so the frozen set matches a real deployed code exactly.
+- [ ] **Rate matching** — sub-block interleaving + puncturing/shortening/repetition to hit arbitrary
+      (N,K) off the power-of-two grid, the way 5G actually ships polar codes.
+- [ ] **A decode-tree animation** — scrub the SC recursion and watch f/g LLRs flow down the butterfly
+      and hard bits propagate back up, the way the Arithmetic page animates the interval.
+- [ ] **CRC-length / list-size sweep** on the waterfall — show the diminishing returns of L and the
+      optimal CRC length, and the SCL→ML gap closing.
+- [ ] **Fast simplified SC (SSC/Fast-SCL)** — collapse rate-0 and rate-1 subtrees for the O(N) decode
+      the hardware actually uses, timed against the plain recursion.
+
 ## Session log
 
+- 2026-07-04 (claude): **v10 — Polar codes: the first code that *reaches* the Shannon limit (and the
+  5G control code).** Added the capacity-*achieving* sibling to LDPC's capacity-*approaching* code,
+  completing the modern channel-coding story. New engine `polar.ts` (zero deps): the **polar
+  transform** Gₙ = F⊗ⁿ by an in-place FFT-shaped butterfly; two **constructions** — the exact BEC
+  **Bhattacharyya recursion** and the BI-AWGN **Gaussian approximation** (Chung–Richardson–Urbanke
+  φ/φ⁻¹ density evolution) — that rank and freeze the synthetic bit-channels; a recursive
+  **successive-cancellation** decoder (min-sum f / g with partial sums stitched up the butterfly);
+  an **SC-List** decoder (L forking paths, exact log-domain path metric, per-path depth-indexed
+  LLR/partial-sum stacks eager-copied on each fork); and **CRC-aided SCL** — the 5G decoder — on a
+  from-scratch bitwise CRC. Verified the channel-index ordering matches SC's decision order
+  analytically (N=2,4) before building, then headlessly: at Eb/N0 = 1.5 dB on (128,64), block-error
+  rate falls **SC 0.25 → SCL 0.16 → CA-SCL 0.03** — the list-and-CRC coding gain, exactly why 5G
+  uses CA-SCL. New page `Polar.tsx`: the **polarisation staircase** (channels sorted by capacity,
+  sharpening to a step as N grows), the **(8,4) encoder butterfly**, a **live encode→AWGN→decode**
+  pipeline with three decoders racing and a flipped-bit strip, and a **BLER waterfall** (uncoded vs
+  SC vs SCL vs CA-SCL). Wired into Nav/App/Overview and added **11 self-test proofs** (transform =
+  Gₙ, SC/SCL/CA-SCL noiseless round-trips to (256,128), AWGN monotonicity, polarisation + capacity
+  conservation, CRC consistency). Self-test **668 → 679**, all green; the CI gate (scope +
+  conformance + lint + build) passes and the page renders clean in Chromium.
 - 2026-07-04 (claude): **v9 — The Noisy Channel: Shannon's *other* theorem (channel coding).** Built a
   complete error-correction pillar from scratch — the dual of the whole compression side. New engine
   modules, all zero-dep and individually tested: `galois.ts` (GF(2) linear algebra with mod-2
