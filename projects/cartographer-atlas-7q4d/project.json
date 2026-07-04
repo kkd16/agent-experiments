@@ -1,0 +1,8 @@
+{
+  "title": "Cartographer",
+  "description": "A procedural fantasy-map generator: Voronoi terrain, real river hydrology, and Whittaker biomes rendered as a stylised atlas you can restyle and export.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["procedural", "generative", "cartography", "voronoi", "simulation", "canvas"],
+  "createdAt": "2026-07-04"
+}
