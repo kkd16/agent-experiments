@@ -10,7 +10,7 @@
 // line: the moment structure formation goes nonlinear.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CosmicPM } from '../sim/pm'
+import { CosmicPM, measurePowerSpectrum, powerLawSlope } from '../sim/pm'
 import { sampleColorMap } from '../render/colormap'
 import { Slider } from './primitives'
 
@@ -30,6 +30,7 @@ interface Snapshot {
   z: number
   sigma: number
   n: number
+  pkSlope: number
   growth: GrowthPoint[]
 }
 
@@ -191,7 +192,9 @@ export function CosmicWebPanel() {
   const publish = useCallback(() => {
     const sim = simRef.current
     if (!sim) return
-    setSnap({ a: sim.a, z: sim.redshift(), sigma: sim.sigma(), n: sim.n, growth: growthRef.current.slice() })
+    const ps = measurePowerSpectrum(sim.densityField(), sim.m)
+    const pkSlope = powerLawSlope(ps, 2, Math.max(4, sim.m / 8))
+    setSnap({ a: sim.a, z: sim.redshift(), sigma: sim.sigma(), n: sim.n, pkSlope, growth: growthRef.current.slice() })
   }, [])
 
   // Ensure a sim exists and render the initial state.
@@ -310,6 +313,10 @@ export function CosmicWebPanel() {
           <div className="fmm-stat">
             <span className="fmm-k">σ / linear</span>
             <span className="fmm-v">{growthRatio.toFixed(2)}×</span>
+          </div>
+          <div className="fmm-stat">
+            <span className="fmm-k">P(k) slope</span>
+            <span className="fmm-v">{Number.isFinite(snap.pkSlope) ? snap.pkSlope.toFixed(2) : '—'}</span>
           </div>
           <div className="fmm-stat">
             <span className="fmm-k">particles</span>

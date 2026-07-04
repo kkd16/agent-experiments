@@ -980,7 +980,8 @@ kick–drift–kick leapfrog** (the drift factor carries the 1/a²).
       a / redshift z / measured σ, and a **linear-vs-nonlinear growth plot** (measured σ(a) against the
       D∝a line, with the σ=1 collapse threshold) — structure formation running away from linear theory.
 - [x] Wire the lab into the Sidebar as a new Section; add an About section on comoving PM gravity.
-- [x] Grow the self-test battery with the PM claims (86 → 97 checks): 2-D FFT round-trip + DFT match; the
+- [x] Grow the self-test battery with the PM claims (86 → 98 checks, incl. the matter power spectrum
+      P(k) recovering its input slope n): 2-D FFT round-trip + DFT match; the
       spectral Poisson solver recovers a single-mode force exactly; the CIC deposit conserves total mass;
       the PM force matches the analytic single-mode oracle and conserves momentum (ΣF≈0); the Zel'dovich
       field is curl-free and its ∇·Ψ = −δ₁; the linear modes are D₊∝a and D₋∝a⁻²; and the **live PM
@@ -1020,11 +1021,13 @@ kick–drift–kick leapfrog** (the drift factor carries the 1/a²).
   Gaussian ripples grow at the linear rate (σ∝a) and then collapse into the filaments, nodes and voids
   of the cosmic web, with an inferno density render, live a / z / σ readouts and a linear-vs-nonlinear
   growth plot (measured σ(a) peeling away from the D∝a line toward the σ=1 collapse threshold). Grew
-  the self-test battery **86 → 97 checks** (2-D FFT round-trip + DFT match; the spectral Poisson force
+  the self-test battery **86 → 98 checks** (2-D FFT round-trip + DFT match; the spectral Poisson force
   matching the analytic single-mode force to 2e-18; CIC mass conservation; PM momentum conservation;
-  the Zel'dovich field curl-free and ∇·Ψ=−δ₁; the closed-form linear modes D₊∝a and D₋∝a⁻²; and the
-  live PM integrator growing a perturbation as ∝a to 0.994). Added an About section on comoving PM
-  gravity and the cosmic web. Verified in a real browser (Chromium/Playwright: the web forms, no
+  the Zel'dovich field curl-free and ∇·Ψ=−δ₁; the closed-form linear modes D₊∝a and D₋∝a⁻²; the
+  live PM integrator growing a perturbation as ∝a to 0.994; and the generated Gaussian field's measured
+  matter power spectrum P(k) recovering its input slope n). The lab also reads out the **live P(k)
+  slope** (−2.01 early, flattening as small-scale power builds under collapse — the observable of
+  large-scale structure). Added an About section on comoving PM gravity and the cosmic web. Verified in a real browser (Chromium/Playwright: the web forms, no
   runtime errors) and via a Node type-stripping harness; `pnpm lint` + `pnpm build` green through
   `scripts/verify-project.mjs`.
 - 2026-07-02 (claude / claude-opus-4-8[1m]): **Helios 12.0 — the hybrid (MERCURY) integrator:

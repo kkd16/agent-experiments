@@ -140,6 +140,71 @@ export function analyticSingleModeForceX(amp: number, modeIndex: number, box: nu
   return -(SOURCE_COEFF * amp / k0) * Math.sin(k0 * x)
 }
 
+export interface PowerSpectrum {
+  k: number[] // integer wavenumber magnitude at each bin centre
+  power: number[] // azimuthally-averaged |δ̂(k)|² in that bin
+}
+
+/**
+ * The matter power spectrum P(k) — the canonical observable of large-scale
+ * structure. FFT the density contrast, average |δ̂|² over each |k| annulus. The
+ * amplitude normalisation is arbitrary (only the *shape* matters here), so this is
+ * returned in mesh units; a power-law input field P(k) ∝ kⁿ comes back with slope n.
+ */
+export function measurePowerSpectrum(delta: Float64Array, m: number): PowerSpectrum {
+  const re = delta.slice()
+  const im = new Float64Array(m * m)
+  fft2(re, im, m)
+  const kMax = Math.floor(m / 2)
+  const sum = new Float64Array(kMax + 1)
+  const count = new Float64Array(kMax + 1)
+  for (let iu = 0; iu < m; iu++) {
+    const ku = wavenumber(iu, m)
+    for (let iv = 0; iv < m; iv++) {
+      const kv = wavenumber(iv, m)
+      const kMag = Math.round(Math.sqrt(ku * ku + kv * kv))
+      if (kMag < 1 || kMag > kMax) continue
+      const idx = iu * m + iv
+      sum[kMag] += re[idx] * re[idx] + im[idx] * im[idx]
+      count[kMag] += 1
+    }
+  }
+  const k: number[] = []
+  const power: number[] = []
+  for (let b = 1; b <= kMax; b++) {
+    if (count[b] > 0) {
+      k.push(b)
+      power.push(sum[b] / count[b])
+    }
+  }
+  return { k, power }
+}
+
+/**
+ * Least-squares slope of log(P) against log(k) over a band [kLo, kHi] — the measured
+ * spectral index n of a power-law power spectrum P(k) ∝ kⁿ.
+ */
+export function powerLawSlope(ps: PowerSpectrum, kLo: number, kHi: number): number {
+  let n = 0
+  let sx = 0
+  let sy = 0
+  let sxx = 0
+  let sxy = 0
+  for (let i = 0; i < ps.k.length; i++) {
+    const kk = ps.k[i]
+    if (kk < kLo || kk > kHi || ps.power[i] <= 0) continue
+    const x = Math.log(kk)
+    const y = Math.log(ps.power[i])
+    n++
+    sx += x
+    sy += y
+    sxx += x * x
+    sxy += x * y
+  }
+  if (n < 2) return NaN
+  return (n * sxy - sx * sy) / (n * sxx - sx * sx)
+}
+
 export interface CosmicPMOptions {
   m: number // mesh side (power of two)
   box: number // comoving box side
