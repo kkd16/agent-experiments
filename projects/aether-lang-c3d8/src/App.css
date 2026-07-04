@@ -2566,6 +2566,67 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--amber) 25%, var(--line));
 }
 
+/* ── Auto-CEGIS (reference-oracle) panel ────────────────────────────── */
+.synth-cegis {
+  margin: 0 1.15rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  overflow: hidden;
+}
+.synth-cegis-head {
+  padding: 0.7rem 0.85rem;
+  font-size: 0.86rem;
+  color: var(--fg-dim);
+  line-height: 1.45;
+  border-bottom: 1px solid color-mix(in srgb, var(--green) 25%, var(--line));
+}
+.synth-cegis-head code {
+  font-family: var(--mono);
+  color: var(--green);
+}
+.synth-cegis-badge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: #06110c;
+  background: var(--green);
+}
+.synth-cegis-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.synth-cegis-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.85rem;
+  border-top: 1px dashed color-mix(in srgb, var(--green) 20%, var(--line));
+}
+.synth-cegis-row:first-child {
+  border-top: none;
+}
+.synth-cegis-in {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--fg);
+}
+.synth-cegis-arrow {
+  color: var(--fg-faint);
+}
+.synth-cegis-out {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--green);
+  font-weight: 600;
+}
+
 /* ── Ranked alternatives ────────────────────────────────────────────── */
 .synth-alts {
   margin: 0 1.15rem 1rem;

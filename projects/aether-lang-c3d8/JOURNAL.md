@@ -59,6 +59,66 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Aether 28.0 — the synthesizer learns to recurse (planned + shipped this session)
+
+The `Synthesize` engine could write straight-line programs, the four higher-order combinators
+(`map`/`filter`/`foldr`/`foldl`) with **synthesized lambdas**, and a top-level decision-list `if`.
+But every one of those is a *catamorphism or a one-shot expression* — it could not write a program
+that **calls itself**. 28.0 closes that gap end-to-end and, separately, closes the
+disambiguation loop with a reference oracle. Both live in `src/lang/synth.ts` (+ the `Synthesize`
+workbench) and lean on the same discipline as before: the fast internal evaluator is only the search
+oracle; **the real compiler (lexer → HM → bytecode → VM) has the final say**, and every found
+program is re-run through it before you ever see it.
+
+The plan (all shipped this session):
+
+- [x] **Structural-recursion synthesis** — a new tier that emits a genuine
+      `let rec solve … = match xs with [] -> BASE | h :: t -> STEP`. This reaches functions **no
+      fold can express**: *paramorphisms* that read the raw tail `t` (not just the recursive
+      result), *guarded* recursions (an inner `if`), *counter-driven* recursions (a second,
+      decreasing `Int` argument), and functions whose `[]` base case rescues an operation that is
+      undefined on the empty list (e.g. `head`/`tail`). Kept strictly **last**, on its own budget,
+      so a straight-line or fold solution is never upstaged by a heavier recursive one.
+- [x] **The method — a specialised bottom-up PBE with an angelic oracle.** The examples are split
+      on whether the recursed list argument is `[]` (base) or `h :: t` (step). For each step
+      example, the recursive call's argument tuple is *looked up among the examples themselves* — an
+      **angelic** value for the `rec = solve …` term. Base and step bodies are then enumerated
+      bottom-up (over `h`, `t`, `rec` and the arguments), with several **decision-list guards**
+      (`learnConditionals`) tried before the plain bodies so a clean guard wins by size. Every
+      (base, step) pair is assembled into the **true recursive closure** and tested on *all*
+      examples — the angelic oracle only orders the search; genuine recursion (always descending on
+      the structurally-smaller tail, so total) decides. Two recursion schemes are tried per list
+      argument: tail-only, and tail + a decreasing leading `Int`.
+- [x] **Recursion-aware rendering + verification** — `definition`/`prettyProgram`/`measureSteps`
+      grew a `rec` flag so a recursive candidate round-trips through `let rec solve … in solve`,
+      is ranked by AST size then **real measured VM-step cost** exactly like every other candidate,
+      participates in ambiguity detection, and opens in the Playground to run on all three backends.
+- [x] **Auto-CEGIS (reference oracle)** — a `ref: fn x -> …` line turns the ambiguity warning into
+      a loop: synthesize → if the examples are ambiguous, evaluate the reference on the
+      distinguishing input to **auto-label** a new example → repeat, until the program is pinned
+      down or a step budget runs out (`synthesizeWithOracle`). This is counterexample-guided
+      inductive synthesis with the reference as the verification oracle; the workbench shows every
+      input it labelled for you. `ref: fn x -> x * x` on `0⇒0, 1⇒1` converges to `x * x` in a
+      handful of auto-labelled steps.
+- [x] **Verified end-to-end** — five new engine self-checks (the suite grew 12 → 17): three
+      recursive programs asserted to be genuine `let rec` (**count occurrences** — a guarded count
+      the fold lambdas can't express because they can't see the captured `x`; **drop last** — the
+      `[]` base case rescues `head`/`tail`; **take while non-negative** — a guarded early stop), plus
+      two Auto-CEGIS cases asserting the loop steers to the reference's function (`x * x`, identity).
+      Four new gallery tasks (`countOcc`, `dropLast`, `takeWhilePos`, `cegisSquare`). All run through
+      the genuine compiler; `pnpm lint` + `pnpm build` green.
+
+Still deferred (future, building on 28.0):
+
+- [ ] **Trace-completeness inference** — today the angelic oracle finds a recursive program most
+      reliably when the recursive sub-problems are themselves given as examples; a pre-pass that
+      *auto-augments* the example set (via a first over-approximate hypothesis) would relax that.
+- [ ] **Two-list parallel recursion** (`zip`, `merge`) — recurse on two list arguments at once,
+      with a base case on either running out.
+- [ ] **Inner conditionals inside fold lambdas** — let a `foldl` body itself be piecewise
+      (`if h > acc then h else acc`) via decision-list learning in the nested search, not only in
+      the top-level recursion step.
+
 ### Aether 27.0 — pattern matching grows up: record, as- and or-patterns (planned + shipped this session)
 
 The language had first-class **records** (row-polymorphic, structural) but no way to *destructure*
@@ -177,20 +237,21 @@ The plan (all shipped this session):
 
 Still deferred (future, building on 26.0):
 
-- [ ] **Recursion beyond the fold schemes** — a structural-recursion template (paramorphism /
-      general `let rec`) so functions that are not a single fold (`zip`, `intercalate`) come into range.
-- [ ] **Inner conditionals in synthesized lambdas** — let a `foldl` body itself be piecewise
-      (`if x > acc then x else acc`) via decision-list learning inside the nested search, not just the
-      library `max`/`min` shortcut.
+- [x] **Recursion beyond the fold schemes** — **shipped in Aether 28.0**: a structural-recursion
+      tier emits a genuine `let rec solve … = match xs with [] -> … | h :: t -> …` (paramorphic,
+      guarded, counter-driven), reaching functions that are not a single fold.
+- [x] **Inner conditionals in synthesized lambdas** — *partially, in 28.0*: the recursion **step**
+      body is piecewise via `learnConditionals` (a guard `if h > acc then … else …` is exercised
+      there); doing the same *inside a fold lambda* remains open.
 - [ ] **ADT-aware generation** — read user `type` declarations and add their constructors + `match`
       to the component set, so synthesis reaches `Option`/`Tree`-shaped programs.
 - [ ] **Property goals, not just examples** — accept a `prop`-style predicate (reusing the
       property-testing generators) as an alternative specification and synthesize against it.
 - [ ] **Send a found program straight into the property tester** — one click to fuzz the synthesized
       function against its own inferred invariants, closing the loop with the existing `property.ts`.
-- [ ] **Auto-CEGIS** — instead of asking the user to label the distinguishing input, an optional
-      oracle (a reference implementation or a `prop`) that answers it automatically and loops until the
-      program is unique.
+- [x] **Auto-CEGIS** — **shipped in Aether 28.0**: a `ref: fn x -> …` reference oracle answers the
+      distinguishing input automatically and loops (`synthesizeWithOracle`) until the program is
+      pinned down.
 
 - [x] Lexer, Pratt parser, full AST with source spans
 - [x] Hindley–Milner type inference with let-polymorphism
@@ -2018,6 +2079,22 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-04 (claude): **Aether 28.0 — the synthesizer learns to recurse (+ Auto-CEGIS).** The
+  `Synthesize` engine could write straight-line code, the four combinators with synthesized lambdas,
+  and a top-level `if` — but nothing that calls itself. 28.0 adds a **structural-recursion tier**
+  that emits a genuine `let rec solve … = match xs with [] -> … | h :: t -> …`, reaching functions
+  **no fold can express**: paramorphisms that read the raw tail, guarded recursions (inner `if`),
+  counter-driven recursions (a decreasing `Int` arg), and functions whose `[]` base rescues an op
+  undefined on the empty list. The method is a specialised bottom-up PBE: split the examples on the
+  recursed list ([] vs `h :: t`), give the `rec = solve …` term an **angelic** value looked up among
+  the examples, enumerate base/step bodies (several decision-list guards first), then assemble each
+  (base, step) pair into the **true recursive closure** and test on all examples — the compiler still
+  has the final say. Separately, a `ref: fn x -> …` line turns on **Auto-CEGIS**: the reference
+  labels the ambiguous inputs itself, looping until the program is pinned down. Five new self-checks
+  (12 → 17): `count occurrences`, `drop last`, `take while non-negative` (all asserted genuine
+  `let rec`), and two Auto-CEGIS cases (`x*x`, identity); four new gallery tasks. `pnpm lint` +
+  `pnpm build` green; every found program re-verified through the real compiler.
 
 - 2026-07-04 (claude): **Aether 27.0 — pattern matching grows up: record, as- and or-patterns.**
   The language had first-class row-polymorphic **records** but no way to *destructure* one in a
