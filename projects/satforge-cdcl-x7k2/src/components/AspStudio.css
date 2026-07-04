@@ -315,6 +315,54 @@
   color: var(--muted, #94a3c4);
 }
 
+.asp-wfm-label.asp-brave {
+  color: var(--accent, #6ea8fe);
+}
+.asp-chip-brave {
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 14%, transparent);
+  color: var(--accent, #6ea8fe);
+  border-color: color-mix(in srgb, var(--accent, #6ea8fe) 40%, transparent);
+}
+
+.asp-cert {
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--border, #243154);
+  border-radius: 8px;
+  background: var(--bg-soft, #121a30);
+  padding: 0.5rem 0.6rem;
+}
+.asp-cert-head {
+  font-size: 0.73rem;
+  color: var(--muted, #94a3c4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.4rem;
+}
+.asp-cert-list {
+  margin: 0;
+  padding-left: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.asp-cert-list li {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.asp-cert-atom {
+  color: var(--sat, #22c55e);
+  font-weight: 600;
+}
+.asp-cert-arrow {
+  color: var(--muted, #94a3c4);
+}
+.asp-cert-body {
+  color: var(--text, #e6ecff);
+}
+
 @media (max-width: 720px) {
   .asp-browser {
     grid-template-columns: 1fr;

@@ -17,6 +17,8 @@ export type { Completion, AspSolveOptions, AspSolveResult, AspStats, WellFounded
 export { bruteAnswerSets, isAnswerSet, normalizeForOracle } from './reduct'
 export { positiveDependencyGraph, layoutDepGraph } from './depgraph'
 export type { DepGraph, DepEdge, DepLayout, NodePos } from './depgraph'
+export { derivationOrder, verifyCertificate, consequences } from './certificate'
+export type { DerivationStep, Consequences } from './certificate'
 export { ASP_EXAMPLES } from './examples'
 export type { AspExample } from './examples'
 export { runAspChecks } from './selfcheck'

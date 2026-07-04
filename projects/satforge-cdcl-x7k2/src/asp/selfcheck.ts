@@ -16,6 +16,7 @@ import { parseProgram } from './parse'
 import { ground } from './ground'
 import { ASP_EXAMPLES } from './examples'
 import { positiveDependencyGraph, layoutDepGraph } from './depgraph'
+import { derivationOrder, verifyCertificate, consequences } from './certificate'
 
 export interface AspCheckReport {
   pass: number
@@ -233,6 +234,53 @@ export function runAspChecks(): AspCheckReport {
     }
     check('well-founded model: true ⊆ ∩ answer sets, false ∩ ⋃ = ∅', wfBad === 0, `bad=${wfBad}`)
     check('well-founded model: exercised', tested > 300, `tested=${tested}`)
+  }
+
+  // ---- answer-set certificates + brave/cautious consequences ----
+  {
+    const rng = mulberry32(0xce27)
+    let certBad = 0
+    let certMissing = 0
+    let tamperAccepted = 0
+    let consBad = 0
+    let certified = 0
+    for (let i = 0; i < 1500; i++) {
+      const prog = randProgram(rng)
+      const brute = bruteAnswerSets(prog)
+      const res = solveAsp(prog, { maxTimeMs: 3000 })
+      if (!res.complete) continue
+      // certificate for every reported model, independently verified
+      for (const s of res.answerSets) {
+        const cert = derivationOrder(prog, s)
+        if (!cert) {
+          certMissing++
+          continue
+        }
+        certified++
+        if (!verifyCertificate(prog, s, cert)) certBad++
+        // tamper: dropping the last derived atom's step must be rejected
+        if (cert.length > 0) {
+          const broken = cert.slice(0, cert.length - 1)
+          if (verifyCertificate(prog, s, broken)) tamperAccepted++
+        }
+      }
+      // brave/cautious vs. the brute-force answer-set family
+      const cons = consequences(prog, res.answerSets)
+      const brave = new Set<number>()
+      let inter: Set<number> | null = null
+      for (const s of brute) {
+        for (const a of s) brave.add(a)
+        if (inter === null) inter = new Set(s)
+        else for (const a of [...inter]) if (!s.includes(a)) inter.delete(a)
+      }
+      const cautiousTrue = inter ?? new Set<number>()
+      if (cons.brave.length !== brave.size || cons.brave.some((a) => !brave.has(a))) consBad++
+      if (cons.cautious.length !== cautiousTrue.size || cons.cautious.some((a) => !cautiousTrue.has(a))) consBad++
+    }
+    check('certificate: every answer set has a valid founded-set derivation', certMissing === 0 && certBad === 0, `missing=${certMissing} bad=${certBad}`)
+    check('certificate: a truncated certificate is rejected', tamperAccepted === 0, `accepted=${tamperAccepted}`)
+    check('certificate: exercised many models', certified > 300, `n=${certified}`)
+    check('brave/cautious consequences match the answer-set family', consBad === 0, `bad=${consBad}`)
   }
 
   // ---- determinism ----

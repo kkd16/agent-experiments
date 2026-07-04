@@ -10,6 +10,8 @@ import {
   runAspChecks,
   positiveDependencyGraph,
   layoutDepGraph,
+  derivationOrder,
+  consequences,
   ASP_EXAMPLES,
   type GroundProgram,
   type AspSolveResult,
@@ -178,6 +180,20 @@ export function AspStudio() {
   const wfm = analysis?.wfm ?? null
   const wfTrue = new Set(wfm?.trueAtoms ?? [])
   const wfFalse = new Set(wfm?.falseAtoms ?? [])
+  const prog = analysis?.program
+  const cons = useMemo(
+    () => (prog && result && result.complete ? consequences(prog, result.answerSets) : null),
+    [prog, result],
+  )
+  const cert = useMemo(
+    () => (prog && result && result.answerSets.length > 0 ? derivationOrder(prog, result.answerSets[sel] ?? []) : null),
+    [prog, result, sel],
+  )
+  const fmtBody = (pos: number[], neg: number[]): string => {
+    if (!prog) return ''
+    const parts = [...pos.map((a) => prog.atomNames[a]), ...neg.map((a) => 'not ' + prog.atomNames[a])]
+    return parts.join(', ')
+  }
 
   return (
     <div className="layout">
@@ -370,6 +386,41 @@ export function AspStudio() {
               </div>
             )}
 
+            {cons && (cons.brave.length > 0 || cons.cautious.length > 0) && (
+              <div className="imc-panel asp-cons">
+                <h3>Consequences over all answer sets</h3>
+                <p className="imc-note">
+                  <strong>Cautious</strong> (skeptical) atoms hold in <em>every</em> answer set;{' '}
+                  <strong>brave</strong> (credulous) atoms in <em>at least one</em>. The two classic ASP
+                  reasoning modes, read off the complete answer-set family.
+                </p>
+                <div className="asp-wfm-rows">
+                  <div className="asp-wfm-row">
+                    <span className="asp-wfm-label asp-true">cautious · {cons.cautious.length}</span>
+                    <div className="asp-chips">
+                      {cons.cautious.map((a) => (
+                        <span key={a} className="asp-chip asp-chip-true">
+                          {analysis!.program.atomNames[a]}
+                        </span>
+                      ))}
+                      {cons.cautious.length === 0 && <span className="asp-empty">—</span>}
+                    </div>
+                  </div>
+                  <div className="asp-wfm-row">
+                    <span className="asp-wfm-label asp-brave">brave · {cons.brave.length}</span>
+                    <div className="asp-chips">
+                      {cons.brave.map((a) => (
+                        <span key={a} className="asp-chip asp-chip-brave">
+                          {analysis!.program.atomNames[a]}
+                        </span>
+                      ))}
+                      {cons.brave.length === 0 && <span className="asp-empty">—</span>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {answerSets.length > 0 && (
               <div className="imc-panel">
                 <h3>Answer-set browser</h3>
@@ -389,6 +440,25 @@ export function AspStudio() {
                   </div>
                   <div className="asp-setview">
                     <div className="asp-setcode">{formatAnswerSet(analysis!.program, selSet)}</div>
+                    {cert && cert.length > 0 && (
+                      <div className="asp-cert">
+                        <div className="asp-cert-head">
+                          derivation certificate — {cert.length} step{cert.length === 1 ? '' : 's'}, each atom
+                          founded by non-circular support
+                        </div>
+                        <ol className="asp-cert-list">
+                          {cert.map((s, i) => (
+                            <li key={i}>
+                              <span className="asp-cert-atom">
+                                {s.choice ? `{ ${analysis!.program.atomNames[s.atom]} }` : analysis!.program.atomNames[s.atom]}
+                              </span>
+                              <span className="asp-cert-arrow"> ← </span>
+                              <span className="asp-cert-body">{fmtBody(s.pos, s.neg) || '⊤'}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
                     <div className="asp-atomgrid">
                       {Array.from({ length: analysis!.program.numAtoms }, (_, k) => k + 1).map((a) => {
                         const on = selSetIds.has(a)
