@@ -20,6 +20,7 @@ import { HammingCode } from './routes/HammingCode'
 import { ReedSolomon } from './routes/ReedSolomon'
 import { Convolutional } from './routes/Convolutional'
 import { Ldpc } from './routes/Ldpc'
+import { Polar } from './routes/Polar'
 import { ChannelLab } from './routes/ChannelLab'
 import { Burrows } from './routes/Burrows'
 import { Suffix } from './routes/Suffix'
@@ -46,6 +47,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   reedsolomon: ReedSolomon,
   convolutional: Convolutional,
   ldpc: Ldpc,
+  polar: Polar,
   channellab: ChannelLab,
   burrows: Burrows,
   suffix: Suffix,

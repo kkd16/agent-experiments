@@ -23,6 +23,7 @@ const MODULES = [
   { route: 'reedsolomon', name: 'Reed–Solomon', desc: 'The code in QR/CD/DVD/Voyager — corrects byte errors and bursts over GF(256).' },
   { route: 'convolutional', name: 'Convolutional · Viterbi', desc: 'The trellis code + maximum-likelihood decoder that flew on Voyager.' },
   { route: 'ldpc', name: 'LDPC · Belief Prop.', desc: 'Capacity-approaching codes decoded on a Tanner graph — inside 5G & Wi-Fi 6.' },
+  { route: 'polar', name: 'Polar · SC List', desc: 'The first provably capacity-achieving code — channel polarisation + CRC-aided list decoding, the 5G control code.' },
   { route: 'channellab', name: 'Channel Lab', desc: 'End-to-end: gzip → Reed–Solomon → bursty channel → recovered byte-for-byte.' },
   { route: 'benchmark', name: 'Benchmark', desc: 'Race every codec on shared corpora against the entropy floor.' },
   { route: 'selftest', name: 'Self-test', desc: 'Every codec round-trips, every ECC corrects — proven live.' },

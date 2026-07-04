@@ -51,6 +51,18 @@ import { encodeLinear, decodeLinear, repetitionCode } from './linearCode.ts'
 import { rsEncode, rsDecode } from './reedSolomon.ts'
 import { CONV_7_5, CONV_171_133, convEncode, viterbiDecode, freeDistance } from './convolutional.ts'
 import { LDPC_DEMO, ldpcEncode, ldpcMessage, ldpcSyndromeZero, bpDecodeLLR, bscLLR } from './ldpc.ts'
+import {
+  constructPolar,
+  polarEncode,
+  polarTransform,
+  scDecode,
+  sclDecode,
+  bhattacharyyaBEC,
+  appendCrc,
+  crcValid,
+  CRC8,
+} from './polar.ts'
+import { RNG as ChannelRNG, awgn as channelAwgn, ebN0dBtoEsN0 } from './channel.ts'
 
 export interface TestCase {
   group: string
@@ -530,6 +542,113 @@ function runChannelTests(results: TestCase[]): void {
     results.push({ group: 'LDPC · belief propagation', name: 'systematic message recovery', pass: recover, detail: 'info columns read back exactly' })
     results.push({ group: 'LDPC · belief propagation', name: 'BP corrects any single-bit error', pass: single, detail: `${cs} trials, sum-product LLR decode` })
     results.push({ group: 'LDPC · belief propagation', name: 'code is genuinely low-density', pass: code.colWeight <= 3 && code.rowWeight <= 6, detail: `col wt ${code.colWeight}, row wt ${code.rowWeight}` })
+  }
+
+  // --- Polar codes: transform, SC / SCL / CA-SCL, and polarisation ---
+  {
+    // The polar transform must equal Gₙ = F⊗ⁿ — verify by rebuilding the
+    // generator from basis vectors and cross-checking a batch of random inputs.
+    let linear = true
+    for (const nn of [1, 2, 3, 4, 5]) {
+      const N = 1 << nn
+      const G: Uint8Array[] = []
+      for (let i = 0; i < N; i++) {
+        const e = new Uint8Array(N)
+        e[i] = 1
+        G.push(polarTransform(e))
+      }
+      for (let trial = 0; trial < 40 && linear; trial++) {
+        const u = Array.from({ length: N }, () => rnd() & 1)
+        const x = polarTransform(u)
+        const ref = new Uint8Array(N)
+        for (let i = 0; i < N; i++) if (u[i]) for (let j = 0; j < N; j++) ref[j] ^= G[i][j]
+        for (let j = 0; j < N; j++) if (x[j] !== ref[j]) linear = false
+      }
+    }
+    results.push({ group: 'Polar codes', name: 'transform equals Gₙ = F⊗ⁿ (linearity)', pass: linear, detail: 'N up to 32, generator rebuilt from basis' })
+
+    // Noiseless round-trip for SC, SCL and CA-SCL across sizes: strong LLRs
+    // (bit 0 → +30, bit 1 → −30) must recover the message exactly.
+    const bigLLR = (cw: Uint8Array) => Array.from(cw, (b) => (b === 0 ? 30 : -30))
+    let scRT = true, sclRT = true, caRT = true
+    const configs: [number, number][] = [[16, 8], [64, 32], [128, 64], [256, 128]]
+    for (const [N, K] of configs) {
+      const pc = constructPolar(N, K, { construction: 'ga', designSnrDb: 2 })
+      for (let trial = 0; trial < 20; trial++) {
+        const msg = Array.from({ length: K }, () => rnd() & 1)
+        const cw = polarEncode(pc, msg)
+        const llr = bigLLR(cw)
+        if (scDecode(pc, llr).message.join('') !== msg.join('')) scRT = false
+        if (sclDecode(pc, llr, 8).message.join('') !== msg.join('')) sclRT = false
+        const payload = msg.slice(0, K - CRC8.width)
+        const info = appendCrc(payload, CRC8)
+        const ca = sclDecode(pc, bigLLR(polarEncode(pc, info)), 8, CRC8)
+        if (!ca.crcPassed || ca.message.slice(0, K - CRC8.width).join('') !== payload.join('')) caRT = false
+      }
+    }
+    results.push({ group: 'Polar codes', name: 'SC decode: noiseless round-trip', pass: scRT, detail: '4 sizes to (256,128), 20 msgs each' })
+    results.push({ group: 'Polar codes', name: 'SC-List (L=8): noiseless round-trip', pass: sclRT, detail: 'list never loses the true path' })
+    results.push({ group: 'Polar codes', name: 'CRC-aided SCL: round-trip + CRC selects', pass: caRT, detail: 'the 5G decoder, CRC-8 outer check' })
+
+    // Over an AWGN channel: SCL is never worse than SC, and CA-SCL is best —
+    // the whole reason 5G uses list decoding. Count block errors over a batch.
+    {
+      const N = 128, K = 64
+      const pc = constructPolar(N, K, { construction: 'ga', designSnrDb: 2 })
+      const payloadLen = K - CRC8.width
+      const esno = ebN0dBtoEsN0(1.5, K / N)
+      const crng = new ChannelRNG(0xc0ffee)
+      let scErr = 0, sclErr = 0, caErr = 0
+      const T = 200
+      for (let t = 0; t < T; t++) {
+        const payload = Array.from({ length: payloadLen }, () => (crng.float() < 0.5 ? 0 : 1))
+        const info = appendCrc(payload, CRC8)
+        const cw = polarEncode(pc, info)
+        const { llr } = channelAwgn(Array.from(cw), esno, crng)
+        if (scDecode(pc, llr).message.slice(0, payloadLen).join('') !== payload.join('')) scErr++
+        if (sclDecode(pc, llr, 8).message.slice(0, payloadLen).join('') !== payload.join('')) sclErr++
+        if (sclDecode(pc, llr, 8, CRC8).message.slice(0, payloadLen).join('') !== payload.join('')) caErr++
+      }
+      results.push({ group: 'Polar codes', name: 'AWGN: SC-List ≤ SC block errors', pass: sclErr <= scErr, detail: `${sclErr} vs ${scErr} of ${T} @ Eb/N0=1.5 dB` })
+      results.push({ group: 'Polar codes', name: 'AWGN: CA-SCL is the strongest decoder', pass: caErr <= sclErr, detail: `${caErr} vs ${sclErr} block errors` })
+      results.push({ group: 'Polar codes', name: 'AWGN: SC decodes below the noise floor', pass: scErr / T < 0.5, detail: `SC BLER ${(scErr / T).toFixed(2)}` })
+    }
+
+    // Polarisation: on the BEC the channels split toward capacity 0 or 1, and
+    // the un-polarised middle shrinks as N grows (Arıkan's theorem, made finite).
+    const middleFrac = (nn: number) => {
+      const Z = bhattacharyyaBEC(nn, 0.5)
+      let mid = 0
+      for (const z of Z) if (z > 0.01 && z < 0.99) mid++
+      return mid / Z.length
+    }
+    const f4 = middleFrac(4), f7 = middleFrac(7), f10 = middleFrac(10)
+    results.push({ group: 'Polar codes', name: 'channels polarise as N grows (middle shrinks)', pass: f10 < f7 && f7 < f4, detail: `mixed fraction ${f4.toFixed(2)}→${f7.toFixed(2)}→${f10.toFixed(2)} for N=16→128→1024` })
+    // Capacity is conserved by the transform: mean synthetic capacity = C(W).
+    {
+      const Z = bhattacharyyaBEC(9, 0.3)
+      let cap = 0
+      for (const z of Z) cap += 1 - z
+      results.push({ group: 'Polar codes', name: 'transform conserves capacity (Σ(1−Z)/N = C)', pass: Math.abs(cap / Z.length - 0.7) < 1e-6, detail: `mean cap ${(cap / Z.length).toFixed(4)} vs C=0.70` })
+    }
+
+    // CRC append/validate is self-consistent, and a single bit flip is caught.
+    {
+      let ok = true, caught = 0, flips = 0
+      for (let t = 0; t < 200; t++) {
+        const len = 1 + (rnd() % 60)
+        const p = Array.from({ length: len }, () => rnd() & 1)
+        const info = appendCrc(p, CRC8)
+        if (!crcValid(info, CRC8)) ok = false
+        const bad = info.slice()
+        const pos = rnd() % bad.length
+        bad[pos] ^= 1
+        flips++
+        if (!crcValid(bad, CRC8)) caught++
+      }
+      results.push({ group: 'Polar codes', name: 'CRC-8 append/validate consistent', pass: ok, detail: '200 random payloads' })
+      results.push({ group: 'Polar codes', name: 'CRC-8 catches every single-bit flip', pass: caught === flips, detail: `${caught}/${flips} detected` })
+    }
   }
 }
 

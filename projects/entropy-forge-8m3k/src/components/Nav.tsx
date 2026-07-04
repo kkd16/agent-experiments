@@ -45,6 +45,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
       { route: 'reedsolomon', name: 'Reed–Solomon' },
       { route: 'convolutional', name: 'Convolutional · Viterbi' },
       { route: 'ldpc', name: 'LDPC · Belief Prop.' },
+      { route: 'polar', name: 'Polar · SC List' },
       { route: 'channellab', name: 'Channel Lab · end-to-end' },
     ],
   },
