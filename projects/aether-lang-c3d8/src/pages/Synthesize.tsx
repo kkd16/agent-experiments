@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { GALLERY, parseSpec, runSynthSelfTests, synthesize } from '../lang/synth.ts'
-import type { SynthResult, SynthSelfResult } from '../lang/synth.ts'
+import { GALLERY, parseSpec, runSynthSelfTests, synthesize, synthesizeWithOracle } from '../lang/synth.ts'
+import type { CegisStep, SynthResult, SynthSelfResult } from '../lang/synth.ts'
 import { setPendingCode } from '../share.ts'
 import { navigate } from '../router.ts'
 
@@ -19,6 +19,9 @@ function initialTask(): { spec: string } | null {
 interface Outcome {
   result: SynthResult | null
   error: string | null
+  /** examples the Auto-CEGIS loop auto-labelled from a reference (null if no `ref:`) */
+  added: CegisStep[] | null
+  iterations: number
 }
 
 export default function Synthesize() {
@@ -33,12 +36,19 @@ export default function Synthesize() {
     setTimeout(() => {
       const parsed = parseSpec(source)
       if (!parsed.spec) {
-        setOutcome({ result: null, error: parsed.error })
+        setOutcome({ result: null, error: parsed.error, added: null, iterations: 0 })
         setRunning(false)
         return
       }
-      const result = synthesize(parsed.spec)
-      setOutcome({ result, error: null })
+      // A `ref:` line turns on the Auto-CEGIS loop: the reference labels the
+      // ambiguous inputs itself, so the search converges with no hand-labelling.
+      if (parsed.spec.ref) {
+        const cg = synthesizeWithOracle(parsed.spec)
+        setOutcome({ result: cg.result, error: null, added: cg.added, iterations: cg.iterations })
+      } else {
+        const result = synthesize(parsed.spec)
+        setOutcome({ result, error: null, added: null, iterations: 0 })
+      }
       setRunning(false)
     }, 20)
   }
@@ -80,10 +90,14 @@ export default function Synthesize() {
         library) reads the <em>types</em> off your examples, grows a bank of candidate terms with
         observational-equivalence pruning, and even synthesizes the lambdas passed to{' '}
         <code>map</code>/<code>filter</code>/<code>foldr</code>. It handles{' '}
-        <strong>several arguments</strong> (<code>a, b =&gt; c</code> — no tupling),{' '}
+        <strong>several arguments</strong> (<code>a, b =&gt; c</code> — no tupling), and now writes{' '}
+        <strong>genuinely recursive programs</strong> — a <code>let rec</code> over a list argument
+        (guarded, paramorphic, counter-driven) for functions <em>no fold can express</em>. It{' '}
         <strong>ranks</strong> every program that fits by AST size then real VM-step cost, and{' '}
         <strong>warns you when your examples are ambiguous</strong> — showing an input two candidates
-        disagree on so you can pin the function down. Whatever it picks is re-checked through the{' '}
+        disagree on. Give it a <code>ref:</code> line and it closes that loop itself
+        (<strong>Auto-CEGIS</strong>): the reference labels the ambiguous inputs for you until the
+        program is pinned down. Whatever it picks is re-checked through the{' '}
         <strong>real compiler</strong> before you see it.
       </p>
 
@@ -110,7 +124,8 @@ export default function Synthesize() {
             <span className="synth-note">
               values are ordinary Aether: <code>[1, 2, 3]</code>, <code>(2, 3)</code>,{' '}
               <code>true</code>, <code>&quot;hi&quot;</code> · separate multiple arguments with commas:{' '}
-              <code>2, 3 =&gt; 5</code>
+              <code>2, 3 =&gt; 5</code> · add a <code>ref: fn x -&gt; …</code> line to auto-resolve
+              ambiguity
             </span>
           </div>
 
@@ -210,6 +225,7 @@ function ResultView({
   }
   const r = outcome.result
   if (!r) return null
+  const added = outcome.added
 
   if (!r.program) {
     return (
@@ -233,6 +249,25 @@ function ResultView({
       </div>
 
       <pre className="synth-program">{r.program}</pre>
+
+      {added && added.length > 0 && (
+        <div className="synth-cegis">
+          <div className="synth-cegis-head">
+            <span className="synth-cegis-badge">⟳ Auto-CEGIS</span>
+            your <code>ref:</code> oracle labelled {added.length} distinguishing input
+            {added.length === 1 ? '' : 's'} to pin the program down
+          </div>
+          <ul className="synth-cegis-list">
+            {added.map((a, i) => (
+              <li className="synth-cegis-row" key={i}>
+                <code className="synth-cegis-in">{a.input}</code>
+                <span className="synth-cegis-arrow">⇒</span>
+                <code className="synth-cegis-out">{a.output}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="synth-stats">
         <Stat label="AST size" value={r.size === null ? '—' : String(r.size)} />

@@ -170,6 +170,11 @@ interface Term {
    * sub-terms are pruned: at least one operand of every op must use a variable,
    * else we'd endlessly re-derive constants already in the bank. */
   usesVar: boolean
+  /** recursion candidates carry `rec: true` and the recursed argument's name so
+   * the rendering + verification helpers emit a `let rec … = match …` instead of
+   * a plain `fn`. Absent (falsy) on every ordinary straight-line/fold term. */
+  rec?: boolean
+  rName?: string
 }
 
 const wrap = (t: Term): string => (t.atom ? t.src : `(${t.src})`)
@@ -276,9 +281,11 @@ const asInt = (v: Value | undefined): number | undefined =>
 // of these as a whole word, so the whole-word test stays exact.
 let VAR_RE = /\b(?:x|h|acc)\b/
 
-/** Reset the in-scope variable names (the goal's argument names + lambda params). */
-function setVarNames(argNames: string[]): void {
-  const names = [...argNames, 'h', 'acc'].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+/** Reset the in-scope variable names (the goal's argument names + lambda params).
+ * The recursion sub-search overrides `extra` with `['h', 't', 'rec']` so a step
+ * body reading the head/tail/recursive-result counts as variable-using. */
+function setVarNames(argNames: string[], extra: string[] = ['h', 'acc']): void {
+  const names = [...argNames, ...extra].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   VAR_RE = new RegExp(`\\b(?:${names.join('|')})\\b`)
 }
 
@@ -711,6 +718,10 @@ export interface Example {
 export interface Spec {
   examples: Example[]
   typeHint: string | null
+  /** an optional reference function (an oracle) driving the Auto-CEGIS loop:
+   * whenever the examples are ambiguous it is evaluated on the distinguishing
+   * input to auto-label a new example, so the search converges with no hand-labelling. */
+  ref: string | null
 }
 
 /** One ranked candidate program that reproduces every example. */
@@ -1044,6 +1055,15 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     const cond = learnConditional(bank, outShape, rows, targets)
     if (cond) collect(cond)
   }
+  // Still nothing? Reach for genuine recursion — a `let rec` over a list argument
+  // that the fold combinators cannot express (paramorphisms that read the tail,
+  // guarded/polyadic recursion). Kept last, on its own budget, so a straight-line
+  // or fold solution is never upstaged by a heavier recursive one.
+  if (collected.length === 0) {
+    const recDeadline = nowMs() + 3000
+    for (const rc of synthRecursion(argNames, inShapes, outShape, spec.examples, extraInts, recDeadline))
+      collect(rc)
+  }
 
   const millis = Math.round(nowMs() - t0)
   if (collected.length === 0) {
@@ -1062,7 +1082,9 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
   // Rank the harvested solutions: prefer ones that actually compile + run, then
   // smaller ASTs, then fewer VM steps (a genuine dynamic-cost tie-break).
   const distinct = uniqueBy(collected, (t) => t.src).sort((a, b) => a.size - b.size).slice(0, 24)
-  const ranked = distinct.slice(0, 8).map((t) => ({ t, steps: measureSteps(argNames, t.src, spec.examples) }))
+  const ranked = distinct
+    .slice(0, 8)
+    .map((t) => ({ t, steps: measureSteps(argNames, t.src, spec.examples, t.rec) }))
   ranked.sort((a, b) => {
     const ac = a.steps === null ? 1 : 0
     const bc = b.steps === null ? 1 : 0
@@ -1076,19 +1098,19 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     .slice(1)
     .filter((r) => r.t.src !== best.src)
     .slice(0, 4)
-    .map((r) => ({ program: prettyProgram(argNames, r.t.src), size: r.t.size, steps: r.steps }))
+    .map((r) => ({ program: prettyProgram(argNames, r.t.src, r.t.rec), size: r.t.size, steps: r.steps }))
 
   // Anti-overfitting: do any two consistent programs disagree on an unseen input?
   const ambiguity = detectAmbiguity(distinct.slice(0, 12), inShapes, argNames)
 
   const body = best.src
-  const def = definition(argNames, body)
+  const def = definition(argNames, body, best.rec)
   const verify = verifyProgram(def, spec.examples)
   const sample = spec.examples[0]
   const sampleCall = sample.inputSrcs.map((s) => `(${s})`).join(' ')
   return {
     ok: verify.ok,
-    program: prettyProgram(argNames, body),
+    program: prettyProgram(argNames, body, best.rec),
     playgroundSrc: `${def.replace(/ in solve$/, ' in')}\nsolve ${sampleCall}`,
     paramName: argNames[0],
     paramNames: argNames,
@@ -1108,6 +1130,75 @@ export function synthesize(spec: Spec, limitsIn?: Partial<SearchLimits>): SynthR
     alternatives,
     ambiguity,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-CEGIS: close the disambiguation loop with a reference oracle.
+//
+// Plain `synthesize` surfaces a distinguishing input when the examples are
+// ambiguous and asks *you* to label it. If you can supply a reference function
+// (a slow/obvious implementation, a spec you want re-expressed, …), the loop
+// below labels those inputs *for you*: synthesize → if ambiguous, evaluate the
+// reference on the witness → add that as a new example → repeat, until the
+// program is pinned down or a step budget runs out. This is counterexample-
+// guided inductive synthesis with the reference as the verification oracle.
+// ---------------------------------------------------------------------------
+
+export interface CegisStep {
+  input: string
+  output: string
+}
+
+export interface CegisResult {
+  result: SynthResult
+  /** the examples the loop auto-labelled from the reference, in order */
+  added: CegisStep[]
+  iterations: number
+  /** ended with a verified program and no residual ambiguity */
+  converged: boolean
+}
+
+export function synthesizeWithOracle(
+  spec: Spec,
+  limitsIn?: Partial<SearchLimits>,
+  maxIters = 6,
+): CegisResult {
+  const base = synthesize(spec, limitsIn)
+  if (!spec.ref) return { result: base, added: [], iterations: 0, converged: base.ambiguity === null }
+
+  const examples = spec.examples.slice()
+  const added: CegisStep[] = []
+  const seenWitness = new Set<string>()
+  let result = base
+  let iter = 0
+  while (result.ok && result.ambiguity && iter < maxIters) {
+    const amb = result.ambiguity
+    if (seenWitness.has(amb.inputSrc)) break // no progress — the oracle already answered this
+    seenWitness.add(amb.inputSrc)
+
+    const argSrcs = splitTopLevel(amb.inputSrc)
+    const refOut = evalExpr(`(${spec.ref}) ${argSrcs.map((s) => `(${s})`).join(' ')}`)
+    if (refOut.error || !refOut.value) break // the reference can't answer — stop cleanly
+
+    const inputs: Value[] = []
+    let inputsOk = true
+    for (const s of argSrcs) {
+      const v = evalExpr(s)
+      if (v.error || !v.value) {
+        inputsOk = false
+        break
+      }
+      inputs.push(v.value)
+    }
+    if (!inputsOk) break
+
+    const outSrc = litSrc(refOut.value)
+    examples.push({ inputs, output: refOut.value, inputSrcs: argSrcs, outputSrc: outSrc })
+    added.push({ input: amb.inputSrc, output: outSrc })
+    iter++
+    result = synthesize({ ...spec, examples }, limitsIn)
+  }
+  return { result, added, iterations: iter, converged: result.ok && result.ambiguity === null }
 }
 
 /** Deduplicate, keeping first occurrence, by a string key. */
@@ -1130,8 +1221,8 @@ function uniqueBy<T>(xs: T[], key: (x: T) => string): T[] {
  * fails to compile or run, which also lets ranking prefer programs that stand up
  * to the genuine compiler.
  */
-function measureSteps(argNames: string[], body: string, examples: Example[]): number | null {
-  const def = definition(argNames, body).replace(/ in solve$/, ' in')
+function measureSteps(argNames: string[], body: string, examples: Example[], rec = false): number | null {
+  const def = definition(argNames, body, rec).replace(/ in solve$/, ' in')
   let total = 0
   for (const ex of examples.slice(0, 4)) {
     const call = `${def} solve ${ex.inputSrcs.map((s) => `(${s})`).join(' ')}`
@@ -1254,16 +1345,24 @@ function neededHelpers(body: string): string[] {
   return out
 }
 
-/** A self-contained, runnable definition of `solve` (ending in `solve`). */
-function definition(argNames: string[], body: string): string {
+/** A self-contained, runnable definition of `solve` (ending in `solve`). When
+ * `rec` is set, `body` is already a self-referential `match` expression and we
+ * emit `let rec solve … = body` so the recursive call resolves. */
+function definition(argNames: string[], body: string, rec = false): string {
   const pre = neededHelpers(body)
-  return [...pre, `let solve = fn ${argNames.join(' ')} -> ${body} in solve`].join('\n')
+  const decl = rec
+    ? `let rec solve ${argNames.join(' ')} = ${body} in solve`
+    : `let solve = fn ${argNames.join(' ')} -> ${body} in solve`
+  return [...pre, decl].join('\n')
 }
 
 /** The headline the UI shows — helper `let`s plus a clausal `solve x y = …`. */
-function prettyProgram(argNames: string[], body: string): string {
+function prettyProgram(argNames: string[], body: string, rec = false): string {
   const pre = neededHelpers(body)
-  return [...pre, `solve ${argNames.join(' ')} = ${body}`].join('\n')
+  const head = rec
+    ? `let rec solve ${argNames.join(' ')} = ${body}`
+    : `solve ${argNames.join(' ')} = ${body}`
+  return [...pre, head].join('\n')
 }
 
 function vecMatches(vec: (Value | undefined)[], targets: Value[]): boolean {
@@ -1323,6 +1422,306 @@ function learnConditional(bank: Bank, outShape: STy, rows: Env[], targets: Value
     }
   }
   return null
+}
+
+/**
+ * Like {@link learnConditional} but returns *several* distinct guarded programs
+ * (one per splitting condition), smallest first. The recursion tier uses this so
+ * a spurious over-fit guard doesn't crowd out the clean one — every survivor is
+ * re-checked by true recursion, and the smallest that survives wins.
+ */
+function learnConditionals(
+  bank: Bank,
+  outShape: STy,
+  rows: Env[],
+  targets: Value[],
+  maxOut: number,
+): Term[] {
+  const outs = smallest(bank.of(outShape), 120)
+  const conds = smallest(bank.of(TBOOL), 220)
+  const res: Term[] = []
+  const seen = new Set<string>()
+  for (const c of conds) {
+    const cv = c.vec
+    let anyT = false
+    let anyF = false
+    let usable = true
+    for (const v of cv) {
+      if (v === undefined || v.tag !== 'bool') {
+        usable = false
+        break
+      }
+      if (v.b) anyT = true
+      else anyF = true
+    }
+    if (!usable || !anyT || !anyF) continue
+    const pickT = (i: number): boolean => (cv[i] as { b: boolean }).b
+    const pickF = (i: number): boolean => !(cv[i] as { b: boolean }).b
+    let tT: Term | null = null
+    let tF: Term | null = null
+    for (const t of outs) {
+      if (!tT && matchesOn(t.vec, targets, pickT)) tT = t
+      if (!tF && matchesOn(t.vec, targets, pickF)) tF = t
+      if (tT && tF) break
+    }
+    if (tT && tF && tT !== tF) {
+      const t = ifTerm(outShape, rows, c, tT, tF)
+      if (vecMatches(t.vec, targets) && !seen.has(t.src)) {
+        seen.add(t.src)
+        res.push(t)
+      }
+    }
+    if (res.length >= maxOut) break
+  }
+  return res.sort((a, b) => a.size - b.size)
+}
+
+// ---------------------------------------------------------------------------
+// Structural recursion — `let rec solve … = match xs with [] -> … | h :: t -> …`.
+//
+// The fold combinators express *catamorphisms* (a strict right/left fold), but
+// many everyday functions are not folds: a **paramorphism** needs the raw tail
+// `t` (not merely the recursive result), and a **guarded / polyadic** recursion
+// needs an inner `if` and/or a second decreasing argument (`take n`, `drop n`).
+// This tier synthesizes those, extending the engine past every fold scheme.
+//
+// The method is a specialised bottom-up PBE:
+//   • Split the examples on whether the recursed list argument is [] (base) or
+//     h :: t (step). For every step example the recursive call's argument tuple
+//     is looked up among the examples themselves — an *angelic* value for the
+//     `rec = solve …` term (⊥ when that sub-problem isn't given as an example).
+//   • Enumerate base bodies (over the other arguments) and step bodies (over
+//     h, t, rec and the arguments) bottom-up, plus a decision-list `if` for a
+//     guarded step.
+//   • For every (base, step) pair, build the *true* recursive closure and test
+//     it on ALL examples — the angelic oracle only seeds the search; genuine
+//     recursion (and, downstream, the real compiler) has the final say.
+// Recursion always descends on the structurally-smaller tail, so it is total.
+// ---------------------------------------------------------------------------
+
+interface RecScheme {
+  label: string
+  /** the argument tuple of the recursive `solve …` call, given the caller's args + the tail */
+  recArgs: (args: Env, t: Value) => Env
+  /** the rendered argument list of that recursive call (`t`, `(n - 1) t`, …) */
+  recArgsSrc: string
+}
+
+/** The recursion schemes worth trying for a given list argument. */
+function recSchemes(argNames: string[], inShapes: STy[], rIdx: number): RecScheme[] {
+  const plainSrc = argNames.map((n, i) => (i === rIdx ? 't' : n)).join(' ')
+  const out: RecScheme[] = [
+    { label: 'tail', recArgs: (args, t) => args.map((a, i) => (i === rIdx ? t : a)), recArgsSrc: plainSrc },
+  ]
+  // a leading Int argument that decreases each step (take / drop / replicate …)
+  for (let j = 0; j < inShapes.length; j++) {
+    if (j === rIdx || inShapes[j].k !== 'int') continue
+    const src = argNames.map((n, i) => (i === rIdx ? 't' : i === j ? `(${n} - 1)` : n)).join(' ')
+    out.push({
+      label: `dec ${argNames[j]}`,
+      recArgs: (args, t) => args.map((a, i) => (i === rIdx ? t : i === j ? vint((asInt(a) ?? 0) - 1) : a)),
+      recArgsSrc: src,
+    })
+    break // one decreasing counter covers the functions we target
+  }
+  return out
+}
+
+/** A few bottom-up growth rounds on a local bank (no combinators). */
+function growLocal(bank: Bank, rows: Env[], rounds: number, maxTermSize: number): void {
+  const g: GrowOpts = {
+    rows,
+    maxTermSize,
+    perTypeCap: 90,
+    fanout: 60,
+    allowHof: false,
+    deadline: Infinity,
+    hofInner: () => [],
+    hofInner2: () => [],
+  }
+  for (let i = 0; i < rounds; i++) if (growPass(bank, g).added === 0) break
+}
+
+/** The genuine recursive closure for a hypothesised (base, step) pair. Descends
+ * on the tail, so it terminates; the depth guard is belt-and-braces. */
+function makeRecClosure(
+  baseFn: Sem,
+  stepFn: Sem,
+  scheme: RecScheme,
+  rIdx: number,
+  H: number,
+  T: number,
+  REC: number,
+): (args: Env) => Value | undefined {
+  const self = (args: Env, depth: number): Value | undefined => {
+    if (depth > 5000) return undefined
+    const lst = args[rIdx]
+    if (lst === undefined) return undefined
+    if (lst.tag === 'nil') return baseFn(args)
+    if (lst.tag !== 'cons') return undefined
+    const rv = self(scheme.recArgs(args, lst.tail), depth + 1)
+    if (rv === undefined) return undefined
+    const env = args.slice()
+    env[H] = lst.head
+    env[T] = lst.tail
+    env[REC] = rv
+    return stepFn(env)
+  }
+  return (args) => self(args, 0)
+}
+
+function synthRecursion(
+  argNames: string[],
+  inShapes: STy[],
+  outShape: STy,
+  examples: Example[],
+  extraInts: number[],
+  deadline: number,
+): Term[] {
+  const kArgs = argNames.length
+  const H = kArgs
+  const T = kArgs + 1
+  const REC = kArgs + 2
+  const results: Term[] = []
+  const seenBody = new Set<string>()
+
+  const listArgs: number[] = []
+  for (let i = 0; i < kArgs; i++) if (inShapes[i].k === 'list') listArgs.push(i)
+  if (listArgs.length === 0) return results
+
+  // example lookup by argument-tuple, for the angelic `rec` oracle
+  const argsKey = (vs: Env): string => vs.map(valKey).join('¦')
+  const exampleMap = new Map<string, Value>()
+  for (const ex of examples) exampleMap.set(argsKey(ex.inputs), ex.output)
+
+  for (const rIdx of listArgs) {
+    if (nowMs() > deadline) break
+    const listTy = inShapes[rIdx]
+    if (listTy.k !== 'list') continue
+    const elemTy = listTy.el
+    const baseEx = examples.filter((ex) => ex.inputs[rIdx]?.tag === 'nil')
+    const stepEx = examples.filter((ex) => ex.inputs[rIdx]?.tag === 'cons')
+    if (stepEx.length === 0) continue
+
+    for (const scheme of recSchemes(argNames, inShapes, rIdx)) {
+      if (nowMs() > deadline) break
+
+      // ---- base bodies (the [] branch) ----
+      setVarNames(argNames)
+      const baseTargets = baseEx.map((ex) => ex.output)
+      let baseCands: Term[]
+      if (baseEx.length > 0) {
+        const baseRows: Env[] = baseEx.map((ex) => ex.inputs.slice())
+        const bbank = new Bank()
+        for (let i = 0; i < kArgs; i++) {
+          const idx = i
+          bbank.add(term(argNames[i], true, inShapes[i], 1, (env) => env[idx], baseRows))
+        }
+        seedConstants(bbank, outShape, baseRows, extraInts)
+        for (const s of inShapes) seedConstants(bbank, s, baseRows, extraInts)
+        growLocal(bbank, baseRows, 3, 6)
+        baseCands = bbank
+          .of(outShape)
+          .filter((t) => vecMatches(t.vec, baseTargets))
+          .sort((a, b) => a.size - b.size)
+          .slice(0, 6)
+      } else {
+        const bbank = new Bank()
+        seedConstants(bbank, outShape, [[]], extraInts)
+        baseCands = bbank.of(outShape).sort((a, b) => a.size - b.size).slice(0, 4)
+      }
+      if (baseCands.length === 0) continue
+
+      // ---- step bodies (the h :: t branch), with an angelic `rec` ----
+      setVarNames(argNames, ['h', 't'])
+      const stepRows: Env[] = []
+      const stepTargets: Value[] = []
+      const wildcard = new Set<number>()
+      stepEx.forEach((ex, i) => {
+        const lst = ex.inputs[rIdx] as Extract<Value, { tag: 'cons' }>
+        const env: Env = ex.inputs.slice()
+        env[H] = lst.head
+        env[T] = lst.tail
+        const rv = exampleMap.get(argsKey(scheme.recArgs(ex.inputs, lst.tail)))
+        env[REC] = rv
+        if (rv === undefined) wildcard.add(i)
+        stepRows.push(env)
+        stepTargets.push(ex.output)
+      })
+
+      const sbank = new Bank()
+      for (let i = 0; i < kArgs; i++) {
+        const idx = i
+        sbank.add(term(argNames[i], true, inShapes[i], 1, (env) => env[idx], stepRows))
+      }
+      sbank.add(term('h', true, elemTy, 1, (env) => env[H], stepRows))
+      sbank.add(term('t', true, listTy, 1, (env) => env[T], stepRows))
+      sbank.add(term(`solve ${scheme.recArgsSrc}`, false, outShape, 1, (env) => env[REC], stepRows))
+      seedConstants(sbank, outShape, stepRows, extraInts)
+      seedConstants(sbank, elemTy, stepRows, extraInts)
+      for (const s of inShapes) seedConstants(sbank, s, stepRows, extraInts)
+      growLocal(sbank, stepRows, 4, 8)
+
+      const matchStep = (vec: (Value | undefined)[]): boolean => {
+        for (let i = 0; i < stepTargets.length; i++) {
+          if (wildcard.has(i)) continue
+          const v = vec[i]
+          if (v === undefined || !sameValue(v, stepTargets[i])) return false
+        }
+        return true
+      }
+      const plainStep = sbank
+        .of(outShape)
+        .filter((t) => matchStep(t.vec))
+        .sort((a, b) => a.size - b.size)
+        .slice(0, wildcard.size === stepTargets.length ? 30 : 80)
+      // guarded steps (decision-list `if`), smallest first — only when every row
+      // is pinned. Tried *before* the plain bodies so a clean guard wins by size.
+      const guards = wildcard.size === 0 ? learnConditionals(sbank, outShape, stepRows, stepTargets, 12) : []
+      const stepCands = [...guards, ...plainStep]
+      if (stepCands.length === 0) continue
+
+      // ---- assemble each (base, step) pair and test by *true* recursion ----
+      // every survivor is checked by genuine recursion on ALL examples; the
+      // angelic oracle above only ordered the search.
+      let attempts = 0
+      for (const step of stepCands) {
+        if (attempts >= 900 || nowMs() > deadline || results.length >= 40) break
+        for (const base of baseCands) {
+          if (attempts >= 900 || nowMs() > deadline) break
+          attempts++
+          const bodySrc = `match ${argNames[rIdx]} with | [] -> ${base.src} | h :: t -> ${step.src}`
+          if (seenBody.has(bodySrc)) continue
+          seenBody.add(bodySrc)
+          const self = makeRecClosure(base.fn, step.fn, scheme, rIdx, H, T, REC)
+          const vec: (Value | undefined)[] = []
+          let ok = true
+          for (const ex of examples) {
+            const got = self(ex.inputs)
+            vec.push(got)
+            if (got === undefined || !sameValue(got, ex.output)) {
+              ok = false
+              break
+            }
+          }
+          if (!ok) continue
+          results.push({
+            src: bodySrc,
+            atom: false,
+            ty: outShape,
+            size: base.size + step.size + 2,
+            fn: (env) => self(env.slice(0, kArgs)),
+            vec,
+            usesVar: true,
+            rec: true,
+            rName: argNames[rIdx],
+          })
+        }
+      }
+    }
+  }
+  setVarNames(argNames) // restore the module regex for anything downstream
+  return results.sort((a, b) => a.size - b.size).slice(0, 8)
 }
 
 function collectInts(vs: Value[]): number[] {
@@ -1388,10 +1787,17 @@ function nowMs(): number {
 export function parseSpec(text: string): { spec: Spec | null; error: string | null } {
   const examples: Example[] = []
   let typeHint: string | null = null
+  let ref: string | null = null
   const lines = text.split('\n')
   for (const raw of lines) {
     const line = raw.trim()
     if (line === '') continue
+    // a reference oracle: `ref: <function>` (with or without a leading `--`).
+    const refMatch = line.match(/^(?:--\s*)?ref:\s*(.+)$/)
+    if (refMatch) {
+      ref = refMatch[1].trim()
+      continue
+    }
     if (line.startsWith('--')) {
       const h = line.replace(/^--\s*/, '')
       if (h.includes('->')) typeHint = h
@@ -1420,7 +1826,7 @@ export function parseSpec(text: string): { spec: Spec | null; error: string | nu
     })
   }
   if (examples.length === 0) return { spec: null, error: 'No examples found.' }
-  return { spec: { examples, typeHint }, error: null }
+  return { spec: { examples, typeHint, ref }, error: null }
 }
 
 function splitArrow(line: string): [string, string] | null {
@@ -1671,6 +2077,69 @@ export const GALLERY: GalleryTask[] = [
 0 => 0
 1 => 1`,
   },
+  {
+    id: 'countOcc',
+    title: 'Count occurrences (recursive)',
+    blurb: 'let rec — a guarded count no fold can express (the lambda can’t see x).',
+    spec: `-- Int -> List Int -> Int
+2, [] => 0
+2, [2] => 1
+2, [3] => 0
+2, [3,2] => 1
+2, [2,3] => 1
+5, [] => 0
+5, [5] => 1
+5, [4] => 0
+5, [5,5] => 2
+5, [4,5] => 1`,
+  },
+  {
+    id: 'dropLast',
+    title: 'Drop the last element (recursive)',
+    blurb: 'let rec — the [] base case rescues what head/tail can’t do.',
+    spec: `-- List Int -> List Int
+[] => []
+[7] => []
+[3,0] => [3]
+[0,3] => [0]
+[1,2,3] => [1,2]
+[2,3] => [2]
+[3] => []
+[0] => []
+[5,5,5] => [5,5]
+[5,5] => [5]
+[5] => []`,
+  },
+  {
+    id: 'takeWhilePos',
+    title: 'Take while non-negative (recursive)',
+    blurb: 'let rec — a guarded early stop; the recursion halts at the first negative.',
+    spec: `-- List Int -> List Int
+[] => []
+[3] => [3]
+[6] => [6]
+[7] => [7]
+[5] => [5]
+[-1] => []
+[-2] => []
+[3,6] => [3,6]
+[6,7] => [6,7]
+[3,-1] => [3]
+[-1,3] => []
+[-2,6] => []
+[5,-2,6] => [5]
+[6,7,5] => [6,7,5]
+[7,5] => [7,5]`,
+  },
+  {
+    id: 'cegisSquare',
+    title: 'Auto-CEGIS: pin down squaring',
+    blurb: 'A reference oracle auto-labels the ambiguous inputs until only x*x fits.',
+    spec: `-- Int -> Int
+ref: fn x -> x * x
+0 => 0
+1 => 1`,
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -1687,6 +2156,10 @@ export interface SynthSelfCase {
   expect: 'found' | 'none'
   /** if set, the reported ambiguity flag must equal this */
   ambiguous?: boolean
+  /** if true, the found program must be recursive (`let rec …`) */
+  rec?: boolean
+  /** if set, run the Auto-CEGIS loop; the final program's clause must end with this */
+  cegisExpect?: string
 }
 
 export interface SynthSelfResult {
@@ -1709,6 +2182,38 @@ export const SYNTH_SELF_CASES: SynthSelfCase[] = [
   // Negation covers the whole Bool domain, so no distinguishing input exists.
   { name: 'no ambiguity on negation', spec: 'true => false\nfalse => true', expect: 'found', ambiguous: false },
   { name: 'impossible spec', spec: '1 => "a"\n2 => 5', expect: 'none' },
+  // Structural recursion — programs the fold combinators cannot express.
+  {
+    name: 'count occurrences (let rec)',
+    spec: '2,[] => 0\n2,[2] => 1\n2,[3] => 0\n2,[3,2] => 1\n2,[2,3] => 1\n5,[] => 0\n5,[5] => 1\n5,[4] => 0\n5,[5,5] => 2\n5,[4,5] => 1',
+    expect: 'found',
+    rec: true,
+  },
+  {
+    name: 'drop last (let rec)',
+    spec: '[] => []\n[7] => []\n[3,0] => [3]\n[0,3] => [0]\n[1,2,3] => [1,2]\n[2,3] => [2]\n[3] => []\n[0] => []\n[5,5,5] => [5,5]\n[5,5] => [5]\n[5] => []',
+    expect: 'found',
+    rec: true,
+  },
+  {
+    name: 'take while non-negative (let rec)',
+    spec: '[] => []\n[3] => [3]\n[6] => [6]\n[7] => [7]\n[5] => [5]\n[-1] => []\n[-2] => []\n[3,6] => [3,6]\n[6,7] => [6,7]\n[3,-1] => [3]\n[-1,3] => []\n[-2,6] => []\n[5,-2,6] => [5]\n[6,7,5] => [6,7,5]\n[7,5] => [7,5]',
+    expect: 'found',
+    rec: true,
+  },
+  // Auto-CEGIS — a reference oracle steers past the ambiguity to the intended program.
+  {
+    name: 'Auto-CEGIS pins x*x',
+    spec: 'ref: fn x -> x * x\n0 => 0\n1 => 1',
+    expect: 'found',
+    cegisExpect: 'x * x',
+  },
+  {
+    name: 'Auto-CEGIS pins identity',
+    spec: 'ref: fn x -> x\n0 => 0\n1 => 1',
+    expect: 'found',
+    cegisExpect: 'x',
+  },
 ]
 
 /** Run the self-check battery; each row reports pass/fail with a detail string. */
@@ -1719,6 +2224,25 @@ export function runSynthSelfTests(cases: SynthSelfCase[] = SYNTH_SELF_CASES): Sy
       // A spec that fails to parse only "passes" when we expected nothing found.
       return { name: c.name, ok: c.expect === 'none', detail: `parse: ${parsed.error}` }
     }
+    // Auto-CEGIS cases run the reference-oracle loop and assert the clause it lands on.
+    if (c.cegisExpect !== undefined) {
+      let cg: CegisResult
+      try {
+        cg = synthesizeWithOracle(parsed.spec)
+      } catch (e) {
+        return { name: c.name, ok: false, detail: `threw: ${(e as Error).message}` }
+      }
+      const clause = (cg.result.program ?? '').split('\n').pop()?.trim() ?? ''
+      const ok = cg.result.ok && cg.result.verified && clause.endsWith(c.cegisExpect)
+      return {
+        name: c.name,
+        ok,
+        detail: ok
+          ? `${clause} · +${cg.added.length} labelled · ${cg.iterations} iters`
+          : `expected …${c.cegisExpect}, got ${clause || '(none)'}`,
+      }
+    }
+
     let r: SynthResult
     try {
       r = synthesize(parsed.spec)
@@ -1731,6 +2255,9 @@ export function runSynthSelfTests(cases: SynthSelfCase[] = SYNTH_SELF_CASES): Sy
     }
     if (!r.ok || !r.verified) {
       return { name: c.name, ok: false, detail: r.message || 'not found / not verified' }
+    }
+    if (c.rec && !(r.program ?? '').startsWith('let rec')) {
+      return { name: c.name, ok: false, detail: `expected a recursive program, got: ${r.program}` }
     }
     if (c.ambiguous !== undefined) {
       const got = r.ambiguity !== null
