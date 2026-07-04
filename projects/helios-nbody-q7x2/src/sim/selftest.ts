@@ -14,6 +14,22 @@ import { orbitElements } from './orbit'
 import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
 import { accelAndVariational, analyzeChaos } from './chaos'
 import { fft, ifft } from './fft'
+import { fft2, ifft2, dft2Ref, wavenumber } from './fft2'
+import {
+  makeInitialField,
+  zeldovichDisplacement,
+  integrateLinearGrowth,
+  growingMode,
+  decayingMode,
+  samplePeriodic,
+} from './cosmology'
+import {
+  solveForce,
+  analyticSingleModeForceX,
+  cicDeposit,
+  depositContrast,
+  CosmicPM,
+} from './pm'
 import { naff, frequencyDiffusion } from './naff'
 import { poincareSection, toRotating } from './poincare'
 import { measurePrecession, precessionTheory, mercuryArcsecPerCentury } from './relativity'
@@ -2000,6 +2016,189 @@ export function runSelfTest(): SelfTestReport {
     const fmmDrift = maxEnergyDrift(makeSim('fmm'), 'velocity-verlet', 0.02, 300)
     const ok = Number.isFinite(fmmDrift) && fmmDrift < 5e-3 && fmmDrift < bhDrift * 5 + 1e-4
     add('FMM — live solver conserves energy like Barnes–Hut', ok, `drift: FMM = ${fmmDrift.toExponential(2)}, Barnes–Hut = ${bhDrift.toExponential(2)} (300 steps)`)
+  }
+
+  // ── Cosmological Particle-Mesh solver (Helios 13.0) ─────────────────────────
+  //
+  // The PM solver paints mass onto a mesh, solves Poisson's equation with an FFT,
+  // and reads the force back. These cases prove the 2-D FFT, the spectral Poisson
+  // solve, the Zel'dovich initial conditions, and the live comoving integrator —
+  // the last one recovering the closed-form cosmological growing mode D₊ ∝ a.
+
+  // 79 — The 2-D FFT is invertible: ifft2 ∘ fft2 returns the original field.
+  {
+    const m = 16
+    let s = 7 >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const re = new Float64Array(m * m)
+    const im = new Float64Array(m * m)
+    const orig = new Float64Array(m * m)
+    for (let i = 0; i < m * m; i++) {
+      orig[i] = rng() - 0.5
+      re[i] = orig[i]
+    }
+    fft2(re, im, m)
+    ifft2(re, im, m)
+    let maxErr = 0
+    for (let i = 0; i < m * m; i++) maxErr = Math.max(maxErr, Math.abs(re[i] - orig[i]), Math.abs(im[i]))
+    add('PM — 2-D FFT round-trip', maxErr < 1e-12, `max |ifft2(fft2(x)) − x| = ${maxErr.toExponential(2)}`)
+  }
+
+  // 80 — The 2-D FFT agrees with a naive O(M⁴) DFT (an independent oracle).
+  {
+    const m = 8
+    let s = 3 >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const re = new Float64Array(m * m)
+    const im = new Float64Array(m * m)
+    for (let i = 0; i < m * m; i++) {
+      re[i] = rng() - 0.5
+      im[i] = rng() - 0.5
+    }
+    const ref = dft2Ref(re, im, m)
+    const fr = re.slice()
+    const fi = im.slice()
+    fft2(fr, fi, m)
+    let maxErr = 0
+    for (let i = 0; i < m * m; i++) maxErr = Math.max(maxErr, Math.abs(fr[i] - ref.re[i]), Math.abs(fi[i] - ref.im[i]))
+    add('PM — 2-D FFT matches direct DFT', maxErr < 1e-9, `max |FFT − DFT| = ${maxErr.toExponential(2)}`)
+  }
+
+  // 81 — The spectral Poisson solver reproduces the analytic force of a single-cosine
+  // density field δ = A·cos(k₀x), whose exact peculiar force is Fₓ = −(2A/k₀)·sin(k₀x).
+  {
+    const m = 64
+    const box = 1
+    const amp = 0.01
+    const mode = 3
+    const k0 = (2 * Math.PI * mode) / box
+    const cell = box / m
+    const delta = new Float64Array(m * m)
+    for (let i = 0; i < m; i++) {
+      const x = i * cell
+      for (let j = 0; j < m; j++) delta[i * m + j] = amp * Math.cos(k0 * x)
+    }
+    const f = solveForce(delta, m, box)
+    let maxErr = 0
+    for (let i = 0; i < m; i++) {
+      const x = i * cell
+      const an = analyticSingleModeForceX(amp, mode, box, x)
+      for (let j = 0; j < m; j++) maxErr = Math.max(maxErr, Math.abs(f.fx[i * m + j] - an), Math.abs(f.fy[i * m + j]))
+    }
+    add('PM — spectral Poisson force = analytic single mode', maxErr < 1e-6, `max force error = ${maxErr.toExponential(2)}`)
+  }
+
+  // 82 — Cloud-In-Cell mass deposit conserves the total mass exactly.
+  {
+    const m = 32
+    const box = 1
+    const n = 500
+    let s = 11 >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const px = new Float64Array(n)
+    const py = new Float64Array(n)
+    const mass = new Float64Array(n)
+    let mtot = 0
+    for (let i = 0; i < n; i++) {
+      px[i] = rng() * box
+      py[i] = rng() * box
+      mass[i] = 0.5 + rng()
+      mtot += mass[i]
+    }
+    const grid = cicDeposit(n, px, py, mass, m, box)
+    let g = 0
+    for (let i = 0; i < grid.length; i++) g += grid[i]
+    add('PM — CIC deposit conserves mass', Math.abs(g - mtot) < 1e-9 * mtot, `Δmass/mass = ${(Math.abs(g - mtot) / mtot).toExponential(2)}`)
+  }
+
+  // 83 — The PM force conserves momentum: with a shared scatter/gather kernel and an
+  // odd (∝ i·k) Green's function, the net force ΣF over all particles is zero.
+  {
+    const m = 64
+    const box = 1
+    const n = 2000
+    let s = 99 >>> 0
+    const rng = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0xffffffff)
+    const px = new Float64Array(n)
+    const py = new Float64Array(n)
+    const mass = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      px[i] = rng() * box
+      py[i] = rng() * box
+      mass[i] = 1
+    }
+    const delta = depositContrast(n, px, py, mass, m, box)
+    const f = solveForce(delta, m, box)
+    let sx = 0
+    let sy = 0
+    for (let p = 0; p < n; p++) {
+      sx += samplePeriodic(f.fx, m, box, px[p], py[p])
+      sy += samplePeriodic(f.fy, m, box, px[p], py[p])
+    }
+    add('PM — force conserves momentum (ΣF≈0)', Math.abs(sx) < 1e-8 && Math.abs(sy) < 1e-8, `ΣF = (${sx.toExponential(1)}, ${sy.toExponential(1)})`)
+  }
+
+  // 84 — The Zel'dovich displacement field is curl-free (it is a pure gradient,
+  // Ψ̂ = i·k·δ̂/k²). Checked spectrally: the curl i·(k×Ψ̂) vanishes to roundoff.
+  {
+    const m = 64
+    const box = 1
+    const field = makeInitialField(m, -1, 0.05, 42)
+    const disp = zeldovichDisplacement(field, box)
+    const xr = disp.psiX.slice()
+    const xi = new Float64Array(m * m)
+    const yr = disp.psiY.slice()
+    const yi = new Float64Array(m * m)
+    fft2(xr, xi, m)
+    fft2(yr, yi, m)
+    const kUnit = (2 * Math.PI) / box
+    let maxCurl = 0
+    let maxDiv = 0
+    for (let iu = 0; iu < m; iu++) {
+      const kx = kUnit * wavenumber(iu, m)
+      for (let iv = 0; iv < m; iv++) {
+        if (iu * 2 === m || iv * 2 === m) continue // Nyquist band dropped by design
+        const ky = kUnit * wavenumber(iv, m)
+        const idx = iu * m + iv
+        // curl_z = i(kx Ψ̂y − ky Ψ̂x)
+        const curlRe = ky * xi[idx] - kx * yi[idx]
+        const curlIm = kx * yr[idx] - ky * xr[idx]
+        maxCurl = Math.max(maxCurl, Math.hypot(curlRe, curlIm))
+        // div = i(kx Ψ̂x + ky Ψ̂y) should equal −δ̂₁
+        const divRe = -(kx * xi[idx] + ky * yi[idx])
+        const divIm = kx * xr[idx] + ky * yr[idx]
+        maxDiv = Math.max(maxDiv, Math.hypot(divRe + field.modesRe[idx], divIm + field.modesIm[idx]))
+      }
+    }
+    add('PM — Zel’dovich field is curl-free', maxCurl < 1e-9, `max |∇×Ψ| = ${maxCurl.toExponential(2)}`)
+    add('PM — Zel’dovich ∇·Ψ = −δ₁', maxDiv < 1e-9, `max residual = ${maxDiv.toExponential(2)}`)
+  }
+
+  // 85 — The linear growth ODE δ̈ + 2Hδ̇ − (2/a²)δ = 0 has the closed-form modes
+  // D₊ ∝ a and D₋ ∝ a⁻². Integrated independently (RK4), each is recovered exactly.
+  {
+    const gPlus = integrateLinearGrowth(0.05, 1.0, growingMode(0.05), 1.0, 4000)
+    const dPlus = gPlus[gPlus.length - 1].delta
+    const gMinus = integrateLinearGrowth(0.5, 1.0, decayingMode(0.5), -2 * Math.pow(0.5, -3), 4000)
+    const dMinus = gMinus[gMinus.length - 1].delta
+    add('PM — linear growing mode D₊ ∝ a', Math.abs(dPlus - 1) < 1e-4, `D₊(1) = ${dPlus.toFixed(6)} (want 1)`)
+    add('PM — linear decaying mode D₋ ∝ a⁻²', Math.abs(dMinus - 1) < 1e-3, `D₋(1) = ${dMinus.toFixed(6)} (want 1)`)
+  }
+
+  // 86 — The *live* PM integrator, from Zel'dovich ICs, grows structure at the
+  // cosmological linear rate: the RMS particle displacement from the lattice tracks
+  // the growing mode D ∝ a (a clean, low-noise probe, exact until shell-crossing).
+  {
+    const pm = new CosmicPM({ m: 64, box: 1, particlesPerSide: 64, spectralIndex: -2, sigma1: 0.02, seed: 7, aInit: 0.05 })
+    const a0 = pm.a
+    const d0 = pm.rmsDisplacement()
+    const dt = 0.004
+    while (pm.a < 0.25) pm.step(dt)
+    const d1 = pm.rmsDisplacement()
+    const ratio = d1 / d0 / (pm.a / a0)
+    add('PM — live solver grows ∝ a (linear regime)', Math.abs(ratio - 1) < 0.05, `displacement-growth / a-growth = ${ratio.toFixed(4)} (a: ${a0}→${pm.a.toFixed(3)})`)
+    const mom = pm.totalMomentum()
+    add('PM — live solver conserves Σp', Math.abs(mom.x) < 1e-8 && Math.abs(mom.y) < 1e-8, `|Σp| = (${mom.x.toExponential(1)}, ${mom.y.toExponential(1)})`)
   }
 
   const passed = cases.filter((c) => c.pass).length

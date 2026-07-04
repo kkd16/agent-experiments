@@ -23,6 +23,7 @@ import { KerrPanel } from './KerrPanel'
 import { SymplecticPanel } from './SymplecticPanel'
 import { MergerPanel } from './MergerPanel'
 import { FmmPanel } from './FmmPanel'
+import { CosmicWebPanel } from './CosmicWebPanel'
 import { Section, Segmented, Select, Slider, Toggle } from './primitives'
 
 export interface SidebarProps {
@@ -353,6 +354,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="FMM Lab" defaultOpen={false}>
         <FmmPanel />
+      </Section>
+
+      <Section title="Cosmic Web Lab" defaultOpen={false}>
+        <CosmicWebPanel />
       </Section>
 
       <Section title="Black Hole Lab" defaultOpen={false}>
