@@ -18,13 +18,15 @@ import NCALab from './components/nca/NCALab';
 import ContrastiveLab from './components/contrastive/ContrastiveLab';
 import AlphaZeroLab from './components/az/AlphaZeroLab';
 import DQNLab from './components/dqn/DQNLab';
+import SnnLab from './components/snn/SnnLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'moe' | 'morphogenesis' | 'spiking';
 
-// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA).
+// Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #q= DQN, #p= AlphaZero, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA, #y= spiking).
 function initialTab(): Tab {
   try {
+    if (/[#&]y=/.test(location.hash)) return 'spiking';
     if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
     if (/[#&]x=/.test(location.hash)) return 'moe';
     if (/[#&]s=/.test(location.hash)) return 'ssm';
@@ -120,6 +122,9 @@ export default function App() {
             <button className={tab === 'morphogenesis' ? 'on' : ''} onClick={() => setTab('morphogenesis')}>
               Morphogenesis · NCA
             </button>
+            <button className={tab === 'spiking' ? 'on' : ''} onClick={() => setTab('spiking')}>
+              Neuromorphic · SNN
+            </button>
           </nav>
           <div className="kbd-hint">
             <kbd>space</kbd> train · <kbd>s</kbd> step · <kbd>r</kbd> reset · <kbd>g</kbd> gradcheck
@@ -163,6 +168,8 @@ export default function App() {
         <NodeLab />
       ) : tab === 'morphogenesis' ? (
         <NCALab />
+      ) : tab === 'spiking' ? (
+        <SnnLab />
       ) : (
         <BayesLab />
       )}

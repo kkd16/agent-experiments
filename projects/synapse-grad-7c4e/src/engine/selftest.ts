@@ -34,6 +34,17 @@ import { l2NormalizeRows, ntXentLoss, diagonalMask, Encoder } from './contrastiv
 import { makeAZNet, azLoss } from './aznet';
 import { makeGame, solve, type GameState, type SolveResult } from './games';
 import { runSearch, visitPolicy, argmaxPolicy } from './mcts';
+import {
+  SNN,
+  snnLoss,
+  spike,
+  softSpike,
+  surrogateForward,
+  surrogateDeriv,
+  encodeInput,
+  type SNNConfig,
+  type SurrogateKind,
+} from './snn';
 import { gradCheck } from './gradcheck';
 import {
   QNet,
@@ -1444,6 +1455,105 @@ export function runSelfTest(seed = 7): SelfTestReport {
           [maxQErr < 0.15 ? 1 : 0, 1], // learned Q within tolerance of the closed-form optimum
         ]),
       );
+    }
+  }
+
+  // ---- Neuromorphic · Spiking neural network (LIF + surrogate gradients) --------------------
+  // The spiking lab hinges on the surrogate gradient — a *deliberately* wrong gradient for the
+  // Heaviside spike. We prove the whole story is nonetheless exact and self-consistent:
+  //   (1) each surrogate's `softSpike` (smooth forward) gradchecks against finite differences;
+  //   (2) the hard `spike` and the soft `softSpike` share the IDENTICAL backward — the surrogate
+  //       derivative — so the "hard forward, soft backward" trick is literally that;
+  //   (3) the smooth forward equals the closed-form relaxation and the hard forward is the exact
+  //       Heaviside step;
+  //   (4) LIF subtractive reset drops a spiking neuron's potential by exactly θ; and
+  //   (5) a whole unrolled SNN gradchecks end-to-end through BPTT + the readout integrator.
+  {
+    const kinds: SurrogateKind[] = ['fast-sigmoid', 'arctan', 'sigmoid', 'triangular'];
+    const kSlope = 5;
+    const theta = 0.7;
+
+    // (1) softSpike op gradcheck (finite differences of the smooth relaxation), each surrogate.
+    for (const kind of kinds) {
+      const u = leaf(rng, 4, 5, false);
+      ops.push(checkOp(`snn-softSpike:${kind}`, [u], () => softSpike(u, theta, kind, kSlope), rng));
+    }
+
+    // (2) hard spike and soft spike share the same backward (the surrogate derivative), and (3)
+    //     the forwards equal their closed forms. Feed downstream grad = 1 and read the input grad.
+    {
+      const pairs: [number, number][] = [];
+      const us = [-1.3, -0.4, 0.0, 0.2, 0.7, 0.71, 1.9];
+      for (const kind of kinds) {
+        for (const uv of us) {
+          const expected = surrogateDeriv(uv - theta, kind, kSlope);
+          // hard spike grad
+          const uh = Tensor.fromFlat(Float64Array.from([uv]), 1, 1, false);
+          const sh = spike(uh, theta, kind, kSlope);
+          sh.grad[0] = 1;
+          sh.backwardFn!();
+          pairs.push([uh.grad[0], expected]);
+          // soft spike grad
+          const usf = Tensor.fromFlat(Float64Array.from([uv]), 1, 1, false);
+          const ss = softSpike(usf, theta, kind, kSlope);
+          ss.grad[0] = 1;
+          ss.backwardFn!();
+          pairs.push([usf.grad[0], expected]);
+          // forwards: hard = Heaviside, soft = surrogateForward
+          pairs.push([sh.data[0], uv >= theta ? 1 : 0]);
+          pairs.push([ss.data[0], surrogateForward(uv - theta, kind, kSlope)]);
+        }
+      }
+      ops.push(relCheck('snn-surrogate (hard≡soft backward, forwards exact)', pairs));
+    }
+
+    // (4) subtractive reset: a neuron that crosses θ retains exactly (U − θ) after reset; one that
+    //     does not spike keeps U. Checked by driving a single LIF neuron one step by hand.
+    {
+      const pairs: [number, number][] = [];
+      for (const drive of [0.3, 0.95, 1.6]) {
+        const U = Tensor.fromFlat(Float64Array.from([drive]), 1, 1, false);
+        const s = spike(U, theta, 'fast-sigmoid', kSlope);
+        const reset = U.sub(s.scale(theta));
+        const spiked = drive >= theta ? 1 : 0;
+        pairs.push([reset.data[0], drive - spiked * theta]);
+        pairs.push([s.data[0], spiked]);
+      }
+      ops.push(relCheck('snn-LIF reset (subtractive, −θ on spike)', pairs));
+    }
+
+    // (5) whole SNN gradcheck end-to-end through BPTT + the leaky readout, on the smooth twin
+    //     (finite differences of the hard spike are ~0 by construction — that is the whole point
+    //     of the surrogate — so the differentiable relaxation is what we verify).
+    {
+      const cfg: SNNConfig = {
+        inDim: 6,
+        hidden: [5, 4],
+        classes: 3,
+        T: 5,
+        beta: 0.9,
+        kappa: 0.8,
+        threshold: 0.6,
+        surrogate: 'fast-sigmoid',
+        slope: 4,
+        recurrent: true,
+        seed: 7,
+      };
+      const B = 3;
+      const X = new Float64Array(B * cfg.inDim);
+      for (let i = 0; i < X.length; i++) X[i] = rng() - 0.5;
+      const targets = Int32Array.from([0, 2, 1]);
+      const frames = encodeInput(X, B, cfg.inDim, cfg.T, 'current', 1, rng);
+      const net = new SNN(cfg);
+      const gc = gradCheck(
+        net.parameters(),
+        () => {
+          const { logits, spikeCount } = net.forward(frames, false);
+          return snnLoss(logits, targets, spikeCount, cfg.T, 0.01).loss;
+        },
+        { samplesPerParam: 4 },
+      );
+      ops.push({ name: 'snn (BPTT, e2e)', maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
     }
   }
 

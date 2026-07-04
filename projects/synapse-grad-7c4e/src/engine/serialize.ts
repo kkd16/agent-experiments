@@ -98,6 +98,7 @@ export const BAYES_SLOT_PREFIX = 'synapse:uslot:';
 export const NCA_SLOT_PREFIX = 'synapse:mslot:';
 export const CONTRASTIVE_SLOT_PREFIX = 'synapse:zslot:';
 export const DQN_SLOT_PREFIX = 'synapse:qslot:';
+export const SNN_SLOT_PREFIX = 'synapse:yslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 
