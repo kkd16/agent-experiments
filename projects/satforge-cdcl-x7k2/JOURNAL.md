@@ -2094,3 +2094,108 @@ under-approximate the true answer-set intersection.
 - [x] **Cautious / brave consequences** — the atoms true in *every* / *some* answer set (`consequences`),
       cross-checked against the brute-force family and shown in a Consequences panel. *Still open:* the
       full bridge to Insight/#SAT (projected answer-set counting, approximate brave inference).
+
+### Session 24 — from *deciding a formula* to *propagating a domain*: a Constraint Programming studio (a thirteenth studio)
+
+Every engine before this one reasons about **Boolean** (or theory-atom) truth: a variable is true or
+false, and the whole tower — CDCL, DPLL(T), QBF, model checking, #SAT, ASP — is built on flipping and
+propagating those bits. Session 24 adds the other great tradition of combinatorial problem-solving,
+the one you reach for when the natural variables aren't bits but **integers with finite domains**:
+*constraint programming*. It is the paradigm behind timetabling, rostering, configuration and
+scheduling, and it is a genuinely different machine — no CNF, no clauses, no resolution. Instead:
+a **variable is a set of candidate values**, a **constraint is a propagator** that deletes values that
+can't participate in any solution, and search **interleaves branching with propagation to a fixpoint**.
+
+The reason this belongs in SatForge is that CP solves *the very same puzzles* the SAT side already
+encodes — N-Queens, Sudoku, graph colouring, Langford — but by a completely different route, so the
+two can **check each other**. The self-test leans on exactly that: solve a model with the CP engine,
+count its solutions, and confront the number with OEIS, with brute force, and (for the shared
+problems) with the counts the SAT `#SAT` engine already trusts.
+
+**The engine.**
+
+- [x] **`src/cp/domain.ts`** — finite-domain variable domains as *immutable sorted arrays* with holes
+      (so a domain-consistent filter can carve a value out of the middle of a range, not just move the
+      endpoints). Every narrowing op returns the **same reference** when it removes nothing, which is
+      what makes the store's change-detection and O(1) trailing exact and free.
+- [x] **`src/cp/store.ts`** — the constraint store + **propagation-fixpoint engine**: a watch-list
+      queue (AC-3 generalised from binary arcs to arbitrary propagators), a trail that restores a
+      domain by swapping back its previous immutable reference (undo is O(1), no copying), and a
+      `lastConflict` hook so the search can *blame* the propagator that emptied a domain.
+- [x] **`src/cp/graph.ts`** — the graph kernels the star propagator needs: **iterative Tarjan SCC**
+      (deep graphs never blow the JS stack) and a **Kuhn augmenting-path bipartite matcher**.
+- [x] **`src/cp/propagators.ts`** — the propagator library, each one *sound by construction* (it only
+      deletes a value that cannot extend to a solution of its own constraint):
+      **bounds-consistent linear** `Σ aᵢxᵢ {≤,=,≥,<,>} c` (exact integer floor/ceil interval
+      reasoning), **≠** (arc consistency on the difference), **element** `y = arr[idx]` (GAC),
+      **positive table** (GAC by support counting), and **all-different at three filtering strengths** —
+      `value` (forward checking), `bounds` (**Hall-interval** reasoning — a set of variables pinned
+      into an interval it exactly fills evicts those values from everyone else), and `domain`
+      (**Régin's GAC**: a maximum matching gives one distinct value per variable, then a
+      Tarjan-SCC + free-vertex-reachability analysis of the oriented residual graph removes *every*
+      value that lies on no alternating cycle or even alternating path — i.e. every value in no
+      maximum matching). This is the propagator that makes Sudoku fall out at the root.
+- [x] **`src/cp/search.ts`** — backtracking search that *propagates then branches*, done iteratively
+      so restarts and limits are clean. **Variable ordering**: input, first-fail, and **dom/wdeg**
+      (smallest domain per accumulated constraint blame — the weights it learns survive restarts).
+      **Value ordering**: min / max / median / seeded-random. **Luby restarts** for single-solution and
+      optimisation search. Exact **solution enumeration + counting**, and **branch-and-bound**
+      optimisation as a sequence of strictly-improving feasibility searches (the final infeasible
+      search certifies the incumbent optimal).
+- [x] **`src/cp/model.ts`** — a declarative modelling layer (`newVar`, `addAllDifferent`, `addLinear`,
+      `addElement`, `addTable`, …) that merges duplicate variables per linear constraint (so
+      SEND+MORE's repeated letters propagate correctly) and, crucially, records a **parallel,
+      independent boolean checker** for every posted constraint — a *second code path* used only by
+      the oracle, so the self-test is a real solver-vs-checker differential.
+- [x] **`src/cp/examples.ts`** — the gallery: **N-Queens** (all-different on columns and both
+      diagonals), **Sudoku** (27 all-differents; GAC alone fixes all 81 cells with zero search),
+      **Latin** and **magic squares**, **Petersen graph colouring**, **SEND + MORE = MONEY**,
+      **Langford pairs**, the **Golomb ruler** (branch-and-bound) and **0/1 knapsack** — each with a
+      bespoke render spec and, where known, a pinned answer.
+- [x] **`src/cp/selfcheck.ts`** — `runCpChecks()`: (1) **700 random models** solved to completion and
+      compared **value-for-value** against a brute-force enumeration built from the independent
+      checkers, with every reported solution re-validated; (2) **Régin GAC exactness** on 600 random
+      all-different instances (the filtered domains must equal the brute-computed supported values —
+      no more, no fewer); (3) **filtering-level agreement** (value / bounds / domain give the *same*
+      solution count); (4) **branch-and-bound vs. brute optima**; (5) the gallery's **pinned answers** —
+      N-Queens (OEIS A000170), Latin squares, the magic square, SEND+MORE's unique 9567+1085=10652,
+      Langford, and the optimal Golomb lengths for 4/5/6 marks. **20 grouped assertions, thousands of
+      comparisons**, folded into the studio's self-test badge.
+- [x] **`src/components/CpStudio.tsx` (+ `.css`)** — the thirteenth studio: model gallery + parameter
+      sliders, live pickers for the all-different level and the two heuristics, a **root-propagation
+      readout** (how many variables GAC fixes and how many candidates it prunes *before* search — the
+      Sudoku "81/81 fixed, 0 search" moment), bespoke solution renderers (chessboard, number grid with
+      box borders, coloured Petersen graph, cryptarithm digit map, ruler with its distinct-distance
+      set, packed knapsack), a search-statistics card deck, an all-solutions browser, the
+      incumbent-trajectory for optimisation, and a live cross-check badge. Wired into `App.tsx` as the
+      `cp` mode with an in-app self-test button.
+- [x] Verified `node scripts/verify-project.mjs satforge-cdcl-x7k2` (scope + conformance + lint + tsc +
+      build) green, and drove the live app in headless Chromium: N-Queens(8) → **92** (badge confirms
+      OEIS A000170), Sudoku → root propagation **fixed 81/81, pruned 408 candidates in 2 ms with zero
+      search**, SEND+MORE → **9567 + 1085 = 10652**, Golomb(5) → **OPTIMAL length 11** (trajectory
+      12→11), in-app self-test **20/20**, no functional console errors.
+
+**Ideas for next time (open):**
+- [ ] **Bounds-consistent all-different in O(n log n)** — replace the O(n³) Hall-interval sweep with the
+      López-Ortiz–Quimper–Tromp–van Beek union-find algorithm, and add a `range` level between `bounds`
+      and `domain` for a cleaner pedagogical ladder.
+- [ ] **Global cardinality (GCC) and `among`/`count`** — value-occurrence bounds by a network-flow
+      filter, cross-checked against the existing MaxSAT/PB engines by encoding the same counting two ways.
+- [ ] **Reified constraints and half-reification** — `b ⇔ (Σ aᵢxᵢ ≤ c)` as a first-class propagator, so
+      boolean combinations of arithmetic (implication, disjunction) can be modelled directly and the
+      studio can show a Boolean/CP hybrid.
+- [ ] **In-tree branch-and-bound** — keep a single search tree with a monotone objective-bound
+      propagator instead of restarting the whole search per improvement; expose the bound tightening in
+      the trace.
+- [ ] **A live propagation animation** — replay the root fixpoint (and the first few search nodes)
+      step-by-step, drawing each variable's domain as a shrinking strip and highlighting the propagator
+      that fired, the way the SAT studio animates the implication graph.
+- [ ] **A SAT ⇄ CP bridge** — compile a CP model to CNF (direct/order encodings of the domains) and run
+      it on the CDCL core, and conversely read a DIMACS instance as a Boolean CP model, so the two
+      paradigms can be raced on the shared problems inside the Solver Lab.
+- [ ] **`no-overlap` / cumulative scheduling** — the disjunctive and cumulative resource constraints
+      (timetabling's core), with a small job-shop example and a makespan objective.
+- [ ] **A textual mini-model DSL** in the studio so users can author their own CSPs, not only pick from
+      the gallery — parsed into the same `Model` builder the examples use.
+- [ ] **Run the heavy searches off the main thread** via the existing worker/task runner (Golomb with
+      more marks, magic squares of order 5), with cancellation and a live node-count ticker.

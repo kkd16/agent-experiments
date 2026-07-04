@@ -26,6 +26,7 @@ import { TwoSatStudio } from './components/TwoSatStudio'
 import { LiaStudio } from './components/LiaStudio'
 import { InsightStudio } from './components/InsightStudio'
 import { AspStudio } from './components/AspStudio'
+import { CpStudio } from './components/CpStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -41,6 +42,7 @@ type Mode =
   | 'lia'
   | 'insight'
   | 'asp'
+  | 'cp'
   | 'lab'
 
 export default function App() {
@@ -129,7 +131,9 @@ export default function App() {
                                   ? 'Beyond yes/no: model enumeration, backbones, MUS/MCS diagnosis, and approximate counting.'
                                   : mode === 'asp'
                                     ? 'Answer Set Programming: stable-model logic programming on the CDCL core, via completion & loop formulas.'
-                                    : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                                    : mode === 'cp'
+                                      ? 'Finite-domain constraint programming: propagation to a fixpoint, Régin GAC all-different, dom/wdeg + restarts, branch & bound.'
+                                      : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -170,6 +174,9 @@ export default function App() {
           <button className={mode === 'asp' ? 'active' : ''} onClick={() => setMode('asp')}>
             ASP Studio
           </button>
+          <button className={mode === 'cp' ? 'active' : ''} onClick={() => setMode('cp')}>
+            CP Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -187,6 +194,7 @@ export default function App() {
       {mode === 'lia' && <LiaStudio />}
       {mode === 'insight' && <InsightStudio />}
       {mode === 'asp' && <AspStudio />}
+      {mode === 'cp' && <CpStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
