@@ -36,6 +36,7 @@ import { ClassGroupVdfPage } from './pages/ClassGroupVdfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
 import { MpcPage } from './pages/MpcPage'
+import { VotingPage } from './pages/VotingPage'
 import { SelfTestPage } from './pages/SelfTestPage'
 
 const ROUTES = [
@@ -75,6 +76,7 @@ const ROUTES = [
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
   { path: '/mpc', label: 'Secure 2PC' },
+  { path: '/voting', label: 'E-Voting' },
   { path: '/verify', label: 'Self-Test' },
 ]
 
@@ -137,6 +139,7 @@ export default function App() {
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
       {base === '/mpc' && <MpcPage />}
+      {base === '/voting' && <VotingPage />}
       {base === '/verify' && <SelfTestPage />}
 
       <footer className="foot">

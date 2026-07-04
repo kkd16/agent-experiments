@@ -282,6 +282,31 @@ import {
 } from './circuit'
 import { runMillionaires, runEquality, runSum, runProduct, runAuction } from './twopc'
 import { gmwCompute } from './gmw'
+import {
+  encrypt as elgEncrypt,
+  decryptToPoint as elgDecrypt,
+  addCipher as elgAdd,
+  zeroCipher as elgZero,
+  dlogSmall as elgDlog,
+  proveEnc01,
+  verifyEnc01,
+  eq as elgEq,
+} from './elgamal'
+import {
+  runDKG,
+  castBallot,
+  verifyBallot,
+  aggregate as tallyAggregate,
+  decryptShare,
+  verifyDecryptionShare,
+  combineShares,
+  tally as runTally,
+  verifyElection,
+  plaintextCounts,
+  stuffBallot,
+  corruptShare as corruptDecShare,
+} from './voting'
+import { publicKey as elgPublicKey } from './secp256k1'
 
 export interface TestCase {
   name: string
@@ -2301,6 +2326,67 @@ export function runSelfTest(): TestCase[] {
     const tp = trianglesProve(adj, N)
     check('GKR · sum-check', 'sum-check certifies the triangle count (Ã evaluated at 3 points)', trianglesVerify(adj, N, triCount, tp).ok, '6·1 = Σ over the 4³ vertex triples')
     check('GKR · sum-check', 'triangle verifier rejects an inflated count', !trianglesVerify(adj, N, triCount + 1, tp).ok, 'soundness of the counting argument')
+  }
+
+  // ── 39. Homomorphic e-voting (exponential ElGamal + DKG + threshold) ──
+  {
+    const VG = 'Homomorphic Voting'
+    // ElGamal round-trip and additive homomorphism.
+    const vsk = 987654321n
+    const vpk = elgPublicKey(vsk)
+    const ctA = elgEncrypt(vpk, 3n, 111n)
+    const ctB = elgEncrypt(vpk, 5n, 222n)
+    const M = elgDecrypt(vsk, elgAdd(ctA, ctB))
+    check(VG, 'ElGamal is additively homomorphic', elgEq(M, secp256k1.multiply(8n, G)), 'Enc(3)⊕Enc(5) decrypts to 8·G')
+    check(VG, 'bounded discrete log recovers the small plaintext', elgDlog(M, 50) === 8, 'BSGS finds m=8 in √-range steps')
+    check(VG, 'discrete log reports an out-of-range plaintext as impossible', elgDlog(secp256k1.multiply(80n, G), 50) === null, 'malformed totals are caught, not silently wrapped')
+    // homomorphic accumulate over a batch, starting from the identity ciphertext.
+    let vacc = elgZero()
+    let vsum = 0
+    for (const x of [4, 0, 7, 2, 9]) { vacc = elgAdd(vacc, elgEncrypt(vpk, BigInt(x), BigInt(x * 17 + 1))); vsum += x }
+    check(VG, 'a batch of ciphertexts tallies to the plaintext sum', elgDlog(elgDecrypt(vsk, vacc), 100) === vsum, 'the whole point of a homomorphic tally')
+
+    // Disjunctive Chaum–Pedersen: a ciphertext encrypts a bit.
+    for (const m of [0, 1] as const) {
+      const r = 314159n + BigInt(m)
+      const ct = elgEncrypt(vpk, BigInt(m), r)
+      const pf = proveEnc01(vpk, m, r, ct.A, ct.B)
+      check(VG, `ballot-validity proof accepts an encryption of ${m}`, verifyEnc01(vpk, ct.A, ct.B, pf), 'zero-knowledge OR-proof "it is a 0 or a 1"')
+      check(VG, `ballot-validity proof rejects a tampered ciphertext (m=${m})`, !verifyEnc01(vpk, ct.A, secp256k1.add(ct.B, G), pf), 'Fiat–Shamir binds the proof to (A,B)')
+    }
+    // A voter who encrypts a "2" cannot produce a passing proof.
+    const two = elgEncrypt(vpk, 2n, 999n)
+    check(VG, 'ballot-validity proof rejects an encryption of 2 (no ballot stuffing)', !verifyEnc01(vpk, two.A, two.B, proveEnc01(vpk, 1, 999n, two.A, two.B)), 'the soundness of the disjunction')
+
+    // Distributed key generation: PK = sk·G, every trustee key Feldman-consistent.
+    const K = 3
+    const election = runDKG(4, 3)
+    check(VG, 'DKG public key equals sk·G for the implied threshold secret', elgEq(election.pk, secp256k1.multiply(election.sk, G)), 'sk = Σ trustee secrets, held by no one')
+    check(VG, 'every dealt share passed its Feldman check', election.trustees.every((tr) => tr.dealtOk), 'a cheating dealer would be caught here')
+
+    // A full election: cast, tally, and grade against the plaintext truth.
+    const choices = [0, 1, 1, 2, 0, 1, 0, 2, 1, 1, 0, 2]
+    const ballots = choices.map((c, i) => castBallot(election, `v${i}`, c, K))
+    check(VG, 'every cast ballot self-certifies (bits + sum = 1)', ballots.every((b) => verifyBallot(election, b, K).ok), 'no secret needed to check a ballot')
+    const quorum = [election.trustees[0], election.trustees[2], election.trustees[3]]
+    const result = runTally(ballots, K, quorum)
+    const truth = plaintextCounts(ballots, K)
+    check(VG, 'the homomorphic tally reproduces the plaintext count', JSON.stringify(result.counts) === JSON.stringify(truth), `decrypted ${JSON.stringify(result.counts)} = ${JSON.stringify(truth)}, no ballot opened`)
+
+    // Threshold guarantee: t decrypt, t−1 cannot.
+    const agg0 = tallyAggregate(ballots, K)[0]
+    const goodShare = decryptShare(quorum[0], agg0)
+    check(VG, 'a decryption share carries a valid DLEQ proof', verifyDecryptionShare(quorum[0].vk, agg0, goodShare), 'log_G(Yᵢ) = log_A(Dᵢ) = skᵢ')
+    check(VG, 'a corrupted decryption share is rejected', !verifyDecryptionShare(quorum[0].vk, agg0, corruptDecShare(goodShare)), 'a dishonest trustee is publicly caught')
+    const twoShares = [election.trustees[0], election.trustees[1]].map((tr) => decryptShare(tr, agg0))
+    check(VG, 'fewer than t trustees cannot recover the tally', elgDlog(combineShares(agg0, twoShares), ballots.length) !== truth[0], 'the t-of-n threshold, demonstrated')
+
+    // Universal verifiability, and that tampering is caught.
+    const qi = quorum.map((q) => q.index)
+    check(VG, 'the universal verifier accepts an honest election', verifyElection(election, ballots, K, result, qi).ok, 're-checks DKG, ballots, aggregation, and decryption')
+    const stuffed = ballots.slice(); stuffed[0] = stuffBallot(election, ballots[0])
+    const stuffedResult = runTally(stuffed, K, quorum)
+    check(VG, 'the universal verifier rejects a stuffed bulletin board', !verifyElection(election, stuffed, K, stuffedResult, qi).ok, 'ballot-stuffing breaks a bit-proof')
   }
 
   return t

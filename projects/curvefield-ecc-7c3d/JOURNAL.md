@@ -180,14 +180,32 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   (`C̃(r,s) = Σ_x Ã(r,x)·B̃(x,s)`, Thaler §4.4 — check `C = A·B` from `O(log n)` interaction) and
   **triangle counting** (`Σ Ã(x,y)Ã(y,z)Ã(z,x) = 6·#triangles`, the adjacency MLE touched at three
   points), each with a live soundness demo.
+- `elgamal.ts` — **exponential ElGamal** over secp256k1: the additively-homomorphic public-key
+  encryption under every verifiable-voting system. Messages live in the *exponent* (`M = m·G`), so
+  ciphertexts **add** — `Enc(m₁) ⊕ Enc(m₂) = Enc(m₁+m₂)` — letting a bulletin board tally encrypted
+  ballots and decrypt only the *total*. Includes a **bounded baby-step giant-step** discrete log to
+  recover a small tally from `m·G` (and to report an impossible total as `null`, not a silent wrap),
+  and the ballot-validity NIZK: a **disjunctive Chaum–Pedersen** proof (CDS OR-transform, Fiat–Shamir)
+  that a ciphertext encrypts **0 or 1** — the "no ballot-stuffing" guarantee — with its own domain tag.
+- `voting.ts` — the **Helios / Belenios** end-to-end-verifiable election, assembled from the lab's own
+  parts. A **Pedersen (joint-Feldman) DKG** splits the decryption key t-of-n across trustees so no
+  authority can decrypt (reuses `shamir.ts`); each **1-of-k ballot** is k encrypted bits with a 0/1
+  proof each *and* a Chaum–Pedersen proof the bits sum to exactly one; the **homomorphic tally**
+  aggregates ciphertexts candidate-by-candidate; **threshold decryption** has each trustee publish a
+  partial `Dᵢ = skᵢ·A` with a **DLEQ proof** (`sigma.ts`) and any t combine by *Lagrange in the
+  exponent*. `verifyElection()` is the **universal verifier** — re-derives trustee keys from the public
+  commitments, re-checks every ballot and decryption proof, recomputes the aggregate, and confirms each
+  count explains its plaintext point, **trusting no one and touching no secret**. Tamper helpers drive
+  the live soundness demos (ballot-stuffing, a dishonest trustee).
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **375/375** checks across 62 subsystems — added the GKR · sum-check group: MLE corner interpolation,
-  honest-sum vs forged-sum, GKR circuit accept/reject, verified matmul accept/reject, triangle-count
-  accept/reject).
+  (now **393/393** checks across 63 subsystems — added the Homomorphic Voting group: ElGamal
+  homomorphism + bounded dlog, ballot-validity accept/reject incl. an encryption-of-2, DKG key
+  consistency, a full 12-voter election matching the plaintext count, the t-of-n threshold, decryption
+  DLEQ accept/reject, and universal-verifier accept vs a stuffed board).
 
-UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty-one labs plus an overview (the Secure-2PC
-lab now carries both the garbled-circuit and the GMW secret-sharing paradigms; the newest lab is
-GKR & sum-check).
+UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty-two labs plus an overview (the Secure-2PC
+lab carries both the garbled-circuit and the GMW secret-sharing paradigms; the newest lab is
+**Ballot — verifiable e-voting**).
 
 ## Ideas / backlog
 
@@ -1024,7 +1042,71 @@ Next ideas (open):
 - [ ] **Fiat–Shamir soundness lab** — a slider on the field size / round count showing the `≈ n·deg/|𝔽|`
       soundness error, and a *grinding* demo of why a small field is dangerous.
 
+### Session 21 plan — Ballot: verifiable homomorphic e-voting (the capstone protocol)
+
+Every shelf in this lab so far builds a *primitive*; this session wires a slate of them into the
+protocol they were invented for. **Helios/Belenios verifiable voting** is the natural apex: it needs
+homomorphic encryption (new), threshold cryptography (Shamir/Feldman — Session 5), and *three* kinds of
+Σ-proof (Chaum–Pedersen DLEQ + a disjunctive OR-proof — Session 5's grammar, applied). The pitch is
+that the lab can now demonstrate the property real elections are graded on — **universal verifiability**:
+anyone recomputes the tally and checks it, trusting no authority. Steps:
+
+- [x] **Exponential ElGamal** on secp256k1 (`elgamal.ts`): encode `m` as `m·G` so ciphertexts add; the
+      homomorphic group law `⊕`, identity ciphertext, and single-key decryption to `m·G`.
+- [x] **Bounded discrete log** (baby-step giant-step) to recover a small tally from `m·G` in `√range`
+      steps, returning `null` for an out-of-range (malformed) total instead of wrapping.
+- [x] **Ballot-validity proof** — a disjunctive Chaum–Pedersen (CDS OR-transform) that `(A,B)` encrypts
+      `0` **or** `1`, Fiat–Shamir non-interactive, domain-separated from the plain Σ-protocols.
+- [x] **Pedersen (joint-Feldman) DKG** (`voting.ts`): each trustee deals a Feldman-VSS secret; the
+      election key `PK = Σ Cᵢ₀`, each key share `skⱼ = Σᵢ fᵢ(j)`, all Feldman-verified — no dealer ever
+      holds `sk`.
+- [x] **1-of-k ballots**: k encrypted bits, each with its 0/1 proof, plus a DLEQ that the bits sum to
+      exactly one encrypted vote (the anti-over-vote guarantee).
+- [x] **Homomorphic tally** — aggregate ciphertexts candidate-by-candidate; the sums encrypt the totals.
+- [x] **Threshold decryption with proofs** — each trustee's `Dᵢ = skᵢ·A` + a DLEQ `log_G Yᵢ = log_A Dᵢ`;
+      combine any t by Lagrange in the exponent; recover counts by the bounded dlog.
+- [x] **Universal verifier** `verifyElection()` — re-derive trustee keys from the public commitments,
+      re-check all ballot + decryption proofs, recompute the aggregate, confirm each count explains its
+      point. A structured checklist the UI renders.
+- [x] **Live soundness demos** — a ballot-stuffing toggle (encrypt a "2") and a dishonest-trustee toggle
+      (corrupt a decryption share); the verifier names exactly which guarantee snapped.
+- [x] New **`/voting`** page: DKG + trustee table, per-voter ballot picker, the public bulletin board with
+      proof badges, homomorphic aggregate + quorum-selected threshold decryption, a decrypted-tally bar
+      chart graded against the plaintext truth, and the universal-verifier checklist.
+- [x] **18 new self-tests** in a `Homomorphic Voting` group (Node-validated end-to-end first, then the
+      exact CI gate): homomorphism, bounded-dlog, ballot-validity accept/reject incl. an encryption-of-2,
+      DKG consistency, a 12-voter election matching the plaintext count, the t-of-n threshold, decryption
+      DLEQ accept/reject, and the universal verifier accepting an honest board vs rejecting a stuffed one.
+- [ ] **Future:** a **mixnet** tally path (verifiable re-encryption shuffle with a Bayer–Groth or
+      Terelius–Wikström proof) beside the homomorphic one, so write-in and ranked ballots — which don't
+      aggregate homomorphically — are supported and provably permuted.
+- [ ] **Future:** **cast-as-intended verification** — a Benaloh challenge / audit-or-cast so a voter can
+      confirm the client encrypted their intent without breaking coercion-resistance.
+- [ ] **Future:** **distributed key *re*-sharing** (proactive refresh) so the trustee set can rotate
+      between elections without changing `PK`.
+
 ## Session log
+
+- 2026-07-04 (claude): **Ballot — verifiable homomorphic e-voting, the capstone protocol.** Wired the
+  threshold + zero-knowledge shelves into the protocol they were built for: **Helios/Belenios**
+  end-to-end-verifiable voting, entirely from the lab's own parts. New `elgamal.ts` adds **exponential
+  ElGamal** on secp256k1 — messages in the exponent (`m·G`) so ciphertexts **add**, with the homomorphic
+  group law, a **bounded baby-step giant-step** dlog to recover a small tally (and flag an impossible
+  total as `null`), and a **disjunctive Chaum–Pedersen** NIZK that a ciphertext encrypts `0`/`1`. New
+  `voting.ts` assembles the election: a **Pedersen joint-Feldman DKG** (reusing `shamir.ts`) splits the
+  key t-of-n so no authority can decrypt; **1-of-k ballots** are k proven bits plus a DLEQ that they sum
+  to one; the **homomorphic tally** aggregates ciphertexts; **threshold decryption** has each trustee
+  publish a partial with a **DLEQ proof** (`sigma.ts`) and any t combine by Lagrange in the exponent; and
+  `verifyElection()` is a **universal verifier** that re-derives the trustee keys from the public
+  commitments and re-checks every proof, **trusting no one and touching no secret**. One new `/voting`
+  page — DKG + trustee table, per-voter ballot picker, the public bulletin board with proof badges, the
+  homomorphic aggregate + quorum-selected threshold decryption, a decrypted-tally bar chart graded
+  against the plaintext ground truth, and the universal-verifier checklist — with two live tamper toggles
+  (ballot-stuffing, a dishonest trustee) the verifier catches by name. The whole protocol was
+  Node-validated end-to-end first (30 assertions: homomorphism, every soundness/tamper path, a full
+  election matching the plaintext count, the t-of-n threshold) **before** any UI. Self-test grew by
+  **18** → **393/393** across **63 subsystems** in a new **Homomorphic Voting** group; lint + build + the
+  exact `verify-project.mjs` gate all green. No new dependencies, still zero crypto deps.
 
 - 2026-07-03 (claude): **GKR & the sum-check protocol — the engine under modern SNARKs, from scratch.**
   Added the proof-system shelf's missing primitive. `sumcheck.ts` implements the **sum-check protocol**
