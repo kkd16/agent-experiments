@@ -212,6 +212,74 @@ keep it current.
 
 ## Ideas / backlog
 
+### Session 22 — Parikh image ⇒ semilinear set: the commutative bridge to arithmetic (2026-07-04, claude)
+
+Every prior tab reads the *order* of a language. This one throws the order away. The **Parikh map** π
+sends a word to its vector of letter counts, and **Parikh's theorem** (1966) says the commutative image
+π(L) of a regular language is always **semilinear** — a finite union of linear sets `base + ℕ·p₁ + … + ℕ·p_r`.
+The new **Parikh** tab builds that image *structurally*, straight off the regex AST, as the exact mirror of
+Thompson's construction — one semilinear operation per regex operator:
+
+```
+π(∅) = ∅        π(ε) = {0}        π(a) = {eₐ}
+π(A|B) = π(A) ∪ π(B)              π(A·B) = π(A) ⊕ π(B)   (Minkowski sum)
+π(A*)  = ⟨π(A)⟩  (the additive submonoid: {0} + every finite sum, the 2^m−1-subset star formula)
+```
+
+The two-line miracles fall out: **π((ab)\*) = {(n,n)}** is the diagonal `#a = #b` — a regular language whose
+commutative image is a single ray; **π(a\*b\*) = ℕ²** is the whole quadrant; and over one letter
+**π((aaa|aaaaa)\*) = ⟨3,5⟩ = {0,3,5,6,8,…}**, the numerical semigroup whose largest gap **7 is the Frobenius
+number** — literally the Chicken-McNugget set the **Presburger** tab reads off `∃a∃b. n = 3a+5b`. That
+coincidence is the whole point: a set of naturals is semilinear **iff** it is Presburger-definable, so the tab
+**bridges the studio's two halves** — the semilinear image compiles to a Presburger formula (∃ one multiplier
+per period, OR the linear sets), which the studio's own **Büchi–Bruyère–Villemaire** engine turns into a
+digit-automaton, confronted **tuple for tuple** against the semilinear set. Three independent roads — the
+structural algebra, a brute-force enumeration of the language's own words, and the number-theoretic automaton
+— must land on one set of vectors.
+
+Proved the house way: a seeded fuzzer (`engine/parikh-verify.ts`) draws random regular patterns and checks, all
+exact up to a length/count horizon, (1) the semilinear enumeration **equals** the brute-force set of the
+language's word-counts, (2) the semilinear membership oracle agrees with "some accepted word has these counts",
+and (3) the Presburger digit-automaton accepts **exactly** the semilinear tuples — **685,388 checks across
+11,018 random patterns over 40 seeds, zero disagreements** (offline), and the in-app console reproduces a
+per-seed slice. Along the way it exposed and fixed the two real hazards of computing semilinear sets by hand:
+an unbounded blow-up in the star of a wide alternation (now capped and reported, never hung) and a non-minimal
+union (now collapsed by a *sound, general* linear-set containment test — `bL ∈ M` and every period of `L` in
+`M`'s recession cone).
+
+The tab shows: the derived atom alphabet (each distinct leaf character-class = one axis), the semilinear set as
+a list of `base + ℕ·periods` cones with a finite/semilinear/full-lattice verdict, a **lattice visualisation**
+(a number line with the Frobenius gap lit for one letter; an SVG scatter with base points + period arrows for
+two), a **membership query** box that decodes the ℕ-combination realising a queried count vector, the
+per-subexpression **construction trace**, the **Presburger bridge** formula with its compiled digit-automaton
+graph and a live `digit-automaton ≡ semilinear set ✓` badge, and the seeded proof console.
+
+New files: `engine/parikh.ts` (the semilinear algebra + structural map + the Presburger bridge),
+`engine/parikh-verify.ts` (the three-road fuzzer), `components/ParikhPanel.tsx` (the tab). Wired one entry into
+`App.tsx` and the tab list; no existing engine touched.
+
+- [x] Structural Parikh map over the regex AST (·↦⊕, |↦∪, *↦submonoid, {m,n}↦⋃Aᶜ), with a per-subexpression trace
+- [x] Semilinear-set algebra: Minkowski sum, union, the 2^m-subset star, normalisation with a sound general
+  linear-set containment (recession-cone) subsumption; hard size caps so a runaway pattern is reported, never hung
+- [x] Membership oracle (bounded reachability) + witness ℕ-combination decoding for the query box
+- [x] The Presburger bridge — semilinear ⇒ formula ⇒ the studio's Büchi–Bruyère–Villemaire digit-automaton,
+  cross-checked tuple-for-tuple
+- [x] Three-road differential fuzzer (language enumeration · membership · Presburger) — 685k checks, zero disagreements
+- [x] 1-D (number line + Frobenius gap) and 2-D (SVG lattice with period arrows) visualisations; N-D vector list
+- [ ] **Parikh image of the *extended* (Boolean-closed) regex** `A & B`, `~A`, `A − B` — regular languages, so
+  still semilinear, but *not* computable structurally; build the min-DFA and read the image off its cycle structure
+  (the Chomsky–Schützenberger / Esparza construction) so the `&~−` tab gains a commutative image too
+- [ ] **Context-free Parikh** — Parikh's theorem is really about CFLs; a small CFG box whose Parikh image is
+  semilinear too (via the grammar's derivation-tree cycles) would show the theorem in its native habitat
+- [ ] **Semilinear-set *minimisation*** — the structural union is sound but not always minimal; add a proper
+  Presburger-backed minimiser (or Pottier's algorithm) so `(a|b)*a(a|b)*` collapses to the single ideal set
+- [ ] **Intersection / Presburger *query*** — type an arbitrary Presburger constraint over the counts (e.g.
+  `#a = 2·#b`) and intersect it with π(L) live, deciding non-emptiness via the existing engine (a "does the
+  language contain a word with these proportions?" oracle)
+- [ ] **The generating-function tie-in** — the Census tab's rational series counts words; overlay the Parikh
+  fibre sizes (how many words share each count vector) to connect the commutative image to the word census
+- [ ] **3-D lattice** — an isometric/rotatable scatter for the |Σ|=3 case, and axis-projection controls for higher
+
 ### Session 21 — Presburger arithmetic ⇒ Automaton: number theory as a machine (2026-07-03, claude)
 
 The **Logic** tab (session 14) reads a *string* logic — MSO[<] over word positions — into an automaton
