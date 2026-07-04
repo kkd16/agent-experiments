@@ -1,0 +1,29 @@
+:root {
+  --bg: #0b0f16;
+  --panel: #121826;
+  --panel-2: #182234;
+  --line: #26324a;
+  --text: #e7ecf4;
+  --muted: #8fa0bd;
+  --accent: #6cc0ff;
+  --accent-2: #7de3b5;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
