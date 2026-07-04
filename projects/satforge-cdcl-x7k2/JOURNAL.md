@@ -1114,6 +1114,17 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
 
 ## Session log
 
+- 2026-07-04 (claude): ASP Studio follow-up — **machine-checked answer-set certificates** + brave/cautious
+  reasoning (`src/asp/certificate.ts`). Gives ASP the certificate every other prover here ships: for each
+  reported answer set, `derivationOrder` emits a founded-set derivation sequence (each atom justified by a
+  rule whose positive body was already derived and whose negatives are absent), and `verifyCertificate`
+  re-checks it independently — a stand-alone proof the model is *stable* (nothing true by circular support).
+  Adds cautious (∩, skeptical) and brave (∪, credulous) consequences. Self-test grew to 67 ASP assertions:
+  1500 random programs where every reported model's certificate must verify, a *truncated* certificate must
+  be rejected, and brave/cautious must equal the brute-force answer-set family's union/intersection. Studio
+  gains a Consequences panel and a per-model derivation certificate in the answer-set browser (verified in
+  headless Chromium — the positive loop's {c,a,b} shows `{c} ← ⊤`, `a ← c`, `b ← a`, proving a,b are founded
+  *through* c, not circularly).
 - 2026-07-04 (claude): ASP Studio follow-up — a **positive dependency graph** view (`src/asp/depgraph.ts`).
   Draws the graph a→b (a rule deriving `a` has `b` in its positive body), computes its SCCs by iterative
   Tarjan, highlights the **loop** components, and shows a **tightness** badge. This visualises exactly
@@ -2077,8 +2088,9 @@ under-approximate the true answer-set intersection.
       *Still open:* animate the loop formula being learned when a circular model is rejected.
 - [ ] **Smodels-style well-founded propagation during grounding** and a proper `#show` directive to
       project the displayed atoms.
-- [ ] **An answer-set certificate** — emit, per reported model, the founded-set derivation order
-      (the proof that each true atom has non-circular support) and re-check it independently, the way
-      DRAT re-checks UNSAT.
-- [ ] **Bridge to Insight/#SAT** — projected answer-set counting and backbone (the atoms true in
-      *every* answer set) computed the cautious/brave way, reusing the Insight Studio's machinery.
+- [x] **An answer-set certificate** — `src/asp/certificate.ts`: `derivationOrder` emits the founded-set
+      derivation, `verifyCertificate` re-checks it independently (each atom's non-circular support), and the
+      studio shows it per model in the answer-set browser.
+- [x] **Cautious / brave consequences** — the atoms true in *every* / *some* answer set (`consequences`),
+      cross-checked against the brute-force family and shown in a Consequences panel. *Still open:* the
+      full bridge to Insight/#SAT (projected answer-set counting, approximate brave inference).
