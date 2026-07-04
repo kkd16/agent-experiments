@@ -121,6 +121,9 @@ import {
   createGenerators as bbsGenerators,
   messagesToScalars as bbsMsgs,
   messageToScalar as bbsMsg,
+  blindCommit as bbsBlindCommit,
+  verifyBlindRequest as bbsVerifyBlindRequest,
+  blindSign as bbsBlindSign,
 } from './bbs'
 import {
   CG,
@@ -2456,6 +2459,25 @@ export function runSelfTest(): TestCase[] {
     const b = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, disclosed, gens)
     const bothOk = bbsProofVerify(key.pk, a, header, ph, disMsgs, gens) && bbsProofVerify(key.pk, b, header, ph, disMsgs, gens)
     check(BG, 'two presentations both verify yet are unlinkable', bothOk && !g1.eq(a.Abar, b.Abar) && !g1.eq(a.D, b.D), 'a fresh randomizer r makes Ā uniformly random each time')
+
+    // Blind issuance: the issuer signs attributes it never sees. Slot 4 is the
+    // holder's link secret; slot 1 a private id — both hidden from the issuer.
+    seedRng(0xb11d)
+    const bGens = bbsGenerators(5)
+    const linkSecret = bbsMsg('device-link-secret')
+    const privId = bbsMsg('private-id-42')
+    const req = bbsBlindCommit([{ index: 1, msg: privId }, { index: 4, msg: linkSecret }], bGens)
+    check(BG, 'issuer accepts a well-formed blind commitment proof', bbsVerifyBlindRequest(req, bGens), 'the holder proves knowledge of the opening in ZK')
+    check(BG, 'issuer rejects a tampered blind commitment', !bbsVerifyBlindRequest({ ...req, sHat: req.sHat.map((x, i) => (i === 0 ? (x + 1n) % BLS_R : x)) }, bGens), 'the Σ-proof of the opening fails')
+    const issuerMsgs = [{ index: 0, msg: bbsMsg('Grace Hopper') }, { index: 2, msg: bbsMsg('class-B') }, { index: 3, msg: bbsMsg('2035-01-01') }]
+    const bSig = bbsBlindSign(key, header, req, issuerMsgs, bGens)
+    check(BG, 'blind issuance yields a signature over never-seen attributes', bSig !== null, 'the issuer completes A from the commitment U, blind to slots 1 & 4')
+    const bFull = [bbsMsg('Grace Hopper'), privId, bbsMsg('class-B'), bbsMsg('2035-01-01'), linkSecret]
+    check(BG, 'the blind-issued signature verifies as an ordinary BBS sig', bSig !== null && bbsVerify(key.pk, bSig, header, bFull, bGens), 'the hidden slots verify exactly like disclosed ones')
+    seedRng(0xb11d + 9)
+    const bProof = bSig !== null ? bbsProofGen({ pk: key.pk }, bSig, header, ph, bFull, [0, 3], bGens) : null
+    check(BG, 'a blind-issued credential presents with selective disclosure', bProof !== null && bbsProofVerify(key.pk, bProof, header, ph, [bFull[0], bFull[3]], bGens) && bProof.mHat.length === 3, 'link secret + private id stay hidden through presentation')
+    check(BG, 'the issuer refuses to blind-sign a bad commitment', bbsBlindSign(key, header, { ...req, U: bGens.P1 }, issuerMsgs, bGens) === null, 'no valid opening proof ⇒ no signature')
   }
 
   return t

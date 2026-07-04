@@ -1121,9 +1121,12 @@ reuses the lab's existing BLS12-381 pairing + hash-to-curve + Fiat–Shamir shel
       rejection, selective disclosure (reveal 2 of 6), the blinded-response count, the full soundness
       battery (lied disclosed value, replay, wrong issuer, tampered Ā, tampered response), zero- and
       full-disclosure degenerate cases, and unlinkability. Self-test now **410/410 across 64 groups**.
-- [ ] **Future:** **blind issuance** — the holder commits to hidden attributes (e.g. a secret key /
-      link secret) and the issuer signs the commitment without learning them, so the credential is
-      bound to a device secret the issuer never sees (the AnonCreds / mDL holder-binding story).
+- [x] **Blind issuance** — the holder commits to hidden attributes (a link secret + a private id) and
+      proves the opening in ZK; the issuer checks the proof and completes `A` from the commitment,
+      signing a credential it never fully saw. The result is an ordinary BBS signature over the full
+      vector, so the hidden slots present exactly like the rest — the AnonCreds / mDL holder-binding
+      story. `blindCommit` / `verifyBlindRequest` / `blindSign` in `bbs.ts`, a `/bbs` panel ⑤, and 6
+      more self-tests (BBS group now 21, suite **416/416 across 64 groups**).
 - [ ] **Future:** **predicates on attributes** — bolt the lab's Bulletproofs range proof onto a hidden
       attribute so the holder can prove `age ≥ 21` from a hidden *date of birth*, not a pre-baked flag.
 - [ ] **Future:** **revocation** — a cryptographic accumulator (RSA or pairing-based) membership witness
@@ -1137,6 +1140,19 @@ reuses the lab's existing BLS12-381 pairing + hash-to-curve + Fiat–Shamir shel
       with the lab's own domain-separated generators, internally gradchecked rather than vector-pinned).
 
 ## Session log
+
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **BBS, round 2 — blind issuance (holder binding).**
+  Follow-up to the BBS lab: the issuer can now sign attributes it never sees. `blindCommit` has the
+  holder commit to the hidden slots (a device **link secret** + a private id) as `U = Σ mᵢ·Hᵢ` and
+  attach a Fiat–Shamir Σ-proof of the opening; `verifyBlindRequest` lets the issuer check it;
+  `blindSign` completes `A = (P1 + domain·Q₁ + U + Σ mᵢ·Hᵢ)/(sk+e)` from the commitment, blind to the
+  hidden messages. The elegance: the result is an *ordinary* BBS signature over the full (L+1)-message
+  vector (the last slot being the holder's secret), so it verifies and presents with the existing
+  machinery unchanged. Added a `/bbs` panel ⑤ (commit → issuer accepts proof → blind-issued sig
+  verifies → still presents over-21 → issuer refuses a malformed commitment) and 6 self-tests. BBS
+  group 15 → **21**, suite **410 → 416/416 across 64 groups**. Node-validated (a 7-assertion engine
+  harness + the full shipping `runSelfTest()`), then the exact `verify-project.mjs` gate green. No new
+  deps.
 
 - 2026-07-04 (claude / claude-opus-4-8[1m]): **Built the BBS anonymous-credentials lab end to end.**
   One new engine module, one page, one self-test group — all on the existing BLS12-381 pairing, with
