@@ -5174,3 +5174,62 @@
 .rt-terminal {
   font-weight: 600;
 }
+
+/* ── Parikh tab ─────────────────────────────────────────────────────────────── */
+.parikh-panel { display: flex; flex-direction: column; gap: 18px; }
+.parikh-gallery { display: flex; flex-wrap: wrap; gap: 8px; }
+.parikh-ex {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 7px 10px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; text-align: left; max-width: 230px;
+}
+.parikh-ex:hover { border-color: var(--accent-2); }
+.parikh-ex-name { font-size: 12px; color: var(--text); font-weight: 600; }
+.parikh-ex-pat { font-size: 11px; color: var(--accent-2); font-family: var(--mono); }
+.parikh-section {
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px 16px;
+}
+.parikh-section h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: .02em; color: var(--text); }
+.parikh-verdict { padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.parikh-verdict.ok { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
+.parikh-verdict.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
+.parikh-atoms { display: flex; flex-wrap: wrap; gap: 8px; }
+.parikh-atom { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+.parikh-atom code { color: var(--accent-2); font-family: var(--mono); }
+.parikh-axis { font-size: 10px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .05em; }
+.parikh-count { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.parikh-linears { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.parikh-linears li { display: flex; align-items: center; gap: 10px; }
+.parikh-lin-idx { font-size: 11px; color: var(--accent-2); font-family: var(--mono); min-width: 26px; }
+.parikh-lin { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.parikh-lin-kind { font-size: 11px; color: var(--muted-2); margin-left: auto; }
+.parikh-formula { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent-2); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; word-break: break-word; }
+.parikh-trace { display: flex; flex-direction: column; gap: 4px; }
+.parikh-trace-row { display: grid; grid-template-columns: minmax(80px, 1.2fr) minmax(90px, 1fr) 2fr; gap: 10px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed var(--border-soft); }
+.parikh-trace-expr { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.parikh-trace-op { font-size: 11px; color: var(--muted); }
+.parikh-trace-sl { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.parikh-line { display: flex; flex-wrap: wrap; gap: 3px; }
+.parikh-cell { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; border-radius: 5px; font-family: var(--mono); }
+.parikh-cell.in { background: color-mix(in srgb, var(--accent-2) 30%, transparent); color: var(--text); border: 1px solid var(--accent-2); }
+.parikh-cell.out { background: transparent; color: var(--muted-2); border: 1px dashed var(--border); }
+.parikh-cell.frob { outline: 2px solid var(--warn); color: var(--warn); font-weight: 700; }
+.parikh-lattice-wrap { overflow-x: auto; }
+.parikh-lattice { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.parikh-grid line { stroke: var(--border-soft); stroke-width: 1; }
+.parikh-axisline { stroke: var(--edge); stroke-width: 1.5; }
+.parikh-axislabel { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.parikh-pt { fill: var(--accent-2); }
+.parikh-pt.base { fill: var(--accent); stroke: var(--text); stroke-width: 1; }
+.parikh-period { stroke: var(--accent); stroke-width: 1.5; opacity: .8; }
+.parikh-veclist { display: flex; flex-wrap: wrap; gap: 6px; }
+.parikh-vec { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; }
+.parikh-query { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.parikh-query-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.parikh-query-field input { width: 64px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 5px 7px; font-family: var(--mono); }
+.parikh-query-verdict { padding: 6px 12px; border-radius: 8px; font-weight: 700; font-family: var(--mono); }
+.parikh-query-verdict.yes { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.parikh-query-verdict.no { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.parikh-bridge-graph { margin-top: 10px; height: 320px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.parikh-proof { border-color: color-mix(in srgb, var(--accent-2) 30%, var(--border-soft)); }
