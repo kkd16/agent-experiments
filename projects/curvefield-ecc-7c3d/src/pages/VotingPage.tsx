@@ -3,6 +3,8 @@ import { PageHead, Panel, Slider, Verdict } from '../ui/components'
 import {
   runDKG,
   castBallot,
+  sealBallot,
+  auditBallot,
   verifyBallot,
   aggregate,
   tally,
@@ -40,6 +42,8 @@ export function VotingPage() {
   // Live tamper switches for the soundness demos.
   const [stuffIdx, setStuffIdx] = useState<number | null>(null)
   const [corruptDec, setCorruptDec] = useState(false)
+  // Which voter to spoil-and-audit (Benaloh cast-or-audit).
+  const [auditVoter, setAuditVoter] = useState(0)
 
   const tt = Math.min(t, n)
 
@@ -106,6 +110,16 @@ export function VotingPage() {
     () => (result ? verifyElection(election, board, k, result, quorum.map((q) => q.index)) : null),
     [result, election, board, k, quorum],
   )
+
+  // Benaloh cast-or-audit: spoil a fresh encryption of the chosen voter's vote,
+  // reveal its randomness, and recompute every ciphertext to prove cast-as-intended.
+  const audited = useMemo(() => {
+    const idx = Math.min(auditVoter, choices.length - 1)
+    seedRng(seed * 60013 + idx * 97 + k * 3)
+    const choice = Math.min(choices[idx] ?? 0, k - 1)
+    const sealed = sealBallot(election, `voter ${idx + 1}`, choice, k)
+    return { idx, choice, sealed, check: auditBallot(election, sealed, k) }
+  }, [election, choices, auditVoter, k, seed])
 
   const maxCount = Math.max(1, ...truth)
   const clean = stuffIdx === null && !corruptDec
@@ -235,6 +249,44 @@ export function VotingPage() {
           <span className="note" style={{ display: 'inline' }}>
             A stuffed ballot puts a "2" in one slot. Its old bit-proof no longer verifies — the board
             rejects it before it can ever reach the tally.
+          </span>
+        </div>
+      </Panel>
+
+      <Panel
+        title="Cast-or-audit — the Benaloh challenge"
+        sub="Before casting, a voter may spoil a ballot: the client reveals the encryption randomness, and anyone recomputes the ciphertext from the claimed vote to confirm the machine encrypted the voter's actual intent. A spoiled ballot is then discarded and re-encrypted — so a cheating client can never predict which ballots will be checked."
+      >
+        <div className="seg" style={{ flexWrap: 'wrap', marginBottom: '0.7rem' }}>
+          {choices.map((_, i) => (
+            <button key={i} className={audited.idx === i ? 'on' : ''} onClick={() => setAuditVoter(i)}>
+              spoil voter {i + 1}
+            </button>
+          ))}
+        </div>
+        <table className="data">
+          <thead>
+            <tr><th>candidate</th><th>revealed randomness rᵢ</th><th>recompute matches?</th></tr>
+          </thead>
+          <tbody>
+            {CANDIDATES.slice(0, k).map((name, c) => (
+              <tr key={c}>
+                <td style={{ color: COLORS[c % COLORS.length] }}>
+                  ● {name} {c === audited.choice && <span className="pill">claimed vote</span>}
+                </td>
+                <td className="mono" style={{ fontSize: '0.72rem' }}>{ellipsize(hex(audited.sealed.openings[c], 64), 8, 4)}</td>
+                <td><Verdict ok={audited.check.slotOk[c]}>{audited.check.slotOk[c] ? 'match' : 'mismatch'}</Verdict></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ marginTop: '0.8rem' }}>
+          <Verdict ok={audited.check.ok}>
+            {audited.check.ok ? 'cast-as-intended ✓' : 'client cheated ✗'}
+          </Verdict>
+          <span className="note" style={{ display: 'inline', marginLeft: '0.6rem' }}>
+            Every slot re-encrypts to the exact ciphertext on the board — proof the client encoded this
+            voter's real choice, with no secret revealed about any ballot that is actually cast.
           </span>
         </div>
       </Panel>

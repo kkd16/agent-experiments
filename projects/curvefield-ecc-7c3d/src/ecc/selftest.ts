@@ -295,6 +295,8 @@ import {
 import {
   runDKG,
   castBallot,
+  sealBallot,
+  auditBallot,
   verifyBallot,
   aggregate as tallyAggregate,
   decryptShare,
@@ -2387,6 +2389,13 @@ export function runSelfTest(): TestCase[] {
     const stuffed = ballots.slice(); stuffed[0] = stuffBallot(election, ballots[0])
     const stuffedResult = runTally(stuffed, K, quorum)
     check(VG, 'the universal verifier rejects a stuffed bulletin board', !verifyElection(election, stuffed, K, stuffedResult, qi).ok, 'ballot-stuffing breaks a bit-proof')
+
+    // Cast-or-audit (Benaloh challenge): a spoiled ballot's revealed openings
+    // reproduce it, and a client that swapped the vote is caught.
+    const sealed = sealBallot(election, 'auditor', 2, K)
+    check(VG, 'a spoiled ballot audits as cast-as-intended', auditBallot(election, sealed, K).ok, 'revealed randomness reproduces every ciphertext')
+    const swapped = { ...sealed, ballot: { ...sealed.ballot, choice: 0 } }
+    check(VG, 'auditing catches a client that encrypted a different vote', !auditBallot(election, swapped, K).ok, 'the ciphertexts no longer match the claimed choice')
   }
 
   return t

@@ -102,13 +102,22 @@ export interface Ballot {
   sumProof: DleqProof // the k ciphertexts sum to an encryption of exactly 1
 }
 
-/** Cast a ballot for `choice` among `k` candidates under the election key. Each
- *  candidate slot is an encrypted bit with a 0/1 proof, and the aggregate carries
- *  a Chaum–Pedersen proof that the bits sum to exactly one — the "exactly one
- *  vote" guarantee that makes ballot-stuffing detectable by anyone. */
-export function castBallot(election: Election, voter: string, choice: number, k: number): Ballot {
+/** A cast ballot together with the per-slot encryption randomness that produced
+ *  it. In Helios a voter may *spoil* (audit) an encrypted ballot to reveal these
+ *  openings and confirm the client encrypted their intent — after which the ballot
+ *  is discarded and re-encrypted. A ballot that is actually *cast* keeps its
+ *  openings secret forever; that is what preserves privacy. */
+export interface SealedBallot {
+  ballot: Ballot
+  openings: bigint[] // openings[c] = the randomness rᵢ used for candidate slot c
+}
+
+/** Encrypt a ballot for `choice`, returning it alongside its openings so the
+ *  caller can either cast it (drop the openings) or audit it (reveal them). */
+export function sealBallot(election: Election, voter: string, choice: number, k: number): SealedBallot {
   const ciphers: Ciphertext[] = []
   const proofs: Enc01Proof[] = []
+  const openings: bigint[] = []
   let rSum = 0n
   for (let c = 0; c < k; c++) {
     const v = c === choice ? 1 : 0
@@ -116,12 +125,47 @@ export function castBallot(election: Election, voter: string, choice: number, k:
     const ct = encrypt(election.pk, BigInt(v), r)
     ciphers.push(ct)
     proofs.push(proveEnc01(election.pk, v, r, ct.A, ct.B))
+    openings.push(r)
     rSum = mod(rSum + r, N)
   }
   // The aggregate ciphertext encrypts Σvᵢ = 1 with randomness rSum, so a DLEQ that
   // log_G(ΣA) = log_PK(ΣB − G) = rSum proves the sum is exactly one.
   const { proof: sumProof } = proveDleq(rSum, election.pk)
-  return { voter, choice, ciphers, proofs, sumProof }
+  return { ballot: { voter, choice, ciphers, proofs, sumProof }, openings }
+}
+
+/** Cast a ballot for `choice` among `k` candidates under the election key. Each
+ *  candidate slot is an encrypted bit with a 0/1 proof, and the aggregate carries
+ *  a Chaum–Pedersen proof that the bits sum to exactly one — the "exactly one
+ *  vote" guarantee that makes ballot-stuffing detectable by anyone. */
+export function castBallot(election: Election, voter: string, choice: number, k: number): Ballot {
+  return sealBallot(election, voter, choice, k).ballot
+}
+
+/**
+ * The Benaloh cast-or-audit challenge: given a *spoiled* ballot's revealed
+ * openings, recompute every ciphertext from the claimed choice and check it
+ * matches — proving the client encrypted the voter's actual intent (cast-as-
+ * intended) without ever having been able to predict it would be audited. A
+ * malicious client that silently swapped the vote is caught here.
+ */
+export function auditBallot(
+  election: Election,
+  sealed: SealedBallot,
+  k: number,
+): { ok: boolean; slotOk: boolean[] } {
+  const { ballot, openings } = sealed
+  const slotOk: boolean[] = []
+  if (ballot.ciphers.length !== k || openings.length !== k) {
+    return { ok: false, slotOk: new Array(k).fill(false) }
+  }
+  for (let c = 0; c < k; c++) {
+    const v = c === ballot.choice ? 1n : 0n
+    const recomputed = encrypt(election.pk, v, openings[c])
+    slotOk.push(eq(recomputed.A, ballot.ciphers[c].A) && eq(recomputed.B, ballot.ciphers[c].B))
+  }
+  // A spoiled ballot must also be independently well-formed.
+  return { ok: slotOk.every(Boolean) && verifyBallot(election, ballot, k).ok, slotOk }
 }
 
 /** Verify a ballot without any secret: every slot is a bit, and the slots sum to

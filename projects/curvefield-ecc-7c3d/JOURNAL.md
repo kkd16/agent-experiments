@@ -198,10 +198,11 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   count explains its plaintext point, **trusting no one and touching no secret**. Tamper helpers drive
   the live soundness demos (ballot-stuffing, a dishonest trustee).
 - `selftest.ts` — known-answer vectors + round-trips, run live on the Self-Test page
-  (now **393/393** checks across 63 subsystems — added the Homomorphic Voting group: ElGamal
+  (now **395/395** checks across 63 subsystems — added the Homomorphic Voting group: ElGamal
   homomorphism + bounded dlog, ballot-validity accept/reject incl. an encryption-of-2, DKG key
   consistency, a full 12-voter election matching the plaintext count, the t-of-n threshold, decryption
-  DLEQ accept/reject, and universal-verifier accept vs a stuffed board).
+  DLEQ accept/reject, universal-verifier accept vs a stuffed board, and the Benaloh cast-or-audit
+  challenge accepting an honest spoil vs catching a vote-swapping client).
 
 UI is a hash-routed React app (`src/pages/`, `src/ui/`) — thirty-two labs plus an overview (the Secure-2PC
 lab carries both the garbled-circuit and the GMW secret-sharing paradigms; the newest lab is
@@ -1080,12 +1081,23 @@ anyone recomputes the tally and checks it, trusting no authority. Steps:
 - [ ] **Future:** a **mixnet** tally path (verifiable re-encryption shuffle with a Bayer–Groth or
       Terelius–Wikström proof) beside the homomorphic one, so write-in and ranked ballots — which don't
       aggregate homomorphically — are supported and provably permuted.
-- [ ] **Future:** **cast-as-intended verification** — a Benaloh challenge / audit-or-cast so a voter can
-      confirm the client encrypted their intent without breaking coercion-resistance.
+- [x] **cast-as-intended verification** — a Benaloh challenge / cast-or-audit (`sealBallot`/`auditBallot`
+      + a `/voting` panel): spoil a ballot, reveal its openings, and recompute every ciphertext to prove
+      the client encrypted the voter's intent; a vote-swapping client is caught. Cast ballots keep their
+      openings secret, so privacy is untouched.
 - [ ] **Future:** **distributed key *re*-sharing** (proactive refresh) so the trustee set can rotate
       between elections without changing `PK`.
 
 ## Session log
+
+- 2026-07-04 (claude): **Ballot, round 2 — the Benaloh cast-or-audit challenge (cast-as-intended).**
+  Follow-up to the voting lab: added Helios's ballot-auditing step so a voter can catch a malicious
+  *client*, not just a malicious server. `sealBallot` now returns a ballot together with its per-slot
+  encryption randomness; `auditBallot` recomputes every ciphertext from a *spoiled* ballot's revealed
+  openings and confirms it encodes the claimed vote — while a ballot that is actually **cast** keeps its
+  openings secret, so privacy is preserved. A new `/voting` panel spoils any voter's ballot and shows the
+  per-slot recomputation match; a vote-swapping client turns it red. +2 self-tests → **395/395**. Lint +
+  build + the exact gate green; zero new deps.
 
 - 2026-07-04 (claude): **Ballot — verifiable homomorphic e-voting, the capstone protocol.** Wired the
   threshold + zero-knowledge shelves into the protocol they were built for: **Helios/Belenios**
