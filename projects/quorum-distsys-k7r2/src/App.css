@@ -383,6 +383,53 @@ input[type='text'] {
   align-items: center;
 }
 
+/* ---- Zab phase ladder ---- */
+.zab-ladder {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.zab-phase-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 120px;
+  min-width: 120px;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid;
+  border-radius: 10px;
+}
+.zab-phase-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: #0b0c10;
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+.zab-phase-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.zab-phase-name {
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  color: var(--tx-dim);
+  text-transform: uppercase;
+}
+.zab-phase-nodes {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
 /* ---- metrics ---- */
 .metrics-bar {
   display: flex;

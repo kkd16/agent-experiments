@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { RaftLab } from './RaftLab';
 import { PaxosLab } from './PaxosLab';
 import { VrLab } from './VrLab';
+import { ZabLab } from './ZabLab';
 import { BenOrLab } from './BenOrLab';
 import { EPaxosLab } from './EPaxosLab';
 import { AbdLab } from './AbdLab';
@@ -59,6 +60,15 @@ export const LABS: LabDef[] = [
     icon: '⟲',
     tag: 'consensus',
     Component: VrLab,
+  },
+  {
+    id: 'zab',
+    title: 'Zab (ZooKeeper)',
+    blurb:
+      "The consensus engine inside ZooKeeper — the fourth canonical crash-fault protocol beside Raft, Paxos and VR, built for the primary-backup pattern. An elected primary stamps every write with a zxid = (epoch, counter) and atomically broadcasts it, so replicas deliver in the exact order the primary issued — Zab's primary-order guarantee. All four phases run live: Fast Leader Election picks the peer with the most up-to-date log; Discovery settles a new epoch; Synchronization forces the newest history onto a quorum so everyone starts identical; and Broadcast is normal two-phase operation (Propose → Ack → Commit). Unlike VR it keeps a DURABLE log, so a restarted node recovers by log reconciliation, not replay. Kill the leader, partition the cluster and restart nodes while five safety invariants — Agreement, Primary Order, Leader Uniqueness, Execution Safety and Log Well-Formed — stay green.",
+    icon: '🐘',
+    tag: 'consensus',
+    Component: ZabLab,
   },
   {
     id: 'benor',

@@ -21,6 +21,9 @@ import { DEFAULT_PAXOS_CONFIG, type PaxosCmd, type PaxosState, type PaxosValue }
 import { createVR } from '../protocols/vr/vr';
 import { vrInvariants } from '../protocols/vr/invariants';
 import { DEFAULT_VR_CONFIG, primaryOf as vrPrimaryOf, quorum as vrQuorum, type VrCommand, type VrState } from '../protocols/vr/types';
+import { createZab } from '../protocols/zab/zab';
+import { zabInvariants } from '../protocols/zab/invariants';
+import { DEFAULT_ZAB_CONFIG, quorum as zabQuorum, type ZabCommand, type ZabState } from '../protocols/zab/types';
 import { createBenOr } from '../protocols/benor/benor';
 import { benorInvariants, benorGauge } from '../protocols/benor/invariants';
 import { type BenOrCommand, type BenOrState, type Bit } from '../protocols/benor/types';
@@ -2818,6 +2821,192 @@ export function runSelfTests(): TestResult[] {
     }
     const ok = !!vrPrimary(k) && minCommit > 0 && converged && vrOk(k);
     return [ok, ok ? `re-established a primary and every live replica converged on ${minCommit} committed ops` : vrBad(k) || `primary=${!!vrPrimary(k)} minCommit=${minCommit} converged=${converged}`];
+  });
+
+  // ---- Zab (ZooKeeper Atomic Broadcast) ----
+  const zabKernel = (seed: number, ids: string[], net?: { minLatency: number; maxLatency: number; dropRate: number }) =>
+    new Kernel<ZabState, ZabCommand>({ seed, protocol: createZab(DEFAULT_ZAB_CONFIG), nodeIds: ids, network: net });
+  const zabLeader = (k: Kernel<ZabState, ZabCommand>) =>
+    k
+      .views()
+      .filter((v) => v.up && v.state.role === 'leading' && v.state.phase === 'broadcast')
+      .sort((a, b) => b.state.currentEpoch - a.state.currentEpoch)[0];
+  const zabOk = (k: Kernel<ZabState, ZabCommand>) => zabInvariants(k.views()).every((iv) => iv.ok);
+  const zabBad = (k: Kernel<ZabState, ZabCommand>) => {
+    const b = zabInvariants(k.views()).find((iv) => !iv.ok);
+    return b ? `${b.name}: ${b.detail}` : '';
+  };
+  const zabReq = (k: Kernel<ZabState, ZabCommand>, id: string, cid: string, rn: number, key: string, value: string) =>
+    k.command(id, { type: 'request', clientId: cid, requestNumber: rn, op: { op: 'set', key, value } });
+
+  t('Zab', 'Fast Leader Election picks a leader that drives broadcast', () => {
+    let elected = 0;
+    let safe = true;
+    for (const seed of [1, 2, 3, 7, 13]) {
+      const k = zabKernel(seed, ['A', 'B', 'C', 'D', 'E']);
+      for (let i = 0; i < 80; i++) k.advance(25);
+      if (zabLeader(k)) elected++;
+      if (!zabOk(k)) safe = false;
+    }
+    return [elected === 5 && safe, `${elected}/5 seeds elected a broadcasting leader; invariants ${safe ? 'held' : 'broke'}`];
+  });
+
+  t('Zab', 'Atomically broadcasts & delivers writes by quorum (zxid order)', () => {
+    const k = zabKernel(1, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 60; i++) k.advance(25);
+    const l = zabLeader(k);
+    if (!l) return [false, 'no leader formed'];
+    for (let n = 0; n < 6; n++) {
+      zabReq(k, zabLeader(k)?.id ?? l.id, 'c1', n + 1, 'x', String(n));
+      for (let i = 0; i < 20; i++) k.advance(25);
+    }
+    const applied = k.views().filter((v) => v.up && v.state.kv['x'] === '5').length;
+    return [applied >= 3 && zabOk(k), applied >= 3 ? `${applied}/5 replicas delivered the latest committed zxid` : zabBad(k) || `only ${applied}/5 applied`];
+  });
+
+  t('Zab', 'Leader crash: election rotates the primary & committed writes survive', () => {
+    const k = zabKernel(7, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 60; i++) k.advance(25);
+    const l0 = zabLeader(k);
+    if (!l0) return [false, 'no initial leader'];
+    zabReq(k, l0.id, 'c1', 1, 'k', 'v0');
+    for (let i = 0; i < 30; i++) k.advance(25);
+    k.crash(l0.id);
+    for (let i = 0; i < 220; i++) k.advance(25);
+    const l1 = zabLeader(k);
+    if (!l1 || l1.id === l0.id) return [false, `no new leader after crashing ${l0.id}`];
+    const survived = k.views().filter((v) => v.up && v.state.kv['k'] === 'v0').length;
+    zabReq(k, l1.id, 'c2', 1, 'k', 'v1');
+    for (let i = 0; i < 80; i++) k.advance(25);
+    const progressed = k.views().filter((v) => v.up && v.state.kv['k'] === 'v1').length;
+    const ok = survived >= 2 && progressed >= 2 && l1.state.currentEpoch > l0.state.currentEpoch && zabOk(k);
+    return [ok, ok ? `leader ${l0.id}(e${l0.state.currentEpoch})→${l1.id}(e${l1.state.currentEpoch}); committed write survived and progress resumed` : zabBad(k) || `survived=${survived} progressed=${progressed}`];
+  });
+
+  t('Zab', 'A restarted node recovers from its durable log via election + sync', () => {
+    const k = zabKernel(3, ['A', 'B', 'C', 'D', 'E']);
+    for (let i = 0; i < 60; i++) k.advance(25);
+    const l = zabLeader(k);
+    if (!l) return [false, 'no leader'];
+    for (let n = 0; n < 5; n++) {
+      zabReq(k, zabLeader(k)?.id ?? l.id, 'c1', n + 1, 'z', String(n));
+      for (let i = 0; i < 16; i++) k.advance(25);
+    }
+    const victim = k.nodeOrder.find((id) => id !== zabLeader(k)?.id)!;
+    k.crash(victim);
+    for (let i = 0; i < 60; i++) k.advance(25);
+    k.restart(victim);
+    for (let i = 0; i < 320; i++) k.advance(25);
+    const v = k.views().find((n) => n.id === victim)!.state;
+    const ok = v.kv['z'] === '4' && v.phase === 'broadcast' && zabOk(k);
+    return [ok, ok ? `${victim} rejoined and synced to z=${v.kv['z']}` : zabBad(k) || `z=${v.kv['z']} phase=${v.phase}`];
+  });
+
+  t('Zab', 'Simulation is deterministic (same seed ⇒ byte-identical run)', () => {
+    const run = () => {
+      const k = zabKernel(99, ['A', 'B', 'C', 'D', 'E']);
+      for (let i = 0; i < 200; i++) {
+        k.advance(25);
+        if (i % 30 === 0) {
+          const l = zabLeader(k);
+          if (l) zabReq(k, l.id, 'c', i, 'x', String(i));
+        }
+      }
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced byte-identical state' : 'runs diverged'];
+  });
+
+  t('Zab', 'Safety holds through 1,500 randomized faults (aggressive chaos)', () => {
+    const k = zabKernel(2026, ['A', 'B', 'C', 'D', 'E'], { minLatency: 20, maxLatency: 80, dropRate: 0.05 });
+    const chaos = new Rng(31337);
+    const ids = k.nodeOrder;
+    let cmd = 0;
+    let firstBreak = '';
+    let maxCommit = 0;
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      if (roll < 0.03 && up.length > 3) k.crash(chaos.pick(up)!);
+      else if (roll < 0.11 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.14) {
+        const sh = chaos.shuffle(ids);
+        const cut = chaos.int(1, ids.length - 1);
+        k.partition([sh.slice(0, cut), sh.slice(cut)]);
+      } else if (roll < 0.19) k.healNetwork();
+      else if (roll < 0.4) {
+        const l = zabLeader(k);
+        if (l) { zabReq(k, l.id, 'c' + (cmd % 3), cmd, 'c', String(cmd)); cmd++; }
+      }
+      const bad = zabInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+      maxCommit = Math.max(maxCommit, ...k.views().map((v) => v.state.lastCommitted));
+    }
+    return [!firstBreak, firstBreak || `all five invariants held through 1,500 faults (reached commit #${maxCommit})`];
+  });
+
+  t('Zab', 'Bounded chaos (healthy quorum) stays safe AND makes progress', () => {
+    const k = zabKernel(555, ['A', 'B', 'C', 'D', 'E'], { minLatency: 20, maxLatency: 70, dropRate: 0.03 });
+    const chaos = new Rng(4242);
+    const ids = k.nodeOrder;
+    const need = zabQuorum(ids.length);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1400 && !firstBreak; i++) {
+      k.advance(20);
+      const up = ids.filter((id) => k.isUp(id));
+      const down = ids.filter((id) => !k.isUp(id));
+      const roll = chaos.next();
+      // Keep a quorum alive so Zab (a majority protocol) must stay live.
+      if (roll < 0.025 && up.length > need + 1) k.crash(chaos.pick(up)!);
+      else if (roll < 0.14 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.16 && up.length > need) k.partition([chaos.shuffle(up).slice(0, 1), chaos.shuffle(up).slice(1)]);
+      else if (roll < 0.24) k.healNetwork();
+      else if (roll < 0.5) {
+        const l = zabLeader(k);
+        if (l) { zabReq(k, l.id, 'c' + (cmd % 3), cmd, 'c', String(cmd)); cmd++; }
+      }
+      const bad = zabInvariants(k.views()).find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    if (firstBreak) return [false, firstBreak];
+    k.healNetwork();
+    for (const id of ids) if (!k.isUp(id)) k.restart(id);
+    for (let i = 0; i < 900; i++) k.advance(20);
+    const live = k.views().filter((v) => v.up && v.state.phase === 'broadcast');
+    const minCommit = live.length ? Math.min(...live.map((v) => v.state.lastCommitted)) : 0;
+    let converged = true;
+    for (let idx = 0; idx < minCommit; idx++) {
+      const set = new Set(live.map((v) => JSON.stringify(v.state.history[idx].request)));
+      if (set.size !== 1) converged = false;
+    }
+    const ok = !!zabLeader(k) && minCommit > 0 && converged && zabOk(k);
+    return [ok, ok ? `re-established a leader and every live replica converged on ${minCommit} committed zxids` : zabBad(k) || `leader=${!!zabLeader(k)} minCommit=${minCommit} converged=${converged}`];
+  });
+
+  t('Zab', 'A late learner is synced without over-delivering the leader’s uncommitted tail', () => {
+    // Isolate one node, commit a burst on the majority, then heal: the learner
+    // must sync to the committed prefix only — never the leader's in-flight tail.
+    const k = zabKernel(17, ['A', 'B', 'C', 'D', 'E'], { minLatency: 20, maxLatency: 70, dropRate: 0 });
+    for (let i = 0; i < 70; i++) k.advance(25);
+    const l = zabLeader(k);
+    if (!l) return [false, 'no leader'];
+    const learner = k.nodeOrder.find((id) => id !== l.id)!;
+    k.partition([[learner], k.nodeOrder.filter((id) => id !== learner)]);
+    for (let n = 0; n < 8; n++) {
+      zabReq(k, zabLeader(k)?.id ?? l.id, 'c1', n + 1, 'w', String(n));
+      for (let i = 0; i < 14; i++) k.advance(25);
+    }
+    k.healNetwork();
+    for (let i = 0; i < 300; i++) k.advance(25);
+    const v = k.views().find((n) => n.id === learner)!.state;
+    const others = k.views().filter((n) => n.id !== learner && n.up).map((n) => n.state.kv['w']);
+    const want = others[0];
+    const ok = v.kv['w'] === want && v.phase === 'broadcast' && zabOk(k);
+    return [ok, ok ? `learner ${learner} synced cleanly to w=${v.kv['w']} (no over-delivery)` : zabBad(k) || `learner w=${v.kv['w']} want=${want} phase=${v.phase}`];
   });
 
   // ---- Ben-Or randomized consensus ----
