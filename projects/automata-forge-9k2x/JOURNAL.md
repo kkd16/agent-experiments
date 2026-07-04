@@ -30,6 +30,74 @@ src/
   App.tsx         multi-panel UI wiring it all together
 ```
 
+## Algebra — the syntactic monoid & Schützenberger's star-free theorem (2026-07-04)
+
+For twelve versions the lab climbed the *automata/logic* ladder — regex, PDA, TM, LTL, CTL, CTL\*,
+symbolic BDDs, Presburger, infinite games. This session adds the **third leg of the tripod that the
+whole subject stands on**: the *algebraic* theory of regular languages. Every regular language has a
+smallest monoid that recognises it — its **syntactic monoid** *M(L)* — and the deepest theorems in
+the field read a language's *logical* complexity straight off that finite algebra. The headline is
+**Schützenberger's theorem**: *L* is **star-free** ⟺ *M(L)* is **aperiodic** ⟺ (McNaughton–Papert /
+Kamp) *L* is definable in **first-order logic FO[<]** and in **LTL**. So the new mode is not a
+side-quest — it is the machine that decides whether a language you built in *Explore* could equally
+have been written in the *Logic* mode. It ties the two halves of the lab together.
+
+Everything is from scratch: the monoid construction, Green's relations, the aperiodicity/variety
+tests, and a proof harness that cross-checks them — no semigroup library anywhere.
+
+### Engine (`src/engine/algebra/`, ~0.7k lines, zero deps)
+
+- [x] `monoid.ts` — the **transition monoid** of a DFA by BFS over the generators from the identity;
+  each word is a transformation `q ↦ δ*(q,w)`, composed in word order `(a·b)(q)=b(a(q))`. On the
+  *minimal complete* DFA this is exactly the **syntactic monoid** (Myhill). Includes `completeDfa`
+  (re-totalise the display-pruned minimal DFA — the trap is the monoid's zero), the Cayley table,
+  the accepting set `P = η(L)`, shortest-word witnesses, and `wordToElement` (the syntactic morphism).
+- [x] `green.ts` — **Green's relations** ℛ, ℒ, 𝒥, ℋ from principal ideals (`aM`, `Ma`, `MaM`), and the
+  **egg-box** builder: each 𝒟(=𝒥)-class as an ℛ-rows × ℒ-columns grid of ℋ-classes, group cells starred.
+- [x] `properties.ts` — **aperiodicity** via the powers of every element (period 1 ⟺ H-trivial), the
+  stability index, plus commutativity, band/semilattice, group, and 𝒥/ℛ/ℒ-triviality, each with a witness.
+- [x] `verdict.ts` — the **Schützenberger verdict** and the Eilenberg **variety ladder** (star-free /
+  FO[<] / LTL, piecewise-testable ⟺ 𝒥-trivial by Simon, semilattice, group…), with the counting obstruction.
+- [x] `examples.ts` — a guided tour: star-free (`a*b*`), semilattice (`contains a`), aperiodic-not-piecewise
+  (`contains aa`), the ℤ/2 hidden in *even #a's*, the pure ℤ/3 group of `(...)*`, and trivial `Σ*` = `.*`.
+- [x] `selftest.ts` — the in-app proof harness (see Verified).
+
+### The Algebra view (`src/views/AlgebraView.tsx` + `.css`)
+
+- [x] **Syntactic monoid** tab — the element table (shortest word, transformation, unit/generator/
+  idempotent/accepting flags) and the colour-coded **Cayley table** with hover-trace.
+- [x] **Green's relations** tab — the **egg-box diagrams**, one per 𝒟-class, group ℋ-classes starred and
+  highlighted, with live ℛ/ℒ/𝒥/ℋ counts.
+- [x] **Structure** tab — the property checklist with concrete witnesses, beside the variety ladder
+  showing which named language class the language lands in and why.
+- [x] **Star-free?** tab — the Schützenberger verdict card, the equivalence chain (star-free ⟺ aperiodic
+  ⟺ counter-free ⟺ FO[<] ⟺ LTL), the counting obstruction when present, and the **bridge to the Logic modes**.
+- [x] **Verify** tab — runs the whole proof harness in the browser and lists every check.
+- [x] **About** tab — the theory from syntactic congruence to Schützenberger, Simon and Eilenberg.
+- [x] Wired into `App.tsx`, `hash.ts` (shareable `#/algebra?r=…&t=…` permalinks) and the mode switch;
+  driven headless (Playwright) across every tab — zero runtime errors, Verify green in-browser.
+
+### Verified (`Verify` tab / `selftest.ts`) — 10/10
+
+- [x] **Monoid axioms** — closure, identity and full-triple **associativity** on every curated Cayley table.
+- [x] **Recognition** — the monoid accepts a word IFF the DFA does, on every short word (the algebra
+  faithfully models the regex), and `η` is a **homomorphism** `η(uv)=η(u)·η(v)`.
+- [x] **Green consistency** — ℛ, ℒ refine 𝒥; ℋ = ℛ ∩ ℒ; and **𝒟 = 𝒥** re-derived independently as the join of ℛ and ℒ.
+- [x] **Aperiodicity three ways** — element-powers = H-triviality = the stability test `mⁿ=mⁿ⁺¹` at n=|M|, all agree; and group ⟺ a single idempotent.
+- [x] **Egg-box** tiles the monoid exactly once; every regular 𝒟-class exposes a group cell.
+- [x] **Known answers** — ℤ/2, ℤ/3, the semilattice and the star-free specimens all classify as hand-checked.
+- [x] **Negative control** — a single corrupted product is caught by the associativity checker (the harness has teeth).
+
+### Backlog — where Algebra goes next
+
+- [ ] **Star-free expression synthesis** — actually *emit* a star-free regex (union/concat/complement) for aperiodic languages, not just certify existence.
+- [ ] **Green's-relation animation** — step the ideal computation and watch the egg-box crystallise.
+- [ ] **Cayley graph** — the right-generator action drawn as a graph, reusing the pan/zoom SVG renderer.
+- [ ] **More varieties** — dot-depth hierarchy, 𝑹-trivial ⟺ 𝒟𝑹, and a two-variable `FO²` / unambiguous test.
+- [ ] **Wreath-product / Krohn–Rhodes** decomposition of the syntactic monoid — the algebraic prime factorisation.
+- [ ] **Direct FO[<] ⇄ LTL bridge** — hand the aperiodic verdict to the Logic mode and synthesise the equivalent LTL formula.
+- [ ] **Ordered syntactic monoid** and the positive-variety refinements (Σ₁ / Π₁ pinning of piecewise languages).
+
 ## Games — infinite games on graphs & reactive synthesis (2026-07-04)
 
 The lab already climbed the automata/logic ladder to LTL, CTL, CTL\* and symbolic (BDD) model
