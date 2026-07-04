@@ -584,8 +584,9 @@ function AboutTab() {
         strategy; the opponent now controls all branching, so "can the opponent still win?" becomes a plain graph
         question about reachable cycles of the wrong parity. If neither player’s region admits such a cycle and the
         two regions cover every vertex, the partition is provably exact. The <b>Verify</b> tab runs that certificate
-        against a thousand random arenas, cross-checks it against a brute-force referee on small ones, and confirms
-        the certificate rejects a deliberately corrupted answer.
+        against a thousand random arenas, cross-checks it against a brute-force referee on small ones, confirms the
+        certificate rejects a deliberately corrupted answer, and makes <b>two structurally-independent parity
+        algorithms</b> — Zielonka's recursion and Jurdziński's small progress measures — agree on every arena.
       </p>
       <h3>Synthesis</h3>
       <p>

@@ -56,6 +56,9 @@ a hand-rolled SVG arena renderer (circles = Player 0 / Even, squares = Player 1 
   Player 1 trap → remove → repeat), with both players' memoryless strategies.
 - [x] `parity.ts` — **McNaughton–Zielonka** recursion for **parity** games with full two-player strategy
   synthesis; sub-arenas stay total by construction (the complement of an attractor is a trap).
+- [x] `spm.ts` — **Jurdziński's small progress measures**, a second, structurally-independent parity
+  solver (a least fixpoint over a lattice of tuples over the odd priorities). Run beside Zielonka on
+  every fuzz arena and forced to agree — two famous algorithms sharing no code, one answer.
 - [x] `certify.ts` — a **complete, size-independent proof checker**: pin each player to its returned
   memoryless strategy, and since the opponent then controls all branching, "can the opponent still
   win?" collapses to a graph question — a reachable cycle of the wrong parity (via restricted-subgraph
@@ -95,6 +98,8 @@ a hand-rolled SVG arena renderer (circles = Player 0 / Even, squares = Player 1 
   certificate proves exactly correct — the headline differential check.
 - The fast solvers **match the brute-force oracle** vertex-for-vertex on 180 small arenas (the oracle
   shares none of the solvers' logic — it only knows the rules).
+- **Two independent parity solvers agree**: Zielonka's recursion and Jurdziński's small progress
+  measures return the same winning region on 150 random arenas — a fourth witness sharing no logic.
 - **Direct Büchi ≡ its parity encoding** (accepting ↦ 2, else ↦ 1) on 80 arenas.
 - **Parity role-duality**: flipping every owner and bumping every priority by 1 swaps the winning
   regions exactly, on 80 arenas.
@@ -108,8 +113,9 @@ a hand-rolled SVG arena renderer (circles = Player 0 / Even, squares = Player 1 
 
 - [ ] **Rabin / Streett / Muller** conditions and the index/parity-index reductions between them.
 - [ ] **Mean-payoff & energy games** (pseudo-polynomial value iteration) and the reduction from parity.
-- [ ] **Jurdziński small progress measures** and **strategy improvement** as second/third parity solvers,
-  cross-checked against Zielonka on every fuzz arena (a fourth independent witness).
+- [x] **Jurdziński small progress measures** as a second parity solver, cross-checked against Zielonka
+  on every fuzz arena (a fourth independent witness). — shipped
+- [ ] **Strategy improvement** as a third parity solver, and expose all three side by side with timings.
 - [ ] **Quasi-polynomial** parity solving (Calude et al. / succinct progress measures) with a complexity readout.
 - [ ] **LTL → game → controller**: compile a safety/GR(1) LTL spec against a plant into a game and
   synthesise the controller, closing the loop with the existing LTL Büchi machinery.
