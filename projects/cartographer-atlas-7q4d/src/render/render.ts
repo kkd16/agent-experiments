@@ -1,34 +1,40 @@
 // Draw a WorldMap onto a 2D canvas. Layers, bottom to top: biome-filled Voronoi
-// cells (with Lambert hillshade from the elevation gradient), coastline, rivers
-// tapered by √flux, optional faint region borders, place labels, and a paper-grain
-// + vignette finish. All drawing is in world units (0..width, 0..height); the
-// caller is expected to have applied any device-pixel-ratio scaling already.
+// cells (with Lambert hillshade), plate/province overlays, lakes, contours,
+// coastline, rivers, roads, a lat/long graticule, place labels, city markers, and a
+// framed-atlas finish (compass rose, scale bar, double border, paper grain, vignette).
+// All drawing is in world units (0..width, 0..height); the caller applies any
+// device-pixel-ratio scaling.
 
 import type { WorldMap } from '../core/types'
 import type { Palette, RGB } from './palettes'
 import { rgbToCss } from './palettes'
+import { computeContours, defaultLevels } from '../core/contours'
+import type { ViewOptions } from '../ui/viewOptions'
 import { Rng } from '../core/rng'
 
 export interface RenderOptions {
   palette: Palette
-  showRivers: boolean
-  showCoast: boolean
-  showHillshade: boolean
-  showBorders: boolean
-  showLabels: boolean
-  showGrain: boolean
+  view: ViewOptions
+  /** Region index highlighted by the inspector, or null. */
+  selected?: number | null
 }
 
 const nextHalfedge = (e: number): number => (e % 3 === 2 ? e - 2 : e + 1)
 const triangleOfEdge = (e: number): number => Math.floor(e / 3)
 const clampByte = (v: number): number => (v < 0 ? 0 : v > 255 ? 255 : v)
 
+/** Golden-angle hue so adjacent province indices get well-separated colours. */
+function provinceCss(i: number, pal: Palette, alpha?: number): string {
+  const hue = (i * 137.508 + 20) % 360
+  const a = alpha ?? pal.provinceAlpha
+  return `hsla(${hue.toFixed(0)},${pal.provinceSat}%,${pal.provinceLum}%,${a})`
+}
+
 /** Per-region Lambert shade factor from the local elevation gradient. */
-function computeShade(world: WorldMap, strength: number): Float32Array {
+export function computeShade(world: WorldMap, strength: number): Float32Array {
   const { mesh, elevation } = world
   const shade = new Float32Array(mesh.numRegions).fill(1)
-  const H = 170 * strength // elevation → pixel-height exaggeration
-  // Light from the upper-left, fairly high in the sky.
+  const H = 170 * strength
   let lx = -0.6
   let ly = -0.85
   let lz = 1.1
@@ -52,7 +58,7 @@ function computeShade(world: WorldMap, strength: number): Float32Array {
     gx /= nb.length
     gy /= nb.length
     const nl = Math.hypot(gx, gy, 1)
-    const d = (-gx * lx - gy * ly + lz) / nl // dot(normal, light)
+    const d = (-gx * lx - gy * ly + lz) / nl
     let f = 0.72 + d * 0.62
     if (f < 0.5) f = 0.5
     if (f > 1.45) f = 1.45
@@ -61,40 +67,60 @@ function computeShade(world: WorldMap, strength: number): Float32Array {
   return shade
 }
 
-function fillCell(ctx: CanvasRenderingContext2D, world: WorldMap, r: number): void {
+function cellPath(ctx: CanvasRenderingContext2D, world: WorldMap, r: number): boolean {
   const tris = world.mesh.cellTriangles[r]
-  if (tris.length < 3) return
+  if (tris.length < 3) return false
   const { cx, cy } = world.mesh
   ctx.beginPath()
   ctx.moveTo(cx[tris[0]], cy[tris[0]])
   for (let k = 1; k < tris.length; k++) ctx.lineTo(cx[tris[k]], cy[tris[k]])
   ctx.closePath()
+  return true
+}
+
+function fillCell(ctx: CanvasRenderingContext2D, world: WorldMap, r: number): void {
+  if (!cellPath(ctx, world, r)) return
   ctx.fill()
-  // A hairline stroke in the same colour hides sub-pixel seams between cells.
-  ctx.stroke()
+  ctx.stroke() // hairline in the same colour hides sub-pixel seams
+}
+
+/** Base fill colour for one region (ocean depth / lake / shaded biome). */
+export function regionColor(
+  world: WorldMap,
+  r: number,
+  pal: Palette,
+  shade: Float32Array | null,
+): RGB {
+  const { ocean, lake, biome, elevation, params } = world
+  const seaLevel = params.seaLevel
+  const denom = 1 - seaLevel || 1
+  let col: RGB
+  if (ocean[r]) {
+    const depth = Math.min(1, Math.max(0, (seaLevel - elevation[r]) / (seaLevel || 1)))
+    col = pal.ocean(depth)
+  } else if (lake[r]) {
+    col = pal.lake ?? pal.ocean(0)
+    if (shade) {
+      const f = 0.85 + (shade[r] - 1) * 0.3
+      col = [col[0] * f, col[1] * f, col[2] * f]
+    }
+  } else {
+    const above = Math.max(0, elevation[r] - seaLevel) / denom
+    col = pal.land(biome[r], above, world.moisture[r])
+    if (shade) {
+      const f = shade[r]
+      col = [col[0] * f, col[1] * f, col[2] * f]
+    }
+  }
+  return [clampByte(col[0]), clampByte(col[1]), clampByte(col[2])]
 }
 
 function drawCells(ctx: CanvasRenderingContext2D, world: WorldMap, opts: RenderOptions): void {
-  const { mesh, ocean, biome, elevation, params } = world
+  const { mesh } = world
   const pal = opts.palette
-  const seaLevel = params.seaLevel
-  const denom = 1 - seaLevel || 1
-  const shade = opts.showHillshade ? computeShade(world, pal.hillshade) : null
-
+  const shade = opts.view.showHillshade ? computeShade(world, pal.hillshade) : null
   for (let r = 0; r < mesh.numSolid; r++) {
-    let col: RGB
-    if (ocean[r]) {
-      const depth = Math.min(1, Math.max(0, (seaLevel - elevation[r]) / (seaLevel || 1)))
-      col = pal.ocean(depth)
-    } else {
-      const above = Math.max(0, elevation[r] - seaLevel) / denom
-      col = pal.land(biome[r], above, world.moisture[r])
-      if (shade) {
-        const f = shade[r]
-        col = [col[0] * f, col[1] * f, col[2] * f]
-      }
-    }
-    const css = rgbToCss([clampByte(col[0]), clampByte(col[1]), clampByte(col[2])])
+    const css = rgbToCss(regionColor(world, r, pal, shade))
     ctx.fillStyle = css
     ctx.strokeStyle = css
     ctx.lineWidth = 0.7
@@ -102,8 +128,96 @@ function drawCells(ctx: CanvasRenderingContext2D, world: WorldMap, opts: RenderO
   }
 }
 
+/** Plate-tectonics overlay: tint each cell by plate, ink the boundaries. */
+function drawPlates(ctx: CanvasRenderingContext2D, world: WorldMap): void {
+  const { mesh, plateId, plateBoundary } = world
+  if (plateId.length === 0) return
+  ctx.lineWidth = 0.7
+  for (let r = 0; r < mesh.numSolid; r++) {
+    const p = plateId[r]
+    if (p < 0) continue
+    const hue = (p * 47 + 10) % 360
+    const css = `hsla(${hue},55%,55%,0.18)`
+    ctx.fillStyle = css
+    ctx.strokeStyle = css
+    fillCell(ctx, world, r)
+  }
+  // Boundary ink: Voronoi edges between differing plates.
+  const tri = mesh.triangles
+  const half = mesh.halfedges
+  ctx.strokeStyle = 'rgba(20,20,30,0.5)'
+  ctx.lineWidth = 1.6
+  ctx.beginPath()
+  for (let e = 0; e < tri.length; e++) {
+    const opp = half[e]
+    if (opp === -1 || opp < e) continue
+    const a = tri[e]
+    const b = tri[nextHalfedge(e)]
+    if (a >= mesh.numSolid || b >= mesh.numSolid) continue
+    if (plateId[a] === plateId[b]) continue
+    if (!plateBoundary[a] && !plateBoundary[b]) continue
+    ctx.moveTo(mesh.cx[triangleOfEdge(e)], mesh.cy[triangleOfEdge(e)])
+    ctx.lineTo(mesh.cx[triangleOfEdge(opp)], mesh.cy[triangleOfEdge(opp)])
+  }
+  ctx.stroke()
+}
+
+/** Province tint fills (semi-transparent so relief still reads underneath). */
+function drawProvinceFills(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { mesh, province, ocean, lake } = world
+  ctx.lineWidth = 0.7
+  for (let r = 0; r < mesh.numSolid; r++) {
+    if (ocean[r] || lake[r]) continue
+    const p = province[r]
+    if (p < 0) continue
+    const css = provinceCss(p, pal)
+    ctx.fillStyle = css
+    ctx.strokeStyle = css
+    fillCell(ctx, world, r)
+  }
+}
+
+/** Ink the borders between provinces. */
+function drawProvinceBorders(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { mesh, province, ocean, lake } = world
+  const tri = mesh.triangles
+  const half = mesh.halfedges
+  ctx.strokeStyle = pal.provinceLine
+  ctx.lineWidth = 1.1
+  ctx.lineJoin = 'round'
+  ctx.setLineDash([5, 3])
+  ctx.beginPath()
+  for (let e = 0; e < tri.length; e++) {
+    const opp = half[e]
+    if (opp === -1 || opp < e) continue
+    const a = tri[e]
+    const b = tri[nextHalfedge(e)]
+    if (a >= mesh.numSolid || b >= mesh.numSolid) continue
+    if (ocean[a] || ocean[b] || lake[a] || lake[b]) continue
+    if (province[a] === province[b]) continue
+    ctx.moveTo(mesh.cx[triangleOfEdge(e)], mesh.cy[triangleOfEdge(e)])
+    ctx.lineTo(mesh.cx[triangleOfEdge(opp)], mesh.cy[triangleOfEdge(opp)])
+  }
+  ctx.stroke()
+  ctx.setLineDash([])
+}
+
+function drawContours(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const levels = defaultLevels(world.params.seaLevel, 6)
+  const segs = computeContours(world, levels)
+  ctx.strokeStyle = pal.contour
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (const s of segs) {
+    ctx.moveTo(s.x1, s.y1)
+    ctx.lineTo(s.x2, s.y2)
+  }
+  ctx.lineWidth = 0.6
+  ctx.stroke()
+}
+
 function drawCoast(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
-  const { mesh, ocean } = world
+  const { mesh, ocean, lake } = world
   const tri = mesh.triangles
   const half = mesh.halfedges
   ctx.strokeStyle = pal.coast
@@ -113,15 +227,14 @@ function drawCoast(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette)
   ctx.beginPath()
   for (let e = 0; e < tri.length; e++) {
     const opp = half[e]
-    if (opp === -1) continue
-    if (opp < e) continue // draw each Voronoi edge once
+    if (opp === -1 || opp < e) continue
     const a = tri[e]
     const b = tri[nextHalfedge(e)]
-    if (ocean[a] === ocean[b]) continue
-    const t1 = triangleOfEdge(e)
-    const t2 = triangleOfEdge(opp)
-    ctx.moveTo(mesh.cx[t1], mesh.cy[t1])
-    ctx.lineTo(mesh.cx[t2], mesh.cy[t2])
+    const wa = ocean[a] || lake[a]
+    const wb = ocean[b] || lake[b]
+    if (wa === wb) continue
+    ctx.moveTo(mesh.cx[triangleOfEdge(e)], mesh.cy[triangleOfEdge(e)])
+    ctx.lineTo(mesh.cx[triangleOfEdge(opp)], mesh.cy[triangleOfEdge(opp)])
   }
   ctx.stroke()
 }
@@ -138,11 +251,9 @@ function drawBorders(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palett
     if (opp === -1 || opp < e) continue
     const a = tri[e]
     const b = tri[nextHalfedge(e)]
-    if (ocean[a] && ocean[b]) continue // skip open water
-    const t1 = triangleOfEdge(e)
-    const t2 = triangleOfEdge(opp)
-    ctx.moveTo(mesh.cx[t1], mesh.cy[t1])
-    ctx.lineTo(mesh.cx[t2], mesh.cy[t2])
+    if (ocean[a] && ocean[b]) continue
+    ctx.moveTo(mesh.cx[triangleOfEdge(e)], mesh.cy[triangleOfEdge(e)])
+    ctx.lineTo(mesh.cx[triangleOfEdge(opp)], mesh.cy[triangleOfEdge(opp)])
   }
   ctx.stroke()
 }
@@ -165,6 +276,99 @@ function drawRivers(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette
   }
 }
 
+function drawRoads(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { mesh, roads } = world
+  if (roads.length === 0) return
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  // Casing pass, then the road itself, for a subtle engraved look.
+  for (const pass of [0, 1]) {
+    for (const rd of roads) {
+      const w = rd.trunk ? 2.4 : 1.5
+      ctx.strokeStyle = pass === 0 ? pal.roadCasing : pal.road
+      ctx.lineWidth = pass === 0 ? w + 1.6 : w
+      if (pass === 1 && !rd.trunk) ctx.setLineDash([4, 3])
+      ctx.beginPath()
+      const p0 = rd.path[0]
+      ctx.moveTo(mesh.px[p0], mesh.py[p0])
+      for (let k = 1; k < rd.path.length; k++) ctx.lineTo(mesh.px[rd.path[k]], mesh.py[rd.path[k]])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+  }
+}
+
+function drawCities(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { cities } = world
+  for (const c of cities) {
+    const rad = 2.6 + c.tier * 1.5
+    ctx.lineWidth = 1.4
+    ctx.fillStyle = pal.city
+    ctx.strokeStyle = pal.cityStroke
+    if (c.capital) {
+      // Capitals get a star inside a ring.
+      drawStar(ctx, c.x, c.y, rad + 2.2, rad * 0.9, 5)
+      ctx.fill()
+      ctx.stroke()
+    } else {
+      ctx.beginPath()
+      ctx.arc(c.x, c.y, rad, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+      if (c.tier >= 2) {
+        // A central pip marks the larger towns.
+        ctx.beginPath()
+        ctx.fillStyle = pal.cityStroke
+        ctx.arc(c.x, c.y, rad * 0.32, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
+}
+
+function drawCityLabels(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { cities, params } = world
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  for (const c of cities) {
+    if (c.tier < 1 && !c.capital) continue // keep the smallest hamlets unlabelled
+    const size = c.capital ? 15 : 10 + c.tier * 1.6
+    ctx.font = `${c.capital ? '700' : '600'} ${size.toFixed(1)}px Georgia, "Times New Roman", serif`
+    const label = c.capital ? `★ ${c.name}` : c.name
+    const w = ctx.measureText(label).width
+    // Prefer a right-side label; flip left near the east edge.
+    const rightRoom = c.x + 8 + w < params.width - 4
+    const x = rightRoom ? c.x + 6 + c.tier : c.x - 6 - c.tier - w
+    const y = c.y - 1
+    ctx.lineWidth = Math.max(2, size * 0.16)
+    ctx.strokeStyle = pal.cityLabelStroke
+    ctx.lineJoin = 'round'
+    ctx.strokeText(label, x, y)
+    ctx.fillStyle = pal.cityLabel
+    ctx.fillText(label, x, y)
+  }
+}
+
+function drawStar(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  outer: number,
+  inner: number,
+  points: number,
+): void {
+  ctx.beginPath()
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner
+    const a = (Math.PI * i) / points - Math.PI / 2
+    const x = cx + Math.cos(a) * r
+    const y = cy + Math.sin(a) * r
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+}
+
 function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
   const W = world.params.width
   const H = world.params.height
@@ -178,29 +382,191 @@ function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette
       size = 11 + 6 * l.weight
       style = 'italic '
     } else {
-      size = 14 + 6 * l.weight
+      size = 13 + 6 * l.weight
       style = 'italic '
     }
     ctx.font = `${style}600 ${size.toFixed(1)}px Georgia, "Times New Roman", serif`
-    // Keep the whole label on the canvas even when its anchor is near an edge.
     const halfW = ctx.measureText(l.text).width / 2 + 4
     const x = Math.min(W - halfW, Math.max(halfW, l.x))
     const y = Math.min(H - size, Math.max(size, l.y))
     ctx.lineWidth = Math.max(2, size * 0.16)
     ctx.strokeStyle = pal.labelStroke
     ctx.lineJoin = 'round'
-    ctx.strokeText(l.text, x, y)
-    ctx.fillStyle = pal.labelFill
-    ctx.fillText(l.text, x, y)
+    // Sea & lake labels get letter-spacing for a nautical-chart feel.
+    if (l.kind === 'sea' || l.kind === 'lake') {
+      drawTracked(ctx, l.text.toUpperCase(), x, y, size * 0.14, pal)
+    } else {
+      ctx.strokeText(l.text, x, y)
+      ctx.fillStyle = pal.labelFill
+      ctx.fillText(l.text, x, y)
+    }
   }
 }
 
-/** Cached-per-call paper grain: a small noise tile tiled over the whole map. */
-function drawGrain(
+/** Draw centred text with manual letter-spacing (canvas has no tracking). */
+function drawTracked(
   ctx: CanvasRenderingContext2D,
-  world: WorldMap,
+  text: string,
+  cx: number,
+  cy: number,
+  spacing: number,
   pal: Palette,
 ): void {
+  const widths = [...text].map((ch) => ctx.measureText(ch).width + spacing)
+  const total = widths.reduce((a, b) => a + b, 0) - spacing
+  let x = cx - total / 2
+  ctx.textAlign = 'left'
+  for (let i = 0; i < text.length; i++) {
+    ctx.strokeText(text[i], x, cy)
+    ctx.fillStyle = pal.labelFill
+    ctx.fillText(text[i], x, cy)
+    x += widths[i]
+  }
+  ctx.textAlign = 'center'
+}
+
+/** Lat/long graticule — faint meridians & parallels with edge ticks. */
+function drawGraticule(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const W = world.params.width
+  const H = world.params.height
+  ctx.strokeStyle = pal.graticule
+  ctx.lineWidth = 0.6
+  const stepX = W / 10
+  const stepY = H / 7
+  ctx.beginPath()
+  for (let x = stepX; x < W; x += stepX) {
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, H)
+  }
+  for (let y = stepY; y < H; y += stepY) {
+    ctx.moveTo(0, y)
+    ctx.lineTo(W, y)
+  }
+  ctx.stroke()
+}
+
+/** A compass rose in a corner, engraved in the palette's ink. */
+function drawCompass(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const W = world.params.width
+  const R = Math.min(W, world.params.height) * 0.05
+  const cx = W - R - 24
+  const cy = R + 26
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.strokeStyle = pal.compass
+  ctx.fillStyle = pal.compass
+  ctx.lineWidth = 1
+  // Outer ring.
+  ctx.beginPath()
+  ctx.arc(0, 0, R, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(0, 0, R * 0.72, 0, Math.PI * 2)
+  ctx.lineWidth = 0.6
+  ctx.stroke()
+  // Eight-point star.
+  for (let i = 0; i < 4; i++) {
+    const a = (Math.PI / 2) * i - Math.PI / 2
+    const major = i === 0 // north
+    const len = major ? R : R * 0.82
+    ctx.beginPath()
+    ctx.moveTo(Math.cos(a - 0.13) * (R * 0.16), Math.sin(a - 0.13) * (R * 0.16))
+    ctx.lineTo(Math.cos(a) * len, Math.sin(a) * len)
+    ctx.lineTo(Math.cos(a + 0.13) * (R * 0.16), Math.sin(a + 0.13) * (R * 0.16))
+    ctx.closePath()
+    if (major) ctx.fill()
+    else ctx.stroke()
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = (Math.PI / 2) * i - Math.PI / 4
+    ctx.beginPath()
+    ctx.moveTo(0, 0)
+    ctx.lineTo(Math.cos(a) * R * 0.5, Math.sin(a) * R * 0.5)
+    ctx.stroke()
+  }
+  ctx.fillStyle = pal.compass
+  ctx.font = `700 ${(R * 0.34).toFixed(1)}px Georgia, serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('N', 0, -R * 1.28)
+  ctx.restore()
+}
+
+/** A scale bar in leagues (an arbitrary but consistent world scale). */
+function drawScale(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const W = world.params.width
+  const H = world.params.height
+  const leaguesPerWorld = 1600 / W // ⇒ ~1600 leagues across a default map
+  const barLeagues = 200
+  const barW = barLeagues / leaguesPerWorld
+  const x0 = 26
+  const y0 = H - 30
+  const h = 6
+  ctx.save()
+  ctx.strokeStyle = pal.scaleInk
+  ctx.fillStyle = pal.scaleInk
+  ctx.lineWidth = 1
+  // Alternating black/white segments.
+  const segs = 4
+  for (let i = 0; i < segs; i++) {
+    const sx = x0 + (barW * i) / segs
+    ctx.beginPath()
+    ctx.rect(sx, y0, barW / segs, h)
+    if (i % 2 === 0) ctx.fill()
+    else ctx.stroke()
+  }
+  ctx.strokeRect(x0, y0, barW, h)
+  ctx.font = `600 10px Georgia, serif`
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'bottom'
+  ctx.fillText('0', x0 - 1, y0 - 3)
+  ctx.textAlign = 'center'
+  ctx.fillText(`${barLeagues} leagues`, x0 + barW / 2, y0 - 3)
+  ctx.restore()
+}
+
+/** A double-ruled atlas frame with corner ticks. */
+function drawFrame(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const W = world.params.width
+  const H = world.params.height
+  ctx.strokeStyle = pal.frame
+  const inset = 8
+  ctx.lineWidth = 2.4
+  ctx.strokeRect(inset, inset, W - 2 * inset, H - 2 * inset)
+  ctx.lineWidth = 0.8
+  ctx.strokeRect(inset + 5, inset + 5, W - 2 * inset - 10, H - 2 * inset - 10)
+}
+
+function drawSelection(ctx: CanvasRenderingContext2D, world: WorldMap, r: number): void {
+  const { mesh } = world
+  if (r < 0 || r >= mesh.numSolid) return
+  if (cellPath(ctx, world, r)) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.strokeStyle = 'rgba(10,15,25,0.8)'
+    ctx.lineWidth = 0.8
+    ctx.stroke()
+  }
+  const x = mesh.px[r]
+  const y = mesh.py[r]
+  const rad = 9
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  ctx.arc(x, y, rad, 0, Math.PI * 2)
+  ctx.moveTo(x - rad - 4, y)
+  ctx.lineTo(x - rad + 2, y)
+  ctx.moveTo(x + rad - 2, y)
+  ctx.lineTo(x + rad + 4, y)
+  ctx.moveTo(x, y - rad - 4)
+  ctx.lineTo(x, y - rad + 2)
+  ctx.moveTo(x, y + rad - 2)
+  ctx.lineTo(x, y + rad + 4)
+  ctx.stroke()
+}
+
+function drawGrain(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
   const W = world.params.width
   const H = world.params.height
   const size = 128
@@ -263,16 +629,49 @@ export function renderWorld(
 ): void {
   const W = world.params.width
   const H = world.params.height
+  const pal = opts.palette
+  const v = opts.view
   ctx.save()
-  ctx.fillStyle = opts.palette.background
+  ctx.fillStyle = pal.background
   ctx.fillRect(0, 0, W, H)
 
   drawCells(ctx, world, opts)
-  if (opts.showBorders) drawBorders(ctx, world, opts.palette)
-  if (opts.showCoast) drawCoast(ctx, world, opts.palette)
-  if (opts.showRivers) drawRivers(ctx, world, opts.palette)
-  if (opts.showLabels) drawLabels(ctx, world, opts.palette)
-  if (opts.showGrain) drawGrain(ctx, world, opts.palette)
+  if (v.showPlates) drawPlates(ctx, world)
+  if (v.showProvinces) drawProvinceFills(ctx, world, pal)
+  if (v.showContours) drawContours(ctx, world, pal)
+  if (v.showBorders) drawBorders(ctx, world, pal)
+  if (v.showProvinces) drawProvinceBorders(ctx, world, pal)
+  if (v.showCoast) drawCoast(ctx, world, pal)
+  if (v.showRivers) drawRivers(ctx, world, pal)
+  if (v.showRoads) drawRoads(ctx, world, pal)
+  if (v.showGraticule) drawGraticule(ctx, world, pal)
+  if (v.showLabels) drawLabels(ctx, world, pal)
+  if (v.showCities) {
+    drawCities(ctx, world, pal)
+    drawCityLabels(ctx, world, pal)
+  }
+  if (v.showGrain) drawGrain(ctx, world, pal)
   drawVignette(ctx, world)
+  if (v.showFrame) drawFrame(ctx, world, pal)
+  if (v.showCompass) drawCompass(ctx, world, pal)
+  if (v.showScale) drawScale(ctx, world, pal)
+  if (opts.selected != null && opts.selected >= 0) drawSelection(ctx, world, opts.selected)
   ctx.restore()
+}
+
+/** Nearest region site to a world-space point — the Voronoi cell it lands in. */
+export function nearestRegion(world: WorldMap, x: number, y: number): number {
+  const { mesh } = world
+  let best = -1
+  let bestD = Infinity
+  for (let r = 0; r < mesh.numSolid; r++) {
+    const dx = mesh.px[r] - x
+    const dy = mesh.py[r] - y
+    const d = dx * dx + dy * dy
+    if (d < bestD) {
+      bestD = d
+      best = r
+    }
+  }
+  return best
 }

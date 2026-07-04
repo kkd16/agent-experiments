@@ -16,6 +16,11 @@ export const DEFAULT_PARAMS: WorldParams = {
   rainfall: 1,
   riverThreshold: 0.012,
   islandFalloff: 0.9,
+  terrainMode: 'noise',
+  plates: 9,
+  windAngle: 200,
+  orographic: 0.7,
+  cities: 12,
 }
 
 export interface Preset {
@@ -49,6 +54,28 @@ export const PRESETS: readonly Preset[] = [
     name: 'Drowned',
     blurb: 'A flooded world of narrow capes',
     patch: { shape: 'continent', seaLevel: 0.52, islandFalloff: 1.0, noiseScale: 4 },
+  },
+  {
+    name: 'Tectonic',
+    blurb: 'Plate-driven mountain arcs & rift seas',
+    patch: {
+      terrainMode: 'tectonic',
+      plates: 10,
+      seaLevel: 0.35,
+      shape: 'pangaea',
+      islandFalloff: 0.7,
+      orographic: 0.8,
+    },
+  },
+  {
+    name: 'Monsoon',
+    blurb: 'Strong wind, sharp rain-shadow deserts',
+    patch: { shape: 'continent', seaLevel: 0.4, orographic: 1, windAngle: 250, rainfall: 1.6, octaves: 7 },
+  },
+  {
+    name: 'Lakelands',
+    blurb: 'A low, wet world thick with lakes',
+    patch: { shape: 'continent', seaLevel: 0.34, rainfall: 1.8, erosion: 0, riverThreshold: 0.006, orographic: 0.5 },
   },
 ]
 

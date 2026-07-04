@@ -4,6 +4,7 @@ import './App.css'
 import { DEFAULT_PARAMS } from './core/presets'
 import type { WorldParams } from './core/types'
 import { renderWorld } from './render/render'
+import { worldToSvg } from './render/svg'
 import { paletteByKey } from './render/palettes'
 import { useWorld } from './ui/useWorld'
 import { DEFAULT_VIEW } from './ui/viewOptions'
@@ -11,8 +12,9 @@ import type { ViewOptions } from './ui/viewOptions'
 import Controls from './ui/Controls'
 import MapCanvas from './ui/MapCanvas'
 import Legend from './ui/Legend'
+import Inspector from './ui/Inspector'
 
-const STORE_KEY = 'cartographer.state.v1'
+const STORE_KEY = 'cartographer.state.v2'
 
 // Persistence is best-effort: sandboxed thumbnail frames have no same-origin
 // storage, so every access is guarded.
@@ -33,6 +35,13 @@ function save(params: WorldParams, view: ViewOptions): void {
   }
 }
 
+function download(href: string, name: string): void {
+  const a = document.createElement('a')
+  a.href = href
+  a.download = name
+  a.click()
+}
+
 export default function App(): ReactElement {
   const [stored] = useState(loadStored)
   const { params, patch, world, generating } = useWorld({
@@ -40,12 +49,21 @@ export default function App(): ReactElement {
     ...stored.params,
   })
   const [view, setView] = useState<ViewOptions>({ ...DEFAULT_VIEW, ...stored.view })
+  const [selected, setSelected] = useState<number | null>(null)
+
+  // A fresh world invalidates the old cell selection — reset during render (the
+  // sanctioned React pattern for deriving state from a changed value).
+  const [prevWorld, setPrevWorld] = useState(world)
+  if (world !== prevWorld) {
+    setPrevWorld(world)
+    setSelected(null)
+  }
 
   useEffect(() => {
     save(params, view)
   }, [params, view])
 
-  const onExport = useCallback(() => {
+  const onExportPng = useCallback(() => {
     if (!world) return
     try {
       const scale = 2
@@ -57,21 +75,23 @@ export default function App(): ReactElement {
       const ctx = c.getContext('2d')
       if (!ctx) return
       ctx.setTransform(scale, 0, 0, scale, 0, 0)
-      renderWorld(ctx, world, {
-        palette: paletteByKey(view.paletteKey),
-        showRivers: view.showRivers,
-        showCoast: view.showCoast,
-        showHillshade: view.showHillshade,
-        showBorders: view.showBorders,
-        showLabels: view.showLabels,
-        showGrain: view.showGrain,
-      })
-      const a = document.createElement('a')
-      a.href = c.toDataURL('image/png')
-      a.download = `cartographer-${world.params.seed}.png`
-      a.click()
+      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected: null })
+      download(c.toDataURL('image/png'), `cartographer-${world.params.seed}.png`)
     } catch (err) {
-      console.error('export failed', err)
+      console.error('PNG export failed', err)
+    }
+  }, [world, view])
+
+  const onExportSvg = useCallback(() => {
+    if (!world) return
+    try {
+      const svg = worldToSvg(world, view)
+      const blob = new Blob([svg], { type: 'image/svg+xml' })
+      const url = URL.createObjectURL(blob)
+      download(url, `cartographer-${world.params.seed}.svg`)
+      setTimeout(() => URL.revokeObjectURL(url), 4000)
+    } catch (err) {
+      console.error('SVG export failed', err)
     }
   }, [world, view])
 
@@ -82,12 +102,16 @@ export default function App(): ReactElement {
         patch={patch}
         view={view}
         setView={setView}
-        onExport={onExport}
+        onExportPng={onExportPng}
+        onExportSvg={onExportSvg}
         generating={generating}
       />
       <main className="stage">
-        <MapCanvas world={world} view={view} />
+        <MapCanvas world={world} view={view} selected={selected} onPick={setSelected} />
         {world && <Legend world={world} />}
+        {world && selected != null && (
+          <Inspector world={world} region={selected} onClose={() => setSelected(null)} />
+        )}
         {!world && generating && <div className="loading">Generating world…</div>}
       </main>
     </div>

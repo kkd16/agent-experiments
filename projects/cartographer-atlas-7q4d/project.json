@@ -1,8 +1,8 @@
 {
   "title": "Cartographer",
-  "description": "A procedural fantasy-map generator: Voronoi terrain, real river hydrology, and Whittaker biomes rendered as a stylised atlas you can restyle and export.",
+  "description": "A procedural fantasy-atlas studio: plate tectonics, orographic rain, river hydrology, lakes, Whittaker biomes, and a civilisation of cities, provinces & roads — restylable, inspectable, and exportable to PNG or SVG.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["procedural", "generative", "cartography", "voronoi", "simulation", "canvas"],
+  "tags": ["procedural", "generative", "cartography", "voronoi", "tectonics", "simulation", "canvas"],
   "createdAt": "2026-07-04"
 }

@@ -1,9 +1,10 @@
-// The studio's control panel: seed, world/terrain/water sliders, presets, palette
-// and layer toggles, and export. Parameter changes flow through `patch` (which
-// regenerates the world); view changes flow through `setView` (a cheap re-render).
+// The studio's control panel: seed, world/terrain/climate/water/civilisation sliders,
+// presets, palette and layer toggles, and export. Parameter changes flow through
+// `patch` (which regenerates the world); view changes flow through `setView` (a cheap
+// re-render).
 
 import type { ReactElement } from 'react'
-import type { WorldParams, WorldShape } from '../core/types'
+import type { TerrainMode, WorldParams, WorldShape } from '../core/types'
 import { PRESETS, SHAPES } from '../core/presets'
 import { PALETTES } from '../render/palettes'
 import { randomSeed } from '../core/rng'
@@ -14,7 +15,8 @@ interface Props {
   patch: (p: Partial<WorldParams>) => void
   view: ViewOptions
   setView: (v: ViewOptions) => void
-  onExport: () => void
+  onExportPng: () => void
+  onExportSvg: () => void
   generating: boolean
 }
 
@@ -64,12 +66,23 @@ function Toggle(props: {
   )
 }
 
+const TERRAIN_MODES: { value: TerrainMode; label: string }[] = [
+  { value: 'noise', label: 'Noise' },
+  { value: 'tectonic', label: 'Tectonic' },
+]
+
+const COMPASS = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE']
+function bearing(deg: number): string {
+  return COMPASS[Math.round(((deg % 360) / 45)) % 8]
+}
+
 export default function Controls({
   params,
   patch,
   view,
   setView,
-  onExport,
+  onExportPng,
+  onExportSvg,
   generating,
 }: Props): ReactElement {
   const setV = (partial: Partial<ViewOptions>): void => setView({ ...view, ...partial })
@@ -164,6 +177,30 @@ export default function Controls({
 
       <section className="group">
         <h2>Terrain</h2>
+        <label className="ctl">
+          <span className="ctl-label">Mode</span>
+          <div className="seg">
+            {TERRAIN_MODES.map((m) => (
+              <button
+                key={m.value}
+                className={`seg-btn ${params.terrainMode === m.value ? 'active' : ''}`}
+                onClick={() => patch({ terrainMode: m.value })}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </label>
+        {params.terrainMode === 'tectonic' && (
+          <Slider
+            label="Plates"
+            value={params.plates}
+            min={4}
+            max={20}
+            step={1}
+            onChange={(v) => patch({ plates: v })}
+          />
+        )}
         <Slider
           label="Feature scale"
           value={params.noiseScale}
@@ -192,6 +229,28 @@ export default function Controls({
       </section>
 
       <section className="group">
+        <h2>Climate</h2>
+        <Slider
+          label="Wind bearing"
+          value={params.windAngle}
+          min={0}
+          max={359}
+          step={1}
+          onChange={(v) => patch({ windAngle: v })}
+          fmt={(v) => `${v}° ${bearing(v)}`}
+        />
+        <Slider
+          label="Rain shadow"
+          value={params.orographic}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(v) => patch({ orographic: v })}
+          fmt={(v) => v.toFixed(2)}
+        />
+      </section>
+
+      <section className="group">
         <h2>Water</h2>
         <Slider
           label="Rainfall"
@@ -210,6 +269,18 @@ export default function Controls({
           step={0.002}
           onChange={(v) => patch({ riverThreshold: v })}
           fmt={(v) => v.toFixed(3)}
+        />
+      </section>
+
+      <section className="group">
+        <h2>Civilisation</h2>
+        <Slider
+          label="Cities"
+          value={params.cities}
+          min={0}
+          max={28}
+          step={1}
+          onChange={(v) => patch({ cities: v })}
         />
       </section>
 
@@ -234,20 +305,35 @@ export default function Controls({
             checked={view.showHillshade}
             onChange={(v) => setV({ showHillshade: v })}
           />
+          <Toggle label="Contours" checked={view.showContours} onChange={(v) => setV({ showContours: v })} />
           <Toggle label="Borders" checked={view.showBorders} onChange={(v) => setV({ showBorders: v })} />
           <Toggle label="Labels" checked={view.showLabels} onChange={(v) => setV({ showLabels: v })} />
           <Toggle label="Grain" checked={view.showGrain} onChange={(v) => setV({ showGrain: v })} />
+          <Toggle label="Frame" checked={view.showFrame} onChange={(v) => setV({ showFrame: v })} />
+          <Toggle label="Compass" checked={view.showCompass} onChange={(v) => setV({ showCompass: v })} />
+          <Toggle label="Scale" checked={view.showScale} onChange={(v) => setV({ showScale: v })} />
+          <Toggle label="Graticule" checked={view.showGraticule} onChange={(v) => setV({ showGraticule: v })} />
+          <Toggle label="Plates" checked={view.showPlates} onChange={(v) => setV({ showPlates: v })} />
+        </div>
+        <div className="toggle-grid civ-toggles">
+          <Toggle label="Provinces" checked={view.showProvinces} onChange={(v) => setV({ showProvinces: v })} />
+          <Toggle label="Roads" checked={view.showRoads} onChange={(v) => setV({ showRoads: v })} />
+          <Toggle label="Cities" checked={view.showCities} onChange={(v) => setV({ showCities: v })} />
         </div>
       </section>
 
-      <section className="group">
-        <button className="btn export" onClick={onExport}>
+      <section className="group export-row">
+        <button className="btn export" onClick={onExportPng}>
           Export PNG
+        </button>
+        <button className="btn export" onClick={onExportSvg}>
+          Export SVG
         </button>
       </section>
 
       <footer className="panel-foot">
-        Voronoi terrain · priority-flood rivers · Whittaker biomes — all generated in your browser.
+        Tectonics · orographic rain · rivers · biomes · provinces & roads — all generated in
+        your browser. Click any cell to inspect it.
       </footer>
     </aside>
   )

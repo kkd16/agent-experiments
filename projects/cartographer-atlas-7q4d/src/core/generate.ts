@@ -1,10 +1,12 @@
 // The pipeline. params → a fully realised WorldMap, with per-stage timings so the
 // UI can show where the milliseconds go. Deterministic: same params ⇒ same world.
 
-import type { WorldMap, WorldParams } from './types'
+import type { Plate, WorldMap, WorldParams } from './types'
 import { buildMesh } from './mesh'
 import { assignElevation, computeTemperature } from './terrain'
+import { buildPlates, tectonicElevation } from './tectonics'
 import { computeHydrology } from './hydrology'
+import { buildPolitical } from './political'
 import { B, classify } from './biomes'
 import { generateLabels } from './names'
 
@@ -21,15 +23,30 @@ export function generateWorld(params: WorldParams): WorldMap {
   }
 
   const mesh = stage('mesh', () => buildMesh(params))
-  const elevation = stage('terrain', () => assignElevation(mesh, params))
+
+  // --- Base heightfield: layered noise, or a plate-tectonic simulation ---
+  let plateId: Int32Array = new Int32Array(0)
+  let plateBoundary: Uint8Array = new Uint8Array(0)
+  let plates: Plate[] = []
+  const elevation = stage('terrain', () => {
+    if (params.terrainMode === 'tectonic') {
+      const tect = buildPlates(mesh, params)
+      plateId = tect.plateId
+      plateBoundary = tect.boundary
+      plates = tect.plates
+      return tectonicElevation(mesh, params, tect)
+    }
+    return assignElevation(mesh, params)
+  })
+
   const temperature = stage('climate', () => computeTemperature(mesh, params, elevation))
-  const hydro = stage('hydrology', () => computeHydrology(mesh, params, elevation))
+  const hydro = stage('hydrology', () => computeHydrology(mesh, params, elevation, temperature))
 
   const biome = stage('biomes', () => {
     const out = new Uint8Array(mesh.numRegions)
     const denom = 1 - params.seaLevel || 1
     for (let r = 0; r < mesh.numSolid; r++) {
-      if (hydro.ocean[r]) {
+      if (hydro.ocean[r] || hydro.lake[r]) {
         out[r] = B.ocean
         continue
       }
@@ -39,8 +56,26 @@ export function generateWorld(params: WorldParams): WorldMap {
     return out
   })
 
+  const political = stage('polity', () =>
+    buildPolitical(
+      mesh,
+      {
+        elevation,
+        ocean: hydro.ocean,
+        lake: hydro.lake,
+        coast: hydro.coast,
+        flux: hydro.flux,
+        moisture: hydro.moisture,
+        temperature,
+        biome,
+      },
+      params,
+      params.seed,
+    ),
+  )
+
   const labels = stage('labels', () =>
-    generateLabels(mesh, elevation, hydro.ocean, params.seaLevel, params.seed),
+    generateLabels(mesh, elevation, hydro.ocean, params.seaLevel, params.seed, hydro.lake),
   )
 
   return {
@@ -54,9 +89,18 @@ export function generateWorld(params: WorldParams): WorldMap {
     flux: hydro.flux,
     moisture: hydro.moisture,
     temperature,
+    precip: hydro.precip,
     biome,
     rivers: hydro.rivers,
     labels,
+    waterLevel: hydro.waterLevel,
+    lake: hydro.lake,
+    plateId,
+    plateBoundary,
+    plates,
+    cities: political.cities,
+    province: political.province,
+    roads: political.roads,
     timings,
   }
 }

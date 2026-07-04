@@ -26,6 +26,8 @@ function makeName(rng: Rng): string {
 
 const RANGE_FORMS = ['%s Mountains', 'The %s Range', '%s Peaks', '%s Highlands', 'Spine of %s']
 const SEA_FORMS = ['The %s Ocean', '%s Sea', 'The %s Deep', 'Gulf of %s']
+const LAKE_FORMS = ['Lake %s', 'The %s Mere', '%s Water', 'Loch %s']
+const INLAND_SEA_FORMS = ['The %s Sea', 'Sea of %s', 'The %s Basin']
 
 /** Connected components over regions for which `member(r)` is true. */
 function components(mesh: Mesh, member: (r: number) => boolean): number[][] {
@@ -81,6 +83,7 @@ export function generateLabels(
   ocean: Uint8Array,
   seaLevel: number,
   seed: string,
+  lake?: Uint8Array,
 ): Label[] {
   const rng = new Rng(`${seed}:names`)
   const labels: Label[] = []
@@ -156,6 +159,29 @@ export function generateLabels(
       kind: 'sea',
       weight: 1,
     })
+  }
+
+  // --- Lakes & inland seas: label the largest standing-water bodies ---
+  if (lake) {
+    const bodies = components(mesh, (r) => lake[r] === 1).sort((a, b) => b.length - a.length)
+    const maxLake = bodies[0]?.length ?? 1
+    let named = 0
+    for (const comp of bodies) {
+      if (comp.length < 5) break
+      if (named >= 4) break
+      const { x, y } = centroidRegion(mesh, comp)
+      // Big bodies read as inland seas; small ones as lakes.
+      const inland = comp.length > Math.max(28, maxLake * 0.5)
+      const form = rng.pick(inland ? INLAND_SEA_FORMS : LAKE_FORMS)
+      labels.push({
+        x,
+        y,
+        text: form.replace('%s', makeName(rng)),
+        kind: 'lake',
+        weight: Math.min(1, comp.length / maxLake + 0.2),
+      })
+      named++
+    }
   }
 
   return labels
