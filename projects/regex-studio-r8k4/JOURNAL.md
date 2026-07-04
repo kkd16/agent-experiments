@@ -273,9 +273,11 @@ New files: `engine/parikh.ts` (the semilinear algebra + structural map + the Pre
   semilinear too (via the grammar's derivation-tree cycles) would show the theorem in its native habitat
 - [ ] **Semilinear-set *minimisation*** — the structural union is sound but not always minimal; add a proper
   Presburger-backed minimiser (or Pottier's algorithm) so `(a|b)*a(a|b)*` collapses to the single ideal set
-- [ ] **Intersection / Presburger *query*** — type an arbitrary Presburger constraint over the counts (e.g.
-  `#a = 2·#b`) and intersect it with π(L) live, deciding non-emptiness via the existing engine (a "does the
-  language contain a word with these proportions?" oracle)
+- [x] **Intersection / Presburger *query*** — type an arbitrary Presburger constraint over the counts (e.g.
+  `a = 2·b`) and intersect it with π(L) live, deciding non-emptiness via the existing engine (a "does the
+  language contain a word with these proportions?" oracle) *(shipped: `ArithQuery` in `ParikhPanel.tsx` —
+  AND-s the constraint with π(L)'s formula, decides emptiness, decodes a witness count vector; correct on the
+  Frobenius gaps — `(aaa|aaaaa)*` answers a=4/a=7 NO, a=8/a=11 YES)*
 - [ ] **The generating-function tie-in** — the Census tab's rational series counts words; overlay the Parikh
   fibre sizes (how many words share each count vector) to connect the commutative image to the word census
 - [ ] **3-D lattice** — an isometric/rotatable scatter for the |Σ|=3 case, and axis-projection controls for higher
