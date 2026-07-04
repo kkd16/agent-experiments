@@ -1073,6 +1073,34 @@ input[type='text'] {
   font-family: var(--mono, ui-monospace, monospace);
 }
 
+/* ---- streamlet block tree ---- */
+.streamlet-chain {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(115, 224, 138, 0.05), rgba(0, 0, 0, 0) 72%);
+  padding: 8px 10px 6px;
+}
+.streamlet-chain.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+}
+.streamlet-chain .chain-legend {
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.streamlet-chain .chain-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.streamlet-chain svg text {
+  user-select: none;
+  pointer-events: none;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
 /* ---- dynamo lab ---- */
 .dynamo-legend {
   display: flex;

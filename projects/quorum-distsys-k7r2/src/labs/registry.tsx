@@ -9,6 +9,7 @@ import { AbdLab } from './AbdLab';
 import { CraqLab } from './CraqLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
+import { StreamletLab } from './StreamletLab';
 import { ChordLab } from './ChordLab';
 import { DynamoLab } from './DynamoLab';
 import { CrdtLab } from './CrdtLab';
@@ -105,6 +106,15 @@ export const LABS: LabDef[] = [
     icon: '⬡',
     tag: 'byzantine consensus',
     Component: HotStuffLab,
+  },
+  {
+    id: 'streamlet',
+    title: 'Streamlet (textbook BFT)',
+    blurb:
+      'The simplest Byzantine-fault-tolerant consensus ever published (Chan & Shi, 2020) — same N=3f+1 guarantees as HotStuff with almost none of the machinery: no pacemaker, no view-change, no locks, no certificates. Synchronized epochs, a rotating leader, and three rules — propose extending the longest notarized chain, vote once per epoch, and finalize the moment a notarized chain holds three adjacent blocks with consecutive epochs. Watch the golden triple slide along the chain; corrupt the leader and see Consistency hold with zero view-change code. Safety even survives full asynchrony.',
+    icon: '≋',
+    tag: 'byzantine consensus',
+    Component: StreamletLab,
   },
   {
     id: 'abd',
