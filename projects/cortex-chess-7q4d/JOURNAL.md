@@ -18,6 +18,16 @@ representation, move generation, search and evaluation are all hand-built here.
   promotion), attack detection, and a make/unmake legality filter. Castling validates the king's path
   (out-of/through/into-check), and that the king-span and rook-span are clear except for the two movers,
   for arbitrary king/rook files.
+- **`engine/bitboard.ts`** — a **wholly independent** second move generator on **magic bitboards** (twelve
+  64-bit `bigint` piece boards), used as a correctness oracle for the mailbox path and as the substrate for
+  the Bitboards Lab. It shares **no code** with `movegen.ts`: its own FEN parser, its own move encoding, and
+  **fully-LEGAL** generation — a king-danger map (king removed from the occupancy so it can't hide behind
+  itself along a slider ray), checker detection with single-check block/capture masks and double-check
+  king-only, absolute-pin rays via `BETWEEN`/`LINE` tables, and en passant validated by a full king-safety
+  simulation (which also settles the horizontal discovered-check case). Sliding attacks are a single 64-bit
+  multiply-and-shift into a magic-indexed table; the magics are found by a seeded sparse-random search and
+  embedded so init is ~100 ms. Both generators reproduce the published perft numbers **and agree
+  move-for-move** on the divide for all six standard positions.
 - **`engine/eval.ts`** — tapered PeSTO evaluation (mg/eg PST interpolation) plus a full positional
   layer: piece **mobility** (sane centres), **king safety** (pawn-shield holes + a weighted attacker
   count), **pawn structure** (passed / isolated / doubled), **rooks** on open/semi-open files and the
@@ -782,3 +792,90 @@ mate-in-3, proven in ~2.3k sims) and a **two-ply knight royal fork** that wins t
 **12 visit bars, best = Rxf7+, +3.67, 4,000 sims and a full SAN PV**; **Run alpha-beta → "✓ both engines agree"**; a
 heuristic-policy start-position search returns 1.Nf3; **zero console errors**. Clean scope + conformance + lint + tsc +
 vite build via `node scripts/verify-project.mjs cortex-chess-7q4d`.
+
+### Session — Nova: an independent magic-bitboard move generator + perft oracle (2026-07-04, claude)
+
+**The gap.** Everything in this engine — search, eval, tablebases, NNUE, MCTS — stands on ONE
+foundation: `movegen.ts`, a 0x88 mailbox generator that produces pseudo-legal moves and filters
+them make/unmake. It is perft-clean, but it is the *only* witness to its own correctness: if it
+had a subtle bug, every layer above would inherit it and the perft suite (which uses that same
+generator) could not tell. A real engine earns trust by having a **second, completely independent
+move generator** reproduce the exact same node counts. This session builds that oracle — and,
+because bitboards are the most beautiful idea in chess programming and this studio had never
+*shown* one, an interactive magic-bitboard explorer.
+
+**What ships:** `engine/bitboard.ts` — a from-scratch **magic-bitboard, FULLY-LEGAL** move
+generator built on a totally different representation (twelve 64-bit `bigint` piece boards, no
+mailbox, no make/unmake-to-test-legality), and a Lab tab that runs it head-to-head against the
+mailbox generator and against the published reference counts.
+
+Planned steps:
+
+- [x] 64-bit bitboard core in `bigint`: `bit`/`lsb`/`popcount`/pretty-print, square = rank*8+file (a1=0)
+- [x] Precomputed leaper tables: knight, king, and per-colour pawn attacks
+- [x] `BETWEEN[64][64]` and `LINE[64][64]` ray tables (for pins, checks, and blocking)
+- [x] Rook/bishop occupancy masks + blocker-aware ray attacks (the ground truth for magics)
+- [x] **Magic bitboards from scratch**: seeded sparse-random magic search, per-square attack tables,
+      `rookAttacks`/`bishopAttacks`/`queenAttacks` via one 64-bit multiply-and-shift
+- [x] Independent FEN → bitboard parser (own state, own move encoding)
+- [x] **Fully-legal** generation — king-danger map (king removed from occupancy), checker detection,
+      single-check block/capture masks, double-check king-only, absolute-pin ray restriction
+- [x] Correct en passant incl. the horizontal discovered-check case (full king-safety simulation)
+- [x] Standard-chess castling (path clear + not through check), promotions (all four pieces)
+- [x] Copy-make + `bbPerft` with leaf **bulk-counting**; `bbPerftDivide` (per-move breakdown)
+- [x] `bitboardSelftest()` — reproduces the published perft numbers AND cross-checks the mailbox
+      generator move-for-move (perft divide agreement), returning a structured pass/fail
+- [x] Validate OUTSIDE the browser (Node) on all five suite positions before wiring any UI
+- [x] Magic-explorer helpers: live magic index `((occ·magic) & 2⁶⁴−1) >> shift` for any square/blockers
+- [x] `components/BitboardLab.tsx` — the "Bitboards" Lab tab: (a) perft oracle table (bitboard vs
+      mailbox vs published, timings + NPS + agreement badges, expandable divide), (b) an interactive
+      magic-bitboard explorer (pick rook/bishop/queen + square, click blockers, watch the attack set
+      and the magic hash light up), (c) a FEN-driven piece-bitboard viewer
+- [x] Wire the tab into `Lab.tsx`, export the API from `engine/index.ts`, scoped CSS in `App.css`
+- [x] Green gate: `node scripts/verify-project.mjs cortex-chess-7q4d` (scope + conformance + lint + build)
+
+**Shipped — and validated three independent ways.** The magic-bitboard generator reproduces the
+**published** Chess-Programming-Wiki perft numbers **exactly** for all six standard positions
+(Start, Kiwipete, and Positions 3–6), verified outside the browser via `tools/bb-validate.ts`
+(`node --experimental-strip-types`) up to millions of nodes — Start `d5` = 4,865,609, Kiwipete
+`d4` = 4,085,603, Position 5 `d4` = 2,103,487, all green. Then `tools/bb-crosscheck.ts`
+(`node tools/run-ts.mjs`) confirmed the bitboard generator and the **0x88 mailbox** generator agree
+**move-for-move** on the perft *divide* for every position — two engines sharing no code, matching
+per-root-move. (This cross-check earned its keep immediately: it caught that the bitboard
+`moveToUci` was mapping promotion letters off-by-one — the node *totals* were right, but the
+per-move labels were shuffled — a bug the totals-only perft suite would never have surfaced.)
+Finally a **headless-Chromium** run of the production build (`tools/bb-e2e.mjs`) drove the live UI:
+Engine Lab → Bitboards → *Run perft oracle* returns **"✓ all 6 positions — both engines match the
+references exactly"**, the expandable *divide* shows **0 mismatches**, the magic explorer computes
+a live index and lights the 14-square rook cross, the attack viewer resolves a clicked piece's
+attacks, and there are **zero console errors**.
+
+**How it's built.** Bitboards are `bigint` for exact 64-bit semantics (JS `number` bitwise is
+32-bit) — this is the oracle/reference path, so clarity beats raw throughput, yet copy-make + leaf
+**bulk-counting** perft still turns ~2.5–3.9M nodes/s in the browser (the C-like mailbox make/unmake
+path is a touch faster at ~4.5–5.5M/s — the honest numbers sit side by side in the oracle table).
+Move generation is **fully legal by construction**: a king-danger map computed with our own king
+lifted out of the occupancy; single-check moves masked to *capture-the-checker ∪ block-the-ray*;
+double check pruned to king moves; absolute pins restricted to their `LINE[king][sniper]` ray; and
+en passant validated by a full king-safety re-test that also nails the horizontal
+discovered-check. Sliding attacks are one 64-bit multiply-and-shift into a magic-indexed table.
+The magics were found by a seeded splitmix64 sparse-random search (`searchMagics`, ~18 s once),
+dumped, and **embedded** as constants so `initMagics` only builds the ~110k-entry attack tables
+(~100 ms) and re-asserts every magic is collision-free on the way.
+
+**The Lab.** A new **Bitboards** tab (`components/BitboardLab.tsx`, imported directly from
+`engine/bitboard.ts` — deliberately *not* re-exported through `engine/index.ts`, whose `WHITE`/
+`PAWN`/`FLAG_*`/`squareName` names would collide with the bitboard module's own) with three views:
+(1) the **perft oracle** — bitboard vs mailbox vs published reference, with per-engine timings and
+nodes/s, an all-green pass banner, and an expandable move-by-move **divide**; (2) the **magic
+explorer** — pick rook/bishop/queen and a square, click to drop blockers, and watch the full hash
+resolve (`relevant occupancy × magic (mod 2⁶⁴) » shift = index` into the 2ⁿ-entry table) with the
+attack set drawn as both board highlights and a mini-bitboard; (3) the **attack viewer** — paste a
+FEN or pick a preset, click any piece, and see exactly which squares it attacks by live magic
+lookup, beside the occupancy bitboard. The alpha-beta/mailbox engine is **untouched** — this is a
+purely additive second opinion. Clean scope + conformance + lint + tsc + vite build via
+`node scripts/verify-project.mjs cortex-chess-7q4d`.
+
+- [x] Independent Node validation (`tools/bb-validate.ts`): all published perft counts reproduced to millions of nodes
+- [x] Move-for-move mailbox↔bitboard divide agreement (`tools/bb-crosscheck.ts`) — caught + fixed the UCI promo-letter bug
+- [x] Headless-Chromium e2e of the live build (`tools/bb-e2e.mjs`): oracle all-green, divide 0 mismatches, zero console errors
