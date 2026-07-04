@@ -11,7 +11,7 @@ import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
 import { cepstrum } from './cepstrum'
 import { voicedSignal, pulseTrain, VOWELS } from './synth'
 import { polyRoots } from './poly'
-import { cx, cabs } from './cplx'
+import { cx, cabs, cmul } from './cplx'
 import {
   designFilter,
   freqResponse,
@@ -19,6 +19,10 @@ import {
   type DesignParams,
 } from './filterdesign'
 import { freqToNote, refinePeak } from './note'
+import { ellipk, ellipj, ellipdeg, ellipap } from './ellip'
+import { remezDesign } from './remez'
+import { estimateOrders, buttord, cheb1ord, ellipord } from './filterspec'
+import type { FilterSpec } from './filterspec'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -273,6 +277,8 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     gainDb: 6,
     taps: 63,
     window: 'hamming',
+    transHz: 60,
+    stopWeight: 4,
   }
   const nearest = (hz: Float64Array, target: number) => {
     let bi = 0
@@ -411,6 +417,164 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     for (let k = 1; k < 8; k++) if (mag[k] > mag[kmax]) kmax = k
     const f = refinePeak(mag, kmax, binHz)
     check('refinePeak: sub-bin interpolation lands near 25 Hz', Math.abs(f - 25) < 1.2)
+  }
+
+  // ---- Optimal filter design (v6): elliptic + Parks–McClellan + spec estimators ----
+
+  // 26. Jacobi identities: sn²+cn²=1, dn²+m·sn²=1, and sn(K,m)=1 at the quarter period.
+  {
+    let idOk = true
+    for (const m of [0.15, 0.4, 0.75]) {
+      for (let u = -3; u <= 3; u += 0.5) {
+        const { sn, cn, dn } = ellipj(u, m)
+        if (Math.abs(sn * sn + cn * cn - 1) > 1e-12) idOk = false
+        if (Math.abs(dn * dn + m * sn * sn - 1) > 1e-12) idOk = false
+      }
+      const q = ellipj(ellipk(m), m)
+      if (Math.abs(q.sn - 1) > 1e-9 || Math.abs(q.cn) > 1e-9) idOk = false
+    }
+    check('Jacobi sn/cn/dn identities + sn(K,m)=1', idOk)
+  }
+
+  // 27. Elliptic degree equation: N·K(k₁)/K′(k₁) == K(k)/K′(k) for the solved modulus.
+  {
+    let degOk = true
+    for (const N of [3, 4, 5, 7]) {
+      for (const m1 of [1e-4, 1e-3, 1e-2]) {
+        const m = ellipdeg(N, m1)
+        const lhs = (N * ellipk(m1)) / ellipk(1 - m1)
+        const rhs = ellipk(m) / ellipk(1 - m)
+        if (Math.abs(lhs - rhs) / rhs > 1e-6) degOk = false
+      }
+    }
+    check('elliptic degree equation N·K(k₁)/K′(k₁)=K(k)/K′(k)', degOk)
+  }
+
+  // 28. The analog elliptic prototype is equiripple in both bands and meets spec: the
+  //     passband stays within Rp of 0 dB and the stopband stays below −Rs, with N
+  //     stable (LHP) poles.
+  {
+    const magAt = (z: import('./cplx').Cx[], p: import('./cplx').Cx[], k: number, w: number) => {
+      const s = cx(0, w)
+      let num = cx(k, 0)
+      for (const zi of z) num = cmul(num, cx(s.re - zi.re, s.im - zi.im))
+      let den = cx(1, 0)
+      for (const pj of p) den = cmul(den, cx(s.re - pj.re, s.im - pj.im))
+      const dd = den.re * den.re + den.im * den.im
+      return cabs(cx((num.re * den.re + num.im * den.im) / dd, (num.im * den.re - num.re * den.im) / dd))
+    }
+    let specOk = true
+    for (const [N, rp, rs] of [
+      [4, 1, 40],
+      [5, 0.5, 60],
+      [6, 0.1, 80],
+    ] as [number, number, number][]) {
+      const { z, p, k } = ellipap(N, rp, rs)
+      const m = ellipdeg(N, (Math.pow(10, rp / 10) - 1) / (Math.pow(10, rs / 10) - 1))
+      const Ws = 1 / Math.sqrt(m)
+      let pbMin = Infinity
+      let pbMax = -Infinity
+      for (let w = 0; w <= 1; w += 0.002) {
+        const db = 20 * Math.log10(magAt(z, p, k, w))
+        pbMax = Math.max(pbMax, db)
+        pbMin = Math.min(pbMin, db)
+      }
+      let sbMax = -Infinity
+      for (let w = Ws; w <= Ws * 30; w += Ws * 0.02) sbMax = Math.max(sbMax, 20 * Math.log10(magAt(z, p, k, w)))
+      const stable = p.every((pp) => pp.re < 0)
+      if (!(pbMax < 0.05 && pbMin > -rp - 0.05 && sbMax < -rs + 0.1 && stable && p.length === N)) specOk = false
+    }
+    check('elliptic prototype: equiripple both bands, meets Rp/Rs, stable', specOk)
+  }
+
+  // 29. The digital elliptic filter (through the bilinear pipeline) holds its passband
+  //     ripple and remains stable.
+  {
+    const d = designFilter({ ...baseParams, family: 'ellip', order: 6, cutoff: 150, rippleDb: 1, stopDb: 60 })
+    const fr = freqResponse(d, 4096)
+    const iCut = nearest(fr.hz, 150)
+    let pbMax = -Infinity
+    let pbMin = Infinity
+    for (let i = 0; i <= iCut; i++) {
+      pbMax = Math.max(pbMax, fr.magDb[i])
+      pbMin = Math.min(pbMin, fr.magDb[i])
+    }
+    check('digital elliptic LP: passband ripple ≤ Rp, stable', d.stable && pbMax < 0.1 && pbMin > -1 - 0.25)
+  }
+
+  // 30. Parks–McClellan converges to an *equiripple* filter: with equal band weights the
+  //     max passband deviation equals the max stopband ripple (the alternation theorem).
+  {
+    const r = remezDesign(31, [
+      { lo: 0, hi: 0.2, desired: 1, weight: 1 },
+      { lo: 0.3, hi: 0.5, desired: 0, weight: 1 },
+    ])
+    const h = r.taps
+    const ampAt = (f: number) => {
+      let re = 0
+      let im = 0
+      for (let n = 0; n < h.length; n++) {
+        re += h[n] * Math.cos(-2 * Math.PI * f * n)
+        im += h[n] * Math.sin(-2 * Math.PI * f * n)
+      }
+      return Math.hypot(re, im)
+    }
+    let pbDev = 0
+    for (let f = 0; f <= 0.2; f += 0.001) pbDev = Math.max(pbDev, Math.abs(ampAt(f) - 1))
+    let sbMax = 0
+    for (let f = 0.3; f <= 0.5; f += 0.001) sbMax = Math.max(sbMax, ampAt(f))
+    let sym = 0
+    for (let n = 0; n < h.length; n++) sym = Math.max(sym, Math.abs(h[n] - h[h.length - 1 - n]))
+    check(
+      'Parks–McClellan: converged, symmetric (linear phase), equiripple',
+      r.converged && sym < 1e-12 && Math.abs(pbDev - sbMax) / sbMax < 0.05,
+    )
+  }
+
+  // 31. A weighted Remez trades ripple by exactly the weight ratio: a 10× stopband weight
+  //     makes the stopband ripple ≈ 1/10 of the passband ripple.
+  {
+    const r = remezDesign(41, [
+      { lo: 0, hi: 0.2, desired: 1, weight: 1 },
+      { lo: 0.28, hi: 0.5, desired: 0, weight: 10 },
+    ])
+    const h = r.taps
+    const ampAt = (f: number) => {
+      let re = 0
+      let im = 0
+      for (let n = 0; n < h.length; n++) {
+        re += h[n] * Math.cos(-2 * Math.PI * f * n)
+        im += h[n] * Math.sin(-2 * Math.PI * f * n)
+      }
+      return Math.hypot(re, im)
+    }
+    let pbDev = 0
+    for (let f = 0; f <= 0.2; f += 0.001) pbDev = Math.max(pbDev, Math.abs(ampAt(f) - 1))
+    let sbMax = 0
+    for (let f = 0.28; f <= 0.5; f += 0.001) sbMax = Math.max(sbMax, ampAt(f))
+    check('weighted Remez: ripple ratio ≈ weight ratio (10×)', Math.abs(pbDev / sbMax - 10) / 10 < 0.1)
+  }
+
+  // 32. Order estimators are sound: the minimum order each formula returns yields a filter
+  //     that actually meets the stopband attenuation at the stopband edge, and the elliptic
+  //     order is never worse than Chebyshev, which is never worse than Butterworth.
+  {
+    const spec: FilterSpec = { fp: 150, fs: 250, rp: 1, rs: 50, fsamp: 1000, response: 'low' }
+    const est = estimateOrders(spec)
+    let meets = true
+    const fams: [import('./filterdesign').FamilyId, number, number][] = [
+      ['butter', est.butter, spec.fp],
+      ['cheby1', est.cheby1, spec.fp],
+      ['cheby2', est.cheby2, spec.fs],
+      ['ellip', est.ellip, spec.fp],
+    ]
+    for (const [family, N, fc] of fams) {
+      const d = designFilter({ ...baseParams, family, order: N, cutoff: fc, rippleDb: spec.rp, stopDb: spec.rs })
+      const fr = freqResponse(d, 8192)
+      if (fr.magDb[nearest(fr.hz, spec.fs)] > -spec.rs + 0.6) meets = false
+    }
+    const ordered = ellipord(spec) <= cheb1ord(spec) && cheb1ord(spec) <= buttord(spec)
+    check('order estimators meet Rs at edge; ellip ≤ cheby ≤ butter', meets && ordered)
   }
 
   return { passed, failed, messages }

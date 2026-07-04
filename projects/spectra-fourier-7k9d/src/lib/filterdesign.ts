@@ -34,12 +34,22 @@ import {
   CONE,
 } from './cplx'
 import { polyRoots } from './poly'
+import { ellipap } from './ellip'
+import { remezStandard } from './remez'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type FamilyId = 'butter' | 'cheby1' | 'cheby2' | 'fir' | 'biquad' | 'manual'
+export type FamilyId =
+  | 'butter'
+  | 'cheby1'
+  | 'cheby2'
+  | 'ellip'
+  | 'fir'
+  | 'remez'
+  | 'biquad'
+  | 'manual'
 export type ResponseType = 'low' | 'high' | 'band' | 'notch'
 export type BiquadType =
   | 'lowpass'
@@ -89,6 +99,9 @@ export interface DesignParams {
   // FIR
   taps: number
   window: 'rect' | 'hann' | 'hamming' | 'blackman'
+  // Parks–McClellan (Remez)
+  transHz: number // transition-band width, Hz
+  stopWeight: number // stopband error weight relative to the passband
 }
 
 interface Zpk {
@@ -497,6 +510,7 @@ function designIIRClassic(params: DesignParams): Design {
   let proto: Zpk
   if (family === 'butter') proto = butterAP(N)
   else if (family === 'cheby1') proto = cheby1AP(N, rippleDb)
+  else if (family === 'ellip') proto = ellipap(N, rippleDb, stopDb)
   else proto = cheby2AP(N, stopDb)
 
   let zpk: Zpk
@@ -516,7 +530,13 @@ function designIIRClassic(params: DesignParams): Design {
   const sos = zpkToSos(zpk.z, zpk.p, zpk.k)
   const stable = zpk.p.every((p) => cabs(p) < 1 - 1e-9)
   const famLabel =
-    family === 'butter' ? 'Butterworth' : family === 'cheby1' ? 'Chebyshev I' : 'Chebyshev II'
+    family === 'butter'
+      ? 'Butterworth'
+      : family === 'cheby1'
+        ? 'Chebyshev I'
+        : family === 'ellip'
+          ? 'Elliptic'
+          : 'Chebyshev II'
   return {
     kind: 'iir',
     zeros: zpk.z,
@@ -571,6 +591,42 @@ function designFIR(params: DesignParams): Design {
   }
 }
 
+function designRemez(params: DesignParams): Design {
+  const { fs, response, taps, cutoff, cutoffHi, transHz, stopWeight } = params
+  const nyq = fs / 2
+  const tw = Math.max(1, transHz) / fs // cycles/sample
+  const clampF = (f: number) => Math.min(0.499, Math.max(0.001, f))
+  const fc = clampF(cutoff / fs)
+  const fcHi = clampF(Math.max(cutoff + 5, cutoffHi) / fs)
+  let edges: { f1: number; f2?: number; f3?: number; f4?: number }
+  if (response === 'low') {
+    edges = { f1: fc, f2: clampF(fc + tw) }
+  } else if (response === 'high') {
+    edges = { f1: clampF(fc - tw), f2: fc }
+  } else if (response === 'band') {
+    edges = { f1: clampF(fc - tw), f2: fc, f3: fcHi, f4: clampF(fcHi + tw) }
+  } else {
+    // notch (band-stop)
+    edges = { f1: clampF(fc - tw), f2: fc, f3: fcHi, f4: clampF(fcHi + tw) }
+  }
+  const res = remezStandard(taps, response, edges, Math.max(0.1, stopWeight))
+  const h = res.taps
+  const zeros = polyRoots(Array.from(h, (t) => cx(t)))
+  void nyq
+  return {
+    kind: 'fir',
+    zeros,
+    poles: Array.from({ length: h.length - 1 }, () => cx(0)),
+    gain: 1,
+    sos: [],
+    taps: h,
+    order: h.length - 1,
+    stable: true,
+    fs,
+    label: `Remez · ${response} · ${h.length} taps${res.converged ? '' : ' (approx)'}`,
+  }
+}
+
 /** Build a design straight from a set of z-plane roots (manual / dragged mode). */
 export function designFromZpk(zeros: Cx[], poles: Cx[], gain: number, fs: number): Design {
   const sos = zpkToSos(zeros, poles, gain)
@@ -594,8 +650,11 @@ export function designFilter(params: DesignParams): Design {
       return designBiquad(params)
     case 'fir':
       return designFIR(params)
+    case 'remez':
+      return designRemez(params)
     case 'cheby1':
     case 'cheby2':
+    case 'ellip':
     case 'butter':
       return designIIRClassic(params)
     case 'manual':

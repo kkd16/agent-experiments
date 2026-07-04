@@ -18,6 +18,8 @@ import {
   applyFilter,
 } from '../lib/filterdesign'
 import type { DesignParams, FamilyId, ResponseType, BiquadType, Design } from '../lib/filterdesign'
+import { estimateOrders } from '../lib/filterspec'
+import type { FilterSpec } from '../lib/filterspec'
 
 const FS = 1000
 const NYQ = FS / 2
@@ -29,10 +31,14 @@ const FAMILIES: { id: FamilyId; label: string }[] = [
   { id: 'butter', label: 'Butterworth' },
   { id: 'cheby1', label: 'Chebyshev I' },
   { id: 'cheby2', label: 'Chebyshev II' },
+  { id: 'ellip', label: 'Elliptic (Cauer)' },
   { id: 'fir', label: 'FIR (windowed sinc)' },
+  { id: 'remez', label: 'FIR (Parks–McClellan)' },
   { id: 'biquad', label: 'Biquad (RBJ cookbook)' },
   { id: 'manual', label: 'Manual — drag the z-plane' },
 ]
+
+const IIR_CLASSIC: FamilyId[] = ['butter', 'cheby1', 'cheby2', 'ellip']
 
 const RESPONSES: { id: ResponseType; label: string }[] = [
   { id: 'low', label: 'Low' },
@@ -159,6 +165,18 @@ export default function DesignMode() {
   const [win, setWin] = useState<DesignParams['window']>(() =>
     readStr<DesignParams['window']>(sp, 'win', 'hamming', WINDOWS.map((w) => w.id)),
   )
+  const [transHz, setTransHz] = useState(() => readNum(sp, 'tr', 60))
+  const [stopWeight, setStopWeight] = useState(() => readNum(sp, 'sw', 4))
+
+  // ---- spec designer state ----
+  const [specFp, setSpecFp] = useState(() => readNum(sp, 'sfp', 120))
+  const [specFs, setSpecFs] = useState(() => readNum(sp, 'sfs', 200))
+  const [specRp, setSpecRp] = useState(() => readNum(sp, 'srp', 1))
+  const [specRs, setSpecRs] = useState(() => readNum(sp, 'srs', 50))
+  const [specResp, setSpecResp] = useState<'low' | 'high'>(() =>
+    readStr<'low' | 'high'>(sp, 'srsp', 'low', ['low', 'high']),
+  )
+  const [showMask, setShowMask] = useState(() => readStr(sp, 'mask', '0', ['0', '1']) === '1')
 
   // manual z-plane state
   const [mPoles, setMPoles] = useState<Handle[]>([{ re: 0.6, im: 0.5 }])
@@ -189,8 +207,65 @@ export default function DesignMode() {
       gainDb,
       taps,
       window: win,
+      transHz,
+      stopWeight,
     }),
-    [family, response, order, cutoff, cutoffHi, rippleDb, stopDb, biquadType, q, gainDb, taps, win],
+    [
+      family,
+      response,
+      order,
+      cutoff,
+      cutoffHi,
+      rippleDb,
+      stopDb,
+      biquadType,
+      q,
+      gainDb,
+      taps,
+      win,
+      transHz,
+      stopWeight,
+    ],
+  )
+
+  // ---- spec-driven order estimates ----
+  const spec: FilterSpec = useMemo(
+    () => ({ fp: specFp, fs: specFs, rp: specRp, rs: specRs, fsamp: FS, response: specResp }),
+    [specFp, specFs, specRp, specRs, specResp],
+  )
+  const specValid = specResp === 'low' ? specFs > specFp : specFs < specFp
+  const orders = useMemo(() => (specValid ? estimateOrders(spec) : null), [spec, specValid])
+
+  // Apply one family from the spec table to the live design.
+  const applySpec = useCallback(
+    (fam: FamilyId) => {
+      if (!orders) return
+      setResponse(specResp)
+      setRippleDb(specRp)
+      setStopDb(specRs)
+      const passEdge = specFp
+      if (fam === 'remez') {
+        setFamily('remez')
+        setTaps(orders.firRemez)
+        setCutoff(passEdge)
+        setTransHz(Math.abs(specFs - specFp))
+      } else {
+        setFamily(fam)
+        // Chebyshev-II is specified at its stopband edge; the others at the passband edge.
+        setCutoff(fam === 'cheby2' ? specFs : passEdge)
+        const N =
+          fam === 'butter'
+            ? orders.butter
+            : fam === 'ellip'
+              ? orders.ellip
+              : fam === 'cheby2'
+                ? orders.cheby2
+                : orders.cheby1
+        setOrder(N)
+      }
+      setShowMask(true)
+    },
+    [orders, specResp, specRp, specRs, specFp, specFs],
   )
 
   const design: Design = useMemo(() => {
@@ -243,6 +318,14 @@ export default function DesignMode() {
       gdb: gainDb,
       tap: taps,
       win,
+      tr: transHz,
+      sw: stopWeight,
+      sfp: specFp,
+      sfs: specFs,
+      srp: specRp,
+      srs: specRs,
+      srsp: specResp,
+      mask: showMask ? '1' : '0',
       sig,
       nz: noise.toFixed(2),
     }).then((ok) => {
@@ -468,6 +551,46 @@ export default function DesignMode() {
     ctx.moveTo(0, y0)
     ctx.lineTo(w, y0)
     ctx.stroke()
+
+    // spec mask — the forbidden zones the response must avoid
+    if (showMask) {
+      const yOf = (db: number) => r.h - ((Math.max(lo, Math.min(hi, db)) - lo) / (hi - lo)) * r.h
+      const fpX = Math.min(1, specFp / NYQ) * r.w
+      const fsX = Math.min(1, specFs / NYQ) * r.w
+      const yRp = yOf(-specRp)
+      const yRs = yOf(-specRs)
+      ctx.fillStyle = 'rgba(251,113,133,0.14)'
+      if (specResp === 'low') {
+        // passband [0,fp] must stay above −Rp; stopband [fs,Nyq] must stay below −Rs
+        ctx.fillRect(0, yRp, fpX, r.h - yRp)
+        ctx.fillRect(fsX, 0, r.w - fsX, yRs)
+      } else {
+        // high-pass: passband [fp,Nyq] above −Rp; stopband [0,fs] below −Rs
+        ctx.fillRect(fpX, yRp, r.w - fpX, r.h - yRp)
+        ctx.fillRect(0, 0, fsX, yRs)
+      }
+      // mask boundary lines
+      ctx.strokeStyle = 'rgba(251,113,133,0.7)'
+      ctx.lineWidth = 1.2
+      ctx.setLineDash([5, 3])
+      ctx.beginPath()
+      if (specResp === 'low') {
+        ctx.moveTo(0, yRp)
+        ctx.lineTo(fpX, yRp)
+        ctx.moveTo(fsX, yRs)
+        ctx.lineTo(r.w, yRs)
+      } else {
+        ctx.moveTo(fpX, yRp)
+        ctx.lineTo(r.w, yRp)
+        ctx.moveTo(0, yRs)
+        ctx.lineTo(fsX, yRs)
+      }
+      ctx.stroke()
+      ctx.setLineDash([])
+      vMarker(ctx, r, Math.min(1, specFp / NYQ), 'rgba(251,113,133,0.55)')
+      vMarker(ctx, r, Math.min(1, specFs / NYQ), 'rgba(251,113,133,0.55)')
+    }
+
     seriesPlot(ctx, r, fr.magDb, lo, hi, '#5eead4', 2.4, 'rgba(94,234,212,0.10)')
     // cutoff markers
     vMarker(ctx, r, cutFrac, 'rgba(167,139,250,0.8)', `${Math.round(cutoff)}Hz`)
@@ -479,7 +602,21 @@ export default function DesignMode() {
     }
     axisLabel(ctx, `0`, 4, h - 6, 'left')
     axisLabel(ctx, `${NYQ} Hz`, w - 6, h - 6, 'right')
-  }, [fr, magSize, magRef, cutFrac, cutHiFrac, response, cutoff])
+  }, [
+    fr,
+    magSize,
+    magRef,
+    cutFrac,
+    cutHiFrac,
+    response,
+    cutoff,
+    showMask,
+    specFp,
+    specFs,
+    specRp,
+    specRs,
+    specResp,
+  ])
 
   useEffect(() => {
     const ctx = prepareContext(phRef.current, phSize)
@@ -559,7 +696,7 @@ export default function DesignMode() {
   // ---- readouts ----
   const passN = Math.round(cutoff)
   const isBand = response === 'band' || response === 'notch'
-  const rolloff = family === 'fir' ? '—' : `${design.order * 6} dB/oct`
+  const rolloff = design.kind === 'fir' ? '—' : `${design.order * 6} dB/oct`
 
   return (
     <div className="mode">
@@ -575,12 +712,15 @@ export default function DesignMode() {
           )}
         </Panel>
 
-        {(family === 'butter' || family === 'cheby1' || family === 'cheby2') && (
+        {IIR_CLASSIC.includes(family) && (
           <Panel title="Parameters">
             <Field label="Order" value={`${order}`}>
               <Slider min={1} max={10} step={1} value={order} onChange={(v) => setOrder(Math.round(v))} />
             </Field>
-            <Field label={isBand ? 'Low edge' : 'Cutoff'} value={`${passN} Hz`}>
+            <Field
+              label={isBand ? 'Low edge' : family === 'cheby2' ? 'Stopband edge' : 'Cutoff'}
+              value={`${passN} Hz`}
+            >
               <Slider min={10} max={NYQ - 10} step={1} value={cutoff} onChange={(v) => setCutoff(Math.round(v))} />
             </Field>
             {isBand && (
@@ -588,16 +728,50 @@ export default function DesignMode() {
                 <Slider min={10} max={NYQ - 5} step={1} value={cutoffHi} onChange={(v) => setCutoffHi(Math.round(v))} />
               </Field>
             )}
-            {family === 'cheby1' && (
+            {(family === 'cheby1' || family === 'ellip') && (
               <Field label="Passband ripple" value={`${rippleDb.toFixed(1)} dB`}>
                 <Slider min={0.1} max={6} step={0.1} value={rippleDb} onChange={setRippleDb} />
               </Field>
             )}
-            {family === 'cheby2' && (
+            {(family === 'cheby2' || family === 'ellip') && (
               <Field label="Stopband atten." value={`${Math.round(stopDb)} dB`}>
                 <Slider min={20} max={90} step={1} value={stopDb} onChange={(v) => setStopDb(Math.round(v))} />
               </Field>
             )}
+            {family === 'ellip' && (
+              <p className="hint">
+                The <em>optimal</em> IIR: equiripple in <em>both</em> bands, so it reaches a target
+                attenuation in the fewest poles of any classic family — watch the transmission zeros
+                (○) sit right on the unit circle to notch the stopband.
+              </p>
+            )}
+          </Panel>
+        )}
+
+        {family === 'remez' && (
+          <Panel title="Parks–McClellan (Remez)">
+            <Field label="Taps" value={`${taps | 1}`}>
+              <Slider min={7} max={161} step={2} value={taps} onChange={(v) => setTaps(Math.round(v))} />
+            </Field>
+            <Field label={isBand ? 'Low edge' : 'Passband edge'} value={`${passN} Hz`}>
+              <Slider min={10} max={NYQ - 10} step={1} value={cutoff} onChange={(v) => setCutoff(Math.round(v))} />
+            </Field>
+            {isBand && (
+              <Field label="High edge" value={`${Math.round(cutoffHi)} Hz`}>
+                <Slider min={10} max={NYQ - 5} step={1} value={cutoffHi} onChange={(v) => setCutoffHi(Math.round(v))} />
+              </Field>
+            )}
+            <Field label="Transition width" value={`${Math.round(transHz)} Hz`}>
+              <Slider min={5} max={150} step={1} value={transHz} onChange={(v) => setTransHz(Math.round(v))} />
+            </Field>
+            <Field label="Stopband weight" value={`${stopWeight.toFixed(1)}×`}>
+              <Slider min={0.5} max={20} step={0.5} value={stopWeight} onChange={setStopWeight} />
+            </Field>
+            <p className="hint">
+              The <em>optimal</em> linear-phase FIR: the Remez exchange equalises the ripple so the
+              worst-case error is as small as possible. Raise the stopband weight to trade passband
+              flatness for a deeper stopband — the ripples rebalance live.
+            </p>
           </Panel>
         )}
 
@@ -680,6 +854,66 @@ export default function DesignMode() {
               Edit on z-plane →
             </Button>
           )}
+        </Panel>
+
+        <Panel title="Design to a spec">
+          <p className="hint">
+            State your tolerances; get the <em>minimum</em> order of every family that meets them.
+            One click designs it, and the spec mask is drawn on the magnitude plot.
+          </p>
+          <Field label="Response">
+            <Segmented
+              value={specResp}
+              options={[
+                { id: 'low', label: 'Low-pass' },
+                { id: 'high', label: 'High-pass' },
+              ]}
+              onChange={setSpecResp}
+            />
+          </Field>
+          <Field label="Passband edge fₚ" value={`${Math.round(specFp)} Hz`}>
+            <Slider min={10} max={NYQ - 10} step={1} value={specFp} onChange={(v) => setSpecFp(Math.round(v))} />
+          </Field>
+          <Field label="Stopband edge f_s" value={`${Math.round(specFs)} Hz`}>
+            <Slider min={10} max={NYQ - 5} step={1} value={specFs} onChange={(v) => setSpecFs(Math.round(v))} />
+          </Field>
+          <Field label="Passband ripple Rₚ" value={`${specRp.toFixed(1)} dB`}>
+            <Slider min={0.1} max={3} step={0.1} value={specRp} onChange={setSpecRp} />
+          </Field>
+          <Field label="Stopband atten. R_s" value={`${Math.round(specRs)} dB`}>
+            <Slider min={20} max={100} step={1} value={specRs} onChange={(v) => setSpecRs(Math.round(v))} />
+          </Field>
+          {!specValid && (
+            <p className="hint" style={{ color: '#fca5a5' }}>
+              {specResp === 'low'
+                ? 'For a low-pass, the stopband edge must sit above the passband edge.'
+                : 'For a high-pass, the stopband edge must sit below the passband edge.'}
+            </p>
+          )}
+          {orders && (
+            <div className="spec-table">
+              {(
+                [
+                  ['butter', 'Butterworth', `order ${orders.butter}`],
+                  ['cheby1', 'Chebyshev I', `order ${orders.cheby1}`],
+                  ['cheby2', 'Chebyshev II', `order ${orders.cheby2}`],
+                  ['ellip', 'Elliptic', `order ${orders.ellip}`],
+                  ['remez', 'Parks–McClellan', `${orders.firRemez} taps`],
+                ] as [FamilyId, string, string][]
+              ).map(([fam, label, detail]) => (
+                <div className="spec-row" key={fam}>
+                  <span className="spec-name">{label}</span>
+                  <span className="spec-cost">{detail}</span>
+                  <Button variant="ghost" onClick={() => applySpec(fam)}>
+                    Design →
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ marginTop: 8 }}>
+            <Toggle label="Draw spec mask" checked={showMask} onChange={setShowMask} />
+          </div>
         </Panel>
 
         <Panel title="Listen (A / B)">

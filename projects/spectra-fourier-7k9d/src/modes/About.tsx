@@ -139,6 +139,43 @@ export default function About() {
       </div>
 
       <div className="card">
+        <h3>Optimal filter design — elliptic &amp; Parks–McClellan</h3>
+        <p>
+          Butterworth spends its whole ripple budget on being flat; Chebyshev lets one band ripple to
+          buy a steeper skirt. Push that idea to its limit — ripple equally in <em>both</em> bands —
+          and you get the <strong>elliptic (Cauer)</strong> filter, the <em>most selective</em> IIR
+          shape that exists for a given order. Its stopband is a row of notches (transmission zeros
+          that sit right on the unit circle), and building it needs the machinery of{' '}
+          <strong>Jacobi elliptic functions</strong>: we compute the complete elliptic integral{' '}
+          <code>K(m)</code> by the arithmetic–geometric mean, the functions <code>sn/cn/dn</code> by
+          the descending Landen transformation, the <strong>degree equation</strong> that fixes the
+          selectivity from the order and the ripple ratio (through the theta/nome series), and a
+          complex inverse <code>sn</code> to place the poles — all from scratch.
+        </p>
+        <div className="formula">min ‖ W(ω)·[D(ω) − A(ω)] ‖∞  ⇒  equiripple error at r+1 frequencies</div>
+        <p>
+          The FIR twin is <strong>Parks–McClellan</strong>. Instead of windowing a sinc, it finds the
+          linear-phase filter whose <em>worst-case</em> weighted error is as small as possible — the
+          Chebyshev (minimax) optimum. By the <strong>alternation theorem</strong>, that filter is the
+          unique one whose error ripples with equal amplitude and alternating sign at exactly{' '}
+          <code>r+1</code> frequencies, and the <strong>Remez exchange</strong> hunts those
+          frequencies down: guess them, solve for the deviation <code>δ</code> in closed form,
+          interpolate, then relocate the extrema to the error's peaks and repeat until the ripples
+          equalise. Weight the stopband more heavily and the ripples rebalance — deeper rejection for
+          a little passband ripple.
+        </p>
+        <p>
+          The <strong>“design to a spec”</strong> panel inverts the whole question. Give it your
+          tolerances — passband edge, stopband edge, ripple <code>Rₚ</code>, attenuation{' '}
+          <code>R_s</code> — and the classic order formulas (<code>buttord</code>,{' '}
+          <code>cheb1ord</code>, <code>ellipord</code> — the ratio of elliptic integrals — and the
+          Kaiser FIR-length estimate) return the <em>minimum</em> order of each family that meets
+          them. The spec mask drawn over the magnitude plot is the contract; watch each filter kiss
+          it, and watch the elliptic reach the floor in the fewest poles.
+        </p>
+      </div>
+
+      <div className="card">
         <h3>Beyond one dimension</h3>
         <div className="formula">X[k,l] = Σₘ Σₙ x[m,n] · e^(−2πi(km/M + ln/N))</div>
         <p>

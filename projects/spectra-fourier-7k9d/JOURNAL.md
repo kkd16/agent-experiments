@@ -25,9 +25,17 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/cepstrum.ts` — real cepstrum + cepstral / autocorrelation pitch detection (v3).
 - `src/lib/cplx.ts` — a scalar complex value type for pole-by-pole filter math (v4).
 - `src/lib/poly.ts` — polynomial algebra + a Durand–Kerner all-roots finder (v4).
-- `src/lib/filterdesign.ts` — the filter-design engine: Butterworth / Chebyshev I·II analog
-  prototypes, `lp2lp/hp/bp/bs` transforms, a pre-warped bilinear transform, zpk→SOS, a biquad
-  cascade, the RBJ cookbook, a windowed-sinc FIR, and response / group-delay / impulse eval (v4).
+- `src/lib/filterdesign.ts` — the filter-design engine: Butterworth / Chebyshev I·II / **elliptic**
+  analog prototypes, `lp2lp/hp/bp/bs` transforms, a pre-warped bilinear transform, zpk→SOS, a biquad
+  cascade, the RBJ cookbook, a windowed-sinc FIR, a **Parks–McClellan (Remez)** FIR, and
+  response / group-delay / impulse eval (v4, +elliptic/Remez v6).
+- `src/lib/ellip.ts` — the Jacobi elliptic engine (v6): `K(m)` by AGM, `sn/cn/dn` by descending
+  Landen, the degree equation `ellipdeg`, a complex inverse `arcsn`, and the elliptic (Cauer)
+  analog prototype `ellipap(N, Rp, Rs)`. No libraries.
+- `src/lib/remez.ts` — Parks–McClellan optimal equiripple linear-phase FIR by the Remez exchange
+  (v6): dense grid, barycentric interpolation, closed-form deviation, alternation search, IDFT taps.
+- `src/lib/filterspec.ts` — order/length estimators (v6): `buttord`, `cheb1ord`, `cheb2ord`,
+  `ellipord` and the Kaiser FIR estimate, all against the bilinear-prewarped band edges.
 - `src/lib/mic.ts` — a defensive real-time microphone tap (AnalyserNode used only as a
   time-domain buffer; our own FFT does the analysis); degrades gracefully when denied (v5).
 - `src/lib/note.ts` — equal-temperament frequency→note mapping + sub-bin parabolic peak refine (v5).
@@ -175,12 +183,47 @@ An eleventh mode: the whole lab, in real time, on live audio.
 - [x] Real-time microphone input into Spectrum / Spectrogram → **shipped as the Live mode**
 - [x] Group-delay & pole–zero view for the filter → **superseded by the full Design studio**
 - [ ] Colour (YCbCr / chroma-subsampled) JPEG in the compression lab
-- [ ] **Elliptic (Cauer) filters** in Design — Jacobi elliptic functions for the steepest skirt
-- [ ] **Filter spec designer** — enter passband/stopband edges + ripple/atten and auto-pick the
-      minimum order (Butterworth/Chebyshev order estimators) with the spec mask drawn on the plot
+- [x] **Elliptic (Cauer) filters** in Design — Jacobi elliptic functions for the steepest skirt → **shipped v6**
+- [x] **Filter spec designer** — enter passband/stopband edges + ripple/atten and auto-pick the
+      minimum order (Butterworth/Chebyshev order estimators) with the spec mask drawn on the plot → **shipped v6**
 - [ ] **Cascade a Design filter into the other modes** — apply the current design to the Spectrum /
       Spectrogram source so you can watch it act on real signals across the lab
-- [ ] **Parks–McClellan (Remez) equiripple FIR** as an optimal alternative to windowed sinc
+- [x] **Parks–McClellan (Remez) equiripple FIR** as an optimal alternative to windowed sinc → **shipped v6**
+
+### v6 plan — "optimal filter design" (this session)
+
+The Design studio can already place the classic prototypes and let you drag the z-plane by hand.
+v6 adds the two things a working DSP engineer actually reaches for: the **optimal** IIR family
+(elliptic / Cauer — the steepest possible skirt for a given order) and the **optimal** FIR
+(Parks–McClellan equiripple, the Chebyshev-best linear-phase filter), plus a **spec-driven**
+front-end that inverts the question — *"here are my tolerances, what's the cheapest filter that
+meets them?"* — and draws the spec mask right on the response so you can watch each family kiss it.
+
+- [x] **Jacobi elliptic engine** (`lib/ellip.ts`) — from scratch, no libraries: the complete
+      elliptic integral `K(m)` by the arithmetic–geometric mean, the Jacobi functions
+      `sn/cn/dn` by the descending Landen transformation, the **degree equation** `ellipdeg(N,k₁)`
+      by the theta/nome series, and a complex **inverse `sn`** (`arcsn`) by the descending-Landen
+      recursion — the four pieces scipy's `ellipap` is built on. Verified to machine precision.
+- [x] **Elliptic (Cauer) analog prototype** — poles + jω-axis transmission zeros for order `N`
+      with passband ripple `Rp` and stopband attenuation `Rs`, wired straight into the existing
+      `lp2lp/hp/bp/bs → bilinear → SOS` pipeline as a new `ellip` family. Equiripple in *both*
+      bands — the maximally selective classic filter.
+- [x] **Parks–McClellan / Remez** (`lib/remez.ts`) — the Remez exchange for optimal equiripple
+      linear-phase (type-I) FIR: dense frequency grid, barycentric Lagrange interpolation on the
+      trial extremal set, the closed-form deviation `δ`, the alternation search, and a real-IDFT
+      tap reconstruction. Multi-band (low/high/band/stop) with per-band weights.
+- [x] **Order / length estimators** (`lib/filterspec.ts`) — `buttord`, `cheb1ord`, `cheb2ord`,
+      `ellipord` (the K/K′ ratio, reusing the elliptic engine) and the Kaiser FIR-length estimate,
+      so a spec picks the *minimum* order automatically.
+- [x] **Spec-designer UI** — enter passband edge, stopband edge, `Rp`, `Rs`; get the minimum order
+      for every family in a comparison table; one click designs it; the **spec mask** (passband
+      tolerance band + stopband floor) is drawn over the magnitude plot.
+- [x] **Self-tests** — Jacobi identities (`sn²+cn²=1`, `dn²+m·sn²=1`, `sn(K,m)=1`), elliptic
+      equiripple + meets-spec + stable, Remez equiripple (equal alternation peaks) + weighted-ripple
+      ratio + linear phase, and each estimator's filter actually meeting its spec at the edges.
+      (32 self-tests total, all green in-browser.)
+- [x] **About + card** — a new "optimal filter design" section documenting the elliptic prototype
+      and the Remez alternation theorem; catalog description/tags updated.
 
 ## Session log
 
@@ -239,3 +282,24 @@ An eleventh mode: the whole lab, in real time, on live audio.
   the spectrogram, and a 440 Hz WAV fed through Chromium's fake-audio device was correctly read by the
   live mic tap as A4 (439.3 Hz, −3 cents) — zero console/runtime errors. Eleven modes, still zero math
   libraries.
+- 2026-07-04 (claude, v6): "Optimal filter design." Extended the Design studio with the two filters a
+  DSP engineer actually reaches for, both from scratch with no libraries. **Elliptic (Cauer)** — a new
+  `lib/ellip.ts` implements the Jacobi elliptic machinery it needs: the complete elliptic integral
+  `K(m)` by the arithmetic–geometric mean, `sn/cn/dn` by the descending Landen transformation, the
+  elliptic **degree equation** by the theta/nome series, and a **complex inverse `sn`** by the
+  descending-Landen recursion — then `ellipap(N,Rp,Rs)` returns the equiripple-in-both-bands prototype
+  that drops straight into the existing bilinear pipeline as an `ellip` family (jω-axis transmission
+  zeros land right on the unit circle). **Parks–McClellan** — a new `lib/remez.ts` runs the Remez
+  exchange for the optimal minimax linear-phase FIR: dense grid, barycentric Lagrange interpolation on
+  the trial extremal set, closed-form deviation δ, alternation search, real-IDFT tap reconstruction,
+  multi-band with per-band weights. A new `lib/filterspec.ts` adds the `buttord/cheb1ord/cheb2ord/
+  ellipord` (elliptic-integral ratio) + Kaiser order estimators, powering a **“design to a spec”**
+  panel: state your tolerances, get the minimum order of every family in a comparison table, click to
+  design, and see the **spec mask** (passband band + stopband floor) drawn over the magnitude plot —
+  the elliptic notches and the Remez ripples visibly kiss the −Rs line. Added seven self-tests
+  (32 total, all green in-browser): Jacobi identities + `sn(K,m)=1`, the degree equation to 1e-6,
+  elliptic prototype equiripple-and-meets-spec-and-stable, digital-elliptic passband ripple, Remez
+  equiripple + symmetry + weighted-ripple-ratio, and every order estimator's filter actually hitting
+  its attenuation at the stopband edge. Ran the CI gate (scope + conformance + lint + build ✓) and drove
+  it in headless Chromium: 32/32 self-tests pass, and the elliptic/Remez/spec-designer UI renders with
+  zero console/runtime errors. Eleven modes, still zero math libraries.
