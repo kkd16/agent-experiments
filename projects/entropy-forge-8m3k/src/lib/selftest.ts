@@ -45,6 +45,12 @@ import {
   type FilterStrategy,
 } from './png.ts'
 import { PNG_VECTORS, base64ToBytes, fnv1a } from './pngVectors.ts'
+import { GF256 } from './galois.ts'
+import { HAMMING_7_4, HAMMING_8_4, decodeSecDed, hammingFamily } from './hamming.ts'
+import { encodeLinear, decodeLinear, repetitionCode } from './linearCode.ts'
+import { rsEncode, rsDecode } from './reedSolomon.ts'
+import { CONV_7_5, CONV_171_133, convEncode, viterbiDecode, freeDistance } from './convolutional.ts'
+import { LDPC_DEMO, ldpcEncode, ldpcMessage, ldpcSyndromeZero, bpDecodeLLR, bscLLR } from './ldpc.ts'
 
 export interface TestCase {
   group: string
@@ -333,7 +339,198 @@ export function runSelfTest(): TestCase[] {
   // ---- PNG codec (from scratch, on our own DEFLATE) ----
   runPngTests(results)
 
+  // ---- Channel coding (Shannon's other theorem) ----
+  runChannelTests(results)
+
   return results
+}
+
+// The channel-coding pillar earns its own correctness gate: every error-
+// correcting code must decode∘channel∘encode = identity for every corruption
+// within its guarantee, and flag or fail gracefully beyond it. Uses a
+// deterministic LCG so the run is reproducible.
+function runChannelTests(results: TestCase[]): void {
+  let s = 0x1234abcd >>> 0
+  const rnd = () => {
+    s = (1103515245 * s + 12345) >>> 0
+    return s >>> 8
+  }
+  const eq = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i])
+
+  // --- GF(256) field axioms ---
+  {
+    let inverses = true
+    for (let a = 1; a < 256 && inverses; a++) if (GF256.mul(a, GF256.inv(a)) !== 1) inverses = false
+    results.push({ group: 'GF(256) field', name: 'a·a⁻¹ = 1 for all 255 non-zero elements', pass: inverses, detail: 'exp/log tables consistent' })
+    results.push({ group: 'GF(256) field', name: 'α⁸ = 0x1D (primitive poly 0x11D)', pass: GF256.pow(2, 8) === 0x1d, detail: `α⁸ = 0x${GF256.pow(2, 8).toString(16)}` })
+    let distributes = true
+    for (let t = 0; t < 500 && distributes; t++) {
+      const a = rnd() & 0xff, b = rnd() & 0xff, c = rnd() & 0xff
+      if (GF256.mul(a, b ^ c) !== (GF256.mul(a, b) ^ GF256.mul(a, c))) distributes = false
+    }
+    results.push({ group: 'GF(256) field', name: 'distributivity a·(b⊕c) = a·b ⊕ a·c', pass: distributes, detail: '500 random triples' })
+  }
+
+  // --- Hamming(7,4): exhaustive single-error correction ---
+  {
+    let ok = true
+    let checks = 0
+    for (let m = 0; m < 16; m++) {
+      const msg = [(m >> 3) & 1, (m >> 2) & 1, (m >> 1) & 1, m & 1]
+      const cw = encodeLinear(HAMMING_7_4, msg)
+      for (let e = 0; e < 7; e++) {
+        const r = cw.slice()
+        r[e] ^= 1
+        checks++
+        if (!eq(decodeLinear(HAMMING_7_4, r).message, msg)) ok = false
+      }
+    }
+    results.push({ group: 'Hamming(7,4)', name: 'every single-bit error in every codeword corrected', pass: ok, detail: `${checks} exhaustive cases (16 msgs × 7 positions)` })
+    results.push({ group: 'Hamming(7,4)', name: 'minimum distance d = 3, t = 1', pass: HAMMING_7_4.d === 3 && HAMMING_7_4.t === 1, detail: `d=${HAMMING_7_4.d}` })
+  }
+
+  // --- Extended Hamming(8,4) SEC-DED: correct singles, detect doubles ---
+  {
+    let singles = true, doubles = true, cs = 0, cd = 0
+    for (let m = 0; m < 16; m++) {
+      const msg = [(m >> 3) & 1, (m >> 2) & 1, (m >> 1) & 1, m & 1]
+      const cw = encodeLinear(HAMMING_8_4, msg)
+      for (let e = 0; e < 8; e++) {
+        const r = cw.slice(); r[e] ^= 1; cs++
+        const d = decodeSecDed(r)
+        if (d.status !== 'corrected' || !eq(d.message, msg)) singles = false
+      }
+      for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) {
+        const r = cw.slice(); r[a] ^= 1; r[b] ^= 1; cd++
+        if (decodeSecDed(r).status !== 'double-error-detected') doubles = false
+      }
+    }
+    results.push({ group: 'Extended Hamming(8,4) · SEC-DED', name: 'all single errors corrected', pass: singles, detail: `${cs} cases` })
+    results.push({ group: 'Extended Hamming(8,4) · SEC-DED', name: 'all double errors detected (not mis-corrected)', pass: doubles, detail: `${cd} cases, d=${HAMMING_8_4.d}` })
+  }
+
+  // --- Hamming family scaling ---
+  {
+    const h15 = hammingFamily(4), h31 = hammingFamily(5)
+    let ok15 = true
+    for (let t = 0; t < 200 && ok15; t++) {
+      const msg = Array.from({ length: 11 }, () => rnd() & 1)
+      const cw = encodeLinear(h15, msg)
+      const e = rnd() % 15
+      const r = cw.slice(); r[e] ^= 1
+      if (!eq(decodeLinear(h15, r).message, msg)) ok15 = false
+    }
+    results.push({ group: 'Hamming family', name: '(15,11) corrects any single error', pass: ok15 && h15.d === 3, detail: '200 random trials' })
+    results.push({ group: 'Hamming family', name: '(31,26) parameters', pass: h31.n === 31 && h31.k === 26 && h31.d === 3, detail: `d=${h31.d}` })
+    const rep = repetitionCode(5)
+    results.push({ group: 'Linear codes', name: 'Repetition(5,1): d=5, corrects 2', pass: rep.d === 5 && rep.t === 2, detail: `d=${rep.d}` })
+  }
+
+  // --- Reed–Solomon: errors, bursts, erasures, and mixed ---
+  {
+    const configs: [number, number][] = [[15, 11], [26, 16], [26, 9], [40, 20], [255, 223]]
+    let errOk = true, burstOk = true, eraseOk = true, mixOk = true
+    let ce = 0, cb = 0, cr = 0, cm = 0
+    for (const [n, k] of configs) {
+      const t = Math.floor((n - k) / 2)
+      const nsym = n - k
+      for (let trial = 0; trial < 80; trial++) {
+        const msg = Array.from({ length: k }, () => rnd() & 0xff)
+        const cw = rsEncode(msg, nsym)
+        // random errors up to t
+        {
+          const r = cw.slice()
+          const ne = rnd() % (t + 1)
+          const used = new Set<number>()
+          for (let i = 0; i < ne; i++) { let p = rnd() % n; while (used.has(p)) p = rnd() % n; used.add(p); r[p] = (r[p] + 1 + (rnd() & 0x7f)) & 0xff }
+          ce++
+          try { if (!eq(rsDecode(r, nsym).message, msg)) errOk = false } catch { errOk = false }
+        }
+        // burst of t
+        {
+          const r = cw.slice()
+          const start = rnd() % (n - t)
+          for (let i = 0; i < t; i++) r[start + i] = (r[start + i] + 1 + (rnd() & 0x7f)) & 0xff
+          cb++
+          try { if (!eq(rsDecode(r, nsym).message, msg)) burstOk = false } catch { burstOk = false }
+        }
+        // erasures up to 2t
+        {
+          const r = cw.slice()
+          const neras = rnd() % (2 * t + 1)
+          const used = new Set<number>()
+          const epos: number[] = []
+          for (let i = 0; i < neras; i++) { let p = rnd() % n; while (used.has(p)) p = rnd() % n; used.add(p); epos.push(p); r[p] = rnd() & 0xff }
+          cr++
+          try { if (!eq(rsDecode(r, nsym, epos).message, msg)) eraseOk = false } catch { eraseOk = false }
+        }
+        // mixed: a errors + b erasures with 2a+b ≤ 2t
+        {
+          const r = cw.slice()
+          const a = rnd() % (t + 1)
+          const b = rnd() % (2 * t - 2 * a + 1)
+          const used = new Set<number>()
+          const epos: number[] = []
+          for (let i = 0; i < b; i++) { let p = rnd() % n; while (used.has(p)) p = rnd() % n; used.add(p); epos.push(p); r[p] = rnd() & 0xff }
+          for (let i = 0; i < a; i++) { let p = rnd() % n; while (used.has(p)) p = rnd() % n; used.add(p); r[p] = (r[p] + 1 + (rnd() & 0x7f)) & 0xff }
+          cm++
+          try { if (!eq(rsDecode(r, nsym, epos).message, msg)) mixOk = false } catch { mixOk = false }
+        }
+      }
+    }
+    results.push({ group: 'Reed–Solomon', name: 'up to t random symbol errors corrected', pass: errOk, detail: `${ce} trials across 5 (n,k)` })
+    results.push({ group: 'Reed–Solomon', name: 'burst of t contiguous errors corrected', pass: burstOk, detail: `${cb} trials — RS's home turf` })
+    results.push({ group: 'Reed–Solomon', name: 'up to 2t erasures corrected', pass: eraseOk, detail: `${cr} trials` })
+    results.push({ group: 'Reed–Solomon', name: 'mixed errors+erasures within 2a+b ≤ 2t', pass: mixOk, detail: `${cm} trials (errata locator)` })
+  }
+
+  // --- Convolutional codes + Viterbi ---
+  {
+    results.push({ group: 'Convolutional', name: '(7,5) free distance = 5', pass: freeDistance(CONV_7_5) === 5, detail: `d_free=${freeDistance(CONV_7_5)}` })
+    results.push({ group: 'Convolutional', name: '(171,133) free distance = 10', pass: freeDistance(CONV_171_133) === 10, detail: `d_free=${freeDistance(CONV_171_133)}` })
+    for (const code of [CONV_7_5, CONV_171_133]) {
+      let clean = true, single = true, cc = 0
+      for (let trial = 0; trial < 120; trial++) {
+        const bits = Array.from({ length: 20 + (rnd() % 30) }, () => rnd() & 1)
+        const { coded } = convEncode(code, bits, true)
+        if (!eq(viterbiDecode(code, coded, { terminate: true }).bits, bits)) clean = false
+        const r = coded.slice(); r[rnd() % coded.length] ^= 1
+        cc++
+        if (!eq(viterbiDecode(code, r, { terminate: true }).bits, bits)) single = false
+      }
+      results.push({ group: 'Convolutional', name: `${code.name}: clean round-trip`, pass: clean, detail: '120 random streams' })
+      results.push({ group: 'Convolutional', name: `${code.name}: any single channel error corrected`, pass: single, detail: `${cc} trials, hard-decision Viterbi` })
+    }
+    // soft decision on exact BPSK samples decodes clean
+    let soft = true
+    for (let trial = 0; trial < 60; trial++) {
+      const bits = Array.from({ length: 30 }, () => rnd() & 1)
+      const { coded } = convEncode(CONV_171_133, bits, true)
+      const samples = coded.map((b) => (b === 0 ? 1 : -1))
+      if (!eq(viterbiDecode(CONV_171_133, samples, { soft: true, terminate: true }).bits, bits)) soft = false
+    }
+    results.push({ group: 'Convolutional', name: 'soft-decision Viterbi on BPSK samples', pass: soft, detail: '60 trials, Euclidean metric' })
+  }
+
+  // --- LDPC + belief propagation ---
+  {
+    const code = LDPC_DEMO
+    let valid = true, recover = true, single = true, cs = 0
+    for (let trial = 0; trial < 200; trial++) {
+      const msg = Array.from({ length: code.k }, () => rnd() & 1)
+      const cw = ldpcEncode(code, msg)
+      if (!ldpcSyndromeZero(code, cw)) valid = false
+      if (!eq(ldpcMessage(code, cw), msg)) recover = false
+      const r = cw.slice(); r[rnd() % code.n] ^= 1
+      cs++
+      const dec = bpDecodeLLR(code, bscLLR(r, 0.05), 50)
+      if (!dec.success || !eq(dec.bits, cw)) single = false
+    }
+    results.push({ group: 'LDPC · belief propagation', name: `${code.name}: every encoded word is a valid codeword`, pass: valid, detail: 'H·cᵀ = 0, 200 msgs' })
+    results.push({ group: 'LDPC · belief propagation', name: 'systematic message recovery', pass: recover, detail: 'info columns read back exactly' })
+    results.push({ group: 'LDPC · belief propagation', name: 'BP corrects any single-bit error', pass: single, detail: `${cs} trials, sum-product LLR decode` })
+    results.push({ group: 'LDPC · belief propagation', name: 'code is genuinely low-density', pass: code.colWeight <= 3 && code.rowWeight <= 6, detail: `col wt ${code.colWeight}, row wt ${code.rowWeight}` })
+  }
 }
 
 // A from-scratch PNG codec deserves the suite's highest bar: an exhaustive
