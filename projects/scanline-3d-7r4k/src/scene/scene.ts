@@ -702,6 +702,94 @@ const iridescence = (): SceneConfig => {
   }
 }
 
+// A caustic sphere — the v12 photon-mapping showcase. A single clear glass sphere resting on
+// a checker floor under one bright, near-overhead sun. Unidirectional path tracing renders the
+// floor beneath the sphere as a flat shadow (it cannot find the light *back through* the glass);
+// the photon pass shoots light forward through the sphere, which acts as a lens and focuses it
+// into the bright caustic that pools around the sphere's shadow. Turn the Caustics section on
+// (the scene does it for you) and compare the caustic-only view against the beauty.
+const causticSphere = (): SceneConfig => {
+  const glassMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.5, attenuation: [0, 0, 0], dispersion: 0 }
+  return {
+    name: 'Caustic Sphere',
+    ground: true,
+    groundTexture: 'checker',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.82, 0.82, 0.85], 0.1, 16, 0, 0, 0.75),
+    objects: [
+      { id: 'ball', meshKind: 'sphere', position: [0, 0.85, 0], scale: 0.85, spin: 0, tiltSpin: 0, baseRotation: [0, 0, 0], material: glassMat, texture: 'none', normalMap: 'none' },
+    ],
+    lights: [
+      { type: 'dir', direction: normalize([-0.18, -0.97, -0.16]) as Vec3, color: [1, 0.97, 0.9], intensity: 3.2 },
+    ],
+    ambient: [0.1, 0.12, 0.16],
+    bgTop: [0.06, 0.09, 0.15],
+    bgBottom: [0.14, 0.15, 0.2],
+    fogColor: [0.1, 0.12, 0.16],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 0.35, 0], yaw: 0.5, pitch: 0.34, distance: 5.4 },
+  }
+}
+
+// A caustic ring — a glass torus lit at a low angle throws the classic *cardioid* caustic (the
+// heart-shaped curl of light you see at the bottom of a coffee cup): rays entering the curved
+// inner wall focus onto a cusped curve on the floor. Pure L(S⁺)D transport the path tracer
+// misses entirely; the photon map draws it.
+const causticRing = (): SceneConfig => {
+  const glassMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.5, attenuation: [0, 0, 0], dispersion: 0 }
+  return {
+    name: 'Caustic Ring',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.85, 0.85, 0.88], 0.1, 16, 0, 0, 0.8),
+    objects: [
+      { id: 'ring', meshKind: 'torus', position: [0, 0.62, 0], scale: 1.0, spin: 0, tiltSpin: 0, baseRotation: [1.15, 0, 0], material: glassMat, texture: 'none', normalMap: 'none' },
+    ],
+    lights: [
+      { type: 'dir', direction: normalize([0.32, -0.72, -0.6]) as Vec3, color: [1, 0.96, 0.88], intensity: 3.0 },
+    ],
+    ambient: [0.1, 0.12, 0.16],
+    bgTop: [0.06, 0.09, 0.14],
+    bgBottom: [0.13, 0.14, 0.19],
+    fogColor: [0.1, 0.12, 0.16],
+    fogDensity: 0,
+    sky: DEFAULT_SKY,
+    view: { target: [0, 0.25, 0.2], yaw: 0.3, pitch: 0.42, distance: 5.6 },
+  }
+}
+
+// A rainbow — the v10 backlog wish, delivered: a dense-flint prism refracts a collimated sun and
+// paints a real *dispersed* spectrum band onto a white floor. Because a photon carries a single
+// wavelength through the glass, each colour bends by its own SF10 index — violet most, red least —
+// so the deposits fan out by wavelength and the CIE reconstruction reads as a continuous rainbow.
+// This is a caustic the path tracer cannot make: the spectrum is only ever seen *through* the
+// glass, never thrown onto a surface, until light is traced forward. Spectral caustics on.
+const rainbow = (): SceneConfig => {
+  const prismMat: Material = { albedo: [1, 1, 1], specular: 0.9, shininess: 130, rim: 0, metallic: 0, roughness: 0, transmission: 1, ior: 1.728, attenuation: [0, 0, 0], dispersion: 1.5, glass: 'sf10' }
+  return {
+    name: 'Rainbow',
+    ground: true,
+    groundTexture: 'none',
+    groundNormalMap: 'none',
+    groundMaterial: mat([0.9, 0.9, 0.92], 0.05, 12, 0, 0, 0.9),
+    objects: [
+      { id: 'prism', meshKind: 'prism', position: [0, 1.5, 0], scale: 1.8, spin: 0, tiltSpin: 0, baseRotation: [0, Math.PI / 2, 0.62], material: prismMat, texture: 'none', normalMap: 'none' },
+    ],
+    lights: [
+      { type: 'dir', direction: normalize([-0.05, -0.86, -0.5]) as Vec3, color: [1, 1, 1], intensity: 4.5 },
+    ],
+    ambient: [0.05, 0.06, 0.09],
+    bgTop: [0.05, 0.07, 0.12],
+    bgBottom: [0.1, 0.11, 0.15],
+    fogColor: [0, 0, 0],
+    fogDensity: 0,
+    sky: { ...DEFAULT_SKY, zenith: [0.05, 0.07, 0.12], horizon: [0.1, 0.11, 0.14], ground: [0.05, 0.05, 0.06], sunDir: normalize([0.05, 0.86, 0.5]) as Vec3, sunColor: [0, 0, 0], sunIntensity: 0, intensity: 1 },
+    view: { target: [0, 0.6, 0], yaw: 0.2, pitch: 0.28, distance: 6.6 },
+  }
+}
+
 export const PRESETS: Record<string, () => SceneConfig> = {
   showcase,
   interior,
@@ -718,6 +806,9 @@ export const PRESETS: Record<string, () => SceneConfig> = {
   iridescence,
   cathedral,
   nebula,
+  causticSphere,
+  causticRing,
+  rainbow,
   implicit: implicitScene,
   custom: customScene,
 }
@@ -738,6 +829,9 @@ export const PRESET_LABELS: { key: string; label: string }[] = [
   { key: 'iridescence', label: 'Iridescence' },
   { key: 'cathedral', label: 'Cathedral' },
   { key: 'nebula', label: 'Nebula' },
+  { key: 'causticSphere', label: 'Caustic Sphere' },
+  { key: 'causticRing', label: 'Caustic Ring' },
+  { key: 'rainbow', label: 'Rainbow' },
   { key: 'implicit', label: 'Implicit (SDF)' },
   { key: 'custom', label: 'Custom OBJ' },
 ]

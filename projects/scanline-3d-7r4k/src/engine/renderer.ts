@@ -31,7 +31,7 @@ import type { SceneConfig } from '../scene/scene.ts'
 import { lerp3 } from '../math/vec.ts'
 import { clamp01 } from '../math/scalar.ts'
 import { RayTracer } from '../raytrace/raytracer.ts'
-import type { RTCamera, RTMode, RTView } from '../raytrace/raytracer.ts'
+import type { RTCamera, RTMode, RTView, CausticSettings } from '../raytrace/raytracer.ts'
 import type { DenoiseSettings } from '../raytrace/denoise.ts'
 import type { RTInstance } from '../raytrace/rtscene.ts'
 import type { RTLighting } from '../raytrace/tracer.ts'
@@ -62,6 +62,7 @@ export interface RTSettings {
   denoise: DenoiseSettings // v6 — À-Trous / SVGF-lite denoiser config
   view: RTView // what the RT pane presents (beauty / noisy / feature buffers / wipe)
   medium: MediumSettings // v7 — volumetric participating media (fog / haze / smoke / nebula)
+  caustics: CausticSettings // v12 — photon-mapped caustics (focused/dispersed light on receivers)
 }
 
 export interface RenderSettings {
@@ -377,6 +378,11 @@ export class Renderer {
     const f3 = `${cam.fx.toFixed(3)},${cam.fy.toFixed(3)},${cam.fz.toFixed(3)}`
     const med = rt.medium
     const medKey = med.enabled ? `${med.preset}:${med.density}:${med.g}` : '0'
+    // caustics only make sense under the RGB / spectral path integrator (not AO); the
+    // spectral photon path is enabled automatically for the spectral/hero modes.
+    const caustics: CausticSettings | null = rt.mode === 'ao'
+      ? null
+      : { ...rt.caustics, spectral: rt.caustics.spectral || rt.mode === 'spectral' || rt.mode === 'hero' }
     const resetKey = [
       geomKey, e3, f3, rt.mode, rt.maxBounces, rt.heroCount, rt.mis ? 1 : 0, rt.softShadows ? 1 : 0,
       rt.sunSoftness, rt.lightRadius, rt.aoRadius, settings.environment ? 1 : 0,
@@ -387,7 +393,7 @@ export class Renderer {
     const rtH = Math.max(16, Math.round(fb.height * rt.resolutionScale))
     this.rayTracer.step(
       cam, light, rt.mode, settings.post, rtW, rtH, RT_BUDGET_MS, resetKey,
-      rt.denoise, rt.view, rt.splitPos,
+      rt.denoise, rt.view, rt.splitPos, caustics, geomKey,
     )
 
     const stats = emptyStats()

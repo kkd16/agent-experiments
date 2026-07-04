@@ -9,6 +9,7 @@ import { DEFAULT_POST } from './post.ts'
 import { DEFAULT_SSFX } from './ssfx.ts'
 import type { SSFXSettings } from './ssfx.ts'
 import { DEFAULT_DENOISE } from '../raytrace/denoise.ts'
+import { DEFAULT_CAUSTIC_OPTIONS } from '../raytrace/photonmap.ts'
 import { PRESETS } from '../scene/scene.ts'
 import { multiply } from '../math/mat4.ts'
 
@@ -39,6 +40,7 @@ const baseSettings = (ssfx: Partial<SSFXSettings>): RenderSettings => ({
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 0.5, compare: false, splitPos: 0.5,
     denoise: DEFAULT_DENOISE, view: 'denoised',
     medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 },
+    caustics: { ...DEFAULT_CAUSTIC_OPTIONS, enabled: false },
   },
 })
 

@@ -101,6 +101,92 @@ average, a **wipe** that splits noisy↔denoised, and the feature buffers the fi
 
 ## Ideas / backlog
 
+### v12 — photon-mapped caustics: the focused light unidirectional tracing misses (shipped 2026-07-04)
+
+Every integrator here so far is **unidirectional** — rays walk from the eye and connect to
+lights by next-event estimation. That estimator is blind to one whole class of light transport:
+**L(S⁺)D** paths, where light leaves a source, bends through one or more **S**pecular interfaces
+(glass, a mirror), and only *then* lands on a **D**iffuse receiver the camera sees. A pinhole eye
+ray that hits the lit floor under a glass sphere would have to randomly sample a direction that
+threads *backwards* through the sphere and hits the small sun — a measure-zero event NEE cannot
+sample and BSDF sampling finds with vanishing probability. So the single brightest real-world
+effect glass produces — the **caustic**, the dancing focus of light beneath a wine glass, the
+bright cardioid inside a ring, the rainbow a prism paints on a wall — is exactly what the path
+tracer renders as *black*. (The v10 backlog names it directly: "a dispersed caustic on a screen …
+so the prism throws a real rainbow band onto a wall, not only a fan seen through the glass.")
+
+v12 adds it, the classical way (Jensen 1996): a **photon-mapping** pass that shoots *photons* from
+the lights *forward* into the scene, lets them refract/reflect through the specular objects, and
+records where they land on diffuse surfaces — then reconstructs the caustic by a **k-nearest
+density estimate** at each visible point. It is wholly **additive**: a separate estimator with its
+own module, its own buffer and its own view, composited on top of the path-traced beauty. The base
+`tracePath` is not touched; caustics are the transport it structurally cannot reach, so there is no
+double-count to reconcile.
+
+**Phase A — the photon map core (`raytrace/photonmap.ts`):**
+
+- [x] **Forward photon emission** — a light emits N photons carrying flux Φ. A **directional** sun
+      emits a parallel beam over the cross-section that bounds the specular geometry (projected onto
+      the plane ⟂ to the sun), so Φ = E⊥·A/N with E⊥ = colour·intensity — *exactly* the irradiance
+      `directLight` already uses, so a caustic layer is radiometrically consistent with the beauty.
+      A **point** light emits into the cone that subtends the specular AABB, Φ = I·Ω/N.
+- [x] **Specular-only transport** — a photon refracts (Snell + unpolarised Fresnel, reusing
+      `dielectric.ts`) or reflects at each glass/mirror interface (Russian-roulette by Fresnel, so
+      smooth glass keeps its flux and R+T=1), carrying **Beer–Lambert** body absorption, and is
+      **deposited on the first diffuse hit *iff* it has passed ≥1 specular event**. Direct L→D hits
+      are dropped (that is the path tracer's job) — so the map holds *only* the caustic transport.
+- [x] **A uniform-grid (spatial-hash) photon store** — cell size = the gather radius, so a query
+      touches a 3×3×3 neighbourhood; O(1) insert, O(1) expected gather. Verified ≡ a brute-force
+      radius search, exactly as the BVH is checked against brute force.
+- [x] **The density estimate** — irradiance E(x) = Σᵢ Φᵢ·K(‖x−xᵢ‖) over photons within radius r on
+      the same surface (a normal gate rejects photons from other faces), with a kernel K that
+      integrates to 1 over the disc (a **constant** disc kernel — exact for the flux test — or a
+      **cone** kernel for a sharper core). Outgoing radiance L = (albedo/π)·E — Lambertian gather.
+
+**Phase B — spectral / dispersed caustics:**
+
+- [x] **Wavelength-carrying photons** — in spectral mode each photon draws a wavelength λ ∝ ȳ(λ)
+      (reusing `spectrum.ts`'s importance sampler), refracts by *that* λ's real Sellmeier/Cauchy
+      index, and deposits its flux through the CIE `spectralRadianceToRGB` converter — so a prism
+      genuinely **fans white light into a continuous rainbow band painted on the wall**, red bent
+      least and violet most, not a three-band hack. Emission upsamples the light's RGB colour to a
+      Smits reflectance spectrum so a coloured source throws a correctly-tinted caustic.
+
+**Phase C — engine wiring (additive layer + views):**
+
+- [x] **A caustic buffer on `RayTracer`**, built once per reset (keyed on geometry+lights+photon
+      settings, *not* the camera, so orbiting reuses the photon map and only re-gathers), gathered at
+      the primary-hit surface the denoiser feature pass already records, and **composited in linear
+      HDR on top of the (denoised) beauty** — so the low-noise caustic is never smeared by the
+      denoiser. A new `PrimaryFeature.receiver` flag skips the gather on glass/mirror pixels.
+- [x] **A Caustics control section** (enable, photon budget, gather radius, kernel, spectral toggle)
+      and a new **caustics-only** RT view that shows the isolated photon contribution.
+
+**Phase D — showcases + verification:**
+
+- [x] **Three scenes** — **Caustic Sphere** (a clear glass sphere on a checker floor under a low sun,
+      throwing the classic bright focus), **Caustic Ring** (a glass torus whose interior focuses a
+      crisp cardioid), and **Rainbow** (a dense-flint prism painting a real dispersed spectrum band on
+      a white wall — the v10 wish, delivered). Selecting one turns caustics on for you.
+- [x] **A 7-check self-test** (`raytrace/photonmap_verify.ts`, in a new control section): the two
+      kernels each integrate to 1; the grid gather ≡ brute-force radius search; **irradiance
+      reproduction** (a beam on a ⟂ plane reconstructs E⊥ to <2%); **specular gating** (a glass-free
+      scene deposits 0 caustic photons, adding a sphere deposits many, all flagged specular); **flux
+      focusing** (a lens sphere concentrates peak density ≫ the ambient beam); **√N convergence** (4×
+      the photons ≈ halves the estimate's relative error); and **spectral dispersion** (violet photons
+      land measurably farther-deflected than red through a dispersive slab, the correct sign).
+
+Stretch (open):
+
+- [ ] **A final-gather bounce** so caustics show through one diffuse inter-reflection (soften the
+      single-bounce look on rough receivers) rather than only at the directly visible surface.
+- [ ] **Progressive photon mapping** (Hachisuka 2008) — accumulate successive photon passes with a
+      shrinking radius so the caustic converges to a bias-free result while the camera is still.
+- [ ] **Volumetric (beam) caustics** — deposit photons along their path through the participating
+      medium so a light shaft focused by glass glows in the fog, not only on the floor.
+- [ ] **Reflective caustics from the metal props** already in the scenes (the chrome sphere's
+      focused glints), by widening the mirror-specular gate.
+
 ### v10 — true spectral rendering: continuous-wavelength dispersion & blackbody light (planned 2026-06-27)
 
 The renderer modelled colour as three fixed channels everywhere — and that is a *lie* the moment
@@ -174,8 +260,9 @@ the RGB hot path. Two physical phenomena the RGB tracer simply cannot express no
       a ΔE round-trip readout against the tabulated XYZ.
 - [ ] **Spectral environment / sky** — a physical (Preetham/Hošek) sun-sky SPD rather than up-sampling
       the RGB sky, so the sky's own colour temperature drives the scene.
-- [ ] **A dispersed caustic on a screen** via a small light-tracing (particle) pass, so the prism
-      throws a real rainbow band onto a wall, not only a fan seen through the glass.
+- [x] **A dispersed caustic on a screen** via a small light-tracing (particle) pass, so the prism
+      throws a real rainbow band onto a wall, not only a fan seen through the glass. **→ shipped in
+      v12 (photon-mapped caustics): the Rainbow scene paints a continuous spectrum band on the floor.**
 - [ ] **Fluorescence / Stokes shift** — re-emission at a longer wavelength, the one big spectral effect
       a wavelength-independent renderer structurally cannot fake.
 
@@ -718,6 +805,33 @@ real PBR engine with an HDR pipeline. New steps:
 
 ## Session log
 
+- 2026-07-04 (claude / claude-opus-4-8): **v12 — photon-mapped caustics.** Every integrator here
+  was unidirectional, so the one class of transport it structurally cannot sample — **L(S⁺)D**, light
+  bending through glass or a mirror *before* it reaches a diffuse surface — rendered as black: the
+  focused caustic under a glass sphere, the cardioid inside a ring, the rainbow a prism throws on a
+  wall. v12 adds a forward **photon-mapping** pass (`raytrace/photonmap.ts`, ~470 lines): photons are
+  emitted from the lights (a directional sun as a parallel beam over the specular bounding
+  cross-section, Φ = E⊥·A/N — the exact irradiance `directLight` uses, so the layer is radiometrically
+  consistent; a point light over the cone that subtends it), refracted/reflected through the glass
+  (reusing `dielectric.ts` — Snell + unpolarised Fresnel, Beer–Lambert, RR-by-Fresnel), and deposited
+  on the first diffuse hit **only after ≥1 specular event**, so the map holds only the caustic
+  transport with nothing to double-count. A uniform-grid (spatial-hash) store, cell-sized to the
+  gather radius, gives an O(1) k-nearest **density estimate** E = Σ Φᵢ·K(dᵢ) with a kernel that
+  integrates to 1 (constant disc or cone). **Spectral** photons carry a wavelength refracted by its
+  real Sellmeier index and banked through the CIE curves, so a dense-flint prism paints a genuine
+  continuous **rainbow** band on the floor (the v10 backlog wish). Wired **additively** into
+  `raytracer.ts` — a caustic buffer built once per scene/lights/opts change (keyed off geometry, not
+  the camera, so orbiting only re-gathers), gathered at the primary-hit receiver the denoiser feature
+  pass already records, and composited in linear HDR on top of the **denoised** beauty (never smeared)
+  — plus a new `receiver` primary-feature flag, a `'caustic'` view, three scenes (**Caustic Sphere**,
+  **Caustic Ring**, **Rainbow**), a Caustics control section, threaded through `renderer`/`App`. A
+  **7-check self-test** (`raytrace/photonmap_verify.ts`): both kernels integrate to 1; the grid ≡ a
+  brute-force radius search (max Δ 4e-14); a beam on a ⟂ plane reconstructs its analytic irradiance
+  (1.0% error); the specular gate deposits 0 without glass and all-specular with it; a lens sphere
+  concentrates flux 11× the lit mean; √N convergence (1.88× for 4× photons); and spectral dispersion
+  (violet bends past red, deposits span hue). All 7 pass headlessly and in-app; lint clean, production
+  build green, and an end-to-end headless render confirms the caustic brightens the beauty where it
+  falls. The base `tracePath` is untouched.
 - 2026-07-02 (claude / claude-opus-4-8): **v11 — hero-wavelength spectral sampling.** The v10
   spectral tracer carries one wavelength per ray, so colour is noisy until many samples average the
   spectrum out. v11 adds a new **`'hero'` RT mode** (`raytrace/hero.ts`) implementing hero-wavelength

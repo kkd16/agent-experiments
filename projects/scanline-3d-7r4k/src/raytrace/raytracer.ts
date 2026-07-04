@@ -19,6 +19,9 @@ import { Rng, hashSeed } from './sampling.ts'
 import type { Vec3 } from '../math/vec.ts'
 import { Denoiser } from './denoise.ts'
 import type { DenoiseSettings } from './denoise.ts'
+import { PhotonMap } from './photonmap.ts'
+import type { CausticOptions, PhotonStats } from './photonmap.ts'
+import type { Light } from '../render/shading.ts'
 
 export interface RTCamera {
   ex: number; ey: number; ez: number // eye
@@ -33,8 +36,13 @@ export type RTMode = 'path' | 'ao' | 'spectral' | 'hero'
 
 // What the denoiser-aware resolve presents. 'denoised' is the beauty; the rest are
 // debug views into the pipeline (the raw average, the feature buffers, the variance
-// field) and a side-by-side noisy↔denoised wipe.
-export type RTView = 'denoised' | 'noisy' | 'split' | 'albedo' | 'normal' | 'variance'
+// field), a side-by-side noisy↔denoised wipe, and the isolated caustic layer.
+export type RTView = 'denoised' | 'noisy' | 'split' | 'albedo' | 'normal' | 'variance' | 'caustic'
+
+// v12 — photon-mapped caustics config: the emitter/gather options plus an enable flag.
+export interface CausticSettings extends CausticOptions {
+  enabled: boolean
+}
 
 const MAX_SPP = 2048 // stop refining once every pixel has this many samples
 // Above this sample count the raw average is already clean: skip the denoiser so a
@@ -60,8 +68,17 @@ export class RayTracer {
   private featNormal = new Float32Array(0)
   private featPos = new Float32Array(0)
   private featMask = new Uint8Array(0)
+  private featRecv = new Uint8Array(0) // 1 where the primary hit is a diffuse caustic receiver
   private featuresDirty = true
   private denoiseSig = '' // cache key so the filter only re-runs when its input changes
+  // v12 — photon-mapped caustics: the photon map (rebuilt only when scene/lights/opts change),
+  // a per-pixel caustic radiance layer (gathered at the primary hit), and their cache keys.
+  private readonly photonMap = new PhotonMap()
+  private caustic = new Float32Array(0)
+  private photonKey = '' // scene + lights + photon options → when to rebuild the map
+  private causticGatherKey = '' // + camera/features → when to re-gather the layer
+  private causticOn = false
+  photonStats: PhotonStats | null = null
   passes = 0 // completed full passes since the last reset
   minSamples = 0 // the least-sampled pixel (drives "converged?" + the HUD)
   private scene: RTScene | null = null
@@ -106,6 +123,8 @@ export class RayTracer {
     this.featNormal = new Float32Array(n3)
     this.featPos = new Float32Array(n3)
     this.featMask = new Uint8Array(n1)
+    this.featRecv = new Uint8Array(n1)
+    this.caustic = new Float32Array(n3)
     this.out = new Framebuffer(w, h)
     this.resetAccum()
   }
@@ -119,6 +138,7 @@ export class RayTracer {
     this.minSamples = 0
     this.featuresDirty = true
     this.denoiseSig = ''
+    this.causticGatherKey = '' // features changed → re-gather the caustic layer
   }
 
   // Refine the image for up to `budgetMs`, then tone-map it. The accumulation
@@ -127,6 +147,7 @@ export class RayTracer {
     cam: RTCamera, light: RTLighting, mode: RTMode, post: PostSettings,
     w: number, h: number, budgetMs: number, resetKey: string,
     den: DenoiseSettings, view: RTView, splitPos: number,
+    caustics: CausticSettings | null, geomKey: string,
   ): void {
     this.ensureBuffers(w, h)
     if (resetKey !== this.resetKey) {
@@ -147,6 +168,10 @@ export class RayTracer {
       this.computeFeatures(cam, ctx)
       this.featuresDirty = false
     }
+    // v12 — the photon-mapped caustic layer. The map depends only on geometry + lights +
+    // options (not the camera), so orbiting reuses it and only re-gathers; the gather depends
+    // on the camera through the feature buffers. Both are cached by their own keys.
+    this.updateCaustics(caustics, light.lights, geomKey)
     if (this.minSamples >= MAX_SPP) {
       this.resolve(post, mode, den, view, splitPos)
       return
@@ -265,7 +290,7 @@ export class RayTracer {
   // get mask=0 (and a neutral albedo so the demodulate divide is well-defined).
   private computeFeatures(cam: RTCamera, ctx: RTContext): void {
     const W = this.W, H = this.H
-    const feat: PrimaryFeature = { hit: false, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, ar: 1, ag: 1, ab: 1 }
+    const feat: PrimaryFeature = { hit: false, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, ar: 1, ag: 1, ab: 1, receiver: false }
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const ndcX = (2 * (x + 0.5)) / W - 1
@@ -282,16 +307,76 @@ export class RayTracer {
         const o = p * 3
         if (feat.hit) {
           this.featMask[p] = 1
+          this.featRecv[p] = feat.receiver ? 1 : 0
           this.featPos[o] = feat.px; this.featPos[o + 1] = feat.py; this.featPos[o + 2] = feat.pz
           this.featNormal[o] = feat.nx; this.featNormal[o + 1] = feat.ny; this.featNormal[o + 2] = feat.nz
           this.featAlbedo[o] = feat.ar; this.featAlbedo[o + 1] = feat.ag; this.featAlbedo[o + 2] = feat.ab
         } else {
           this.featMask[p] = 0
+          this.featRecv[p] = 0
           this.featPos[o] = 0; this.featPos[o + 1] = 0; this.featPos[o + 2] = 0
           this.featNormal[o] = 0; this.featNormal[o + 1] = 0; this.featNormal[o + 2] = 0
           this.featAlbedo[o] = 1; this.featAlbedo[o + 1] = 1; this.featAlbedo[o + 2] = 1
         }
       }
+    }
+  }
+
+  // Build the photon-mapped caustic layer. The photon map is a function of geometry +
+  // lights + options only, so it is rebuilt on `photonKey` (no camera) and reused while the
+  // camera orbits; the per-pixel gather additionally depends on the camera through the
+  // feature buffers, so it re-runs on `causticGatherKey` (which folds in the reset key).
+  private updateCaustics(caustics: CausticSettings | null, lights: Light[], geomKey: string): void {
+    this.causticOn = !!caustics && caustics.enabled
+    if (!this.causticOn || !this.scene || !this.bvh) {
+      if (!this.causticOn) { this.photonKey = ''; this.photonStats = null }
+      return
+    }
+    const c = caustics as CausticSettings
+    // a compact, stable signature of the lights that cast caustics
+    let lightSig = ''
+    for (const l of lights) {
+      lightSig += l.type === 'dir'
+        ? `d${l.direction.map((x) => x.toFixed(2)).join(',')}`
+        : `p${l.position.map((x) => x.toFixed(2)).join(',')}`
+      lightSig += `:${l.color.map((x) => x.toFixed(2)).join(',')}:${l.intensity.toFixed(2)};`
+    }
+    // intensity is only a gather multiplier, not a photon-position input — keep it out of the
+    // build key (it lives in the gather key below) so dragging it never rebuilds the map.
+    const optKey = `${c.photons}|${c.radius}|${c.kernel}|${c.spectral ? 1 : 0}|${c.maxBounces}|${c.mirror ? 1 : 0}`
+    const photonKey = `${geomKey}||${lightSig}||${optKey}`
+    if (photonKey !== this.photonKey) {
+      this.photonMap.build(this.scene, this.bvh, lights, c)
+      this.photonStats = this.photonMap.stats
+      this.photonKey = photonKey
+      this.causticGatherKey = '' // a fresh map forces a re-gather
+    }
+    // re-gather when the map or the camera/features changed (resetAccum clears the key)
+    const gatherKey = `${photonKey}||${this.resetKey}||${this.W}x${this.H}||${c.intensity}`
+    if (gatherKey === this.causticGatherKey) return
+    this.causticGatherKey = gatherKey
+    this.gatherCaustics()
+  }
+
+  // Gather the caustic irradiance at each visible receiver point (the primary hit the
+  // feature pass recorded) and write the outgoing radiance into `this.caustic`.
+  private gatherCaustics(): void {
+    const n = this.W * this.H
+    const out = new Float64Array(3)
+    if (!this.photonMap.hasPhotons()) { this.caustic.fill(0); return }
+    for (let p = 0; p < n; p++) {
+      const o = p * 3
+      if (!this.featMask[p] || !this.featRecv[p]) {
+        this.caustic[o] = 0; this.caustic[o + 1] = 0; this.caustic[o + 2] = 0
+        continue
+      }
+      this.photonMap.estimate(
+        this.featPos[o], this.featPos[o + 1], this.featPos[o + 2],
+        this.featNormal[o], this.featNormal[o + 1], this.featNormal[o + 2],
+        this.featAlbedo[o], this.featAlbedo[o + 1], this.featAlbedo[o + 2],
+        out,
+      )
+      this.caustic[o] = out[0]; this.caustic[o + 1] = out[1]; this.caustic[o + 2] = out[2]
     }
   }
 
@@ -361,6 +446,13 @@ export class RayTracer {
       hdr.set(this.featAlbedo.subarray(0, n * 3))
       return
     }
+    // the isolated caustic layer, on black — what the photon map alone contributes
+    if (view === 'caustic') {
+      const cst = this.caustic
+      if (this.causticOn) hdr.set(cst.subarray(0, n * 3))
+      else hdr.fill(0, 0, n * 3)
+      return
+    }
     if (view === 'normal') {
       for (let p = 0; p < n; p++) {
         const o = p * 3
@@ -384,6 +476,10 @@ export class RayTracer {
       }
       return
     }
+    // the caustic layer is added in linear HDR on top of the (denoised) beauty, so the
+    // low-noise photon contribution is never smeared by the denoiser.
+    const cOn = this.causticOn
+    const cst = this.caustic
     if (view === 'split') {
       const splitX = Math.round(Math.min(0.95, Math.max(0.05, splitPos)) * W)
       for (let y = 0; y < H; y++) {
@@ -391,13 +487,21 @@ export class RayTracer {
           const p = y * W + x
           const o = p * 3
           const src = x < splitX ? mean : beauty
-          hdr[o] = src[o]; hdr[o + 1] = src[o + 1]; hdr[o + 2] = src[o + 2]
+          if (cOn) {
+            hdr[o] = src[o] + cst[o]; hdr[o + 1] = src[o + 1] + cst[o + 1]; hdr[o + 2] = src[o + 2] + cst[o + 2]
+          } else {
+            hdr[o] = src[o]; hdr[o + 1] = src[o + 1]; hdr[o + 2] = src[o + 2]
+          }
         }
       }
       return
     }
     const src = view === 'noisy' ? mean : beauty
-    hdr.set(src.subarray(0, n * 3))
+    if (cOn) {
+      for (let i = 0; i < n * 3; i++) hdr[i] = src[i] + cst[i]
+    } else {
+      hdr.set(src.subarray(0, n * 3))
+    }
   }
 
   // Used when there is no geometry: paint the sky so the viewport isn't blank.

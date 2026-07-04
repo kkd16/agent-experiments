@@ -9,6 +9,7 @@ import { Renderer } from '../engine/renderer.ts'
 import type { RenderSettings } from '../engine/renderer.ts'
 import { DEFAULT_POST } from '../render/post.ts'
 import { DEFAULT_SSFX } from '../render/ssfx.ts'
+import { DEFAULT_CAUSTIC_OPTIONS } from './photonmap.ts'
 import { PRESETS } from '../scene/scene.ts'
 
 export interface DenoiseTest {
@@ -74,7 +75,8 @@ const baseRender = (over: Partial<RenderSettings> = {}, rtOver: Partial<RenderSe
     mode: 'path', maxBounces: 4, heroCount: 4, mis: true, softShadows: true, sunSoftness: 1.5,
     lightRadius: 0.25, aoRadius: 1.5, resolutionScale: 1, compare: false, splitPos: 0.5,
     denoise: DEFAULT_DENOISE, view: 'denoised',
-    medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 }, ...rtOver,
+    medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 },
+    caustics: { ...DEFAULT_CAUSTIC_OPTIONS, enabled: false }, ...rtOver,
   },
   ...over,
 })
