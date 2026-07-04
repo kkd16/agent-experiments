@@ -18,6 +18,8 @@ import type { ThinFilmTest } from '../raytrace/thinfilm_verify.ts'
 import { MEDIUM_PRESETS } from '../raytrace/medium.ts'
 import { runMediumSelfTest } from '../raytrace/medium_verify.ts'
 import type { MediumTest } from '../raytrace/medium_verify.ts'
+import { runPhotonSelfTest } from '../raytrace/photonmap_verify.ts'
+import type { PhotonTest } from '../raytrace/photonmap_verify.ts'
 import { runSpectralSelfTest } from '../raytrace/spectral_verify.ts'
 import type { SpectralTest } from '../raytrace/spectral_verify.ts'
 import { runHeroSelfTest } from '../raytrace/hero_verify.ts'
@@ -126,6 +128,7 @@ export default function Controls(props: Props) {
   const setTransp = (patch: Partial<TransparencySettings>): void => set({ transparency: { ...settings.transparency, ...patch } })
   const setDen = (patch: Partial<DenoiseSettings>): void => setRT({ denoise: { ...settings.rt.denoise, ...patch } })
   const setMed = (patch: Partial<RTSettings['medium']>): void => setRT({ medium: { ...settings.rt.medium, ...patch } })
+  const setCaust = (patch: Partial<RTSettings['caustics']>): void => setRT({ caustics: { ...settings.rt.caustics, ...patch } })
   const activeMode = MODES.find((m) => m.key === settings.mode) ?? MODES[0]
   const post = settings.post
   const rt = settings.rt
@@ -233,6 +236,16 @@ export default function Controls(props: Props) {
       setHeroTesting(false)
     }, 30)
   }
+  const [photonTests, setPhotonTests] = useState<PhotonTest[] | null>(null)
+  const [photonTesting, setPhotonTesting] = useState(false)
+  const runPhoton = (): void => {
+    setPhotonTesting(true)
+    setPhotonTests(null)
+    setTimeout(() => {
+      setPhotonTests(runPhotonSelfTest())
+      setPhotonTesting(false)
+    }, 30)
+  }
   const activeSdf = SDF_PRESETS.find((p) => p.key === props.sdfPreset) ?? SDF_PRESETS[0]
   const rtViews: { key: RTView; label: string }[] = [
     { key: 'denoised', label: 'Denoised' },
@@ -241,6 +254,7 @@ export default function Controls(props: Props) {
     { key: 'albedo', label: 'Albedo' },
     { key: 'normal', label: 'Normal' },
     { key: 'variance', label: 'Variance' },
+    { key: 'caustic', label: 'Caustics' },
   ]
 
   const models: { key: ShadingModel; label: string }[] = [
@@ -535,6 +549,65 @@ export default function Controls(props: Props) {
                 Beer–Lambert, and a multiple-scattering furnace for energy conservation.
               </p>
               {medTests.map((t) => (
+                <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
+                  {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
+                </p>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {isRT && rt.mode !== 'ao' && (
+        <Section title="Caustics — photon-mapped focused light">
+          <div className="toggles">
+            <Toggle label="Photon caustics" value={rt.caustics.enabled} onChange={(v) => setCaust({ enabled: v })} />
+            <Toggle label="Spectral (rainbow)" value={rt.caustics.spectral} onChange={(v) => setCaust({ spectral: v })} />
+          </div>
+          {rt.caustics.enabled && (
+            <>
+              <div className="seg seg-wrap">
+                {(['constant', 'cone'] as const).map((k) => (
+                  <button key={k} className={rt.caustics.kernel === k ? 'active' : ''} onClick={() => setCaust({ kernel: k })} type="button">
+                    {k === 'cone' ? 'Cone kernel' : 'Disc kernel'}
+                  </button>
+                ))}
+              </div>
+              <Slider
+                label="Photons" value={rt.caustics.photons} min={50_000} max={800_000} step={50_000}
+                onChange={(v) => setCaust({ photons: v })} format={(v) => `${(v / 1000).toFixed(0)}k`}
+              />
+              <Slider
+                label="Gather radius" value={rt.caustics.radius} min={0.03} max={0.4} step={0.01}
+                onChange={(v) => setCaust({ radius: v })} format={(v) => v.toFixed(2)}
+              />
+              <Slider
+                label="Brightness" value={rt.caustics.intensity} min={0.2} max={3} step={0.1}
+                onChange={(v) => setCaust({ intensity: v })} format={(v) => `${v.toFixed(1)}×`}
+              />
+            </>
+          )}
+          <p className="blurb">
+            A forward <em>photon-mapping</em> pass (Jensen 1996) for the one thing the path tracer
+            structurally cannot render: <em>L(S⁺)D</em> transport — light that bends through glass
+            or a mirror <em>before</em> reaching a diffuse surface. Photons are shot from the lights,
+            refracted/reflected through the specular objects, deposited where they land, and gathered
+            by a k-nearest density estimate — the bright <em>caustic</em> under a glass sphere, the
+            cardioid inside a ring, the rainbow a prism paints on the floor. Additive, composited on
+            top of the beauty; best on a still frame. Try <em>Caustic Sphere</em>, <em>Caustic
+            Ring</em> &amp; <em>Rainbow</em>, or the <em>Caustics</em> view to see the layer alone.
+          </p>
+          <button className="reset" onClick={runPhoton} type="button" disabled={photonTesting} style={{ width: '100%' }}>
+            {photonTesting ? 'Running…' : 'Run caustics self-test'}
+          </button>
+          {photonTests && (
+            <div className="rt-tests">
+              <p className="blurb">
+                {photonTests.filter((t) => t.pass).length}/{photonTests.length} checks passed — kernel
+                normalisation, grid ≡ brute force, irradiance reproduction, the specular gate, flux
+                focusing, √N convergence, and spectral dispersion.
+              </p>
+              {photonTests.map((t) => (
                 <p key={t.name} className={`obj-msg ${t.pass ? 'ok' : 'err'}`}>
                   {t.pass ? '✓' : '✗'} {t.name} — {t.detail}
                 </p>

@@ -7,6 +7,8 @@ import { DEFAULT_POST } from './render/post.ts'
 import { DEFAULT_SSFX } from './render/ssfx.ts'
 import { DEFAULT_TRANSPARENCY } from './render/oit.ts'
 import { DEFAULT_DENOISE } from './raytrace/denoise.ts'
+import { DEFAULT_CAUSTIC_OPTIONS } from './raytrace/photonmap.ts'
+import type { CausticOptions } from './raytrace/photonmap.ts'
 import { parseOBJ, SAMPLE_OBJ } from './geometry/obj.ts'
 import { buildSdf } from './sdf/scenes.ts'
 import { marchingCubes, fitMesh } from './sdf/marchingcubes.ts'
@@ -43,12 +45,21 @@ const DEFAULT_SETTINGS: RenderSettings = {
     denoise: DEFAULT_DENOISE,
     view: 'denoised',
     medium: { enabled: false, preset: 'haze', density: 1, g: 0.55 },
+    caustics: { ...DEFAULT_CAUSTIC_OPTIONS, enabled: false },
   },
 }
 
 // Scenes that are built for global illumination — selecting one flips to the ray
 // tracer so they don't read as a flat rasterized box.
-const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula'])
+const RT_SCENES = new Set(['cornell', 'reflections', 'glass', 'prism', 'cathedral', 'nebula', 'causticSphere', 'causticRing', 'rainbow'])
+
+// Scenes built for the v12 photon-mapped caustics — selecting one switches to the ray
+// tracer AND turns the caustic pass on with fitting photon settings.
+const CAUSTIC_SCENES: Record<string, Partial<CausticOptions>> = {
+  causticSphere: { radius: 0.13, kernel: 'cone', photons: 300_000, intensity: 1.1 },
+  causticRing: { radius: 0.1, kernel: 'cone', photons: 320_000, intensity: 1.2 },
+  rainbow: { radius: 0.09, kernel: 'cone', photons: 500_000, spectral: true, intensity: 1.3 },
+}
 
 // Scenes built for the v10 spectral path tracer — selecting one switches to the ray tracer
 // AND to the spectral mode, since a real rainbow / Planckian colour only exists there.
@@ -96,7 +107,17 @@ export default function App() {
   const choosePreset = (key: string): void => {
     setPreset(key)
     const med = MEDIUM_SCENES[key]
-    if (SPECTRAL_SCENES.has(key)) {
+    const caust = CAUSTIC_SCENES[key]
+    if (caust) {
+      // caustics live on a still, converged frame — freeze auto-rotate so the photon map is
+      // built once (manual orbit then only re-gathers, which is cheap) instead of every frame.
+      setSettings((s) => ({
+        ...s,
+        engine: 'rt',
+        autoRotate: false,
+        rt: { ...s.rt, mode: s.rt.mode === 'spectral' || s.rt.mode === 'hero' ? s.rt.mode : 'path', caustics: { ...s.rt.caustics, enabled: true, ...caust } },
+      }))
+    } else if (SPECTRAL_SCENES.has(key)) {
       setSettings((s) => ({ ...s, engine: 'rt', rt: { ...s.rt, mode: 'spectral' } }))
     } else if (RT_SCENES.has(key) || med) {
       setSettings((s) => ({

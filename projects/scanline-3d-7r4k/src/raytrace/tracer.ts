@@ -736,6 +736,7 @@ export interface PrimaryFeature {
   px: number; py: number; pz: number
   nx: number; ny: number; nz: number
   ar: number; ag: number; ab: number
+  receiver: boolean // a diffuse caustic receiver (opaque, not a sharp mirror) — gather photons here
 }
 
 // Trace one primary ray and read the surface it hits (no lighting). Returns the
@@ -746,12 +747,14 @@ export function primaryFeature(
   ctx: RTContext, out: PrimaryFeature,
 ): void {
   const hit = ctx.bvh.closest(ox, oy, oz, dx, dy, dz, 1e-4, 1e30, tmpHit)
-  if (!hit) { out.hit = false; return }
+  if (!hit) { out.hit = false; out.receiver = false; return }
   const s = surfaceAt(ctx.scene, hit.tri, hit.u, hit.v, dx, dy, dz)
   out.hit = true
   out.px = s.px; out.py = s.py; out.pz = s.pz
   out.nx = s.nx; out.ny = s.ny; out.nz = s.nz
   out.ar = s.br; out.ag = s.bg; out.ab = s.bb
+  // a caustic falls on a diffuse receiver — skip glass (it refracts) and sharp mirrors
+  out.receiver = s.mat.transmission === 0 && !(s.mat.metallic > 0.9 && s.mat.roughness < 0.08)
 }
 
 // Pure ambient occlusion: one cosine-weighted hemisphere ray per call (accumulated
