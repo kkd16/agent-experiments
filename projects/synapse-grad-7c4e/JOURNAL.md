@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Sixteen labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Twenty labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -153,8 +153,21 @@ gradient is hand-derived and the tape is hand-rolled). Sixteen labs share the on
   spaghetti of sampled plausible functions, and the honest **held-out NLL**. The Gaussian NLL, the
   variational KL and a whole Bayes-by-Backprop MLP are gradchecked end-to-end (~1e-9); the self-test
   now covers **67 checks**.
+- **Neuromorphic · SNN** — a from-scratch **spiking neural network** of **leaky integrate-and-fire**
+  neurons trained by **surrogate-gradient back-propagation-through-time** (Neftci et al., 2019). A
+  spike `S = 1[U ≥ θ]` is a Heaviside step with a zero derivative, so a spiking net is not
+  differentiable; the surrogate gradient keeps the hard binary spike on the forward pass and
+  substitutes a smooth backward derivative — and the lab proves the trick exact (each surrogate is a
+  matched `(f, f′)` pair, `softSpike` gradchecks to ~1e-9, the hard and soft ops share the *identical*
+  backward, and a whole unrolled spiking net gradchecks end-to-end through BPTT to ~2e-8). It
+  classifies the procedural glyphs encoded into spike trains (constant-current / Poisson-rate /
+  latency) through LIF layers feeding a leaky-integrator readout, and the headline is the **spike
+  raster** — the whole population firing, neurons × time — beside membrane-potential traces, a
+  per-class readout race, the surrogate-gradient plot itself, and a firing-rate/sparsity **energy**
+  panel (it hits ~100% held-out accuracy at ~86% sparsity — the event-driven efficiency story).
 
-A built-in **numerical gradient checker** runs finite differences against the analytic gradients
+The engine is **twenty labs** deep, all sharing the one hand-rolled tape. A built-in **numerical
+gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
 not just trust it.
 
@@ -2112,3 +2125,111 @@ Why it belongs here and isn't a rerun of the RL lab:
   safeguards — the Huber loss (a bounded gradient) and gradient clipping — are still on, which is
   itself the lesson: the panel note says so, and toggling them tells the whole stabilisation story.
   tsc + lint + the full `verify-project.mjs` gate green.
+
+## v20 — Neuromorphic · Spiking Neural Network (surrogate-gradient BPTT) — planned + built this session
+
+The twentieth lab, and the first whose neurons don't emit a real number but a **binary spike**: a
+from-scratch network of **leaky integrate-and-fire (LIF)** neurons trained by **surrogate-gradient
+back-propagation-through-time** (Neftci, Mostafa & Zenke, 2019) — the learning paradigm behind
+neuromorphic, event-driven hardware. The whole lab is organised around the one idea that makes
+training a network of *step functions* possible at all, and it is made exact and machine-checkable.
+
+### Why this is interesting
+
+A biological spike is a threshold event: `S = 1[U ≥ θ]` — a Heaviside step, whose derivative is
+**zero everywhere** (and a delta at θ). Back-prop through a wall of zeros learns nothing, so for a
+long time nobody could train deep spiking nets by gradient descent. The **surrogate gradient** is
+the fix: keep the hard binary spike on the *forward* pass (so inference and the raster are genuine
+0/1 events), but on the *backward* pass pretend the neuron responded smoothly, substituting a
+non-zero surrogate derivative `f′(U−θ)`. This lab doesn't hand-wave that — it proves the trick is
+*literally* "the soft spike's gradient bolted onto the hard spike's forward."
+
+### The plan (this session's checklist)
+
+- [x] **`engine/snn.ts`** — the spiking brain, all on the existing tape:
+  - [x] Four **surrogate** functions as matched pairs `(f, f′)` — **fast-sigmoid/SuperSpike**
+        (Zenke & Ganguli), **ArcTan** (Fang et al.), **sigmoid**, **triangular/straight-through** —
+        where `f′` is *exactly* `d f/du`, so the soft twin is finite-difference-checkable.
+  - [x] Two ops: **`spike(U,θ)`** (forward Heaviside, backward `f′`) and **`softSpike(U,θ)`**
+        (forward `f`, backward the *identical* `f′`) — the hard/soft pair.
+  - [x] Three input **encodings** — **constant current** (direct coding), **Poisson rate**,
+        **latency / time-to-first-spike** — turning a glyph into an input spike train.
+  - [x] An **`SNN`** class: stacked LIF hidden layers (`U_t = β·U_{t-1} + I_t`, spike, **subtractive
+        reset** `U ← U − θ·S`), an optional **recurrent** spike→spike weight per layer, and a
+        **non-spiking leaky-integrator readout** summed over time into the logits; a full
+        per-timestep **trace** capture for the visualizers; weight export/import.
+  - [x] **`snnLoss`** — softmax-CE on the time-summed readout + an optional **spike-rate penalty**
+        (the energy/activity cost).
+- [x] **Self-tests** (7 new, engine now **107 ops**): each surrogate's `softSpike` gradchecks
+      (~1e-9); the **hard≡soft backward identity** and exact forwards (0.0); the **LIF subtractive
+      reset** (−θ on spike, 0.0); and a **whole unrolled SNN gradchecked end-to-end through BPTT +
+      the readout integrator** (~1.8e-8).
+- [x] **`hooks/useSnnTrainer.ts`** — RAF trainer: a train/test split of the procedural glyphs, Adam,
+      minibatch **BPTT** (authentic hard-spike surrogate training, or the soft relaxation), held-out
+      accuracy + confusion + **firing-rate/sparsity/spikes-per-inference** telemetry, a scrubbable
+      **spotlight** sample whose trace feeds the raster/traces/readout, end-to-end gradcheck,
+      snapshot/load/share, and a `classify()` for arbitrary glyphs.
+- [x] **`components/snn/`** — library-free SVG/canvas throughout:
+  - [x] **`SpikeRaster`** (headline) — the whole population firing, neurons × time, the encoded
+        input on top and each LIF layer below.
+  - [x] **`MembraneTraces`** — the classic LIF plot: the most-active neurons' potential climbing to
+        θ (dashed) and resetting, spikes marked.
+  - [x] **`ReadoutView`** — the "decision race": each class's integrated readout membrane over time,
+        winner bold, true class ringed.
+  - [x] **`EncodingView`** — the spotlight glyph (time-averaged drive) + the net's verdict.
+  - [x] **`SurrogatePlot`** — the idea itself: the flat Heaviside step vs the smooth backward bump
+        `f′` and the soft relaxation `f`, reacting live to the surrogate + steepness.
+  - [x] **`FiringRates`** — per-layer firing-rate bars + sparsity + spikes-per-inference (the energy
+        story a neuromorphic chip pays).
+  - [x] **`LearningChart`** (loss/acc/rate) and **`ConfusionMatrix`** (held-out).
+- [x] Wire the **Neuromorphic · SNN** tab + `#y=` route into `App.tsx`, a `SNN_SLOT_PREFIX` into
+      `serialize.ts`, refresh `project.json`, and pass the full `verify-project.mjs` gate.
+
+### Stretch / next-time ideas (open)
+
+- [ ] **A draw-your-own glyph pad** (reuse the Vision `DrawPad`) → encode → watch it spike →
+      classify live, with the input spike train animating.
+- [ ] **Spiking convolutions** — a spiking CNN front-end (reuse `conv2d`) for translation invariance.
+- [ ] **ANN→SNN conversion** — train a ReLU net, convert to a rate-coded SNN, and show the
+      accuracy/latency trade-off vs steps.
+- [ ] **Backprop-through-time truncation / online (e-prop-style)** learning rules as an alternative
+      to full BPTT, and a memory/compute read-out.
+- [ ] **A temporal task** (not just static glyphs) — e.g. spoken-digit-like rate patterns — where
+      the recurrent LIF layer's memory actually earns its keep.
+
+## Session log (v20)
+
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **Built the twentieth lab — Neuromorphic · SNN — end
+  to end.** One new engine module, a trainer hook, eight UI components, seven new self-tests, all on
+  the existing autograd engine and reusing the procedural glyph dataset (no SNN library, no snnTorch).
+  - **`engine/snn.ts`** — the surrogate-gradient core. Four surrogates as exact `(f, f′)` pairs; the
+    hard **`spike`** and soft **`softSpike`** ops sharing one backward; three spike **encodings**; a
+    stacked-LIF **`SNN`** with subtractive reset, optional recurrence, and a leaky-integrator readout
+    summed over time; and **`snnLoss`** (CE + a spike-rate penalty). The membrane recurrence, reset
+    and readout are assembled entirely from `matmul`/`add`/`scale`/`sub`/`mul` + the two spike ops, so
+    the whole unrolled network is one differentiable graph that BPTTs with the existing optimizer.
+  - **Self-tests** (engine now **107 ops, all green**, overall maxRel 5.1e-4): `snn-softSpike:*`
+    gradcheck each surrogate (**4.9e-10 / 2.4e-9 / 4.3e-9 / 3.3e-12**); `snn-surrogate (hard≡soft
+    backward, forwards exact)` and `snn-LIF reset (subtractive, −θ)` are **exact (0.0)**; and `snn
+    (BPTT, e2e)` gradchecks a whole 2-hidden-layer recurrent spiking net through BPTT + the readout
+    integrator at **1.8e-8**. The honest subtlety — that finite differences of the *hard* Heaviside
+    are ~0 by design, which is the entire reason the surrogate exists — is documented and handled by
+    verifying the differentiable *twin* end-to-end and the hard/soft backward *identity* separately.
+  - **`hooks/useSnnTrainer.ts` + `components/snn/`** — the lab UI: `SnnPanel` (dataset, architecture,
+    LIF dynamics β/κ/θ/T, surrogate + steepness, encoding + drive scale, hard/soft training, rate
+    penalty, spotlight scrubber, stats, gradcheck badge, self-test, save/share); the headline
+    **`SpikeRaster`**; `MembraneTraces`; the **`ReadoutView`** decision race; `EncodingView`;
+    the **`SurrogatePlot`** (the Heaviside step vs the surrogate bump); `FiringRates` (the energy
+    panel); `LearningChart`; `ConfusionMatrix`. Wired the **Neuromorphic · SNN** tab + `#y=` route
+    and a `SNN_SLOT_PREFIX`.
+  - **Validated outside the browser** (Vite-SSR Node harness over the shipped engine): the self-test
+    is green (107 ops), and a **real training run learns** — a `[64]`-hidden LIF net under
+    **authentic hard-spike surrogate training** on 12×12 digits climbs from **16% → 100%** held-out
+    (hard-spike-eval) accuracy in ~50 iterations (~26 ms/iter); the soft-relaxation mode converges
+    identically, confirming the hard/soft consistency at inference.
+  - **Smoke-tested in headless Chromium** (production build): the Neuromorphic · SNN tab mounts via
+    `#y=`, all five canvases render non-empty, 5 s of live training advances (60 iters / 1920 examples,
+    **test acc 100%**, **sparsity 86%**, **173 spikes/inference** — the event-driven energy win), the
+    in-browser **gradient check reads 2.17e-4 ✓ surrogate BPTT verified**, the spotlight scrubber
+    re-renders, and there are **no app console errors** (only a benign favicon 404, as on every lab).
+    Full `verify-project.mjs` gate (scope + conformance + lint + build) green.
