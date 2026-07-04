@@ -23,6 +23,10 @@ import SymbolicView from './views/SymbolicView'
 import type { SymbolicTab } from './views/SymbolicView'
 import PresburgerView from './views/PresburgerView'
 import type { PresburgerTab } from './views/PresburgerView'
+import GamesView from './views/GamesView'
+import type { GamesTab } from './views/GamesView'
+import type { Condition } from './engine/games/types'
+import { DEFAULT_EXAMPLE } from './engine/games/examples'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -54,6 +58,8 @@ const VALID_BRANCHING_TABS: BranchingTab[] = ['formula', 'label', 'check', 'veri
 const VALID_STAR_TABS: StarTab[] = ['formula', 'decompose', 'check', 'verify', 'about']
 const VALID_SYMBOLIC_TABS: SymbolicTab[] = ['bdd', 'relation', 'check', 'verify', 'about']
 const VALID_PRESBURGER_TABS: PresburgerTab[] = ['construct', 'automaton', 'solutions', 'verify', 'about']
+const VALID_GAMES_TABS: GamesTab[] = ['arena', 'solve', 'play', 'synth', 'verify', 'about']
+const VALID_CONDITIONS: Condition[] = ['reachability', 'safety', 'buchi', 'parity']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
 
@@ -76,6 +82,7 @@ const DEFAULT_STATE: AppState = {
   star: { formula: STAR_DEFAULT_FORMULA, model: STAR_DEFAULT_MODEL, tab: 'decompose' },
   symbolic: { formula: SYM_DEFAULT_FORMULA, model: SYM_DEFAULT_MODEL, bool: SYM_DEFAULT_BOOL, tab: 'bdd' },
   presburger: { formula: PRESBURGER_DEFAULT_FORMULA, tab: 'construct', input: '' },
+  games: { preset: DEFAULT_EXAMPLE.id, condition: DEFAULT_EXAMPLE.condition, tab: 'solve' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -92,6 +99,8 @@ function clean(s: AppState): AppState {
   const startab = VALID_STAR_TABS.includes(s.star.tab as StarTab) ? s.star.tab : 'decompose'
   const symtab = VALID_SYMBOLIC_TABS.includes(s.symbolic.tab as SymbolicTab) ? s.symbolic.tab : 'bdd'
   const prtab = VALID_PRESBURGER_TABS.includes(s.presburger.tab as PresburgerTab) ? s.presburger.tab : 'construct'
+  const gtabx = VALID_GAMES_TABS.includes(s.games.tab as GamesTab) ? s.games.tab : 'solve'
+  const gcond = VALID_CONDITIONS.includes(s.games.condition as Condition) ? s.games.condition : 'parity'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -109,6 +118,7 @@ function clean(s: AppState): AppState {
     star: { ...s.star, tab: startab },
     symbolic: { ...s.symbolic, tab: symtab },
     presburger: { ...s.presburger, tab: prtab },
+    games: { ...s.games, tab: gtabx, condition: gcond },
   }
 }
 
@@ -170,7 +180,9 @@ export default function App() {
                                   ? 'symbolic model checking: a from-scratch ROBDD engine — encode the system as BDDs & run the CTL fixpoints symbolically'
                                   : state.mode === 'presburger'
                                     ? 'Presburger arithmetic, decided by automata: compile a linear-integer formula into the DFA of its solutions, LSBF'
-                                    : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
+                                    : state.mode === 'games'
+                                      ? 'infinite games on graphs: reachability, safety, Büchi & parity — solved by attractors & Zielonka, with certified winning strategies & controller synthesis'
+                                      : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
         </div>
@@ -272,6 +284,14 @@ export default function App() {
             >
               Arithmetic
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'games'}
+              className={`mode-btn${state.mode === 'games' ? ' active' : ''}`}
+              onClick={() => setMode('games')}
+            >
+              Games
+            </button>
           </div>
           <button
             className="share-btn"
@@ -290,7 +310,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'presburger' ? (
+      {state.mode === 'games' ? (
+        <GamesView
+          preset={state.games.preset}
+          onPreset={(preset) => setState((s) => ({ ...s, games: { ...s.games, preset } }))}
+          condition={state.games.condition as Condition}
+          onCondition={(condition) => setState((s) => ({ ...s, games: { ...s.games, condition } }))}
+          tab={state.games.tab as GamesTab}
+          onTab={(tab) => setState((s) => ({ ...s, games: { ...s.games, tab } }))}
+        />
+      ) : state.mode === 'presburger' ? (
         <PresburgerView
           formula={state.presburger.formula}
           onFormula={(formula) => setState((s) => ({ ...s, presburger: { ...s.presburger, formula } }))}

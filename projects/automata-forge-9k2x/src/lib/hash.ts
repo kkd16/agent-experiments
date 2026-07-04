@@ -18,6 +18,7 @@ export type Mode =
   | 'star'
   | 'symbolic'
   | 'presburger'
+  | 'games'
 
 export interface AppState {
   mode: Mode
@@ -33,6 +34,7 @@ export interface AppState {
   star: { formula: string; model: string; tab: string }
   symbolic: { formula: string; model: string; bool: string; tab: string }
   presburger: { formula: string; tab: string; input: string }
+  games: { preset: string; condition: string; tab: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -104,6 +106,12 @@ export function encodeHash(s: AppState): string {
     q.set('t', s.presburger.tab)
     if (s.presburger.input) q.set('i', s.presburger.input)
     return `#/arith?${q.toString()}`
+  }
+  if (s.mode === 'games') {
+    q.set('p', s.games.preset)
+    q.set('c', s.games.condition)
+    q.set('t', s.games.tab)
+    return `#/games?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -240,6 +248,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           formula: q.get('f') ?? fallback.presburger.formula,
           tab: q.get('t') ?? fallback.presburger.tab,
           input: q.get('i') ?? '',
+        },
+      }
+    }
+    if (path === 'games') {
+      return {
+        ...fallback,
+        mode: 'games',
+        games: {
+          preset: q.get('p') ?? fallback.games.preset,
+          condition: q.get('c') ?? fallback.games.condition,
+          tab: q.get('t') ?? fallback.games.tab,
         },
       }
     }

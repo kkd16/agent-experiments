@@ -30,6 +30,99 @@ src/
   App.tsx         multi-panel UI wiring it all together
 ```
 
+## Games — infinite games on graphs & reactive synthesis (2026-07-04)
+
+The lab already climbed the automata/logic ladder to LTL, CTL, CTL\* and symbolic (BDD) model
+checking. This session adds the floor **above** all of them: **infinite two-player games on finite
+graphs**, the computational engine of the modal µ-calculus and of reactive-controller synthesis.
+Parity games are polynomial-time inter-reducible with µ-calculus model checking, so the new **Games**
+mode is not a side-quest — it is the general machine the earlier fixpoint checkers are special cases of.
+
+A token sits on a vertex; each vertex is owned by one of two players; the owner picks an outgoing
+edge; forever. The infinite path is a *play*, and a winning condition decides who won it. The mode
+solves all four canonical conditions, proves each answer with an independent certificate, lets you
+*play* against the optimal strategy, and reads the winning strategy back out as a synthesised
+controller. Everything is from scratch — the solvers, the certificate, the brute-force referee, and
+a hand-rolled SVG arena renderer (circles = Player 0 / Even, squares = Player 1 / Odd).
+
+### Engine (`src/engine/games/`, ~1.0k lines, zero deps)
+
+- [x] `types.ts` — the arena model (owners, edges, priorities, coloured `accent` set, layout), sub-arena
+  masks, totality validation, and condition→priority lowering.
+- [x] `attractor.ts` — the one primitive everything is built on: `Attr_p(goal)` as a worklist least
+  fixpoint with **positional strategy extraction**, plus a trap-strategy for safety/co-Büchi.
+- [x] `reachability.ts` — **reachability & safety** games (duals), each solved by a single attractor.
+- [x] `buchi.ts` — **Büchi** games by the McNaughton/Zielonka peel-off fixpoint (`Attr_0(F)` complement →
+  Player 1 trap → remove → repeat), with both players' memoryless strategies.
+- [x] `parity.ts` — **McNaughton–Zielonka** recursion for **parity** games with full two-player strategy
+  synthesis; sub-arenas stay total by construction (the complement of an attractor is a trap).
+- [x] `certify.ts` — a **complete, size-independent proof checker**: pin each player to its returned
+  memoryless strategy, and since the opponent then controls all branching, "can the opponent still
+  win?" collapses to a graph question — a reachable cycle of the wrong parity (via restricted-subgraph
+  Tarjan SCC), or a target-dodging cycle for reachability/safety.
+- [x] `oracle.ts` — an **independent brute-force referee**: enumerate every memoryless strategy pair on
+  a small arena and simulate the deterministic play to its cycle. Knows only the rules.
+- [x] `simulate.ts` — turn strategies into plays (lassos, joint optimal play, prescribed moves).
+- [x] `random.ts` — seeded (`splitmix32`) total-arena generator for the differential fuzzer.
+- [x] `examples.ts` — six curated arenas: an escort (reachability), a ridge (safety), a fair arbiter
+  (Büchi = synthesis-in-miniature), the three-colour parity game, a "why greed fails" parity trap, and
+  the parity game that **is** a νµ µ-calculus formula.
+- [x] `solve.ts` — one dispatcher returning `{ solution, certificate }` for any condition.
+- [x] `selftest.ts` — the in-app proof harness (see Verified).
+
+### The Games view (`src/views/GamesView.tsx` + `.css`)
+
+- [x] A from-scratch **SVG arena**: player-shaped nodes, priorities/target/hazard/accepting glyphs,
+  two-way-edge separation, self-loops, **draggable** vertices, winning-region tints and bold
+  strategy arrows.
+- [x] **Arena** tab — pick a condition, load a curated game or roll a seeded random one (size slider),
+  and **edit** by clicking (toggle the coloured set, flip an owner, or cycle a priority).
+- [x] **Solve** tab — winning regions coloured, both positional strategies drawn, `|W₀|/|W₁|` stats and
+  the live **certificate verdict** ("✓ proven — both memoryless strategies win against every reply").
+- [x] **Play** tab — choose your side and play by clicking legal successors while the app answers with
+  the optimal strategy; a live trace ribbon, loop detection, and a parity/reachability/safety verdict;
+  or hit **▶ optimal** to watch both sides play their winning strategies into a lasso.
+- [x] **Synthesis** tab — Player 0's memoryless winning strategy rendered as a **controller table**
+  (state → move): a provably correct reactive program, the point of Church's synthesis problem.
+- [x] **Verify** tab — runs the whole proof harness in the browser and lists every check.
+- [x] **About** tab — the theory, from attractors to Zielonka to why the certificate is a complete proof.
+- [x] Wired into `App.tsx`, `hash.ts` (shareable `#/games?p=…&c=…&t=…` permalinks) and the mode switch.
+
+### Verified (`Verify` tab / `selftest.ts`)
+
+- Every curated arena is well-formed and its solution **self-certifies**.
+- **1000 random arenas** across all four conditions (4–17 vertices) each produce a solution the
+  certificate proves exactly correct — the headline differential check.
+- The fast solvers **match the brute-force oracle** vertex-for-vertex on 180 small arenas (the oracle
+  shares none of the solvers' logic — it only knows the rules).
+- **Direct Büchi ≡ its parity encoding** (accepting ↦ 2, else ↦ 1) on 80 arenas.
+- **Parity role-duality**: flipping every owner and bumping every priority by 1 swaps the winning
+  regions exactly, on 80 arenas.
+- The certificate has **teeth**: it accepts the true solution and **rejects** a deliberately corrupted
+  one — so the green checks are not vacuous.
+- Full CI gate green: scope + conformance + `pnpm lint` + `tsc` + `vite build`. Headless-Chromium
+  smoke of the production build renders Solve/Play/Synthesis with a certified verdict and zero page
+  console errors.
+
+### Backlog — where Games goes next
+
+- [ ] **Rabin / Streett / Muller** conditions and the index/parity-index reductions between them.
+- [ ] **Mean-payoff & energy games** (pseudo-polynomial value iteration) and the reduction from parity.
+- [ ] **Jurdziński small progress measures** and **strategy improvement** as second/third parity solvers,
+  cross-checked against Zielonka on every fuzz arena (a fourth independent witness).
+- [ ] **Quasi-polynomial** parity solving (Calude et al. / succinct progress measures) with a complexity readout.
+- [ ] **LTL → game → controller**: compile a safety/GR(1) LTL spec against a plant into a game and
+  synthesise the controller, closing the loop with the existing LTL Büchi machinery.
+- [ ] **Emptiness of the LTL/CTL model-checkers as games**: harvest the product automaton from the Logic
+  tab straight into a Büchi game and animate the accepting-lasso search as a play.
+- [ ] **Attractor animation** — step the least-fixpoint rank by rank, colouring each new layer, with a
+  scrubber; likewise animate Zielonka's recursion as a peeling tree.
+- [ ] **Full arena editor** — add/remove edges by dragging, not just recolour/reprioritise; import/export
+  an arena in the URL so any hand-built game is a permalink.
+- [ ] **A "find the winning move" puzzle mode** and a difficulty ladder over the random generator.
+- [ ] **Positional-determinacy stress**: certify that a *single* memoryless strategy wins from the whole
+  region (already proven) and surface the two one-player restricted graphs side by side.
+
 ## Ideas / backlog
 
 - [x] Regex tokenizer + recursive-descent parser → AST (`|`, concat, `* + ?`, groups)
