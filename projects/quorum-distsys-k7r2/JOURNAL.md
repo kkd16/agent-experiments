@@ -43,7 +43,8 @@ src/sim/        the protocol-agnostic kernel
   kernel.ts      the engine: schedule, deliver, timers, crash, snapshots, replay
   network.ts     latency/jitter/drop/partition model
 src/protocols/  one folder per protocol, each implementing Protocol<S,Cmd>
-  raft/  paxos/  epaxos/  pbft/  hotstuff/  chord/  dynamo/  crdt/  coedit/  gossip/  vclock/  commit/
+  raft/  paxos/  vr/  zab/  epaxos/  benor/  pbft/  hotstuff/  brb/  snow/  nakamoto/
+  chord/  dynamo/  crdt/  coedit/  gossip/  vclock/  commit/  abd/  craq/  snapshot/  mutex/
 src/ui/         shared visual components (network canvas, timeline, panels, controls)
 src/labs/       one lab screen per protocol, wired to the kernel via a React hook
 src/lib/        small helpers (formatting, colors, geometry, self-test runner)
@@ -193,6 +194,83 @@ four safety invariants checked live.
       replicas live, mirroring Raft's joint-consensus lab.
 - [ ] **Batched Prepares** and a primary that piggybacks the next request's commit, to cut message
       count under load.
+
+### Zab lab (ZooKeeper Atomic Broadcast) — NEW
+The **fourth** canonical crash-fault consensus protocol, and the one actually deployed at scale: Zab
+is the engine inside **ZooKeeper** (and, historically, Kafka's controller). Where Raft/Paxos/VR are
+general SMR, Zab is purpose-built for the **primary-backup** pattern — an elected primary turns every
+write into a transaction stamped with a **`zxid = (epoch, counter)`** and *atomically broadcasts* it,
+so replicas deliver in the exact order the primary issued (**primary order**), and a new primary's
+proposals strictly follow every deliverable proposal of older epochs (the high `epoch` bits in the
+zxid *are* that ordering). Unlike VR it keeps a **durable log**, so recovery is by log
+reconciliation, not replay-from-peers. Implemented for real on the shared kernel from Junqueira,
+Reed & Serafini's "Zab: High-performance broadcast for primary-backup systems" (DSN 2011), all four
+phases, with five safety invariants checked live.
+
+- [x] **Phase 0 — Fast Leader Election (FLE)** — servers exchange ballots `(currentEpoch, lastZxid,
+      serverId)` and adopt the best by a total-order predicate until a quorum backs the peer with the
+      most up-to-date log. A node already **LEADING/FOLLOWING** answers an election with the current
+      leader (so a lone restarted node rejoins), but *only a looking peer* — see the two bugs below.
+- [x] **Phase 1 — Discovery** — followers send **FOLLOWERINFO(acceptedEpoch)**; the prospective
+      leader picks **NEWEPOCH** one past the largest it sees; each follower **ACKEPOCH**s with its full
+      history, and the leader selects the most up-to-date one in the quorum (highest `currentEpoch`,
+      ties by longest log) as the epoch's initial history.
+- [x] **Phase 2 — Synchronization** — the leader forces that history onto a quorum
+      (**NEWLEADER → ACK-LD → UPTODATE**); once a quorum has it the whole recovered history commits and
+      everyone starts the epoch identical. A late learner is synced the same way *live*, mid-broadcast.
+- [x] **Phase 3 — Broadcast** — normal two-phase atomic broadcast (**PROPOSE → ACK → COMMIT**): the
+      leader commits a zxid once a quorum has logged it, PINGs carry the commit point, and a follower
+      that stops hearing the leader (or a leader that loses a quorum of live followers) falls back to
+      election. Out-of-order proposals are buffered and drained in zxid order (the kernel reorders
+      messages; the real protocol assumes FIFO/TCP).
+- [x] **Durable log + at-most-once** — `history`, `acceptedEpoch`, `currentEpoch`, the committed prefix
+      and the KV state machine all **survive a crash** (only volatile election state is reset in
+      `onRestart`), so a restarted node rejoins via election + sync — the authentic ZooKeeper on-disk
+      model, and a deliberate contrast to the VR lab beside it. A client table gives at-most-once
+      execution.
+- [x] **Live safety invariants (5)** — *Agreement / Total Order* (every committed zxid maps to one
+      transaction on all servers), *Primary Order* (each server delivers zxids in strictly increasing
+      `(epoch, counter)`), *Leader Uniqueness* (≤1 broadcasting leader per epoch), *Execution Safety*
+      (KV = replay of the committed prefix), *Log Well-Formed* (committed ≤ |history|, zxids strictly
+      increasing).
+- [x] **Three real bugs found & fixed by the checker + an offline harness** (150-seed chaos sweep,
+      ~7k commits, zero violations):
+      **(1) Learner over-delivery** — syncing a learner mid-broadcast sent the leader's *entire* log
+      incl. its uncommitted tail, and UPTODATE committed all of it, so a joiner delivered proposals the
+      leader itself hadn't committed (they later orphaned → Execution-Safety break). Fixed by carrying
+      an explicit commit point in NEWLEADER: the whole log for an initial epoch sync, only the committed
+      prefix for a live learner.
+      **(2) Election livelock on a dead ex-leader** — a crashed but highest-ranked leader kept being
+      "re-elected" because stale followers advocated it. Fixed with ZK's FLE rule: FOLLOWING/LEADING
+      notifications go to a separate out-of-election set and a node joins leader L only when a quorum
+      backs L *and* L has confirmed itself (a LEADING self-vote) — which a dead node never sends.
+      **(3) Split-brain election deadlock + vote-storm** — two nodes each latched onto a *transient*
+      quorum and became rival prospective leaders (stuck forever, since the rest couldn't reach quorum),
+      and two established nodes echoed election replies to each other forever (698 votes over 4s in a
+      *healthy* cluster). Fixed with ZK's **finalizeWait** (conclude only after the ballots settle),
+      a **recovery timeout** so a stuck prospective leader re-elects, and a guard so an established node
+      replies to *looking* peers only. Result: healthy steady state carries **zero** election traffic.
+- [x] **Lab UI** — a **four-phase ladder** showing which servers sit in Election / Discovery / Sync /
+      Broadcast, a network canvas coloured by phase/role (leader glows green) with per-message glyphs
+      and zxid-carrying badges, write / burst / kill-leader / force-election / partition / heal
+      controls, a per-node inspector (accepted vs current epoch, last zxid, committed/log, election
+      ballot, live-follower table, discovery tallies, history with committed shading + zxids, KV, last
+      reply), shareable scenario URLs, and the shared invariant panel + event log + time-travel scrubber.
+- [x] **Self-tests (8)** — FLE elects a broadcasting leader across seeds; atomic broadcast delivers by
+      quorum in zxid order; leader-crash rotates the primary and preserves committed writes; a restarted
+      node recovers from its durable log; byte-identical determinism; **safety through 1,500 aggressive
+      faults**; **bounded chaos (healthy quorum) stays safe AND makes progress** with convergence after
+      the heal; and a **late-learner sync never over-delivers** the uncommitted tail. Also validated
+      out-of-suite across N=1/3/5/7 and a 150-seed chaos sweep.
+- [ ] **Reconfiguration** — ZooKeeper's dynamic membership (ZOOKEEPER-107) as a separate protocol layer.
+- [ ] **Observers / read scaling** — non-voting learners that take the broadcast stream but never vote,
+      and a reads-per-second meter showing how they scale reads without slowing commits.
+- [ ] **Diff-based sync (TRUNC/DIFF/SNAP)** — the real ZooKeeper learner handshake that sends only the
+      delta a follower is missing rather than the whole history, with the three sync modes visualised.
+- [ ] **Harvest a Zab run into the linearizability checker** — feed the committed KV history to the
+      Wing & Gong checker (as the ABD/CRAQ labs do) to certify each run linearizable with a witness.
+- [ ] **Threshold/epoch race animation** — step the FLE ballots and the NEWEPOCH/NEWLEADER exchange out
+      on the canvas the way the HotStuff lab animates its pacemaker.
 
 ### Ben-Or randomized-consensus lab — NEW
 The lab that answers the **FLP impossibility** (1985 — no *deterministic* async protocol can guarantee
@@ -895,6 +973,27 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
 
 ## Session log
 
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **New flagship lab — Zab (ZooKeeper Atomic Broadcast),
+  the fourth canonical crash-fault consensus pillar.** The lab had Raft, Paxos and VR but not the one
+  protocol from this family that is actually deployed at scale — the engine inside ZooKeeper. Built it
+  in full on the shared kernel from the Junqueira–Reed–Serafini (DSN 2011) paper: **Fast Leader
+  Election**, **Discovery** (FOLLOWERINFO/NEWEPOCH/ACKEPOCH), **Synchronization**
+  (NEWLEADER/ACK-LD/UPTODATE) and **Broadcast** (PROPOSE/ACK/COMMIT), with a **`zxid = (epoch,
+  counter)`** total order, a **durable log** that survives crashes (recovery by reconciliation, a
+  deliberate contrast to VR beside it), out-of-order-proposal buffering (the kernel reorders; Zab
+  assumes FIFO), leader heartbeats + step-down, and live-learner sync. New `protocols/zab/`
+  (`types.ts`, `zab.ts`, `invariants.ts`), a rich `labs/ZabLab.tsx` with a four-phase ladder + zxid
+  inspector, registry + CSS wiring, and **8 new self-tests** (suite now **154/154** green in-browser).
+  **Found and fixed three real bugs** with the live invariant checker plus an offline Vite-SSR harness
+  (150-seed chaos sweep, ~7k commits, zero safety violations; 60-seed leader-crash liveness; steady
+  state proven churn-free): **(1)** a mid-broadcast learner over-delivered the leader's *uncommitted*
+  tail (UPTODATE committed the whole synced log) — fixed by carrying an explicit commit point in
+  NEWLEADER; **(2)** FLE livelocked re-electing a *crashed* highest-ranked ex-leader — fixed with ZK's
+  out-of-election rule (join a leader only once a quorum backs it *and* it confirms itself, which a dead
+  node never does); **(3)** a split-brain deadlock where two nodes each seized a *transient* vote quorum
+  as rival leaders, plus an established-node vote-storm (698 votes over 4s in a *healthy* cluster) —
+  fixed with ZK's **finalizeWait**, a prospective-leader **recovery timeout**, and replying to *looking*
+  peers only. Full gate (scope + conformance + lint + build) green.
 - 2026-07-02 (claude / claude-opus-4-8): **New lab — Ben-Or randomized consensus.** Added the
   protocol that circumvents the FLP impossibility with randomization — a conceptual pillar the
   simulator was missing. Implemented the crash-fault version (N > 2f) from scratch on the kernel:
