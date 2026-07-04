@@ -69,9 +69,23 @@ const UNARY_BP = 8
 class Parser {
   private toks: Token[]
   private pos = 0
+  // counter for fresh names synthesised when desugaring pattern binders
+  // (`let (a, b) = …`, `fn { x } -> …`). `$`-prefixed names can't be lexed, so
+  // they never collide with source identifiers.
+  private synthId = 0
 
   constructor(toks: Token[]) {
     this.toks = toks
+  }
+
+  private freshName(): string {
+    return `$pat_${this.synthId++}`
+  }
+
+  /** A pattern-binder position (`let`/`fn` param) starts with `(`, `{` or `[`. */
+  private startsPatternBinder(): boolean {
+    const t = this.peek()
+    return t.kind === 'punc' && (t.value === '(' || t.value === '[' || t.value === '{')
   }
 
   private peek(): Token {
@@ -360,9 +374,19 @@ class Parser {
 
   private parseLambda(): Expr {
     const start = this.expect('keyword', 'fn')
-    const params: string[] = []
-    while (this.at('ident')) {
-      params.push(this.next().value)
+    // each parameter is either a plain name or a destructuring pattern (a `(`/`{`/
+    // `[`-headed atom); a pattern param desugars to a fresh name whose lambda body
+    // opens with `match <fresh> with <pattern> -> …`.
+    const params: { name: string; pat?: Pattern }[] = []
+    for (;;) {
+      if (this.at('ident')) {
+        params.push({ name: this.next().value })
+      } else if (this.startsPatternBinder()) {
+        const pat = this.parsePatternArg()
+        params.push({ name: this.freshName(), pat })
+      } else {
+        break
+      }
     }
     if (params.length === 0) {
       throw new ParseError('fn needs at least one parameter', this.peek().span)
@@ -373,7 +397,16 @@ class Parser {
     // curry right-to-left into nested single-parameter lambdas
     let acc: Expr = body
     for (let k = params.length - 1; k >= 0; k--) {
-      acc = { kind: 'lambda', param: params[k], body: acc, span }
+      const p = params[k]
+      if (p.pat) {
+        acc = {
+          kind: 'match',
+          scrutinee: { kind: 'var', name: p.name, span },
+          cases: [{ pattern: p.pat, body: acc }],
+          span,
+        }
+      }
+      acc = { kind: 'lambda', param: p.name, body: acc, span }
     }
     return acc
   }
@@ -449,6 +482,22 @@ class Parser {
     if (this.at('keyword', 'rec')) {
       this.next()
       recursive = true
+    }
+    // pattern-binding: `let (a, b) = e in body` / `let { x, y } = e in body`
+    // desugars to a one-arm `match` (refutable shapes like `[a, b]` are allowed
+    // but flagged non-exhaustive, exactly as a match would be).
+    if (!recursive && this.startsPatternBinder()) {
+      const pattern = this.parsePattern()
+      this.expect('op', '=')
+      const value = this.parseExpr(0)
+      this.expect('keyword', 'in')
+      const body = this.parseExpr(0)
+      return {
+        kind: 'match',
+        scrutinee: value,
+        cases: [{ pattern, body }],
+        span: this.spanFrom(start.span, body.span),
+      }
     }
     const first = this.parseBinding()
     // `let rec f = … and g = … in …` — a mutually recursive group
