@@ -3,13 +3,16 @@
 // 1. Priority-flood depression filling (Barnes, Lehman & Mulla 2014): every land
 //    cell is raised just enough that a strictly-downhill path to the sea exists —
 //    no more endorheic pits that would trap rivers.
-// 2. Downslope graph: each land cell points at its lowest neighbour.
-// 3. Flow accumulation: drop rainfall on every cell and route it downhill; the
-//    accumulated flux is how big a river the cell carries.
-// 4. Moisture: BFS distance from the coast, boosted along rivers.
+// 2. A second, *epsilon-free* flood recovers each basin's spill elevation. Where the
+//    terrain sits below that level, standing water collects — lakes and inland seas.
+// 3. Orographic precipitation (see climate.ts) drives per-cell rainfall.
+// 4. Downslope graph: each land cell points at its lowest neighbour.
+// 5. Flow accumulation: route rainfall downhill; the accumulated flux is the river.
+// 6. Moisture: coast distance + precipitation + river wetness.
 
 import type { Mesh, WorldParams } from './types'
 import { Noise2D } from './noise'
+import { computePrecipitation } from './climate'
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
@@ -74,16 +77,23 @@ export interface Hydrology {
   ocean: Uint8Array
   coast: Uint8Array
   filled: Float64Array
+  waterLevel: Float64Array
+  lake: Uint8Array
   downslope: Int32Array
   flux: Float64Array
+  precip: Float64Array
   moisture: Float64Array
   rivers: Array<{ a: number; b: number; flux: number }>
 }
+
+/** Minimum lake depth (spill − terrain) that counts as standing water. */
+const LAKE_DEPTH = 0.004
 
 export function computeHydrology(
   mesh: Mesh,
   params: WorldParams,
   elevation: Float64Array,
+  temperature: Float64Array,
 ): Hydrology {
   const n = mesh.numRegions
   const { seaLevel } = params
@@ -104,28 +114,60 @@ export function computeHydrology(
     }
   }
 
-  // --- Priority-flood depression filling ---
+  // --- Priority-flood depression filling (epsilon: guarantees drainage) ---
   const filled = Float64Array.from(elevation)
-  const visited = new Uint8Array(n)
-  const heap = new MinHeap()
-  const EPS = 1e-5
-  // Seed from every ocean cell — these are the world's outlets to the sea.
-  for (let r = 0; r < n; r++) {
-    if (ocean[r]) {
-      visited[r] = 1
-      heap.push(filled[r], r)
+  {
+    const visited = new Uint8Array(n)
+    const heap = new MinHeap()
+    const EPS = 1e-5
+    for (let r = 0; r < n; r++) {
+      if (ocean[r]) {
+        visited[r] = 1
+        heap.push(filled[r], r)
+      }
+    }
+    while (heap.size > 0) {
+      const c = heap.pop()
+      for (const nb of mesh.neighbors[c]) {
+        if (visited[nb]) continue
+        visited[nb] = 1
+        if (filled[nb] <= filled[c]) filled[nb] = filled[c] + EPS
+        heap.push(filled[nb], nb)
+      }
     }
   }
-  while (heap.size > 0) {
-    const c = heap.pop()
-    for (const nb of mesh.neighbors[c]) {
-      if (visited[nb]) continue
-      visited[nb] = 1
-      // Raise the neighbour to at least an epsilon above the cell we drained from.
-      if (filled[nb] <= filled[c]) filled[nb] = filled[c] + EPS
-      heap.push(filled[nb], nb)
+
+  // --- Epsilon-free flood → spill surface → lakes ---
+  const waterLevel = Float64Array.from(elevation)
+  const lake = new Uint8Array(n)
+  {
+    const visited = new Uint8Array(n)
+    const heap = new MinHeap()
+    for (let r = 0; r < n; r++) {
+      if (ocean[r]) {
+        visited[r] = 1
+        heap.push(waterLevel[r], r)
+      }
+    }
+    while (heap.size > 0) {
+      const c = heap.pop()
+      for (const nb of mesh.neighbors[c]) {
+        if (visited[nb]) continue
+        visited[nb] = 1
+        // Spill level: the lowest barrier height the water must clear to escape.
+        if (waterLevel[nb] < waterLevel[c]) waterLevel[nb] = waterLevel[c]
+        heap.push(waterLevel[nb], nb)
+      }
+    }
+    for (let r = 0; r < mesh.numSolid; r++) {
+      if (!ocean[r] && waterLevel[r] - elevation[r] > LAKE_DEPTH) lake[r] = 1
     }
   }
+
+  // --- Orographic precipitation (needs the full water mask: sea + lakes) ---
+  const water = new Uint8Array(n)
+  for (let r = 0; r < n; r++) water[r] = ocean[r] || lake[r] ? 1 : 0
+  const precip = computePrecipitation(mesh, params, elevation, water, temperature)
 
   // --- Downslope graph (steepest descent on the filled surface) ---
   const downslope = new Int32Array(n).fill(-1)
@@ -142,16 +184,17 @@ export function computeHydrology(
     downslope[r] = best
   }
 
-  // --- Flow accumulation: rain on every land cell, routed downhill ---
+  // --- Flow accumulation: rain (scaled by local precip) routed downhill ---
   const flux = new Float64Array(n)
   const land: number[] = []
   for (let r = 0; r < mesh.numSolid; r++) {
     if (!ocean[r]) {
-      flux[r] = params.rainfall
+      // Precip-weighted rainfall: wet windward slopes feed far bigger rivers than
+      // rain-shadow interiors under the same nominal rainfall setting.
+      flux[r] = params.rainfall * (0.35 + 1.5 * precip[r])
       land.push(r)
     }
   }
-  // Process from high to low so all upstream flux is summed before a cell drains.
   land.sort((a, b) => filled[b] - filled[a])
   let maxFlux = 0
   for (const r of land) {
@@ -160,7 +203,7 @@ export function computeHydrology(
     if (flux[r] > maxFlux) maxFlux = flux[r]
   }
 
-  // --- Rivers: land edges whose flux clears the threshold ---
+  // --- Rivers: land edges whose flux clears the threshold (lakes hide their bed) ---
   const rivers: Array<{ a: number; b: number; flux: number }> = []
   const thr = Math.max(params.rainfall * 2.5, params.riverThreshold * maxFlux)
   for (const r of land) {
@@ -169,11 +212,11 @@ export function computeHydrology(
     if (flux[r] >= thr) rivers.push({ a: r, b: d, flux: flux[r] })
   }
 
-  // --- Moisture: BFS hop-distance from the coast, plus river wetness ---
+  // --- Moisture: coast distance + precipitation + river wetness ---
   const dist = new Int32Array(n).fill(-1)
   let queue: number[] = []
   for (let r = 0; r < n; r++) {
-    if (ocean[r]) {
+    if (water[r]) {
       dist[r] = 0
       queue.push(r)
     }
@@ -182,7 +225,7 @@ export function computeHydrology(
     const nextQ: number[] = []
     for (const c of queue) {
       for (const j of mesh.neighbors[c]) {
-        if (dist[j] === -1 && !ocean[j]) {
+        if (dist[j] === -1 && !water[j]) {
           dist[j] = dist[c] + 1
           nextQ.push(j)
         }
@@ -194,15 +237,17 @@ export function computeHydrology(
   const mNoise = new Noise2D(`${params.seed}:moist`)
   const moisture = new Float64Array(n)
   for (let r = 0; r < mesh.numSolid; r++) {
-    if (ocean[r]) {
+    if (water[r]) {
       moisture[r] = 1
       continue
     }
     const coastM = Math.exp(-(dist[r] < 0 ? 40 : dist[r]) * 0.1)
     const riverM = maxFlux > 0 ? clamp01(Math.sqrt(flux[r] / maxFlux) * 1.3) : 0
-    const nz = mNoise.fbm(mesh.px[r] / params.width * 3, mesh.py[r] / params.height * 3, 3)
-    moisture[r] = clamp01(coastM * 0.55 + riverM * 0.5 + (nz - 0.5) * 0.25)
+    const nz = mNoise.fbm((mesh.px[r] / params.width) * 3, (mesh.py[r] / params.height) * 3, 3)
+    moisture[r] = clamp01(
+      coastM * 0.3 + precip[r] * 0.55 + riverM * 0.32 + (nz - 0.5) * 0.16,
+    )
   }
 
-  return { ocean, coast, filled, downslope, flux, moisture, rivers }
+  return { ocean, coast, filled, waterLevel, lake, downslope, flux, precip, moisture, rivers }
 }

@@ -54,6 +54,27 @@ export interface Palette {
   ocean(depth: number): RGB
   /** Land colour from biome id, elevation above sea (0..1), moisture (0..1). */
   land(biome: number, elevAbove: number, moisture: number): RGB
+
+  // --- Atlas furniture & the civilisation layer ---
+  /** Lake / inland-sea water colour (falls back to shallow ocean). */
+  lake?: RGB
+  /** River + open-water line colour is `water`; these tint the extras. */
+  road: string
+  roadCasing: string
+  city: string
+  cityStroke: string
+  cityLabel: string
+  cityLabelStroke: string
+  contour: string
+  provinceLine: string
+  /** HSL lightness/saturation the province tint fills settle around. */
+  provinceLum: number
+  provinceSat: number
+  provinceAlpha: number
+  graticule: string
+  scaleInk: string
+  frame: string
+  compass: string
 }
 
 const BIOME_RGB: RGB[] = BIOMES.map((b) => hexToRgb(b.color))
@@ -85,6 +106,22 @@ const TERRA: Palette = {
     // Gently deepen colour with altitude for a touch of relief before hillshade.
     return lerpRgb(base, [base[0] * 0.78, base[1] * 0.78, base[2] * 0.78], elevAbove * 0.35)
   },
+  lake: hexToRgb('#3f7fae'),
+  road: 'rgba(233,214,170,0.9)',
+  roadCasing: 'rgba(20,28,38,0.55)',
+  city: '#f6e7c4',
+  cityStroke: '#12202f',
+  cityLabel: '#f7efdd',
+  cityLabelStroke: 'rgba(10,18,28,0.9)',
+  contour: 'rgba(20,30,42,0.28)',
+  provinceLine: 'rgba(245,238,220,0.5)',
+  provinceLum: 62,
+  provinceSat: 40,
+  provinceAlpha: 0.16,
+  graticule: 'rgba(210,225,240,0.12)',
+  scaleInk: '#e7ecf4',
+  frame: 'rgba(210,225,240,0.35)',
+  compass: 'rgba(230,238,248,0.75)',
 }
 
 // --- Parchment: aged-paper fantasy atlas ---
@@ -122,6 +159,22 @@ const PARCHMENT: Palette = {
     const green = hexToRgb('#9aa76a')
     return lerpRgb(sepia, green, Math.min(0.28, moisture * (1 - elevAbove) * 0.4))
   },
+  lake: hexToRgb('#8fa79a'),
+  road: 'rgba(120,64,40,0.85)',
+  roadCasing: 'rgba(233,220,187,0.6)',
+  city: '#7a2f22',
+  cityStroke: '#e9dcbb',
+  cityLabel: '#43301a',
+  cityLabelStroke: 'rgba(233,220,187,0.85)',
+  contour: 'rgba(120,96,60,0.35)',
+  provinceLine: 'rgba(92,74,48,0.5)',
+  provinceLum: 55,
+  provinceSat: 32,
+  provinceAlpha: 0.14,
+  graticule: 'rgba(92,74,48,0.14)',
+  scaleInk: '#4a3820',
+  frame: 'rgba(92,74,48,0.55)',
+  compass: 'rgba(74,56,32,0.8)',
 }
 
 // --- Bathymetric: scientific hypsometric relief ---
@@ -161,9 +214,78 @@ const BATHY: Palette = {
   land(_biome, elevAbove) {
     return ramp(HYPSO, elevAbove)
   },
+  lake: hexToRgb('#63b3ed'),
+  road: 'rgba(255,255,255,0.7)',
+  roadCasing: 'rgba(6,20,32,0.6)',
+  city: '#fff2c9',
+  cityStroke: '#06121f',
+  cityLabel: '#eef6ff',
+  cityLabelStroke: 'rgba(6,20,32,0.9)',
+  contour: 'rgba(255,255,255,0.16)',
+  provinceLine: 'rgba(238,246,255,0.5)',
+  provinceLum: 60,
+  provinceSat: 38,
+  provinceAlpha: 0.14,
+  graticule: 'rgba(158,202,225,0.16)',
+  scaleInk: '#eef6ff',
+  frame: 'rgba(158,202,225,0.4)',
+  compass: 'rgba(220,238,255,0.7)',
 }
 
-export const PALETTES: readonly Palette[] = [TERRA, PARCHMENT, BATHY]
+// --- Imperial: political parchment tuned for provinces, roads & cities ---
+const IMPERIAL: Palette = {
+  key: 'imperial',
+  name: 'Imperial',
+  background: '#efe4c6',
+  water: '#89a0a6',
+  coast: '#4a3a26',
+  border: 'rgba(74,58,38,0.10)',
+  labelFill: '#3c2c17',
+  labelStroke: 'rgba(239,228,198,0.7)',
+  grain: 0.12,
+  hillshade: 0.35,
+  ocean(depth) {
+    return ramp(
+      [
+        [0, hexToRgb('#c9cdba')],
+        [0.5, hexToRgb('#adb49f')],
+        [1, hexToRgb('#8f9a86')],
+      ],
+      depth,
+    )
+  },
+  land(_biome, elevAbove, moisture) {
+    // A muted, near-uniform vellum so province tints and ink read clearly on top.
+    const vellum = ramp(
+      [
+        [0, hexToRgb('#efe7cc')],
+        [0.5, hexToRgb('#e2d4ac')],
+        [1, hexToRgb('#c9b382')],
+      ],
+      elevAbove,
+    )
+    const green = hexToRgb('#b7bd88')
+    return lerpRgb(vellum, green, Math.min(0.18, moisture * (1 - elevAbove) * 0.3))
+  },
+  lake: hexToRgb('#9db4b8'),
+  road: 'rgba(102,44,28,0.9)',
+  roadCasing: 'rgba(239,228,198,0.7)',
+  city: '#6d1f16',
+  cityStroke: '#efe4c6',
+  cityLabel: '#3a2413',
+  cityLabelStroke: 'rgba(239,228,198,0.9)',
+  contour: 'rgba(120,96,60,0.22)',
+  provinceLine: 'rgba(74,50,30,0.6)',
+  provinceLum: 58,
+  provinceSat: 45,
+  provinceAlpha: 0.26,
+  graticule: 'rgba(74,58,38,0.16)',
+  scaleInk: '#3c2c17',
+  frame: 'rgba(74,50,30,0.65)',
+  compass: 'rgba(74,44,26,0.82)',
+}
+
+export const PALETTES: readonly Palette[] = [TERRA, PARCHMENT, BATHY, IMPERIAL]
 
 export function paletteByKey(key: string): Palette {
   return PALETTES.find((p) => p.key === key) ?? TERRA

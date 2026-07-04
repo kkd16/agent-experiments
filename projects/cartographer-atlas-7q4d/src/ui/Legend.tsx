@@ -12,17 +12,19 @@ interface Props {
 
 export default function Legend({ world }: Props): ReactElement {
   const stats = useMemo(() => {
-    const { mesh, ocean, biome } = world
+    const { mesh, ocean, lake, biome } = world
     let land = 0
+    let lakeCells = 0
     const present = new Set<number>()
     for (let r = 0; r < mesh.numSolid; r++) {
-      if (ocean[r]) continue
+      if (lake[r]) lakeCells++
+      if (ocean[r] || lake[r]) continue
       land++
       present.add(biome[r])
     }
     const landPct = mesh.numSolid ? (100 * land) / mesh.numSolid : 0
     const total = Object.values(world.timings).reduce((a, b) => a + b, 0)
-    return { landPct, present: [...present].sort((a, b) => a - b), total }
+    return { landPct, lakeCells, present: [...present].sort((a, b) => a - b), total }
   }, [world])
 
   return (
@@ -36,6 +38,18 @@ export default function Legend({ world }: Props): ReactElement {
           <span className="hud-k">rivers</span>
           <span className="hud-v">{world.rivers.length}</span>
         </div>
+        {stats.lakeCells > 0 && (
+          <div className="hud-item">
+            <span className="hud-k">lakes</span>
+            <span className="hud-v">{stats.lakeCells}</span>
+          </div>
+        )}
+        {world.cities.length > 0 && (
+          <div className="hud-item">
+            <span className="hud-k">cities</span>
+            <span className="hud-v">{world.cities.length}</span>
+          </div>
+        )}
         <div className="hud-item">
           <span className="hud-k">cells</span>
           <span className="hud-v">{world.mesh.numSolid.toLocaleString()}</span>

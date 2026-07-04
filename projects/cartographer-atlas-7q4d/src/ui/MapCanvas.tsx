@@ -1,20 +1,23 @@
 // Responsive canvas that renders the current world. Sizes its backing store to the
 // container width × device-pixel-ratio and maps world coordinates (0..width,
-// 0..height) onto it, so the map is always crisp and fills the pane.
+// 0..height) onto it, so the map is always crisp and fills the pane. Clicking picks
+// the Voronoi cell under the cursor and reports it up for the inspector.
 
 import { useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
 import type { WorldMap } from '../core/types'
-import { renderWorld } from '../render/render'
+import { renderWorld, nearestRegion } from '../render/render'
 import { paletteByKey } from '../render/palettes'
 import type { ViewOptions } from './viewOptions'
 
 interface Props {
   world: WorldMap | null
   view: ViewOptions
+  selected: number | null
+  onPick: (region: number | null) => void
 }
 
-export default function MapCanvas({ world, view }: Props): ReactElement {
+export default function MapCanvas({ world, view, selected, onPick }: Props): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -36,26 +39,28 @@ export default function MapCanvas({ world, view }: Props): ReactElement {
       canvas.width = Math.round(cssW * dpr)
       canvas.height = Math.round(cssH * dpr)
       ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0)
-      renderWorld(ctx, world, {
-        palette: paletteByKey(view.paletteKey),
-        showRivers: view.showRivers,
-        showCoast: view.showCoast,
-        showHillshade: view.showHillshade,
-        showBorders: view.showBorders,
-        showLabels: view.showLabels,
-        showGrain: view.showGrain,
-      })
+      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected })
     }
 
     draw()
     const ro = new ResizeObserver(draw)
     ro.observe(wrap)
     return () => ro.disconnect()
-  }, [world, view])
+  }, [world, view, selected])
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current
+    if (!canvas || !world) return
+    const rect = canvas.getBoundingClientRect()
+    const wx = ((e.clientX - rect.left) / rect.width) * world.params.width
+    const wy = ((e.clientY - rect.top) / rect.height) * world.params.height
+    const r = nearestRegion(world, wx, wy)
+    onPick(r === selected ? null : r)
+  }
 
   return (
     <div className="map-wrap" ref={wrapRef}>
-      <canvas ref={canvasRef} className="map-canvas" />
+      <canvas ref={canvasRef} className="map-canvas" onClick={handleClick} />
     </div>
   )
 }

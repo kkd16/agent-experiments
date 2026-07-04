@@ -9,6 +9,16 @@ export interface ViewOptions {
   showBorders: boolean
   showLabels: boolean
   showGrain: boolean
+  // --- Session-2 layers ---
+  showContours: boolean
+  showFrame: boolean
+  showGraticule: boolean
+  showCompass: boolean
+  showScale: boolean
+  showProvinces: boolean
+  showRoads: boolean
+  showCities: boolean
+  showPlates: boolean
 }
 
 export const DEFAULT_VIEW: ViewOptions = {
@@ -19,4 +29,13 @@ export const DEFAULT_VIEW: ViewOptions = {
   showBorders: false,
   showLabels: true,
   showGrain: true,
+  showContours: false,
+  showFrame: true,
+  showGraticule: false,
+  showCompass: true,
+  showScale: true,
+  showProvinces: false,
+  showRoads: true,
+  showCities: true,
+  showPlates: false,
 }
