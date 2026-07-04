@@ -22,12 +22,14 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The twelve modes</h3>
+        <h3>The thirteen modes</h3>
         <ul>
           <li>
-            <strong>Epicycles</strong> — treat a drawn curve's points as complex numbers, FFT
-            them, and each coefficient becomes a rotating vector. Chained largest-first, the
-            vectors redraw the shape. It's the Fourier series made visible.
+            <strong>Epicycles</strong> — treat a curve's points as complex numbers, FFT them, and
+            each coefficient becomes a rotating vector. Chained largest-first, the vectors redraw
+            the shape. Draw your own scribble, or point it at an <strong>image</strong>: a
+            Moore-neighbour tracer pulls the outline of a glyph or uploaded silhouette out of the
+            picture and the epicycles redraw it. The Fourier series made visible.
           </li>
           <li>
             <strong>Spectrum</strong> — build a waveform and read its magnitude and phase spectra.
@@ -74,6 +76,14 @@ export default function About() {
             <strong>Image (2-D)</strong> — the transform is separable, so an image FFT is just
             "rows then columns." Paint a mask over the 2-D frequency plane — keep the center to
             blur, keep the rim to find edges — and invert to rebuild the filtered picture.
+          </li>
+          <li>
+            <strong>Tomography</strong> — a CT scanner from scratch. Project a phantom into a{' '}
+            <strong>sinogram</strong> of line integrals, then invert it two ways: filtered
+            back-projection (watch each reading smear back and resolve into a sharp slice) and a
+            direct <strong>Fourier Slice Theorem</strong> reconstruction that grids each
+            projection's spectrum into k-space. An RMSE error map and a live view of the radial
+            slices filling the frequency plane keep it honest.
           </li>
           <li>
             <strong>Vocoder</strong> — the FFT put to work: a <em>phase vocoder</em> time-stretches
@@ -218,6 +228,32 @@ export default function About() {
       </div>
 
       <div className="card">
+        <h3>Seeing inside — the Fourier Slice Theorem</h3>
+        <div className="formula">ℱ₁&#123;p_θ&#125;(ν) = F(ν·cosθ, ν·sinθ)</div>
+        <p>
+          The <strong>Tomography</strong> mode rests on one of the most beautiful results in all of
+          applied mathematics. A CT scanner only ever measures <em>projections</em> — for each angle
+          θ, the parallel-beam line integrals <code>p_θ(t) = ∫ f&nbsp;ds</code> that form the{' '}
+          <strong>sinogram</strong>. The theorem says the 1-D Fourier transform of that projection is
+          exactly a <strong>radial slice</strong>, at angle θ, through the 2-D Fourier transform of
+          the object. Collect enough angles and you've sampled the object's entire spectrum on a
+          polar grid; one inverse 2-D FFT brings the hidden slice back. The mode shows those slices
+          literally lighting up the frequency plane.
+        </p>
+        <div className="formula">f(x,y) = ∫₀^π Q_θ(x·cosθ + y·sinθ) dθ, &nbsp; Q_θ = ℱ⁻¹&#123;|ν|·ℱp_θ&#125;</div>
+        <p>
+          Naïvely smearing each projection back across the image (<em>back-projection</em>) blurs
+          the result by a <code>1/r</code> point-spread — every point of the object bleeds outward.
+          The fix falls straight out of the slice theorem: converting the polar samples to Cartesian
+          adds a <code>|ν|</code> Jacobian, and that ramp is precisely the{' '}
+          <strong>ramp filter</strong> of <strong>filtered back-projection</strong>. Ram–Lak is the ideal ramp; the Shepp–Logan,
+          cosine, Hann and Hamming windows trade a little resolution for noise rejection, exactly the
+          knobs a radiologist turns. Everything runs on the same from-scratch FFT — no CT library,
+          no linear-algebra package.
+        </p>
+      </div>
+
+      <div className="card">
         <h3>Why it's honest</h3>
         <p>
           Everything you see is computed live from the same core — there is still no math library
@@ -241,8 +277,13 @@ export default function About() {
           mapping (A4 = 440 Hz) and sub-bin parabolic peak refinement — and the newest sharpening
           engine: <strong>reassignment</strong> is confirmed to lock a pure tone onto its true
           frequency and to make a chirp's ridge track its analytic instantaneous frequency to within
-          a bin, while synchrosqueezing is checked to leave the time axis untouched. Open the console
-          to see all thirty-five pass.
+          a bin, while synchrosqueezing is checked to leave the time axis untouched. The{' '}
+          <strong>tomography</strong> engine is pinned down as well: a disk's Radon transform is
+          confirmed angle-independent, projection mass is verified conserved across every angle,
+          filtered back-projection is held to a 0.9 correlation on the Shepp–Logan phantom, the
+          Fourier-slice reconstruction is confirmed both recognisable and sharper than raw
+          back-projection, and the contour tracer is checked to pull a closed, near-circular loop
+          out of a disk. Open the console to see all forty-two pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

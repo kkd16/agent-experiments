@@ -47,9 +47,24 @@ vectors / pure frequencies, and lets you manipulate them.
   **reassigned** spectrogram and to `(n, ω̂)` for the invertible **synchrosqueezed** one. Also a
   Rényi-entropy (order-3) concentration metric, a per-column ridge, and the exotic multi-component
   test signals (crossing/parallel/quadratic chirps, sine-FM vibrato, tone+chirp, impulses).
+- `src/lib/phantom.ts` — CT test images (v8): the modified **Shepp–Logan** head (ten additive
+  ellipses) plus disk / nested-rings / density-bars / spokes phantoms, rasterised over the
+  normalized unit-disk square.
+- `src/lib/radon.ts` — **the tomography engine (v8).** Ray-driven forward Radon transform
+  (parallel-beam line integrals → sinogram), a frequency-domain ramp filter with Ram–Lak /
+  Shepp–Logan / cosine / Hann / Hamming apodisation, filtered back-projection (incremental,
+  one angle at a time, for the live build animation), and a **direct Fourier Slice Theorem**
+  reconstruction — grid every projection's 1-D FFT onto a Cartesian k-space (with the correct
+  `e^{+2πi·k·dc/nfft}` detector-centering phase) and inverse-2D-FFT. Plus dose-noise injection,
+  the object's true 2-D spectrum, and quality metrics (least-squares affine error map + RMSE,
+  Pearson correlation). All on the shared FFT; no CT library.
+- `src/lib/contour.ts` — image→outline for the epicycle machine (v8): border-referenced
+  thresholding, largest-connected-component flood fill, and **Moore-neighbour boundary tracing**
+  into an ordered closed loop, plus a defensive glyph rasteriser for the built-in silhouettes.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
 - `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Reassign`, `Live`,
-  `Wavelet`, `ImageFFT`, `Vocoder`, `Compress`, `Cepstrum`, `About` (twelve interactive modes).
+  `Wavelet`, `ImageFFT`, `Tomography`, `Vocoder`, `Compress`, `Cepstrum`, `About` (thirteen
+  interactive modes).
 
 ## Modes
 
@@ -187,7 +202,9 @@ An eleventh mode: the whole lab, in real time, on live audio.
 
 ### Backlog (future sessions)
 
-- [ ] Import an image outline (edge-detect) to drive the epicycle machine directly
+- [x] Import an image outline (edge-detect) to drive the epicycle machine directly → **shipped v8**
+      (Moore-neighbour contour tracing in `lib/contour.ts`; an *Image* source on the Epicycles mode
+      with built-in glyph silhouettes + photo upload + a threshold slider)
 - [x] Real-time microphone input into Spectrum / Spectrogram → **shipped as the Live mode**
 - [x] Group-delay & pole–zero view for the filter → **superseded by the full Design studio**
 - [ ] Colour (YCbCr / chroma-subsampled) JPEG in the compression lab
@@ -270,8 +287,87 @@ zero math libraries: it's all built on the existing radix-2 FFT.
       correction formulas and the synchrosqueezing note; twelve-mode heading; route + nav wired;
       catalog description/tags updated.
 
+### Shipped in v8 — the **Tomography** mode (Fourier Slice Theorem + CT reconstruction)
+
+The thirteenth mode, and the most ambitious single addition yet: a **from-scratch computed-tomography
+lab** that turns the Fourier transform loose on the inverse problem CT hardware solves millions of
+times a day. It answers "how do you see inside something you can only measure the shadows of?" — and
+the answer *is* the Fourier Slice Theorem. Same shared FFT, still zero math libraries.
+
+- [x] **Phantoms** (`lib/phantom.ts`) — the modified **Shepp–Logan** head (ten additive ellipses),
+      plus uniform-disk, nested-rings, density-bars and radial-spokes test objects.
+- [x] **Forward Radon transform** (`lib/radon.ts`) — ray-driven parallel-beam line integrals over a
+      dense chord sampling → the **sinogram**, with deterministic Box–Muller **dose noise** so a link
+      reproduces exactly.
+- [x] **Filtered back-projection** — a frequency-domain **ramp filter** (Ram–Lak) with Shepp–Logan /
+      cosine / Hann / Hamming apodisation, and an **incremental** back-projector (one angle per call)
+      that drives a live "watch it build" animation as smeared streaks resolve into a sharp slice.
+- [x] **Direct Fourier reconstruction** — the slice theorem made literal: 1-D FFT each projection,
+      grid the polar samples onto a Cartesian k-space (with the correct `e^{+2πi·k·dc/nfft}`
+      detector-centering phase and bilinear density compensation), and inverse-2D-FFT. The k-space
+      panel shows the radial slices tiling the frequency plane.
+- [x] **Quality** — a least-squares **affine error map** (CT reconstructions are defined up to a
+      gain/offset) with a live **RMSE** and Pearson-correlation readout.
+- [x] **UI** (`modes/Tomography.tsx`) — object / sinogram / reconstruction / k-space canvases,
+      phantom + resolution (64/128/256) + photo-upload controls, a projections (angles) slider, a
+      dose-noise slider, method (FBP / Fourier-slice / raw-BP) + ramp-filter selectors, a build-speed
+      control with play/pause/replay, an error-map toggle, and a "show sampled slices" overlay on the
+      2-D spectrum. Deep-linkable state; a `.tomo-grid` 2×2 layout.
+- [x] **Validated numerically before the UI** — an offline harness (Node type-stripping) confirmed FBP
+      hits **0.97 correlation** on Shepp–Logan / 0.996 on a disk, and debugged the direct-Fourier
+      centering phase (the detector centre is `(nDet−1)/2`, not `nfft/2`).
+
+### Also in v8 — **image → epicycles**
+
+Closed the oldest backlog item. The Epicycles mode gains an **Image** source: pick a built-in glyph
+silhouette (λ, π, @, &, Ω, …) or upload a photo, and a **Moore-neighbour contour tracer**
+(`lib/contour.ts`) pulls the dominant outline out of the picture, feeds it to the existing Fourier
+decomposition, and the rotating vectors redraw it. An edge-threshold slider tunes the segmentation;
+state is deep-linkable.
+
+- [x] Border-referenced thresholding + largest-connected-component flood fill + Moore-neighbour
+      boundary tracing → an ordered closed loop, normalised straight into the epicycle machine.
+- [x] Built-in serif-glyph rasteriser (defensive; degrades in the sandboxed thumbnail) + photo upload.
+- [x] **Seven new self-tests** (42 checks total, all green): Radon-of-a-disk is angle-independent,
+      projection mass is conserved across angles, FBP corr > 0.9 on Shepp–Logan, the Fourier-slice
+      reconstruction is recognisable *and* sharper than raw back-projection, `affineError(x,x)=0`, and
+      the contour of a disk is a closed near-circular loop.
+- [x] **About** — a new "Seeing inside — the Fourier Slice Theorem" card (with the slice + FBP
+      formulas), a Tomography bullet, the Epicycles bullet updated, and the honesty roll-call extended.
+
+### Future (tomography)
+
+- [ ] **Iterative reconstruction** (ART / SIRT / a few CG steps) to compare against FBP under sparse
+      angles and heavy noise — the modern algebraic alternative to the analytic inverse.
+- [ ] **Fan-beam geometry** with rebinning to parallel, the geometry real scanners actually use.
+- [ ] **Metal-artifact / limited-angle** demos (streak artifacts from a missing wedge of angles).
+- [ ] Move the forward projection + reconstruction into a **Web Worker** so 256² scans never touch
+      the frame budget.
+
 ## Session log
 
+- 2026-07-04 (claude, v8): "See inside the shadows." Added the thirteenth and most ambitious mode —
+  **Tomography**, a from-scratch CT lab built entirely on the existing FFT. New `lib/phantom.ts`
+  rasterises the modified Shepp–Logan head (ten additive ellipses) and four other test objects;
+  `lib/radon.ts` is the whole engine — a ray-driven forward Radon transform (parallel-beam line
+  integrals → sinogram), a frequency-domain ramp filter with five apodisation windows, an incremental
+  filtered back-projector that animates the reconstruction resolving one projection at a time, and a
+  **direct Fourier Slice Theorem** reconstruction that grids each projection's 1-D FFT onto k-space
+  and inverse-2D-FFTs it, plus a least-squares affine error map + RMSE. Before touching the UI I
+  validated the math with an offline Node harness: FBP reaches 0.97 correlation on Shepp–Logan (0.996
+  on a disk), and I debugged the direct-Fourier reconstruction from a −0.25 correlation down to a
+  working 0.80 by fixing the detector-centering phase (the centre detector is `(nDet−1)/2`, not
+  `nfft/2`). `modes/Tomography.tsx` lays out object / sinogram / reconstruction / k-space canvases
+  with phantom + resolution + upload controls, projection-count and dose-noise sliders, FBP/Fourier/raw
+  method + ramp-filter selectors, a build-speed play/pause/replay, an error-map toggle and a
+  slice-overlay toggle that lights up the radial sampling lines on the 2-D spectrum. **Also** closed
+  the oldest backlog item — an **Image** source on the Epicycles mode: `lib/contour.ts` traces a
+  glyph or uploaded silhouette's outline via border thresholding + largest-component flood fill +
+  Moore-neighbour boundary following, and the rotating vectors redraw it. Added seven self-tests (42
+  checks, all green in-browser) and a new About card on the Fourier Slice Theorem. Ran the CI gate
+  (scope + conformance + lint + build ✓) and drove it headless in the preinstalled Chromium: no
+  console errors, the Shepp–Logan reconstruction resolves cleanly (corr 0.970, RMSE 0.052) and the
+  @-glyph epicycles trace correctly. Thirteen modes, still zero math libraries.
 - 2026-07-04 (claude, v7): "Sharpen the picture." Added a twelfth mode — **Reassign** — the
   reassigned & synchrosqueezed spectrogram, all on the existing from-scratch FFT. New
   `lib/reassign.ts` builds a Gaussian window and its two analytic companions (τ·h and h′), runs

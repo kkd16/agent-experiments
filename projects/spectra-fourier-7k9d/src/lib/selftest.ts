@@ -24,6 +24,9 @@ import { remezDesign } from './remez'
 import { estimateOrders, buttord, cheb1ord, ellipord } from './filterspec'
 import type { FilterSpec } from './filterspec'
 import { reassignSpectrogram, makeTfrSignal, instantaneousFreq } from './reassign'
+import { makePhantom } from './phantom'
+import { forwardRadon, fbp, directFourier, affineError, correlation } from './radon'
+import { traceContour } from './contour'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -673,6 +676,91 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     }
     const corr = num / (Math.sqrt(da * db) + 1e-12)
     check('synchrosqueezing preserves the time axis (col-energy corr > 0.95)', corr > 0.95)
+  }
+
+  // 26. Radon of a centered disk is (nearly) angle-independent: a symmetric
+  //     object casts the same shadow from every direction.
+  {
+    const size = 64
+    const disk = makePhantom('disk', size)
+    const sino = forwardRadon(disk, size, 60)
+    const dc = Math.floor(sino.nDet / 2)
+    let lo = Infinity
+    let hi = -Infinity
+    for (let a = 0; a < sino.nAngles; a++) {
+      const v = sino.data[a * sino.nDet + dc]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+    check('Radon of a disk is angle-independent (center ray)', (hi - lo) / hi < 0.05)
+  }
+
+  // 27. Every projection integrates to the same total mass (∫p_θ dt = const).
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 45)
+    const dt = (2 * sino.tMax) / (sino.nDet - 1)
+    let lo = Infinity
+    let hi = -Infinity
+    for (let a = 0; a < sino.nAngles; a++) {
+      let s = 0
+      for (let d = 0; d < sino.nDet; d++) s += sino.data[a * sino.nDet + d]
+      s *= dt
+      if (s < lo) lo = s
+      if (s > hi) hi = s
+    }
+    check('projection mass is conserved across angles', (hi - lo) / hi < 0.02)
+  }
+
+  // 28. Filtered back-projection recovers the Shepp–Logan phantom faithfully.
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 120)
+    const rec = fbp(sino, size, 'ramlak')
+    check('FBP reconstructs Shepp–Logan (corr > 0.9)', correlation(rec, ph) > 0.9)
+  }
+
+  // 29. The Fourier Slice Theorem reconstruction (gridding + inverse 2-D FFT)
+  //     produces a recognisable image, and back-projection with no ramp filter
+  //     is markedly blurrier (proving the filter is doing real work).
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 120)
+    const df = directFourier(sino, size)
+    const raw = fbp(sino, size, 'none')
+    const cf = correlation(df.recon, ph)
+    const cr = correlation(raw, ph)
+    check('direct-Fourier slice reconstruction is recognisable (corr > 0.6)', cf > 0.6)
+    check('the ramp filter beats raw back-projection', cf > cr)
+  }
+
+  // 30. affineError of a buffer against itself is zero; correlation is one.
+  {
+    const size = 32
+    const ph = makePhantom('circles', size)
+    const { rmse } = affineError(ph, ph)
+    check('affineError(x, x) == 0 and corr(x, x) == 1', rmse < 1e-9 && correlation(ph, ph) > 0.9999)
+  }
+
+  // 31. Contour tracing of a disk returns a closed loop of nearly constant radius.
+  {
+    const size = 96
+    const g = new Float64Array(size * size)
+    const c = (size - 1) / 2
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) g[y * size + x] = Math.hypot(x - c, y - c) < size * 0.35 ? 1 : 0
+    const contour = traceContour(g, size, 0.5)
+    let lo = Infinity
+    let hi = -Infinity
+    for (const p of contour) {
+      const r = Math.hypot(p.x, p.y)
+      if (r < lo) lo = r
+      if (r > hi) hi = r
+    }
+    check('contour of a disk is a closed near-circular loop', contour.length > 32 && hi - lo < 0.15)
   }
 
   return { passed, failed, messages }
