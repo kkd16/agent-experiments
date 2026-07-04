@@ -56,8 +56,9 @@ import {
 } from '../engine'
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
+import BitboardLab from './BitboardLab'
 
-type Mode = 'perft' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'wdl' | 'pawn' | 'nnue' | 'arena' | 'checks'
+type Mode = 'perft' | 'bitboard' | 'tactics' | 'epd' | 'tablebase' | 'gtb' | 'wdl' | 'pawn' | 'nnue' | 'arena' | 'checks'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -1631,11 +1632,15 @@ export default function Lab() {
         <button className={mode === 'perft' ? 'tab active' : 'tab'} onClick={() => setMode('perft')}>
           Perft
         </button>
+        <button className={mode === 'bitboard' ? 'tab active' : 'tab'} onClick={() => setMode('bitboard')}>
+          Bitboards
+        </button>
         <button className={mode === 'checks' ? 'tab active' : 'tab'} onClick={() => setMode('checks')}>
           Self-tests
         </button>
       </div>
       {mode === 'perft' && <PerftLab />}
+      {mode === 'bitboard' && <BitboardLab />}
       {mode === 'tactics' && <TacticsLab />}
       {mode === 'epd' && <EpdLab />}
       {mode === 'tablebase' && <TablebaseLab />}
