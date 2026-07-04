@@ -53,6 +53,12 @@ export type TypeExpr =
 export interface CtorDecl {
   name: string
   args: TypeExpr[]
+  /** For a GADT constructor declared with the `where` syntax, its explicit
+   * result type (e.g. `Expr Int`). Absent for an ordinary ADT constructor,
+   * whose result is implicitly the datatype applied to its parameters. When
+   * present the constructor carries its own quantified type variables, so two
+   * constructors of the same datatype may return different type indices. */
+  result?: TypeExpr
   span: Span
 }
 
@@ -122,7 +128,18 @@ export type Expr =
   | { kind: 'var'; name: string; span: Span }
   | { kind: 'lambda'; param: string; body: Expr; span: Span }
   | { kind: 'app'; fn: Expr; arg: Expr; span: Span }
-  | { kind: 'let'; name: string; value: Expr; body: Expr; recursive: boolean; span: Span }
+  | {
+      kind: 'let'
+      name: string
+      value: Expr
+      body: Expr
+      recursive: boolean
+      /** optional type signature: `let f : T = …`. When present the value is
+       * *checked* against `T` (skolemising its free type variables), which is
+       * what unlocks GADT pattern-matching and polymorphic recursion. */
+      sig?: TypeExpr
+      span: Span
+    }
   | { kind: 'if'; cond: Expr; then: Expr; else: Expr; span: Span }
   | { kind: 'binop'; op: BinaryOp; left: Expr; right: Expr; span: Span }
   | { kind: 'unop'; op: UnaryOp; operand: Expr; span: Span }
@@ -131,7 +148,7 @@ export type Expr =
   | { kind: 'seq'; first: Expr; rest: Expr; span: Span }
   | { kind: 'match'; scrutinee: Expr; cases: MatchCase[]; span: Span }
   | { kind: 'typedecl'; name: string; params: string[]; ctors: CtorDecl[]; body: Expr; span: Span }
-  | { kind: 'letrec'; bindings: { name: string; value: Expr }[]; body: Expr; span: Span }
+  | { kind: 'letrec'; bindings: { name: string; value: Expr; sig?: TypeExpr }[]; body: Expr; span: Span }
   | { kind: 'record'; fields: { label: string; value: Expr }[]; span: Span }
   | { kind: 'field'; record: Expr; label: string; span: Span }
   | { kind: 'recordUpdate'; record: Expr; fields: { label: string; value: Expr }[]; span: Span }
@@ -201,7 +218,7 @@ export function cloneExpr(e: Expr): Expr {
     case 'letrec':
       return {
         ...e,
-        bindings: e.bindings.map((b) => ({ name: b.name, value: cloneExpr(b.value) })),
+        bindings: e.bindings.map((b) => ({ name: b.name, value: cloneExpr(b.value), sig: b.sig })),
         body: cloneExpr(e.body),
       }
     case 'record':

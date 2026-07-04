@@ -238,6 +238,71 @@ let program = Mul (Add (Num 3) (Num 4)) (Neg (Num 5)) in
 eval program`,
   },
   {
+    id: 'gadt',
+    title: 'GADTs: a well-typed interpreter',
+    blurb: 'Constructors carry their own result type, so the interpreter never needs a "type error" case — and the evaluator returns Int or Bool, whichever the tree encodes.',
+    visual: false,
+    code: `// A *Generalized* ADT: each constructor's signature fixes the type INDEX it
+// builds. \`ILit\` builds an \`Expr Int\`, \`BLit\` builds an \`Expr Bool\`, and
+// \`Cmp\` turns two Int-expressions into a Bool-expression. Matching a
+// constructor then *refines* the index locally in that branch.
+type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+  | Add  : Expr Int -> Expr Int -> Expr Int
+  | Cmp  : Expr Int -> Expr Int -> Expr Bool
+  | If   : Expr Bool -> Expr a -> Expr a -> Expr a
+in
+
+// The signature is what unlocks GADT matching: \`a\` is rigid, and each branch
+// learns what it must be. In \`ILit n -> n\`, the result must be \`a\`, but here
+// \`a = Int\`, so returning the Int \`n\` type-checks. No untyped tag, no panic.
+let rec eval : Expr a -> a = fn e ->
+  match e with
+  | ILit n    -> n
+  | BLit b    -> b
+  | Add x y   -> eval x + eval y
+  | Cmp x y   -> eval x < eval y
+  | If c t f  -> if eval c then eval t else eval f
+in
+
+// if (3 < 5) then 20 + 22 else 0   ==>  42 : Int
+eval (If (Cmp (ILit 3) (ILit 5)) (Add (ILit 20) (ILit 22)) (ILit 0))`,
+  },
+  {
+    id: 'gadt-vec',
+    title: 'GADTs: length-indexed vectors',
+    blurb: 'The vector’s length lives in its type. head is total — the compiler knows an empty vector can never reach it, so a one-clause match is exhaustive.',
+    visual: false,
+    code: `// Two empty "phantom" types index the length at the type level.
+type Zero in
+type Succ n in
+
+// \`Vec n a\` is a list of \`a\` whose length \`n\` is tracked in the type:
+// VNil has length Zero; consing bumps the length to \`Succ n\`.
+type Vec n a where
+  | VNil  : Vec Zero a
+  | VCons : a -> Vec n a -> Vec (Succ n) a
+in
+
+// Because the argument is \`Vec (Succ n) a\` — provably non-empty — the VNil
+// case is impossible and the match is exhaustive with a SINGLE clause. A
+// total, crash-free head.
+let head1 : Vec (Succ n) a -> a = fn v ->
+  match v with | VCons x xs -> x
+in
+
+// map preserves the length in the type: Vec n a -> Vec n b.
+let rec vmap : (a -> b) -> Vec n a -> Vec n b = fn f -> fn v ->
+  match v with
+  | VNil       -> VNil
+  | VCons x xs -> VCons (f x) (vmap f xs)
+in
+
+let v = VCons 1 (VCons 2 (VCons 3 VNil)) in
+head1 (vmap (fn x -> x * 10) v)`,
+  },
+  {
     id: 'maybe',
     title: 'Option & safe lookup',
     blurb: 'A polymorphic Option type for computations that can fail.',

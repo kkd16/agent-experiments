@@ -98,7 +98,14 @@ type Signature = { kind: 'finite'; ctors: CtorShape[] } | { kind: 'infinite' }
 
 export interface TypeCtorInfo {
   params: string[]
-  ctors: { name: string; argTypeExprs: TypeExpr[] }[]
+  /** true for a datatype declared in GADT (`where`) form */
+  gadt?: boolean
+  ctors: {
+    name: string
+    argTypeExprs: TypeExpr[]
+    /** GADT constructors carry an explicit result type (its index arguments) */
+    resultTypeExpr?: TypeExpr
+  }[]
 }
 
 type ConvertFn = (te: TypeExpr, params: Map<string, Type>) => Type
@@ -143,6 +150,25 @@ function signatureOf(
     default: {
       const info = typeCtors.get(t.name)
       if (!info) return { kind: 'infinite' }
+      if (info.gadt) {
+        // GADT: a constructor is only *possible* for this scrutinee if its result
+        // indices can unify with the scrutinee's. Constructors whose result is
+        // incompatible (e.g. `BLit : Expr Bool` against a scrutinee `Expr Int`)
+        // are pruned, so a match may be exhaustive without covering them.
+        const ctors: CtorShape[] = []
+        for (const c of info.ctors) {
+          const names = tvarNamesOf(c.argTypeExprs, c.resultTypeExpr)
+          const sub = new Map<string, Type>()
+          for (const n of names) sub.set(n, { kind: 'var', id: -1, ref: null })
+          if (c.resultTypeExpr) {
+            const rt = convert(c.resultTypeExpr, sub)
+            if (!gadtUnifiable(rt, t)) continue
+          }
+          const argTypes = c.argTypeExprs.map((te) => convert(te, sub))
+          ctors.push({ name: c.name, arity: argTypes.length, argTypes })
+        }
+        return { kind: 'finite', ctors }
+      }
       const subst = new Map<string, Type>()
       info.params.forEach((p, i) => subst.set(p, t.args[i] ?? prune({ kind: 'var', id: -1, ref: null })))
       const ctors = info.ctors.map((c) => {
@@ -152,6 +178,55 @@ function signatureOf(
       return { kind: 'finite', ctors }
     }
   }
+}
+
+// Collect every type-variable name mentioned across a constructor's argument and
+// result type expressions (so `convert` has a binding for each).
+function tvarNamesOf(args: TypeExpr[], result: TypeExpr | undefined): string[] {
+  const acc: string[] = []
+  const seen = new Set<string>()
+  const go = (te: TypeExpr): void => {
+    switch (te.kind) {
+      case 'tvar':
+        if (!seen.has(te.name)) {
+          seen.add(te.name)
+          acc.push(te.name)
+        }
+        break
+      case 'tcon':
+        te.args.forEach(go)
+        break
+      case 'tarrow':
+        go(te.from)
+        go(te.to)
+        break
+      case 'ttuple':
+        te.elements.forEach(go)
+        break
+      case 'tapp':
+        go(te.fn)
+        go(te.arg)
+        break
+    }
+  }
+  for (const a of args) go(a)
+  if (result) go(result)
+  return acc
+}
+
+// Non-mutating structural unifiability, with type variables *and* skolem constants
+// treated as flexible wildcards — used only to decide whether a GADT constructor's
+// result indices could match the scrutinee. Conservative: any doubt keeps the ctor.
+function gadtUnifiable(a: Type, b: Type): boolean {
+  const pa = prune(a)
+  const pb = prune(b)
+  const flex = (t: Type): boolean =>
+    t.kind === 'var' || (t.kind === 'con' && t.name.startsWith('skolem$'))
+  if (flex(pa) || flex(pb)) return true
+  if (pa.kind === 'app' || pb.kind === 'app') return true // conservative
+  if (pa.kind !== 'con' || pb.kind !== 'con') return true
+  if (pa.name !== pb.name || pa.args.length !== pb.args.length) return false
+  return pa.args.every((x, i) => gadtUnifiable(x, pb.args[i]))
 }
 
 function wildcards(n: number): NPat[] {

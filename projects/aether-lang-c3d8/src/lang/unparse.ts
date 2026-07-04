@@ -59,12 +59,18 @@ function go(e: Expr, depth: number, arg: boolean): string {
       return wrap(`${go(e.fn, depth, false)} ${go(e.arg, depth, true)}`, arg)
     case 'let': {
       const kw = e.recursive ? 'let rec' : 'let'
+      const sig = e.sig ? ` : ${typeExprToString(e.sig)}` : ''
       const v = go(e.value, depth + 1, false)
-      return `${kw} ${e.name} = ${v} in\n${pad(depth)}${go(e.body, depth, false)}`
+      return `${kw} ${e.name}${sig} = ${v} in\n${pad(depth)}${go(e.body, depth, false)}`
     }
     case 'letrec': {
       const binds = e.bindings
-        .map((b, i) => `${i === 0 ? 'let rec' : pad(depth) + 'and'} ${b.name} = ${go(b.value, depth + 1, false)}`)
+        .map(
+          (b, i) =>
+            `${i === 0 ? 'let rec' : pad(depth) + 'and'} ${b.name}${
+              b.sig ? ` : ${typeExprToString(b.sig)}` : ''
+            } = ${go(b.value, depth + 1, false)}`,
+        )
         .join('\n')
       return `${binds} in\n${pad(depth)}${go(e.body, depth, false)}`
     }
@@ -94,8 +100,12 @@ function go(e: Expr, depth: number, arg: boolean): string {
         .join('')
       return wrap(`match ${go(e.scrutinee, depth, false)} with${cases}`, arg)
     }
-    case 'typedecl':
-      return `type ${e.name}${e.params.length ? ' ' + e.params.join(' ') : ''} = … in\n${pad(depth)}${go(e.body, depth, false)}`
+    case 'typedecl': {
+      const head = `type ${e.name}${e.params.length ? ' ' + e.params.join(' ') : ''}`
+      const isGadt = e.ctors.some((c) => c.result !== undefined)
+      const body = e.ctors.length === 0 ? '' : isGadt ? ' where …' : ' = …'
+      return `${head}${body} in\n${pad(depth)}${go(e.body, depth, false)}`
+    }
     case 'record':
       return `{ ${e.fields.map((f) => `${f.label} = ${go(f.value, depth, false)}`).join(', ')} }`
     case 'field':

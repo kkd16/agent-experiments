@@ -24,7 +24,11 @@ compile the same optimized core — and the equivalence checks prove it preserve
 - `src/lang/lexer.ts` — hand-written scanner; precise source spans, nested block comments.
 - `src/lang/parser.ts` — Pratt parser; application is juxtaposition; curried lambdas.
 - `src/lang/types.ts` + `infer.ts` — Algorithm W: unification by mutation, occurs-check,
-  let-generalisation (real parametric polymorphism, zero annotations).
+  let-generalisation (real parametric polymorphism, zero annotations). Also carries the optional
+  **bidirectional layer** (Aether 29.0): a value can be *checked* against a pushed-down type — used
+  by type signatures (`let f : T = …`), expression ascription (`(e : T)`) and **GADT** pattern
+  matching, where a rigid (skolemised) result type lets each constructor's index equations be solved
+  as branch-local equalities.
 - `src/lang/optimize.ts` — the optimizing middle-end: a multi-pass, fixpoint rewriter over the core
   (const-fold + algebra, β/η, capture-avoiding inlining, dead-binding elimination, known-constructor
   `match` reduction, field projection, local CSE) plus a top-down **global value numbering** pass
@@ -58,6 +62,74 @@ compile the same optimized core — and the equivalence checks prove it preserve
   Tokens, AST, Types, Bytecode, Debugger), plus Examples / Language / Internals pages.
 
 ## Ideas / backlog
+
+### Aether 29.0 — the type system grows a spine: signatures, ascription & GADTs (planned + shipped this session)
+
+Until now Aether inferred *everything* with zero annotations — a point of pride, but also a
+ceiling: without a way to write a type down, a whole tier of type-system features is unreachable.
+29.0 adds the annotation surface and then spends it on the crown-jewel feature it unlocks —
+**GADTs (generalized algebraic data types)** — the thing that turns a datatype's parameter into a
+genuine *type index* that pattern-matching can refine. The classic payoff: one `eval : Expr a -> a`
+that returns an `Int` from an int-expression and a `Bool` from a bool-expression, with **no runtime
+tag and no impossible "type error" case**, because the checker proves each branch returns the right
+thing. And because GADT constructors are **erased at runtime** (they compile to the same tagged
+values as any ADT), every GADT program runs **byte-for-byte identically on the VM, the JavaScript
+backend and the WebAssembly backend** — proven by the differential suite, exactly like the rest of
+the language. All of the risk is therefore confined to the *type checker*, and the whole feature is
+**additive**: an un-annotated program takes the exact pre-29.0 inference path, so nothing regressed.
+
+The plan (all shipped this session):
+
+- [x] **Type signatures & ascription** — `let f : T = value` (and per-binding in a `let rec … and …`
+      group) and expression ascription `(e : T)` (parser-desugared to a one-shot signatured binding,
+      so it reuses the same path). A signature is **checked, not merely unified**: its free type
+      variables are **skolemised** (turned into rigid constants) while the value is checked, so a
+      value must be *genuinely* polymorphic — `let f : a -> a = fn x -> x + 1` is correctly rejected
+      (`cannot unify skolem with Int`). Skolems are represented as reserved nullary `TCon`s, so the
+      existing unifier already treats them as rigid — **no change to unification**.
+- [x] **Polymorphic recursion (a free bonus)** — a signatured `let rec` sees itself at its *full
+      polymorphic* scheme while checking its own body, so it can recurse at a **different** type than
+      the definition (`depth : Nest a -> Int` calling `depth` on a `Nest (List a)`). A bare
+      un-annotated `let rec` — typed monomorphically while self-checking — can never do this.
+- [x] **GADT declaration syntax** — `type T a where | K : t1 -> … -> T … | …`. Each constructor
+      carries a full signature whose result fixes the indices it builds; the parser splits the arrow
+      chain into arguments + an explicit `result`, and inference elaborates each GADT constructor from
+      **its own** signature (its own quantified indices/existentials) rather than the shared datatype
+      result. Ordinary `type T = A | B` declarations are untouched. Also added **empty/phantom types**
+      (`type Zero in …`) as type-level indices.
+- [x] **GADT-aware pattern matching (the heart)** — bidirectional: when a result type is pushed into
+      a `match` on a GADT, each constructor's declared result indices are reconciled with the
+      scrutinee's **locally, per branch**. A rigid scrutinee index refined to a concrete type becomes
+      a branch-local equality `θ` (a `Refl : Eq a a` pattern records a *rigid = rigid* equality — the
+      whole point of a coercion witness); the branch's pattern-variable types and expected result type
+      are refined through `θ`, and `θ` is discarded at the branch boundary so sibling branches never
+      clash (the ILit branch learns `a = Int`, the BLit branch `a = Bool`, independently). A branch
+      whose indices are contradictory is **pruned as unreachable** (warned, not type-checked). No
+      global mutation of rigid indices ever leaks — the classic `coerce : a -> b` unsoundness is
+      rejected.
+- [x] **GADT-aware exhaustiveness** — Maranget's usefulness check now, for a GADT scrutinee, drops
+      constructors whose result indices cannot unify with the scrutinee's type (skolems & vars treated
+      as flexible wildcards, conservatively). So a match on `Expr Int` is exhaustive **without** a
+      `BLit` case, and a one-clause `head : Vec (Succ n) a -> a` on a provably-non-empty
+      length-indexed vector is **total** — the `VNil` case is impossible and correctly not required.
+- [x] **Verified end-to-end** — 12 new in-app self-tests (the suite grew **135 → 147**, all VM ≡ JS),
+      including the typed `Expr` evaluator (returning both `Int` and `Bool`), length-indexed vectors
+      with a total `head` and a length-preserving `vmap`, a `Refl` type-equality cast, polymorphic
+      recursion, and **negative** cases (non-polymorphic signature, `Refl` at an unequal index, a
+      branch that ignores refinement, an un-annotated index-mixing match — all rejected). The GADT
+      programs were additionally checked **VM ≡ JS ≡ WASM on both the optimized and unoptimized core**.
+      Two gallery examples (`GADTs: a well-typed interpreter`, `GADTs: length-indexed vectors`), a Tour
+      section and an About card were added; `pnpm lint` + `pnpm build` green.
+
+Still deferred (future, building on 29.0):
+
+- [ ] **Existential types** — a GADT constructor whose signature mentions a variable *not* in the
+      result (`type Any where | Any : a -> Any`); the machinery instantiates them already, but the
+      surface/escape story wants its own pass and tests.
+- [ ] **Signature contexts** — allow `let f : (Eq a) => a -> a -> Bool = …` so a signatured binding
+      can *declare* the class constraints it needs (today a leftover obligation is an error).
+- [ ] **Type-annotated holes** — `(? : T)` reporting the expected type, pairing the new ascription
+      surface with the existing synthesizer.
 
 ### Aether 28.0 — the synthesizer learns to recurse (planned + shipped this session)
 

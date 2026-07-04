@@ -288,6 +288,26 @@ class Parser {
       const close = this.expect('punc', ')')
       return { kind: 'tuple', elements, span: this.spanFrom(open.span, close.span) }
     }
+    // type ascription: `(e : T)`. Desugared to a one-shot signatured binding
+    // `let $asc : T = e in $asc`, so it reuses the exact `let`-signature checking
+    // path (skolemised, GADT-aware). The name is used immediately, so a fixed
+    // reserved name is safe even when ascriptions nest (inner simply shadows).
+    if (this.at('op', ':')) {
+      this.next()
+      const sig = this.parseTypeExpr()
+      const close = this.expect('punc', ')')
+      const span = this.spanFrom(open.span, close.span)
+      const nm = '$asc'
+      return {
+        kind: 'let',
+        name: nm,
+        value: first,
+        body: { kind: 'var', name: nm, span },
+        recursive: false,
+        sig,
+        span,
+      }
+    }
     this.expect('punc', ')')
     return first
   }
@@ -459,7 +479,7 @@ class Parser {
   }
 
   // one binding: `name params = value` (params desugar to curried lambdas)
-  private parseBinding(): { name: string; value: Expr } {
+  private parseBinding(): { name: string; value: Expr; sig?: TypeExpr } {
     if (!this.at('ident')) {
       throw new ParseError('expected a name', this.peek().span)
     }
@@ -468,12 +488,27 @@ class Parser {
     while (this.at('ident')) {
       params.push(this.next().value)
     }
+    // optional type signature `let f : T = …`. The signature is the full type of
+    // the binding name; it is not allowed together with sugar parameters (write
+    // the lambda explicitly so the annotation and the value line up).
+    let sig: TypeExpr | undefined
+    if (this.at('op', ':')) {
+      if (params.length > 0) {
+        throw new ParseError(
+          'a type signature `let f : T = …` cannot be combined with parameters; ' +
+            'write the value as an explicit `fn` instead',
+          this.peek().span,
+        )
+      }
+      this.next()
+      sig = this.parseTypeExpr()
+    }
     this.expect('op', '=')
     let value = this.parseExpr(0)
     for (let k = params.length - 1; k >= 0; k--) {
       value = { kind: 'lambda', param: params[k], body: value, span: value.span }
     }
-    return { name, value }
+    return { name, value, sig }
   }
 
   private parseLet(): Expr {
@@ -519,6 +554,7 @@ class Parser {
       value: first.value,
       body,
       recursive,
+      sig: first.sig,
       span: this.spanFrom(start.span, body.span),
     }
   }
@@ -744,6 +780,24 @@ class Parser {
     while (this.at('ident') && !isUpper(this.peek().value)) {
       params.push(this.next().value)
     }
+    // empty / phantom type: `type Zero in …` declares a type with no
+    // constructors (handy as a type-level index for GADTs).
+    if (this.at('keyword', 'in')) {
+      this.next()
+      const body = this.parseExpr(0)
+      return { kind: 'typedecl', name, params, ctors: [], body, span: this.spanFrom(start.span, body.span) }
+    }
+    // GADT form: `type T a where | K : t1 -> … -> T … | … `. Each constructor
+    // carries a full type signature whose result may fix the datatype's indices
+    // (e.g. `IntLit : Int -> Expr Int`), so different constructors can return
+    // different indices of the same type.
+    if (this.at('keyword', 'where')) {
+      this.next()
+      const ctors = this.parseGadtCtors(name, params)
+      this.expect('keyword', 'in')
+      const body = this.parseExpr(0)
+      return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
+    }
     this.expect('op', '=')
     const ctors: CtorDecl[] = []
     if (this.at('op', '|')) this.next()
@@ -775,6 +829,52 @@ class Parser {
       body = deriveInstances(name, params, ctors, derived, tdSpan, body)
     }
     return { kind: 'typedecl', name, params, ctors, body, span: this.spanFrom(start.span, body.span) }
+  }
+
+  // Parse the constructor signatures of a GADT (`where` form). Each is
+  // `Name : t1 -> … -> tn -> Result`, which we split into argument types plus an
+  // explicit `result`. The result's head constructor must be the datatype being
+  // declared. Constructors are separated by `|` (a leading `|` is optional).
+  private parseGadtCtors(typeName: string, params: string[]): CtorDecl[] {
+    const ctors: CtorDecl[] = []
+    if (this.at('op', '|')) this.next()
+    for (;;) {
+      if (!this.at('ident') || !isUpper(this.peek().value)) {
+        throw new ParseError('expected an uppercase constructor name', this.peek().span)
+      }
+      const ctorTok = this.next()
+      this.expect('op', ':')
+      const sig = this.parseTypeExpr()
+      // split the arrow chain into arguments + final result type
+      const args: TypeExpr[] = []
+      let cur: TypeExpr = sig
+      while (cur.kind === 'tarrow') {
+        args.push(cur.from)
+        cur = cur.to
+      }
+      const result = cur
+      const resultHead = result.kind === 'tcon' ? result.name : null
+      if (resultHead !== typeName) {
+        throw new ParseError(
+          `constructor ${ctorTok.value} must return ${typeName}, but its signature returns ` +
+            `a different type`,
+          result.span,
+        )
+      }
+      void params
+      ctors.push({
+        name: ctorTok.value,
+        args,
+        result,
+        span: this.spanFrom(ctorTok.span, result.span),
+      })
+      if (this.at('op', '|')) {
+        this.next()
+        continue
+      }
+      break
+    }
+    return ctors
   }
 
   // optional `deriving (C1, C2, …)` after a type's constructors. Returns [] when

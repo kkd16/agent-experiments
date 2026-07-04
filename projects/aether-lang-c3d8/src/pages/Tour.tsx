@@ -260,6 +260,80 @@ toList (fmap (fn x -> x * 10) (Node Leaf 1 (Node Leaf 2 Leaf)))  // [10, 20]`}</
       </section>
 
       <section>
+        <h2>Type signatures &amp; ascription</h2>
+        <p>
+          Any binding can carry a signature, and any expression can be ascribed a type with{' '}
+          <code>(e : T)</code>. A signature is <strong>checked, not just unified</strong>: its type
+          variables become <em>rigid</em> for the duration, so the value has to be genuinely
+          polymorphic — <code>let f : a -&gt; a = fn x -&gt; x + 1</code> is rejected, because a
+          function that adds <code>1</code> is not <em>every</em> <code>a -&gt; a</code>.
+        </p>
+        <pre className="snippet">{`let const2 : a -> b -> a = fn x -> fn y -> x in const2 5 true   // 5
+([1, 2, 3] : List Int)                                          // [1, 2, 3]`}</pre>
+        <p>
+          A signature also enables <strong>polymorphic recursion</strong> — a recursive call at a{' '}
+          <em>different</em> type than the definition, which a bare <code>let rec</code> (typed
+          monomorphically while checking itself) can never do:
+        </p>
+        <pre className="snippet">{`type Nest a where | Leaf : a -> Nest a | Deep : Nest (List a) -> Nest a in
+let rec depth : Nest a -> Int = fn n ->
+  match n with | Leaf x -> 0 | Deep d -> 1 + depth d in
+depth (Deep (Deep (Leaf [[7]])))                                // 2`}</pre>
+      </section>
+
+      <section>
+        <h2>GADTs (generalized algebraic data types)</h2>
+        <p>
+          An ordinary <code>type T a = …</code> gives every constructor the <em>same</em> result
+          type, <code>T a</code>. A <strong>GADT</strong>, declared with <code>where</code> and a full
+          signature per constructor, lets each one fix the type <em>index</em> it builds. Pattern
+          matching then <strong>refines that index locally</strong>, one branch at a time:
+        </p>
+        <pre className="snippet">{`type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+  | Add  : Expr Int -> Expr Int -> Expr Int
+  | Cmp  : Expr Int -> Expr Int -> Expr Bool
+  | If   : Expr Bool -> Expr a -> Expr a -> Expr a
+in
+let rec eval : Expr a -> a = fn e -> match e with
+  | ILit n   -> n                        // here a = Int, so returning n : Int is OK
+  | BLit b   -> b                        // here a = Bool
+  | Add x y  -> eval x + eval y
+  | Cmp x y  -> eval x < eval y
+  | If c t f -> if eval c then eval t else eval f
+in eval (If (Cmp (ILit 3) (ILit 5)) (Add (ILit 20) (ILit 22)) (ILit 0))  // 42`}</pre>
+        <p>
+          One evaluator returns an <code>Int</code> or a <code>Bool</code> depending on the tree it is
+          given — with no runtime tag and no “impossible” fallback case, because the type checker
+          proves each branch returns the right thing. The refinement is discovered by{' '}
+          <strong>skolemising</strong> the result type and solving each constructor’s index equations{' '}
+          <em>per branch</em>; a branch whose indices are contradictory (a <code>BLit</code> match on
+          an <code>Expr Int</code>) is flagged <strong>unreachable</strong>, and a constructor that can
+          never build the scrutinee’s type is dropped from the exhaustiveness check.
+        </p>
+        <p>
+          That last point powers genuinely <strong>total</strong> functions. A length-indexed vector
+          keeps its size in its type, so <code>head</code> on a provably non-empty vector needs only{' '}
+          <em>one</em> clause and is still exhaustive — the empty case is impossible:
+        </p>
+        <pre className="snippet">{`type Zero in
+type Succ n in
+type Vec n a where
+  | VNil  : Vec Zero a
+  | VCons : a -> Vec n a -> Vec (Succ n) a
+in
+let head1 : Vec (Succ n) a -> a = fn v ->
+  match v with | VCons x xs -> x in       // total: no VNil case needed
+head1 (VCons 7 (VCons 8 VNil))            // 7`}</pre>
+        <p>
+          GADT constructors are <strong>erased at runtime</strong> — they are ordinary tagged values —
+          so every one of these programs runs byte-for-byte identically on the tree-walking VM, the
+          JavaScript backend and the WebAssembly backend, exactly like the rest of the language.
+        </p>
+      </section>
+
+      <section>
         <h2>List comprehensions</h2>
         <p>
           <code>[ e | x &lt;- xs, guard, y &lt;- ys ]</code> builds a list from one or more{' '}
