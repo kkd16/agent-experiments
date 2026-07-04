@@ -25,6 +25,7 @@ import { SimplifyStudio } from './components/SimplifyStudio'
 import { TwoSatStudio } from './components/TwoSatStudio'
 import { LiaStudio } from './components/LiaStudio'
 import { InsightStudio } from './components/InsightStudio'
+import { AspStudio } from './components/AspStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -39,6 +40,7 @@ type Mode =
   | 'twosat'
   | 'lia'
   | 'insight'
+  | 'asp'
   | 'lab'
 
 export default function App() {
@@ -125,7 +127,9 @@ export default function App() {
                                 ? 'Quantifier-free integer linear arithmetic (QF_LIA) decided exactly by the Omega test.'
                                 : mode === 'insight'
                                   ? 'Beyond yes/no: model enumeration, backbones, MUS/MCS diagnosis, and approximate counting.'
-                                  : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
+                                  : mode === 'asp'
+                                    ? 'Answer Set Programming: stable-model logic programming on the CDCL core, via completion & loop formulas.'
+                                    : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
         </div>
@@ -163,6 +167,9 @@ export default function App() {
           <button className={mode === 'insight' ? 'active' : ''} onClick={() => setMode('insight')}>
             Insight Studio
           </button>
+          <button className={mode === 'asp' ? 'active' : ''} onClick={() => setMode('asp')}>
+            ASP Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -179,6 +186,7 @@ export default function App() {
       {mode === 'twosat' && <TwoSatStudio />}
       {mode === 'lia' && <LiaStudio />}
       {mode === 'insight' && <InsightStudio />}
+      {mode === 'asp' && <AspStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
