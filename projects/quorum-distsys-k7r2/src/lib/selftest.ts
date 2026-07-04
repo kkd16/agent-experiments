@@ -88,6 +88,18 @@ import {
   type Command as HsCommand,
   type FaultMode as HsFaultMode,
 } from '../protocols/hotstuff/types';
+import { createStreamlet } from '../protocols/streamlet/streamlet';
+import { streamletInvariants } from '../protocols/streamlet/invariants';
+import {
+  DEFAULT_STREAMLET_CONFIG,
+  faultBudget as slFaultBudget,
+  quorum as slQuorum,
+  leaderOf as slLeaderOf,
+  type StreamletCmd,
+  type StreamletState,
+  type Command as SlCommand,
+  type FaultMode as SlFaultMode,
+} from '../protocols/streamlet/types';
 import { createEPaxos } from '../protocols/epaxos/epaxos';
 import { epaxosInvariants, convergenceGauge as epConvergence } from '../protocols/epaxos/invariants';
 import {
@@ -1335,6 +1347,210 @@ export function runSelfTests(): TestResult[] {
         hsSettle(k, 25);
       }
       hsSettle(k, 100);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent Byzantine runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  // ---- Streamlet (textbook BFT consensus) ----
+  const slKernel = (seed: number, ids: string[], drop = 0, epochLen = 300) =>
+    new Kernel<StreamletState, StreamletCmd>({
+      seed,
+      protocol: createStreamlet({ ...DEFAULT_STREAMLET_CONFIG, epochLen }),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const slSet = (key: string, value: string, cid: string): SlCommand => ({ cid, op: { op: 'set', key, value } });
+  const slClient = (k: Kernel<StreamletState, StreamletCmd>, c: SlCommand) => {
+    for (const id of k.nodeOrder) if (k.isUp(id)) k.command(id, { type: 'request', command: c });
+  };
+  const slFaulty = (k: Kernel<StreamletState, StreamletCmd>, id: string, mode: SlFaultMode) => k.command(id, { type: 'set-fault', mode });
+  const slSettle = (k: Kernel<StreamletState, StreamletCmd>, ticks = 200, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const slHonest = (k: Kernel<StreamletState, StreamletCmd>) => k.views().filter((v) => v.state.fault === 'honest');
+  const slOk = (k: Kernel<StreamletState, StreamletCmd>) => streamletInvariants(k.views()).every((iv) => iv.ok);
+  const slBad = (k: Kernel<StreamletState, StreamletCmd>) =>
+    streamletInvariants(k.views())
+      .filter((iv) => !iv.ok)
+      .map((iv) => `${iv.name}: ${iv.detail}`)
+      .join(' | ');
+
+  t('Streamlet', 'Quorum sizes: N=3f+1 with 2f+1 notarization & rotating leaders', () => {
+    const ok =
+      slFaultBudget(4) === 1 && slQuorum(4) === 3 && slFaultBudget(7) === 2 && slQuorum(7) === 5 && slFaultBudget(10) === 3 && slQuorum(10) === 7;
+    const ids = ['A', 'B', 'C', 'D'];
+    const rotates = slLeaderOf(ids, 1) === 'B' && slLeaderOf(ids, 2) === 'C' && slLeaderOf(ids, 4) === 'A' && slLeaderOf(ids, 5) === 'B';
+    return [ok && rotates, ok && rotates ? 'f=⌊(N-1)/3⌋, notarize=2f+1, leader=all[epoch%N] rotates every epoch' : 'quorum/leader arithmetic wrong'];
+  });
+
+  t('Streamlet', 'Healthy 4-node cluster finalizes via consecutive-epoch triples & every replica agrees', () => {
+    const k = slKernel(1, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 5; i++) {
+      slClient(k, slSet('k' + i, 'v' + i, 'c' + i));
+      slSettle(k, 45);
+    }
+    slSettle(k, 160);
+    const kvs = slHonest(k).map((v) => JSON.stringify(v.state.kv));
+    const allFive = slHonest(k).every((v) => Object.keys(v.state.kv).length === 5);
+    const ok = allFive && new Set(kvs).size === 1 && slOk(k);
+    return [ok, ok ? `5 commands finalized by the 3-consecutive-epoch rule; all replicas agree` : slBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('Streamlet', 'Leaders rotate: many distinct proposers finalize blocks', () => {
+    const k = slKernel(8, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 8; i++) {
+      slClient(k, slSet('r', String(i), 'r' + i));
+      slSettle(k, 30);
+    }
+    slSettle(k, 160);
+    const lead = slHonest(k).reduce((a, b) => (a.state.finalHeight >= b.state.finalHeight ? a : b));
+    const ps = new Set<string>();
+    for (const e of lead.state.committed) {
+      const blk = lead.state.blocks[e.hash];
+      if (blk) ps.add(blk.proposer);
+    }
+    const ok = ps.size >= 2 && slOk(k);
+    return [ok, ok ? `${ps.size} distinct leaders proposed finalized blocks (round-robin rotation)` : slBad(k) || `proposers=${ps.size}`];
+  });
+
+  t('Streamlet', 'A silent leader’s epoch simply passes — no view-change, later epochs finalize', () => {
+    const k = slKernel(3, ['A', 'B', 'C', 'D']);
+    slFaulty(k, 'B', 'silent'); // B leads epoch 1, 5, 9, …
+    slClient(k, slSet('y', '9', 'cy'));
+    slSettle(k, 500);
+    const honest = slHonest(k);
+    const finalized = honest.every((v) => v.state.kv['y'] === '9');
+    const advanced = honest.some((v) => v.state.epoch > 3);
+    const ok = finalized && advanced && slOk(k);
+    return [ok, ok ? `the silent leader's epochs passed with no timeout code; a later epoch finalized the request` : slBad(k) || `epochs=${honest.map((v) => v.state.epoch).join(',')}`];
+  });
+
+  t('Streamlet', 'An EQUIVOCATING leader cannot break consistency or notarize a fork', () => {
+    const k = slKernel(7, ['A', 'B', 'C', 'D']);
+    slFaulty(k, 'B', 'equivocate'); // B forges conflicting blocks & double-votes at its epochs
+    slClient(k, slSet('w', 'real', 'cw'));
+    slSettle(k, 500);
+    const honest = slHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const noForgery = honest.every((v) => Object.values(v.state.kv).every((val) => !val.includes('✗')));
+    const ok = new Set(kvs).size === 1 && noForgery && slOk(k);
+    return [ok, ok ? `neither forked block gathered 2f+1; honest replicas stayed consistent with no forgery` : slBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('Streamlet', 'A lying (conflicting) backup’s forged-hash votes never count', () => {
+    const k = slKernel(11, ['A', 'B', 'C', 'D']);
+    slFaulty(k, 'D', 'conflict'); // votes for a corrupted hash
+    for (let i = 0; i < 4; i++) {
+      slClient(k, slSet('k' + i, 'v' + i, 'c' + i));
+      slSettle(k, 45);
+    }
+    slSettle(k, 160);
+    const allFour = slHonest(k).every((v) => Object.keys(v.state.kv).length === 4);
+    const ok = allFour && slOk(k);
+    return [ok, ok ? `the lying backup's votes were ignored; honest replicas finalized all 4` : slBad(k) || slHonest(k).map((v) => v.state.finalHeight).join(',')];
+  });
+
+  t('Streamlet', '7-node cluster tolerates 2 simultaneous Byzantine faults', () => {
+    const k = slKernel(13, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    slFaulty(k, 'B', 'silent');
+    slFaulty(k, 'G', 'conflict');
+    for (let i = 0; i < 3; i++) {
+      slClient(k, slSet('k' + i, 'v' + i, 'c' + i));
+      slSettle(k, 90);
+    }
+    slSettle(k, 500);
+    const honest = slHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const allKeys = honest.every((v) => Object.keys(v.state.kv).length === 3);
+    const ok = new Set(kvs).size === 1 && allKeys && slOk(k);
+    return [ok, ok ? `f=2 faults tolerated; all honest replicas converged with 3 keys` : slBad(k) || `kvs=${new Set(kvs).size}`];
+  });
+
+  t('Streamlet', 'A restarted replica catches up via finalized-block gossip', () => {
+    const k = slKernel(31, ['A', 'B', 'C', 'D']);
+    k.crash('D');
+    for (let i = 0; i < 6; i++) {
+      slClient(k, slSet('k' + i, 'v' + i, 'c' + i));
+      slSettle(k, 45);
+    }
+    slSettle(k, 80);
+    k.restart('D');
+    slSettle(k, 300);
+    const D = k.views().find((v) => v.id === 'D')!.state;
+    const A = k.views().find((v) => v.id === 'A')!.state;
+    const ok = JSON.stringify(D.kv) === JSON.stringify(A.kv) && D.finalHeight === A.finalHeight && slOk(k);
+    return [ok, ok ? `the restarted replica rebuilt its state to #${D.finalHeight} from f+1 matching reports` : slBad(k) || `D@${D.finalHeight} vs A@${A.finalHeight}`];
+  });
+
+  t('Streamlet', 'Consistency holds through 1,500 faults with an equivocating leader', () => {
+    const k = slKernel(2026, ['A', 'B', 'C', 'D']);
+    slFaulty(k, 'B', 'equivocate'); // 1 Byzantine = f for N=4
+    const chaos = new Rng(70707);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 1500 && !firstBreak; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'B');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.09 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.12) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.16) k.healNetwork();
+      else if (roll < 0.4) {
+        slClient(k, slSet('c', String(cmd), 'c' + cmd));
+        cmd++;
+      }
+      const bad = streamletInvariants(k.views()).filter((iv) => iv.name !== 'Progress').find((iv) => !iv.ok);
+      if (bad) firstBreak = `${bad.name}: ${bad.detail}`;
+    }
+    return [!firstBreak, firstBreak || 'Consistency, chain-integrity, state-machine safety & no-fork held through 1,500 Byzantine faults'];
+  });
+
+  t('Streamlet', 'Safety survives asynchrony: a long partition finalizes nothing conflicting, then heals', () => {
+    const k = slKernel(555, ['A', 'B', 'C', 'D']);
+    slFaulty(k, 'C', 'conflict'); // a fixed Byzantine backup (= f)
+    const chaos = new Rng(31337);
+    let cmd = 0;
+    for (let i = 0; i < 1000; i++) {
+      k.advance(20);
+      const roll = chaos.next();
+      const up = k.nodeOrder.filter((id) => k.isUp(id) && id !== 'C');
+      const down = k.nodeOrder.filter((id) => !k.isUp(id));
+      if (roll < 0.03 && up.length > 2) k.crash(chaos.pick(up)!);
+      else if (roll < 0.1 && down.length > 0) k.restart(chaos.pick(down)!);
+      else if (roll < 0.14) {
+        const sh = chaos.shuffle(k.nodeOrder);
+        k.partition([sh.slice(0, 2), sh.slice(2)]);
+      } else if (roll < 0.18) k.healNetwork();
+      else if (roll < 0.4) {
+        slClient(k, slSet('z', String(cmd), 'z' + cmd));
+        cmd++;
+      }
+      if (!slOk(k)) return [false, slBad(k)];
+    }
+    k.healNetwork();
+    for (const id of k.nodeOrder) if (!k.isUp(id)) k.restart(id);
+    slSettle(k, 700);
+    const honest = slHonest(k).filter((v) => v.up);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const ok = new Set(kvs).size === 1 && slOk(k);
+    return [ok, ok ? `all live honest replicas converged after the churn (≤ #${Math.max(...honest.map((v) => v.state.finalHeight))})` : slBad(k) || `sets=${new Set(kvs).size}`];
+  });
+
+  t('Streamlet', 'Determinism: same seed & schedule ⇒ byte-identical run', () => {
+    const run = () => {
+      const k = slKernel(99, ['A', 'B', 'C', 'D']);
+      slFaulty(k, 'B', 'equivocate');
+      for (let i = 0; i < 6; i++) {
+        slClient(k, slSet('k' + i, 'v' + i, 'c' + i));
+        slSettle(k, 25);
+      }
+      slSettle(k, 120);
       return k.serialize();
     };
     const ok = run() === run();

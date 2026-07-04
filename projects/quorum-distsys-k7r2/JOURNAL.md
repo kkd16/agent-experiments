@@ -517,6 +517,81 @@ a lab (`labs/HotStuffLab.tsx`) and a bespoke chain visualiser (`ui/ChainView.tsx
 - [ ] **Forensics / accountability** — when faulty > f and agreement breaks, identify the ≥ f+1 replicas
       that signed two conflicting QCs (the culprit-exposure HotStuff enables).
 
+### Streamlet lab (textbook BFT consensus) — NEW
+The deliberate *minimalist* counterpoint to HotStuff, and the third Byzantine consensus lab:
+**Streamlet** (Chan & Shi, "Streamlet: Textbook Streamlined Blockchains", 2020). Same fault model as
+PBFT/HotStuff (up to **f** Byzantine of **N = 3f+1**, safety by 2f+1 quorum intersection) pared down
+until almost nothing is left — *no pacemaker, no view-change, no locks, no certificates, no highest-QC*.
+The whole point of the lab is the contrast: identical guarantees, a fraction of the moving parts, at the
+cost of all-to-all (O(N²)) vote dissemination instead of HotStuff's linear certificate hand-off. Three
+new files (`protocols/streamlet/{types,streamlet,invariants}.ts`), a lab (`labs/StreamletLab.tsx`) and a
+bespoke block-tree visualiser (`ui/StreamletChain.tsx`).
+- [x] **Synchronized epoch clock, for free** — the kernel's single global virtual time *is* Streamlet's
+      synchronized-epoch assumption: `epoch(t) = ⌊t/epochLen⌋ + 1`, so every node advances epochs in
+      perfect lock-step by arming a timer to the next boundary — no clock sub-protocol, no skew, and a
+      restarted node re-reads the clock and rejoins the current epoch. This is what lets Streamlet drop
+      the pacemaker entirely: a bad epoch simply produces nothing and the clock rolls on.
+- [x] **The three rules, and nothing else.** PROPOSE: the epoch leader (`all[epoch % N]`, round-robin)
+      broadcasts one block extending the *longest notarized chain* it has seen. VOTE: every honest replica
+      votes for the leader's proposal iff it extends a longest notarized chain **in its own view**, the
+      epoch matches the current epoch, and it hasn't voted this epoch (one vote per epoch, durable so a
+      crash can never double-vote). NOTARIZE+FINALIZE below.
+- [x] **Notarization by counted votes** (no certificate object) — a block is notarized once a replica
+      sees **2f+1** distinct votes for it; a chain is notarized when all its blocks are. Votes are
+      broadcast to *everyone* and carry the block body, so a replica that missed the proposal (a drop or a
+      brief partition) still learns the block and tallies it. Every replica tallies notarization for
+      itself — the radical simplification, and the O(N²) cost.
+- [x] **The finalization rule (safety crux)** — the instant a notarized chain holds **three adjacent
+      blocks with consecutive epoch numbers** (e, e+1, e+2), the **middle** block and its whole prefix are
+      final, forever. That one rule replaces HotStuff's lock + 3-chain machinery outright. Safety (no two
+      honest replicas finalize conflicting blocks) rests only on the two voting rules + 2f+1 quorum
+      intersection and holds under **full asynchrony**; synchrony buys only liveness.
+- [x] **Byzantine fault modes** (toggled live per node): `silent` (its epoch just passes — the no-view-
+      change story made watchable), `equivocate` (a leader proposing two conflicting blocks at one epoch
+      on the same parent *and double-voting* both — quorum intersection still denies both 2f+1, so no fork
+      notarizes) and `conflict` (a backup voting for a corrupted block hash whose content doesn't match —
+      every replica re-derives the hash on receipt, so the vote is worthless).
+- [x] **Safe catch-up** — Status/Catchup gossip ships finalized block bodies; a replica adopts a height
+      once f+1 distinct replicas report the same (height, hash), so a restarted/lagging replica reconverges
+      without a full state copy. All state is durable (block tree, votes, notarization, votes-per-epoch,
+      the finalized log) — a restart only re-reads the clock and re-arms timers.
+- [x] **Live safety invariants** (over the honest replicas): **Fault budget** (≤ f), **Consistency** (no
+      two honest replicas finalize different blocks at one height — the headline), **Finalized-chain
+      integrity** (a gap-free, parent-linked finalized chain matching the exec tip), **State-machine
+      safety** (KV = finalized log replayed) and a Streamlet-specific **No conflicting notarization on the
+      finalized path** (forks may be notarized *off* the finalized path — that is allowed — but never a
+      notarized block conflicting with a finalized one at its height), plus a Progress line.
+- [x] **Bespoke block-tree visualiser** (`ui/StreamletChain.tsx`) — the signature picture: the recent
+      block tree laid out by height with forks stacked into lanes, each block tinted **proposed →
+      notarized (2f+1) → finalized** and labelled with its epoch + live vote count, and a **golden dashed
+      bracket** that lights over any three consecutive-epoch notarized blocks with "e·e+1·e+2 → #h final".
+      Watching that bracket slide right along the chain *is* Streamlet.
+- [x] **Streamlet lab UI** (`labs/StreamletLab.tsx`) — network canvas coloured by role (leader/backup)
+      and fault, the block-tree view, a one-click "Corrupt leader" button + per-node fault switch +
+      crash/restart, a finalized-log panel, KV view, replica inspector (epoch / finalized / notarized tip),
+      latency-scaled epoch lengths per network preset, curated scenarios incl. **"Beyond f (unsafe!)"**,
+      and deep links. Wired into the consensus family (registry + Home hero).
+- [x] **Self-tests** (11) — quorum/leader-rotation arithmetic; healthy finalization via consecutive-epoch
+      triples + convergence; many distinct leaders finalizing; **a silent leader's epoch simply passing
+      with no view-change code**; an **equivocating leader that cannot notarize a fork or break
+      Consistency**; a lying backup's forged-hash votes ignored; a 7-node cluster tolerating 2 faults; a
+      restarted replica catching up via gossip; **Consistency holding through 1,500 Byzantine faults**;
+      **safety surviving a long partition under asynchrony then reconverging on heal**; and determinism.
+      Suite grew to **165/165**. Drove the built `#/streamlet` route in headless Chromium: the chain grows
+      and finalizes (5 FINAL blocks, invariants **HOLDING**), and the equivocating-leader preset keeps
+      **Consistency** green — with no page errors.
+- [ ] **HotStuff ↔ Streamlet message-complexity meter** — a side-by-side counter (votes/decision:
+      Streamlet's O(N²) all-to-all vs HotStuff's O(N) funnel) to *show* the price of the simplicity.
+- [ ] **Streamlet "5-epoch liveness" visual** — highlight the window of consecutive honest-leader epochs
+      and animate the finalization triple forming, to make the after-GST liveness argument watchable.
+- [ ] **Optimistic / concurrent proposals** — the Streamlet follow-ups that pipeline proposing to cut the
+      per-block latency, offered as a toggle against the vanilla one-block-per-epoch cadence.
+- [ ] **A same-height notarized-fork demo** — deliberately induce two notarized blocks at one height on
+      different forks (allowed!) and show the finalization rule refuse to finalize either until a triple
+      forms, driving home that *notarization ≠ finality*.
+- [ ] **Harvest a Streamlet run into the linearizability checker** — feed the finalized KV history to the
+      Wing–Gong checker for an end-to-end "BFT log ⇒ linearizable object" certificate.
+
 ### Dynamo lab (tunable-quorum replication) — NEW
 The **AP counterpoint** to every consensus lab here, and the headline backlog item now shipped. Where
 Raft/Paxos/PBFT/HotStuff buy consistency with a leader and an agreed order, Dynamo (DeCandia et al.,
@@ -1426,3 +1501,43 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
   (height 6, fork 0, invariants **HOLDING**), and staging + releasing the 51% attack flips the ledger to
   **ROBBED** and the panel to **VIOLATED** with **zero console errors**. Full gate green (scope +
   conformance + lint + build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`.
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **New lab — Streamlet, the textbook streamlined BFT
+  consensus protocol (Chan & Shi, 2020).** Added the deliberate *minimalist* counterpoint to HotStuff and
+  the third Byzantine consensus lab: identical guarantees (up to **f** Byzantine of **N = 3f+1**, safety
+  by 2f+1 quorum intersection) with almost none of the machinery — **no pacemaker, no view-change, no
+  locks, no certificates, no highest-QC**. Built for real on the shared kernel across three modules
+  (`protocols/streamlet/{types,streamlet,invariants}.ts`), a bespoke block-tree visualiser
+  (`ui/StreamletChain.tsx`) and `labs/StreamletLab.tsx`. The elegant trick: the kernel's single global
+  virtual time *is* Streamlet's synchronized-epoch assumption — `epoch(t) = ⌊t/epochLen⌋ + 1`, so every
+  node advances epochs in perfect lock-step with a boundary timer, letting the protocol drop the pacemaker
+  entirely (a bad epoch just produces nothing and the clock rolls on). The whole engine is three rules:
+  the epoch leader **proposes** a block extending the longest **notarized** chain; every honest replica
+  **votes** for it iff it extends a longest notarized chain in *its* view (one vote per epoch, durable);
+  a block is notarized at **2f+1** votes; and the instant a notarized chain holds **three adjacent blocks
+  with consecutive epochs** (e, e+1, e+2), the **middle** block and its whole prefix are **final, forever**
+  — that single rule replacing HotStuff's lock + 3-chain outright. Safety holds under **full asynchrony**;
+  synchrony buys only liveness. Three Byzantine fault modes toggled live: `silent` (its epoch simply
+  passes — the no-view-change story made watchable), `equivocate` (a leader proposing two conflicting
+  blocks at one epoch *and double-voting* both — quorum intersection still denies both 2f+1, so no fork
+  notarizes) and `conflict` (a backup voting a corrupted hash the receiver re-derives and rejects). Safe
+  catch-up gossips finalized block bodies (adopt a height on f+1 matching reports) so restarted/lagging
+  replicas reconverge; all state is durable across a crash. Five live invariants (over honest replicas):
+  **Fault budget**, **Consistency** (the headline — no two honest finalize different blocks at a height),
+  **Finalized-chain integrity**, **State-machine safety**, and a Streamlet-specific **No conflicting
+  notarization on the finalized path** (forks may be notarized *off* the finalized path — allowed — but
+  never conflicting with a finalized block), plus Progress. The bespoke **StreamletChain** lays out the
+  recent block tree by height with forks stacked into lanes, tinting each block **proposed → notarized →
+  finalized** with its epoch + live vote count, and lighting a **golden dashed bracket** over any
+  consecutive-epoch triple ("e·e+1·e+2 → #h final"). The lab canvas colours nodes by role/fault, animates
+  Propose/Vote messages, and offers a one-click "Corrupt leader", per-node fault switch, latency-scaled
+  epoch lengths per network preset, six curated scenarios (incl. **"Beyond f (unsafe!)"**) and deep links;
+  wired into the consensus family (registry + Home hero). **11 self-tests** — quorum/leader-rotation
+  arithmetic; healthy finalization via consecutive-epoch triples + convergence; distinct-leader rotation;
+  a silent leader's epoch passing with no view-change; an **equivocating leader that cannot notarize a
+  fork or break Consistency**; a lying backup ignored; a 7-node cluster tolerating 2 faults; a restarted
+  replica catching up; **Consistency through 1,500 Byzantine faults**; **safety surviving a long partition
+  under asynchrony then reconverging on heal**; and determinism. Suite **154 → 165/165**. Drove the built
+  `#/streamlet` route in headless Chromium: the chain grows and finalizes (5 FINAL blocks, invariants
+  **HOLDING**, finalized log `#1 y=1 e2 … #5 z=5 e6`), and the equivocating-leader preset keeps
+  **Consistency** green — with no page errors. Full gate green (scope + conformance + lint + build) via
+  `node scripts/verify-project.mjs quorum-distsys-k7r2`.
