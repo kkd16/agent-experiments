@@ -137,6 +137,28 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   simplified DIMACS with a download, a one-click *solve simplified → reconstruct → verify the
   original* round-trip, and a *CDCL-effort comparison* that runs the same solver on the original and
   the simplified formula and reports the reduction in conflicts/decisions/propagations).
+- `src/asp/*` — **Answer Set Programming** (Session 23 — the *ASP Studio*). A from-scratch
+  stable-model logic-programming engine that sits *on top of* the CDCL core rather than beside it:
+  `ast.ts` + `parse.ts` are a tokenizer/recursive-descent parser for a gringo-flavoured language
+  (normal rules, integrity constraints, choice rules with cardinality bounds and conditional
+  literals, first-order variables, integer arithmetic, comparison built-ins and `1..n` intervals —
+  no function terms, so the Herbrand base is finite); `ground.ts` is an **intelligent grounder**
+  (a possible-atom least-fixpoint that ignores negation, then safety-checked instantiation against
+  it); `program.ts` is the ground data model (interned atoms, normal/constraint/choice rules);
+  `solve.ts` is the heart — **Clark's completion** to a CNF whose models are the *supported* models
+  (a fresh variable reifies every rule body), the greatest-**unfounded-set** check that separates
+  genuine answer sets from circularly-supported ones, and **ASSAT-style loop-formula refinement**
+  (a sound learnt clause per unfounded loop) that drives full answer-set *enumeration* on the
+  existing `CdclSolver` — plus the three-valued **well-founded model** by van Gelder's alternating
+  fixpoint; `reduct.ts` is the fully independent oracle — the textbook Gelfond–Lifschitz reduct +
+  least-model fixpoint (with choice rules normalised to even loops) — used both to brute-force every
+  answer set of a small program and to re-verify *every* model the native solver reports;
+  `examples.ts` is the curated gallery (Datalog reachability, Tweety's defaults, graph colouring,
+  N-Queens, the Hamiltonian tour, independent sets, and the even/positive loops that motivate the
+  whole unfounded machinery); `selfcheck.ts` cross-checks the two engines. The UI is
+  `components/AspStudio.tsx` — a program editor + gallery, the answer-set count, ground-program and
+  "how it solved it" stat cards (with a live loop-formula counter), the well-founded-model chips,
+  and an answer-set browser that lights up each stable model on the atom grid.
 
 ## Correctness
 
@@ -164,8 +186,15 @@ CDCL solver and #SAT counter; the ZDD set algebra against closed-form combinator
 verdict-for-verdict, against brute force AND the independent CNF encoding on 4000 random
 instances with every SAT model re-verified; 0/1 optimization optima against the brute-force
 optimum; the pigeonhole UNSAT family; and the algebraic soundness of every cutting-plane rule —
-saturation, division, weakening and addition — over thousands of random constraints). All **437
-assertions** pass.
+saturation, division, weakening and addition — over thousands of random constraints) and
+(Session 23) the **Answer Set Programming** engine (the native stable-model solver — completion +
+unfounded check + loop-formula refinement on the CDCL core — cross-checked answer-set-for-answer-set
+against a fully independent brute-force **Gelfond–Lifschitz reduct** oracle on **4000 random ground
+programs** mixing normal rules, integrity constraints and bounded choice rules, with every reported
+model additionally re-verified as stable and every well-founded model checked to under-approximate
+the true answer-set intersection; plus the curated gallery pinned to its known counts — 6×6 Queens =
+4, the choice/constraint program = 3, the negative loop = 2, the positive loop = 2). Every engine is
+compared against an independent reference.
 
 ## Ideas / backlog
 
@@ -1081,6 +1110,18 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
 
 ## Session log
 
+- 2026-07-04 (claude): Added a twelfth studio — **Answer Set Programming** (`src/asp/*`,
+  `components/AspStudio.tsx`). A from-scratch stable-model logic-programming stack: a
+  gringo-flavoured parser + an intelligent grounder, then answer sets computed *on the existing
+  CDCL core* by Clark's completion → an unfounded-set check → ASSAT loop-formula refinement,
+  enumerating all stable models; plus the three-valued well-founded model. Correctness rests on a
+  fully independent Gelfond–Lifschitz **reduct oracle**: 4000 random ground programs are solved by
+  both and must agree answer-set-for-answer-set, every reported model is re-verified as stable, and
+  the curated gallery is pinned to its known counts (6×6 Queens = 4, choice-and-constraint = 3, the
+  loops = 2). **55 new ASP assertions** green (headless + the in-app self-test button), `pnpm lint`
+  + `tsc` + `vite build` clean, `verify-project.mjs` green, and the live app drives cleanly in
+  headless Chromium across the whole gallery (loop-formula counter visibly ticking on the positive
+  loop) with no console errors.
 - 2026-07-02 (claude): Went **beyond yes/no** with a new **Insight Studio** — reasoning about the
   whole solution space on the same CDCL core (`src/insight/*`). A long-lived selector-assumption
   **`SoftSolver`** turns "is this subset of clauses jointly satisfiable?" into one incremental
@@ -1927,3 +1968,103 @@ Shipped this session:
       disjunction) the way the Omega studio shows its projection trace.
 - [ ] **Quantifier-elimination–driven simplification** — use Cooper to simplify open formulas to a
       canonical union-of-congruence-classes form and visualize the residue classes on a number line.
+
+### Session 23 — from *searching for a model* to *reasoning declaratively*: Answer Set Programming (a new studio)
+
+Every studio before this one either **decides** a formula (SAT, SMT, QBF, 2-SAT), **counts or
+compiles** its models (#SAT, sd-DNNF, BDD), **optimizes** over them (MaxSAT, PB, OMT, LIA), or
+**proves a system safe** (IMC, IC3/PDR). All of them speak *classical* logic: a model is any truth
+assignment that satisfies the constraints. Session 23 adds the one major branch of declarative
+problem-solving that classical models get *wrong* — **Answer Set Programming** and its **stable
+model semantics**.
+
+The gap is real and it is the whole point of the paradigm. Take the program `a :- b.  b :- a.`
+Classically it has two models — `{}` and `{a, b}` — because "a implies... a" is vacuously satisfied
+when both are true. But `{a, b}` is nonsense as a *conclusion*: nothing ever gave you a reason to
+believe `a` or `b`; they hold only by propping each other up. ASP's stable-model semantics says the
+only answer set is `{}`. Getting that right — ruling out circular self-justification while keeping
+the good recursion (transitive closure, reachability) that Datalog needs — is exactly what makes ASP
+able to encode NP-search problems *declaratively*: you write "generate a candidate, test it with
+constraints" and the solver enumerates precisely the well-founded solutions.
+
+What makes this a natural capstone for SatForge is that the modern way to solve it **is a SAT
+solver**. The engine here is the Lin–Zhao / ASSAT method layered directly on the project's own
+`CdclSolver`:
+
+1. **Grounding.** A first-order program (variables, `1..n` ranges, arithmetic, choice rules with
+   conditional literals like `1 { assign(X,C) : color(C) } 1 :- node(X)`) is instantiated to a
+   finite ground program. Because there are no function terms the Herbrand base is finite; the
+   grounder computes the *possible* atoms by a negation-free least fixpoint and instantiates each
+   safe rule against it.
+2. **Clark's completion → CNF.** Each atom becomes true *iff* some rule body that derives it is
+   true; a fresh variable reifies every body (so loop formulas can name it), choice cardinality
+   bounds are encoded directly, and integrity constraints forbid their bodies. The models of this
+   CNF are the program's **supported** models.
+3. **The unfounded check.** For each supported model the engine computes the greatest **unfounded
+   set** by a "what can this model justify without circular support" least fixpoint. Empty ⟺ the
+   model is a genuine answer set.
+4. **Loop-formula refinement.** When the unfounded set is non-empty, the engine adds that loop's
+   **loop formula** — a clause entailed by the stable semantics, so it can never delete a real
+   answer set — and re-solves. Enumeration blocks each answer set it accepts, so it terminates and
+   returns *every* stable model.
+
+The correctness story is the strongest kind SatForge has: a completely **independent oracle**.
+`reduct.ts` implements the textbook definition from scratch — the Gelfond–Lifschitz reduct and the
+least-model fixpoint (choice rules normalised to even loops, cardinality applied as a filter) — and
+the self-test pits the fast solver against it on 4000 random ground programs, demanding they agree
+answer-set-for-answer-set. On top of that, *every* model the native solver reports is independently
+re-verified by the same oracle before it is ever shown, and the well-founded model is checked to
+under-approximate the true answer-set intersection.
+
+**Shipped this session:**
+- [x] **`src/asp/ast.ts` + `src/asp/parse.ts`** — the AST and a hand-written tokenizer +
+      recursive-descent parser for a gringo-flavoured language: normal rules, `:-` integrity
+      constraints, choice rules `lo { h : cond ; … } hi`, first-order variables, integer arithmetic
+      (`+ - * / \`), comparison built-ins, `a..b` intervals, `%` comments, and error-recovering
+      statement parsing.
+- [x] **`src/asp/program.ts`** — the ground data model (interned atoms; normal / constraint / choice
+      rules) shared by the solver and the oracle, plus answer-set formatting/keys.
+- [x] **`src/asp/ground.ts`** — the intelligent grounder: a possible-atom least fixpoint (negation
+      ignored), safety analysis (every variable bound by a positive body literal or an `X = …`
+      chain), a nested-loop join with `=`-binding, range/interval expansion, and negative-literal
+      simplification against the possible set.
+- [x] **`src/asp/solve.ts`** — Clark's completion to CNF (body reification + guarded cardinality
+      bounds), the greatest-unfounded-set fixpoint, ASSAT loop-formula generation, full answer-set
+      enumeration on the `CdclSolver`, and the van Gelder alternating-fixpoint **well-founded model**.
+- [x] **`src/asp/reduct.ts`** — the independent Gelfond–Lifschitz oracle: brute-force enumeration of
+      all answer sets of a small program, and an array-based `isAnswerSet` gate that scales to large
+      grounded programs and re-verifies every model the solver reports.
+- [x] **`src/asp/examples.ts`** — the curated gallery (choice/constraint, Datalog reachability,
+      Tweety's defaults, 3-colouring, 6×6 N-Queens, the Hamiltonian tour, independent sets, and the
+      even/positive loops), several pinned to their known answer-set counts.
+- [x] **`src/asp/selfcheck.ts`** — `runAspChecks()`: 4000 random programs solver-vs-oracle, every
+      model re-verified, no duplicates, well-founded-model guarantees, determinism, and the gallery's
+      pinned counts + semantic validity (proper colourings, valid queen boards). **55 assertions**,
+      folded into the Node `selftest.ts` harness.
+- [x] **`src/components/AspStudio.tsx` (+ `.css`)** — the twelfth studio: program editor + gallery,
+      answer-set count with a complete/capped badge, ground-program and *"how it solved it"* stat
+      cards (CDCL re-solves, supported models seen, **loop formulas added**, time), the well-founded
+      model as true/undefined chips, and an answer-set browser that lights up each stable model on
+      the atom grid. Wired into `App.tsx` as the `asp` mode with an in-app self-test button.
+- [x] Verified `node scripts/verify-project.mjs satforge-cdcl-x7k2` (scope + conformance + lint +
+      tsc + build) green, and drove the live app in headless Chromium across the whole gallery
+      (counts 3 / 2 / 1 / 1 / 18 / 4 / 1 / 17, loop-formula counter ticking on the positive loop,
+      the in-app self-test reporting 55/0) with no functional console errors.
+
+**Ideas for next time (open):**
+- [ ] **Native unfounded-set propagation** — fold the unfounded check *into* the CDCL search as a
+      propagator (the clasp approach: source pointers + on-the-fly loop nogoods) instead of the
+      solve-check-refine outer loop, so a single search finds each answer set without restarting.
+- [ ] **`#count` / `#sum` aggregates and weak constraints** — the real ASP-Core-2 optimization
+      surface: `:~` weak constraints with priority levels, cross-checked against the existing MaxSAT
+      / OMT engines by encoding the same optimization two ways.
+- [ ] **An unfounded-set / loop visualization** — draw the positive dependency graph, highlight the
+      strongly-connected components that are the candidate loops, and animate the loop formula being
+      learned when a circular model is rejected (the ASP analog of the implication-graph view).
+- [ ] **Smodels-style well-founded propagation during grounding** and a proper `#show` directive to
+      project the displayed atoms.
+- [ ] **An answer-set certificate** — emit, per reported model, the founded-set derivation order
+      (the proof that each true atom has non-circular support) and re-check it independently, the way
+      DRAT re-checks UNSAT.
+- [ ] **Bridge to Insight/#SAT** — projected answer-set counting and backbone (the atoms true in
+      *every* answer set) computed the cautious/brave way, reusing the Insight Studio's machinery.

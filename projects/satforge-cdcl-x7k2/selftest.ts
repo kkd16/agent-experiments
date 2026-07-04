@@ -67,6 +67,7 @@ import { runPbChecks } from './src/pb/selfcheck'
 import { runSlsChecks } from './src/sls/selfcheck'
 import { runPreprocessChecks } from './src/preprocess/selfcheck'
 import { runLiaChecks } from './src/lia/selfcheck'
+import { runAspChecks } from './src/asp/selfcheck'
 
 let pass = 0
 let fail = 0
@@ -1373,6 +1374,14 @@ function bruteMaxCut(g: WeightedGraph): number {
   for (const m of liar.messages) console.error(m)
   pass += liar.pass
   fail += liar.fail
+}
+
+// ---- ASP: stable-model logic programming via completion + loop formulas ------
+{
+  const aspr = runAspChecks()
+  for (const m of aspr.messages) console.error(m)
+  pass += aspr.pass
+  fail += aspr.fail
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
