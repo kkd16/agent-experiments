@@ -3,6 +3,7 @@ import { Studio } from './ui/Studio';
 import { About } from './ui/About';
 import { Verify } from './ui/Verify';
 import { SpectraLab } from './ui/SpectraLab';
+import { SpectralLab } from './ui/SpectralLab';
 import { KineticLab } from './ui/KineticLab';
 import { ThermalLab } from './ui/ThermalLab';
 import { PhaseLab } from './ui/PhaseLab';
@@ -13,7 +14,8 @@ export default function App() {
   const [route] = useHashRoute();
   const onAbout = route.startsWith('/about');
   const onVerify = route.startsWith('/verify');
-  const onSpectra = route.startsWith('/spectra');
+  const onSpectral = route.startsWith('/spectral');
+  const onSpectra = route.startsWith('/spectra') && !onSpectral;
   const onKinetic = route.startsWith('/kinetic');
   const onThermal = route.startsWith('/thermal');
   const onPhase = route.startsWith('/phase');
@@ -32,7 +34,11 @@ export default function App() {
         </a>
         <nav>
           <a
-            className={!onAbout && !onVerify && !onSpectra && !onKinetic && !onThermal && !onPhase && !onGas ? 'active' : ''}
+            className={
+              !onAbout && !onVerify && !onSpectra && !onSpectral && !onKinetic && !onThermal && !onPhase && !onGas
+                ? 'active'
+                : ''
+            }
             href="#/"
           >
             Studio
@@ -52,6 +58,9 @@ export default function App() {
           <a className={onSpectra ? 'active' : ''} href="#/spectra">
             Spectra
           </a>
+          <a className={onSpectral ? 'active' : ''} href="#/spectral">
+            Spectral
+          </a>
           <a className={onAbout ? 'active' : ''} href="#/about">
             How it works
           </a>
@@ -65,6 +74,8 @@ export default function App() {
           <About />
         ) : onVerify ? (
           <Verify />
+        ) : onSpectral ? (
+          <SpectralLab />
         ) : onSpectra ? (
           <SpectraLab />
         ) : onKinetic ? (

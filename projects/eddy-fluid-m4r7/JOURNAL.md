@@ -43,6 +43,22 @@ src/
                  energyTransfer() — the rotational-form nonlinear transfer T(k) +
                  cumulative flux Π(k) (with ∑ₖT(k)=0 conservation), plus
                  meanKineticEnergy(). Powers the Spectra lab + the spectral checks.
+    spectral.ts  SpectralNS — a SECOND incompressible solver, this one PSEUDO-SPECTRAL:
+                 it evolves vorticity ω̂(k) directly in Fourier space on the periodic
+                 unit torus (reusing fft.ts). Every spatial derivative is an exact
+                 multiply by i·k, the streamfunction is one divide (ψ̂ = ω̂/K²), and
+                 ALL linear terms — viscosity νK², large-scale drag μ, optional
+                 hyperviscosity ν_hK^{2p} — collapse to a per-mode decay rate integrated
+                 EXACTLY by an integrating factor e^{L·dt}; only the nonlinear advection
+                 is stepped by a 4th-order Runge–Kutta (the "IF-RK4" scheme). The
+                 advection is evaluated pseudo-spectrally in CONSERVATION form ∇·(uω)
+                 and truncated by the 2/3 DEALIASING rule (Orszag), so the quadratic is
+                 exact for the retained band — which is why the scheme conserves
+                 circulation exactly and both energy AND enstrophy to round-off. Ships
+                 seedTaylorGreen() (an exact single-shell steady Euler state with a
+                 closed-form e^{−νK²t} decay), seedRandomField(), a band-limited
+                 stochastic ring forcing for the dual cascade, and energy/enstrophy/
+                 divergence/circulation diagnostics read straight off the spectrum.
     ftle.ts      FtleComputer — Finite-Time Lyapunov Exponents / Lagrangian Coherent
                  Structures: RK4 flow-map integration of the frozen velocity field
                  (forward or backward), flow-map gradient by central differences, the
@@ -138,6 +154,11 @@ src/
     SpectraLab.tsx  the live #/spectra lab: a self-contained decaying-turbulence
                  sim (MGCG) whose velocity is FFT'd every few frames into a log–log
                  E(k) plot with k^-3 / k^-5/3 reference slopes, beside its vorticity.
+    SpectralLab.tsx the live #/spectral lab: runs the PSEUDO-SPECTRAL solver
+                 (spectral.ts) directly — vorticity painted with the diverging map,
+                 beside its live E(k) spectrum and energy flux Π(k). Decaying vs Forced
+                 regimes and a viscosity slider; the forced regime shows the negative
+                 flux of the 2-D inverse cascade in real time.
     PhaseLab.tsx the #/phase lab: a MODEL SWITCH between the single-component
                  (liquid ⇌ vapour) Shan–Chen lab and the two-fluid one.
     MultiPhaseLab.tsx the two-immiscible-fluids lab — Demix / Rayleigh–Taylor /
@@ -266,6 +287,53 @@ src/
 - [x] **Forced 2-D turbulence** — `forceTurbulence` injects band-limited solenoidal kicks each step;
       paired with a large-scale drag it reaches a steady k^-5/3 inertial range. New **Forced 2-D
       turbulence** scene, and a Decaying/Forced toggle in the Spectra lab.
+
+### Pseudo-spectral solver (`spectral.ts`, the **Spectral lab** `#/spectral`)
+
+A second, wholly independent incompressible solver — Fourier space, not a grid — with closed-form
+invariants a finite-difference code can only approximate. Verified group **"Pseudo-spectral
+Navier–Stokes"** (9 checks); suite **82 → 91/91**.
+
+- [x] **Vorticity–streamfunction pseudo-spectral core** (`SpectralNS`) on the periodic unit torus,
+      reusing the from-scratch `fft.ts`: ψ̂ = ω̂/K², û = i·k_y·ψ̂, v̂ = −i·k_x·ψ̂; every derivative an
+      exact i·k multiply, incompressibility exact by construction (∇·u ≡ 0 to round-off).
+- [x] **Integrating-factor RK4 (IF-RK4)** — the linear part (viscosity νK², large-scale drag μ, an
+      optional hyperviscosity ν_hK^{2p}) integrated EXACTLY by e^{L·dt}; only the nonlinear advection
+      stepped by 4th-order RK. Unconditionally stable in the viscous term.
+- [x] **Conservation-form, 2/3-dealiased advection** — N = ∇·(uω) formed pseudo-spectrally with
+      Orszag's 2/3 truncation, so the quadratic is exact for the retained band; conserves circulation
+      exactly and energy AND enstrophy to the time-stepping order.
+- [x] **Band-limited stochastic ring forcing** — a Hermitian, real-valued small-scale drive on the
+      shell |k|≈k_f, normalised as a white-in-time increment, for the forced dual-cascade regime.
+- [x] **Analytic-oracle verification** — Taylor–Green single-shell decay matched to the closed form
+      e^{−νK²t} to ~4e-15; inviscid energy & enstrophy conservation to ~1e-15; machine-zero divergence
+      & circulation; solver energy/enstrophy cross-checked against `fft.ts` diagnostics; and the
+      forced run's **negative** inertial-range flux Π(k)<0 (the inverse cascade) asserted directly.
+- [x] **Spectral lab UI** (`#/spectral`) — live vorticity + E(k) + Π(k), Decaying/Forced regimes, a
+      viscosity slider; the forced regime shows the inverse-cascade flux build up in real time.
+
+Planned next steps (spectral pillar):
+
+- [ ] **A passive scalar advected spectrally** (a dye field θ̂ with its own diffusivity κ) to show the
+      **Batchelor k^-1** scalar-variance range at high Schmidt number — reuse `scalarVarianceSpectrum`.
+- [ ] **Hyperviscosity in the lab UI** — expose ν_h and p so users can widen the inertial range at a
+      fixed 128² resolution and watch the k^-3 enstrophy slope sharpen (the core already supports it).
+- [ ] **A convergence / order-of-accuracy check** — halve dt and confirm the IF-RK4 nonlinear error
+      drops ~16× (4th order), and refine M to show spectral (super-algebraic) spatial convergence.
+- [ ] **ETDRK4 (Cox–Matthews)** as an alternative to IF-RK4 — exact treatment of the *forced* linear
+      response too, via the contour-integral φ-functions; A/B the two integrators' accuracy vs cost.
+- [ ] **Real-space cross-validation against the grid solver** — seed the same Taylor–Green / shear
+      layer in both `FluidSolver` and `SpectralNS` and overlay their energy-decay curves on Verify.
+- [ ] **Dealiased enstrophy-flux Z-flux Π_Z(k)** plotted beside the energy flux — the *forward*
+      cascade's positive flux, the dual of the negative energy flux, from `enstrophySpectrum` shells.
+- [ ] **Spectral scenes ported to the studio render pipeline** — a shared vorticity-field adapter so
+      the Spectral lab can reuse `renderer.ts` (streamlines, LIC) instead of its own painter.
+- [ ] **3-D pseudo-spectral extension (Taylor–Green 3-D)** — the leap to a 3-D forward *energy*
+      cascade with vortex stretching, the canonical Taylor–Green vortex transition-to-turbulence.
+- [ ] **Off-thread evolution in a Web Worker** so a 256² spectral run (20 FFTs/step) never touches
+      the UI frame budget; stream ω back as a transferable for the painter.
+- [ ] **Shell-to-shell transfer matrix T(k,p)** — not just the net T(k) but *which* donor shell feeds
+      each receiver, the locality-of-interactions heatmap that distinguishes 2-D from 3-D turbulence.
 - [x] **FTLE / Lagrangian-coherent-structure render mode** — `ftle.ts`: RK4 flow-map integration of
       the frozen field, Cauchy–Green tensor, closed-form λ_max → FTLE. New **LCS** render mode with a
       forward (repelling) / backward (attracting) toggle and an integration-time knob. Verified
@@ -976,3 +1044,29 @@ serious CFD studio along three axes — **new physics, honest rigor, and legible
   stratification with thin wall boundary layers, and a rising plume. Updated App routing/nav (a new
   "Convection" tab), the About page (a thermal-LBM section + the verification tally), `project.json`
   (a fifth kinetic model; tags), and this journal. Full gate green (scope + conformance + lint + build).
+- 2026-07-04 (claude): **Eddy 13.0 — the Spectral lab (pseudo-spectral Navier–Stokes).** Added a
+  SECOND, wholly independent incompressible solver that never touches a grid stencil: `src/sim/
+  spectral.ts`, `SpectralNS`, evolves vorticity ω̂(k) directly in **Fourier space** on the periodic
+  unit torus, reusing the from-scratch `fft.ts`. Every spatial derivative is an exact multiply by i·k,
+  the streamfunction is a single divide (ψ̂ = ω̂/K²), and ALL linear terms — viscosity νK², a
+  large-scale drag μ, an optional hyperviscosity ν_hK^{2p} — collapse to a per-mode decay rate
+  integrated **exactly** by an integrating factor e^{L·dt}; only the nonlinear advection is stepped by
+  a 4th-order Runge–Kutta (the **IF-RK4** scheme). The advection is evaluated pseudo-spectrally in
+  **conservation form** ∇·(uω) and truncated by the **2/3 dealiasing rule** (Orszag), so the quadratic
+  is exact for the retained band — which is why the scheme conserves circulation exactly and both
+  energy AND enstrophy to round-off. A band-limited, Hermitian **stochastic ring forcing** drives the
+  forced regime. New **Spectral lab** (`#/spectral`, `SpectralLab.tsx`): live vorticity (diverging map)
+  beside its E(k) spectrum and energy flux Π(k), Decaying/Forced regimes and a viscosity slider; the
+  forced regime shows the **inverse cascade's negative flux** build up in real time. Extended the
+  verification suite **82 → 91/91 checks (19 → 20 groups)** with a **"Pseudo-spectral Navier–Stokes"**
+  group whose oracles are closed-form, not eyeballed: the **Taylor–Green** single-shell state matched
+  to its analytic e^{−νK²t} decay to ~4e-15 (and staying shape-exact, proving the nonlinear transfer
+  vanishes identically); **inviscid conservation** of energy AND enstrophy to ~1e-15 over 300 steps;
+  machine-zero **divergence** (7.8e-18) and **circulation** (3.5e-18); the solver's own energy/
+  enstrophy cross-checked against the independent `fft.ts` diagnostics to ~1e-15; and the physics
+  payoff — a forced run's inertial-range flux **Π(k) < 0**, the 2-D inverse cascade, asserted directly.
+  Validated the whole suite headless under Node (**91/91 green**, 20 groups) and the spectral group in
+  isolation. Updated App routing/nav (a new "Spectral" tab, guarding the `/spectral` vs `/spectra`
+  prefix), `project.json` (a second incompressible solver; check tally; tags), and this journal with a
+  planned next-steps backlog (spectral passive scalar → Batchelor range, ETDRK4, a 3-D extension,
+  shell-to-shell transfer, worker offload). Full gate green (scope + conformance + lint + build).

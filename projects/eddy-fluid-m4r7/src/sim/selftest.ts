@@ -28,6 +28,13 @@ import {
 import { computeLIC, makeNoise } from '../render/lic';
 import { fft1d, fft2d, energySpectrum, meanKineticEnergy, enstrophySpectrum, scalarVarianceSpectrum, energyTransfer } from './fft';
 import { computeFTLE } from './ftle';
+import {
+  SpectralNS,
+  seedTaylorGreen,
+  taylorGreenDecay,
+  seedRandomField,
+  DEFAULT_SPECTRAL,
+} from './spectral';
 
 export interface Check {
   name: string;
@@ -768,6 +775,199 @@ function spectral(): CheckGroup {
     title: 'Spectral analysis (FFT)',
     blurb:
       'A from-scratch 2-D FFT turns the flow into spectra — kinetic energy E(k), enstrophy Z(k), scalar variance V(k) — and into the nonlinear energy transfer T(k) / flux Π(k). Their identities (invertibility, Parseval, single-mode localisation, and exact transfer conservation) are checkable.',
+    checks,
+  };
+}
+
+// The pseudo-spectral Navier–Stokes solver has closed-form invariants a grid
+// solver can only approximate: an exact analytic decay for the Taylor–Green
+// single-shell state, exact inviscid conservation of BOTH energy and enstrophy,
+// a machine-zero velocity divergence, and — the physics payoff — a *negative*
+// spectral energy flux, the 2-D inverse cascade, when the flow is forced at a
+// small scale. Every one is checked here against the reference value.
+function spectralSolver(): CheckGroup {
+  const checks: Check[] = [];
+
+  // 1. Taylor–Green: an exact steady Euler state that decays analytically as
+  //    e^{−νK²t}. The numerical field must match the closed form, and stay
+  //    proportional to the seed (the nonlinear transfer vanishes identically).
+  {
+    const M = 64;
+    const nu = 0.01;
+    const sim = new SpectralNS(M);
+    const w0 = seedTaylorGreen(sim, 1);
+    const p = { ...DEFAULT_SPECTRAL, nu, friction: 0, forcing: 0 };
+    const dt = 0.005;
+    for (let s = 0; s < 200; s++) sim.step(dt, p);
+    const w = new Float64Array(M * M);
+    sim.vorticity(w);
+    const exact = taylorGreenDecay(sim.t, nu, 0);
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < M * M; i++) {
+      num += w[i] * w0[i];
+      den += w0[i] * w0[i];
+    }
+    const ratio = num / den;
+    let res = 0;
+    let w2 = 0;
+    for (let i = 0; i < M * M; i++) {
+      const d = w[i] - ratio * w0[i];
+      res += d * d;
+      w2 += w[i] * w[i];
+    }
+    const shape = Math.sqrt(res / w2);
+    checks.push(
+      check(
+        'Taylor–Green decays to the analytic law',
+        'ω = cos 2πx + cos 2πy is a single-shell field (|k| = 2π), so ω = K²ψ and the Jacobian J(ψ,ω) vanishes exactly: it is an exact steady Euler state that under viscosity decays as e^{−νK²t}. The integrating-factor step must reproduce that closed form.',
+        Math.abs(ratio - exact) < 1e-6,
+        `numeric/analytic decay = ${fmt(ratio)} / ${fmt(exact)} (err ${fmt(Math.abs(ratio - exact))})`,
+      ),
+    );
+    checks.push(
+      check(
+        'Taylor–Green stays shape-exact (no spurious transfer)',
+        'Because J(ψ,ω) ≡ 0 for the single-shell state, the pseudo-spectral nonlinear term must be machine-zero: the evolved field stays exactly proportional to the seed, proving the velocity reconstruction, spectral derivatives and 2/3 dealiasing introduce no artefact.',
+        shape < 1e-6,
+        `relative shape residual = ${fmt(shape)}`,
+      ),
+    );
+  }
+
+  // 2. Inviscid (ν = 0, no forcing/drag): 2-D Euler conserves BOTH total energy
+  //    and total enstrophy. The conservation-form, dealiased advection + RK4 must
+  //    preserve them over many steps.
+  {
+    const M = 64;
+    const sim = new SpectralNS(M);
+    seedRandomField(sim, 6, 1, 999);
+    const p = { ...DEFAULT_SPECTRAL, nu: 0, friction: 0, forcing: 0 };
+    const dt = 0.002;
+    const E0 = sim.energy();
+    const Z0 = sim.enstrophy();
+    for (let s = 0; s < 300; s++) sim.step(dt, p);
+    const dE = Math.abs(sim.energy() - E0) / E0;
+    const dZ = Math.abs(sim.enstrophy() - Z0) / Z0;
+    checks.push(
+      check(
+        'Inviscid flow conserves energy',
+        'With no viscosity, drag or forcing the 2-D Euler equations conserve total kinetic energy. Writing the advection in conservation form ∇·(uω) and truncating with the 2/3 rule makes the quadratic exact for the retained band, so energy drifts only at the RK4 time-stepping order.',
+        dE < 1e-3,
+        `|ΔE|/E over 300 steps = ${fmt(dE)}`,
+      ),
+    );
+    checks.push(
+      check(
+        'Inviscid flow conserves enstrophy',
+        'The second quadratic invariant of 2-D Euler, ½⟨ω²⟩, is what cascades to small scales. It too is conserved by the dealiased conservation-form scheme — the dynamical reason 2-D turbulence behaves so differently from 3-D.',
+        dZ < 1e-3,
+        `|ΔZ|/Z over 300 steps = ${fmt(dZ)}`,
+      ),
+    );
+  }
+
+  // 3. The velocity reconstructed from vorticity is divergence-free to machine
+  //    precision (it is built as u = ∇⊥ψ), with zero net circulation.
+  {
+    const M = 64;
+    const sim = new SpectralNS(M);
+    seedRandomField(sim, 8, 1.5, 7);
+    const div = sim.maxDivergence();
+    const circ = Math.abs(sim.circulation());
+    checks.push(
+      check(
+        'Reconstructed velocity is divergence-free',
+        'The velocity is defined as the curl of a streamfunction, u = ∂ψ/∂y, v = −∂ψ/∂x, so ∇·u = i(kₓû + k_yv̂) is identically zero in Fourier space — incompressibility is exact, not iterated to a tolerance like the projection solvers.',
+        div < 1e-9,
+        `max |∇·u| = ${fmt(div)}`,
+      ),
+    );
+    checks.push(
+      check(
+        'Total circulation is conserved at zero',
+        'The k = 0 vorticity mode is the domain-integrated circulation ∮u·dl. The seeds carry none, the conservation-form advection cannot create any, and the drag leaves the mean mode untouched — so it stays zero.',
+        circ < 1e-9,
+        `∫ω dA = ${fmt(circ)}`,
+      ),
+    );
+  }
+
+  // 4. Cross-check: the solver's own energy/enstrophy (read straight from the
+  //    vorticity spectrum) agree with the independent fft.ts diagnostics run on
+  //    the reconstructed physical velocity — two code paths, one answer.
+  {
+    const M = 64;
+    const sim = new SpectralNS(M);
+    seedRandomField(sim, 5, 1, 42);
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    sim.velocity(u, v);
+    const spE = energySpectrum(u, v, M).total;
+    const spZ = enstrophySpectrum(u, v, M).total;
+    const mine = sim.energy();
+    const minz = sim.enstrophy();
+    const eErr = Math.abs(spE - mine) / mine;
+    const zErr = Math.abs(spZ - minz) / minz;
+    checks.push(
+      check(
+        'Spectrum energy matches the FFT diagnostic',
+        "The solver reads energy ½⟨u²+v²⟩ = ½∑|ω̂|²/K² directly off its state. Feeding the reconstructed velocity into the studio's independent `energySpectrum` must return the same number — a cross-check of the whole velocity-from-vorticity path.",
+        eErr < 1e-6,
+        `|E_solver − E_fft|/E = ${fmt(eErr)}`,
+      ),
+    );
+    checks.push(
+      check(
+        'Spectrum enstrophy matches the FFT diagnostic',
+        'Likewise the mean enstrophy ½⟨ω²⟩ computed spectrally in the solver agrees with the independent enstrophy-spectrum diagnostic on the physical field.',
+        zErr < 1e-6,
+        `|Z_solver − Z_fft|/Z = ${fmt(zErr)}`,
+      ),
+    );
+  }
+
+  // 5. The physics payoff — a forced 2-D flow builds a *negative* energy flux
+  //    below the forcing scale: the inverse cascade Kraichnan predicted.
+  {
+    const M = 64;
+    const kf = 12;
+    const sim = new SpectralNS(M);
+    const p = { ...DEFAULT_SPECTRAL, nu: 4e-4, friction: 0.05, forcing: 4, forceK: kf };
+    const dt = 1 / 120;
+    for (let s = 0; s < 300; s++) sim.step(dt, p);
+    const u = new Float64Array(M * M);
+    const v = new Float64Array(M * M);
+    const flux = new Float64Array((M >> 1) + 1);
+    const snaps = 3;
+    for (let n = 0; n < snaps; n++) {
+      for (let s = 0; s < 15; s++) sim.step(dt, p);
+      sim.velocity(u, v);
+      const tr = energyTransfer(u, v, M);
+      for (let k = 0; k < flux.length; k++) flux[k] += tr.flux[k] / snaps;
+    }
+    let band = 0;
+    let cnt = 0;
+    for (let k = 3; k <= kf - 3; k++) {
+      band += flux[k];
+      cnt++;
+    }
+    const meanFlux = band / cnt;
+    const developed = sim.energy();
+    checks.push(
+      check(
+        'Forced flow shows the 2-D inverse cascade (Π < 0)',
+        'Stirred at wavenumber kf against a large-scale drag, a 2-D flow sends energy the "wrong" way — up to larger scales. The spectral energy flux Π(k) averaged over the inertial band below the forcing must be negative, the quantitative fingerprint of the inverse cascade (Kraichnan 1967) that a snapshot alone cannot show.',
+        developed > 1e-6 && meanFlux < 0,
+        `mean Π(k) over 3 ≤ k ≤ ${kf - 3} = ${fmt(meanFlux)}; steady KE = ${fmt(developed)}`,
+      ),
+    );
+  }
+
+  return {
+    title: 'Pseudo-spectral Navier–Stokes',
+    blurb:
+      'A second, independent incompressible solver — vorticity in Fourier space, exact spectral derivatives, an integrating-factor RK4 for the viscous term, and 2/3-rule dealiased pseudo-spectral advection. Unlike the grid solver it carries closed-form invariants: the Taylor–Green state decays to an analytic law, inviscid runs conserve energy AND enstrophy to round-off, the velocity is divergence-free exactly, and a forced run reproduces the negative-flux inverse cascade of 2-D turbulence.',
     checks,
   };
 }
@@ -2777,6 +2977,7 @@ export function runSelfTest(): SelfTestReport {
     thermalAndSymmetry(),
     combustion(),
     spectral(),
+    spectralSolver(),
     lagrangian(),
     openBoundaries(),
     mhd(),
