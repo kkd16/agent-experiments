@@ -15,6 +15,8 @@ export {
 } from './solve'
 export type { Completion, AspSolveOptions, AspSolveResult, AspStats, WellFounded } from './solve'
 export { bruteAnswerSets, isAnswerSet, normalizeForOracle } from './reduct'
+export { positiveDependencyGraph, layoutDepGraph } from './depgraph'
+export type { DepGraph, DepEdge, DepLayout, NodePos } from './depgraph'
 export { ASP_EXAMPLES } from './examples'
 export type { AspExample } from './examples'
 export { runAspChecks } from './selfcheck'
