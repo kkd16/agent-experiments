@@ -23,6 +23,7 @@ import { ellipk, ellipj, ellipdeg, ellipap } from './ellip'
 import { remezDesign } from './remez'
 import { estimateOrders, buttord, cheb1ord, ellipord } from './filterspec'
 import type { FilterSpec } from './filterspec'
+import { reassignSpectrogram, makeTfrSignal, instantaneousFreq } from './reassign'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -575,6 +576,103 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     }
     const ordered = ellipord(spec) <= cheb1ord(spec) && cheb1ord(spec) <= buttord(spec)
     check('order estimators meet Rs at edge; ellip ≤ cheby ≤ butter', meets && ordered)
+  }
+
+  // 33. Reassignment concentrates a pure tone: the reassigned frequency of every
+  //     energetic cell collapses onto the tone's true frequency (sub-bin), and the
+  //     reassigned spectrogram is sharper (lower Rényi entropy) than the STFT.
+  {
+    const fs = 4000
+    const f0 = 650
+    const N = 2048
+    const tone = new Float64Array(N)
+    for (let i = 0; i < N; i++) tone[i] = Math.cos((2 * Math.PI * f0 * i) / fs)
+    const r = reassignSpectrogram(tone, { fs, fftSize: 512, hop: 64, sigma: 60 })
+    // The ridge (dominant reassigned freq per column) should sit within ~one
+    // bin of f0 despite the peak bin being 656 Hz away from it.
+    let maxErr = 0
+    let counted = 0
+    for (let c = 0; c < r.cols; c++) {
+      const f = r.ridge[c]
+      if (isFinite(f)) {
+        maxErr = Math.max(maxErr, Math.abs(f - f0))
+        counted++
+      }
+    }
+    const sharper = r.entropy.reassigned < r.entropy.stft - 0.5
+    check(
+      'reassignment locks a tone to its true frequency + sharpens vs STFT',
+      counted > 4 && maxErr < r.binHz && sharper,
+    )
+  }
+
+  // 34. Reassigned ridge of a linear chirp tracks the analytic instantaneous
+  //     frequency f(t) = f0 + rate·t at every column, to within a bin.
+  {
+    const fs = 4000
+    const N = 4096
+    const dur = N / fs
+    const chirp = makeTfrSignal('linearChirp', N, fs)
+    const r = reassignSpectrogram(chirp, { fs, fftSize: 512, hop: 64, sigma: 45 })
+    let maxErr = 0
+    let counted = 0
+    for (let c = 0; c < r.cols; c++) {
+      const f = r.ridge[c]
+      if (!isFinite(f)) continue
+      const t = r.frameTimes[c]
+      const truth = instantaneousFreq('linearChirp', t, dur, fs)
+      maxErr = Math.max(maxErr, Math.abs(f - truth))
+      counted++
+    }
+    check('reassigned ridge tracks the chirp instantaneous frequency', counted > 20 && maxErr < 2 * r.binHz)
+  }
+
+  // 35. Synchrosqueezing preserves the time axis (energy is not moved in time):
+  //     the per-column energy profile of the SST tracks the STFT's, while still
+  //     concentrating in frequency. Probe with an amplitude *burst* — a tone under
+  //     a Gaussian envelope — so column energy has real temporal structure to
+  //     correlate (a stationary tone would be near-flat and correlate only noise).
+  {
+    const fs = 4000
+    const N = 2048
+    const sig = new Float64Array(N)
+    const c0 = N / 2
+    const w0 = N / 5
+    for (let i = 0; i < N; i++) {
+      const env = Math.exp(-Math.pow((i - c0) / w0, 2))
+      sig[i] = env * Math.sin((2 * Math.PI * 500 * i) / fs)
+    }
+    const r = reassignSpectrogram(sig, { fs, fftSize: 512, hop: 64, sigma: 60 })
+    // Column energy of STFT vs synchro should correlate strongly (time preserved).
+    const colEnergy = (t: typeof r.stft) => {
+      const e = new Float64Array(t.cols)
+      for (let c = 0; c < t.cols; c++) {
+        let s = 0
+        for (let row = 0; row < t.rows; row++) s += Math.pow(10, t.data[row * t.cols + c] / 10)
+        e[c] = s
+      }
+      return e
+    }
+    const a = colEnergy(r.stft)
+    const b = colEnergy(r.synchro)
+    let ma = 0
+    let mb = 0
+    for (let c = 0; c < a.length; c++) {
+      ma += a[c]
+      mb += b[c]
+    }
+    ma /= a.length
+    mb /= b.length
+    let num = 0
+    let da = 0
+    let db = 0
+    for (let c = 0; c < a.length; c++) {
+      num += (a[c] - ma) * (b[c] - mb)
+      da += (a[c] - ma) ** 2
+      db += (b[c] - mb) ** 2
+    }
+    const corr = num / (Math.sqrt(da * db) + 1e-12)
+    check('synchrosqueezing preserves the time axis (col-energy corr > 0.95)', corr > 0.95)
   }
 
   return { passed, failed, messages }
