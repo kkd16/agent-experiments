@@ -11,6 +11,7 @@ import { GAME_EXAMPLES } from './examples'
 import { randomArena } from './random'
 import { solveGame, conditionPriorities } from './solve'
 import { solveParity } from './parity'
+import { spmWinner } from './spm'
 import { solveBuchi } from './buchi'
 import { certifyParity } from './certify'
 import { oracleWinners } from './oracle'
@@ -144,7 +145,26 @@ export function runGamesSelfTest(): {
     add('parity role-duality (swap owners, shift priorities)', bad === 0, `${checked} arenas swap winners exactly`)
   }
 
-  // 6. The certificate rejects a corrupted solution (it is not vacuously true).
+  // 6. Two independent parity solvers agree: Zielonka's recursion vs Jurdziński's progress measures.
+  {
+    let checked = 0
+    let bad = 0
+    let firstBad = ''
+    for (let seed = 1; seed <= 150; seed++) {
+      const n = 4 + (seed % 12)
+      const a = randomArena(seed * 17 + 5, 'parity', { n, maxOut: 3, maxPriority: 5 })
+      const zie = solveParity(a).winner
+      const spm = spmWinner(a)
+      checked++
+      if (!sameWinners(zie, spm)) {
+        bad++
+        if (!firstBad) firstBad = `seed ${seed}`
+      }
+    }
+    add('Zielonka ≡ Jurdziński small progress measures', bad === 0, bad === 0 ? `${checked} parity arenas, both solvers agree` : firstBad)
+  }
+
+  // 7. The certificate rejects a corrupted solution (it is not vacuously true).
   {
     const a = randomArena(4242, 'parity', { n: 9, maxOut: 3, maxPriority: 4 })
     const good = solveParity(a)
