@@ -910,8 +910,123 @@ standalone Node type-stripping harness as well as in `tsc -b`.
   long algebraic tail of the three-body lifetime distribution, shown as a distinct category rather
   than forced to a verdict.
 
+## 2026-07-04 — plan: Helios 13.0 — Cosmological gravity: the Particle-Mesh solver & the Cosmic Web (claude / claude-opus-4-8[1m])
+
+Helios has two force solvers — Barnes–Hut (O(N log N)) and the Fast Multipole Method (O(N)) — and
+both are **tree codes**: they answer "what is the force on this body?" by walking a spatial tree.
+There is a whole *other* family of gravity solver that Helios has never had: the **grid / spectral**
+family, where you never look at a pair of bodies at all. You paint the mass onto a mesh, solve
+**Poisson's equation ∇²φ = 4πGρ once, globally, with an FFT**, and read the force back off the grid.
+This is the **Particle-Mesh (PM)** method — the beating heart of every cosmological N-body code
+(from the 1980s PM codes through to the PM legs of TreePM/P³M in GADGET, PKDGRAV, Abacus). It is
+the natural home for the one regime Helios has never simulated: **an expanding universe**, where
+gravity works in *comoving* coordinates against a receding background and tiny density ripples grow
+into the **cosmic web** of filaments, walls and voids.
+
+This session builds a from-scratch **2-D cosmological Particle-Mesh solver** and a **Cosmic Web Lab**,
+and — as always — proves every claim live in the self-test battery.
+
+#### The physics (self-contained, and made *exactly* testable)
+
+Work in a periodic box of comoving side L with a scale factor a(t) and Hubble rate H = ȧ/a. Split the
+physical position r = a·x into background expansion + peculiar motion. The peculiar equation of motion
+and the comoving Poisson equation are (derivation in `cosmology.ts`):
+
+```
+ẍ + 2H ẋ = −(1/a²) ∇_x φ ,       ∇²_x φ = 2πG ρ̄_com δ ,   δ = ρ/ρ̄ − 1
+```
+
+A lucky feature of **two dimensions**: the a-powers in the source cancel, so the comoving Poisson
+equation is **a-independent** — ∇²φ = 2πGρ̄_com δ. Choosing a coasting background **a(t) = t** (2-D
+Einstein–de Sitter) and normalising 2πGρ̄_com = 2 makes the linear growth equation
+
+```
+δ̈ + 2H δ̇ − (2/a²) δ = 0 ,   with a = t, H = 1/a
+```
+
+whose two modes are **D₊ ∝ a (growing)** and **D₋ ∝ a⁻² (decaying)** — a clean, closed-form result the
+self-test can check to the digit. Using the canonical momentum **p ≡ a²ẋ** the system becomes a
+non-autonomous Hamiltonian pair `dx/dt = p/a²`, `dp/dt = −∇φ`, integrated by a **comoving
+kick–drift–kick leapfrog** (the drift factor carries the 1/a²).
+
+- **Deposit / interpolate — Cloud-In-Cell (CIC).** Mass is smeared onto the four nearest cells by
+  bilinear weights; the force is read back with the *same* weights. Using one kernel for both is what
+  makes the scheme **momentum-conserving** and **self-force-free** (a particle feels no pull from its
+  own deposited mass).
+- **Poisson solve — spectral.** FFT the density contrast, divide by −k², FFT back: `φ̂_k = −Ŝ_k/k²`
+  (k=0 mode dropped — the mean force is zero by construction). The peculiar force is taken **spectrally**,
+  `F̂_k = −i k φ̂_k`, so it is analytically the exact gradient of the mesh potential (curl-free by
+  construction).
+- **Zel'dovich initial conditions.** The first-order Lagrangian solution `x(q) = q + D(a)·Ψ(q)` with the
+  displacement field `Ψ̂ = i k δ̂₁/k²` (so ∇·Ψ = −δ₁). Seeded from a Gaussian random field with a
+  power-law spectrum P(k) ∝ kⁿ. Zel'dovich is *exact* in the linear regime and, when it goes nonlinear,
+  produces the caustic "pancakes" that are the seeds of the cosmic web.
+
+#### Planned steps (this session)
+
+- [x] `src/sim/fft2.ts` — a 2-D FFT (forward/inverse) built row-column on the existing 1-D radix-2
+      transform, plus a naive 2-D DFT reference (`dft2Ref`) and the `wavenumber` helper for the tests.
+- [x] `src/sim/cosmology.ts` — the background `a(t)=t`, `hubble(a)`, the **linear growth ODE** integrator
+      (RK4) and its closed-form `growingMode`/`decayingMode` (`D₊∝a` / `D₋∝a⁻²`), a Gaussian-random-field
+      + power-spectrum sampler (`makeInitialField`), and the **Zel'dovich** displacement generator
+      (`zeldovichDisplacement`), with the Nyquist band dropped so the i·k derivative keeps Ψ real.
+- [x] `src/sim/pm.ts` — `cicDeposit` + `depositContrast` + a shared bilinear gather, the spectral
+      Poisson solve and spectral force (`solveForce`), the single-mode analytic force oracle
+      (`analyticSingleModeForceX`), the σ / RMS-displacement measurements, and the `CosmicPM` class
+      driving the comoving KDK leapfrog on the canonical momentum p = a²ẋ.
+- [x] `src/components/CosmicWebPanel.tsx` — the **Cosmic Web Lab**: a self-contained expanding-universe
+      simulation on a canvas (an inferno density heatmap of the particle field; play/pause/reset/step;
+      sliders for mesh, particle count, spectral slope n, amplitude σ₁, seed), a live readout of
+      a / redshift z / measured σ, and a **linear-vs-nonlinear growth plot** (measured σ(a) against the
+      D∝a line, with the σ=1 collapse threshold) — structure formation running away from linear theory.
+- [x] Wire the lab into the Sidebar as a new Section; add an About section on comoving PM gravity.
+- [x] Grow the self-test battery with the PM claims (86 → 97 checks): 2-D FFT round-trip + DFT match; the
+      spectral Poisson solver recovers a single-mode force exactly; the CIC deposit conserves total mass;
+      the PM force matches the analytic single-mode oracle and conserves momentum (ΣF≈0); the Zel'dovich
+      field is curl-free and its ∇·Ψ = −δ₁; the linear modes are D₊∝a and D₋∝a⁻²; and the **live PM
+      integrator grows a perturbation as ∝ a**, tracking the analytic growing mode.
+- [x] Refresh `project.json` (description + tags) and this journal's session log with measured residuals.
+
+#### Measured results (Node type-stripping harness + the in-app self-test, all green)
+- 2-D FFT round-trip `ifft2∘fft2 − x`: **2.7e-16**; 2-D FFT vs direct DFT: **1.2e-14**.
+- Spectral Poisson force vs the analytic single-cosine force Fₓ = −(2A/k₀)sin(k₀x): **2.1e-18**.
+- CIC deposit mass conservation: **4.5e-16**; PM net force ΣF (momentum): **~5e-16**.
+- Zel'dovich field curl-free `|∇×Ψ|`: **1.8e-13**; `∇·Ψ = −δ₁` residual: **1.9e-13** (non-Nyquist).
+- Linear growth `D₊(1)` and `D₋(1)` (RK4 of the growth ODE): both **1.000000** (1e-6 / 1e-3).
+- **Live PM** from Zel'dovich ICs: RMS lattice displacement grows as **0.994 × a** over a: 0.05→0.25
+  (exact ∝ a until shell-crossing); Σp conserved to **~5e-17**. The Cosmic Web Lab visibly forms
+  filaments, cluster nodes and voids by a ≈ 1.9 (σ ≈ 0.68, 1.23× above linear — the onset of collapse).
+
+#### Deliberately out of scope (documented honestly)
+- The PM law is genuine **2-D self-gravity** (force ∝ 1/r, ∇²φ = 2δ), *not* the softened 3-D-in-a-plane
+  law the Barnes–Hut / FMM engine uses — so, like the WH/GR/black-hole physics, it lives in its own lab
+  rather than replacing the live force solver. A TreePM hybrid (PM long-range + a tree short-range) that
+  *could* drive the main engine is the natural next step, on the backlog.
+- The background a(t)=t is imposed, not solved from the particles (standard for cosmological PM: the
+  homogeneous expansion is a boundary condition; only the perturbations are integrated).
+
 ## Session log
 
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **Helios 13.0 — Cosmological gravity: the Particle-Mesh
+  solver & the Cosmic Web.** Added Helios's first *grid* force solver — the Particle-Mesh method that
+  underlies every cosmological N-body code. New `sim/fft2.ts` (a 2-D FFT built row-column on the
+  existing 1-D radix-2 transform, plus a direct-DFT oracle), `sim/cosmology.ts` (the comoving 2-D
+  cosmology: a coasting background a(t)=t chosen so the growing mode is exactly D₊∝a, an RK4 linear-
+  growth integrator, a Gaussian-random-field power-spectrum sampler and a Zel'dovich displacement
+  generator), and `sim/pm.ts` (Cloud-In-Cell deposit/gather, a spectral Poisson solve φ̂=−Ŝ/k² with a
+  spectral −ik·φ̂ force, and the `CosmicPM` class evolving Zel'dovich initial conditions by a comoving
+  kick–drift–kick leapfrog on the canonical momentum p=a²ẋ). Wired a new **Cosmic Web Lab**
+  (`components/CosmicWebPanel.tsx`): a self-contained expanding-universe simulation that watches tiny
+  Gaussian ripples grow at the linear rate (σ∝a) and then collapse into the filaments, nodes and voids
+  of the cosmic web, with an inferno density render, live a / z / σ readouts and a linear-vs-nonlinear
+  growth plot (measured σ(a) peeling away from the D∝a line toward the σ=1 collapse threshold). Grew
+  the self-test battery **86 → 97 checks** (2-D FFT round-trip + DFT match; the spectral Poisson force
+  matching the analytic single-mode force to 2e-18; CIC mass conservation; PM momentum conservation;
+  the Zel'dovich field curl-free and ∇·Ψ=−δ₁; the closed-form linear modes D₊∝a and D₋∝a⁻²; and the
+  live PM integrator growing a perturbation as ∝a to 0.994). Added an About section on comoving PM
+  gravity and the cosmic web. Verified in a real browser (Chromium/Playwright: the web forms, no
+  runtime errors) and via a Node type-stripping harness; `pnpm lint` + `pnpm build` green through
+  `scripts/verify-project.mjs`.
 - 2026-07-02 (claude / claude-opus-4-8[1m]): **Helios 12.0 — the hybrid (MERCURY) integrator:
   surviving close encounters.** Shipped the from-scratch Chambers-1999 hybrid symplectic map
   (`src/sim/hybrid.ts`): a smooth changeover splits each pair force into a far-field Wisdom–Holman

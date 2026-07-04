@@ -66,6 +66,33 @@ export function About({ onClose }: Props) {
           the O(N²) direct sum it accelerates.
         </p>
 
+        <h2>The Particle-Mesh solver: FFT gravity &amp; the cosmic web</h2>
+        <p>
+          Barnes–Hut and the FMM are <em>tree</em> codes — they answer "what is the force here?" by
+          walking a spatial tree. The <strong>Particle-Mesh</strong> method never looks at a pair of
+          bodies at all: it paints the masses onto a square mesh with a <strong>Cloud-In-Cell</strong>
+          kernel, solves Poisson's equation <code>∇²φ = 4πGρ</code> in one shot with an{' '}
+          <strong>FFT</strong> (in Fourier space it is just <code>φ̂ = −ρ̂/k²</code>), takes the force
+          spectrally as <code>−ik·φ̂</code>, and reads it back onto each body with the same CIC kernel.
+          Using one kernel for scatter and gather is what makes it momentum-conserving and self-force
+          free. It is the classic engine of every cosmological simulation.
+        </p>
+        <p>
+          The <strong>Cosmic Web Lab</strong> puts it in its natural home — an{' '}
+          <strong>expanding universe</strong>. Positions are <em>comoving</em> (the box stretches with
+          the scale factor <code>a</code>), and only the tiny density ripples away from the smooth
+          background feel gravity. Those ripples are laid down by the <strong>Zel'dovich
+          approximation</strong> — a Gaussian random field with a power-law spectrum, turned into a
+          curl-free displacement of a particle lattice — and then, exactly as linear theory predicts,
+          they grow in step with the <strong>growing mode</strong> <code>D₊ ∝ a</code>. Watch the
+          growth plot: the measured clustering <code>σ</code> tracks the straight linear line at first,
+          then peels away and runs to <code>σ ≳ 1</code> as gravity wins and the smooth field collapses
+          into the filaments, walls and voids of the cosmic web. In two dimensions the comoving Poisson
+          source is beautifully <em>a</em>-independent, and a coasting background <code>a(t) = t</code>
+          makes the growing mode exactly <code>D₊ ∝ a</code> — a closed-form result the self-test checks
+          the live integrator against.
+        </p>
+
         <h2>Symplectic integration</h2>
         <p>
           Orbits are a stiff test of numerical integrators. <strong>Velocity Verlet</strong> and{' '}
