@@ -1121,6 +1121,146 @@ instance Sz Int where sz = fn n -> n + 1 in
 let rec sm = fn xs -> match xs with [] -> 0 | h :: t -> sz h + sm t in sm [10, 20, 30]`,
     expected: '63',
   },
+
+  // ---- type ascription & signatures (both backends run the value unchanged) ----
+  {
+    group: 'signatures',
+    name: 'expression ascription (e : T)',
+    code: '([1, 2, 3] : List Int)',
+    expected: '[1, 2, 3]',
+  },
+  {
+    group: 'signatures',
+    name: 'polymorphic signature checked with skolems',
+    code: 'let const2 : a -> b -> a = fn x -> fn y -> x in const2 5 true',
+    expected: '5',
+  },
+  {
+    group: 'signatures',
+    name: 'a non-polymorphic value is rejected by a polymorphic signature',
+    code: 'let f : a -> a = fn x -> x + 1 in f 3',
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'signatures',
+    name: 'polymorphic recursion (impossible for an un-annotated let rec)',
+    code: `type Nest a where | Leaf : a -> Nest a | Deep : Nest (List a) -> Nest a in
+let rec depth : Nest a -> Int = fn n -> match n with
+  | Leaf x -> 0
+  | Deep d -> 1 + depth d
+in depth (Deep (Deep (Leaf [[7]])))`,
+    expected: '2',
+  },
+
+  // ---- GADTs: constructors that refine the datatype's type indices ----
+  {
+    group: 'gadt',
+    name: 'typed expression evaluator returns an Int',
+    code: `type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+  | Add  : Expr Int -> Expr Int -> Expr Int
+  | Cmp  : Expr Int -> Expr Int -> Expr Bool
+  | If   : Expr Bool -> Expr a -> Expr a -> Expr a
+in
+let rec eval : Expr a -> a = fn e -> match e with
+  | ILit n -> n
+  | BLit b -> b
+  | Add x y -> eval x + eval y
+  | Cmp x y -> eval x < eval y
+  | If c t f -> if eval c then eval t else eval f
+in eval (Add (ILit 20) (ILit 22))`,
+    expected: '42',
+  },
+  {
+    group: 'gadt',
+    name: 'the same evaluator returns a Bool from a Bool-indexed tree',
+    code: `type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+  | Cmp  : Expr Int -> Expr Int -> Expr Bool
+in
+let rec eval : Expr a -> a = fn e -> match e with
+  | ILit n -> n
+  | BLit b -> b
+  | Cmp x y -> eval x < eval y
+in eval (Cmp (ILit 3) (ILit 5))`,
+    expected: 'true',
+  },
+  {
+    group: 'gadt',
+    name: 'length-indexed vector: head is total (the empty case is impossible)',
+    code: `type Zero in
+type Succ n in
+type Vec n a where
+  | VNil  : Vec Zero a
+  | VCons : a -> Vec n a -> Vec (Succ n) a
+in
+let head1 : Vec (Succ n) a -> a = fn v -> match v with | VCons x xs -> x
+in head1 (VCons 7 (VCons 8 VNil))`,
+    expected: '7',
+  },
+  {
+    group: 'gadt',
+    name: 'a length-preserving vector map, summed',
+    code: `type Zero in
+type Succ n in
+type Vec n a where
+  | VNil  : Vec Zero a
+  | VCons : a -> Vec n a -> Vec (Succ n) a
+in
+let rec vmap : (a -> b) -> Vec n a -> Vec n b = fn f -> fn v -> match v with
+  | VNil -> VNil
+  | VCons x xs -> VCons (f x) (vmap f xs)
+in
+let rec vsum : Vec n Int -> Int = fn v -> match v with
+  | VNil -> 0
+  | VCons x xs -> x + vsum xs
+in vsum (vmap (fn x -> x * 10) (VCons 1 (VCons 2 (VCons 3 VNil))))`,
+    expected: '60',
+  },
+  {
+    group: 'gadt',
+    name: 'a type-equality witness (Refl) casts safely',
+    code: `type Eql a b where | Refl : Eql a a in
+let cast : Eql a b -> a -> b = fn eq -> fn x -> match eq with | Refl -> x in
+cast Refl 41 + 1`,
+    expected: '42',
+  },
+  {
+    group: 'gadt',
+    name: 'Refl cannot inhabit an unequal index (rejected)',
+    code: `type Eql a b where | Refl : Eql a a in
+let bad : Eql Int Bool = Refl in 0`,
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'gadt',
+    name: 'a branch that ignores index refinement is rejected',
+    code: `type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+in
+let rec ev : Expr a -> a = fn e -> match e with
+  | ILit n -> true
+  | BLit b -> b
+in ev (ILit 1)`,
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'gadt',
+    name: 'an un-annotated match mixing indices is rejected (needs a signature)',
+    code: `type Expr a where
+  | ILit : Int -> Expr Int
+  | BLit : Bool -> Expr Bool
+in
+let f = fn e -> match e with | ILit n -> n | BLit b -> b in 0`,
+    expected: null,
+    expectError: true,
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

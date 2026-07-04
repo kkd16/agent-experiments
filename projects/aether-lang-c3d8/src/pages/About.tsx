@@ -25,6 +25,11 @@ const STAGES = [
     body: "A kind classifies a type the way a type classifies a value: Int : *, List : * -> *, Either : * -> * -> *. Kinds make higher-kinded classes principled — Monad m abstracts over an m of kind * -> *, so one generic combinator runs in every monad (Option, List, the partially-applied State s). Kinds are inferred by unification, exactly like types: each class parameter's kind is read off how its methods use it, every class/instance/type declaration is kind-checked, and instance Monad Int is rejected because Int : * ≠ * -> *. A type variable may now stand for a constructor — a TApp node represents m a and unification decomposes ordinary constructors into application spines to bridge the two.",
   },
   {
+    n: 3.25,
+    title: 'Signatures, ascription & GADTs',
+    body: "A binding can carry a type signature (let f : T = …) and any expression can be ascribed a type ((e : T)); both are checked, not merely unified — the signature's type variables are skolemised (made rigid), so a value must be genuinely polymorphic, and the same machinery gives polymorphic recursion. On top of that sit GADTs: a type declared with `where` gives each constructor its own signature, so different constructors can build different type indices (ILit : Int -> Expr Int, BLit : Bool -> Expr Bool). Matching a GADT is bidirectional — with the result type pushed in, each constructor's index equations are solved per branch as local, rigid equalities, so a branch learns (say) a = Int and type-checks its body under that refinement; a branch whose indices are contradictory is pruned as unreachable, and a constructor that cannot build the scrutinee's type drops out of the exhaustiveness check (making a total, single-clause head on a non-empty length-indexed vector). GADT constructors are erased at runtime, so every such program runs identically on the VM, JavaScript and WebAssembly backends.",
+  },
+  {
     n: 3.5,
     title: 'Optimizer',
     body: 'An optional semantics-preserving pass folds constant arithmetic / comparison / boolean / string expressions, eliminates dead branches (if true …), and simplifies short-circuit operators — before compilation. Toggle it in the playground and watch the folded count and VM step total drop.',

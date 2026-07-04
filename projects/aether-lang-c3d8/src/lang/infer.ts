@@ -10,7 +10,7 @@ import { cloneExpr } from './ast.ts'
 import type { TypeCtorInfo } from './exhaustive.ts'
 import { analyzeMatch } from './exhaustive.ts'
 import type { Span } from './lexer.ts'
-import type { Pred, Scheme, Type, TVar } from './types.ts'
+import type { Pred, Scheme, TCon, Type, TVar } from './types.ts'
 import {
   ARROW,
   RECORD,
@@ -130,6 +130,9 @@ class Inferrer {
   bindingSchemes = new Map<Expr, Scheme>()
   ctorInfo = new Map<string, { arity: number; scheme: Scheme }>()
   typeCtors = new Map<string, TypeCtorInfo>()
+  /** names of datatypes declared in GADT (`where`) form — their constructors may
+   * refine the datatype's type indices, so matching on them is bidirectional. */
+  gadtTypes = new Set<string>()
   warnings: InferWarning[] = []
 
   // kind environment: the kind of every type constructor in scope, and the
@@ -265,13 +268,20 @@ class Inferrer {
     return { vars, type: t }
   }
 
-  infer(env: Env, e: Expr): Type {
-    const t = this.inferRaw(env, e)
+  // `expected`, when supplied, is a type pushed down from an enclosing signature
+  // or ascription (bidirectional checking). It defaults to undefined, in which
+  // case inference behaves exactly as plain Algorithm W — every existing call
+  // site omits it, so unannotated programs are inferred unchanged. When present,
+  // it is threaded into the nodes where a pushed type matters (lambda, if, match,
+  // let/letrec/seq bodies) and, uniformly, unified with the synthesised type here.
+  infer(env: Env, e: Expr, expected?: Type): Type {
+    const t = this.inferRaw(env, e, expected)
+    if (expected !== undefined) this.unify(t, expected, e.span)
     this.nodeTypes.set(e, t)
     return t
   }
 
-  private inferRaw(env: Env, e: Expr): Type {
+  private inferRaw(env: Env, e: Expr, expected?: Type): Type {
     switch (e.kind) {
       case 'int':
         return tInt
@@ -290,9 +300,19 @@ class Inferrer {
         return this.instantiateScheme(scheme, e)
       }
       case 'lambda': {
-        const a = freshVar()
+        // When an arrow type is pushed in, bind the parameter at its domain and
+        // push the codomain into the body (so a signature reaches the body).
+        let a: Type = freshVar()
+        let bodyExpected: Type | undefined
+        if (expected !== undefined) {
+          const pe = prune(expected)
+          if (pe.kind === 'con' && pe.name === ARROW && pe.args.length === 2) {
+            a = pe.args[0]
+            bodyExpected = pe.args[1]
+          }
+        }
         const env1 = extend(env, e.param, monoScheme(a))
-        const tb = this.infer(env1, e.body)
+        const tb = this.infer(env1, e.body, bodyExpected)
         return tArrow(a, tb)
       }
       case 'app': {
@@ -303,6 +323,7 @@ class Inferrer {
         return r
       }
       case 'let': {
+        if (e.sig) return this.inferSignaturedLet(env, e, expected)
         if (e.recursive) {
           const a = freshVar()
           const env1 = extend(env, e.name, monoScheme(a))
@@ -314,14 +335,14 @@ class Inferrer {
           this.bindingSchemes.set(e, scheme)
           this.attachDicts(e, params, frame ? frame.refs : [])
           const env2 = extend(env, e.name, scheme)
-          return this.infer(env2, e.body)
+          return this.infer(env2, e.body, expected)
         }
         const t1 = this.infer(env, e.value)
         const { scheme, params } = this.generalizeWithPreds(env, t1)
         this.bindingSchemes.set(e, scheme)
         this.attachDicts(e, params, [])
         const env2 = extend(env, e.name, scheme)
-        return this.infer(env2, e.body)
+        return this.infer(env2, e.body, expected)
       }
       case 'classdecl':
         return this.inferClass(env, e)
@@ -329,8 +350,8 @@ class Inferrer {
         return this.inferInstance(env, e)
       case 'if': {
         this.unify(this.infer(env, e.cond), tBool, e.cond.span)
-        const tt = this.infer(env, e.then)
-        const te = this.infer(env, e.else)
+        const tt = this.infer(env, e.then, expected)
+        const te = this.infer(env, e.else, expected)
         this.unify(tt, te, e.span)
         return tt
       }
@@ -354,9 +375,14 @@ class Inferrer {
         return { kind: 'con', name: '*', args: e.elements.map((el) => this.infer(env, el)) }
       case 'seq':
         this.infer(env, e.first)
-        return this.infer(env, e.rest)
+        return this.infer(env, e.rest, expected)
       case 'match': {
         const ts = this.infer(env, e.scrutinee)
+        // GADT elimination needs a *known* result type (bidirectional): only take
+        // the refining path when one is pushed in and the scrutinee is a GADT.
+        if (expected !== undefined && this.isGadtType(ts)) {
+          return this.inferGadtMatch(env, e, ts, expected)
+        }
         const result = freshVar()
         for (const c of e.cases) {
           const bindings = new Map<string, Type>()
@@ -364,7 +390,7 @@ class Inferrer {
           let env2 = env
           for (const [name, t] of bindings) env2 = extend(env2, name, monoScheme(t))
           if (c.guard) this.unify(this.infer(env2, c.guard), tBool, c.guard.span)
-          this.unify(this.infer(env2, c.body), result, c.body.span)
+          this.unify(this.infer(env2, c.body, expected), result, c.body.span)
         }
         this.checkMatch(e, ts)
         return result
@@ -405,13 +431,23 @@ class Inferrer {
         return this.infer(env2, e.body)
       }
       case 'typedecl': {
+        const isGadt = e.ctors.some((c) => c.result !== undefined)
+        if (isGadt) this.gadtTypes.add(e.name)
         this.typeCtors.set(e.name, {
           params: e.params,
-          ctors: e.ctors.map((c) => ({ name: c.name, argTypeExprs: c.args })),
+          gadt: isGadt,
+          ctors: e.ctors.map((c) => ({
+            name: c.name,
+            argTypeExprs: c.args,
+            resultTypeExpr: c.result,
+          })),
         })
         // kind-infer the type's parameters from its constructor arguments. The
         // constructor's own kind is registered first so recursive references
         // (`type Tree a = Leaf | Node (Tree a) (Tree a)`) resolve consistently.
+        // For a GADT the constructor signatures carry their own (existential and
+        // index) variables, so we only register the datatype's kind and skip the
+        // ordinary-ADT per-argument kind unification.
         this.kindCheck(() => {
           const varKinds = new Map<string, Kind>()
           for (const p of e.params) varKinds.set(p, freshKVar())
@@ -420,8 +456,10 @@ class Inferrer {
             kStar,
           )
           this.conKinds.set(e.name, selfKind)
-          for (const ctor of e.ctors) {
-            for (const a of ctor.args) unifyKind(this.kindOf(a, varKinds), kStar, a.span)
+          if (!isGadt) {
+            for (const ctor of e.ctors) {
+              for (const a of ctor.args) unifyKind(this.kindOf(a, varKinds), kStar, a.span)
+            }
           }
           this.conKinds.set(e.name, defaultKind(selfKind))
         })
@@ -433,11 +471,34 @@ class Inferrer {
         )
         let env2 = env
         for (const ctor of e.ctors) {
-          const argTypes = ctor.args.map((a) => convertTypeExpr(a, params))
-          let schemeType: Type = resultType
-          for (let i = argTypes.length - 1; i >= 0; i--) schemeType = tArrow(argTypes[i], schemeType)
-          const scheme: Scheme = { vars: [...freeVars(schemeType)], type: schemeType }
-          this.ctorInfo.set(ctor.name, { arity: argTypes.length, scheme })
+          let scheme: Scheme
+          let arity: number
+          if (ctor.result !== undefined) {
+            // GADT constructor: build its scheme from its own signature, with a
+            // fresh set of type variables (its own indices and existentials).
+            const acc: string[] = []
+            const seen = new Set<string>()
+            for (const a of ctor.args) freeTypeVarNames(a, acc, seen)
+            freeTypeVarNames(ctor.result, acc, seen)
+            const cmap = new Map<string, Type>()
+            for (const n of acc) cmap.set(n, freshVar())
+            const argTypes = ctor.args.map((a) => convertTypeExpr(a, cmap))
+            let schemeType: Type = convertTypeExpr(ctor.result, cmap)
+            for (let i = argTypes.length - 1; i >= 0; i--) {
+              schemeType = tArrow(argTypes[i], schemeType)
+            }
+            scheme = { vars: [...freeVars(schemeType)], type: schemeType }
+            arity = argTypes.length
+          } else {
+            const argTypes = ctor.args.map((a) => convertTypeExpr(a, params))
+            let schemeType: Type = resultType
+            for (let i = argTypes.length - 1; i >= 0; i--) {
+              schemeType = tArrow(argTypes[i], schemeType)
+            }
+            scheme = { vars: [...freeVars(schemeType)], type: schemeType }
+            arity = argTypes.length
+          }
+          this.ctorInfo.set(ctor.name, { arity, scheme })
           env2 = extend(env2, ctor.name, scheme)
         }
         return this.infer(env2, e.body)
@@ -497,6 +558,195 @@ class Inferrer {
         span: e.cases[idx].pattern.span,
       })
     }
+  }
+
+  private isGadtType(t: Type): boolean {
+    const { head } = spineOf(t)
+    return head.kind === 'con' && this.gadtTypes.has(head.name)
+  }
+
+  // Check a value against an explicit signature `let f : T = value`. Each free
+  // type variable of `T` is *skolemised* (a rigid constant) while the value is
+  // checked, so the value must be genuinely polymorphic; the binding is then
+  // exposed to the body at the clean, generalised scheme `∀…. T`. A recursive
+  // binding sees itself at that polymorphic scheme, which also gives us
+  // *polymorphic recursion* (impossible for an un-annotated `let rec`).
+  private inferSignaturedLet(
+    env: Env,
+    e: Extract<Expr, { kind: 'let' }>,
+    expected: Type | undefined,
+  ): Type {
+    const sig = e.sig as TypeExpr
+    const names = freeTypeVarNames(sig)
+    // clean scheme: the public type of the binding (fresh unification vars, so
+    // they generalise to `∀ a b …`)
+    const cleanMap = new Map<string, Type>()
+    for (const n of names) cleanMap.set(n, freshVar())
+    const cleanType = convertTypeExpr(sig, cleanMap)
+    const cleanScheme: Scheme = { vars: [...freeVars(cleanType)], type: cleanType }
+    // skolemised type: what the value is actually checked against
+    const skMap = new Map<string, Type>()
+    for (const n of names) skMap.set(n, freshSkolem(n))
+    const skType = convertTypeExpr(sig, skMap)
+
+    const wantedBefore = this.wanted.length
+    let env1 = env
+    if (e.recursive) env1 = extend(env, e.name, cleanScheme)
+    const tv = this.infer(env1, e.value, skType)
+    this.unify(tv, skType, e.value.span)
+    // discharge ground obligations; a signatured binding declares no class
+    // context, so a leftover (non-ground) obligation is an error rather than a
+    // silently-dropped constraint.
+    this.reduceConWanted(e.span)
+    if (this.wanted.length > wantedBefore) {
+      throw new TypeCheckError(
+        'a signatured binding cannot require class constraints its signature does ' +
+          'not declare; use concrete types or drop the annotation',
+        e.span,
+      )
+    }
+    this.bindingSchemes.set(e, cleanScheme)
+    this.attachDicts(e, [], [])
+    const env2 = extend(env, e.name, cleanScheme)
+    return this.infer(env2, e.body, expected)
+  }
+
+  // A `match` whose scrutinee is a GADT and whose result type is known. Each
+  // constructor's declared result indices are unified with the scrutinee's, but
+  // *locally per branch*: a rigid scrutinee index refined to a concrete type
+  // becomes a branch-local equality (`θ`), used to refine the pattern-variable
+  // types and the expected result type for that branch only. A branch whose
+  // indices cannot be reconciled is unreachable at this type (pruned, warned).
+  private inferGadtMatch(
+    env: Env,
+    e: Extract<Expr, { kind: 'match' }>,
+    scrutType: Type,
+    expected: Type,
+  ): Type {
+    const S = prune(scrutType)
+    for (const c of e.cases) {
+      const pat = c.pattern
+      if (pat.kind === 'pcon' && this.ctorInfo.has(pat.name)) {
+        const info = this.ctorInfo.get(pat.name) as { arity: number; scheme: Scheme }
+        if (pat.args.length !== info.arity) {
+          throw new TypeCheckError(
+            `constructor ${pat.name} expects ${info.arity} argument(s) but got ${pat.args.length}`,
+            pat.span,
+          )
+        }
+        // instantiate the constructor and split into argument types + result
+        let cur = this.instantiate(info.scheme)
+        const argTs: Type[] = []
+        for (let i = 0; i < info.arity; i++) {
+          const p = prune(cur)
+          if (p.kind !== 'con' || p.name !== ARROW) {
+            throw new TypeCheckError(`constructor ${pat.name} is not a function`, pat.span)
+          }
+          argTs.push(p.args[0])
+          cur = p.args[1]
+        }
+        const theta = new Map<string, Type>()
+        const reconciled = this.solveGadtEq(cur, S, theta, pat.span)
+        if (!reconciled) {
+          // dead branch: no value of the scrutinee's type is built by this
+          // constructor. Bind loosely and check leniently (inconsistent context).
+          const dead = new Map<string, Type>()
+          try {
+            pat.args.forEach((p, i) => this.inferPattern(p, argTs[i], dead))
+            let envD = env
+            for (const [n, t] of dead) envD = extend(envD, n, monoScheme(t))
+            if (c.guard) this.infer(envD, c.guard)
+            this.infer(envD, c.body)
+          } catch {
+            /* the equalities are contradictory here — any type error is vacuous */
+          }
+          this.warnings.push({
+            message: `unreachable clause — the scrutinee's type is never built by ${pat.name}`,
+            span: pat.span,
+          })
+          continue
+        }
+        const bindings = new Map<string, Type>()
+        pat.args.forEach((p, i) => this.inferPattern(p, applySkolemSubst(argTs[i], theta), bindings))
+        let env2 = env
+        for (const [n, t] of bindings) env2 = extend(env2, n, monoScheme(t))
+        if (c.guard) this.unify(this.infer(env2, c.guard), tBool, c.guard.span)
+        // check the body at the *branch-refined* result type
+        this.infer(env2, c.body, applySkolemSubst(expected, theta))
+      } else {
+        // wildcard / variable / literal pattern: no index refinement
+        const bindings = new Map<string, Type>()
+        this.inferPattern(pat, S, bindings)
+        let env2 = env
+        for (const [n, t] of bindings) env2 = extend(env2, n, monoScheme(t))
+        if (c.guard) this.unify(this.infer(env2, c.guard), tBool, c.guard.span)
+        this.infer(env2, c.body, expected)
+      }
+    }
+    this.checkMatch(e, S)
+    return expected
+  }
+
+  // Structurally reconcile a constructor's declared result type with the
+  // scrutinee's type. Fresh (instantiation) variables on the constructor side
+  // are bound by ordinary unification; a *rigid* scrutinee index (a skolem)
+  // refined to a concrete type is recorded in the branch-local map `theta`.
+  // Returns false when the two are contradictory (the branch is unreachable).
+  private solveGadtEq(
+    ctorRes: Type,
+    scrut: Type,
+    theta: Map<string, Type>,
+    span: Span | null,
+  ): boolean {
+    const c = prune(applySkolemSubst(ctorRes, theta))
+    const s = prune(applySkolemSubst(scrut, theta))
+    if (s.kind === 'con' && skolemName(s)) {
+      // rigid scrutinee index: refine it locally
+      if (c.kind === 'var') {
+        this.unify(c, s, span)
+        return true
+      }
+      // same rigid index on both sides — already reconciled
+      if (c.kind === 'con' && skolemName(c) && c.name === s.name) return true
+      // `s := c`, provided c does not mention s (no cyclic refinement). When `c`
+      // is itself a (different) skolem this records a rigid=rigid equality —
+      // exactly what a `Refl : Eq a a` pattern proves locally in its branch.
+      if (this.mentionsSkolem(c, s.name)) return false
+      const existing = theta.get(s.name)
+      if (existing) return this.solveGadtEq(c, existing, theta, span)
+      theta.set(s.name, c)
+      return true
+    }
+    if (c.kind === 'var') {
+      this.unify(c, s, span)
+      return true
+    }
+    if (s.kind === 'var') {
+      // a non-rigid scrutinee index — ordinary unification, no extra GADT power
+      this.unify(s, c, span)
+      return true
+    }
+    if (c.kind === 'app' || s.kind === 'app') {
+      const dc = decompApp(c)
+      const ds = decompApp(s)
+      if (!dc || !ds) return false
+      return (
+        this.solveGadtEq(dc.fn, ds.fn, theta, span) && this.solveGadtEq(dc.arg, ds.arg, theta, span)
+      )
+    }
+    if (c.name !== s.name || c.args.length !== s.args.length) return false
+    for (let i = 0; i < c.args.length; i++) {
+      if (!this.solveGadtEq(c.args[i], s.args[i], theta, span)) return false
+    }
+    return true
+  }
+
+  private mentionsSkolem(t: Type, name: string): boolean {
+    const p = prune(t)
+    if (p.kind === 'var') return false
+    if (p.kind === 'app') return this.mentionsSkolem(p.fn, name) || this.mentionsSkolem(p.arg, name)
+    if (p.name === name) return true
+    return p.args.some((a) => this.mentionsSkolem(a, name))
   }
 
   private inferPattern(pat: Pattern, expected: Type, bindings: Map<string, Type>): void {
@@ -1276,6 +1526,73 @@ function convertTypeExpr(te: TypeExpr, params: Map<string, Type>): Type {
   }
 }
 
+// --- skolem constants (rigid type variables) -------------------------------
+//
+// A *skolem* is a rigid, opaque type constant introduced when we CHECK a value
+// against a type signature: each universally-quantified variable of the
+// signature becomes a distinct skolem, so the value must be polymorphic enough
+// to work for *any* instantiation (unifying a skolem with a different concrete
+// type fails, exactly as it should). We represent a skolem as a nullary `TCon`
+// with a reserved name, so the ordinary unifier already treats it as a rigid
+// constructor — no change to unification is needed. GADT pattern-matching then
+// refines these rigid indices *locally, per branch* (see `inferGadtMatch`).
+
+const SKOLEM_PREFIX = 'skolem$'
+let skolemCounter = 0
+export function resetSkolemCounter(): void {
+  skolemCounter = 0
+}
+function freshSkolem(hint = 't'): Type {
+  return tcon(`${SKOLEM_PREFIX}${hint}$${skolemCounter++}`)
+}
+export function isSkolem(t: Type): boolean {
+  return t.kind === 'con' && t.name.startsWith(SKOLEM_PREFIX)
+}
+function skolemName(t: TCon): boolean {
+  return t.name.startsWith(SKOLEM_PREFIX)
+}
+
+/** All lowercase (type-variable) names mentioned in a type expression, in first
+ * appearance order — the implicitly-universally-quantified variables of a
+ * signature. */
+function freeTypeVarNames(te: TypeExpr, acc: string[] = [], seen = new Set<string>()): string[] {
+  switch (te.kind) {
+    case 'tvar':
+      if (!seen.has(te.name)) {
+        seen.add(te.name)
+        acc.push(te.name)
+      }
+      break
+    case 'tcon':
+      for (const a of te.args) freeTypeVarNames(a, acc, seen)
+      break
+    case 'tarrow':
+      freeTypeVarNames(te.from, acc, seen)
+      freeTypeVarNames(te.to, acc, seen)
+      break
+    case 'ttuple':
+      for (const x of te.elements) freeTypeVarNames(x, acc, seen)
+      break
+    case 'tapp':
+      freeTypeVarNames(te.fn, acc, seen)
+      freeTypeVarNames(te.arg, acc, seen)
+      break
+  }
+  return acc
+}
+
+/** Deep-substitute skolem constants by name (used to apply a branch-local GADT
+ * equality solution). */
+function applySkolemSubst(t: Type, theta: Map<string, Type>): Type {
+  const p = prune(t)
+  if (p.kind === 'var') return p
+  if (p.kind === 'app') {
+    return { kind: 'app', fn: applySkolemSubst(p.fn, theta), arg: applySkolemSubst(p.arg, theta) }
+  }
+  if (p.args.length === 0 && theta.has(p.name)) return theta.get(p.name) as Type
+  return { kind: 'con', name: p.name, args: p.args.map((a) => applySkolemSubst(a, theta)) }
+}
+
 function subst(t: Type, mapping: Map<number, Type>): Type {
   const p = prune(t)
   if (p.kind === 'var') {
@@ -1308,6 +1625,7 @@ function describe(t: Type): string {
 
 export function inferProgram(program: Expr, base: Env): InferResult {
   resetKindCounter()
+  resetSkolemCounter()
   const inf = new Inferrer()
   const type = inf.infer(base, program)
   inf.finish()
