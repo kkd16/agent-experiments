@@ -130,6 +130,13 @@ function patternVars(p: Pattern): { name: string; span: Span }[] {
       return p.elements.flatMap(patternVars)
     case 'pcon':
       return p.args.flatMap(patternVars)
+    case 'precord':
+      return p.fields.flatMap((f) => patternVars(f.pattern))
+    case 'pas':
+      return [{ name: p.name, span: p.span }, ...patternVars(p.inner)]
+    case 'por':
+      // alternatives bind the same names; the first supplies representative spans
+      return patternVars(p.alternatives[0])
     default:
       return []
   }

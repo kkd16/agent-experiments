@@ -9,11 +9,16 @@
 // Results are surfaced as non-fatal warnings.
 
 import type { Pattern, TypeExpr } from './ast.ts'
+import { expandOrPattern } from './ast.ts'
 import type { Type } from './types.ts'
-import { ARROW, LIST, TUPLE, prune } from './types.ts'
+import { ARROW, LIST, RECORD, TUPLE, prune } from './types.ts'
 
-// Normalised pattern: either a wildcard, or a constructor with sub-patterns.
-type NPat = { wild: true } | { wild: false; ctor: string; args: NPat[] }
+// Normalised pattern: either a wildcard, or a constructor with sub-patterns. A
+// record pattern is encoded as the constructor `record` whose `labels` name each
+// argument column; records are irrefutable products (one "constructor") but the
+// label set differs per pattern, so `useful` reconciles them against a per-column
+// label union rather than the ordinary fixed-arity constructor machinery.
+type NPat = { wild: true } | { wild: false; ctor: string; args: NPat[]; labels?: string[] }
 
 const WILD: NPat = { wild: true }
 
@@ -40,7 +45,45 @@ function toNPat(p: Pattern): NPat {
       return { wild: false, ctor: 'tuple', args: p.elements.map(toNPat) }
     case 'pcon':
       return { wild: false, ctor: p.name, args: p.args.map(toNPat) }
+    case 'precord': {
+      const sorted = [...p.fields].sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+      return { wild: false, ctor: 'record', args: sorted.map((f) => toNPat(f.pattern)), labels: sorted.map((f) => f.label) }
+    }
+    case 'pas':
+      // as-patterns add a binding but no refutation — coverage-equivalent to the inner
+      return toNPat(p.inner)
+    case 'por':
+      // or-patterns are expanded to independent rows before reaching here; a bare
+      // `toNPat` (defensive) approximates with the first alternative
+      return toNPat(p.alternatives[0])
   }
+}
+
+function isRecordType(t: Type): boolean {
+  const p = prune(t)
+  return p.kind === 'con' && p.name === RECORD
+}
+
+/** The field types of a (pruned) record type, by label. Open-row tails simply
+ *  contribute no entry, so an absent field falls back to a placeholder var. */
+function recordRowFields(t: Type): Map<string, Type> {
+  const out = new Map<string, Type>()
+  const p = prune(t)
+  if (p.kind !== 'con' || p.name !== RECORD) return out
+  let row = prune(p.args[0])
+  while (row.kind === 'con' && row.name.startsWith('row:')) {
+    out.set(row.name.slice(4), row.args[0])
+    row = prune(row.args[1])
+  }
+  return out
+}
+
+/** If `h` is a record NPat, its label ↦ sub-NPat map; otherwise null. */
+function recordFieldMap(h: NPat): Map<string, NPat> | null {
+  if (h.wild || h.ctor !== 'record' || !h.labels) return null
+  const m = new Map<string, NPat>()
+  h.labels.forEach((l, i) => m.set(l, h.args[i]))
+  return m
 }
 
 interface CtorShape {
@@ -165,6 +208,36 @@ function useful(
   const q0 = q[0]
   const restTypes = types.slice(1)
 
+  // A record column: records are irrefutable products, but different clauses may
+  // name different field subsets. Reconcile them against the union of labels seen
+  // in this column, expanding each record (or wildcard) head to one sub-column per
+  // label, then recurse as an ordinary product.
+  if (isRecordType(types[0])) {
+    const labels = new Set<string>()
+    const collect = (h: NPat): void => {
+      const m = recordFieldMap(h)
+      if (m) for (const k of m.keys()) labels.add(k)
+    }
+    for (const row of matrix) collect(row[0])
+    collect(q0)
+    if (labels.size > 0) {
+      const L = [...labels].sort()
+      const rowFields = recordRowFields(types[0])
+      const argTypes: Type[] = L.map((l) => rowFields.get(l) ?? ({ kind: 'var', id: -1, ref: null } as Type))
+      const expand = (h: NPat): NPat[] => {
+        const m = recordFieldMap(h)
+        return L.map((l) => (m ? (m.get(l) ?? WILD) : WILD))
+      }
+      const spec = matrix.map((row) => [...expand(row[0]), ...row.slice(1)])
+      const w = useful(spec, [...expand(q0), ...q.slice(1)], [...argTypes, ...restTypes], typeCtors, convert)
+      if (!w) return null
+      const args = w.slice(0, L.length)
+      return [{ wild: false, ctor: 'record', args, labels: L }, ...w.slice(L.length)]
+    }
+    // no record pattern constrains this column ⇒ it behaves as a plain wildcard,
+    // handled by the generic path below.
+  }
+
   if (!q0.wild) {
     const spec = specialize(matrix, q0.ctor, q0.args.length)
     const sig = signatureOf(types[0], typeCtors, convert)
@@ -231,6 +304,9 @@ function renderNPat(p: NPat, prec = 0): string {
     case 'false':
       return p.ctor
     default: {
+      if (p.ctor === 'record' && p.labels) {
+        return `{ ${p.labels.map((l, i) => `${l} = ${renderNPat(p.args[i], 0)}`).join(', ')} }`
+      }
       if (p.ctor.startsWith('int:')) return p.ctor.slice(4)
       if (p.ctor.startsWith('float:')) return p.ctor.slice(6)
       if (p.ctor.startsWith('str:')) return p.ctor.slice(4)
@@ -261,11 +337,13 @@ export function analyzeMatch(
   const rows: NPat[][] = []
   const redundant: number[] = []
   for (let i = 0; i < patterns.length; i++) {
-    const row = [toNPat(patterns[i])]
-    if (useful(rows, row, [scrutType], typeCtors, convert) === null) {
-      redundant.push(i)
-    }
-    if (!guarded[i]) rows.push(row)
+    // An or-pattern covers the union of its alternatives: expand into independent
+    // rows. The clause is redundant only if *no* alternative is useful; every
+    // alternative of an unguarded clause contributes to coverage.
+    const altRows = expandOrPattern(patterns[i]).map((a) => [toNPat(a)])
+    const anyUseful = altRows.some((r) => useful(rows, r, [scrutType], typeCtors, convert) !== null)
+    if (!anyUseful) redundant.push(i)
+    if (!guarded[i]) for (const r of altRows) rows.push(r)
   }
   const witness = useful(rows, [WILD], [scrutType], typeCtors, convert)
   const missing = witness ? [renderNPat(witness[0])] : []

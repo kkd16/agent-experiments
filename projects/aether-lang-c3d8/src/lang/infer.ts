@@ -563,6 +563,57 @@ class Inferrer {
         pat.args.forEach((p, i) => this.inferPattern(p, argTs[i], bindings))
         return
       }
+      case 'precord': {
+        // `{ l1 = p1, … }` requires a record with (at least) the named fields;
+        // the row stays open (a fresh tail var) so extra fields are allowed.
+        const seen = new Set<string>()
+        let row: Type = freshVar()
+        const parts: { pat: Pattern; type: Type }[] = []
+        for (const f of pat.fields) {
+          if (seen.has(f.label)) {
+            throw new TypeCheckError(`duplicate field '${f.label}' in record pattern`, pat.span)
+          }
+          seen.add(f.label)
+          const fieldT = freshVar()
+          row = rowExtend(f.label, fieldT, row)
+          parts.push({ pat: f.pattern, type: fieldT })
+        }
+        this.unify(expected, tRecord(row), pat.span)
+        for (const part of parts) this.inferPattern(part.pat, part.type, bindings)
+        return
+      }
+      case 'pas': {
+        if (bindings.has(pat.name)) {
+          throw new TypeCheckError(`variable ${pat.name} is bound twice in the same pattern`, pat.span)
+        }
+        bindings.set(pat.name, expected)
+        this.inferPattern(pat.inner, expected, bindings)
+        return
+      }
+      case 'por': {
+        // Every alternative must bind exactly the same variables (so the arm body
+        // is well-scoped whichever alternative matched) at unifiable types.
+        const first = new Map<string, Type>()
+        this.inferPattern(pat.alternatives[0], expected, first)
+        for (let i = 1; i < pat.alternatives.length; i++) {
+          const alt = new Map<string, Type>()
+          this.inferPattern(pat.alternatives[i], expected, alt)
+          if (alt.size !== first.size || [...first.keys()].some((k) => !alt.has(k))) {
+            throw new TypeCheckError(
+              'every alternative of an or-pattern must bind the same variables',
+              pat.span,
+            )
+          }
+          for (const [name, type] of alt) this.unify(first.get(name)!, type, pat.span)
+        }
+        for (const [name, type] of first) {
+          if (bindings.has(name)) {
+            throw new TypeCheckError(`variable ${name} is bound twice in the same pattern`, pat.span)
+          }
+          bindings.set(name, type)
+        }
+        return
+      }
     }
   }
 

@@ -135,6 +135,18 @@ function unparsePattern(p: Pattern): string {
       return `(${p.elements.map(unparsePattern).join(', ')})`
     case 'pcon':
       return p.args.length === 0 ? p.name : `${p.name} ${p.args.map(unparsePattern).join(' ')}`
+    case 'precord':
+      return `{ ${p.fields
+        .map((f) =>
+          f.pattern.kind === 'pvar' && f.pattern.name === f.label
+            ? f.label
+            : `${f.label} = ${unparsePattern(f.pattern)}`,
+        )
+        .join(', ')} }`
+    case 'pas':
+      return `${unparsePattern(p.inner)} as ${p.name}`
+    case 'por':
+      return p.alternatives.map(unparsePattern).join(' | ')
   }
 }
 

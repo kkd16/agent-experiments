@@ -29,6 +29,32 @@ let squares = [ x * x | x <- range 1 8 ] in   // a list comprehension
 (id 42, compose (fn x -> x + 1) (fn x -> x * 2) 10, fact 6, squares)`,
   },
   {
+    id: 'patterns',
+    title: 'Pattern matching',
+    blurb: 'Record patterns, as-patterns and or-patterns — destructure by field, keep the whole, or share one arm.',
+    visual: false,
+    code: `// Three pattern forms working together.
+type Shape = Circle Float | Rect Float Float in
+
+// records destructure by field; the row stays open, so extra fields are ignored
+let area = fn s -> match s with
+  | Circle r  -> 3.14159 *. r *. r
+  | Rect w h  -> w *. h in
+
+// or-patterns collapse many shapes into one arm; \`as\` keeps the whole value
+let describe = fn xs -> match xs with
+  | []            -> "empty"
+  | [_] | [_, _]  -> "one or two"                          // one arm, two shapes
+  | (first :: _) as whole ->                               // bind the head AND the list
+      "starts with " ^ show first ^ ", " ^ show (length whole) ^ " items" in
+
+// a record pattern with field punning: { x } binds the field named x
+let pt = { x = 3, y = 4, label = "here" } in
+let normSq = match pt with { x, y } -> x * x + y * y in
+
+(area (Circle 2.0), area (Rect 3.0 4.0), describe [10, 20, 30], normSq)`,
+  },
+  {
     id: 'fib',
     title: 'Fibonacci',
     blurb: 'Naive tree recursion — great for the time-travel debugger.',

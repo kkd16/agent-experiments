@@ -504,12 +504,41 @@ class Parser {
     return { kind: 'match', scrutinee, cases, span: this.spanFrom(start.span, last.span) }
   }
 
-  // pattern grammar: cons is right-associative and the only infix form
+  // pattern grammar (loosest → tightest):
+  //   or-pattern    p | p | …        (lowest; a disjunction of alternatives)
+  //   as-pattern    p as x           (binds the whole matched value to x)
+  //   cons-pattern  a :: p           (right-associative, the only infix form)
+  //   atom          Con a…, {…}, (…), […], literal, var, _
   private parsePattern(): Pattern {
+    const first = this.parseAsPattern()
+    if (!this.at('op', '|')) return first
+    const alternatives = [first]
+    while (this.at('op', '|')) {
+      this.next()
+      alternatives.push(this.parseAsPattern())
+    }
+    const last = alternatives[alternatives.length - 1]
+    return { kind: 'por', alternatives, span: this.spanFrom(first.span, last.span) }
+  }
+
+  private parseAsPattern(): Pattern {
+    const inner = this.parseConsPattern()
+    if (this.at('keyword', 'as')) {
+      this.next()
+      if (!this.at('ident') || isUpper(this.peek().value)) {
+        throw new ParseError('expected a lowercase name after `as`', this.peek().span)
+      }
+      const nameTok = this.next()
+      return { kind: 'pas', inner, name: nameTok.value, span: this.spanFrom(inner.span, nameTok.span) }
+    }
+    return inner
+  }
+
+  private parseConsPattern(): Pattern {
     const left = this.parsePatternAtom()
     if (this.at('op', '::')) {
       this.next()
-      const tail = this.parsePattern()
+      const tail = this.parseConsPattern()
       return { kind: 'pcons', head: left, tail, span: this.spanFrom(left.span, tail.span) }
     }
     return left
@@ -536,7 +565,7 @@ class Parser {
     const t = this.peek()
     if (t.kind === 'int' || t.kind === 'float' || t.kind === 'string' || t.kind === 'ident') return true
     if (t.kind === 'keyword' && (t.value === 'true' || t.value === 'false')) return true
-    if (t.kind === 'punc' && (t.value === '(' || t.value === '[')) return true
+    if (t.kind === 'punc' && (t.value === '(' || t.value === '[' || t.value === '{')) return true
     return false
   }
 
@@ -568,6 +597,7 @@ class Parser {
       case 'punc':
         if (t.value === '(') return this.parsePatternParen()
         if (t.value === '[') return this.parsePatternList()
+        if (t.value === '{') return this.parsePatternRecord()
         throw new ParseError(`unexpected ${JSON.stringify(t.value)} in pattern`, t.span)
       default:
         throw new ParseError(`unexpected ${JSON.stringify(t.value)} in pattern`, t.span)
@@ -612,6 +642,46 @@ class Parser {
       acc = { kind: 'pcons', head: elements[i], tail: acc, span }
     }
     return acc
+  }
+
+  // record pattern `{ label = p, … }` with field punning `{ x }` ≡ `{ x = x }`.
+  // Matching is by the listed fields only, so it destructures a record that may
+  // carry further fields (the row stays open during inference).
+  private parsePatternRecord(): Pattern {
+    const open = this.expect('punc', '{')
+    const fields: { label: string; pattern: Pattern }[] = []
+    const seen = new Set<string>()
+    if (!this.at('punc', '}')) {
+      for (;;) {
+        if (!this.at('ident') || isUpper(this.peek().value)) {
+          throw new ParseError('expected a lowercase field label in the record pattern', this.peek().span)
+        }
+        const labelTok = this.next()
+        if (seen.has(labelTok.value)) {
+          throw new ParseError(`field ${labelTok.value} appears twice in the record pattern`, labelTok.span)
+        }
+        seen.add(labelTok.value)
+        let pattern: Pattern
+        if (this.at('op', '=')) {
+          this.next()
+          pattern = this.parsePattern()
+        } else {
+          // punning: `{ x }` binds field `x` to a variable named `x`
+          pattern = { kind: 'pvar', name: labelTok.value, span: labelTok.span }
+        }
+        fields.push({ label: labelTok.value, pattern })
+        if (this.at('punc', ',')) {
+          this.next()
+          continue
+        }
+        break
+      }
+    }
+    const close = this.expect('punc', '}')
+    if (fields.length === 0) {
+      throw new ParseError('an empty record pattern `{}` matches nothing useful — use `_`', this.spanFrom(open.span, close.span))
+    }
+    return { kind: 'precord', fields, span: this.spanFrom(open.span, close.span) }
   }
 
   // type Name p1 p2 = C1 t.. | C2 t.. in body

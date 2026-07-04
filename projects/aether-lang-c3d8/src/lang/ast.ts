@@ -97,6 +97,14 @@ export type Pattern =
   | { kind: 'pcons'; head: Pattern; tail: Pattern; span: Span }
   | { kind: 'ptuple'; elements: Pattern[]; span: Span }
   | { kind: 'pcon'; name: string; args: Pattern[]; span: Span }
+  // a record pattern `{ label = p, other }` — irrefutable at the record level;
+  // it destructures a (possibly larger) record by projecting the named fields.
+  | { kind: 'precord'; fields: { label: string; pattern: Pattern }[]; span: Span }
+  // an as-pattern `p as x` — binds `x` to the whole matched value, then matches `p`.
+  | { kind: 'pas'; inner: Pattern; name: string; span: Span }
+  // an or-pattern `p1 | p2 | …` — matches when any alternative does. Every
+  // alternative must bind the same variables (checked during inference).
+  | { kind: 'por'; alternatives: Pattern[]; span: Span }
 
 export interface MatchCase {
   pattern: Pattern
@@ -298,6 +306,14 @@ export function patternLabel(p: Pattern): string {
       return `(${p.elements.map(patternLabel).join(', ')})`
     case 'pcon':
       return p.args.length === 0 ? p.name : `${p.name} ${p.args.map(patternLabel).join(' ')}`
+    case 'precord':
+      return `{ ${p.fields
+        .map((f) => (f.pattern.kind === 'pvar' && f.pattern.name === f.label ? f.label : `${f.label} = ${patternLabel(f.pattern)}`))
+        .join(', ')} }`
+    case 'pas':
+      return `${patternLabel(p.inner)} as ${p.name}`
+    case 'por':
+      return p.alternatives.map(patternLabel).join(' | ')
   }
 }
 
@@ -340,4 +356,117 @@ export function children(e: Expr): Expr[] {
     default:
       return []
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pattern helpers for the record / as / or-pattern extensions.
+//
+// Or-patterns are *disjunctions*, which the flatten-based backends and the
+// decision-tree lowering don't model directly. Rather than thread disjunction
+// through every consumer, each backend expands an arm carrying an or-pattern
+// into several or-free arms (the cartesian product of the alternatives at each
+// nested position) that share a clone of the guard and body. This keeps the
+// backends' pattern logic linear; only inference and exhaustiveness reason about
+// `por` natively.
+// ---------------------------------------------------------------------------
+
+/** Does `p` contain an or-pattern anywhere? (drives whether expansion is needed) */
+export function patternHasOr(p: Pattern): boolean {
+  switch (p.kind) {
+    case 'por':
+      return true
+    case 'pas':
+      return patternHasOr(p.inner)
+    case 'pcons':
+      return patternHasOr(p.head) || patternHasOr(p.tail)
+    case 'ptuple':
+      return p.elements.some(patternHasOr)
+    case 'pcon':
+      return p.args.some(patternHasOr)
+    case 'precord':
+      return p.fields.some((f) => patternHasOr(f.pattern))
+    default:
+      return false
+  }
+}
+
+/** Does `p` use any of the record / as / or extensions anywhere? Used by the
+ *  decision-tree pass to fall back to the naive compiler for these arms. */
+export function patternHasExtension(p: Pattern): boolean {
+  switch (p.kind) {
+    case 'por':
+    case 'pas':
+    case 'precord':
+      return true
+    case 'pcons':
+      return patternHasExtension(p.head) || patternHasExtension(p.tail)
+    case 'ptuple':
+      return p.elements.some(patternHasExtension)
+    case 'pcon':
+      return p.args.some(patternHasExtension)
+    default:
+      return false
+  }
+}
+
+function cartesian<T>(rows: T[][]): T[][] {
+  let acc: T[][] = [[]]
+  for (const row of rows) {
+    const next: T[][] = []
+    for (const prefix of acc) for (const x of row) next.push([...prefix, x])
+    acc = next
+  }
+  return acc
+}
+
+/** Every or-free pattern an arm's pattern can take, i.e. the cartesian product of
+ *  the alternatives at each nested or-pattern. Structure-preserving: when `p`
+ *  contains no or-pattern the single original object is returned unchanged. */
+export function expandOrPattern(p: Pattern): Pattern[] {
+  switch (p.kind) {
+    case 'por':
+      return p.alternatives.flatMap(expandOrPattern)
+    case 'pas':
+      return expandOrPattern(p.inner).map((inner) => ({ ...p, inner }))
+    case 'pcons': {
+      const heads = expandOrPattern(p.head)
+      const tails = expandOrPattern(p.tail)
+      const out: Pattern[] = []
+      for (const head of heads) for (const tail of tails) out.push({ ...p, head, tail })
+      return out
+    }
+    case 'ptuple':
+      return cartesian(p.elements.map(expandOrPattern)).map((elements) => ({ ...p, elements }))
+    case 'pcon':
+      return cartesian(p.args.map(expandOrPattern)).map((args) => ({ ...p, args }))
+    case 'precord':
+      return cartesian(p.fields.map((f) => expandOrPattern(f.pattern))).map((pats) => ({
+        ...p,
+        fields: p.fields.map((f, i) => ({ label: f.label, pattern: pats[i] })),
+      }))
+    default:
+      return [p]
+  }
+}
+
+/** Rewrite a list of match arms so no arm's pattern contains an or-pattern,
+ *  cloning the guard/body for each alternative. Arms without or-patterns are
+ *  passed through by identity, so or-free matches compile bit-for-bit as before. */
+export function expandOrCases(cases: MatchCase[]): MatchCase[] {
+  if (!cases.some((c) => patternHasOr(c.pattern))) return cases
+  const out: MatchCase[] = []
+  for (const c of cases) {
+    if (!patternHasOr(c.pattern)) {
+      out.push(c)
+      continue
+    }
+    for (const pattern of expandOrPattern(c.pattern)) {
+      out.push({
+        pattern,
+        guard: c.guard ? cloneExpr(c.guard) : undefined,
+        body: cloneExpr(c.body),
+      })
+    }
+  }
+  return out
 }

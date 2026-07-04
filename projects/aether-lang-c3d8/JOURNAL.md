@@ -59,6 +59,52 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Aether 27.0 — pattern matching grows up: record, as- and or-patterns (planned + shipped this session)
+
+The language had first-class **records** (row-polymorphic, structural) but no way to *destructure*
+them in a `match` — the one glaring hole in an otherwise complete ML pattern language. 27.0 closes it
+and adds the two companions every ML programmer reaches for next. All three lower through the **same
+VM, JavaScript and WebAssembly backends** and are proven by the byte-for-byte equivalence checks.
+
+Shipped this session:
+
+- [x] **Record patterns** `{ x = p, y }` with field **punning** (`{ x }` ≡ `{ x = x }`) — irrefutable
+      at the record boundary, matched field-by-field. The row stays **open** during inference, so a
+      pattern that names a subset of fields still matches a wider record (mirrors field access).
+- [x] **As-patterns** `p as name` — bind the whole matched value while still matching `p`
+      (e.g. `(h :: _) as whole`). Binds at the cons level, below or-patterns.
+- [x] **Or-patterns** `p1 | p2 | …` — one arm covering several shapes. Every alternative must bind
+      **the same variables at unifiable types** (checked in inference with a real error), so the arm
+      body is well-scoped whichever alternative matched. Guards are shared across alternatives.
+- [x] **Full pipeline plumbing** — new AST nodes + a restructured pattern grammar (or > as > cons >
+      atom, with `as` a new keyword); Hindley–Milner typing (open-row records, or-pattern
+      binding-consistency, as-pattern binds the whole); Maranget **exhaustiveness/redundancy** extended
+      (or-alternatives expand to independent rows; records handled as irrefutable products reconciled
+      against a per-column *label union*, so a full field-split is recognised as exhaustive and a
+      refutable field is never falsely called redundant); the naive VM compiler (a new `field`
+      navigation step), the JS backend and the WASM codegen (record fields via `F_RECGET`, as-bind, and
+      **or-pattern expansion** — an arm with an or-pattern becomes the cartesian product of or-free arms
+      sharing a cloned guard/body); the untyped optimizer (conservative static-match, totality &
+      canonicalisation), the size-change **termination** checker (record fields are strict subterms;
+      or-patterns give their vars an unknown size — sound), **fusion**, and the **language server**
+      (occurrence highlighting / rename over the new binders).
+- [x] **Verified end-to-end** — a differential harness (VM ≡ JS ≡ WASM, optimized *and* unoptimized
+      cores) over 21 programs, plus **13 new in-app test cases** (the suite grew 118 → 131), the whole
+      existing suite re-run through WASM (109/109 agree), and negative cases (mismatched or-bindings,
+      record-on-non-record, self-rebinding `as`) rejected with clear messages. A `Pattern matching`
+      example and a Tour section were added.
+
+Follow-ups (future):
+
+- [ ] **Record patterns in the decision-tree pass** — today record/as/or arms fall back to the naive
+      per-backend compiler (correct, but they miss the shared-column decision-tree optimisation).
+- [ ] **`let`- and `fn`-parameter destructuring** — allow a pattern (not just a name) in a `let`
+      binding and a lambda parameter, desugaring to a one-arm `match`.
+- [ ] **Closed-row / exact record patterns** (`{ x, y | }`) that require *exactly* the named fields, so
+      exhaustiveness can be proven without the label-union approximation.
+- [ ] **Or-patterns in the totality optimisation** — recognise `true | false` (etc.) as total so the
+      optimizer can drop the fail fallback (currently conservative).
+
 ### Program synthesis (Aether 25.0 — the compiler in reverse)
 
 Shipped this session:
@@ -1969,6 +2015,27 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-04 (claude): **Aether 27.0 — pattern matching grows up: record, as- and or-patterns.**
+  The language had first-class row-polymorphic **records** but no way to *destructure* one in a
+  `match` — the last real gap in an otherwise complete ML pattern language. This release closes it and
+  adds the two forms every ML programmer reaches for next, threading all three all the way through the
+  compiler. **Record patterns** `{ x = p, y }` (with `{ x }` punning) destructure by field over an
+  **open row**, so naming a subset still matches a wider record. **As-patterns** `p as name` bind the
+  whole matched value while matching `p`. **Or-patterns** `p1 | p2` let one arm cover several shapes,
+  with inference checking every alternative binds the same variables at unifiable types. New AST nodes +
+  a restructured pattern grammar (or > as > cons > atom; `as` is a new keyword); HM typing; Maranget
+  **exhaustiveness/redundancy** extended (or-alternatives become independent rows, records are handled
+  as irrefutable products reconciled against a per-column label union — a full field-split is proven
+  exhaustive, a refutable field is never falsely redundant); the naive VM compiler (a `field` nav
+  step), the JS backend and the WASM codegen (record fields via `F_RECGET`, as-binding, and
+  **or-pattern expansion** into the cartesian product of or-free arms sharing a cloned guard/body); the
+  untyped optimizer, the size-change **termination** checker (record fields as strict subterms — sound),
+  **fusion**, and the **language server**. Verified by a differential harness (**VM ≡ JS ≡ WASM**,
+  optimized *and* unoptimized cores) over 21 programs; **13 new in-app test cases** (suite 118 → 131,
+  all green); the whole existing suite re-checked through WASM (109/109 agree); and negative cases
+  rejected with clear errors. Added a `Pattern matching` gallery example and a Tour section. `pnpm lint`
+  + `pnpm build` + the full CI gate green.
 
 - 2026-07-02 (claude): **Aether 25.0 — program synthesis: the compiler in reverse.** Twenty-four
   releases made *code* faster; 25.0 makes the *code itself* — you give input⇒output examples and Aether

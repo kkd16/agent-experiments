@@ -546,6 +546,96 @@ eval (simp (Mul (Add (Mul (Lit 1) (Lit 7)) (Mul (Lit 0) (Lit 9))) (Add (Lit 3) (
     expected: '63',
   },
 
+  // ---- record / as / or patterns ----
+  {
+    group: 'patterns',
+    name: 'record pattern (labelled + punned)',
+    code: 'let p = { x = 3, y = 4 } in match p with { x = a, y } -> a + y',
+    expected: '7',
+  },
+  {
+    group: 'patterns',
+    name: 'record pattern over an open row (extra fields ignored)',
+    code: 'match { a = 1, b = 2, c = 3 } with { b } -> b',
+    expected: '2',
+  },
+  {
+    group: 'patterns',
+    name: 'record pattern nested under cons, recursively',
+    code: `let pts = [{ x = 1, y = 9 }, { x = 3, y = 9 }, { x = 5, y = 9 }] in
+let rec sumx = fn ps -> match ps with [] -> 0 | { x } :: rest -> x + sumx rest in sumx pts`,
+    expected: '9',
+  },
+  {
+    group: 'patterns',
+    name: 'as-pattern binds the whole matched value',
+    code: 'match [1, 2, 3] with (h :: _) as whole -> h :: whole | [] -> []',
+    expected: '[1, 1, 2, 3]',
+  },
+  {
+    group: 'patterns',
+    name: 'as-pattern nested inside a constructor argument',
+    code: `type Box = Box (List Int) in
+match Box [7, 8] with Box ((h :: _) as xs) -> h + length xs | Box [] -> 0`,
+    expected: '9',
+  },
+  {
+    group: 'patterns',
+    name: 'or-pattern with a shared variable binding',
+    code: 'type T = A Int | B Int in let f = fn t -> match t with A x | B x -> x in f (A 5) + f (B 7)',
+    expected: '12',
+  },
+  {
+    group: 'patterns',
+    name: 'or-pattern makes an enum match exhaustive',
+    code: `type Color = Red | Green | Blue in
+let f = fn c -> match c with Red | Blue -> "cool" | Green -> "warm" in f Blue ^ f Green`,
+    expected: '"coolwarm"',
+  },
+  {
+    group: 'patterns',
+    name: 'or-pattern shares a guard across alternatives',
+    code: `type T = A Int | B Int in
+let f = fn t -> match t with A x | B x when x > 0 -> "pos" | _ -> "other" in
+f (A 5) ^ f (B (0 - 3))`,
+    expected: '"posother"',
+  },
+  {
+    group: 'patterns',
+    name: 'nested or-pattern in a tuple (cartesian expansion)',
+    code: `let f = fn p -> match p with (1 | 2, 3 | 4) -> "hit" | _ -> "miss" in
+f (1, 3) ^ f (2, 4) ^ f (1, 5)`,
+    expected: '"hithitmiss"',
+  },
+  {
+    group: 'patterns',
+    name: 'record + as + record-update together',
+    code: `let p = { x = 1, y = 2 } in let q = { p | x = 100 } in
+match q with { x } as whole -> x + whole.y`,
+    expected: '102',
+  },
+  {
+    group: 'errors',
+    name: 'or-pattern alternatives binding different variables is rejected',
+    code: 'type T = A Int | B Int in match A 1 with A a | B b -> a',
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'errors',
+    name: 'a record pattern on a non-record is rejected',
+    code: 'match 5 with { x } -> x',
+    expected: null,
+    expectError: true,
+  },
+  {
+    group: 'errors',
+    name: 'an as-pattern rebinding its own variable is rejected',
+    code: 'match 5 with x as x -> x',
+    expected: null,
+    expectError: true,
+  },
+
   // ---- errors (must be rejected) ----
   {
     group: 'errors',
