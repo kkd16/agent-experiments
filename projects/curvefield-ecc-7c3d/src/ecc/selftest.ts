@@ -113,6 +113,16 @@ import {
   type Form as CgForm,
 } from './classgroup'
 import {
+  bbsKeygen,
+  bbsSign,
+  bbsVerify,
+  bbsProofGen,
+  bbsProofVerify,
+  createGenerators as bbsGenerators,
+  messagesToScalars as bbsMsgs,
+  messageToScalar as bbsMsg,
+} from './bbs'
+import {
   CG,
   evalVDF as cgEval,
   wesolowskiProve as cgProve,
@@ -2396,6 +2406,56 @@ export function runSelfTest(): TestCase[] {
     check(VG, 'a spoiled ballot audits as cast-as-intended', auditBallot(election, sealed, K).ok, 'revealed randomness reproduces every ciphertext')
     const swapped = { ...sealed, ballot: { ...sealed.ballot, choice: 0 } }
     check(VG, 'auditing catches a client that encrypted a different vote', !auditBallot(election, swapped, K).ok, 'the ciphertexts no longer match the claimed choice')
+  }
+
+  // ── 40. BBS anonymous credentials (pairing multi-message sig + ZK disclosure) ──
+  {
+    const BG = 'BBS · anonymous credentials'
+    seedRng(0xbb5)
+    const key = bbsKeygen(0x1815_1210_dacen)
+    const attrs = ['Ada Lovelace', '1815-12-10', 'UK-DL-8150', '2035-06-01', 'over21:true', 'London']
+    const gens = bbsGenerators(attrs.length)
+    const msgs = bbsMsgs(attrs)
+    const header = utf8('gov.uk/dvla')
+    const sig = bbsSign(key, header, msgs, gens)
+
+    // Signature correctness.
+    check(BG, 'issuer signature verifies over all attributes', bbsVerify(key.pk, sig, header, msgs, gens), 'e(A, PK + e·P₂) = e(B, P₂)')
+    check(BG, 'signing is deterministic (e = H(sk, domain, msgs))', (() => { const s2 = bbsSign(key, header, msgs, gens); return g1.eq(sig.A, s2.A) && sig.e === s2.e })(), 'the presentation randomizes, not the signature')
+    const badMsgs = msgs.map((m, i) => (i === 1 ? bbsMsg('1980-01-01') : m))
+    check(BG, 'verify rejects a tampered attribute', !bbsVerify(key.pk, sig, header, badMsgs, gens), 'changing any mᵢ moves B off the pairing')
+    check(BG, 'verify rejects the wrong public key', !bbsVerify(bbsKeygen(999n).pk, sig, header, msgs, gens), 'the signature binds to the issuer')
+    check(BG, 'verify rejects a mauled e', !bbsVerify(key.pk, { A: sig.A, e: (sig.e + 1n) % BLS_R }, header, msgs, gens), 'e is fixed by the signature')
+
+    // Selective disclosure: reveal only "over21" (index 4) and expiry (index 3).
+    const disclosed = [3, 4]
+    const ph = utf8('bar:session#7')
+    const proof = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, disclosed, gens)
+    const disMsgs = disclosed.map((i) => msgs[i])
+    check(BG, 'selective-disclosure proof verifies (reveal 2 of 6)', bbsProofVerify(key.pk, proof, header, ph, disMsgs, gens), 'proves a valid credential while hiding 4 attributes')
+    check(BG, 'the proof carries a blinded response per hidden attribute only', proof.mHat.length === 4 && proof.disclosed.length === 2, '4 undisclosed m̂ⱼ, 0 plaintext hidden values')
+
+    // Soundness battery.
+    const lie = disMsgs.map((m, i) => (i === 1 ? bbsMsg('over21:false') : m))
+    check(BG, 'proof rejects a lied-about disclosed value', !bbsProofVerify(key.pk, proof, header, ph, lie, gens), 'Fiat–Shamir binds every disclosed value')
+    check(BG, 'proof is bound to the presentation header (no replay)', !bbsProofVerify(key.pk, proof, header, utf8('bar:session#8'), disMsgs, gens), 'a new verifier session needs a fresh proof')
+    check(BG, 'proof rejects the wrong issuer key', !bbsProofVerify(bbsKeygen(7n).pk, proof, header, ph, disMsgs, gens), 'the pairing e(Ā, PK) fails')
+    check(BG, 'proof rejects a tampered Ā', !bbsProofVerify(key.pk, { ...proof, Abar: g1.add(proof.Abar, gens.P1) }, header, ph, disMsgs, gens), 'the randomized signature element is bound in')
+    check(BG, 'proof rejects a tampered response scalar', !bbsProofVerify(key.pk, { ...proof, mHat: proof.mHat.map((x, i) => (i === 0 ? (x + 1n) % BLS_R : x)) }, header, ph, disMsgs, gens), 'the Σ-proof commitment no longer reproduces c')
+
+    // Degenerate disclosures.
+    const pk0 = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, [], gens)
+    check(BG, 'zero-disclosure proof is a pure proof of possession', bbsProofVerify(key.pk, pk0, header, ph, [], gens) && pk0.mHat.length === 6, 'holds a credential, reveals nothing')
+    const pkAll = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, [0, 1, 2, 3, 4, 5], gens)
+    check(BG, 'full-disclosure proof verifies', bbsProofVerify(key.pk, pkAll, header, ph, msgs, gens), 'the same machinery covers reveal-everything')
+
+    // Unlinkability: two presentations of the same credential are independent.
+    seedRng(0xbb5 + 1)
+    const a = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, disclosed, gens)
+    seedRng(0xbb5 + 2)
+    const b = bbsProofGen({ pk: key.pk }, sig, header, ph, msgs, disclosed, gens)
+    const bothOk = bbsProofVerify(key.pk, a, header, ph, disMsgs, gens) && bbsProofVerify(key.pk, b, header, ph, disMsgs, gens)
+    check(BG, 'two presentations both verify yet are unlinkable', bothOk && !g1.eq(a.Abar, b.Abar) && !g1.eq(a.D, b.D), 'a fresh randomizer r makes Ā uniformly random each time')
   }
 
   return t

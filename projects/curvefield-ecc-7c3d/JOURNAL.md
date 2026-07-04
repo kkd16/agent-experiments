@@ -1088,7 +1088,76 @@ anyone recomputes the tally and checks it, trusting no authority. Steps:
 - [ ] **Future:** **distributed key *re*-sharing** (proactive refresh) so the trustee set can rotate
       between elections without changing `PK`.
 
+### Session 22 plan — BBS anonymous credentials (selective disclosure on the pairing)
+
+The lab has every *proof system* (Groth16, PLONK, Bulletproofs, STARK, GKR) and the whole
+signature museum, but it was missing the one primitive the digital-identity world is actually
+standardising on: a **multi-message signature the holder can present in zero knowledge**. BBS
+(draft-irtf-cfrg-bbs-signatures) is exactly that — an issuer signs a *vector* of attributes once,
+and the holder later proves possession of a valid signature while disclosing an arbitrary subset,
+hiding the rest, and making every presentation unlinkable. It is the crypto under W3C Verifiable
+Credentials, the ISO mobile driver's licence (mDL), and the EU Digital Identity Wallet, and it
+reuses the lab's existing BLS12-381 pairing + hash-to-curve + Fiat–Shamir shelf perfectly. Steps:
+
+- [x] **`bbs.ts`** — the whole scheme on the lab's own `bls12381.ts`, zero new deps: `createGenerators`
+      (NUMS `P1`, `Q₁`, and one `Hᵢ` per attribute via RFC 9380 hash-to-curve — no known DL relation),
+      `hashToScalar`/`messageToScalar` (expand_message_xmd → 𝔽_r), deterministic `bbsSign`
+      (`A = (P1 + domain·Q₁ + Σ mᵢ·Hᵢ)/(sk+e)`, `e = H(sk, domain, msgs)`), and `bbsVerify`
+      (`e(A, PK + e·P₂) = e(B, P₂)`, one `pairingProduct`).
+- [x] **The zero-knowledge selective-disclosure proof**, derived in-file so every step is checkable:
+      randomize `Ā = r·A`, `D̂ = r·B − e·Ā` (the pairing `e(Ā, PK) = e(D̂, P₂)` survives), then a
+      Fiat–Shamir Σ-proof of `D̂ = r·C − e·Ā + Σ uⱼ·Hⱼ` over the *undisclosed* attributes, with
+      `C` the verifier-recomputable disclosed part of `B`. Soundness: the pairing forces `D̂ = sk·Ā`;
+      substituting and dividing by `r≠0` extracts a genuine signature over the disclosed attributes.
+- [x] **Presentation-header binding** (`ph`, a verifier nonce) folded into the challenge so a proof
+      can't be replayed to another session, and a **high-level credential API**
+      (`issueCredential`/`presentCredential`/`verifyPresentation`) that reads like the mDL use case.
+- [x] New **`/bbs`** page: an interactive mobile driver's licence with per-attribute disclose/hide
+      toggles, the live ZK presentation (Ā, D̂, challenge, hidden-response count, verdict), an editable
+      presentation header, a soundness panel (lie / replay / tamper all rejected live), and an
+      **unlinkability** panel showing two presentations of the same credential share no group element.
+- [x] **15 new self-tests** in a `BBS · anonymous credentials` group (Node-validated end-to-end via a
+      vite-lib bundle first, then the exact CI gate): sign/verify, determinism, tamper/wrong-key/mauled-e
+      rejection, selective disclosure (reveal 2 of 6), the blinded-response count, the full soundness
+      battery (lied disclosed value, replay, wrong issuer, tampered Ā, tampered response), zero- and
+      full-disclosure degenerate cases, and unlinkability. Self-test now **410/410 across 64 groups**.
+- [ ] **Future:** **blind issuance** — the holder commits to hidden attributes (e.g. a secret key /
+      link secret) and the issuer signs the commitment without learning them, so the credential is
+      bound to a device secret the issuer never sees (the AnonCreds / mDL holder-binding story).
+- [ ] **Future:** **predicates on attributes** — bolt the lab's Bulletproofs range proof onto a hidden
+      attribute so the holder can prove `age ≥ 21` from a hidden *date of birth*, not a pre-baked flag.
+- [ ] **Future:** **revocation** — a cryptographic accumulator (RSA or pairing-based) membership witness
+      proven in ZK alongside the presentation, so a revoked credential stops verifying without a
+      per-holder revocation list.
+- [ ] **Future:** **pseudonyms** — a per-verifier `nym = H(ctx)^link_secret` proven equal to the hidden
+      link secret, giving *unlinkable across verifiers* but *linkable within one verifier* (rate-limiting
+      / one-vote-per-person without deanonymising).
+- [ ] **Future:** pin to the **IRTF draft's exact `create_generators` + serialization** so the
+      fixtures match the published BBS test vectors byte-for-byte (this build is the same construction
+      with the lab's own domain-separated generators, internally gradchecked rather than vector-pinned).
+
 ## Session log
+
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **Built the BBS anonymous-credentials lab end to end.**
+  One new engine module, one page, one self-test group — all on the existing BLS12-381 pairing, with
+  zero new dependencies and still zero crypto deps.
+  - **`src/ecc/bbs.ts`** — BBS from scratch: NUMS generators via RFC 9380 hash-to-curve, `hashToScalar`
+    over `expand_message_xmd`, deterministic `bbsSign`/`bbsVerify` (the pairing `e(A, PK+e·P₂)=e(B,P₂)`),
+    and the headline **zero-knowledge selective-disclosure proof** (`bbsProofGen`/`bbsProofVerify`).
+    The proof is derived in the file (randomize `Ā=r·A`, `D̂=r·B−e·Ā`, Σ-prove `D̂=r·C−e·Ā+Σuⱼ·Hⱼ`),
+    with the soundness argument written out: the pairing forces `D̂=sk·Ā`, so dividing by `r≠0` extracts
+    a real signature over the disclosed attributes. A high-level `issueCredential`/`presentCredential`/
+    `verifyPresentation` API expresses the mDL "prove over-21 without revealing date-of-birth" flow.
+  - **`src/pages/BbsPage.tsx`** + `/bbs` route (nav label "BBS Credentials", after BLS Pairing): an
+    interactive driver's-licence credential with disclose/hide toggles per attribute, the live ZK
+    presentation, an editable verifier session header, a soundness panel (lie / replay / tampered-Ā all
+    rejected live), and an unlinkability panel proving two presentations share no group element.
+  - **Self-test** grew to **410/410 across 64 groups** with a new `BBS · anonymous credentials` group
+    (15 checks): correctness + determinism, tamper/wrong-key/mauled-e rejection, selective disclosure
+    (2 of 6), the blinded-response bookkeeping, the full soundness battery, zero-/full-disclosure edge
+    cases, and unlinkability. **Validated in Node first** (a vite-lib bundle running the exact shipping
+    `runSelfTest()` — 410/410, and a standalone 22-assertion harness of the raw engine), then the full
+    `verify-project.mjs` gate (scope + conformance + lint + build) green.
 
 - 2026-07-04 (claude): **Ballot, round 2 — the Benaloh cast-or-audit challenge (cast-as-intended).**
   Follow-up to the voting lab: added Helios's ballot-auditing step so a voter can catch a malicious

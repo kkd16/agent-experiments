@@ -9,6 +9,7 @@ import { Encodings } from './pages/Encodings'
 import { MuSigPage } from './pages/MuSigPage'
 import { Curve25519Page } from './pages/Curve25519Page'
 import { BlsPage } from './pages/BlsPage'
+import { BbsPage } from './pages/BbsPage'
 import { AdaptorPage } from './pages/AdaptorPage'
 import { Bip32Page } from './pages/Bip32Page'
 import { Attacks } from './pages/Attacks'
@@ -49,6 +50,7 @@ const ROUTES = [
   { path: '/musig', label: 'MuSig' },
   { path: '/ed25519', label: 'Curve25519' },
   { path: '/bls', label: 'BLS Pairing' },
+  { path: '/bbs', label: 'BBS Credentials' },
   { path: '/adaptor', label: 'Adaptor Sigs' },
   { path: '/bip32', label: 'HD Wallets' },
   { path: '/attacks', label: 'ECDLP Attacks' },
@@ -112,6 +114,7 @@ export default function App() {
       {base === '/musig' && <MuSigPage />}
       {base === '/ed25519' && <Curve25519Page />}
       {base === '/bls' && <BlsPage />}
+      {base === '/bbs' && <BbsPage />}
       {base === '/adaptor' && <AdaptorPage />}
       {base === '/bip32' && <Bip32Page />}
       {base === '/attacks' && <Attacks />}
