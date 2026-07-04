@@ -88,8 +88,13 @@ Shipped this session:
       canonicalisation), the size-change **termination** checker (record fields are strict subterms;
       or-patterns give their vars an unknown size — sound), **fusion**, and the **language server**
       (occurrence highlighting / rename over the new binders).
+- [x] **`let`- and `fn`-parameter destructuring** — a `let (a, b) = e in …` / `let { x, y } = e in …`
+      binding and a `fn (a, b) -> …` / `fn { x } -> …` parameter accept any `(`/`{`/`[`-headed pattern,
+      desugared **in the parser** to a one-arm `match` (so they reuse the fully-verified pattern
+      machinery and every backend unchanged; refutable shapes like `[a, b]` are allowed and flagged
+      non-exhaustive exactly as a `match` would be).
 - [x] **Verified end-to-end** — a differential harness (VM ≡ JS ≡ WASM, optimized *and* unoptimized
-      cores) over 21 programs, plus **13 new in-app test cases** (the suite grew 118 → 131), the whole
+      cores) over 29 programs, plus **17 new in-app test cases** (the suite grew 118 → 135), the whole
       existing suite re-run through WASM (109/109 agree), and negative cases (mismatched or-bindings,
       record-on-non-record, self-rebinding `as`) rejected with clear messages. A `Pattern matching`
       example and a Tour section were added.
@@ -98,8 +103,6 @@ Follow-ups (future):
 
 - [ ] **Record patterns in the decision-tree pass** — today record/as/or arms fall back to the naive
       per-backend compiler (correct, but they miss the shared-column decision-tree optimisation).
-- [ ] **`let`- and `fn`-parameter destructuring** — allow a pattern (not just a name) in a `let`
-      binding and a lambda parameter, desugaring to a one-arm `match`.
 - [ ] **Closed-row / exact record patterns** (`{ x, y | }`) that require *exactly* the named fields, so
       exhaustiveness can be proven without the label-union approximation.
 - [ ] **Or-patterns in the totality optimisation** — recognise `true | false` (etc.) as total so the
@@ -2031,11 +2034,14 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
   step), the JS backend and the WASM codegen (record fields via `F_RECGET`, as-binding, and
   **or-pattern expansion** into the cartesian product of or-free arms sharing a cloned guard/body); the
   untyped optimizer, the size-change **termination** checker (record fields as strict subterms — sound),
-  **fusion**, and the **language server**. Verified by a differential harness (**VM ≡ JS ≡ WASM**,
-  optimized *and* unoptimized cores) over 21 programs; **13 new in-app test cases** (suite 118 → 131,
-  all green); the whole existing suite re-checked through WASM (109/109 agree); and negative cases
-  rejected with clear errors. Added a `Pattern matching` gallery example and a Tour section. `pnpm lint`
-  + `pnpm build` + the full CI gate green.
+  **fusion**, and the **language server**. The same patterns also became **binders**: `let (a, b) = e`
+  / `let { x, y } = e` and `fn (a, b) -> …` / `fn { x } -> …` accept any `(`/`{`/`[`-headed pattern,
+  desugared in the parser to a one-arm `match` (reusing the whole verified machinery, no backend
+  changes). Verified by a differential harness (**VM ≡ JS ≡ WASM**, optimized *and* unoptimized cores)
+  over 29 programs; **17 new in-app test cases** (suite 118 → 135, all green); the whole existing suite
+  re-checked through WASM (109/109 agree); and negative cases rejected with clear errors. Added a
+  `Pattern matching` gallery example and a Tour section. `pnpm lint` + `pnpm build` + the full CI gate
+  green.
 
 - 2026-07-02 (claude): **Aether 25.0 — program synthesis: the compiler in reverse.** Twenty-four
   releases made *code* faster; 25.0 makes the *code itself* — you give input⇒output examples and Aether

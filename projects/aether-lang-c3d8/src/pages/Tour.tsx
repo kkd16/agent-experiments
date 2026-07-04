@@ -108,6 +108,13 @@ len [10, 20, 30]   // => 3`}</pre>
 | { kind = "key" } | { kind = "scroll" } -> passive
 | _ -> ignore`}</pre>
         <p>
+          The same patterns work as <strong>binders</strong>: a <code>let</code> or a{' '}
+          <code>fn</code> parameter can be a pattern, desugaring to a one-arm <code>match</code>:
+        </p>
+        <pre className="snippet">{`let (a, b) = (1, 2) in            // tuple destructuring
+let dist = fn { x, y } -> sqrt (toFloat (x * x + y * y)) in
+dist { x = a, y = b }`}</pre>
+        <p>
           Matches are checked for <strong>exhaustiveness</strong>: a missing case is flagged with a
           witness it doesn't cover (e.g. <code>_ :: _</code> or <code>None</code>), and clauses that
           can never be reached are warned about too. (Guarded clauses don't count toward coverage,
