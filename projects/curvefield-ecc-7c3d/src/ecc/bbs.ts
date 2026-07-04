@@ -473,3 +473,101 @@ export function verifyPresentation(
   })
   return bbsProofVerify(pk, proof, utf8(header), utf8(presentationHeader), disclosedMsgs, gens)
 }
+
+// ── Blind issuance — the issuer signs attributes it never sees ─────────────────
+//
+// In a real wallet the holder wants a *link secret* (a device key that binds the
+// credential to them) folded into the signature, but the issuer must never learn
+// it — otherwise the issuer could impersonate the holder or link presentations.
+// BBS supports this: the holder sends a *commitment* to the hidden coordinates,
+// proves in zero knowledge that it is well-formed, and the issuer completes the
+// signature from the commitment. The result is an ordinary BBS signature over the
+// full vector — the hidden slots (which the issuer never saw) verify and present
+// exactly like disclosed ones. This is the AnonCreds / mDL holder-binding story.
+//
+// We model it with the last generator slot as the holder's blinding/link secret:
+// a credential over L visible attributes is internally an (L+1)-message BBS
+// signature whose final message is the secret the issuer is blind to.
+
+/** A holder's blinded request: the commitment U and a proof it opens correctly. */
+export interface BlindRequest {
+  /** U = Σ_{i∈hidden} mᵢ·Hᵢ  (includes the link-secret slot). */
+  U: G1
+  /** The hidden slot indices (ascending). */
+  hidden: number[]
+  /** Fiat–Shamir Σ-proof of knowledge of the opening. */
+  c: bigint
+  /** Responses for each hidden message, aligned with `hidden`. */
+  sHat: bigint[]
+}
+
+function commitChallenge(U: G1, T: G1, hidden: number[], gens: Generators): bigint {
+  const parts: Uint8Array[] = [serG1(U), serG1(T), serInt(hidden.length)]
+  for (const i of hidden) parts.push(serInt(i), serG1(gens.H[i]))
+  return hashToScalar(concat(...parts), CHAL_DST)
+}
+
+/**
+ * Holder side: commit to the hidden messages (typically the link secret plus any
+ * attributes the issuer shouldn't see) and prove knowledge of the opening. The
+ * returned commitment leaks nothing about the messages.
+ */
+export function blindCommit(
+  hidden: { index: number; msg: bigint }[],
+  gens: Generators,
+): BlindRequest {
+  const sorted = [...hidden].sort((a, b) => a.index - b.index)
+  const idx = sorted.map((h) => h.index)
+  // U = Σ mᵢ·Hᵢ.
+  let U: G1 = null
+  for (const h of sorted) U = g1.add(U, g1.mul(h.msg, gens.H[h.index]))
+  // Σ-proof of knowledge of {mᵢ}: T = Σ m̃ᵢ·Hᵢ.
+  const mTil = sorted.map(() => randomScalar(R))
+  let T: G1 = null
+  for (let k = 0; k < sorted.length; k++) T = g1.add(T, g1.mul(mTil[k], gens.H[idx[k]]))
+  const c = commitChallenge(U, T, idx, gens)
+  const sHat = sorted.map((h, k) => mod(mTil[k] + c * h.msg, R))
+  return { U, hidden: idx, c, sHat }
+}
+
+/** Issuer side: check the holder's commitment proof before signing anything. */
+export function verifyBlindRequest(req: BlindRequest, gens: Generators): boolean {
+  if (req.sHat.length !== req.hidden.length) return false
+  // T' = Σ ŝᵢ·Hᵢ − c·U.
+  let T: G1 = null
+  for (let k = 0; k < req.hidden.length; k++) T = g1.add(T, g1.mul(req.sHat[k], gens.H[req.hidden[k]]))
+  T = g1.add(T, g1.mul(mod(-req.c, R), req.U))
+  return commitChallenge(req.U, T, req.hidden, gens) === req.c
+}
+
+/**
+ * Issuer side: complete the signature from the commitment. `issuerMsgs` are the
+ * attributes the issuer *does* set (index → scalar); together with the blinded U
+ * they form B = P1 + domain·Q₁ + U + Σ_{issuer} mᵢ·Hᵢ, and A = B/(sk+e). The
+ * issuer never learns the hidden messages, yet produces a valid BBS signature
+ * over the whole vector. Returns null if the commitment proof fails.
+ */
+export function blindSign(
+  key: BbsKey,
+  header: Uint8Array,
+  req: BlindRequest,
+  issuerMsgs: { index: number; msg: bigint }[],
+  gens: Generators,
+): BbsSignature | null {
+  if (!verifyBlindRequest(req, gens)) return null
+  const domain = calcDomain(key.pk, gens, header)
+  // e is derived from sk, domain, U and the issuer-set messages (deterministic,
+  // and independent of the hidden messages the issuer cannot see).
+  const eInput = concat(
+    serScalar(key.sk),
+    serScalar(domain),
+    serG1(req.U),
+    ...issuerMsgs.map((m) => concat(serInt(m.index), serScalar(m.msg))),
+  )
+  const e = hashToScalar(eInput, SIG_DST)
+  let B = g1.add(gens.P1, g1.mul(domain, gens.Q1))
+  B = g1.add(B, req.U)
+  for (const m of issuerMsgs) B = g1.add(B, g1.mul(m.msg, gens.H[m.index]))
+  const A = g1.mul(modInv(mod(key.sk + e, R), R), B)
+  return { A, e }
+}

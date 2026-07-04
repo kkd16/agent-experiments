@@ -3,11 +3,15 @@ import { PageHead, Panel, Verdict } from '../ui/components'
 import {
   bbsKeygen,
   bbsSign,
+  bbsVerify,
   bbsProofGen,
   bbsProofVerify,
   createGenerators,
   messagesToScalars,
   messageToScalar,
+  blindCommit,
+  verifyBlindRequest,
+  blindSign,
   type BbsProof,
 } from '../ecc/bbs'
 import { g1 } from '../ecc/bls12381'
@@ -87,6 +91,41 @@ export function BbsPage() {
     const differ = !g1.eq(a.Abar, b.Abar) && !g1.eq(a.D, b.D)
     return { a, b, bothOk, differ }
   }, [issued, disclosedIndexes, seed, ph])
+
+  // ── Blind issuance: the issuer signs a credential without seeing the holder's
+  //    link secret (slot 5) or private id (slot 1). ──
+  const blind = useMemo(() => {
+    seedRng(seed * 40487 + 3)
+    const key = bbsKeygen(0x0b11d_15ecn)
+    const gens = createGenerators(6)
+    const linkSecret = messageToScalar('holder-device-link-secret')
+    const privId = messageToScalar('national-id-#88231')
+    // Holder commits to the two hidden slots and proves the opening in ZK.
+    const req = blindCommit([{ index: 1, msg: privId }, { index: 5, msg: linkSecret }], gens)
+    const header = utf8('gov.uk/dvla · blind')
+    const requestOk = verifyBlindRequest(req, gens)
+    // Issuer sets the visible attributes and completes the signature — blind to 1 & 5.
+    const issuerMsgs = [
+      { index: 0, msg: messageToScalar('Ada Lovelace') },
+      { index: 2, msg: messageToScalar('UK-DL-8150') },
+      { index: 3, msg: messageToScalar('2035-06-01') },
+      { index: 4, msg: messageToScalar('true') },
+    ]
+    const sig = blindSign(key, header, req, issuerMsgs, gens)
+    // The holder reconstructs the full vector and checks / presents it.
+    const full = [
+      messageToScalar('Ada Lovelace'), privId, messageToScalar('UK-DL-8150'),
+      messageToScalar('2035-06-01'), messageToScalar('true'), linkSecret,
+    ]
+    const sigOk = sig !== null && bbsVerify(key.pk, sig, header, full, gens)
+    let presentOk = false
+    if (sig !== null) {
+      const proof = bbsProofGen({ pk: key.pk }, sig, header, utf8('bar:blind'), full, [4], gens)
+      presentOk = bbsProofVerify(key.pk, proof, header, utf8('bar:blind'), [messageToScalar('true')], gens)
+    }
+    const badRefused = blindSign(key, header, { ...req, U: gens.P1 }, issuerMsgs, gens) === null
+    return { req, requestOk, sigOk, presentOk, badRefused }
+  }, [seed])
 
   const pkHex = issued.key.pk ? hex(issued.key.pk.x.a, 20) : '—'
   const nDisclosed = disclosedIndexes.length
@@ -275,6 +314,40 @@ export function BbsPage() {
           A fresh randomizer <code>r</code> per presentation makes <code>Ā</code> a uniformly random
           group element every time. The same licence looks like a brand-new object at every door —
           the property RSA/ECDSA signatures, whose bytes are fixed, can never offer.
+        </div>
+      </Panel>
+
+      <Panel
+        title="⑤ Blind issuance — the issuer signs what it cannot see"
+        sub={
+          <>
+            A wallet folds a <strong>link secret</strong> (a device key binding the credential to its
+            holder) and a private id into the signature — but the issuer must never learn them. The
+            holder sends a <em>commitment</em> <code>U = Σ mᵢ·Hᵢ</code> to the hidden slots and a
+            Σ-proof it opens correctly; the issuer checks the proof and completes{' '}
+            <code>A = (P1 + domain·Q₁ + U + Σ mᵢ·Hᵢ)/(sk+e)</code> from it. The result is an ordinary
+            BBS signature over the full vector — the hidden slots the issuer never saw verify and
+            present exactly like the rest.
+          </>
+        }
+      >
+        <dl className="kv">
+          <dt>holder commits to link secret + private id (2 hidden slots)</dt>
+          <dd className="hexbox">{blind.req.U ? hex(blind.req.U.x, 22) : '—'}…</dd>
+          <dt>issuer accepts the commitment proof</dt>
+          <dd><Verdict ok={blind.requestOk}>{blind.requestOk ? 'well-formed ✓' : 'no'}</Verdict></dd>
+          <dt>blind-issued signature verifies over the full vector</dt>
+          <dd><Verdict ok={blind.sigOk}>{blind.sigOk ? 'valid ✓ (issuer blind to 2 attrs)' : 'no'}</Verdict></dd>
+          <dt>the credential still presents (prove over-21)</dt>
+          <dd><Verdict ok={blind.presentOk}>{blind.presentOk ? 'valid ✓' : 'no'}</Verdict></dd>
+          <dt>issuer refuses to sign a malformed commitment</dt>
+          <dd><Verdict ok={blind.badRefused}>{blind.badRefused ? 'refused ✓' : 'signed anyway (!)'}</Verdict></dd>
+        </dl>
+        <div className="note" style={{ marginTop: '0.5rem' }}>
+          This is the AnonCreds / mDL <strong>holder-binding</strong> story: the credential is tied to a
+          secret only the holder's device knows, so a stolen credential can't be presented by anyone
+          else — and the issuer, who signed it, still cannot impersonate the holder or recognise their
+          presentations.
         </div>
       </Panel>
 
