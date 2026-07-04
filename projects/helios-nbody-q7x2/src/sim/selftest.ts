@@ -28,6 +28,8 @@ import {
   analyticSingleModeForceX,
   cicDeposit,
   depositContrast,
+  measurePowerSpectrum,
+  powerLawSlope,
   CosmicPM,
 } from './pm'
 import { naff, frequencyDiffusion } from './naff'
@@ -2199,6 +2201,18 @@ export function runSelfTest(): SelfTestReport {
     add('PM — live solver grows ∝ a (linear regime)', Math.abs(ratio - 1) < 0.05, `displacement-growth / a-growth = ${ratio.toFixed(4)} (a: ${a0}→${pm.a.toFixed(3)})`)
     const mom = pm.totalMomentum()
     add('PM — live solver conserves Σp', Math.abs(mom.x) < 1e-8 && Math.abs(mom.y) < 1e-8, `|Σp| = (${mom.x.toExponential(1)}, ${mom.y.toExponential(1)})`)
+  }
+
+  // 87 — The generated Gaussian initial field has the power spectrum it was asked
+  // for: a field built with P(k) ∝ kⁿ recovers slope ≈ n when its azimuthally-
+  // averaged |δ̂(k)|² is fit in log–log — the observable of large-scale structure.
+  {
+    const m = 128
+    const n = -2
+    const field = makeInitialField(m, n, 0.1, 123)
+    const ps = measurePowerSpectrum(field.delta, m)
+    const slope = powerLawSlope(ps, 2, 30)
+    add('PM — power spectrum recovers its input slope n', Math.abs(slope - n) < 0.3, `measured n = ${slope.toFixed(3)} (want ${n})`)
   }
 
   const passed = cases.filter((c) => c.pass).length
