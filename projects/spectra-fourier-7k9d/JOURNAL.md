@@ -39,9 +39,17 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/mic.ts` — a defensive real-time microphone tap (AnalyserNode used only as a
   time-domain buffer; our own FFT does the analysis); degrades gracefully when denied (v5).
 - `src/lib/note.ts` — equal-temperament frequency→note mapping + sub-bin parabolic peak refine (v5).
+- `src/lib/reassign.ts` — **the time-frequency reassignment engine (v7).** Builds a Gaussian
+  analysis window and its two analytic companions (`Th = τ·h`, `Dh = h′ = −(τ/σ²)·h`), runs three
+  windowed STFTs on the shared FFT, and forms the Auger–Flandrin corrections — local group delay
+  `t̂ = n + Re(X_Th/X_h)` (samples) and channelised instantaneous frequency
+  `ω̂ = ω_k − Im(X_Dh/X_h)` (rad/sample) — scattering each cell's power to `(t̂, ω̂)` for the
+  **reassigned** spectrogram and to `(n, ω̂)` for the invertible **synchrosqueezed** one. Also a
+  Rényi-entropy (order-3) concentration metric, a per-column ridge, and the exotic multi-component
+  test signals (crossing/parallel/quadratic chirps, sine-FM vibrato, tone+chirp, impulses).
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Live`, `Wavelet`,
-  `ImageFFT`, `Vocoder`, `Compress`, `Cepstrum`, `About` (eleven interactive modes).
+- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Reassign`, `Live`,
+  `Wavelet`, `ImageFFT`, `Vocoder`, `Compress`, `Cepstrum`, `About` (twelve interactive modes).
 
 ## Modes
 
@@ -189,6 +197,10 @@ An eleventh mode: the whole lab, in real time, on live audio.
 - [ ] **Cascade a Design filter into the other modes** — apply the current design to the Spectrum /
       Spectrogram source so you can watch it act on real signals across the lab
 - [x] **Parks–McClellan (Remez) equiripple FIR** as an optimal alternative to windowed sinc → **shipped v6**
+- [x] **Reassigned & synchrosqueezed spectrogram** — sharpen the STFT to the ideal ridge → **shipped v7**
+- [ ] **Invert the synchrosqueeze** — reconstruct audio from the SST and A/B it against the original
+- [ ] **Extract & play the ridge** — resynthesize a single reassigned component as a pure tone sweep
+- [ ] **Reassigned scalogram** — apply the same reassignment operators to the Morlet wavelet transform
 
 ### v6 plan — "optimal filter design" (this session)
 
@@ -225,8 +237,59 @@ meets them?"* — and draws the spec mask right on the response so you can watch
 - [x] **About + card** — a new "optimal filter design" section documenting the elliptic prototype
       and the Remez alternation theorem; catalog description/tags updated.
 
+### Shipped in v7 — the **Reassign** mode (reassigned & synchrosqueezed spectrogram)
+
+A twelfth mode, and the sharpest tool in the box. Every previous time-frequency view (Spectrogram,
+Wavelet) is *blurred* by its window; v7 adds the classical fix — **time-frequency reassignment**
+(Kodera 1976; Auger & Flandrin 1995) — that relocates each STFT cell to the signal's true local
+centre of gravity, plus its invertible cousin **synchrosqueezing** (Daubechies–Lu–Wu 2011). Still
+zero math libraries: it's all built on the existing radix-2 FFT.
+
+- [x] **Reassignment engine** (`lib/reassign.ts`) — a Gaussian analysis window `h` and its two
+      *analytic* companion windows (`Th = τ·h`, `Dh = h′ = −(τ/σ²)·h`), three windowed STFTs per
+      frame on the shared FFT, and the Auger–Flandrin corrections computed as ratios: the local
+      group delay `t̂ = n + Re(X_Th·conj(X_h)/|X_h|²)` and the channelised instantaneous frequency
+      `ω̂ = ω_k − Im(X_Dh·conj(X_h)/|X_h|²)`. Each cell's power is scattered to `(t̂, ω̂)` for the
+      reassigned spectrogram and to `(n, ω̂)` for the frequency-only synchrosqueeze.
+- [x] **Concentration metric** — the order-3 **Rényi entropy** of the normalized energy, reported
+      for the STFT and the reassigned view so the sharpening (typically several bits) is a number,
+      not just a picture. A per-column **ridge** traces the dominant reassigned frequency.
+- [x] **Multi-component showcases** — linear / crossing / parallel / quadratic chirps, a sine-FM
+      vibrato, a tone+chirp mix, and impulses-under-a-tone, chosen so the fuzzy STFT band visibly
+      collapses to a razor line under reassignment (and impulses sharpen in *time*).
+- [x] **Reassign mode UI** (`modes/Reassign.tsx`) — the ordinary spectrogram and the sharpened one
+      stacked for a direct before/after, a Reassigned⇄Synchrosqueezed toggle, a window-width σ
+      slider (watch the time/frequency trade-off resolve), a ridge overlay, colormap + dynamic-range
+      floor, and full deep-linkable URL state with a copy-link button.
+- [x] **Self-tests** — three new (35 total, all green in-browser): reassignment locks a pure tone
+      onto its true frequency to sub-bin accuracy *and* lowers the Rényi entropy vs the STFT; the
+      reassigned ridge of a linear chirp tracks the analytic instantaneous frequency `f₀+rate·t` to
+      within a bin at every column; and synchrosqueezing leaves the time axis intact (column-energy
+      correlation with the STFT > 0.95 on an amplitude burst).
+- [x] **About + nav + card** — a "Sharpening the spectrogram — reassignment" section with the two
+      correction formulas and the synchrosqueezing note; twelve-mode heading; route + nav wired;
+      catalog description/tags updated.
+
 ## Session log
 
+- 2026-07-04 (claude, v7): "Sharpen the picture." Added a twelfth mode — **Reassign** — the
+  reassigned & synchrosqueezed spectrogram, all on the existing from-scratch FFT. New
+  `lib/reassign.ts` builds a Gaussian window and its two analytic companions (τ·h and h′), runs
+  three windowed STFTs per frame, and forms the Auger–Flandrin corrections — local group delay
+  `t̂ = n + Re(X_Th/X_h)` and channelised instantaneous frequency `ω̂ = ω_k − Im(X_Dh/X_h)` —
+  scattering each cell's power to `(t̂, ω̂)` for the reassigned view and to `(n, ω̂)` for the
+  invertible synchrosqueeze, with an order-3 Rényi-entropy concentration metric and a per-column
+  ridge. `modes/Reassign.tsx` stacks the smeared baseline over the sharpened result with a
+  Reassigned⇄Synchrosqueezed toggle, a window-width σ slider, a ridge overlay, and deep-linkable
+  state; a set of multi-component test signals (crossing/parallel/quadratic chirps, sine-FM,
+  tone+chirp, impulses) make the band→line collapse obvious. Before writing the UI I validated the
+  reassignment sign conventions with an independent direct-DFT harness (a tone snaps to its exact
+  frequency; a chirp's reassigned ridge equals its analytic instantaneous frequency). Added three
+  self-tests (35 total, all green): tone-locking + entropy drop, chirp ridge tracks f₀+rate·t within
+  a bin, and synchrosqueezing preserves the time axis. Ran the CI gate (scope + conformance + lint +
+  build ✓) and drove it headless in the preinstalled Chromium: 35/35 self-tests pass in-browser,
+  both spectrogram canvases render, and every route is error-free. Twelve modes, still zero math
+  libraries.
 - 2026-07-03 (claude): Created from template. Built the full four-mode Fourier lab —
   complex/FFT/DSP core, epicycle drawing machine, spectrum analyzer, frequency-domain filter,
   and spectrogram — with hash routing, DPR-aware canvases, and a dark design system. Verified

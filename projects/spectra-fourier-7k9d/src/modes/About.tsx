@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The eleven modes</h3>
+        <h3>The twelve modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a drawn curve's points as complex numbers, FFT
@@ -51,6 +51,13 @@ export default function About() {
             <strong>Spectrogram</strong> — a short-time Fourier transform slides a fixed window
             across the signal, producing a time × frequency heatmap. It exposes the time/frequency
             trade-off at the heart of signal processing.
+          </li>
+          <li>
+            <strong>Reassign</strong> — the spectrogram, <em>sharpened</em>. Time-frequency
+            reassignment moves every STFT cell to the signal's true local centre of gravity, so a
+            fuzzy chirp band collapses to a razor line tracing its instantaneous frequency — and its
+            invertible cousin, <strong>synchrosqueezing</strong>. A Rényi-entropy readout quantifies
+            the sharpening.
           </li>
           <li>
             <strong>Live</strong> — the whole thing in <em>real time</em>. Every animation frame
@@ -176,6 +183,29 @@ export default function About() {
       </div>
 
       <div className="card">
+        <h3>Sharpening the spectrogram — reassignment</h3>
+        <div className="formula">ω̂(n,k) = ω_k − Im( X_Dh / X_h ) &nbsp;·&nbsp; t̂(n,k) = n + Re( X_Th / X_h )</div>
+        <p>
+          A spectrogram blurs each event over its whole window. <strong>Reassignment</strong>{' '}
+          (Kodera 1976; Auger &amp; Flandrin 1995) leaves the window alone and instead relocates
+          every cell's energy to the signal's local centre of gravity in the plane. Both corrections
+          fall out of ratios of STFTs taken with two <em>companion</em> windows built from the same
+          analysis window <code>h</code>: the time-ramped window <code>Th = τ·h</code> gives the
+          local group delay <code>t̂</code>, and the derivative window <code>Dh = h′</code> gives the
+          channelised instantaneous frequency <code>ω̂</code>. We use a Gaussian <code>h</code>, whose
+          derivative is exactly <code>−(τ/σ²)·h</code>, so all three windows are analytic. A pure
+          tone's energy — spread across several bins by the window — snaps back onto one line;
+          a chirp collapses to the curve of its instantaneous frequency.
+        </p>
+        <p>
+          <strong>Synchrosqueezing</strong> (Daubechies–Lu–Wu 2011) reassigns in frequency only,
+          keeping the time bin, which makes the transform <em>invertible</em> — you can squeeze then
+          reconstruct. The <strong>Rényi entropy</strong> of the energy distribution measures the
+          concentration: reassignment provably lowers it, and the app shows the drop in bits.
+        </p>
+      </div>
+
+      <div className="card">
         <h3>Beyond one dimension</h3>
         <div className="formula">X[k,l] = Σₘ Σₙ x[m,n] · e^(−2πi(km/M + ln/N))</div>
         <p>
@@ -208,8 +238,11 @@ export default function About() {
           the Durand–Kerner root finder is checked against a known factorisation, and — the real
           proof — the FFT of each filter's impulse response is confirmed to match its analytic
           transfer function. Even the live analyser's helpers are covered — equal-temperament note
-          mapping (A4 = 440 Hz) and sub-bin parabolic peak refinement. Open the console to see all
-          twenty-five pass.
+          mapping (A4 = 440 Hz) and sub-bin parabolic peak refinement — and the newest sharpening
+          engine: <strong>reassignment</strong> is confirmed to lock a pure tone onto its true
+          frequency and to make a chirp's ridge track its analytic instantaneous frequency to within
+          a bin, while synchrosqueezing is checked to leave the time axis untouched. Open the console
+          to see all thirty-five pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>
