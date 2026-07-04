@@ -33,6 +33,7 @@
 // runtime exactly where the source would.
 
 import type { Expr, MatchCase, Pattern } from './ast.ts'
+import { patternHasExtension } from './ast.ts'
 import type { Span } from './lexer.ts'
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,9 @@ export function compileMatches(root: Expr, ctx: DtContext): DecisionTreeResult {
 // simple matches byte-identical to before).
 
 function worthDecisionTree(cases: MatchCase[], ctx: DtContext): boolean {
+  // The record / as / or pattern extensions are lowered by the naive per-backend
+  // match compilers, not the decision-tree pass — skip any match that uses them.
+  for (const c of cases) if (patternHasExtension(c.pattern)) return false
   // nesting: a refutable pattern directly inside a constructor/cons/tuple pattern
   for (const c of cases) if (hasNestedRefutable(c.pattern)) return true
   // shared head: two arms whose top pattern tests the same constructor
@@ -207,6 +211,14 @@ function topHeadKey(p: Pattern): string | null {
       return 'tuple' + p.elements.length
     case 'pcon':
       return 'C' + p.name
+    // extension patterns never reach the tree pass (worthDecisionTree gates them
+    // off), but the cases keep this switch total.
+    case 'precord':
+      return 'record'
+    case 'pas':
+      return topHeadKey(p.inner)
+    case 'por':
+      return null
   }
 }
 

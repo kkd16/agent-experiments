@@ -95,10 +95,26 @@ len [10, 20, 30]   // => 3`}</pre>
 | n when n < 0 -> "negative"
 | _            -> "positive"`}</pre>
         <p>
+          Three richer pattern forms compose with everything above. A{' '}
+          <strong>record pattern</strong> destructures by field, with <code>{'{ x }'}</code> punning
+          for <code>{'{ x = x }'}</code>; the row stays open, so it also matches records that carry
+          further fields. An <strong>as-pattern</strong> (<code>p as name</code>) binds the whole
+          matched value while still matching <code>p</code>. An <strong>or-pattern</strong>{' '}
+          (<code>p1 | p2</code>) lets one arm cover several shapes — every alternative must bind the
+          same variables, so the body is well-scoped whichever matched:
+        </p>
+        <pre className="snippet">{`match event with
+| { kind = "click", x, y } as e -> handle e x y
+| { kind = "key" } | { kind = "scroll" } -> passive
+| _ -> ignore`}</pre>
+        <p>
           Matches are checked for <strong>exhaustiveness</strong>: a missing case is flagged with a
           witness it doesn't cover (e.g. <code>_ :: _</code> or <code>None</code>), and clauses that
           can never be reached are warned about too. (Guarded clauses don't count toward coverage,
-          since their guard might be false.)
+          since their guard might be false.) Or-patterns count each alternative toward coverage, and
+          record patterns are irrefutable products — so a full field-split is recognised as
+          exhaustive. All three forms lower through the same VM, JavaScript and WebAssembly backends
+          and are covered by the byte-for-byte equivalence checks.
         </p>
       </section>
 

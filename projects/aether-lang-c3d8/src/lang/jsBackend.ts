@@ -19,6 +19,7 @@
 //     shadowing (`let x = … in let x = …`, prelude overrides) never collides.
 
 import type { BinaryOp, Expr, Pattern, UnaryOp } from './ast.ts'
+import { expandOrCases } from './ast.ts'
 import { parse } from './parser.ts'
 import { GLOBALS, PRELUDE_DEFS } from './prelude.ts'
 
@@ -349,7 +350,7 @@ class JsGen {
   private match(e: Extract<Expr, { kind: 'match' }>, env: Env): string {
     const scrut = `$$s${this.scrutId++}`
     const lines: string[] = []
-    for (const c of e.cases) {
+    for (const c of expandOrCases(e.cases)) {
       const { tests, binds, env: env2 } = this.pattern(c.pattern, scrut, env)
       const cond = tests.length ? tests.join(' && ') : 'true'
       const body: string[] = [...binds]
@@ -407,6 +408,21 @@ class JsGen {
         case 'pcon':
           tests.push(`${acc}.tag === 'data' && ${acc}.name === ${JSON.stringify(p.name)}`)
           p.args.forEach((a, i) => go(a, `${acc}.args[${i}]`))
+          return
+        case 'precord':
+          // irrefutable at the record level — project each named field
+          p.fields.forEach((f) => go(f.pattern, `${acc}.fields[${JSON.stringify(f.label)}]`))
+          return
+        case 'pas': {
+          const j = this.fresh(p.name)
+          scope = extend(scope, p.name, j)
+          binds.push(`const ${j} = ${acc};`)
+          go(p.inner, acc)
+          return
+        }
+        case 'por':
+          // or-patterns are removed by `expandOrCases` before the backend runs
+          go(p.alternatives[0], acc)
           return
       }
     }

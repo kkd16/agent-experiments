@@ -23,6 +23,7 @@
 //     byte-for-byte identical to the bytecode VM.
 
 import type { BinaryOp, Expr, Pattern } from '../lang/ast.ts'
+import { expandOrCases } from '../lang/ast.ts'
 import { parse } from '../lang/parser.ts'
 import { PRELUDE_DEFS } from '../lang/prelude.ts'
 import { Code, F64, I32, Module } from './encoder.ts'
@@ -135,6 +136,16 @@ function patternVars(p: Pattern, into: Set<string>): void {
       return
     case 'pcon':
       for (const a of p.args) patternVars(a, into)
+      return
+    case 'precord':
+      for (const f of p.fields) patternVars(f.pattern, into)
+      return
+    case 'pas':
+      into.add(p.name)
+      patternVars(p.inner, into)
+      return
+    case 'por':
+      for (const alt of p.alternatives) patternVars(alt, into)
       return
     default:
       return
@@ -403,6 +414,18 @@ class Gen {
         return
       case 'ptuple':
         for (const el of p.elements) this.collectPattern(el)
+        return
+      case 'precord':
+        for (const f of p.fields) {
+          this.internLabel(f.label)
+          this.collectPattern(f.pattern)
+        }
+        return
+      case 'pas':
+        this.collectPattern(p.inner)
+        return
+      case 'por':
+        for (const alt of p.alternatives) this.collectPattern(alt)
         return
       default:
         return
@@ -886,7 +909,7 @@ class Gen {
     // *into* it, so the non-moving collector keeps them reachable for free.
     code.local_tee(s).call(F_GCPUSH)
     code.block(I32) // RESULT
-    for (const c of e.cases) {
+    for (const c of expandOrCases(e.cases)) {
       code.block() // FAIL_i (empty)
       const caseScope: Scope = new Map(scope)
       // tests: each failed test does `br_if 0` to FAIL_i; binds set locals
@@ -1068,6 +1091,34 @@ class Gen {
             code,
           ),
         )
+        return
+      case 'precord':
+        // irrefutable — for each named field, look it up by label id and recurse
+        for (const f of p.fields) {
+          this.compilePattern(
+            f.pattern,
+            () => {
+              loadPtr()
+              code.i32_const(this.internLabel(f.label)).call(F_RECGET)
+            },
+            scope,
+            ctx,
+            code,
+          )
+        }
+        return
+      case 'pas': {
+        // bind the whole matched value, then match the inner pattern against it
+        const l = ctx.newLocal()
+        loadPtr()
+        code.local_set(l)
+        scope.set(p.name, { kind: 'local', idx: l })
+        this.compilePattern(p.inner, loadPtr, scope, ctx, code)
+        return
+      }
+      case 'por':
+        // or-patterns are removed by `expandOrCases` before the backend runs
+        this.compilePattern(p.alternatives[0], loadPtr, scope, ctx, code)
         return
     }
   }

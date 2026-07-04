@@ -7,6 +7,7 @@
 // `let rec` reserves the slot first so the closure can capture itself.
 
 import type { BinaryOp, Expr, Pattern } from './ast.ts'
+import { expandOrCases } from './ast.ts'
 import type { Span } from './lexer.ts'
 import type { FnProto, UpvalueDesc } from './bytecode.ts'
 import { Op } from './bytecode.ts'
@@ -252,7 +253,7 @@ class Compiler {
     const baseHeight = c.height // scrutinee local only
     const endJumps: number[] = []
 
-    for (const cs of e.cases) {
+    for (const cs of expandOrCases(e.cases)) {
       const tests: PatTest[] = []
       const binds: PatBind[] = []
       analyzePattern(cs.pattern, [], tests, binds)
@@ -325,6 +326,7 @@ class Compiler {
       if (step === 'head') c.op(Op.HEAD, span, 0)
       else if (step === 'tail') c.op(Op.TAIL, span, 0)
       else if ('tuple' in step) c.op(Op.TUPLE_GET, span, 0, step.tuple)
+      else if ('field' in step) c.op(Op.FIELD_GET, span, 0, c.constant(vstr(step.field)))
       else c.op(Op.CTOR_GET, span, 0, step.ctor)
     }
   }
@@ -449,7 +451,7 @@ const BINOP_OPCODE: Record<Exclude<BinaryOp, '&&' | '||'>, number> = {
 }
 
 // A navigation step from the scrutinee value to a sub-value.
-type PatStep = 'head' | 'tail' | { tuple: number } | { ctor: number }
+type PatStep = 'head' | 'tail' | { tuple: number } | { ctor: number } | { field: string }
 
 type PatTest =
   | { path: PatStep[]; kind: 'lit'; value: Value }
@@ -498,6 +500,19 @@ function analyzePattern(pat: Pattern, path: PatStep[], tests: PatTest[], binds: 
     case 'pcon':
       tests.push({ path, kind: 'ctor', name: pat.name })
       pat.args.forEach((p, i) => analyzePattern(p, [...path, { ctor: i }], tests, binds))
+      return
+    case 'precord':
+      // irrefutable at the record level — just project each named field
+      pat.fields.forEach((f) => analyzePattern(f.pattern, [...path, { field: f.label }], tests, binds))
+      return
+    case 'pas':
+      binds.push({ path, name: pat.name })
+      analyzePattern(pat.inner, path, tests, binds)
+      return
+    case 'por':
+      // or-patterns are removed by `expandOrCases` before compilation; this
+      // defensive branch analyses the first alternative only.
+      analyzePattern(pat.alternatives[0], path, tests, binds)
       return
   }
 }

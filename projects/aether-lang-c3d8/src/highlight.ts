@@ -35,6 +35,7 @@ const KEYWORDS = new Set([
   'with',
   'type',
   'when',
+  'as',
   'class',
   'instance',
   'where',

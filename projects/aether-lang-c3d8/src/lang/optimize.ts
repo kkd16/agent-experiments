@@ -50,7 +50,7 @@
 // constructor collapses to its arm.
 
 import type { BinaryOp, Expr, MatchCase, Pattern } from './ast.ts'
-import { cloneExpr } from './ast.ts'
+import { cloneExpr, expandOrPattern } from './ast.ts'
 import { unparse } from './unparse.ts'
 import { collectSiblings, compileMatches } from './decisiontree.ts'
 import type { DtStats, DtView } from './decisiontree.ts'
@@ -2287,6 +2287,12 @@ function tryMatch(p: Pattern, scrut: Expr): MatchOutcome {
       if (head.args.length !== p.args.length) return no()
       return combine(p.args.map((sub, i) => tryMatch(sub, head.args[i])))
     }
+    // The record / as / or extensions are matched conservatively: the static
+    // reducer leaves these arms alone (the backends still compile them correctly).
+    case 'precord':
+    case 'pas':
+    case 'por':
+      return unknown()
   }
 }
 
@@ -2556,6 +2562,16 @@ function toNPat(p: Pattern): NPat {
       return { wild: false, ctor: 'tuple', arity: p.elements.length, args: p.elements.map(toNPat) }
     case 'pcon':
       return { wild: false, ctor: p.name, arity: p.args.length, args: p.args.map(toNPat) }
+    case 'precord':
+      // `record` is not among the recognised signatures, so a record column is
+      // treated as *infinite* — totality is never falsely claimed for it.
+      return { wild: false, ctor: 'record', arity: p.fields.length, args: p.fields.map((f) => toNPat(f.pattern)) }
+    case 'pas':
+      return toNPat(p.inner)
+    case 'por':
+      // or-patterns are expanded into independent rows by the caller; this is a
+      // defensive fallback only.
+      return toNPat(p.alternatives[0])
   }
 }
 
@@ -2656,7 +2672,10 @@ function usefulRows(matrix: NPat[][], q: NPat[]): boolean {
 /** A `match` is *total* when its unguarded patterns are exhaustive — i.e. a fresh
  *  wildcard is not useful against them — so it can never fall through to a fail. */
 function matchTotal(e: Expr & { kind: 'match' }): boolean {
-  const rows = e.cases.filter((c) => !c.guard).map((c) => [toNPat(c.pattern)])
+  // Each alternative of an or-pattern is an independent covered row.
+  const rows = e.cases
+    .filter((c) => !c.guard)
+    .flatMap((c) => expandOrPattern(c.pattern).map((a) => [toNPat(a)]))
   if (rows.length === 0) return false
   return !usefulRows(rows, [NWILD])
 }
@@ -2702,6 +2721,17 @@ function patternVars(p: Pattern, acc: Set<string>): void {
       break
     case 'pcon':
       for (const sub of p.args) patternVars(sub, acc)
+      break
+    case 'precord':
+      for (const f of p.fields) patternVars(f.pattern, acc)
+      break
+    case 'pas':
+      acc.add(p.name)
+      patternVars(p.inner, acc)
+      break
+    case 'por':
+      // every alternative binds the same variables; recurse into all of them
+      for (const alt of p.alternatives) patternVars(alt, acc)
       break
     default:
       break
@@ -3059,6 +3089,12 @@ function renamePattern(from: string, to: string, p: Pattern): Pattern {
       return { ...p, elements: p.elements.map((s) => renamePattern(from, to, s)) }
     case 'pcon':
       return { ...p, args: p.args.map((s) => renamePattern(from, to, s)) }
+    case 'precord':
+      return { ...p, fields: p.fields.map((f) => ({ label: f.label, pattern: renamePattern(from, to, f.pattern) })) }
+    case 'pas':
+      return { ...p, name: p.name === from ? to : p.name, inner: renamePattern(from, to, p.inner) }
+    case 'por':
+      return { ...p, alternatives: p.alternatives.map((a) => renamePattern(from, to, a)) }
     default:
       return p
   }
@@ -3532,6 +3568,12 @@ function canonPat(p: Pattern): string {
       return 'T(' + p.elements.map(canonPat).join(',') + ')'
     case 'pcon':
       return 'C' + p.name + '(' + p.args.map(canonPat).join(',') + ')'
+    case 'precord':
+      return 'R{' + p.fields.map((f) => f.label + '=' + canonPat(f.pattern)).join(',') + '}'
+    case 'pas':
+      return canonPat(p.inner) + '@' + p.name
+    case 'por':
+      return '|(' + p.alternatives.map(canonPat).join('|') + ')'
   }
 }
 

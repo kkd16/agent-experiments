@@ -189,6 +189,16 @@ function patternVars(p: Pattern, acc: Set<string>): void {
     case 'pcon':
       for (const s of p.args) patternVars(s, acc)
       break
+    case 'precord':
+      for (const f of p.fields) patternVars(f.pattern, acc)
+      break
+    case 'pas':
+      acc.add(p.name)
+      patternVars(p.inner, acc)
+      break
+    case 'por':
+      for (const alt of p.alternatives) patternVars(alt, acc)
+      break
     default:
       break
   }
@@ -344,6 +354,28 @@ function bindPattern(p: Pattern, sr: Rel | null, depth: number, out: Env): void 
     case 'pcon':
       for (const s of p.args) bindPattern(s, sr, depth + 1, out)
       break
+    case 'precord':
+      // a record field is a proper substructure of an (acyclic) record value, so
+      // it is a strict subterm — treat like a constructor argument
+      for (const f of p.fields) bindPattern(f.pattern, sr, depth + 1, out)
+      break
+    case 'pas': {
+      // the as-variable *is* the matched value (same depth); the inner pattern
+      // matches that same value, so recurse at the current depth
+      const rel: Rel | null = depth === 0 ? sr : sr ? { param: sr.param, strict: true } : null
+      if (rel) out.set(p.name, rel)
+      else out.delete(p.name)
+      bindPattern(p.inner, sr, depth, out)
+      break
+    }
+    case 'por': {
+      // alternatives may relate their variables to the scrutinee differently; be
+      // conservative and give every bound variable an unknown size
+      const names = new Set<string>()
+      patternVars(p, names)
+      for (const n of names) out.delete(n)
+      break
+    }
     default:
       break
   }
