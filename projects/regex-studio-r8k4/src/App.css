@@ -5233,3 +5233,8 @@
 .parikh-query-verdict.no { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
 .parikh-bridge-graph { margin-top: 10px; height: 320px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .parikh-proof { border-color: color-mix(in srgb, var(--accent-2) 30%, var(--border-soft)); }
+.parikh-arith-ex { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.parikh-arith-chip { padding: 4px 9px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--accent-2); font-family: var(--mono); font-size: 12px; cursor: pointer; }
+.parikh-arith-chip:hover { border-color: var(--accent-2); }
+.parikh-arith-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: var(--mono); font-size: 13px; margin-bottom: 8px; }
+.parikh-arith-input:focus { outline: none; border-color: var(--accent-2); }

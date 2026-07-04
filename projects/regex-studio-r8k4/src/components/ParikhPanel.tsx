@@ -5,14 +5,17 @@ import {
   memberSemi,
   witnessCombination,
   describeLinear,
+  toPresburgerFormula,
   PARIKH_EXAMPLES,
   type Semilinear,
   type Vec,
   type ParikhAtom,
 } from '../engine/parikh';
 import { compilePresburgerFormula } from '../engine/presburger/compile';
-import { acceptsTuple, presburgerDfaToGraph } from '../engine/presburger/automata';
-import type { BitDFA } from '../engine/logic/bitaut';
+import { acceptsTuple, presburgerDfaToGraph, enumerateSolutions } from '../engine/presburger/automata';
+import { isEmpty, type BitDFA } from '../engine/logic/bitaut';
+import { parsePresburger } from '../engine/presburger/parser';
+import { freeVars } from '../engine/presburger/ast';
 import { layoutGraph } from '../engine/layout';
 import { AutomatonGraph } from './AutomatonGraph';
 import { runParikhFuzz, DEFAULT_PARIKH_FUZZ, type ParikhFuzzReport } from '../engine/parikh-verify';
@@ -174,6 +177,9 @@ function ParikhBody({ result }: { result: ParikhResult }) {
 
       {/* membership query */}
       {dim >= 1 && semilinear.sets.length > 0 && <QueryBox sl={semilinear} atoms={atoms} varNames={result.varNames} />}
+
+      {/* arithmetic query — intersect π(L) with a Presburger constraint over the counts */}
+      {dim >= 1 && semilinear.sets.length > 0 && <ArithQuery sl={semilinear} atoms={atoms} />}
 
       {/* construction trace */}
       <section className="parikh-section">
@@ -449,6 +455,107 @@ function QueryBox({ sl, atoms, varNames }: { sl: Semilinear; atoms: ParikhAtom[]
         </p>
       )}
       {!inSet && <p className="muted-note">No word of the language has these letter counts.</p>}
+    </section>
+  );
+}
+
+// ── arithmetic query: does the language contain a word whose counts satisfy … ? ──
+// The bridge in the other direction: the user types a Presburger constraint over
+// the count variables, we AND it with π(L)'s own formula and decide the conjunction
+// non-empty via the studio's Büchi–Bruyère–Villemaire engine — "is there a word
+// with #a = 2·#b?" answered exactly, with a witness count vector decoded back.
+function queryVarNames(atoms: ParikhAtom[]): string[] {
+  const names = atoms.map((a, i) => (/^[A-Za-z]$/.test(a.label) ? a.label : `n${i}`));
+  const allValid = names.every((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
+  const unique = new Set(names).size === names.length;
+  return allValid && unique ? names : atoms.map((_, i) => `n${i}`);
+}
+
+const ARITH_EXAMPLES = ['a = b', 'a = 2*b', 'a + b = 5', 'a > b', 'a + b >= 3 & a <= 1'];
+
+function ArithQuery({ sl, atoms }: { sl: Semilinear; atoms: ParikhAtom[] }) {
+  const vars = useMemo(() => queryVarNames(atoms), [atoms]);
+  const [q, setQ] = useState('');
+  const periodTotal = sl.sets.reduce((s, L) => s + L.periods.length, 0);
+  const tooBig = sl.sets.length > 24 || periodTotal > 40;
+
+  const res = useMemo(() => {
+    const src = q.trim();
+    if (!src) return null;
+    if (tooBig) return { kind: 'err' as const, error: 'the image is too large to compile a query against' };
+    const parsed = parsePresburger(src);
+    if (parsed.error || !parsed.formula)
+      return { kind: 'err' as const, error: parsed.error ? parsed.error.message : 'empty constraint' };
+    const unknown = [...freeVars(parsed.formula)].filter((v) => !vars.includes(v));
+    try {
+      const piF = toPresburgerFormula(sl, vars);
+      const { automaton } = compilePresburgerFormula({ kind: 'and', a: piF, b: parsed.formula });
+      const empty = isEmpty(automaton);
+      let witness: number[] | null = null;
+      if (!empty) {
+        const sol = enumerateSolutions(automaton, { maxValue: 64, limit: 1 });
+        if (sol.rows.length) {
+          const byName: Record<string, number> = {};
+          sol.tracks.forEach((nm, i) => (byName[nm] = sol.rows[0].tuple[i]));
+          witness = vars.map((v) => byName[v] ?? 0);
+        }
+      }
+      return { kind: 'ok' as const, empty, witness, unknown };
+    } catch (e) {
+      return { kind: 'err' as const, error: String((e as Error)?.message ?? e) };
+    }
+  }, [q, sl, vars, tooBig]);
+
+  return (
+    <section className="parikh-section">
+      <h3>Ask arithmetic — is there a word whose counts satisfy a constraint?</h3>
+      <p className="muted-note">
+        Type a Presburger constraint over the count variables{' '}
+        {vars.map((v, i) => (
+          <span key={v}>
+            <code>{v}</code> = #{atoms[i].label}
+            {i < vars.length - 1 ? ', ' : ''}
+          </span>
+        ))}
+        . It is AND-ed with π(L)'s own formula and decided non-empty by the studio's Presburger engine.
+      </p>
+      <div className="parikh-arith-ex">
+        {ARITH_EXAMPLES.map((ex) => (
+          <button key={ex} className="parikh-arith-chip" onClick={() => setQ(ex)}>
+            {ex}
+          </button>
+        ))}
+      </div>
+      <input
+        className="parikh-arith-input"
+        value={q}
+        spellCheck={false}
+        placeholder="e.g. a = 2*b"
+        onChange={(e) => setQ(e.target.value)}
+      />
+      {res?.kind === 'err' && <div className="parikh-verdict bad">{res.error}</div>}
+      {res?.kind === 'ok' && (
+        <>
+          {res.unknown.length > 0 && (
+            <p className="muted-note">
+              ⚠ unknown variable{res.unknown.length === 1 ? '' : 's'} {res.unknown.map((u) => <code key={u}>{u}</code>)} — not a
+              count axis; the verdict below treats {res.unknown.length === 1 ? 'it' : 'them'} as an unconstrained natural.
+            </p>
+          )}
+          <div className={`parikh-verdict ${res.empty ? 'bad' : 'ok'}`}>
+            {res.empty
+              ? '∅ — no word of the language has counts satisfying that constraint'
+              : 'YES — the language contains such a word'}
+          </div>
+          {!res.empty && res.witness && (
+            <p className="muted-note">
+              Witness counts:{' '}
+              <code>{vars.map((v, i) => `${v}=${res.witness![i]}`).join(', ')}</code> — i.e.{' '}
+              {atoms.map((a, i) => `${res.witness![i]}×${a.label}`).join(', ')}.
+            </p>
+          )}
+        </>
+      )}
     </section>
   );
 }
