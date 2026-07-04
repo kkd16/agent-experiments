@@ -214,6 +214,19 @@ code {
   }
 }
 
+/* Two-by-two square panels for the tomography mode. */
+.tomo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .tomo-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .split-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

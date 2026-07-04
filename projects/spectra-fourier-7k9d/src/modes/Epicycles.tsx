@@ -12,17 +12,24 @@ import {
   epicyclePositions,
 } from '../lib/paths'
 import type { Point, PresetName } from '../lib/paths'
+import { traceContour, glyphImage, GLYPHS } from '../lib/contour'
+import { loadImageFile } from '../lib/images'
 import { readHashParams, shareLink, readNum, readStr, readBool } from '../lib/urlState'
 
-type Source = 'preset' | 'draw'
+type Source = 'preset' | 'draw' | 'image'
 
 export default function Epicycles() {
   const sp = useMemo(() => readHashParams(), [])
-  const [source, setSource] = useState<Source>('preset')
+  const [source, setSource] = useState<Source>(() =>
+    readStr<Source>(sp, 'src', 'preset', ['preset', 'draw', 'image']),
+  )
   const [preset, setPreset] = useState<PresetName>(() =>
     readStr<PresetName>(sp, 'p', 'treble', PRESETS.map((x) => x.id)),
   )
   const [drawn, setDrawn] = useState<Point[] | null>(null)
+  const [glyph, setGlyph] = useState<string>(() => readStr(sp, 'g', 'λ', GLYPHS.map((x) => x.id)))
+  const [threshold, setThreshold] = useState(() => readNum(sp, 'th', 0.4))
+  const [uploaded, setUploaded] = useState<Float64Array | null>(null)
   const [harmonics, setHarmonics] = useState(() => readNum(sp, 'h', 60))
   const [speed, setSpeed] = useState(() => readNum(sp, 'spd', 0.18))
   const [running, setRunning] = useState(true)
@@ -31,12 +38,23 @@ export default function Epicycles() {
   const [copied, setCopied] = useState(false)
 
   const { ref, size } = useDprCanvas()
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Trace the chosen glyph / uploaded image into a closed contour (pure, so it
+  // lives in a memo rather than an effect).
+  const imagePath = useMemo<Point[]>(() => {
+    if (source !== 'image') return []
+    const buf = uploaded ?? glyphImage(glyph, 256)
+    if (!buf) return []
+    return traceContour(buf, 256, threshold)
+  }, [source, glyph, uploaded, threshold])
 
   // The active path in normalized path-space (~[-1,1]).
   const path = useMemo<Point[]>(() => {
     if (source === 'draw') return drawn ?? []
+    if (source === 'image') return imagePath
     return presetPath(preset, 720)
-  }, [source, preset, drawn])
+  }, [source, preset, drawn, imagePath])
 
   const cycles = useMemo(() => computeEpicycles(path), [path])
   const maxHarmonics = cycles.length
@@ -99,7 +117,10 @@ export default function Epicycles() {
 
   const onShare = () => {
     shareLink('epicycles', {
+      src: source,
       p: preset,
+      g: glyph,
+      th: threshold.toFixed(2),
       h: usedHarmonics,
       spd: speed.toFixed(2),
       circ: showCircles,
@@ -160,6 +181,14 @@ export default function Epicycles() {
         ctx.font = '15px Inter, sans-serif'
         ctx.textAlign = 'center'
         ctx.fillText('Draw a closed shape with your mouse or finger', cx, cy)
+        return
+      }
+
+      if (source === 'image' && cycles.length === 0) {
+        ctx.fillStyle = 'rgba(154,166,212,0.7)'
+        ctx.font = '15px Inter, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillText('No outline found — adjust the threshold or upload a bold silhouette', cx, cy)
         return
       }
 
@@ -256,19 +285,58 @@ export default function Epicycles() {
             options={[
               { id: 'preset', label: 'Preset' },
               { id: 'draw', label: 'Draw' },
+              { id: 'image', label: 'Image' },
             ]}
             onChange={(s) => setSource(s)}
           />
-          {source === 'preset' ? (
+          {source === 'preset' && (
             <Field label="Preset curve">
               <Select value={preset} options={PRESETS} onChange={(p) => setPreset(p)} />
             </Field>
-          ) : (
+          )}
+          {source === 'draw' && (
             <div className="btn-row">
               <Button variant="ghost" onClick={() => setDrawn(null)}>
                 Clear drawing
               </Button>
             </div>
+          )}
+          {source === 'image' && (
+            <>
+              <Field label="Glyph">
+                <Select
+                  value={glyph}
+                  options={GLYPHS}
+                  onChange={(g) => {
+                    setUploaded(null)
+                    setGlyph(g)
+                  }}
+                />
+              </Field>
+              <Field label="Edge threshold" value={threshold.toFixed(2)}>
+                <Slider min={0.1} max={0.8} step={0.02} value={threshold} onChange={setThreshold} />
+              </Field>
+              <div className="btn-row">
+                <Button variant="ghost" onClick={() => fileRef.current?.click()}>
+                  Upload image…
+                </Button>
+                {uploaded && (
+                  <Button variant="ghost" onClick={() => setUploaded(null)}>
+                    Use glyph
+                  </Button>
+                )}
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) loadImageFile(f, 256).then((b) => b && setUploaded(b))
+                }}
+              />
+            </>
           )}
         </Panel>
 
@@ -302,7 +370,7 @@ export default function Epicycles() {
               { label: 'Points', value: String(path.length) },
             ]}
           />
-          {source === 'preset' && (
+          {source !== 'draw' && (
             <div className="btn-row">
               <Button variant="ghost" onClick={onShare}>
                 {copied ? 'Link copied ✓' : 'Copy link'}
@@ -317,8 +385,10 @@ export default function Epicycles() {
           Every closed curve is a sum of <strong>rotating vectors</strong>. We treat each point of
           the path as a complex number <code>x + iy</code>, run an <strong>FFT</strong>, and turn
           each coefficient into an epicycle with its own frequency, radius, and phase. Chained
-          largest-first, they redraw the shape. Slide <em>Harmonics</em> to add detail — or switch
-          to <em>Draw</em> and watch the machine reproduce your own scribble.
+          largest-first, they redraw the shape. Slide <em>Harmonics</em> to add detail, switch to{' '}
+          <em>Draw</em> to watch the machine reproduce your own scribble, or pick <em>Image</em> to
+          trace the outline of a glyph (or an uploaded silhouette) and redraw it from spinning
+          vectors.
         </p>
         <CanvasCard
           title="Epicycle machine"
