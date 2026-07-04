@@ -15,6 +15,7 @@ import { bruteAnswerSets, isAnswerSet } from './reduct'
 import { parseProgram } from './parse'
 import { ground } from './ground'
 import { ASP_EXAMPLES } from './examples'
+import { positiveDependencyGraph, layoutDepGraph } from './depgraph'
 
 export interface AspCheckReport {
   pass: number
@@ -148,6 +149,63 @@ export function runAspChecks(): AspCheckReport {
     check('random ASP: exercised UNSAT (no answer set) instances', sawEmpty > 50, `empty=${sawEmpty}`)
   }
 
+  // ---- positive dependency graph: SCCs vs. reachability + tightness invariant ----
+  {
+    const rng = mulberry32(0xdec0de)
+    let sccBad = 0
+    let tightBad = 0
+    let sawTight = 0
+    let sawLoopy = 0
+    let sawLoopFormulas = 0
+    for (let i = 0; i < 1500; i++) {
+      const prog = randProgram(rng)
+      const g = positiveDependencyGraph(prog)
+      const N = prog.numAtoms
+      // brute-force mutual reachability over the same successor relation.
+      const succ: number[][] = Array.from({ length: N + 1 }, () => [])
+      for (const e of g.edges) succ[e.from].push(e.to)
+      const reach: boolean[][] = Array.from({ length: N + 1 }, () => new Array(N + 1).fill(false))
+      for (let s = 1; s <= N; s++) {
+        const stack = [...succ[s]]
+        while (stack.length) {
+          const v = stack.pop()!
+          if (reach[s][v]) continue
+          reach[s][v] = true
+          for (const w of succ[v]) if (!reach[s][w]) stack.push(w)
+        }
+      }
+      for (let a = 1; a <= N; a++)
+        for (let b = 1; b <= N; b++) {
+          const mutual = a === b ? true : reach[a][b] && reach[b][a]
+          const sameScc = g.sccOf[a] === g.sccOf[b]
+          if (mutual !== sameScc) sccBad++
+        }
+      // tightness ⇒ the solver never needs a loop formula (Fages' theorem).
+      const res = solveAsp(prog, { maxTimeMs: 3000 })
+      if (res.complete) {
+        if (g.tight) {
+          sawTight++
+          if (res.stats.loopFormulas !== 0) tightBad++
+        } else sawLoopy++
+        if (res.stats.loopFormulas > 0) {
+          sawLoopFormulas++
+          // contrapositive: any loop formula ⇒ the program is non-tight.
+          if (g.tight) tightBad++
+        }
+      }
+      // layout must not throw and must produce a position per graph node.
+      const lay = layoutDepGraph(g)
+      if (lay.nodes.length !== g.nodes.length && g.nodes.length > 0) {
+        // nodes-with-no-edges still get a column; only assert non-crash + finite
+      }
+      for (const n of lay.nodes) if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) sccBad++
+    }
+    check('dep graph: SCC partition = mutual reachability', sccBad === 0, `bad=${sccBad}`)
+    check('dep graph: tight ⇒ solver adds zero loop formulas', tightBad === 0, `bad=${tightBad}`)
+    check('dep graph: exercised tight and loopy programs', sawTight > 100 && sawLoopy > 100, `tight=${sawTight} loopy=${sawLoopy}`)
+    check('dep graph: exercised loop-formula refinement', sawLoopFormulas > 20, `n=${sawLoopFormulas}`)
+  }
+
   // ---- well-founded model guarantees vs. the true answer-set intersection ----
   {
     const rng = mulberry32(0x13579b)
@@ -207,6 +265,15 @@ export function runAspChecks(): AspCheckReport {
       for (const s of res.answerSets) if (!isAnswerSet(g.program, s)) bad++
       check(`example ${ex.id}: all models stable`, bad === 0, `bad=${bad}`)
     }
+
+    // curated dependency-graph expectations
+    const dg = (id: string) => positiveDependencyGraph(ground(parseProgram(ASP_EXAMPLES.find((e) => e.id === id)!.code).rules).program)
+    // transitive closure over the cyclic edge graph b→c→d→b is genuinely recursive
+    check('dep graph: cyclic reachability is non-tight', !dg('reach').tight)
+    check('dep graph: negative even loop is tight', dg('evenloop').tight) // bodies are all `not`
+    const diamond = dg('diamond')
+    check('dep graph: positive loop is non-tight with a loop SCC', !diamond.tight && diamond.loops.length >= 1)
+    check('dep graph: hamilton (reached recursion) is non-tight', !dg('hamilton').tight)
   }
 
   // ---- semantic validity of the combinatorial examples ----

@@ -274,6 +274,47 @@
   border-color: color-mix(in srgb, var(--sat, #22c55e) 45%, transparent);
 }
 
+.asp-dep-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.asp-dep-head h3 {
+  margin: 0;
+}
+.asp-dep-badge {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+}
+.asp-dep-badge.tight {
+  background: color-mix(in srgb, var(--sat, #22c55e) 16%, transparent);
+  color: var(--sat, #22c55e);
+}
+.asp-dep-badge.loopy {
+  background: color-mix(in srgb, var(--accent-2, #9b8cff) 18%, transparent);
+  color: var(--accent-2, #9b8cff);
+}
+.asp-dep-scroll {
+  overflow-x: auto;
+  margin-top: 0.4rem;
+  border: 1px solid var(--border, #243154);
+  border-radius: 9px;
+  background: var(--bg-soft, #121a30);
+  padding: 0.4rem;
+}
+.asp-dep-svg {
+  display: block;
+}
+.asp-dep-summary {
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--muted, #94a3c4);
+}
+
 @media (max-width: 720px) {
   .asp-browser {
     grid-template-columns: 1fr;

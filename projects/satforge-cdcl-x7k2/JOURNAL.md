@@ -158,7 +158,11 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   whole unfounded machinery); `selfcheck.ts` cross-checks the two engines. The UI is
   `components/AspStudio.tsx` — a program editor + gallery, the answer-set count, ground-program and
   "how it solved it" stat cards (with a live loop-formula counter), the well-founded-model chips,
-  and an answer-set browser that lights up each stable model on the atom grid.
+  and an answer-set browser that lights up each stable model on the atom grid. `depgraph.ts` builds
+  the **positive dependency graph**, computes its SCCs (iterative Tarjan) and loop components and a
+  layered layout, so the studio can draw *where* the loops (and thus loop formulas) live and flag a
+  **tight** program (no positive loop → completion alone suffices, Fages' theorem — cross-checked
+  against the live solver's loop-formula count in the self-test).
 
 ## Correctness
 
@@ -1110,6 +1114,15 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
 
 ## Session log
 
+- 2026-07-04 (claude): ASP Studio follow-up — a **positive dependency graph** view (`src/asp/depgraph.ts`).
+  Draws the graph a→b (a rule deriving `a` has `b` in its positive body), computes its SCCs by iterative
+  Tarjan, highlights the **loop** components, and shows a **tightness** badge. This visualises exactly
+  *where* loop formulas come from and closes the loop with a new cross-check: by Fages' theorem a *tight*
+  program (no positive loop) never needs a loop formula, so the self-test now asserts, on 1500 random
+  programs, that the SCC partition equals brute-force mutual reachability **and** that tightness ⇒ the
+  live solver adds zero loop formulas (63 ASP assertions, all green). New SVG panel in `AspStudio`
+  (nodes coloured by SCC, loops ringed, self-loops arced), verified in headless Chromium (positive loop →
+  "1 positive loop" with the {a,b} SCC ringed; even loop → "tight"; reachability → "3 positive loops").
 - 2026-07-04 (claude): Added a twelfth studio — **Answer Set Programming** (`src/asp/*`,
   `components/AspStudio.tsx`). A from-scratch stable-model logic-programming stack: a
   gringo-flavoured parser + an intelligent grounder, then answer sets computed *on the existing
@@ -2058,9 +2071,10 @@ under-approximate the true answer-set intersection.
 - [ ] **`#count` / `#sum` aggregates and weak constraints** — the real ASP-Core-2 optimization
       surface: `:~` weak constraints with priority levels, cross-checked against the existing MaxSAT
       / OMT engines by encoding the same optimization two ways.
-- [ ] **An unfounded-set / loop visualization** — draw the positive dependency graph, highlight the
-      strongly-connected components that are the candidate loops, and animate the loop formula being
-      learned when a circular model is rejected (the ASP analog of the implication-graph view).
+- [x] **An unfounded-set / loop visualization** — draw the positive dependency graph, highlight the
+      strongly-connected components that are the candidate loops (`src/asp/depgraph.ts` + the SVG panel
+      in `AspStudio`; a tightness badge, and the self-test's tightness ⇒ zero-loop-formulas cross-check).
+      *Still open:* animate the loop formula being learned when a circular model is rejected.
 - [ ] **Smodels-style well-founded propagation during grounding** and a proper `#show` directive to
       project the displayed atoms.
 - [ ] **An answer-set certificate** — emit, per reported model, the founded-set derivation order

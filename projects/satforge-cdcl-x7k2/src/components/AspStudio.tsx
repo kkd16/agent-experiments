@@ -8,10 +8,14 @@ import {
   buildCompletion,
   formatAnswerSet,
   runAspChecks,
+  positiveDependencyGraph,
+  layoutDepGraph,
   ASP_EXAMPLES,
   type GroundProgram,
   type AspSolveResult,
   type WellFounded,
+  type DepGraph,
+  type DepLayout,
 } from '../asp'
 
 const MAX_ENUM = 3000
@@ -23,6 +27,8 @@ interface Analysis {
   wfm: WellFounded | null
   completionClauses: number
   bodyVars: number
+  dep: DepGraph
+  depLayout: DepLayout
 }
 
 function analyze(code: string): { parseErrors: string[]; ruleCount: number; analysis: Analysis | null } {
@@ -34,6 +40,8 @@ function analyze(code: string): { parseErrors: string[]; ruleCount: number; anal
       ? null
       : solveAsp(g.program, { maxAnswerSets: MAX_ENUM, maxIterations: 400000, maxTimeMs: 8000 })
   const wfm = wellFoundedModel(g.program)
+  const dep = positiveDependencyGraph(g.program)
+  const depLayout = layoutDepGraph(dep)
   return {
     parseErrors: parsed.errors,
     ruleCount: parsed.rules.length,
@@ -44,8 +52,94 @@ function analyze(code: string): { parseErrors: string[]; ruleCount: number; anal
       wfm,
       completionClauses: comp.cnf.clauses.length,
       bodyVars: comp.numVars - g.program.numAtoms,
+      dep,
+      depLayout,
     },
   }
+}
+
+// A small qualitative palette for SCCs (loop components are re-tinted at render).
+const SCC_COLORS = ['#6ea8fe', '#9b8cff', '#22c55e', '#f59e0b', '#ef476f', '#2dd4bf', '#e879f9', '#f472b6']
+
+function DependencyGraph({ prog, dep, layout }: { prog: GroundProgram; dep: DepGraph; layout: DepLayout }) {
+  const RW = 96
+  const RH = 26
+  const center = new Map(layout.nodes.map((n) => [n.atom, { x: n.x + RW / 2, y: n.y + RH / 2 }]))
+  const w = Math.max(layout.width + RW, 260)
+  const h = Math.max(layout.height + RH, 120)
+  return (
+    <svg className="asp-dep-svg" viewBox={`0 0 ${w} ${h}`} width="100%" style={{ maxHeight: 420 }}>
+      <defs>
+        <marker id="asp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--muted, #94a3c4)" />
+        </marker>
+      </defs>
+      {layout.edges.map((e, i) => {
+        const a = center.get(e.from)
+        const b = center.get(e.to)
+        if (!a || !b) return null
+        if (e.from === e.to) {
+          // self-loop: a small arc above the node
+          return (
+            <path
+              key={i}
+              d={`M ${a.x - 8} ${a.y - RH / 2} C ${a.x - 24} ${a.y - RH / 2 - 26}, ${a.x + 24} ${a.y - RH / 2 - 26}, ${a.x + 8} ${a.y - RH / 2}`}
+              fill="none"
+              stroke="var(--accent-2, #9b8cff)"
+              strokeWidth={1.5}
+              markerEnd="url(#asp-arrow)"
+            />
+          )
+        }
+        // trim endpoints toward rectangle edges
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const len = Math.hypot(dx, dy) || 1
+        const ux = dx / len
+        const uy = dy / len
+        const sameCol = Math.abs(dx) < 4
+        const x1 = a.x + ux * (sameCol ? 0 : RW / 2 + 2)
+        const y1 = a.y + uy * (sameCol ? RH / 2 + 2 : 8)
+        const x2 = b.x - ux * (RW / 2 + 6)
+        const y2 = b.y - uy * (sameCol ? RH / 2 + 6 : 8)
+        const loopEdge = dep.sccOf[e.from] === dep.sccOf[e.to]
+        return (
+          <line
+            key={i}
+            x1={x1}
+            y1={y1}
+            x2={x2}
+            y2={y2}
+            stroke={loopEdge ? 'var(--accent-2, #9b8cff)' : 'var(--border, #243154)'}
+            strokeWidth={loopEdge ? 1.8 : 1.2}
+            markerEnd="url(#asp-arrow)"
+          />
+        )
+      })}
+      {layout.nodes.map((n) => {
+        const color = SCC_COLORS[n.scc % SCC_COLORS.length]
+        return (
+          <g key={n.atom} transform={`translate(${n.x},${n.y})`}>
+            <rect
+              width={RW}
+              height={RH}
+              rx={n.loop ? 13 : 6}
+              fill={n.loop ? `color-mix(in srgb, ${color} 26%, transparent)` : 'var(--panel-2, #18223f)'}
+              stroke={n.loop ? color : 'var(--border, #243154)'}
+              strokeWidth={n.loop ? 2 : 1}
+            />
+            <text x={RW / 2} y={RH / 2 + 4} textAnchor="middle" fontSize="11" fontFamily="ui-monospace, monospace" fill="var(--text, #e6ecff)">
+              {truncate(prog.atomNames[n.atom], 13)}
+            </text>
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
 export function AspStudio() {
@@ -243,6 +337,36 @@ export function AspStudio() {
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {analysis!.dep.nodes.length > 0 && (
+              <div className="imc-panel asp-dep">
+                <div className="asp-dep-head">
+                  <h3>Positive dependency graph</h3>
+                  <span className={`asp-dep-badge ${analysis!.dep.tight ? 'tight' : 'loopy'}`}>
+                    {analysis!.dep.tight
+                      ? 'tight — completion alone pins the answer sets'
+                      : `${analysis!.dep.loops.length} positive loop${analysis!.dep.loops.length === 1 ? '' : 's'} — loop formulas may be needed`}
+                  </span>
+                </div>
+                <p className="imc-note">
+                  An edge a → b means some rule deriving <em>a</em> has <em>b</em> in its positive body. The
+                  highlighted strongly-connected components are the program's positive loops; every unfounded
+                  set the solver can meet lives inside them. A program with no loop is <em>tight</em> (Fages'
+                  theorem), and then the {result.stats.loopFormulas === 0 ? 'search added no loop formulas' : 'completion would already suffice'}.
+                </p>
+                {analysis!.dep.nodes.length <= 48 ? (
+                  <div className="asp-dep-scroll">
+                    <DependencyGraph prog={analysis!.program} dep={analysis!.dep} layout={analysis!.depLayout} />
+                  </div>
+                ) : (
+                  <div className="asp-dep-summary">
+                    {analysis!.dep.nodes.length} atoms, {analysis!.dep.edges.length} positive edges,{' '}
+                    {analysis!.dep.sccs.length} SCCs, {analysis!.dep.loops.length} loop component
+                    {analysis!.dep.loops.length === 1 ? '' : 's'} — graph too large to draw.
+                  </div>
+                )}
               </div>
             )}
 
