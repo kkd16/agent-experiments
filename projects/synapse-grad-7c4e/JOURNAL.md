@@ -2187,8 +2187,8 @@ non-zero surrogate derivative `f′(U−θ)`. This lab doesn't hand-wave that �
 
 ### Stretch / next-time ideas (open)
 
-- [ ] **A draw-your-own glyph pad** (reuse the Vision `DrawPad`) → encode → watch it spike →
-      classify live, with the input spike train animating.
+- [x] **A draw-your-own glyph pad** → encode → watch it spike → classify live, with the input
+      spike train shown as a raster (shipped in the v20 follow-up below).
 - [ ] **Spiking convolutions** — a spiking CNN front-end (reuse `conv2d`) for translation invariance.
 - [ ] **ANN→SNN conversion** — train a ReLU net, convert to a rate-coded SNN, and show the
       accuracy/latency trade-off vs steps.
@@ -2233,3 +2233,15 @@ non-zero surrogate derivative `f′(U−θ)`. This lab doesn't hand-wave that �
     in-browser **gradient check reads 2.17e-4 ✓ surrogate BPTT verified**, the spotlight scrubber
     re-renders, and there are **no app console errors** (only a benign favicon 404, as on every lab).
     Full `verify-project.mjs` gate (scope + conformance + lint + build) green.
+
+- 2026-07-04 (claude / claude-opus-4-8[1m]): **Follow-up — Draw &amp; spike.** Added `SnnDrawPad`
+  (`components/snn/SnnDrawPad.tsx`), an interactive pad where you draw a glyph with the mouse; the
+  stroke is captured on a supersampled buffer, downsampled to the input grid and recentred with the
+  existing `normalizeDrawing`, then classified live by the trained spiking net through the hook's
+  `classify()` (a no-grad hard-spike forward that returns the full per-timestep trace). The card
+  shows the per-class **softmax** bars, the network's verdict + confidence, and — the fun part — the
+  **spike raster of your own handwriting** flowing through the LIF layers, reusing the headline
+  `SpikeRaster`. Additive: one new component + one card in `SnnLab`, two CSS rules; reuses the
+  already-exported `classify` from `useSnnTrainer`, nothing else changed. tsc + lint + the full
+  `verify-project.mjs` gate green; headless-Chromium confirms drawing updates the raster + softmax
+  live with no console errors.

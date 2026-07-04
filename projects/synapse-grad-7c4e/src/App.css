@@ -2527,3 +2527,5 @@ label.toggle input {
 .firing-val { width: 46px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; color: #cbd5e1; }
 .surrogate-svg { display: block; max-width: 100%; background: #0b1220; border-radius: 8px; }
 .confusion-svg { display: block; max-width: 100%; }
+.snn-draw { display: flex; flex-direction: column; gap: 10px; }
+.snn-draw-raster { border-top: 1px solid rgba(148,163,184,0.12); padding-top: 8px; overflow-x: auto; }

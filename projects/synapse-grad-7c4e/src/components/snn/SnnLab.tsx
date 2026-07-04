@@ -23,6 +23,7 @@ import SurrogatePlot from './SurrogatePlot';
 import FiringRates from './FiringRates';
 import LearningChart from './LearningChart';
 import ConfusionMatrix from './ConfusionMatrix';
+import SnnDrawPad from './SnnDrawPad';
 
 const HASH_KEY = 'y';
 
@@ -80,6 +81,7 @@ export default function SnnLab() {
     trace,
     spotlightInfo,
     runGradCheck,
+    classify,
     snapshot,
     prepareLoad,
   } = useSnnTrainer(config);
@@ -215,6 +217,16 @@ export default function SnnLab() {
             Why a network of step functions can learn at all: the backward pass borrows a smooth derivative.
           </p>
           <SurrogatePlot surrogate={config.surrogate} slope={config.slope} />
+        </div>
+      </section>
+
+      <section className="stage-row">
+        <div className="card">
+          <div className="card-title">
+            Draw &amp; spike
+            <span className="muted small"> — your own handwriting, encoded to spikes and classified live</span>
+          </div>
+          <SnnDrawPad handle={handle} tick={tick} classify={classify} />
         </div>
       </section>
 
