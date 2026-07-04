@@ -15,6 +15,12 @@ import { Lempel } from './routes/Lempel'
 import { Deflate } from './routes/Deflate'
 import { Lzma } from './routes/Lzma'
 import { Png } from './routes/Png'
+import { Channel } from './routes/Channel'
+import { HammingCode } from './routes/HammingCode'
+import { ReedSolomon } from './routes/ReedSolomon'
+import { Convolutional } from './routes/Convolutional'
+import { Ldpc } from './routes/Ldpc'
+import { ChannelLab } from './routes/ChannelLab'
 import { Burrows } from './routes/Burrows'
 import { Suffix } from './routes/Suffix'
 import { Workbench } from './routes/Workbench'
@@ -35,6 +41,12 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   deflate: Deflate,
   lzma: Lzma,
   png: Png,
+  channel: Channel,
+  hamming: HammingCode,
+  reedsolomon: ReedSolomon,
+  convolutional: Convolutional,
+  ldpc: Ldpc,
+  channellab: ChannelLab,
   burrows: Burrows,
   suffix: Suffix,
   workbench: Workbench,

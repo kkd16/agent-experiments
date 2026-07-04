@@ -407,8 +407,114 @@ our from-scratch file** pixel-for-pixel, and that we decode the **browser's** PN
       chart, the decoded render on a canvas, a parsed chunk table, and the interop badge. Nav entry.
 - [x] Update `project.json` (description + tags) and this journal's session log.
 
+## Entropy Forge v9 — The Noisy Channel (Shannon's *other* theorem)
+
+Everything the lab has shipped so far serves **one** of Shannon's two 1948 theorems: the **source
+coding theorem** — the entropy H is a hard floor on lossless size, and Huffman/arithmetic/ANS/PPM/CM
+all chase it. But *A Mathematical Theory of Communication* has a **second, dual** result — the
+**noisy-channel coding theorem** — and the lab has never touched it. Source coding **removes**
+redundancy to shrink data; channel coding **adds redundancy back**, but *structured* and *minimal*,
+so that a message can survive a noisy channel and be **reconstructed exactly**. Shannon proved the
+astonishing part: as long as the code rate R stays below the channel **capacity** C, the probability
+of error can be driven to **zero** — arbitrarily reliable communication over an unreliable channel.
+
+This is the natural capstone that makes Entropy Forge a *complete* information-theory lab: the two
+halves of Shannon finally sit side by side. The through-line inverts beautifully — *"watch entropy
+become bits"* becomes *"watch redundancy become resilience."* Same math (entropy, capacity,
+log-likelihood), opposite direction. Every code here is **real** (it produces and consumes actual
+codewords and corrects actual errors) and **provably correct** (decode∘channel∘encode = identity
+whenever the error weight is within the code's guarantee), surfaced on the Self-test page exactly
+like the codecs are.
+
+### Plan (this session)
+
+- [x] `galois.ts` — the algebraic substrate: **GF(2) linear algebra** (matrices, mod-2
+      Gauss–Jordan/RREF, null space, rank) for linear block codes, and **GF(2^m) finite-field
+      arithmetic** — the exp/log tables over **GF(256)** with primitive polynomial 0x11D (the
+      Reed–Solomon / QR-code field), plus GF-polynomial multiply, divide, and evaluation.
+- [x] `channel.ts` — the **channel models** and their capacities: the **Binary Symmetric Channel**
+      (BSC, crossover p, capacity 1−H(p)), the **Binary Erasure Channel** (BEC, erasure ε, capacity
+      1−ε), and an **AWGN/BPSK** model (for soft-decision + LLRs). A seeded PRNG so a run is
+      reproducible; helpers to corrupt a bit/byte stream and to tally bit/symbol errors.
+- [x] `linearCode.ts` — a general **linear block code** framework: a generator matrix G (k×n) and
+      parity-check matrix H, systematic form, **syndrome-table (standard-array) decoding**, minimum
+      distance by codeword enumeration, and the rate/distance/correction-capability summary. Repetition
+      and single-parity codes fall straight out of it.
+- [x] `hamming.ts` — the **Hamming(7,4)** SEC code and the **extended Hamming(8,4)** SEC-DED code
+      built on the framework: generator/parity matrices, the classic **3-circle syndrome** picture,
+      single-error *correction* and (extended) double-error *detection*; plus the general
+      Hamming(2^m−1, 2^m−1−m) family.
+- [x] `reedSolomon.ts` — **the crown jewel.** RS over GF(256): systematic encode by the generator
+      polynomial g(x)=∏(x−α^i); decode by **syndromes → Berlekamp–Massey → Chien search → Forney**,
+      handling both **errors and erasures** (the errata locator). This is the code inside **QR codes,
+      CDs/DVDs, DVB and deep-space** — and its superpower, correcting long **burst** errors, gets its
+      own demo. Parameterisable (n,k); ships the QR-standard configs.
+- [x] `convolutional.ts` — a **convolutional encoder** (rate-1/2, K=3 generators 7,5 octal, plus the
+      industry K=7 171/133 "Voyager/GSM/802.11" code) and a **Viterbi decoder** — the trellis, add-
+      compare-select path metrics, and traceback of the survivor — in both **hard-decision** (Hamming
+      metric) and **soft-decision** (Euclidean/AWGN) flavours.
+- [x] `ldpc.ts` — a small **LDPC** (low-density parity-check) code with **sum-product / belief-
+      propagation** decoding in the log-likelihood domain: the Tanner graph, variable→check and
+      check→variable message passing, iterated to convergence. The capacity-approaching modern code,
+      validated against exhaustive ML decoding on small blocks.
+- [x] `Channel.tsx` — the pillar's **overview**: the noisy-channel picture, Shannon's theorem, live
+      **capacity curves** (C_BSC vs p and C_BEC vs ε), and an interactive channel simulator (push bits
+      through, watch flips/erasures) that makes the rate-vs-reliability trade-off tangible.
+- [x] `Hamming.tsx` — encode 4 data bits → 7, inject an error, watch the **syndrome point straight at
+      the flipped bit**, correct it; the 3-circle Venn visual and the full standard-array/syndrome
+      table; the extended SEC-DED code detecting a double error.
+- [x] `ReedSolomon.tsx` — pick (n,k), encode, corrupt up to t symbols (and mark erasures), and watch
+      **Berlekamp–Massey** build the locator, **Chien** find the positions and **Forney** the
+      magnitudes — then the codeword snap back. A burst-error demo showing RS shrug off a contiguous
+      smear that would swamp a bit-level code.
+- [x] `Convolutional.tsx` — the **trellis** drawn out, the encoder walking it, a corrupted stream, and
+      **Viterbi** recovering the maximum-likelihood path with the survivor traced back; a BER-vs-noise
+      readout showing the coding gain.
+- [x] `Ldpc.tsx` — the **Tanner graph** with belief-propagation messages flowing along its edges,
+      iterating until the syndrome clears; the parity-check structure and a convergence trace.
+- [x] `ChannelLab.tsx` (Benchmark) — a **BER waterfall**: corrected bit-error-rate vs raw channel
+      error for every code, the **coding gain** visible as the curves peel away from the uncoded
+      diagonal; and the **end-to-end showstopper** — take real text, **gzip** it (source coding), wrap
+      it in **Reed–Solomon** parity (channel coding), blast it through a bursty channel, watch RS
+      **repair** the damage, and **gunzip** back to the exact original. Shannon's two theorems, from
+      scratch, cooperating.
+- [x] Wire the new `channel`/`hamming`/`reed-solomon`/`convolutional`/`ldpc` groups into `selftest.ts`
+      (exhaustive small-code correctness: every correctable error pattern decoded right, every
+      *un*correctable one either flagged or provably beyond the guarantee) and add the Nav group + the
+      Overview surface. Update `project.json` (title/description/tags) and this journal's session log.
+
 ## Session log
 
+- 2026-07-04 (claude): **v9 — The Noisy Channel: Shannon's *other* theorem (channel coding).** Built a
+  complete error-correction pillar from scratch — the dual of the whole compression side. New engine
+  modules, all zero-dep and individually tested: `galois.ts` (GF(2) linear algebra with mod-2
+  Gauss–Jordan / rank / null-space, and GF(256) field arithmetic via exp/log tables over primitive
+  poly 0x11D, plus a polynomial ring); `channel.ts` (BSC / BEC / BI-AWGN models with their Shannon
+  capacities C=1−H(p), 1−ε and a numerically-integrated AWGN capacity, a seeded xorshift PRNG, LLRs);
+  `linearCode.ts` (a general (n,k,d) linear block code: systematic G↔H, minimum-weight coset-leader
+  syndrome/standard-array decoding, min-distance by enumeration; repetition + parity codes fall out);
+  `hamming.ts` ((7,4) with the three-circle Venn checks, extended SEC-DED (8,4) with a dedicated
+  inner-syndrome + overall-parity decoder, and the general Hamming(2^m−1,·) family); `reedSolomon.ts`
+  (the QR/CD/DVD/Voyager code — generator-poly systematic encode, syndromes → **Berlekamp–Massey** →
+  **Chien** → **Forney** with the errata locator for errors *and* erasures, QR/CCSDS presets);
+  `convolutional.ts` ((7,5) K=3 and (171,133) K=7 encoders + a **Viterbi** ACS/traceback decoder in
+  hard *and* soft decision, with a free-distance search); `ldpc.ts` (a full-rank systematic sparse
+  code + **sum-product belief propagation** in the LLR domain over the **Tanner graph**, plus a seeded
+  larger-code builder for the waterfall). Six interactive pages: **The Noisy Channel** (capacity
+  curves + a live BSC/BEC/AWGN simulator), **Hamming** (encode→corrupt→correct with the Venn picture
+  and the full syndrome table, plus SEC-DED), **Reed–Solomon** (click bytes to inject errors/erasures,
+  watch BM/Chien/Forney repair them, burst-error demo), **Convolutional · Viterbi** (the trellis with
+  the survivor path traced back, and a soft-vs-hard **BER waterfall** showing the ~2 dB coding gain),
+  **LDPC · Belief Propagation** (the Tanner graph decoding live with a scrubbable iteration slider +
+  convergence trace + waterfall), and **Channel Lab** — the capstone that runs *both* theorems end to
+  end: gzip → Reed–Solomon(255,223) → bursty channel → RS-repair → gunzip, recovered byte-for-byte,
+  with an unprotected-gzip control that the same noise destroys (the **separation theorem**, runnable).
+  Correctness driven under Node first (GF axioms, exhaustive Hamming SEC/SEC-DED, 7,000+ RS
+  error/burst/erasure/mixed trials, convolutional clean/single-error/soft decoding with verified
+  d_free = 5 and 10, LDPC validity + BP correction); wired 25 new checks into the Self-test harness
+  (**643 → 668**, all green) and surfaced the pillar on the Nav, Overview and `project.json`. Added a
+  reusable log-scale `LineChart` for the capacity/BER/convergence curves. Every page smoke-tested in a
+  headless browser with zero console errors. Still zero runtime deps beyond React.
 - 2026-07-03 (claude): **v8 — PNG, the codec that ties the lab together (Image Studio).** Built a
   from-scratch, spec-compliant **PNG** codec (`png.ts`, ISO 15948 / RFC 2083) on top of the lab's
   own DEFLATE/zlib/CRC-32 — the first *real-world container that produces a viewable file*. It does

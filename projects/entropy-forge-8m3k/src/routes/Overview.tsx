@@ -19,8 +19,13 @@ const MODULES = [
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
   { route: 'deflate', name: 'DEFLATE & gzip', desc: 'The real RFC 1951/1952 codec — its output round-trips through the browser’s own gunzip.' },
+  { route: 'channel', name: 'The Noisy Channel', desc: 'Shannon’s other theorem — capacity, and why redundancy becomes resilience.' },
+  { route: 'reedsolomon', name: 'Reed–Solomon', desc: 'The code in QR/CD/DVD/Voyager — corrects byte errors and bursts over GF(256).' },
+  { route: 'convolutional', name: 'Convolutional · Viterbi', desc: 'The trellis code + maximum-likelihood decoder that flew on Voyager.' },
+  { route: 'ldpc', name: 'LDPC · Belief Prop.', desc: 'Capacity-approaching codes decoded on a Tanner graph — inside 5G & Wi-Fi 6.' },
+  { route: 'channellab', name: 'Channel Lab', desc: 'End-to-end: gzip → Reed–Solomon → bursty channel → recovered byte-for-byte.' },
   { route: 'benchmark', name: 'Benchmark', desc: 'Race every codec on shared corpora against the entropy floor.' },
-  { route: 'selftest', name: 'Self-test', desc: 'Every codec round-trips every input — proven live.' },
+  { route: 'selftest', name: 'Self-test', desc: 'Every codec round-trips, every ECC corrects — proven live.' },
 ]
 
 export function Overview() {
@@ -32,15 +37,19 @@ export function Overview() {
   return (
     <div>
       <PageHeader
-        kicker="Information Theory · Lossless Compression"
+        kicker="Information Theory · Both of Shannon's Theorems"
         title="Entropy Forge"
         lede={
           <>
-            A hands-on laboratory of lossless data compression, built from first principles with
-            zero dependencies. Every codec here — Huffman (static & adaptive), arithmetic,{' '}
-            <strong>rANS</strong>, <strong>PPM</strong>, LZ77, LZW, and a full Burrows–Wheeler stack
-            over a linear-time <strong>suffix array</strong> — is implemented from scratch and{' '}
-            <strong>provably round-trips</strong> its input. Watch entropy turn into bits.
+            A hands-on laboratory of information theory, built from first principles with zero
+            dependencies. The <strong>source-coding</strong> half implements every major lossless codec —
+            Huffman, arithmetic, <strong>rANS/tANS</strong>, <strong>PPM</strong>, context mixing, LZ77/LZW,
+            a Burrows–Wheeler stack, and the real DEFLATE/gzip, LZMA and PNG formats — each provably
+            round-tripping its input. The <strong>channel-coding</strong> half builds Shannon's{' '}
+            <em>other</em> theorem: <strong>Hamming</strong>, <strong>Reed–Solomon</strong>,{' '}
+            <strong>convolutional/Viterbi</strong> and <strong>LDPC</strong> error-correction, each
+            provably repairing every corruption within its guarantee. Watch entropy turn into bits — then
+            watch redundancy turn into resilience.
           </>
         }
       />
@@ -121,6 +130,34 @@ export function Overview() {
             with arithmetic coding. The <strong>Benchmark</strong> page assembles those very
             combinations here — DEFLATE-lite and bzip-lite — and races them, each result checked by
             a full decode back to the original bytes.
+          </p>
+        </div>
+      </Panel>
+
+      <SectionTitle>The other half of Shannon</SectionTitle>
+      <Panel
+        title="Channel coding — redundancy becomes resilience"
+        note="Source coding removes redundancy to shrink data. Channel coding adds it back — structured and minimal — so a message survives a noisy channel and reconstructs exactly."
+      >
+        <div className="prose">
+          <p style={{ marginTop: 0 }}>
+            Shannon's 1948 paper proved <em>two</em> theorems. The rest of this lab chases the first —
+            the entropy floor on compression. This pillar builds the second: the{' '}
+            <strong>noisy-channel coding theorem</strong>. Every channel has a <strong>capacity</strong>{' '}
+            C, and any code of rate R &lt; C can be made <strong>arbitrarily reliable</strong>. The
+            error-correcting codes here are concrete constructions under that ceiling —{' '}
+            <strong>Hamming</strong> (syndrome = error position), <strong>Reed–Solomon</strong>{' '}
+            (the QR/CD/DVD/Voyager code, byte- and burst-error correcting over GF(256)),{' '}
+            <strong>convolutional codes with Viterbi</strong> (the trellis and its maximum-likelihood
+            decoder), and <strong>LDPC with belief propagation</strong> (capacity-approaching, inside 5G
+            and Wi-Fi 6) — each proven to decode every corruption within its guarantee.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            The <strong>Channel Lab</strong> page runs both halves together: it <em>gzips</em> a message
+            (source coding), wraps it in <em>Reed–Solomon</em> parity (channel coding), fires it through a
+            bursty channel, and recovers the original byte-for-byte — while the same noise on the
+            unprotected stream destroys it. That is Shannon's <strong>separation theorem</strong>, made
+            runnable.
           </p>
         </div>
       </Panel>

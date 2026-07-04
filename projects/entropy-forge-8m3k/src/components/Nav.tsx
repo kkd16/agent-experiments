@@ -38,6 +38,17 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     ],
   },
   {
+    label: 'Channel coding',
+    items: [
+      { route: 'channel', name: 'The Noisy Channel' },
+      { route: 'hamming', name: 'Hamming Codes' },
+      { route: 'reedsolomon', name: 'Reed–Solomon' },
+      { route: 'convolutional', name: 'Convolutional · Viterbi' },
+      { route: 'ldpc', name: 'LDPC · Belief Prop.' },
+      { route: 'channellab', name: 'Channel Lab · end-to-end' },
+    ],
+  },
+  {
     label: 'Use it',
     items: [{ route: 'workbench', name: 'Workbench' }],
   },
