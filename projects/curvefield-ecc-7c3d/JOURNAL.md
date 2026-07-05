@@ -1219,7 +1219,64 @@ existing BLS12-381 𝔾₁ already gives, and reuses the R1CS shape from the Gro
 - [ ] **Future:** **CycleFold / HyperNova** — fold higher-degree (CCS) constraints, or compress the
       final relaxed instance with one of the lab's existing SNARKs (Spartan-style) instead of opening it.
 
+### Session 24 plan — SLH-DSA (FIPS 205): the toy SPHINCS⁺ becomes the standard
+
+The `/pqsig` lab walks Lamport → WOTS⁺ → XMSS → a *toy* SPHINCS⁺, but that toy is a teaching sketch
+(RFC-8391 hashing, full 32-byte output, tiny `SPHINCS_TOY` params) — not the scheme NIST actually
+standardised. ML-KEM and ML-DSA each earned a *standards-grade, vector-pinned* lab; the hash-based
+signature deserves the same. Build the real **SLH-DSA (FIPS 205)** for the SHA-2 category-1 sets,
+byte-exact and pinned to NIST's own ACVP vectors, sitting beside ML-DSA as the conservative
+(hash-only) post-quantum signature.
+
+- [x] `slhdsa.ts`: the FIPS-205 `Adrs` (correct field layout) + the **22-byte ADRSc** compression.
+- [x] the SHA-2 tweakable-hash family `F/H/T/PRF/PRF_msg/H_msg` (§11.2.1), incl. **MGF1-SHA-256** for `H_msg`.
+- [x] **WOTS⁺** (base-2ᵂ digits + len₂ checksum), **XMSS** (Merkle of WOTS⁺ + auth paths).
+- [x] the **d-layer hypertree** and **FORS** (stateless few-time signature, R-chosen leaf).
+- [x] `slh_sign`/`slh_verify` with the §10.2 pure context wrapper, deterministic + hedged modes.
+- [x] byte-exact key/signature packing for **-128f** and **-128s** (pk 32 B, sig 17088 / 7856 B).
+- [x] pin **keyGen** (seeds → PK.root) and **sigGen** (SHA-256 of the deterministic signature) to NIST ACVP.
+- [x] a `/slhdsa` page: the stack, param-set table, live sign/verify + tamper, FORS/hypertree views,
+      a hash-cost readout, a live NIST-conformance panel, and an SLH-DSA-vs-ML-DSA comparison.
+- [x] a `SLH-DSA` self-test group (both keyGen KATs + the -128f sigGen KAT + verify/tamper/ctx).
+- [ ] follow-up: the category-3/5 sets (SHA-512 for `H`/`T`, larger n) and the SHAKE instantiation.
+- [ ] follow-up: **HashSLH-DSA** (the FIPS 205 pre-hash mode) and a Merkle-signatures interop note.
+- [ ] follow-up: a Web-Worker path so -128s signing streams progress instead of running deferred.
+
 ## Session log
+
+- 2026-07-05 (claude): **SLH-DSA (FIPS 205) — the *standardised* stateless hash-based signature, from
+  scratch and pinned to NIST's own vectors.** The lab already carried a *toy* SPHINCS⁺ (`sphincs.ts`,
+  an RFC-8391-flavoured construction on the full 32-byte SHA-256 output, `SPHINCS_TOY`). This session
+  turns that educational sketch into the real, standards-grade scheme — exactly the move the lab made
+  for ML-KEM (FIPS 203) and ML-DSA (FIPS 204). One new engine module (`slhdsa.ts`), one page
+  (`/slhdsa`), one self-test group; zero new dependencies, still zero crypto deps.
+  - **`src/ecc/slhdsa.ts`** — SLH-DSA for the SHA-2, category-1 sets (**-128f** and **-128s**), built to
+    the letter of FIPS 205: the 32-byte `Adrs` with the FIPS-205 field layout (4-byte layer, 12-byte
+    tree, 4-byte type) and its **22-byte ADRSc compression**; the SHA-2 tweakable-hash family
+    `F/H/T/PRF/PRF_msg/H_msg` (§11.2.1 — PK.seed zero-padded to a 64-byte block, and `H_msg` an
+    **MGF1-SHA-256** over `R ‖ PK.seed ‖ SHA-256(R ‖ PK.seed ‖ PK.root ‖ M)`); **WOTS⁺** (base-2ᵂ digits
+    + the len₂ checksum, chaining via `F`); **XMSS** (a Merkle tree of WOTS⁺ keys, auth paths);
+    the **d-layer hypertree**; and **FORS** (a stateless few-time signature whose leaf is chosen
+    pseudo-randomly from R). Full `slh_sign_internal`/`slh_verify_internal` plus the FIPS 205 §10.2 pure
+    context wrapper `M′ = 0x00 ‖ |ctx| ‖ ctx ‖ M`, deterministic (opt_rand = PK.seed) and hedged modes,
+    and byte-exact key/signature packing (pk 32 B, sk 64 B, sig 17088/7856 B). An optional per-call hash
+    counter (`Stats`) makes the scheme's cost legible.
+  - **Pinned to NIST ACVP FIPS 205 vectors, byte-for-byte.** `KEYGEN_KAT` maps the three seeds to the
+    published public root for both sets; `SIGGEN_KAT` reproduces the deterministic *pure/external*
+    signature over the vector's message+context and checks `SHA-256(sig)` against the pinned digest.
+    Developed against these vectors in a Node reference *and* the TS port before any UI — all pass
+    (keyGen roots + sigGen digests for -128f and -128s).
+  - **`src/pages/SlhDsaPage.tsx`** + `/slhdsa` route (nav "SLH-DSA", after ML-DSA): the four-layer stack
+    explained, a parameter-set table (the size⇄speed trade), a live keypair + signature over your own
+    message/context with tamper toggles, a signature-composition bar (R ‖ FORS ‖ hypertree), a FORS
+    leaf-selection strip (k trees), a hypertree walk (d layers, active leaf highlighted), a live hash-cost
+    readout, a **standards-conformance panel** that recomputes NIST's keyGen roots and sigGen digests in
+    the browser, and an SLH-DSA-vs-ML-DSA comparison (hash vs lattice). Heavy compute is deferred off the
+    render frame; -128f signs live (~10⁵ hashes), -128s (~2·10⁶) is opt-in.
+  - **Self-test** grew with a new **SLH-DSA** group: both keyGen KATs (-128f/-128s) reproduce NIST's
+    public root, the -128f sigGen KAT reproduces NIST's signature digest, and verify accepts the genuine
+    signature while rejecting a mauled byte and a wrong context. The full `verify-project.mjs` gate
+    (scope + conformance + lint + build) is green.
 
 - 2026-07-05 (claude / claude-opus-4-8[1m]): **Nova — a folding scheme for IVC, from scratch.** Added
   the post-2019 idea the proof-system shelf was missing: *folding*. One new engine module (`nova.ts`),

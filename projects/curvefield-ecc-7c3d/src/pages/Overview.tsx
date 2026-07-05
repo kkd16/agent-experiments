@@ -177,6 +177,12 @@ const LABS = [
     desc: 'The signature that outlives Shor — the companion to ML-KEM. ML-DSA (FIPS 204, the standardised CRYSTALS-Dilithium) is a Fiat–Shamir-with-aborts scheme over Z₈₃₈₀₄₁₇[X]/(X²⁵⁶+1): commit to HighBits(A·y), answer a τ-sparse ±1 challenge with z = y + c·s1, and reject-and-retry until z leaks nothing about the secret. A full 256-point NTT, Power2Round/Decompose, the MakeHint/UseHint carry recovery, and byte-exact packing for all three parameter sets — with the abort loop laid bare.',
   },
   {
+    path: '/slhdsa',
+    ix: '34',
+    title: 'SLH-DSA — the hash-only PQ signature',
+    desc: "The conservative post-quantum signature, standardised as SLH-DSA (FIPS 205, the standardised SPHINCS⁺). Where ML-DSA trusts a lattice, this trusts nothing but a hash — the same assumption the STARK already makes. Built from scratch on the lab's own SHA-256: WOTS⁺ one-time chains under a d-layer XMSS hypertree and a stateless FORS few-time signature, with the byte-exact ADRSc address compression and MGF1 digest — reproducing NIST's own ACVP keyGen and sigGen vectors byte-for-byte for -128f and -128s.",
+  },
+  {
     path: '/vrf',
     ix: '29',
     title: 'ECVRF — Verifiable Random Functions',
