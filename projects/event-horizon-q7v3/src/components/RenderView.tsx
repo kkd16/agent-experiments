@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Params } from '../types'
 import { BlackHoleRenderer, RendererError } from '../gl/renderer'
+import { effectiveDiskInner, kerrISCO } from '../state'
+import Spectrograph from './Spectrograph'
 
 interface Props {
   params: Params
@@ -18,6 +20,8 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
 
   const [error, setError] = useState<string | null>(null)
   const [fps, setFps] = useState(0)
+  const [effScale, setEffScale] = useState(1)
+  const [showSpectro, setShowSpectro] = useState(true)
 
   // Drag state kept in refs so it never triggers React re-renders mid-gesture.
   const drag = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 })
@@ -50,6 +54,7 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
     const start = last
     let frames = 0
     let acc = 0
+    let autoScale = paramsRef.current.renderScale // adaptive-quality working scale
 
     const loop = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.05)
@@ -57,16 +62,28 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       const p = paramsRef.current
       if (p.autoRotate) autoPhase += dt * 6 // degrees per second
 
+      // Effective internal scale: auto-tuned when adaptive quality is on, else the slider value.
+      const scale = p.adaptiveQuality ? autoScale : p.renderScale
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      const w = Math.max(1, Math.round(container.clientWidth * dpr * p.renderScale))
-      const h = Math.max(1, Math.round(container.clientHeight * dpr * p.renderScale))
+      const w = Math.max(1, Math.round(container.clientWidth * dpr * scale))
+      const h = Math.max(1, Math.round(container.clientHeight * dpr * scale))
 
       rendererRef.current?.render({ ...p, azimuth: p.azimuth + autoPhase }, (now - start) / 1000, w, h)
 
       frames += 1
       acc += dt
       if (acc >= 0.5) {
-        setFps(Math.round(frames / acc))
+        const f = Math.round(frames / acc)
+        setFps(f)
+        // Adaptive quality: nudge the internal scale toward a comfortable framerate.
+        if (p.adaptiveQuality) {
+          if (f < 30 && autoScale > 0.4) autoScale = Math.max(0.4, autoScale * 0.85)
+          else if (f > 52 && autoScale < 1) autoScale = Math.min(1, autoScale * 1.06)
+          setEffScale(autoScale)
+        } else {
+          autoScale = p.renderScale
+          setEffScale(p.renderScale)
+        }
         frames = 0
         acc = 0
       }
@@ -139,6 +156,17 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
     }
   }
 
+  // 'S' saves a PNG (kept here because the canvas ref lives in this component).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      if (e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey) savePng()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   if (error) {
     return (
       <div className="stage stage--error" ref={containerRef}>
@@ -154,17 +182,30 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
     )
   }
 
+  const spinning = params.spin >= 0.0015
+  const inner = effectiveDiskInner(params)
+
   return (
     <div className="stage" ref={containerRef}>
       <canvas ref={canvasRef} className="stage__canvas" />
       <div className="hud" aria-hidden="true">
         <span className="hud__fps">{fps} fps</span>
-        <button className="hud__btn" onClick={savePng} title="Download the current frame as a PNG">
+        <span className="hud__fps">{Math.round(effScale * 100)}%</span>
+        {spinning && (
+          <span className="hud__fps hud__kerr">
+            Kerr a/M {params.spin.toFixed(2)} · ISCO {kerrISCO(params.spin).toFixed(2)} rs
+          </span>
+        )}
+        <button className="hud__btn" onClick={() => setShowSpectro((s) => !s)} title="Toggle the relativistic line-profile overlay">
+          {showSpectro ? 'Hide spectrum' : 'Spectrum'}
+        </button>
+        <button className="hud__btn" onClick={savePng} title="Download the current frame as a PNG (S)">
           Save PNG
         </button>
       </div>
+      {showSpectro && <Spectrograph params={{ ...params, diskInner: inner }} />}
       <div className="hud hud--hint" aria-hidden="true">
-        drag to orbit · scroll to zoom
+        drag to orbit · scroll to zoom · 1–{7} presets · space auto-orbit · B bloom
       </div>
     </div>
   )

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { traceFan } from '../geodesics'
-import { B_CRIT, PHOTON_SPHERE } from '../state'
+import { traceFanKerr } from '../geodesics'
+import { B_CRIT, M, PHOTON_SPHERE, kerrHorizon } from '../state'
 
 const VIEW_X = 24 // half-width of the world window shown, in rs
 const VIEW_Y = 15
@@ -10,6 +10,7 @@ export default function GeodesicView() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [rays, setRays] = useState(64)
   const [maxB, setMaxB] = useState(9)
+  const [spin, setSpin] = useState(0.6)
   const [size, setSize] = useState({ w: 800, h: 500 })
 
   // Track the container size.
@@ -43,6 +44,12 @@ export default function GeodesicView() {
     const sx = (x: number) => cx + x * scale
     const sy = (y: number) => cy - y * scale
 
+    // Kerr geometry, expressed in equatorial world radius ρ = √(r²+a²).
+    const a = spin * M
+    const rplus = kerrHorizon(spin)
+    const rhoH = Math.sqrt(rplus * rplus + a * a) // horizon in world radius
+    const rhoErgo = Math.sqrt(1 + a * a) // ergosphere at the equator sits at BL r = 2M = 1 rs
+
     // Background.
     ctx.fillStyle = '#05060b'
     ctx.fillRect(0, 0, w, h)
@@ -61,20 +68,40 @@ export default function GeodesicView() {
     }
     ctx.stroke()
 
-    // Critical impact-parameter guide lines.
-    ctx.strokeStyle = 'rgba(255,190,120,0.35)'
-    ctx.setLineDash([5, 6])
-    ctx.lineWidth = 1
-    for (const yb of [B_CRIT, -B_CRIT]) {
+    // Spin sense arrow (the hole rotates counter-clockwise = prograde is +φ).
+    if (spin > 0.02) {
+      ctx.strokeStyle = 'rgba(150,190,255,0.5)'
+      ctx.lineWidth = 1.5
       ctx.beginPath()
-      ctx.moveTo(0, sy(yb))
-      ctx.lineTo(w, sy(yb))
+      ctx.arc(sx(0), sy(0), (rhoErgo + 1.1) * scale, -0.9, 0.9)
       ctx.stroke()
+      const ax = sx(0) + Math.cos(0.9) * (rhoErgo + 1.1) * scale
+      const ay = sy(0) - Math.sin(0.9) * (rhoErgo + 1.1) * scale
+      ctx.fillStyle = 'rgba(150,190,255,0.7)'
+      ctx.beginPath()
+      ctx.moveTo(ax, ay)
+      ctx.lineTo(ax - 6, ay - 5)
+      ctx.lineTo(ax + 1, ay - 9)
+      ctx.closePath()
+      ctx.fill()
     }
-    ctx.setLineDash([])
+
+    // Critical impact-parameter guides (Schwarzschild reference; asymmetric once spinning).
+    if (spin < 0.02) {
+      ctx.strokeStyle = 'rgba(255,190,120,0.35)'
+      ctx.setLineDash([5, 6])
+      ctx.lineWidth = 1
+      for (const yb of [B_CRIT, -B_CRIT]) {
+        ctx.beginPath()
+        ctx.moveTo(0, sy(yb))
+        ctx.lineTo(w, sy(yb))
+        ctx.stroke()
+      }
+      ctx.setLineDash([])
+    }
 
     // Trace and draw photons.
-    const fan = traceFan(rays, maxB)
+    const fan = traceFanKerr(rays, maxB, spin)
     ctx.lineWidth = 1.1
     for (const g of fan) {
       const captured = g.fate === 'captured'
@@ -90,24 +117,35 @@ export default function GeodesicView() {
     }
     ctx.shadowBlur = 0
 
-    // Photon sphere (unstable circular orbit).
-    ctx.strokeStyle = 'rgba(255,230,150,0.7)'
+    // Ergosphere (static limit) — inside it, frame dragging forces everything to co-rotate.
+    ctx.strokeStyle = 'rgba(150,120,255,0.75)'
     ctx.setLineDash([4, 5])
+    ctx.lineWidth = 1.2
     ctx.beginPath()
-    ctx.arc(sx(0), sy(0), PHOTON_SPHERE * scale, 0, Math.PI * 2)
+    ctx.arc(sx(0), sy(0), rhoErgo * scale, 0, Math.PI * 2)
     ctx.stroke()
     ctx.setLineDash([])
 
+    // Schwarzschild photon sphere reference (only meaningful when not spinning).
+    if (spin < 0.02) {
+      ctx.strokeStyle = 'rgba(255,230,150,0.7)'
+      ctx.setLineDash([4, 5])
+      ctx.beginPath()
+      ctx.arc(sx(0), sy(0), PHOTON_SPHERE * scale, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
     // Event horizon (filled shadow with a glowing rim).
-    const grad = ctx.createRadialGradient(sx(0), sy(0), 0, sx(0), sy(0), 1 * scale)
+    const grad = ctx.createRadialGradient(sx(0), sy(0), 0, sx(0), sy(0), rhoH * scale)
     grad.addColorStop(0, '#000000')
     grad.addColorStop(0.82, '#000000')
     grad.addColorStop(1, 'rgba(90,130,255,0.55)')
     ctx.fillStyle = grad
     ctx.beginPath()
-    ctx.arc(sx(0), sy(0), 1 * scale, 0, Math.PI * 2)
+    ctx.arc(sx(0), sy(0), rhoH * scale, 0, Math.PI * 2)
     ctx.fill()
-  }, [rays, maxB, size])
+  }, [rays, maxB, spin, size])
 
   return (
     <div className="geo">
@@ -118,8 +156,8 @@ export default function GeodesicView() {
         <h2>Geodesic Explorer</h2>
         <p className="muted">
           Parallel photons fly in from the left with impact parameter <em>b</em> (their vertical
-          offset). Each path is the same null geodesic the 3D renderer integrates — here you can
-          watch spacetime bend them.
+          offset). Each path is the same null geodesic the 3D renderer integrates — here, in the
+          equatorial plane, you can watch spacetime bend them.
         </p>
         <label className="row" title="How many photons to trace">
           <span className="row__label">Rays</span>
@@ -131,6 +169,11 @@ export default function GeodesicView() {
           <input type="range" min={1.5} max={12} step={0.1} value={maxB} onChange={(e) => setMaxB(Number(e.target.value))} />
           <span className="row__value">{maxB.toFixed(1)} rs</span>
         </label>
+        <label className="row" title="Black-hole spin a/M — the hole rotates counter-clockwise">
+          <span className="row__label">Spin a/M</span>
+          <input type="range" min={0} max={0.998} step={0.002} value={spin} onChange={(e) => setSpin(Number(e.target.value))} />
+          <span className="row__value">{spin.toFixed(2)}</span>
+        </label>
 
         <ul className="legend">
           <li>
@@ -140,16 +183,20 @@ export default function GeodesicView() {
             <span className="swatch swatch--capture" /> falls past the horizon
           </li>
           <li>
-            <span className="swatch swatch--photon" /> photon sphere · {PHOTON_SPHERE.toFixed(1)} rs
-          </li>
-          <li>
-            <span className="swatch swatch--bcrit" /> critical b = 3√3·M ≈ {B_CRIT.toFixed(2)} rs
+            <span className="swatch swatch--ergo" /> ergosphere (static limit)
           </li>
         </ul>
         <p className="muted small">
-          Any photon aimed with <em>|b|</em> below the critical value is swallowed; just above it,
-          rays whip around the photon sphere many times before escaping — the source of the thin
-          bright ring in the 3D view.
+          Turn up the spin and watch the fan go <strong>lopsided</strong>: photons swept along with
+          the hole’s rotation (prograde) skim closer and whip around tighter, while retrograde rays
+          on the other side are flung wide. That asymmetry is <strong>frame dragging</strong> — the
+          hole drags spacetime itself around with it. Inside the purple <strong>ergosphere</strong>,
+          the dragging is so strong that <em>nothing</em> can stay still, not even light.
+        </p>
+        <p className="muted small">
+          At zero spin this reduces exactly to Schwarzschild: a symmetric fan, the photon sphere at{' '}
+          {PHOTON_SPHERE.toFixed(1)} rs and the critical impact parameter b = 3√3·M ≈{' '}
+          {B_CRIT.toFixed(2)} rs.
         </p>
       </div>
     </div>

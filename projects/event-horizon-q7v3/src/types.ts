@@ -15,6 +15,13 @@ export interface Params {
   /** Vertical field of view, in degrees. */
   fov: number
 
+  /** Dimensionless spin a/M ∈ [0, 0.998]. 0 = Schwarzschild, 1 = extremal Kerr. */
+  spin: number
+  /** Draw the ergosphere (static limit) as a translucent shell in the Kerr render. */
+  ergosphere: boolean
+  /** When on, the disk's inner edge snaps to the prograde ISCO for the current spin. */
+  iscoTrack: boolean
+
   /** Inner edge of the accretion disk, in rs units (physical ISCO is 3). */
   diskInner: number
   /** Outer edge of the accretion disk, in rs units. */
@@ -41,8 +48,17 @@ export interface Params {
   /** HDR exposure applied before the ACES tonemap. */
   exposure: number
 
+  /** Multi-pass HDR bloom on the disk highlights. */
+  bloom: boolean
+  /** Bloom intensity (how much of the blurred bright-pass is added back). */
+  bloomStrength: number
+  /** Luminance above which a pixel contributes to the bloom. */
+  bloomThreshold: number
+
   /** Internal render resolution scale (0.35–1). Lower = faster. */
   renderScale: number
+  /** Auto-tune renderScale to hold a target framerate. */
+  adaptiveQuality: boolean
   /** Slowly orbit the camera on its own. */
   autoRotate: boolean
 }

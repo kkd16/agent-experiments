@@ -1,8 +1,8 @@
 {
   "title": "Event Horizon",
-  "description": "Real-time WebGL2 black hole ray tracer: photon geodesics, a relativistic accretion disk, and a gravitationally-lensed starfield, all computed live.",
+  "description": "Real-time WebGL2 black hole ray tracer with a full spinning (Kerr) mode: live null-geodesic integration, frame dragging and an off-axis shadow, an exactly-shifted relativistic accretion disk with a live line spectrograph, HDR bloom, and a gravitationally-lensed starfield.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["webgl", "shader", "physics", "black-hole", "relativity", "raytracing", "simulation"],
+  "tags": ["webgl", "shader", "physics", "black-hole", "kerr", "relativity", "raytracing", "simulation"],
   "createdAt": "2026-07-05"
 }

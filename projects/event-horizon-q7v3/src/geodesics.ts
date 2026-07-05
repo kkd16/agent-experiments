@@ -96,3 +96,134 @@ export function traceFan(count: number, maxB: number): Geodesic[] {
   }
   return out
 }
+
+// ---------------------------------------------------------------------------------------------
+// Equatorial Kerr geodesics for the explorer. We integrate the same Hamiltonian the 3D renderer
+// uses, reduced to the equatorial plane (θ = π/2, p_θ = 0), so the frame dragging is exact: photons
+// on the prograde side (swept along with the spin) and the retrograde side deflect by different
+// amounts, and the whole fan is dragged around the hole. Spin `a` is in rs units (a = a*·M).
+
+const MASS = 0.5
+
+/** World ⇄ equatorial Boyer–Lindquist. World radius ρ = √(r²+a²); r is the BL radius. */
+function worldToBLeq(x: number, y: number, a: number): [number, number] {
+  const rho2 = x * x + y * y
+  const r = Math.sqrt(Math.max(rho2 - a * a, 1e-6))
+  return [r, Math.atan2(y, x)]
+}
+function blToWorldEq(r: number, phi: number, a: number): [number, number] {
+  const rho = Math.sqrt(r * r + a * a)
+  return [rho * Math.cos(phi), rho * Math.sin(phi)]
+}
+
+export function traceGeodesicKerr(b: number, spinAM: number, opts: TraceOpts = {}): Geodesic {
+  const a = Math.min(Math.max(spinAM, 0), 0.9995) * MASS
+  const startX = opts.startX ?? -22
+  const escapeR = opts.escapeR ?? 24
+  const maxSteps = opts.maxSteps ?? 5000
+  const baseStep = opts.baseStep ?? 0.06
+  const rplus = MASS + Math.sqrt(Math.max(MASS * MASS - a * a, 0))
+
+  // initial conditions from a photon coming in along +x with impact parameter b
+  let [r, phi] = worldToBLeq(startX, b, a)
+  const eps = 1e-4
+  const [r1, phi1] = worldToBLeq(startX + eps, b, a) // step along +x
+  let dphi0 = phi1 - phi
+  dphi0 -= 2 * Math.PI * Math.floor((dphi0 + Math.PI) / (2 * Math.PI))
+  const prCon = (r1 - r) / eps
+  const pphCon = dphi0 / eps
+
+  // covariant equatorial metric at the start (far away → nearly flat)
+  const cov = (rr: number) => {
+    const Delta = rr * rr - 2 * MASS * rr + a * a
+    return {
+      gtt: -(1 - 2 * MASS / rr),
+      gtp: (-2 * MASS * a) / rr,
+      grr: (rr * rr) / Delta,
+      gpp: rr * rr + a * a + (2 * MASS * a * a) / rr,
+      Delta,
+    }
+  }
+  const c0 = cov(r)
+  const spatial = c0.grr * prCon * prCon + c0.gpp * pphCon * pphCon
+  const bq = 2 * c0.gtp * pphCon
+  const disc = Math.sqrt(Math.max(bq * bq - 4 * c0.gtt * spatial, 0))
+  const ptCon = Math.max((-bq + disc) / (2 * c0.gtt), (-bq - disc) / (2 * c0.gtt))
+  const E = -(c0.gtt * ptCon + c0.gtp * pphCon)
+  const L = c0.gtp * ptCon + c0.gpp * pphCon
+  let pr = c0.grr * prCon
+
+  // inverse equatorial metric contraction 2H(r) at fixed pr (for the p_r force via finite diff)
+  const twoH = (rr: number, prr: number): number => {
+    const Delta = rr * rr - 2 * MASS * rr + a * a
+    const A = (rr * rr + a * a) * (rr * rr + a * a) - a * a * Delta
+    const gtt = -A / (rr * rr * Delta)
+    const gtp = (-2 * MASS * a) / (rr * Delta)
+    const grr = Delta / (rr * rr)
+    const gpp = (Delta - a * a) / (rr * rr * Delta)
+    return gtt * E * E - 2 * gtp * E * L + grr * prr * prr + gpp * L * L
+  }
+  const invMetric = (rr: number) => {
+    const Delta = rr * rr - 2 * MASS * rr + a * a
+    const gtp = (-2 * MASS * a) / (rr * Delta)
+    const grr = Delta / (rr * rr)
+    const gpp = (Delta - a * a) / (rr * rr * Delta)
+    return { gtp, grr, gpp }
+  }
+
+  const deriv = (rr: number, prr: number): [number, number, number] => {
+    const m = invMetric(rr)
+    const dr = m.grr * prr
+    const dphi = -m.gtp * E + m.gpp * L
+    const h = 1e-3
+    const dpr = -0.5 * (twoH(rr + h, prr) - twoH(rr - h, prr)) / (2 * h)
+    return [dr, dphi, dpr]
+  }
+
+  const [x0, y0] = blToWorldEq(r, phi, a)
+  const pts: number[] = [x0, y0]
+  let fate: Fate = 'escaped'
+  let px = x0
+  let py = y0
+
+  for (let i = 0; i < maxSteps; i++) {
+    if (r < rplus + 0.03 * rplus) {
+      fate = 'captured'
+      break
+    }
+    if (r > escapeR && pr > 0) break
+
+    const prox = Math.min(Math.max((r - rplus) * 1.6, 0.12), 1)
+    const dt = baseStep * (0.4 + 0.22 * r) * prox
+
+    const [d1r, d1p, d1pr] = deriv(r, pr)
+    const [d2r, d2p, d2pr] = deriv(r + 0.5 * dt * d1r, pr + 0.5 * dt * d1pr)
+    const [d3r, d3p, d3pr] = deriv(r + 0.5 * dt * d2r, pr + 0.5 * dt * d2pr)
+    const [d4r, d4p, d4pr] = deriv(r + dt * d3r, pr + dt * d3pr)
+
+    r += (dt / 6) * (d1r + 2 * d2r + 2 * d3r + d4r)
+    phi += (dt / 6) * (d1p + 2 * d2p + 2 * d3p + d4p)
+    pr += (dt / 6) * (d1pr + 2 * d2pr + 2 * d3pr + d4pr)
+
+    const [wx, wy] = blToWorldEq(r, phi, a)
+    pts.push(wx, wy)
+    px = wx
+    py = wy
+  }
+
+  // net heading for escaped rays (from the final segment)
+  const n = pts.length
+  const deflection = fate === 'escaped' && n >= 4 ? Math.atan2(py - pts[n - 4], px - pts[n - 3]) : NaN
+  return { b, points: Float32Array.from(pts), count: pts.length / 2, fate, deflection }
+}
+
+/** A fan of Kerr photons across a range of impact parameters. */
+export function traceFanKerr(count: number, maxB: number, spinAM: number): Geodesic[] {
+  const out: Geodesic[] = []
+  for (let i = 0; i < count; i++) {
+    const frac = (i + 0.5) / count
+    const b = (frac * 2 - 1) * maxB
+    out.push(traceGeodesicKerr(b, spinAM))
+  }
+  return out
+}
