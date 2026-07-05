@@ -1,0 +1,64 @@
+.quant-ws {
+  --pos-c: var(--good, #37d67a);
+  --neg-c: var(--bad, #ff6b81);
+}
+
+/* value shown inside each node */
+.quant-ws .node .nval {
+  fill: var(--ink);
+  font: 700 4px var(--mono);
+  pointer-events: none;
+}
+
+/* editable weight pills on the edges */
+.quant-ws .wpill rect {
+  fill: var(--panel2);
+  stroke: var(--line);
+  stroke-width: 0.4;
+}
+.quant-ws .wpill text {
+  font: 700 4px var(--mono);
+  fill: var(--muted);
+  pointer-events: none;
+}
+.quant-ws .wpill.wp text { fill: var(--good); }
+.quant-ws .wpill.wn text { fill: var(--bad); }
+.quant-ws .wpill.wz text { fill: var(--muted); }
+.quant-ws .wpill.editable { cursor: pointer; }
+.quant-ws .wpill.editable rect { stroke: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.quant-ws .wpill.editable:hover rect { stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 18%, var(--panel2)); }
+
+/* value / reduction tables */
+.quant-ws .val-table,
+.reduce-pane .val-table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font: 500 12.5px var(--mono);
+}
+.quant-ws .val-table { width: 100%; }
+.reduce-pane .val-table.wide { min-width: 460px; }
+.quant-ws .val-table th,
+.reduce-pane .val-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.quant-ws .val-table td,
+.reduce-pane .val-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  color: var(--ink);
+}
+.val.pos { color: var(--good); font-weight: 700; }
+.val.neg { color: var(--bad); font-weight: 700; }
+.val.zero { color: var(--muted); }
+
+/* legend swatches for the value sign */
+.quant-ws .leg .sw.pos { background: var(--p0-fill); }
+.quant-ws .leg .sw.neg { background: var(--p1-fill); }
+.quant-ws .leg .sw.zero { background: var(--node); }
+
+.reduce-pane { overflow: auto; }
+.reduce-pane sup { font-size: 0.72em; }

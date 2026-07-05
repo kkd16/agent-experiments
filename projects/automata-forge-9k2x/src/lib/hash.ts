@@ -19,6 +19,7 @@ export type Mode =
   | 'symbolic'
   | 'presburger'
   | 'games'
+  | 'quant'
   | 'algebra'
 
 export interface AppState {
@@ -36,6 +37,7 @@ export interface AppState {
   symbolic: { formula: string; model: string; bool: string; tab: string }
   presburger: { formula: string; tab: string; input: string }
   games: { preset: string; condition: string; tab: string }
+  quant: { preset: string; tab: string }
   algebra: { regex: string; tab: string }
 }
 
@@ -114,6 +116,11 @@ export function encodeHash(s: AppState): string {
     q.set('c', s.games.condition)
     q.set('t', s.games.tab)
     return `#/games?${q.toString()}`
+  }
+  if (s.mode === 'quant') {
+    q.set('p', s.quant.preset)
+    q.set('t', s.quant.tab)
+    return `#/quant?${q.toString()}`
   }
   if (s.mode === 'algebra') {
     q.set('r', s.algebra.regex)
@@ -266,6 +273,16 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           preset: q.get('p') ?? fallback.games.preset,
           condition: q.get('c') ?? fallback.games.condition,
           tab: q.get('t') ?? fallback.games.tab,
+        },
+      }
+    }
+    if (path === 'quant') {
+      return {
+        ...fallback,
+        mode: 'quant',
+        quant: {
+          preset: q.get('p') ?? fallback.quant.preset,
+          tab: q.get('t') ?? fallback.quant.tab,
         },
       }
     }
