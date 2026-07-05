@@ -79,6 +79,71 @@ function run(src: string, maxSteps = 5_000_000): Cpu {
   return cpu;
 }
 
+/** Assemble + run a program with a specific UART receive stream. */
+function runWithInput(src: string, input: string, maxSteps = 300_000): Cpu {
+  const result = assemble(src);
+  if (!result.ok) {
+    throw new AssertionError(`assembler errors: ${result.errors.map((e) => `L${e.line} ${e.message}`).join('; ')}`);
+  }
+  const cpu = new Cpu();
+  cpu.load(result);
+  cpu.setUartInput(input);
+  cpu.run(maxSteps);
+  return cpu;
+}
+
+// A minimal interrupt-driven UART echo used by several external-interrupt tests: configure the
+// PLIC's M-mode context + the UART, idle in a wfi loop, and echo each received byte through the
+// print_char syscall until a newline halts the program. `THRESH_VAL` lets a test raise the PLIC
+// threshold to prove gating (a threshold ≥ the source priority forwards nothing).
+function uartEchoM(threshVal = 0): string {
+  return `
+    .equ PLIC_PRIO1,  0x0c000004
+    .equ PLIC_ENABLE, 0x0c002000
+    .equ PLIC_THRESH, 0x0c200000
+    .equ PLIC_CLAIM,  0x0c200004
+    .equ UART,        0x10000000
+    .equ UART_IER,    0x10000004
+    main:
+      la t0, h
+      csrw mtvec, t0
+      li t0, 1
+      li t1, PLIC_PRIO1
+      sw t0, 0(t1)
+      li t0, ${threshVal}
+      li t1, PLIC_THRESH
+      sw t0, 0(t1)
+      li t0, 2
+      li t1, PLIC_ENABLE
+      sw t0, 0(t1)
+      li t0, 1
+      li t1, UART_IER
+      sw t0, 0(t1)
+      li t0, 0x800
+      csrs mie, t0
+      csrsi mstatus, 0x8
+    idle:
+      wfi
+      j idle
+    h:
+      li t1, PLIC_CLAIM
+      lw t0, 0(t1)
+      beqz t0, r
+      li t2, UART
+      lw a0, 0(t2)
+      li a7, 11
+      ecall
+      sw t0, 0(t1)
+      li t3, 10
+      beq a0, t3, f
+    r:
+      mret
+    f:
+      li a7, 10
+      ecall
+  `;
+}
+
 type Test = { name: string; fn: () => void };
 
 const TESTS: Test[] = [
@@ -2209,6 +2274,213 @@ const TESTS: Test[] = [
       const cpu = run(EXAMPLES.find((e) => e.id === 'swint')!.code);
       eq(cpu.output, '4', 'IPI count');
       eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'external: PLIC priority / threshold / enable registers round-trip via lw/sw',
+    fn: () => {
+      const cpu = run(`
+        main:
+          li t1, 0x0c000004     # source-1 priority
+          li t0, 5
+          sw t0, 0(t1)
+          lw a0, 0(t1)
+          li a7, 1
+          ecall                 # prints "5"
+          li t1, 0x0c200000     # context-0 threshold
+          li t0, 3
+          sw t0, 0(t1)
+          lw a0, 0(t1)
+          ecall                 # prints "3"
+          li t1, 0x0c002000     # context-0 enable bitmap
+          li t0, 2
+          sw t0, 0(t1)
+          lw a0, 0(t1)
+          ecall                 # prints "2"
+          li a7, 10
+          ecall
+      `);
+      eq(cpu.output, '532', 'PLIC register round-trip');
+    },
+  },
+  {
+    name: 'external: UART LSR data-ready + RBR pops received bytes in order (polled, no IRQ)',
+    fn: () => {
+      // No interrupts at all — spin on the UART line-status register and read each byte.
+      const cpu = runWithInput(`
+        main:
+          li t2, 0x10000000     # UART RBR
+        wait:
+          li t3, 0x10000008     # UART LSR
+          lw t4, 0(t3)
+          andi t4, t4, 1        # DR (data-ready) bit
+          beqz t4, wait
+          lw a0, 0(t2)          # pop the byte
+          li a7, 11
+          ecall                 # echo it
+          li t5, 10
+          bne a0, t5, main      # loop until newline
+          li a7, 10
+          ecall
+      `, 'poll\n');
+      eq(cpu.output, 'poll\n', 'polled UART receive');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'external: interrupt-driven UART echo (PLIC → mip.MEIP) echoes the received stream',
+    fn: () => {
+      const cpu = runWithInput(uartEchoM(), 'Hello!\n');
+      eq(cpu.output, 'Hello!\n', 'M-mode echo');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'external: the bundled UART echo example echoes its default input',
+    fn: () => {
+      const cpu = run(EXAMPLES.find((e) => e.id === 'uart')!.code);
+      eq(cpu.output, 'RISC-V!\n', 'default UART echo');
+      eq(cpu.status, 'halted', 'status');
+    },
+  },
+  {
+    name: 'external: a delegated external interrupt is taken in S-mode (context 1 → SEIP, cause 9)',
+    fn: () => {
+      // The M-mode context is left unconfigured; mideleg routes SEI to S. The S handler echoes
+      // through the UART's TX register (an ecall from S would trap), captures the first scause,
+      // and on a newline does an ecall — which, undelegated, traps to M and exits.
+      const cpu = runWithInput(`
+        .equ PLIC_PRIO1,    0x0c000004
+        .equ PLIC_ENABLE_S, 0x0c002080
+        .equ PLIC_THRESH_S, 0x0c201000
+        .equ PLIC_CLAIM_S,  0x0c201004
+        .equ UART,          0x10000000
+        .equ UART_IER,      0x10000004
+        main:
+          la t0, mtrap
+          csrw mtvec, t0
+          la t0, strap
+          csrw stvec, t0
+          li t0, 0x200          # mideleg: delegate SEI (bit 9) to S
+          csrw mideleg, t0
+          li t0, 1
+          li t1, PLIC_PRIO1
+          sw t0, 0(t1)
+          li t0, 0
+          li t1, PLIC_THRESH_S
+          sw t0, 0(t1)
+          li t0, 2
+          li t1, PLIC_ENABLE_S
+          sw t0, 0(t1)
+          li t0, 1
+          li t1, UART_IER
+          sw t0, 0(t1)
+          li t0, 0x200          # sie.SEIE
+          csrs sie, t0
+          csrsi mstatus, 0x2    # mstatus.SIE
+          csrr t0, mstatus      # drop to S-mode: MPP = S
+          li t1, 0xffffe7ff
+          and t0, t0, t1
+          li t1, 0x800
+          or t0, t0, t1
+          csrw mstatus, t0
+          la t0, smain
+          csrw mepc, t0
+          mret
+        smain:
+          wfi
+          j smain
+        strap:
+          csrr s0, scause       # low 7 bits = 9 (S external)
+          andi s0, s0, 0x7f
+          la s1, cause
+          sw s0, 0(s1)
+          li t1, PLIC_CLAIM_S
+          lw t0, 0(t1)
+          beqz t0, sr
+          li t2, UART
+          lw a0, 0(t2)
+          sw a0, 0(t2)          # echo through UART TX
+          sw t0, 0(t1)          # complete
+          li t3, 10
+          beq a0, t3, fin
+        sr:
+          sret
+        fin:
+          ecall                 # from S → traps to M (undelegated) → exit
+        mtrap:
+          li a7, 10
+          ecall
+        .data
+        cause: .word 0
+      `, 'Sv\n');
+      eq(cpu.output, 'Sv\n', 'S-mode echo (proves the interrupt reached S, not M)');
+      eq(cpu.status, 'halted', 'status');
+      // The captured cause of the S-mode trap must be the S-external interrupt (9).
+      const causeAddr = 0x1001_0000; // .data base — `cause` is the first (only) word
+      eq(cpu.mem.readWord(causeAddr), 9, 'scause = supervisor external interrupt');
+    },
+  },
+  {
+    name: 'external: a PLIC threshold ≥ the source priority forwards nothing (no interrupt fires)',
+    fn: () => {
+      // Same echo program, but threshold = 1 = the source priority, so the gateway never
+      // forwards. With a bounded budget the machine keeps idling and nothing is echoed.
+      const result = assemble(uartEchoM(1));
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.setUartInput('nope\n');
+      cpu.run(5000);
+      eq(cpu.output, '', 'threshold gates the interrupt');
+      assert(cpu.status !== 'halted', 'still idling (never serviced)');
+    },
+  },
+  {
+    name: 'external: claim clears the pending line; complete re-arms it for the next byte',
+    fn: () => {
+      // White-box the PLIC/UART gateway directly: two bytes buffered, one source.
+      const cpu = new Cpu();
+      cpu.setUartInput('AB');
+      cpu.dev.ier = 1; // UART RX interrupt enable
+      cpu.dev.priority[1] = 1; // source-1 priority
+      cpu.dev.enable[0] = 1 << 1; // enable source 1 in the M context
+      cpu.dev.threshold[0] = 0;
+      cpu.dev.tick(1_000); // both bytes have arrived
+      assert(cpu.dev.contextPending(0), 'pending before claim');
+      eq(cpu.dev.claim(0), 1, 'claim returns source 1');
+      assert(!cpu.dev.contextPending(0), 'in-service → no longer pending');
+      eq(cpu.dev.uartRead(0x1000_0000), 0x41, 'RBR pops "A"'); // read one byte
+      cpu.dev.complete(1);
+      assert(cpu.dev.contextPending(0), 're-armed: still a byte queued');
+      eq(cpu.dev.uartRead(0x1000_0000), 0x42, 'RBR pops "B"');
+      cpu.dev.claim(0);
+      cpu.dev.complete(1);
+      assert(!cpu.dev.contextPending(0), 'FIFO drained → line low');
+    },
+  },
+  {
+    name: 'external: time-travel steps back across a received byte + PLIC claim',
+    fn: () => {
+      const result = assemble(uartEchoM());
+      assert(result.ok, 'assembles');
+      const cpu = new Cpu();
+      cpu.load(result);
+      cpu.setUartInput('XY\n');
+      // Step until the first byte has been echoed.
+      let guard = 0;
+      while (cpu.output.length === 0 && guard++ < 100_000) cpu.step();
+      eq(cpu.output, 'X', 'first byte echoed');
+      const depth = cpu.historyDepth();
+      // Rewind all the way to the start: device state (claim/rx cursor) must revert too.
+      while (cpu.historyDepth() > 0) cpu.stepBack();
+      eq(cpu.output, '', 'output reverted');
+      eq(cpu.dev.claimed, 0, 'PLIC claim reverted');
+      eq(cpu.dev.rxPos, 0, 'UART receive cursor reverted');
+      eq(cpu.cycles, 0, 'cycles reverted');
+      // Replaying the same number of steps reproduces the exact same output (determinism).
+      for (let i = 0; i < depth; i++) cpu.step();
+      eq(cpu.output, 'X', 'replay is deterministic');
     },
   },
 ];

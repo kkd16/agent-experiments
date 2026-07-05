@@ -26,6 +26,9 @@ export interface VM {
   /** When true, the assembler auto-emits RV32C 16-bit forms (relaxation). */
   rvc: boolean;
   setRvc: (v: boolean) => void;
+  /** The UART's received input stream (what the program reads from the serial port). */
+  uartInput: string;
+  setUartInput: (s: string) => void;
   assembleOnly: () => AssembleResult;
   load: () => boolean;
   loadSource: (src: string) => void;
@@ -51,6 +54,7 @@ export function useVM(initialSource: string): VM {
   const [prevRegs, setPrevRegs] = useState<Int32Array>(() => new Int32Array(32));
 
   const [rvc, setRvcState] = useState(false);
+  const [uartInput, setUartInputState] = useState(cpu.uartInput);
 
   const loadedSourceRef = useRef<string | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -207,6 +211,17 @@ export function useVM(initialSource: string): VM {
 
   const clearBreakpoints = useCallback(() => setBreakpointLines(new Set()), []);
 
+  /** Set the UART's received stream, then reload so the program restarts against it. */
+  const setUartInput = useCallback(
+    (text: string) => {
+      cancelRun();
+      cpu.setUartInput(text);
+      setUartInputState(text);
+      load(); // reassemble + reload; resetState keeps the new receive stream
+    },
+    [cpu, cancelRun, load],
+  );
+
   // Recomputed every render (cheap); a `tick` bump on each mutation re-renders this hook so
   // the highlighted line follows the pc as we step.
   const currentLine = assembly ? (assembly.addrToLine.get(cpu.pc >>> 0) ?? null) : null;
@@ -227,6 +242,8 @@ export function useVM(initialSource: string): VM {
     historyDepth,
     rvc,
     setRvc,
+    uartInput,
+    setUartInput,
     assembleOnly,
     load,
     loadSource,

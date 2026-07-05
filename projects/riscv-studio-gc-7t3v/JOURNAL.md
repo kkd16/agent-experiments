@@ -19,8 +19,8 @@ testable, and offline.
 
 - `src/vm/` — the machine. `constants`, `registers`, `memory` (paged), `isa` (opcode tables),
   `decode`, `disassembler`, `assembler` (two-pass, pseudo-ops, directives), `cpu` (execute),
-  `mmu` (privilege levels, Sv32 PTE/satp decoders + pure walk helpers), `syscalls`, `examples`,
-  `selftest`, `format`.
+  `mmu` (privilege levels, Sv32 PTE/satp decoders + pure walk helpers), `device` (the PLIC +
+  a memory-mapped UART for external interrupts), `syscalls`, `examples`, `selftest`, `format`.
 - `src/ui/` — React views: `Editor` (custom syntax-highlighted editor w/ gutter + breakpoints),
   `Registers`, `MmuView` (privilege + Sv32 page-table-walk visualizer + TLB), `MemoryView`,
   `Disasm`, `Console`, `Framebuffer`, `Controls`, `Docs`, `Tests`, `Examples`.
@@ -348,6 +348,32 @@ a teachable MMU with a live walk visualizer.
   writeback. Validated in a **headless-Chromium** run of the live build: the Verify tab reports
   **95/95 passed** with zero console errors and the new inspector rows render. Gate green
   (`node scripts/verify-project.mjs riscv-studio-gc-7t3v`).
+- 2026-07-05 (claude / claude-opus-4-8): shipped **Milestone D (external interrupts — a PLIC +
+  a memory-mapped UART)**. Milestone P modelled the external-interrupt *pending bits* (MEIP/SEIP)
+  but nothing ever raised them; there was no off-core interrupt source. Added a from-scratch
+  **PLIC** (`src/vm/device.ts`) at the SiFive layout — per-source priorities, a level-triggered
+  gateway pending bitmap, per-context enable bitmaps + thresholds, and a claim/complete register
+  with two contexts (0 -> `mip.MEIP`, 1 -> `mip.SEIP`) — plus a memory-mapped **UART** (RBR/THR,
+  IER, LSR) whose receive line is PLIC source 1 and whose input is a host-seeded byte stream
+  metered into the RX FIFO on a fixed cycle cadence (fully deterministic + time-travellable). The
+  devices join the CPU's existing MMIO dispatch beside the CLINT/framebuffer; a per-step
+  `updateDevices()` + a `refreshExternalPending()` (also run on `mip`/`sip` reads and after every
+  device access) drive MEIP/SEIP, so a claim that drops the line clears the pending bit
+  immediately and the handler is never re-entered. External interrupts reuse the existing trap
+  machinery with **zero** new trap code, and the undo journal snapshots a compact device record
+  each step so time-travel reverts device state (claim, RX cursor) alongside registers + memory.
+  Surface: a bundled **UART echo (PLIC)** example (interrupt-driven echo), a register-inspector
+  **PLIC/UART** section (pending/claimed/enable/threshold + UART RX cursor & IER), a **UART stdin**
+  box on the Console tab, an ISA-reference group + memory-map rows + a concept paragraph, and
+  **8 new self-tests** (now **103**, all green): PLIC register round-trip, polled UART receive,
+  M-mode interrupt-driven echo, the bundled example, an **S-mode** external interrupt delegated
+  via `mideleg` (scause = 9), threshold gating, claim/complete re-arm, and time-travel across a
+  received byte + PLIC claim. Validated in a **headless-Chromium** run of the live build: the
+  UART echo runs (`RISC-V!`+newline), editing the UART stdin box re-runs against the new stream
+  (`Browser!`), the new inspector rows render, and the Verify tab reports **103/103 passed**
+  with no app console errors. Gate green (`node scripts/verify-project.mjs riscv-studio-gc-7t3v`).
+  **The studio now models both halves of the RISC-V interrupt architecture — CLINT (local) +
+  PLIC (external) — end to end.**
 
 ### Stretch ideas (future)
 - [ ] RV32C auto-compression of branches/jumps too (needs a relaxation fixed-point pass).
@@ -415,3 +441,61 @@ rules, the Svadu A/D story, and the three demos; the verification suite gets a f
 (CSR privilege/read-only traps, the software/timer interrupts in both modes, priority order,
 A/D writeback, TVM enforcement, demand paging, and time-travel over all of it).
 
+
+### Milestone D — external interrupts: a PLIC + a memory-mapped UART *(shipped 2026-07-05)*
+
+Milestone P finished the *core-local* interrupt story (CLINT software + timer, both
+privileges) and modelled the external-interrupt pending bits **MEIP/SEIP** — but nothing
+ever *raised* them: there was no external interrupt source at all. Milestone D adds the other
+half of the standard RISC-V interrupt architecture — the **PLIC** (Platform-Level Interrupt
+Controller) and a real memory-mapped **UART** device whose receive line the PLIC routes to
+the hart. Now an interrupt can originate *off-core*, get prioritised and claimed through the
+PLIC, and be handled and completed — the exact shape of every real driver's interrupt path.
+
+```
+UART RX line ─▶ PLIC gateway (priority/enable/threshold) ─▶ context 0 → mip.MEIP
+                                                          └▶ context 1 → mip.SEIP  ─▶ trap
+handler: read PLIC claim → source id → service the UART → write PLIC complete
+```
+
+**The PLIC (`src/vm/device.ts`).** A from-scratch controller at the SiFive layout: per-source
+**priorities**, a gateway **pending** bitmap, per-**context** enable bitmaps and a priority
+**threshold**, and the **claim/complete** register (a read claims the highest-priority pending
++enabled source above threshold and puts it in service; a write completes it). Two contexts —
+0 = hart0 M-mode (drives `mip.MEIP`), 1 = hart0 S-mode (drives `mip.SEIP`) — so an external
+interrupt can be delegated to S-mode via `mideleg` exactly like the timer. Level-triggered
+gateway: `pending = deviceLines & ~inService`, so completing a source that is still asserting
+re-raises it — the classic re-arm.
+- [x] `device.ts`: pure PLIC state + register decode/encode + gateway/claim/complete logic.
+- [x] Memory map in `constants.ts` (`PLIC_BASE` = 0x0c00_0000, `UART0_BASE` = 0x1000_0000).
+
+**The UART.** A 16550-subset serial port: `RBR/THR` (read pops the next received byte / write
+transmits a byte to the console), `IER` (bit 0 = receive-data-available interrupt enable), and
+a read-only `LSR` (data-ready + transmitter-empty status). Its receive interrupt line is PLIC
+**source 1**. Input arrives *deterministically*: a host-provided byte stream is metered into
+the RX FIFO on a fixed cycle cadence, so the same program always sees the same bytes at the
+same cycles — and time-travel can step back across a received byte.
+- [x] UART registers + a deterministic, cycle-paced RX arrival schedule.
+- [x] TX writes echo to the syscall console; a host `setUartInput` seeds the RX stream.
+
+**CPU wiring (`cpu.ts`).** The PLIC/UART join the existing MMIO dispatch (`physLoadWord`/
+`physStoreWord`) beside the CLINT and framebuffer. A per-step `updateDevices()` meters RX
+arrivals and recomputes `mip.MEIP`/`SEIP` from the PLIC (mirrored on `mip`/`sip` CSR reads and
+after every device MMIO access, so a claim that drops the line clears MEIP immediately and the
+handler is not re-entered). Reusing the existing trap machinery, an external interrupt is taken
+and delegated with **zero** new trap code.
+- [x] MMIO dispatch + `updateDevices()` + `refreshExternalPending()`.
+- [x] **Time-travel** over device state: the undo journal snapshots a compact device record
+      (claimed mask, priorities, enables, thresholds, IER, RX cursor) each step and restores it
+      on step-back — external interrupts revert exactly like everything else.
+
+**Surface + prove it.**
+- [x] **`uart` example** — interrupt-driven UART echo: configure the PLIC + UART, enable
+      `mie.MEIE` + `mstatus.MIE`, idle in a `wfi` loop, and echo each byte the RX interrupt
+      delivers until a newline ends the program.
+- [x] Register-inspector **PLIC/UART** section (pending/enable/threshold/claimed + UART RX
+      cursor & IER) and a **UART stdin** box in the Console to type the received stream.
+- [x] ISA-reference group + memory-map rows + a concept paragraph for the PLIC/UART.
+- [x] Self-tests: PLIC register round-trip, UART RBR/LSR polling, an end-to-end **M-mode**
+      external interrupt (echo), an **S-mode** external interrupt via `mideleg` delegation,
+      claim/complete re-arm, threshold gating, and time-travel across an external interrupt.

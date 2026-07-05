@@ -21,7 +21,10 @@ import {
   MTIMECMP_HI,
   MTIME_LO,
   MTIME_HI,
+  DEFAULT_UART_INPUT,
 } from './constants';
+import { Device } from './device';
+import type { DevSnap } from './device';
 import type { AssembleResult } from './assembler';
 import {
   f32FromBits,
@@ -115,6 +118,8 @@ interface UndoStep {
   satp: number;
   mtimecmp: number;
   stimecmp: number;
+  // External-interrupt hardware (PLIC + UART) — snapshotted whole; the record is a dozen ints.
+  dev: DevSnap;
   reg?: { i: number; prev: number };
   freg?: { i: number; prevLo: number; prevHi: number };
   /** Every memory region this step overwrote (data store + any page-table A/D writeback). */
@@ -198,6 +203,8 @@ export class Cpu {
   /** When true the RV32D double-precision compressed loads/stores decode (set at load). */
   rvdEnabled = true;
   readonly mem = new Memory();
+  /** External-interrupt hardware: the PLIC + a memory-mapped UART (see device.ts). */
+  readonly dev = new Device();
   cycles = 0;
   status: RunStatus = 'idle';
   error = '';
@@ -217,6 +224,19 @@ export class Cpu {
   private undoHead = 0; // index of the next slot to write
   private undoCount = 0; // how many valid records are buffered
   private rec: UndoStep | null = null; // the record being filled this step
+
+  /** The text currently seeding the UART receive stream (survives reset/reload). */
+  uartInput = DEFAULT_UART_INPUT;
+
+  constructor() {
+    this.dev.setInputText(this.uartInput);
+  }
+
+  /** Set the UART's received input stream and rewind its arrival schedule. */
+  setUartInput(text: string): void {
+    this.uartInput = text;
+    this.dev.setInputText(text);
+  }
 
   /** Reset registers + memory and load an assembled program image. */
   load(result: AssembleResult): void {
@@ -263,6 +283,7 @@ export class Cpu {
     this.tlbMisses = 0;
     this.mtimecmp = Number.POSITIVE_INFINITY;
     this.stimecmp = Number.POSITIVE_INFINITY;
+    this.dev.reset();
     this.regs[SP] = STACK_TOP | 0;
     this.regs[GP] = GLOBAL_POINTER | 0;
     this.pc = this.entry >>> 0;
@@ -373,6 +394,7 @@ export class Cpu {
     // Service the timer and take any pending, enabled interrupt *before* fetching — a trap
     // is its own step (no instruction retires) so the handler sees the interrupted pc in mepc.
     this.updateTimer();
+    this.updateDevices();
     const irq = this.pendingInterruptCause();
     if (irq >= 0) {
       this.takeInterrupt(irq);
@@ -442,6 +464,25 @@ export class Cpu {
       if (this.cycles >= this.stimecmp) this.mip |= MIP.STIP;
       else this.mip &= ~MIP.STIP;
     }
+  }
+
+  /**
+   * Recompute the external-interrupt pending bits from the PLIC: context 0 drives `mip.MEIP`,
+   * context 1 drives `mip.SEIP`. Called at every step boundary, on `mip`/`sip` CSR reads, and
+   * after every device MMIO access, so a claim that drops the line clears MEIP immediately and
+   * the handler is not re-entered for a source already in service.
+   */
+  private refreshExternalPending(): void {
+    if (this.dev.contextPending(0)) this.mip |= MIP.MEIP;
+    else this.mip &= ~MIP.MEIP;
+    if (this.dev.contextPending(1)) this.mip |= MIP.SEIP;
+    else this.mip &= ~MIP.SEIP;
+  }
+
+  /** Meter the UART's receive stream from the cycle count, then refresh the PLIC-driven bits. */
+  private updateDevices(): void {
+    this.dev.tick(this.cycles);
+    this.refreshExternalPending();
   }
 
   /** Read the CLINT MMIO window (mtime / mtimecmp), or null if the address is elsewhere. */
@@ -766,10 +807,34 @@ export class Cpu {
 
   private physLoadWord(pa: number): number {
     const c = this.clintRead(pa);
-    return c !== null ? c >>> 0 : this.mem.readWord(pa);
+    if (c !== null) return c >>> 0;
+    // The PLIC and UART sit on their own MMIO windows. A PLIC claim-read or a UART RX pop
+    // changes the interrupt line, so refresh the PLIC-driven pending bits immediately.
+    const p = this.dev.plicRead(pa);
+    if (p !== null) {
+      this.refreshExternalPending();
+      return p >>> 0;
+    }
+    const u = this.dev.uartRead(pa);
+    if (u !== null) {
+      this.refreshExternalPending();
+      return u >>> 0;
+    }
+    return this.mem.readWord(pa);
   }
   private physStoreWord(pa: number, value: number): void {
-    if (!this.clintWrite(pa, value)) this.storeWord(pa, value);
+    if (this.clintWrite(pa, value)) return;
+    if (this.dev.plicWrite(pa, value)) {
+      this.refreshExternalPending();
+      return;
+    }
+    const u = this.dev.uartWrite(pa, value);
+    if (u.handled) {
+      if (u.tx !== undefined) this.print(String.fromCharCode(u.tx)); // UART TX → console
+      this.refreshExternalPending();
+      return;
+    }
+    this.storeWord(pa, value);
   }
 
   /** Load a word from a virtual address (translating, CLINT-aware, page-crossing-safe). */
@@ -863,6 +928,7 @@ export class Cpu {
       satp: this.satp,
       mtimecmp: this.mtimecmp,
       stimecmp: this.stimecmp,
+      dev: this.dev.snapshot(),
     };
   }
 
@@ -933,6 +999,7 @@ export class Cpu {
     this.satp = u.satp;
     this.mtimecmp = u.mtimecmp;
     this.stimecmp = u.stimecmp;
+    this.dev.restore(u.dev);
     // The TLB is just a cache of the (now-restored) page tables; drop it and let it re-fill.
     this.flushTlb();
     if (u.outLen < this.output.length) this.output = this.output.slice(0, u.outLen);
@@ -1565,6 +1632,7 @@ export class Cpu {
         return this.stval | 0;
       case 0x144:
         this.updateTimer();
+        this.refreshExternalPending();
         return this.mip & S_INT_MASK; // sip
       case 0x14d: // stimecmp (Sstc) — low word
         return Number.isFinite(this.stimecmp) ? this.stimecmp >>> 0 : 0xffff_ffff;
@@ -1595,6 +1663,7 @@ export class Cpu {
         return this.mtval | 0;
       case 0x344:
         this.updateTimer();
+        this.refreshExternalPending();
         return this.mip | 0;
       case 0xf14:
         return 0; // mhartid

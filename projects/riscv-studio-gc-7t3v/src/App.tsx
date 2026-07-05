@@ -99,7 +99,7 @@ export default function App() {
           <span className="logo">RV</span>
           <div>
             <h1>RISC-V Studio <span className="brand-gc">GC</span></h1>
-            <p>an RV32GC (IMAFDC + Zicsr) assembler &amp; time-travel emulator — now with M/S/U privilege + Sv32 paging</p>
+            <p>an RV32GC (IMAFDC + Zicsr) assembler &amp; time-travel emulator — M/S/U privilege, Sv32 paging, CLINT + PLIC/UART interrupts</p>
           </div>
         </div>
         <nav className="tabs">
@@ -202,7 +202,9 @@ export default function App() {
             {route === 'mmu' && <MmuView cpu={vm.cpu} tick={vm.tick} />}
             {route === 'disasm' && <Disasm cpu={vm.cpu} assembly={vm.assembly} />}
             {route === 'memory' && <MemoryView cpu={vm.cpu} />}
-            {route === 'console' && <Console cpu={vm.cpu} />}
+            {route === 'console' && (
+              <Console cpu={vm.cpu} uartInput={vm.uartInput} onSetUartInput={vm.setUartInput} />
+            )}
             {route === 'display' && <Framebuffer cpu={vm.cpu} tick={vm.tick} />}
             {route === 'examples' && <Examples onLoad={onLoadExample} activeId={activeExample} />}
             {route === 'verify' && <Tests />}
@@ -219,7 +221,7 @@ export default function App() {
           {vm.historyDepth} undo
         </span>
         <span>
-          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32GC · IMAFDC + Zicsr · M/S/U + Sv32 · traps · 32-bit'}
+          {vm.cpu.error ? <span className="err-text">{vm.cpu.error}</span> : 'RV32GC · IMAFDC + Zicsr · M/S/U + Sv32 · CLINT + PLIC/UART · traps · 32-bit'}
         </span>
       </footer>
     </div>
