@@ -7,17 +7,24 @@ interface Props {
   presets: Preset[]
   onPreset: (p: Preset) => void
   onReset: () => void
+  onShare: () => void
+  shared: boolean
 }
 
-export default function Controls({ params, onChange, presets, onPreset, onReset }: Props) {
+export default function Controls({ params, onChange, presets, onPreset, onReset, onShare, shared }: Props) {
   return (
     <div className="controls">
       <section className="panel">
         <div className="panel__head">
           <h2>Presets</h2>
-          <button className="ghost" onClick={onReset}>
-            Reset
-          </button>
+          <div className="panel__actions">
+            <button className="ghost" onClick={onShare} title="Copy a shareable link to this exact scene">
+              {shared ? 'Copied ✓' : 'Share'}
+            </button>
+            <button className="ghost" onClick={onReset}>
+              Reset
+            </button>
+          </div>
         </div>
         <div className="presets">
           {presets.map((p) => (

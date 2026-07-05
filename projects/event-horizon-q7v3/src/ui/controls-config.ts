@@ -5,6 +5,7 @@ export type NumericParamKey =
   | 'inclination'
   | 'azimuth'
   | 'fov'
+  | 'spin'
   | 'diskInner'
   | 'diskOuter'
   | 'diskBrightness'
@@ -14,7 +15,18 @@ export type NumericParamKey =
   | 'stepSize'
   | 'starBrightness'
   | 'exposure'
+  | 'bloomStrength'
+  | 'bloomThreshold'
   | 'renderScale'
+
+export type ToggleParamKey =
+  | 'doppler'
+  | 'redshift'
+  | 'autoRotate'
+  | 'ergosphere'
+  | 'iscoTrack'
+  | 'bloom'
+  | 'adaptiveQuality'
 
 export interface SliderDef {
   key: NumericParamKey
@@ -27,7 +39,7 @@ export interface SliderDef {
 }
 
 export interface ToggleDef {
-  key: 'doppler' | 'redshift' | 'autoRotate'
+  key: ToggleParamKey
   label: string
   help: string
 }
@@ -53,6 +65,24 @@ export const CONTROL_GROUPS: ControlGroup[] = [
     toggles: [{ key: 'autoRotate', label: 'Auto-orbit', help: 'Slowly spin the camera around the hole on its own.' }],
   },
   {
+    title: 'Black hole',
+    sliders: [
+      {
+        key: 'spin',
+        label: 'Spin a/M',
+        min: 0,
+        max: 0.998,
+        step: 0.002,
+        format: (v) => v.toFixed(3),
+        help: 'Dimensionless spin. 0 is a static Schwarzschild hole; near 1 is a near-extremal Kerr hole with strong frame dragging and a flattened shadow.',
+      },
+    ],
+    toggles: [
+      { key: 'ergosphere', label: 'Ergosphere', help: 'Draw the static-limit shell — inside it, frame dragging is so strong that nothing can remain at rest.' },
+      { key: 'iscoTrack', label: 'Inner edge → ISCO', help: 'Snap the disk’s inner radius to the prograde innermost stable orbit for the current spin.' },
+    ],
+  },
+  {
     title: 'Accretion disk',
     sliders: [
       { key: 'diskInner', label: 'Inner radius', min: 1.5, max: 8, step: 0.1, format: rs, help: 'Inner edge. The physical innermost stable orbit (ISCO) is 3 rs.' },
@@ -71,7 +101,10 @@ export const CONTROL_GROUPS: ControlGroup[] = [
     sliders: [
       { key: 'exposure', label: 'Exposure', min: 0.2, max: 3, step: 0.02, help: 'HDR exposure before the filmic tonemap.' },
       { key: 'starBrightness', label: 'Starfield', min: 0, max: 2.5, step: 0.05, help: 'Brightness of the lensed background stars and nebula.' },
+      { key: 'bloomStrength', label: 'Bloom', min: 0, max: 1.5, step: 0.02, help: 'Intensity of the HDR bloom added to the disk highlights.' },
+      { key: 'bloomThreshold', label: 'Bloom knee', min: 0.4, max: 3, step: 0.05, help: 'Luminance above which a pixel starts to glow.' },
     ],
+    toggles: [{ key: 'bloom', label: 'Bloom', help: 'Multi-pass HDR bloom (float FBO ping-pong) for a photographic glow on bright disk material.' }],
   },
   {
     title: 'Quality',
@@ -80,6 +113,7 @@ export const CONTROL_GROUPS: ControlGroup[] = [
       { key: 'stepSize', label: 'Step size', min: 0.05, max: 0.3, step: 0.005, help: 'Base integrator step. Smaller = more accurate near the hole.' },
       { key: 'renderScale', label: 'Render scale', min: 0.35, max: 1, step: 0.05, format: (v) => `${Math.round(v * 100)}%`, help: 'Internal resolution. Drop it if the framerate sags.' },
     ],
+    toggles: [{ key: 'adaptiveQuality', label: 'Adaptive quality', help: 'Automatically lower the render scale when the framerate drops, and raise it again when there’s headroom.' }],
   },
 ]
 
