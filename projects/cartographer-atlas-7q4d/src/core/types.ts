@@ -71,6 +71,8 @@ export interface City {
   capital: boolean
   /** Province / realm name this city rules. */
   realm: string
+  /** Estimated population (people); filled by the economy stage. */
+  population?: number
 }
 
 /** A road: an ordered list of region indices forming a terrain-aware path. */
@@ -78,6 +80,54 @@ export interface Road {
   path: number[]
   /** Trunk roads (capital links / long hauls) draw heavier than local ones. */
   trunk: boolean
+  /** Trade volume 0..1 (endpoint economic complementarity × wealth); set by economy.ts. */
+  trade?: number
+}
+
+/** A named waterway: its main stem traced source→mouth, with a length. */
+export interface NamedRiver {
+  name: string
+  /** Ordered region indices from source to mouth (the main stem). */
+  cells: number[]
+  /** Stem length in leagues. */
+  lengthLeagues: number
+  /** The mouth region (where it meets the sea or a lake). */
+  mouth: number
+}
+
+/** Aggregated economy for one province (indexed by its ruling city). */
+export interface ProvinceInfo {
+  /** Province / city index (matches cities[] and the province-owner id). */
+  id: number
+  /** Land-cell count. */
+  area: number
+  /** Aggregate wealth score (arbitrary units). */
+  wealth: number
+  /** Estimated population (people). */
+  population: number
+  /** Top export goods, richest first (resource keys, see economy.ts RESOURCES). */
+  exports: string[]
+}
+
+/** A dated event in the generated chronicle. */
+export type ChronicleKind =
+  | 'founding'
+  | 'realm'
+  | 'war'
+  | 'eruption'
+  | 'flood'
+  | 'plague'
+  | 'golden'
+  | 'famine'
+  | 'road'
+export interface ChronicleEvent {
+  year: number
+  title: string
+  text: string
+  kind: ChronicleKind
+  /** Optional map location the event refers to. */
+  x?: number
+  y?: number
 }
 
 /** The dual mesh: Voronoi regions and their Delaunay triangle duals. */
@@ -109,7 +159,7 @@ export interface Label {
   x: number
   y: number
   text: string
-  kind: 'kingdom' | 'range' | 'sea' | 'lake'
+  kind: 'kingdom' | 'range' | 'sea' | 'lake' | 'river'
   /** Relative importance 0..1, used to scale font size. */
   weight: number
 }
@@ -136,6 +186,18 @@ export interface WorldMap {
   temperature: Float64Array
   /** Orographic precipitation 0..1 per region (prevailing-wind rain shadow). */
   precip: Float64Array
+
+  // --- Deep climate (Session 3) -------------------------------------------
+  /** Continentality 0..1: how far a land cell sits from open water (drives seasonal swing). */
+  continentality: Float64Array
+  /** Köppen–Geiger climate id per land region (index into KOPPEN); 255 = water/none. */
+  koppen: Uint8Array
+  /** Warmest-month mean temperature, °C. */
+  tWarm: Float32Array
+  /** Coldest-month mean temperature, °C. */
+  tCold: Float32Array
+  /** Modelled annual precipitation, mm. */
+  precipMm: Float32Array
   /** Biome id per region (see biomes.ts BIOMES ordering). */
   biome: Uint8Array
   /** River edges as region-index pairs [a,b] with flux carried on `a`. */
@@ -160,6 +222,20 @@ export interface WorldMap {
   /** Province owner (index into `cities`) per land region, or -1. */
   province: Int32Array
   roads: Road[]
+
+  // --- Named rivers, economy & history (Session 3) -------------------------
+  /** The great rivers, longest first. */
+  namedRivers: NamedRiver[]
+  /** For each region, the index of the NamedRiver whose stem passes through it, or -1. */
+  riverName: Int32Array
+  /** Dominant resource id per land region (index into economy RESOURCES); 255 = none. */
+  resource: Uint8Array
+  /** Per-province aggregated economy, indexed by province/city id. */
+  provinceInfo: ProvinceInfo[]
+  /** A generated timeline of the world's history. */
+  chronicle: ChronicleEvent[]
+  /** The name of the era the chronicle is set in. */
+  era: string
 
   /** Wall-clock milliseconds spent in each pipeline stage, for the HUD. */
   timings: Record<string, number>

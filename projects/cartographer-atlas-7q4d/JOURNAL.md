@@ -30,6 +30,19 @@ Pure-TS engine under `src/core/`, framework-free and deterministic from a seed:
 - `hydrology.ts` — priority-flood depression filling, downslope graph, rainfall + flow
   accumulation, river extraction, moisture transport from coasts and rivers.
 - `biomes.ts` — Whittaker classification (elevation × moisture) → biome ids + metadata.
+- `climate.ts` — orographic precipitation (prevailing-wind advection sweep) **and**
+  `computeContinentality` (BFS distance-from-water; the second great climate control).
+- `koppen.ts` — a genuine **Köppen–Geiger** classifier: synthesises a 12-month temperature
+  & precipitation cycle per cell (latitude + lapse + continentality + hemisphere phase,
+  with a monsoon / Mediterranean wet-season regime) then applies the real A/B/C/D/E
+  decision rules. ~30 zones with the standard Köppen colours.
+- `rivers.ts` — inverts the downslope forest and traces each river's main stem from mouth
+  to remotest headwater (following max-flux tributaries), measures it in leagues, and names
+  the great ones.
+- `economy.ts` — per-cell resource potential (grain/ore/wine/fish/furs/…), aggregated into
+  provincial wealth, population and exports; trade weights on roads by basket complementarity.
+- `history.ts` — a deterministic **chronicle**: foundings, wars, eruptions, floods, plagues,
+  golden ages and famines drawn from the world's own realms, rivers, peaks and economy.
 - `names.ts` — procedural place-name generator (syllable grammar) for kingdoms & ranges.
 - `generate.ts` — the pipeline: `params → WorldMap`, timed per stage.
 
@@ -90,10 +103,54 @@ Nine new pillars, each a self-contained deterministic stage.
 - [x] SVG vector export alongside PNG; a fourth "Political" palette.
 - [x] Web-Worker generation offload with a safe synchronous fallback for thumbnails.
 
-### Still open / next passes
-- [ ] Named rivers (trace main stems, label the longest).
-- [ ] Biome-aware settlement economy (trade goods per province).
-- [ ] Köppen climate classification overlay toggle.
+### Session 3 (claude, 2026-07-05) — "climate, rivers, economy & history" pass — PLAN
+
+The world had terrain, water, biomes, tectonics and a bare civilisation layer. This
+pass makes it a *believable* world with a deep climate model, named waterways, a
+resource economy and a generated chronicle — plus a proper thematic-overlay system so
+the studio reads like a real atlas (climate maps, resource maps, temperature maps).
+
+**Deep climate**
+- [x] Seasonal climate model: derive a 12-month temperature & precipitation cycle per
+      cell from latitude, altitude lapse, hemisphere phase and **continentality**
+      (distance-from-ocean drives seasonal swing + a summer-monsoon / winter-Mediterranean
+      precipitation regime). New `continentality` field.
+- [x] **Köppen–Geiger** classification (`koppen.ts`): full A/B/C/D/E groups with the
+      standard second/third letters (Af/Am/Aw, BWh/BSk, Cfa/Cfb/Csa/Cwa, Dfb/Dfc/Dsc,
+      ET/EF) from the monthly arrays, using the real thresholds. Standard Köppen colours.
+- [x] Köppen overlay + legend + inspector field (zone code, full name, warmest/coldest
+      month °C, annual rainfall mm).
+
+**Named rivers**
+- [x] `rivers.ts`: find river mouths, trace each main stem upstream by max-flux tributary,
+      measure length in leagues, name the longest as `NamedRiver`s (river-suffix grammar).
+- [x] Per-cell `riverName` map; italic river labels along the stem; inspector shows the
+      river a cell belongs to; HUD lists the great rivers by length.
+
+**Economy & trade**
+- [x] `economy.ts`: per-cell resource potential from biome + terrain (grain, livestock,
+      timber, fish, ore, furs, wine, spice, stone, salt). Dominant-resource field for a
+      resource overlay.
+- [x] Aggregate per province → wealth, population, top exports; fold wealth into city tier.
+- [x] Trade weight per road from endpoint complementarity + wealth; trade arteries drawn
+      heavier. Inspector shows a province's realm, wealth, population and exports.
+
+**Generated history**
+- [x] `history.ts`: a deterministic **chronicle** — foundation years, realms proclaimed,
+      wars between neighbouring realms, eruptions near plate boundaries/peaks, floods on
+      great rivers, plagues in trade hubs, golden ages — as dated events over an era.
+- [x] Collapsible Chronicle panel listing the timeline.
+
+**Studio & rendering**
+- [x] Thematic-overlay selector: None / Köppen / Resources / Temperature / Precipitation /
+      Elevation — full-cell recolours (relief-shaded) with an adapting legend.
+- [x] Prevailing-wind overlay: rhumb-style wind arrows over the sea (old-chart feel).
+- [x] New **Nocturne** palette: dark night-atlas with luminous water + gold cities.
+- [x] New presets (Köppen Earth, Ice Age, Desert World).
+- [x] Greedy label de-clutter (priority-ordered, collision-culled) so dense atlases read cleanly.
+- [x] Keep SVG export + worker clone-safety + determinism intact; keep the CI gate green.
+
+### Deferred / future passes
 - [ ] Hex-grid export for tabletop play.
 - [ ] Time-lapse: animate tectonic uplift or a rising-sea-level coastline.
 
@@ -113,3 +170,16 @@ Nine new pillars, each a self-contained deterministic stage.
   export, and Web-Worker generation offload with a synchronous fallback. The studio grew a
   Tectonics/Climate/Civilisation control section and new layer toggles. Doubled the engine
   in size while keeping every stage pure, deterministic, and seed-reproducible.
+- 2026-07-05 (claude, session 3): the "climate, rivers, economy & history" pass. Shipped
+  four new engine modules — `koppen.ts` (a real Köppen–Geiger classifier off a synthesised
+  12-month climate, driven by a new continentality field in `climate.ts`), `rivers.ts`
+  (traces & names the great river stems), `economy.ts` (per-cell resources → provincial
+  wealth/population/exports + trade-weighted roads), and `history.ts` (a deterministic
+  chronicle of foundings, wars, eruptions, floods, plagues, golden ages & famines). Added a
+  thematic-overlay system (`render/overlay.ts`) with five data maps (Köppen, resources,
+  temperature, rainfall, elevation) and an adapting legend; prevailing-wind rhumb arrows; a
+  luminous **Nocturne** palette; three presets (Köppen Earth, Ice Age, Desert World); a
+  Chronicle panel; a much richer Inspector; and greedy priority-ordered label de-cluttering.
+  Verified in a real browser (Chromium/Playwright) across every overlay, palette and panel —
+  zero console errors. Every new stage stays pure, deterministic, worker-clone-safe, and
+  green through the CI gate.

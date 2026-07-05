@@ -1,10 +1,13 @@
 // Click-to-inspect panel. Given the region picked on the map, it reads the engine's
-// per-cell fields and presents them in friendly units (metres, °C, %) so the map's
-// numbers are legible without a debugger.
+// per-cell fields and presents them in friendly units (metres, °C, mm, %) so the map's
+// numbers are legible without a debugger — now including the Köppen climate zone, the
+// seasonal temperature range, the river the cell drains to, and its realm's economy.
 
 import type { ReactElement } from 'react'
 import type { WorldMap } from '../core/types'
 import { BIOMES } from '../core/biomes'
+import { KOPPEN, KOPPEN_NONE } from '../core/koppen'
+import { RESOURCES } from '../core/economy'
 
 interface Props {
   world: WorldMap
@@ -20,6 +23,9 @@ function row(label: string, value: string): ReactElement {
     </div>
   )
 }
+
+const RES_NAME: Record<string, string> = {}
+RESOURCES.forEach((r) => (RES_NAME[r.key] = r.name))
 
 export default function Inspector({ world, region, onClose }: Props): ReactElement | null {
   if (region < 0 || region >= world.mesh.numSolid) return null
@@ -47,6 +53,11 @@ export default function Inspector({ world, region, onClose }: Props): ReactEleme
   const kind = isOcean ? 'Ocean' : isLake ? 'Lake' : world.coast[region] ? 'Coast' : 'Inland'
   const prov = world.province[region]
   const city = prov >= 0 ? world.cities[prov] : null
+  const info = prov >= 0 ? world.provinceInfo[prov] : null
+
+  const kop = world.koppen[region]
+  const riverIdx = world.riverName[region]
+  const river = riverIdx >= 0 ? world.namedRivers[riverIdx] : null
 
   return (
     <div className="inspector">
@@ -59,16 +70,27 @@ export default function Inspector({ world, region, onClose }: Props): ReactEleme
       <div className="insp-body">
         {row('Type', kind)}
         {row('Biome', BIOMES[world.biome[region]].name)}
+        {!isOcean && !isLake && kop !== KOPPEN_NONE &&
+          row('Climate', `${KOPPEN[kop].code} · ${KOPPEN[kop].name}`)}
         {row('Elevation', `${metres.toLocaleString()} m`)}
-        {!isOcean && row('Temperature', `${celsius}°C`)}
-        {!isOcean && row('Precipitation', `${precipPct}%`)}
+        {!isOcean && row('Mean temp', `${celsius}°C`)}
+        {!isOcean && !isLake &&
+          row('Seasonal', `${Math.round(world.tCold[region])}…${Math.round(world.tWarm[region])}°C`)}
+        {!isOcean && row('Rainfall', `${Math.round(world.precipMm[region]).toLocaleString()} mm · ${precipPct}%`)}
         {!isOcean && !isLake && row('Moisture', `${moistPct}%`)}
-        {!isOcean && !isLake && world.flux[region] > 0 && row('Water', riverLabel)}
+        {!isOcean && !isLake &&
+          row('Continental', `${Math.round(world.continentality[region] * 100)}%`)}
+        {river && row('River', `${river.name} (${river.lengthLeagues.toLocaleString()} lg)`)}
+        {!isOcean && !isLake && !river && world.flux[region] > 0 && row('Water', riverLabel)}
         {p.terrainMode === 'tectonic' &&
           world.plateId.length > 0 &&
           row('Plate', `#${world.plateId[region]}${world.plateBoundary[region] ? ' (boundary)' : ''}`)}
+        {city && <div className="insp-sep" />}
         {city && row('Realm', city.realm)}
         {city && row('Seat', `${city.name}${city.capital ? ' ★' : ''}`)}
+        {info && info.population > 0 && row('Realm pop.', `≈ ${info.population.toLocaleString()}`)}
+        {info && info.exports.length > 0 &&
+          row('Exports', info.exports.map((e) => RES_NAME[e] ?? e).join(', '))}
       </div>
     </div>
   )

@@ -75,6 +75,10 @@ export interface Palette {
   scaleInk: string
   frame: string
   compass: string
+  /** Prevailing-wind arrow colour over the sea (falls back to a faint white). */
+  wind?: string
+  /** River-name ink (falls back to `water`). */
+  riverLabel?: string
 }
 
 const BIOME_RGB: RGB[] = BIOMES.map((b) => hexToRgb(b.color))
@@ -122,6 +126,8 @@ const TERRA: Palette = {
   scaleInk: '#e7ecf4',
   frame: 'rgba(210,225,240,0.35)',
   compass: 'rgba(230,238,248,0.75)',
+  wind: 'rgba(214,230,244,0.22)',
+  riverLabel: '#bfe0f2',
 }
 
 // --- Parchment: aged-paper fantasy atlas ---
@@ -175,6 +181,8 @@ const PARCHMENT: Palette = {
   scaleInk: '#4a3820',
   frame: 'rgba(92,74,48,0.55)',
   compass: 'rgba(74,56,32,0.8)',
+  wind: 'rgba(92,74,48,0.3)',
+  riverLabel: '#3f5f68',
 }
 
 // --- Bathymetric: scientific hypsometric relief ---
@@ -230,6 +238,8 @@ const BATHY: Palette = {
   scaleInk: '#eef6ff',
   frame: 'rgba(158,202,225,0.4)',
   compass: 'rgba(220,238,255,0.7)',
+  wind: 'rgba(200,226,246,0.22)',
+  riverLabel: '#d3ecff',
 }
 
 // --- Imperial: political parchment tuned for provinces, roads & cities ---
@@ -283,9 +293,62 @@ const IMPERIAL: Palette = {
   scaleInk: '#3c2c17',
   frame: 'rgba(74,50,30,0.65)',
   compass: 'rgba(74,44,26,0.82)',
+  wind: 'rgba(74,58,38,0.3)',
+  riverLabel: '#3a5560',
 }
 
-export const PALETTES: readonly Palette[] = [TERRA, PARCHMENT, BATHY, IMPERIAL]
+// --- Nocturne: a dark night-atlas with luminous water & gilt cities ---
+const NOCTURNE: Palette = {
+  key: 'nocturne',
+  name: 'Nocturne',
+  background: '#070b16',
+  water: '#5fd0e6',
+  coast: '#0c2f45',
+  border: 'rgba(150,180,220,0.06)',
+  labelFill: '#e9f0ff',
+  labelStroke: 'rgba(4,8,18,0.9)',
+  grain: 0.05,
+  hillshade: 0.85,
+  ocean(depth) {
+    return ramp(
+      [
+        [0, hexToRgb('#16405c')],
+        [0.5, hexToRgb('#0c2740')],
+        [1, hexToRgb('#050f1e')],
+      ],
+      depth,
+    )
+  },
+  land(biome, elevAbove, moisture) {
+    // Muted, moonlit ground: darken the biome colour and pull it toward cold slate,
+    // lifting a touch on the high ridges so relief still catches the light.
+    const base = BIOME_RGB[biome]
+    const slate: RGB = [26, 34, 52]
+    const dim = lerpRgb(slate, [base[0] * 0.55, base[1] * 0.6, base[2] * 0.55], 0.55 - moisture * 0.1)
+    const lift = 1 + elevAbove * 0.5
+    return [dim[0] * lift, dim[1] * lift, dim[2] * lift]
+  },
+  lake: hexToRgb('#1c5a72'),
+  road: 'rgba(240,197,120,0.85)',
+  roadCasing: 'rgba(4,8,18,0.7)',
+  city: '#ffd479',
+  cityStroke: '#0a0f1e',
+  cityLabel: '#ffe9bf',
+  cityLabelStroke: 'rgba(4,8,18,0.92)',
+  contour: 'rgba(150,180,220,0.14)',
+  provinceLine: 'rgba(210,225,250,0.5)',
+  provinceLum: 64,
+  provinceSat: 46,
+  provinceAlpha: 0.2,
+  graticule: 'rgba(150,180,220,0.1)',
+  scaleInk: '#dce6fb',
+  frame: 'rgba(150,180,220,0.34)',
+  compass: 'rgba(210,225,250,0.72)',
+  wind: 'rgba(150,190,230,0.2)',
+  riverLabel: '#8fe6f4',
+}
+
+export const PALETTES: readonly Palette[] = [TERRA, PARCHMENT, BATHY, IMPERIAL, NOCTURNE]
 
 export function paletteByKey(key: string): Palette {
   return PALETTES.find((p) => p.key === key) ?? TERRA

@@ -36,12 +36,12 @@ export function worldToSvg(world: WorldMap, view: ViewOptions): string {
   )
   out.push(`<rect width="${W}" height="${H}" fill="${pal.background}"/>`)
 
-  // --- Cells ---
+  // --- Cells (with any active thematic overlay) ---
   out.push('<g stroke-width="0.5">')
   for (let r = 0; r < mesh.numSolid; r++) {
     const pts = cellPoints(world, r)
     if (!pts) continue
-    const css = rgbToCss(regionColor(world, r, pal, shade))
+    const css = rgbToCss(regionColor(world, r, pal, shade, view.overlay))
     out.push(`<polygon points="${pts}" fill="${css}" stroke="${css}"/>`)
   }
   out.push('</g>')
@@ -112,12 +112,13 @@ export function worldToSvg(world: WorldMap, view: ViewOptions): string {
     out.push('</g>')
   }
 
-  // --- Roads ---
+  // --- Roads (weighted by trade volume) ---
   if (view.showRoads && world.roads.length) {
     for (const rd of world.roads) {
       let d = `M${f1(mesh.px[rd.path[0]])},${f1(mesh.py[rd.path[0]])}`
       for (let k = 1; k < rd.path.length; k++) d += `L${f1(mesh.px[rd.path[k]])},${f1(mesh.py[rd.path[k]])}`
-      const w = rd.trunk ? 2.4 : 1.5
+      const t = rd.trade ?? (rd.trunk ? 0.7 : 0.3)
+      const w = (rd.trunk ? 1.7 : 1.1) + t * 2.1
       out.push(`<path d="${d}" fill="none" stroke="${pal.roadCasing}" stroke-width="${f1(w + 1.6)}" stroke-linecap="round" stroke-linejoin="round"/>`)
       const dash = rd.trunk ? '' : ' stroke-dasharray="4 3"'
       out.push(`<path d="${d}" fill="none" stroke="${pal.road}" stroke-width="${f1(w)}" stroke-linecap="round" stroke-linejoin="round"${dash}/>`)
@@ -127,12 +128,20 @@ export function worldToSvg(world: WorldMap, view: ViewOptions): string {
   // --- Geographic labels ---
   if (view.showLabels) {
     for (const l of world.labels) {
-      const size = l.kind === 'kingdom' ? 15 + 15 * l.weight : l.kind === 'range' ? 11 + 6 * l.weight : 13 + 6 * l.weight
+      const size =
+        l.kind === 'kingdom'
+          ? 15 + 15 * l.weight
+          : l.kind === 'range'
+            ? 11 + 6 * l.weight
+            : l.kind === 'river'
+              ? 10 + 5 * l.weight
+              : 13 + 6 * l.weight
       const italic = l.kind !== 'kingdom' ? ' font-style="italic"' : ''
       const txt = l.kind === 'sea' || l.kind === 'lake' ? esc(l.text.toUpperCase()) : esc(l.text)
       const spacing = l.kind === 'sea' || l.kind === 'lake' ? ` letter-spacing="${f1(size * 0.14)}"` : ''
+      const fill = l.kind === 'river' ? pal.riverLabel ?? pal.water : pal.labelFill
       out.push(
-        `<text x="${f1(l.x)}" y="${f1(l.y)}" text-anchor="middle" dominant-baseline="middle" font-family="Georgia, serif" font-weight="600" font-size="${f1(size)}"${italic}${spacing} fill="${pal.labelFill}" stroke="${pal.labelStroke}" stroke-width="${f1(Math.max(2, size * 0.16))}" paint-order="stroke">${txt}</text>`,
+        `<text x="${f1(l.x)}" y="${f1(l.y)}" text-anchor="middle" dominant-baseline="middle" font-family="Georgia, serif" font-weight="600" font-size="${f1(size)}"${italic}${spacing} fill="${fill}" stroke="${pal.labelStroke}" stroke-width="${f1(Math.max(2, size * 0.16))}" paint-order="stroke">${txt}</text>`,
       )
     }
   }
