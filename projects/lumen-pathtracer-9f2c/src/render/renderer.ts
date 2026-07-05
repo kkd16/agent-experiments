@@ -786,6 +786,21 @@ export class Renderer {
   toDataURL(): string {
     return this.ctx.canvas.toDataURL('image/png')
   }
+
+  // (25.0) The current averaged **linear HDR** frame — physical radiance before
+  // tone mapping — as an interleaved [r,g,b] Float32Array plus its dimensions.
+  // This is what `floatToRgbe` writes to a real `.hdr`, so the studio can export
+  // the scene it rendered under an HDRI back into the same interchange format.
+  // Reads the freshly composited average (or the MLT/SPPM full-frame estimate).
+  hdrImage(): { pixels: Float32Array; width: number; height: number } {
+    if (this.isFrame()) {
+      if (this.stFrame) this.stFrame.image(this.avg)
+      // Multithreaded MLT/SPPM: `this.avg` already holds the last composite.
+    } else {
+      this.buildAverage()
+    }
+    return { pixels: Float32Array.from(this.avg), width: this.width, height: this.height }
+  }
 }
 
 // Split `height` rows across `count` bands as evenly as possible.

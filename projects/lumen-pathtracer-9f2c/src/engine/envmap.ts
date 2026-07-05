@@ -141,6 +141,15 @@ export class Distribution2D {
 
 export type HdriPreset = 'studio' | 'sunset' | 'twilight'
 
+// (25.0) A decoded, user-supplied equirectangular panorama: interleaved linear
+// radiance, row 0 = zenith. Passed to `EnvMap` in place of a preset name so a
+// real `.hdr` (see hdr.ts) drives the same importance sampler as the built-ins.
+export interface EnvPixels {
+  pixels: Float32Array | Float64Array
+  width: number
+  height: number
+}
+
 // ---- equirectangular ↔ direction mapping ------------------------------------
 //
 // Pixel (i,j) → (u,v)=((i+0.5)/W,(j+0.5)/H) → spherical (θ=vπ from +y, φ=u·2π).
@@ -180,14 +189,27 @@ export class EnvMap {
   // exposed for diagnostics / SPPM-style energy bookkeeping.
   readonly meanRadiance: Vec3
 
-  constructor(preset: HdriPreset, intensity = 1, rotationRad = 0) {
-    const W = 512
-    const H = 256
+  // Build from a named procedural preset (512×256) or from a decoded panorama
+  // (`EnvPixels`, e.g. a real `.hdr`). Either path feeds the identical luminance×
+  // sinθ importance distribution, so sampling, pdf and MIS are agnostic to source.
+  constructor(source: HdriPreset | EnvPixels, intensity = 1, rotationRad = 0) {
+    let W: number
+    let H: number
+    if (typeof source === 'string') {
+      W = 512
+      H = 256
+      this.pixels = generatePanorama(source, W, H)
+    } else {
+      W = source.width
+      H = source.height
+      // The importance build and bilinear lookup index a Float64Array; a Float32
+      // panorama (the postMessage-friendly wire form) is widened once here.
+      this.pixels = source.pixels instanceof Float64Array ? source.pixels : Float64Array.from(source.pixels)
+    }
     this.width = W
     this.height = H
     this.rotation = rotationRad
     this.intensity = intensity
-    this.pixels = generatePanorama(preset, W, H)
 
     // Importance weights: luminance × sinθ (the equirectangular area element).
     const func = new Float64Array(W * H)

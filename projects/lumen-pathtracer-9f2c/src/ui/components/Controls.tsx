@@ -16,9 +16,13 @@ export function Controls(props: {
   onRender: () => void
   onStop: () => void
   onSave: () => void
+  onLoadHdri: (file: File) => void
+  onClearHdri: () => void
+  onSaveHdr: () => void
 }) {
-  const { state, set, running, onRender, onStop, onSave } = props
+  const { state, set, running, onRender, onStop, onSave, onLoadHdri, onClearHdri, onSaveHdr } = props
   const preset = SCENES.find((s) => s.id === state.sceneId)
+  const hdriActive = !!preset?.hdri || !!state.customHdriName
 
   return (
     <div className="controls">
@@ -34,6 +38,42 @@ export function Controls(props: {
               {s.label}
             </button>
           ))}
+        </div>
+      </Panel>
+
+      <Panel title="Custom HDRI" subtitle="Drop a Radiance .hdr on the viewport — it lights any scene, importance-sampled">
+        <div className="hdri-loader">
+          <label className="hdri-load-btn">
+            <input
+              type="file"
+              accept=".hdr,.pic,image/vnd.radiance,application/octet-stream"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) onLoadHdri(f)
+                e.currentTarget.value = '' // allow re-loading the same file
+              }}
+            />
+            ⤒ Load .hdr…
+          </label>
+          {state.customHdriName ? (
+            <div className="hdri-status">
+              <div className="hdri-meta">
+                <span className="hdri-name" title={state.customHdriName}>
+                  {state.customHdriName}
+                </span>
+                <span className="hdri-info">{state.customHdriInfo}</span>
+              </div>
+              <button type="button" className="hdri-clear" onClick={onClearHdri} title="Remove the custom HDRI">
+                ✕ Clear
+              </button>
+            </div>
+          ) : (
+            <p className="hdri-hint">
+              A real equirectangular Radiance <code>.hdr</code> — grab one from Poly&nbsp;Haven. It is decoded,
+              luminance-importance-sampled and MIS-paired the moment it lands, lighting whichever scene is loaded.
+            </p>
+          )}
+          {state.hdriError && <p className="hdri-error">{state.hdriError}</p>}
         </div>
       </Panel>
 
@@ -72,8 +112,15 @@ export function Controls(props: {
         </Panel>
       )}
 
-      {preset?.hdri && (
-        <Panel title="Environment (HDRI)" subtitle="Image-based lighting — the panorama is importance-sampled">
+      {hdriActive && (
+        <Panel
+          title="Environment (HDRI)"
+          subtitle={
+            state.customHdriName
+              ? 'Your panorama — importance-sampled'
+              : 'Image-based lighting — the panorama is importance-sampled'
+          }
+        >
           <Slider
             label="Env rotation"
             value={state.envRotation}
@@ -401,8 +448,16 @@ export function Controls(props: {
         <button className="btn" type="button" onClick={onRender} title="Restart accumulation">
           ⟳ Restart
         </button>
-        <button className="btn" type="button" onClick={onSave} title="Save PNG">
-          ⤓ Save
+        <button className="btn" type="button" onClick={onSave} title="Save a tone-mapped PNG">
+          ⤓ PNG
+        </button>
+        <button
+          className="btn"
+          type="button"
+          onClick={onSaveHdr}
+          title="Export the linear HDR frame as a Radiance .hdr (physical radiance, not tone-mapped)"
+        >
+          ⤓ HDR
         </button>
       </div>
     </div>
