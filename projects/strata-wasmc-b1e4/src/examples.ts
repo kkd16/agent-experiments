@@ -10,6 +10,58 @@ export interface Example {
 
 export const EXAMPLES: Example[] = [
   {
+    id: 'interproc',
+    title: 'Interprocedural optimization',
+    blurb: 'The compiler’s first whole-call-graph rewrite: a constant passed at every call site is propagated into the callee and dropped from its signature; a callee constant at only some sites is cloned & specialized; a pure always-same-literal function is folded to its value. Watch the ipo: pills in the Optimizer tab.',
+    source: `// Every other constant-folding pass here is *intraprocedural* — it can only see
+// inside one function, so a call is an opaque wall constants can't cross. This
+// pass looks at *every call site of a function at once* and does four classic
+// interprocedural transforms (open the Optimizer tab to watch the "ipo:" pills):
+//
+//   - constant-argument propagation: a parameter passed the same constant at
+//     every call site is a constant inside the body;
+//   - dead-argument elimination: once it is a module-wide constant and every
+//     caller is known, the argument is dropped from the signature and every call;
+//   - function specialization (IPA-CP): when a parameter is constant at only
+//     *some* sites, the callee is cloned and those sites redirected — so the clone
+//     sees a constant the original never could;
+//   - return-constant folding: a pure, always-same-literal function is replaced
+//     by its literal at every call, and then deleted as dead.
+//
+// \`tone\` is a real cross-call barrier: the only way the constant \`gamma\` and the
+// per-site \`mode\` reach it is interprocedurally. Everything downstream (SCCP, the
+// branch fold, DCE) then cascades from the constants this pass exposes.
+
+fn tone(mode: int, gamma: int, x: int) -> int {
+  let v = x * gamma;
+  let acc = mode + gamma;
+  for (let i = 0; i < 6; i = i + 1) {
+    let s = (v + i * gamma) & 255;
+    if (mode == 0) { acc = acc + s; }
+    else { if (mode == 1) { acc = acc + s * 2 - i; } else { acc = acc + (s ^ (i * 7)) + gamma; } }
+    acc = acc + (acc & 31) - 15;
+    acc = acc ^ (mode * 3 + i);
+    acc = acc + (v & 7) - (i | mode);
+  }
+  return acc + mode * 13 + gamma * 2;
+}
+
+fn bias() -> int { return 100; }   // pure, always returns 100 -> folded to the literal
+
+fn main() {
+  // gamma is 3 at every call -> module-constant (const-arg + dead-arg).
+  // mode is 0 at one site but 2 at three sites -> the majority is cloned &
+  // specialized to mode=2, and the original keeps the mode=0 site.
+  let total = bias() - bias();
+  for (let x = 0; x < 5; x = x + 1) { total = total + tone(0, 3, x); }
+  for (let x = 5; x < 10; x = x + 1) { total = total + tone(2, 3, x); }
+  total = total + tone(2, 3, 11);
+  total = total + tone(2, 3, 13);
+  print(total);
+}
+`,
+  },
+  {
     id: 'purity',
     title: 'Interprocedural purity',
     blurb: 'A whole-program effect analysis makes pure calls first-class: redundant ones are CSE-d, invariant ones hoisted out of loops, dead ones deleted — while a printing helper is left untouched.',

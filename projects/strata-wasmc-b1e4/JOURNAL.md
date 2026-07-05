@@ -197,6 +197,23 @@ reference interpreter at every optimization level.
   never forwarded (a byte store→byte load is a truncating round-trip). See the 2026-06-19 plan (III).
 - `src/compiler/opt/inline.ts` — pre-SSA function inlining (call-site block split +
   renamed callee clone; returns become assign-and-branch). Runs at -O2+.
+- `src/compiler/opt/interproc.ts` — **interprocedural optimization** (pre-SSA, -O2+, runs
+  *before* the inliner — the classic IPSCCP-then-inline order). The mid-end's first
+  whole-call-graph rewrite: it looks at *every call site of a function at once* and does four
+  classic transforms. (1) **Constant-argument propagation** — a parameter passed the same
+  literal at every call site is bound to that constant at the callee's entry, exposing it to
+  the whole downstream optimizer. (2) **Dead-argument elimination** — once a parameter is a
+  module-wide constant *and* the function is not externally reachable (not exported, address
+  never taken via `funcaddr`), every caller is known, so the argument is dropped from the
+  signature and from every call. (3) **Function specialization / cloning (IPA-CP)** — a
+  parameter constant at only *some* sites splits those sites off to a fresh clone, whose
+  callers now all pass the constant so (1)+(2) bake it in, while the original still serves the
+  varying sites. (4) **Return-constant folding** — a side-effect-free, acyclic (∴ terminating)
+  function whose every `return` yields the same literal is replaced by that literal at every
+  call. Call sites are held by instruction *reference* (index-shift-proof against the
+  entry-block binds), and recursion/opaque-entry functions are handled soundly; every rewrite
+  is proven correct by the differential oracle at every -O level. Fired + fuzzed by
+  `tools/check-interproc.mjs` (`interprocProbe.ts`).
 - `src/compiler/opt/tco.ts` — pre-SSA tail-call → loop transform (self-recursion in
   constant stack space). Runs at -O2+.
 - `src/compiler/backend/` — the wasm backend:
@@ -327,6 +344,20 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Interprocedural optimization — IPCP + dead-arg + specialization + return-const**
+      (`opt/interproc.ts`, -O2+) — the mid-end's first *whole-call-graph rewrite* (every earlier
+      constant-folding pass is intraprocedural: a call is an opaque wall constants can't cross). It
+      runs before the inliner (IPSCCP-then-inline) and does four classic transforms: **constant-argument
+      propagation** (a parameter passed the same literal at every site becomes a constant in the body),
+      **dead-argument elimination** (a module-wide-constant parameter of a non-externally-reachable
+      function is dropped from the signature + every call), **function specialization / cloning (IPA-CP)**
+      (a parameter constant at only some sites is split off to a specialized clone), and **return-constant
+      folding** (a pure, terminating, always-same-literal function is replaced by its literal). Sound by
+      construction — sites held by instruction reference; recursive, exported and address-taken functions
+      handled conservatively; a fold only ever fires when the whole call graph *proves* the constant.
+      Proven by the three-engine oracle (interp = V8 = VM) at -O0…-O3: corpus **1320 → 1344**, plus a
+      seeded **1,040-check** interprocedural fuzzer (`tools/check-interproc.mjs`) with all four transforms
+      firing (in **520** of the -O2/-O3 compiles) and **zero disagreements**. See the 2026-07-05 plan.
 - [x] **Value-range propagation (VRP)** (`opt/vrp.ts`, -O2+) — a flow-sensitive integer **interval**
       analysis, the pass that reasons about *what values a variable can actually hold*. Every i32/i64
       SSA value gets a sound `[lo, hi]` (BigInt bounds) threaded along the CFG with **per-edge guard
@@ -566,6 +597,106 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-07-05 — plan + shipped: interprocedural optimization — IPCP + dead-arg + specialization + return-const (claude / claude-opus-4-8)
+
+**The gap.** Strata's optimizer had grown a full LLVM-grade *intraprocedural* pipeline —
+SCCP, GVN/CSE, GVN-PRE, VRP, LICM, sink/hoist, if-conversion, jump threading, reassociation,
+SROA, auto-vectorization, unrolling, unswitching — and two things that *touch* the call graph:
+inlining (`opt/inline.ts`) and a whole-program purity analysis (`ir/effects.ts`). But no pass
+ever **propagated a value across a call**. A function called with a constant argument at every
+site paid full generality inside; a helper called with a flag that is `0` here and `2` there
+was compiled once, for the union of both. Every constant-folding pass in the mid-end could only
+see inside one function — a `call` was an opaque wall constants could not cross. Inlining
+punches through that wall for *small* callees, but a callee too big to inline (or one called
+from many sites, where inlining everywhere would bloat) stayed a black box.
+
+**What shipped — `opt/interproc.ts` (-O2+, before the inliner).** The mid-end's first
+whole-call-graph *rewrite*. It builds the module's call graph, classifies which functions have
+unknown external callers (exported, or address-taken via `funcaddr`), and runs four classic
+interprocedural transforms — the same family LLVM calls IPSCCP + DeadArgElim + IPA-CP:
+
+1. **Interprocedural constant-argument propagation (IPCP).** For a function whose callers are
+   all direct, meet each parameter's incoming argument over *every* call site. A parameter that
+   is the same literal everywhere is a module-wide constant — bind it at the callee's entry
+   (`p := <const>`), and the whole downstream optimizer (SCCP folds the now-constant branch, DCE
+   deletes the dead arm, …) cascades from there.
+2. **Dead-argument elimination.** Once a parameter is a module-wide constant *and* the function
+   is not externally reachable, every caller is known and passes that one literal — so the
+   argument is pure dead weight. Drop it from the signature and from every call site. (The
+   dropped argument is always a literal, so removing it can never lose a side effect.)
+3. **Function specialization / cloning (IPA-CP).** When a parameter is constant at only *some*
+   sites (a mode flag `0` at the shadows, `2` at the highlights), clone the callee and redirect
+   the majority-constant sites to the clone. The clone's callers now all pass the constant, so
+   (1)+(2) bake it in — a copy of the function specialized to the constant — while the original
+   keeps serving the varying sites. Bounded by a clone budget + a callee-size gate so it pays.
+4. **Interprocedural return-constant folding.** A side-effect-free, acyclic (∴ guaranteed to
+   terminate) function whose every `return` yields the *same* literal is itself a constant:
+   replace each call to it with that literal outright (the pure call has nothing to preserve),
+   and dead-function elimination sweeps the now-unused function.
+
+**The ordering — IPSCCP *then* inline.** Interproc runs *before* the inliner, the standard order:
+it feeds the inliner cleaner constants, its specialization clones become fresh inline candidates,
+and — crucially — it is the *only* way a constant reaches a callee too big to inline. Placing it
+after inlining would starve it of exactly the calls it wants (the inliner would already have eaten
+the small ones and left the big ones opaque).
+
+**The bug the oracle caught.** First cut addressed call sites by `(block, index)`. But binding a
+constant `unshift`es a `copy` onto the callee's entry block — renumbering the indices of any call
+sites *in that same block*. A later dead-arg splice then used a stale index and corrupted a
+different instruction, leaving an `undefined` operand hole that surfaced two passes downstream in
+`copyProp` on the string-runtime prelude (`text-toolkit-2`). Fix: hold every call site by
+instruction *reference*, so an `unshift` (or any renumbering) can never make a recorded site alias
+the wrong instruction. This is exactly the class of soundness bug the differential oracle exists to
+catch — it never reached a wrong *answer*, it crashed the compiler, and the fuzzer + full corpus
+pinned it immediately.
+
+### Soundness — why each transform is a semantics-preserving rewrite
+
+- **IPCP/dead-arg** only fire when the meet over *all* call sites is one literal, and only for
+  functions with **no unknown callers** (not exported, address never taken → no `call_indirect`
+  can reach them). Binding the parameter to that literal is a no-op every caller already satisfied.
+  Recursion is safe: a self-call that passes the parameter itself (a var) makes the parameter ⊥, so
+  it is never folded; a self-call that passes the same literal is just another agreeing caller.
+- **Specialization** redirects only specific *direct* call sites to the clone; the original remains
+  for every other (and every indirect) caller, so it is sound even for exported/address-taken
+  callees.
+- **Return-const** requires the function be free of every effecting/observing op (`print`, `store`,
+  `gset`, `load`, `gget`, `alloc`, `call`, `callind`, vector memory) *and* acyclic — an acyclic,
+  callee-free CFG always terminates, so replacing the call with the literal can't turn a
+  divergence into a value.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/interproc.ts` — the four-transform pass over the pre-SSA `PModule`: call-graph +
+      address-taken + recursion analysis, module-constant meet, entry-bind, dead-arg splice,
+      specialization clone/redirect, and return-const fold, all bounded by clone/size budgets.
+- [x] Wire it into `pipeline.ts` at -O2+ **before** `inlineModule`, surfacing per-transform
+      counts as `ipo: …` pills in the Optimizer tab (`preLog`).
+- [x] `interprocProbe.ts` + `tools/check-interproc.mjs` — a firing probe (each transform fires on
+      a program built to exhibit it, and *declines* when every argument is genuinely runtime) plus
+      a seeded differential fuzzer over call-heavy programs.
+- [x] Six adversarial programs added to the `tests.ts` corpus (const-arg/dead-arg on a
+      too-big-to-inline kernel, specialization, return-const, recursion-soundness, and the
+      IPSCCP-then-inline ordering).
+- [x] An **Interprocedural optimization** showcase example (`src/examples.ts`) that fires all four
+      transforms, and a pipeline-legend update in `Panels.tsx`.
+- [x] Fix the index-shift soundness bug found by the oracle (address sites by reference).
+
+### Proof
+
+- Full three-engine differential corpus (reference interpreter = V8 `WebAssembly` = the
+  from-scratch wasm VM) at -O0…-O3: **1344 / 1344** (was 1320 — the six new interprocedural
+  programs × the examples, all bit-identical across engines and levels).
+- Seeded interprocedural fuzzer (`tools/check-interproc.mjs`): **1040 / 1040** differential checks
+  across 260 random call-heavy programs at -O0…-O3, with the interprocedural transforms firing in
+  **520** of the compiles (all -O2/-O3 runs) and **zero** disagreements; **8 / 8** firing-activity
+  checks (each transform fires when it should, and the pass correctly declines when every argument
+  is runtime).
+- The exact CI gate (`scripts/verify-project.mjs`): scope + conformance + `pnpm lint` + `pnpm build`
+  all green.
+
+---
 
 ## 2026-07-05 — plan + shipped: value-range propagation (VRP) — a flow-sensitive interval analysis + correlated value propagation (claude / claude-opus-4-8)
 
