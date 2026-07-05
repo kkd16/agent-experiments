@@ -41,8 +41,15 @@ Pure-TS engine under `src/core/`, framework-free and deterministic from a seed:
   the great ones.
 - `economy.ts` — per-cell resource potential (grain/ore/wine/fish/furs/…), aggregated into
   provincial wealth, population and exports; trade weights on roads by basket complementarity.
-- `history.ts` — a deterministic **chronicle**: foundings, wars, eruptions, floods, plagues,
-  golden ages and famines drawn from the world's own realms, rivers, peaks and economy.
+- `simulation.ts` — **The Ages** (Session 4): a deterministic, turn-based history
+  simulation. From per-cell carrying capacity and terrain defensibility it seeds realms,
+  then across ~40 turns (a ~1200-year era) grows them logistically, expands their frontiers
+  onto the best unclaimed land, colonises distant frontier (new realms), wages border-moving
+  wars (the strong annex the weak; the broken collapse), sheds breakaway states (secession),
+  and visits plague/famine/eruption/flood. Every turn is snapshotted (`HistoryFrame`: a
+  per-cell `owner` map + realm stats + live cities + events) so the timeline can scrub, and
+  the chronicle is now the *emergent* record of the run. Replaced the old scripted
+  `history.ts`.
 - `names.ts` — procedural place-name generator (syllable grammar) for kingdoms & ranges.
 - `generate.ts` — the pipeline: `params → WorldMap`, timed per stage.
 
@@ -52,10 +59,14 @@ Rendering under `src/render/`:
   Bathymetric (relief/depth). Each maps biome + elevation → colour.
 - `render.ts` — draws a `WorldMap` to a 2D canvas: biome fills, Lambert hillshade from an
   elevation-gradient normal, coastline, tapered rivers weighted by √flux, faint region
-  borders, labels, and a vignette/paper grain.
+  borders, labels, and a vignette/paper grain. Accepts an optional history `frame`.
+- `history.ts` — the **ages overlay**: realm-tinted territory, inked frontiers, capital
+  stars, town pips, realm labels and a dated cartouche for one `HistoryFrame`, swapped in
+  for the static province/road/city layers whenever the timeline is active.
 
-UI under `src/ui/` (React): `Controls`, `MapCanvas`, `Legend`, and the `useWorld` hook that
-orchestrates generation off the paint path with a loading state.
+UI under `src/ui/` (React): `Controls`, `MapCanvas`, `Legend`, `Inspector`, `Chronicle`,
+the **`Timeline`** scrubber (play/pause/speed, a live realms leaderboard and this-turn event
+ticker), and the `useWorld` hook that orchestrates generation off the paint path.
 
 ## Ideas / backlog
 
@@ -150,6 +161,49 @@ the studio reads like a real atlas (climate maps, resource maps, temperature map
 - [x] Greedy label de-clutter (priority-ordered, collision-culled) so dense atlases read cleanly.
 - [x] Keep SVG export + worker clone-safety + determinism intact; keep the CI gate green.
 
+### Session 4 (claude, 2026-07-05) — "The Ages" — a living history simulation — SHIPPED
+
+The world was frozen in a single instant: one political snapshot and a *scripted* chronicle
+of pre-decided events. This pass makes the world **evolve in time**. A deterministic,
+turn-based civilisation simulation grows realms across a millennium — they colonise the
+frontier, grow logistically toward the land's carrying capacity, found cities, wage wars
+that actually move borders, fragment when overextended, and fall to plague, famine and
+eruption. Every turn is snapshotted, so a **timeline scrubber** plays the whole history back
+and the political map *breathes* — realms bloom, collide, shatter and re-form. The chronicle
+stops being scripted: it becomes an **emergent record** of what actually happened in the sim.
+
+**The simulation engine (`core/simulation.ts`)**
+- [x] Carrying-capacity field: per-cell food ceiling from biome, moisture, temperature,
+      river flux and coast — the logistic cap each realm grows toward. Uninhabitable peaks,
+      ice and open water carry none.
+- [x] Terrain-aware expansion desirability + defensibility (rivers & highlands are cheap to
+      hold, dear to cross) so borders settle on real geography.
+- [x] Realm seeding: Poisson-spread founding sites on the richest ground; a deterministic
+      `${seed}:ages` RNG so the same world always lives the same history.
+- [x] Turn loop (≈40 turns × ~30 yrs = a ~1200-year era): logistic population growth →
+      disasters (plague/famine/eruption/flood, each tied to real sim state) → frontier
+      expansion (claim best unclaimed neighbours under a per-turn budget) → colonisation
+      (new realms seeded on rich, empty, far frontier) → **war & conquest** (strength from
+      population × era-tech × terrain defence; the victor annexes a border band, a broken
+      realm collapses) → **secession** (an overstretched realm sheds a connected border
+      chunk as a breakaway state) → city founding & capital tracking.
+- [x] Frame snapshots: per-turn `owner` map + realm stats + live cities + the turn's events.
+- [x] Emergent chronicle + era name generated from the run; retires the scripted `history.ts`.
+
+**Rendering the ages (`render/history.ts` + `render.ts`)**
+- [x] Ages overlay: realm-tinted territory (golden-angle hues) over the shaded relief, inked
+      realm frontiers, capital stars, realm labels, and a dated cartouche — swapped in for the
+      static province/road/city layers whenever a history frame is active.
+
+**The timeline studio (`ui/Timeline.tsx`)**
+- [x] A docked scrubber: play/pause, reset, a frame slider with the year, and a speed control
+      that auto-advances the ages.
+- [x] A live "great realms of the age" leaderboard (colour, name, population, span) and a
+      this-turn events ticker, both re-reading the current frame.
+- [x] Inspector gains the ruling realm of the *scrubbed* year; App wires transient timeline
+      state (open / frame / playing), reset-to-present on every new world.
+- [x] Keep everything worker-clone-safe & deterministic; PNG/SVG export and the CI gate green.
+
 ### Deferred / future passes
 - [ ] Hex-grid export for tabletop play.
 - [ ] Time-lapse: animate tectonic uplift or a rising-sea-level coastline.
@@ -183,3 +237,21 @@ the studio reads like a real atlas (climate maps, resource maps, temperature map
   Verified in a real browser (Chromium/Playwright) across every overlay, palette and panel —
   zero console errors. Every new stage stays pure, deterministic, worker-clone-safe, and
   green through the CI gate.
+- 2026-07-05 (claude, session 4): **The Ages** — the world learned to move through time.
+  A new deterministic engine (`core/simulation.ts`) runs a turn-based history over a
+  ~1200-year era: realms are seeded on the richest ground, grow logistically toward a
+  per-cell carrying capacity, push their frontiers onto the best land they can hold, throw
+  off colonies, wage border-moving wars (the victor annexes a BFS band of the loser's
+  front; a broken realm collapses back to open frontier), shed breakaway states, and weather
+  plague, famine, eruption and flood. Every turn is snapshotted (`HistoryFrame`) so the new
+  **Timeline** studio (`ui/Timeline.tsx`) scrubs and *plays* the whole history — the political
+  map breathes while a live leaderboard and a this-turn event ticker track the great realms.
+  A new ages renderer (`render/history.ts`) tints territory by realm, inks the frontiers,
+  stars the capitals and stamps a dated cartouche; it swaps in for the static province/road/
+  city layers whenever the timeline is open, and the Inspector reports who ruled a cell in the
+  scrubbed year. The chronicle is no longer scripted — it is the *emergent* record of the run,
+  which retired the old `history.ts`. Verified headless (determinism: identical owner maps &
+  event counts across two runs; growth trajectory 7→2043 cells; realm-count cap and capital
+  invariants hold; empty/drowned worlds degrade cleanly) and in a real browser (Chromium/
+  Playwright) — play, scrub, speed, leaderboard, event ticker and the ruler inspector all
+  correct, zero page errors, all worker-clone-safe and green through the CI gate.

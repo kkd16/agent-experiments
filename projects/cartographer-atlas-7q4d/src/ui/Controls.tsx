@@ -21,6 +21,8 @@ interface Props {
   generating: boolean
   chronicleOpen: boolean
   onToggleChronicle: () => void
+  agesOpen: boolean
+  onToggleAges: () => void
 }
 
 function Slider(props: {
@@ -89,6 +91,8 @@ export default function Controls({
   generating,
   chronicleOpen,
   onToggleChronicle,
+  agesOpen,
+  onToggleAges,
 }: Props): ReactElement {
   const setV = (partial: Partial<ViewOptions>): void => setView({ ...view, ...partial })
 
@@ -344,6 +348,12 @@ export default function Controls({
       </section>
 
       <section className="group">
+        <button
+          className={`btn chronicle-btn ${agesOpen ? 'active' : ''}`}
+          onClick={onToggleAges}
+        >
+          ⏳ {agesOpen ? 'Close' : 'Play'} the Ages
+        </button>
         <button
           className={`btn chronicle-btn ${chronicleOpen ? 'active' : ''}`}
           onClick={onToggleChronicle}

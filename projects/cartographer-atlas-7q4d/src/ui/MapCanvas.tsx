@@ -5,7 +5,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
-import type { WorldMap } from '../core/types'
+import type { HistoryFrame, WorldMap } from '../core/types'
 import { renderWorld, nearestRegion } from '../render/render'
 import { paletteByKey } from '../render/palettes'
 import type { ViewOptions } from './viewOptions'
@@ -15,9 +15,11 @@ interface Props {
   view: ViewOptions
   selected: number | null
   onPick: (region: number | null) => void
+  /** When the timeline is open, the history frame to render (else null). */
+  frame?: HistoryFrame | null
 }
 
-export default function MapCanvas({ world, view, selected, onPick }: Props): ReactElement {
+export default function MapCanvas({ world, view, selected, onPick, frame }: Props): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -39,14 +41,14 @@ export default function MapCanvas({ world, view, selected, onPick }: Props): Rea
       canvas.width = Math.round(cssW * dpr)
       canvas.height = Math.round(cssH * dpr)
       ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0)
-      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected })
+      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected, frame })
     }
 
     draw()
     const ro = new ResizeObserver(draw)
     ro.observe(wrap)
     return () => ro.disconnect()
-  }, [world, view, selected])
+  }, [world, view, selected, frame])
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     const canvas = canvasRef.current
