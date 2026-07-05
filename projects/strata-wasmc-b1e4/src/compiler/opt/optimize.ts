@@ -11,6 +11,7 @@ import { sinkCode } from './sink';
 import { hoistCode } from './hoist';
 import { crossJump } from './crossjump';
 import { correlatedFold } from './correlate';
+import { vrp } from './vrp';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -973,6 +974,14 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // already tested (the same SSA value, post-GVN) — a runtime branch SCCP can't fold.
     // Runs right after GVN/CSE has unified the two identical conditions to one value.
     if (level >= 2) record('correlated-fold' + suffix, correlatedFold);
+    // Value-range propagation generalizes correlated folding to numeric implication:
+    // a flow-sensitive integer interval per SSA value (narrowed on each guarded arm)
+    // folds a comparison — or a whole branch — that a *dominating range*, not just an
+    // identical dominating test, already decides (a mask `(x&7)<8`, a remainder, a
+    // bit-count bound, a chained `a<b … a<b+1`). Runs right after correlated-fold so
+    // GVN has unified equal subexpressions and the round's DCE/CFG-simplify sweep the
+    // dead arms and now-constant comparisons it leaves behind.
+    if (level >= 2) record('value-range-prop' + suffix, vrp);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, (fn) => licm(fn, eff.pureNoTrap));
