@@ -3500,4 +3500,112 @@ fn main(){ for (let i = 0; i < 5; i = i + 1) { print(h(long(i) * 123456789L)); }
 }
 fn main(){ for (let i = 0; i < 8; i = i + 1) { print(f(i * 13 + 2)); } }`,
   },
+  {
+    // Interprocedural const-argument + dead-argument elimination. `kernel` is *too
+    // big to inline* (> 40 pre-SSA insts), and every call site passes mode=1, gain=3
+    // — so those parameters are module-wide constants. The interprocedural pass binds
+    // them inside the body and drops them from the signature (all callers are known),
+    // and the downstream SSA optimizer folds the now-constant branch. The differential
+    // oracle proves the constant-propagated wasm prints exactly what the interpreter
+    // (which never sees the transform) does at every level.
+    name: 'ipo-const-arg-dead-arg',
+    source: `fn kernel(mode: int, gain: int, n: int) -> int {
+  let acc = 0;
+  let aux = mode + gain;
+  for (let i = 0; i < n; i = i + 1) {
+    let t = i * gain;
+    if (mode == 0) { acc = acc + t; }
+    else { if (mode == 1) { acc = acc + t * 2 - i; } else { acc = acc + (t - i) + gain; } }
+    acc = acc + (i & gain);
+    acc = acc ^ (i * 3 + mode);
+    acc = acc + (acc & 15) - 7;
+    aux = aux + (acc & 3) + (i | mode);
+    acc = acc - (aux & 7) + gain;
+  }
+  return acc + mode * 7 + gain * 2 + aux;
+}
+fn main() {
+  for (let a = 2; a < 7; a = a + 1) { print(kernel(1, 3, a)); }
+  for (let b = 3; b < 8; b = b + 1) { print(kernel(1, 3, b)); }
+}`,
+  },
+  {
+    // Function specialization (IPA-CP). `gain` is constant (4) everywhere, but `mode`
+    // is 0 at one group of sites, 1 at another, 2 at a third — constant per-site but
+    // not module-wide. The pass clones `kernel` for the majority mode and redirects
+    // those sites to the clone, whose callers now all pass that mode, so const-arg
+    // then bakes it in. Original + clones must all still match the interpreter.
+    name: 'ipo-specialize',
+    source: `fn kernel(mode: int, gain: int, n: int) -> int {
+  let acc = 0;
+  let aux = mode * 2 + gain;
+  for (let i = 0; i < n; i = i + 1) {
+    let t = i * gain;
+    if (mode == 0) { acc = acc + t; }
+    else { if (mode == 1) { acc = acc + t * 2 - i; } else { acc = acc + (t - i) + gain; } }
+    acc = acc + (i & gain);
+    acc = acc ^ (i * 5 + mode);
+    aux = aux + (acc & 7) - 3;
+  }
+  return acc + mode * 11 + gain + aux;
+}
+fn main() {
+  for (let a = 2; a < 6; a = a + 1) { print(kernel(0, 4, a)); }
+  for (let b = 2; b < 6; b = b + 1) { print(kernel(1, 4, b)); }
+  for (let c = 2; c < 6; c = c + 1) { print(kernel(2, 4, c)); }
+  for (let d = 3; d < 7; d = d + 1) { print(kernel(1, 4, d)); }
+}`,
+  },
+  {
+    // Interprocedural return-constant folding. Both helpers ignore their inputs and
+    // always return the same literal; they are side-effect-free and terminating, so
+    // every call to them is replaced by the literal outright (the call vanishes).
+    name: 'ipo-return-const',
+    source: `fn seven(x: int, y: int) -> int {
+  let a = x * 0;
+  let b = (y & 0) + a;
+  if (b > 5) { return 7; }
+  return 7;
+}
+fn always100(k: int) -> int {
+  let m = k - k;
+  return 100 + m;
+}
+fn main() {
+  let s = 0;
+  for (let i = 0; i < 6; i = i + 1) { s = s + seven(i, i * 3) + always100(i); }
+  print(s);
+  print(seven(9, 9) * always100(2));
+}`,
+  },
+  {
+    // Soundness under recursion. `visit` is recursive, so specialization declines it;
+    // and `base` is *not* module-constant (the external sites pass 5, 5, 2 and the
+    // self-call passes the variable `base`), so const-arg declines it too. Nothing
+    // folds — the pass must leave a correct program, which the oracle confirms.
+    name: 'ipo-recursion-sound',
+    source: `fn visit(base: int, n: int) -> int {
+  if (n <= 0) { return base; }
+  return base + visit(base, n - 1);
+}
+fn main() {
+  print(visit(5, 4));
+  print(visit(5, 3));
+  print(visit(2, 5));
+}`,
+  },
+  {
+    // The IPSCCP-then-inline ordering: a small helper whose `f` argument is constant
+    // (3) at every site is const-arg'd *before* the inliner runs, then inlined. The
+    // result must equal the interpreter — a check that interproc's pre-inline
+    // signature/call-site rewrite leaves the module inliner-consistent.
+    name: 'ipo-const-then-inline',
+    source: `fn scale(v: int, f: int) -> int { return v * f + f - (v & 1); }
+fn main() {
+  let s = 0;
+  for (let i = 0; i < 8; i = i + 1) { s = s + scale(i, 3); }
+  print(s);
+  print(scale(10, 3) + scale(-4, 3));
+}`,
+  },
 ];

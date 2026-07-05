@@ -10,6 +10,7 @@ import { toSSA } from './ir/ssa';
 import { lowerAllocs } from './ir/lower';
 import { optimize, cloneModule } from './opt/optimize';
 import { inlineModule } from './opt/inline';
+import { interproc } from './opt/interproc';
 import { tailCallOpt } from './opt/tco';
 import { codegen } from './backend/codegen';
 import type { DebugInfo } from './backend/codegen';
@@ -65,15 +66,28 @@ export function compile(source: string, level: OptLevel, collectSnapshots = fals
     const program = parse(source);
     typecheck(program);
     const pre = buildPreIR(program);
-    // Pre-SSA transforms (at -O2+): turn self-tail-recursion into loops, then
-    // inline small non-recursive callees. SSA construction reconciles the merged
-    // control flow with phi nodes automatically.
+    // Pre-SSA transforms (at -O2+): turn self-tail-recursion into loops, then run
+    // interprocedural optimization across the whole call graph (constant-argument
+    // propagation, dead-argument elimination, function specialization and
+    // return-constant folding), then inline small non-recursive callees. Interproc
+    // runs *before* the inliner (the classic IPSCCP-then-inline order): it feeds the
+    // inliner cleaner constants, its specialization clones become fresh inline
+    // candidates, and — crucially — it is the *only* way constants reach a callee too
+    // big to inline. SSA construction reconciles the rewritten control flow with phi
+    // nodes automatically.
     const tco = level >= 2 ? tailCallOpt(pre) : 0;
+    const ip = level >= 2 ? interproc(pre) : null;
     const inlined = level >= 2 ? inlineModule(pre) : 0;
     const ssa = toSSA(pre);
     const { mod: optimized, log, snapshots } = optimize(ssa, level, collectSnapshots);
     const preLog: PassStat[] = [];
     if (tco > 0) preLog.push({ name: 'tail-call → loop', changed: tco });
+    if (ip) {
+      if (ip.retConsts > 0) preLog.push({ name: 'ipo: return-const fold', changed: ip.retConsts });
+      if (ip.specialized > 0) preLog.push({ name: 'ipo: specialize (clones)', changed: ip.specialized });
+      if (ip.constArgs > 0) preLog.push({ name: 'ipo: const-arg', changed: ip.constArgs });
+      if (ip.deadArgs > 0) preLog.push({ name: 'ipo: dead-arg', changed: ip.deadArgs });
+    }
     if (inlined > 0) preLog.push({ name: 'inline (pre-SSA)', changed: inlined });
     // The optimizer and UI keep records as first-class `alloc` ops; the backend
     // is a pure consumer of the bump-allocator primitives, so lower allocs on a
