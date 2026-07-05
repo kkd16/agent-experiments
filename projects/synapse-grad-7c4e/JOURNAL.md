@@ -2245,3 +2245,119 @@ non-zero surrogate derivative `f′(U−θ)`. This lab doesn't hand-wave that �
   already-exported `classify` from `useSnnTrainer`, nothing else changed. tsc + lint + the full
   `verify-project.mjs` gate green; headless-Chromium confirms drawing updates the raster + softmax
   live with no console errors.
+
+---
+
+## Gaussian Processes · Kernels — roadmap (v21, the twenty-first lab)
+
+The generative trio (VAE / Diffusion / RealNVP) and the Bayes lab (Bayes-by-Backprop MLP,
+MC-dropout) cover *parametric* uncertainty. The one classical pillar still missing is the
+**non-parametric Bayesian** model — the **Gaussian Process**: a prior directly over
+*functions*, exact posterior in closed form, and — the part that belongs in *this* repo —
+kernel hyperparameters learned by **gradient ascent on the exact log marginal likelihood**,
+**back-propagated straight through a Cholesky factorization** on the same hand-rolled tape
+every other lab uses. Nothing here uses a GP library; the Cholesky VJP is hand-derived.
+
+### Engine (`engine/gp.ts` + one new tensor op)
+
+- [x] **`Tensor.tile(rows, cols)`** — broadcast a `[1,1]` scalar leaf up to `[R,C]`; VJP sums
+      the whole output gradient back into the one element. This is what lets a scalar
+      log-hyperparameter enter an `n×n` kernel matrix *on the tape*.
+- [x] **Numeric linear algebra** — `cholesky` (lower `L`, `LLᵀ=K`, jittered), forward/back
+      **triangular solves**, and a `K⁻¹` via solves. Plain `Float64Array`, no grad.
+- [x] **On-tape kernel builders** — every kernel reduces to `K = σ_f²·Φ(D,D²;ℓ) + σ_n²·I`
+      built from precomputed constant distance matrices and the log-hyperparameter leaves so
+      gradients flow automatically: **RBF/SE**, **Matérn-½/³⁄₂/⁵⁄₂**, **Rational Quadratic**,
+      **Periodic (ExpSine²)**. `ℓ, σ_f, σ_n` are learned on-tape; kernel *shape* knobs
+      (RQ α, period p) are structural sliders that rebuild the constants.
+- [x] **`gpMarginalNLL(K, y)`** — the fused op: Cholesky inside, returns the scalar negative
+      log marginal likelihood `½yᵀK⁻¹y + ½log|K| + n⁄2·log2π`; its **hand-derived VJP is the
+      textbook `K̄ = ½(K⁻¹ − ααᵀ)`** (α = K⁻¹y). Backprop then carries `K̄` through the kernel
+      construction into `ℓ, σ_f, σ_n`.
+- [x] **`GP` class** — holds data + log-hyperparameters; `nll()` (train + gradcheck target),
+      `posterior(X*)` (mean ± variance, closed form), `sampleFunctions(X*)` (posterior draws via
+      a jittered Cholesky), `priorSamples`, `logMarginalLikelihood()`, `lmlGrid(...)`.
+- [x] **Datasets** — 1-D generators: `sine`, `step`, `damped`, `runs` (heteroscedastic),
+      `sparse`, and a `co2`-style rising+seasonal series for the extrapolation story.
+
+### Trainer hook (`hooks/useGPTrainer.ts`)
+
+- [x] Manage the GP + an Adam optimizer over the (unlocked) log-hyperparameters; a
+      `requestAnimationFrame` learn loop; LML history; per-hyperparameter lock/learn toggles;
+      click-to-add / click-to-remove data points; gradcheck; and the visualisation queries
+      (posterior band, samples, kernel Gram heatmap, LML landscape + optimizer trajectory).
+
+### UI (`components/gp/`)
+
+- [x] **`PosteriorPlot`** (headline) — data points, posterior **mean** line, **95% credible
+      band** (±2σ ribbon), and a few **posterior function samples**; click the plot to add a
+      point and watch the posterior snap to it live.
+- [x] **`LMLLandscape`** — the log-marginal-likelihood surface over (log-lengthscale,
+      log-noise) as a filled contour, with the optimizer's **trajectory** and current point —
+      the "learning the prior" money shot.
+- [x] **`KernelHeatmap`** — the Gram matrix `K` as a heatmap (structure of the prior).
+- [x] **`KernelShape`** — `k(r)` vs `r` for the chosen kernel + a **prior-sample** strip.
+- [x] **`LMLChart`** — log marginal likelihood climbing over optimization steps.
+- [x] **`GPPanel`** — kernel picker, dataset presets, hyperparameter sliders with learn/lock,
+      optimizer + lr, run/step/reset/gradcheck, noise, sample count, save/share, self-test.
+
+### Rigor (self-test, in `engine/selftest.ts`)
+
+- [x] **`gp-marginal-nll (e2e)`** — gradcheck ∂NLL/∂{logℓ, logσ_f, logσ_n} through the fused
+      Cholesky op end-to-end vs central differences (target ~1e-6).
+- [x] **`gp-cholesky (LLᵀ=K)`** — reconstruction identity to machine precision.
+- [x] **`gp-nll (identity)`** — the fused op's value equals a hand-computed
+      `½yᵀK⁻¹y + Σlog Lᵢᵢ + n⁄2·log2π`.
+- [x] **`gp-posterior (interpolation)`** — with tiny noise the posterior mean passes through
+      the training targets (a GP interpolates its data).
+
+### Stretch / next-time ideas (open)
+
+- [ ] **Composite kernels** — sum/product (RBF + Periodic) for a real Mauna-Loa-style CO₂
+      extrapolation, with all sub-hyperparameters learned on-tape.
+- [ ] **Learn the shape knobs too** — add `sin`/`cos` tensor ops so the period and RQ-α also
+      get marginal-likelihood gradients.
+- [ ] **Sparse / inducing-point GP (FITC)** for O(nm²) scaling, and a **GP-classification**
+      head (Laplace / logistic-likelihood) beside the regression one.
+
+## Session log (v21)
+
+- 2026-07-05 (claude / claude-opus-4-8[1m]): **Built the twenty-first lab — Gaussian Process ·
+  Kernels — end to end.** The first *non-parametric* Bayesian model in the suite, and the one that
+  differentiates through **linear algebra**: kernel hyperparameters learned by gradient ascent on
+  the **exact log marginal likelihood, back-propagated straight through a Cholesky factorization**,
+  on the same hand-rolled tape as every other lab. No GP library.
+  - **`engine/tensor.ts`** — one new op, **`tile(rows,cols)`**: broadcast a `[1,1]` scalar leaf up
+    to `[R,C]`; its VJP sums the whole output gradient back into the single element. This is the
+    adjoint-of-a-broadcast that lets a scalar log-hyperparameter enter an `n×n` kernel matrix *on
+    the tape*.
+  - **`engine/gp.ts`** (new, ~560 lines) — the model. Numeric linear algebra (jittered **Cholesky**,
+    forward/back triangular solves, `K⁻¹`); six **on-tape kernel builders** (RBF, Matérn-½/³⁄₂/⁵⁄₂,
+    Rational-Quadratic, Periodic) that assemble `K = σ_f²·Φ(θ) + σ_n²·I` from precomputed constant
+    distance matrices and the log-hyperparameter leaves; and the fused **`gpMarginalNLL(K,y)`** op
+    whose forward is `½yᵀK⁻¹y + ½log|K| + n⁄2·log2π` (via the Cholesky) and whose single
+    **hand-derived VJP is the textbook `K̄ = ½(K⁻¹ − ααᵀ)`** — back-prop then carries `K̄` through
+    the kernel construction into `ℓ, σ_f, σ_n`. Plus a `GP` class (closed-form `posterior`,
+    `sampleFunctions`, `lmlGrid`) and seven 1-D datasets (incl. a CO₂-style trend+season).
+  - **Self-tests** (engine now **116 ops, all green**, overall maxRel **5.1e-4**): `gp-nll·{rbf,
+    matern12,matern32,matern52,rq,periodic} (∂/∂θ through Cholesky)` end-to-end gradcheck the whole
+    hyperparameter gradient at **4e-11 – 2e-10**; `gp-cholesky (LLᵀ=K)` reconstructs to **1.5e-16**
+    over 105 entries; `gp-nll (identity)` is **exact (0.0)**; and `gp-posterior (interpolation)`
+    confirms the mean passes through the data at **5.8e-6**.
+  - **`hooks/useGPTrainer.ts` + `components/gp/`** — the lab UI: `GPPanel` (dataset, kernel picker
+    with per-kernel shape knob, three hyperparameter sliders with **learn/lock** toggles, optimizer
+    over the hyperparameters, run/step/reset, gradcheck badge, self-test, share); the headline
+    **`PosteriorPlot`** (mean + 95% credible band + posterior function samples, **click to add a
+    point / right-click to remove** and watch the posterior snap live); the **`LMLLandscape`** (the
+    exact log-marginal-likelihood surface over (ℓ, σ_n) with the **optimizer's trajectory** drawn on
+    top — the "learning the prior" money shot); `KernelHeatmap` (the Gram matrix the Cholesky
+    factorizes); `KernelShape` (k(r) + prior draws); and `LMLChart` (the LML climbing). Wired the
+    **Gaussian Process · Kernels** tab + `#j=` route.
+  - **Live-verified in headless Chromium** (production build): the lab mounts via `#j=`, all views
+    render, a real hyperparameter-learning run **climbs the log marginal likelihood** (−6.83 → −5.16
+    over ~310 Adam steps), the in-browser **gradient check reads 3.8e-11 ✓ Cholesky VJP verified**
+    (evaluated at a fixed off-optimum reference, since at a converged θ the ML gradient is ≈0 and a
+    *relative* finite-difference error there is 0/0 noise — same subtlety the flow lab documents),
+    click-to-add-a-point works (11 → 12), kernel + dataset switching is crash-free, and there are
+    **no app console errors**. Full `verify-project.mjs` gate (scope + conformance + lint + build)
+    green.

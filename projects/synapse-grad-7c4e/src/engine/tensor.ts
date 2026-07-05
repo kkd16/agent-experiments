@@ -443,6 +443,28 @@ export class Tensor {
     return out;
   }
 
+  // Broadcast a [1,1] scalar up to a full [rows,cols] matrix (every entry the same value).
+  // The VJP sums the whole output gradient back into the single source element — this is the
+  // adjoint of a broadcast, and it is what lets a scalar log-hyperparameter enter an n×n kernel
+  // matrix *on the tape* so the Gaussian-process marginal likelihood differentiates w.r.t. it.
+  tile(rows: number, cols: number): Tensor {
+    if (this.rows !== 1 || this.cols !== 1) {
+      throw new Error(`tile expects a [1,1] scalar, got [${this.rows},${this.cols}]`);
+    }
+    const out = Tensor.zeros(rows, cols);
+    const v = this.data[0];
+    out.data.fill(v);
+    out.op = 'tile';
+    out.prev = [this];
+    out.backwardFn = () => {
+      const g = out.grad;
+      let s = 0;
+      for (let i = 0; i < g.length; i++) s += g[i];
+      this.grad[0] += s;
+    };
+    return out;
+  }
+
   transpose(): Tensor {
     const R = this.rows;
     const C = this.cols;
