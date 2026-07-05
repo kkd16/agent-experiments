@@ -315,3 +315,14 @@ live here as long as you like.
 - [ ] Include a "Max Combo Reached" in the post-game summary screen.
 - [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
 - [x] Implement an option to clear only recent run history without resetting lifetime stats.
+## New Expansion Ideas
+- [ ] Add a daily goal tracking calendar to visualize activity over the month.
+- [ ] Add an achievement/trophy cabinet display screen.
+- [ ] Create a local 2-player split screen versus mode.
+- [ ] Allow importing custom flashcard sets via JSON.
+- [ ] Add support for drawing answers on a canvas and recognizing the digit.
+- [ ] Support complex numbers in a special university mode.
+- [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
+- [ ] Include a "Max Combo Reached" in the post-game summary screen.
+- [ ] Add a small "Total Time Played" lifetime stat in the statistics menu.
+- [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
