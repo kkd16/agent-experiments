@@ -110,6 +110,9 @@ export default function App() {
         case 'b':
           change({ bloom: !paramsRef.current.bloom })
           break
+        case 'v':
+          change({ volumetric: !paramsRef.current.volumetric })
+          break
         case 'e':
           change({ ergosphere: !paramsRef.current.ergosphere })
           break

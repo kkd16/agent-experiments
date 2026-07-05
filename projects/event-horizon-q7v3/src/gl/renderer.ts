@@ -11,7 +11,9 @@ const SCENE_UNIFORMS = [
   'uCamPos', 'uCamRight', 'uCamUp', 'uCamForward',
   'uSpin', 'uErgosphere',
   'uDiskInner', 'uDiskOuter', 'uDiskBrightness', 'uDiskTemp', 'uDiskDensity',
+  'uVolumetric', 'uDiskThickness',
   'uSteps', 'uStepSize', 'uDoppler', 'uRedshift', 'uStarBrightness', 'uExposure', 'uToneMap',
+  'uObserverBeta',
 ] as const
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -181,6 +183,10 @@ export class BlackHoleRenderer {
     const aspect = width / Math.max(height, 1)
     const diskInner = effectiveDiskInner(params)
 
+    // Free-fall rain observer: β = √(rs/r) with rs = 1, capped just short of light speed.
+    const camR = Math.hypot(eye[0], eye[1], eye[2])
+    const observerBeta = params.freeFall ? Math.min(Math.sqrt(1 / Math.max(camR, 1.0001)), 0.9985) : 0
+
     gl.uniform2f(u.uResolution, width, height)
     gl.uniform1f(u.uTime, timeSeconds)
     gl.uniform1f(u.uAspect, aspect)
@@ -196,6 +202,8 @@ export class BlackHoleRenderer {
     gl.uniform1f(u.uDiskBrightness, params.diskBrightness)
     gl.uniform1f(u.uDiskTemp, params.diskTemperature)
     gl.uniform1f(u.uDiskDensity, params.diskDensity)
+    gl.uniform1i(u.uVolumetric, params.volumetric ? 1 : 0)
+    gl.uniform1f(u.uDiskThickness, params.diskThickness)
     gl.uniform1i(u.uSteps, Math.round(params.steps))
     gl.uniform1f(u.uStepSize, params.stepSize)
     gl.uniform1i(u.uDoppler, params.doppler ? 1 : 0)
@@ -203,6 +211,7 @@ export class BlackHoleRenderer {
     gl.uniform1f(u.uStarBrightness, params.starBrightness)
     gl.uniform1f(u.uExposure, params.exposure)
     gl.uniform1i(u.uToneMap, toneMap ? 1 : 0)
+    gl.uniform1f(u.uObserverBeta, observerBeta)
   }
 
   /** Render one frame. `width`/`height` are the drawing-buffer size in device pixels. */

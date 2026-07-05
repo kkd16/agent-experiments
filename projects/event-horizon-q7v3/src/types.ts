@@ -14,6 +14,12 @@ export interface Params {
   azimuth: number
   /** Vertical field of view, in degrees. */
   fov: number
+  /**
+   * Put the camera on an infalling Gullstrand–Painlevé "rain" geodesic. Every camera ray is
+   * relativistically aberrated and the whole image is Doppler-beamed as it would be for an
+   * observer that fell from rest at infinity — the sky compresses and blueshifts ahead of you.
+   */
+  freeFall: boolean
 
   /** Dimensionless spin a/M ∈ [0, 0.998]. 0 = Schwarzschild, 1 = extremal Kerr. */
   spin: number
@@ -32,6 +38,13 @@ export interface Params {
   diskTemperature: number
   /** Disk opacity/density — higher values make the disk more solid. */
   diskDensity: number
+  /**
+   * Ray-march the disk as a finite-thickness, self-shadowing volume instead of an infinitely thin
+   * plane. Slower but far more three-dimensional. When off, the crisp thin-plane path is used.
+   */
+  volumetric: boolean
+  /** Half-thickness scale of the volumetric disk at its inner edge, in rs (the slab flares outward). */
+  diskThickness: number
 
   /** Number of RK4 integration steps per photon (quality vs. speed). */
   steps: number

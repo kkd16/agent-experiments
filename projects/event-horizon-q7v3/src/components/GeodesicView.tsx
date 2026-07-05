@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { traceFanKerr } from '../geodesics'
-import { B_CRIT, M, PHOTON_SPHERE, kerrHorizon } from '../state'
+import { B_CRIT, M, PHOTON_SPHERE, kerrHorizon, kerrErgosphere, kerrISCO, kerrPhotonOrbit } from '../state'
 
 const VIEW_X = 24 // half-width of the world window shown, in rs
 const VIEW_Y = 15
@@ -126,12 +126,29 @@ export default function GeodesicView() {
     ctx.stroke()
     ctx.setLineDash([])
 
-    // Schwarzschild photon sphere reference (only meaningful when not spinning).
+    // Photon-orbit reference rings. At zero spin there is a single photon sphere at 1.5 rs; once
+    // the hole spins, the equatorial light ring splits into a tighter prograde and a wider
+    // retrograde circular orbit (drawn here in world radius ρ = √(r²+a²)).
     if (spin < 0.02) {
       ctx.strokeStyle = 'rgba(255,230,150,0.7)'
       ctx.setLineDash([4, 5])
       ctx.beginPath()
       ctx.arc(sx(0), sy(0), PHOTON_SPHERE * scale, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+    } else {
+      const rPro = kerrPhotonOrbit(spin, true)
+      const rRet = kerrPhotonOrbit(spin, false)
+      const rhoPro = Math.sqrt(rPro * rPro + a * a)
+      const rhoRet = Math.sqrt(rRet * rRet + a * a)
+      ctx.setLineDash([3, 5])
+      ctx.strokeStyle = 'rgba(150,255,190,0.65)' // prograde light ring (tighter)
+      ctx.beginPath()
+      ctx.arc(sx(0), sy(0), rhoPro * scale, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(255,220,150,0.6)' // retrograde light ring (wider)
+      ctx.beginPath()
+      ctx.arc(sx(0), sy(0), rhoRet * scale, 0, Math.PI * 2)
       ctx.stroke()
       ctx.setLineDash([])
     }
@@ -185,7 +202,38 @@ export default function GeodesicView() {
           <li>
             <span className="swatch swatch--ergo" /> ergosphere (static limit)
           </li>
+          {spin >= 0.02 && (
+            <li>
+              <span className="swatch swatch--ring" /> prograde / retrograde light rings
+            </li>
+          )}
         </ul>
+
+        <div className="geo__readout" aria-live="polite">
+          <div className="geo__readout-title">Geometry at a/M = {spin.toFixed(3)}</div>
+          <dl>
+            <div>
+              <dt>Outer horizon r₊</dt>
+              <dd>{kerrHorizon(spin).toFixed(3)} rs</dd>
+            </div>
+            <div>
+              <dt>Ergosphere (equator)</dt>
+              <dd>{kerrErgosphere(spin, Math.PI / 2).toFixed(3)} rs</dd>
+            </div>
+            <div>
+              <dt>Prograde light ring</dt>
+              <dd>{kerrPhotonOrbit(spin, true).toFixed(3)} rs</dd>
+            </div>
+            <div>
+              <dt>Retrograde light ring</dt>
+              <dd>{kerrPhotonOrbit(spin, false).toFixed(3)} rs</dd>
+            </div>
+            <div>
+              <dt>Prograde ISCO</dt>
+              <dd>{kerrISCO(spin).toFixed(3)} rs</dd>
+            </div>
+          </dl>
+        </div>
         <p className="muted small">
           Turn up the spin and watch the fan go <strong>lopsided</strong>: photons swept along with
           the hole’s rotation (prograde) skim closer and whip around tighter, while retrograde rays
