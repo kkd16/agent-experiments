@@ -161,9 +161,11 @@ import {
   crossTerm as novaCrossTerm,
   instanceEq as novaInstanceEq,
   ivcProve as novaIvcProve,
+  ivcProveWith as novaIvcProveWith,
   ivcVerify as novaIvcVerify,
   NovaTranscript,
 } from './nova'
+import { mimcStep as novaMimcStep } from './nova_mimc'
 import { commit as pedersenCommit } from './sigma'
 import { randomScalar } from './rng'
 import {
@@ -2567,6 +2569,26 @@ export function runSelfTest(): TestCase[] {
       const badW = [(s.W[0] + 1n) % BLS_R, s.W[1]] // wrong sym1 = z²
       const inst = novaStrictInstance(params, s.x, badW)
       check(NV, 'an unsatisfiable step is detected', !novaRelaxedSatisfied(params, inst.U, inst.wit), 'a bad intermediate wire fails its constraint')
+    }
+
+    // A second IVC application on the *same* generic folding core: a MiMC-style
+    // arithmetic permutation folded into a sequential hash chain.
+    {
+      const mimc = novaMimcStep(6)
+      const mparams = novaSetup(mimc.r1cs)
+      const ms = mimc.assign(7n)
+      const minst = novaStrictInstance(mparams, ms.x, ms.W)
+      check(NV, 'MiMC step R1CS is satisfied by its witness', novaRelaxedSatisfied(mparams, minst.U, minst.wit), '6 rounds of x ↦ (x+c)³, 13 constraints')
+      check(NV, 'MiMC circuit output = direct permutation', ms.zOut === mimc.eval(7n), 'the R1CS computes the permutation')
+      const mproof = novaIvcProveWith(mparams, mimc, 3n, 8)
+      const mrep = novaIvcVerify(mparams, mproof)
+      let mz = 3n
+      for (let i = 0; i < 8; i++) mz = mimc.eval(mz)
+      check(NV, 'IVC folds an 8-step MiMC hash chain', mrep.ok, 'the generic folding core, a different circuit')
+      check(NV, 'folded MiMC chain output = direct iteration', mproof.zN === mz, 'a sequential hash nobody can shortcut')
+      const mbad = { ...mproof, finalWit: { E: [...mproof.finalWit.E], W: [...mproof.finalWit.W] } }
+      mbad.finalWit.W[1] = (mbad.finalWit.W[1] + 1n) % BLS_R
+      check(NV, 'a tampered MiMC witness is rejected', !novaIvcVerify(mparams, mbad).ok, 'the folded relaxed check still binds')
     }
   }
 

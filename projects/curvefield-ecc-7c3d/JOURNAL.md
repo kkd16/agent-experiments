@@ -101,6 +101,14 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   ordinary ones. No trusted setup, no pairings, no FFTs. Verified in `selftest.ts`: the cross-term
   identity holds at a random challenge, honest chains accept, and a corrupted witness, a forged
   cross-term, broken chaining, and an unsatisfiable step are each rejected.
+- `nova_mimc.ts` — a **second IVC application on the same generic folding core**: a MiMC-style
+  arithmetic permutation (Albrecht et al. 2016), R rounds of `x ↦ (x + cᵣ)³` — an S-box that is a
+  permutation of 𝔽_r and costs just two multiplications per round — chained into a **sequential hash
+  chain / verifiable-delay skeleton** `z_{i+1} = MiMC(z_i)`. `mimcR1CS` builds the `2R+1`-constraint
+  step (nothing-up-my-sleeve round constants from the lab's own SHA-256), `mimcAssign` its witness,
+  and `mimcStep(rounds)` packages it as a `StepFn` the IVC driver folds exactly like the cubic —
+  proving the whole chain ran, with one final check, on a circuit the folding core never had to know
+  about.
 - `ecvrf.ts` — a from-scratch **ECVRF (RFC 9381)** verifiable random function on Edwards25519. Both
   standardised ciphersuites: `TAI` (try-and-increment hash-to-curve) and `ELL2` (the constant-time
   Elligator2 map + `expand_message_xmd`). `prove` produces β together with an 80-byte Fiat–Shamir
@@ -1192,12 +1200,20 @@ existing BLS12-381 𝔾₁ already gives, and reuses the R1CS shape from the Gro
       bundle first — 18-assertion engine harness — then the full shipping `runSelfTest()`): strict-step
       satisfaction, the fold-completeness property, verifier/prover challenge agreement, the cross-term
       identity at a random `r`, the 6-step IVC round-trip vs. direct iteration, and a four-way soundness
-      battery (tampered witness, forged cross-term, broken chaining, unsatisfiable step). Suite
-      **416 → 427/427 across 65 groups**.
+      battery (tampered witness, forged cross-term, broken chaining, unsatisfiable step).
+- [x] **A second IVC application, `nova_mimc.ts`** — proving the folding core is genuinely generic,
+      not hardwired to the cubic. Refactored the driver into `ivcProveWith(params, step, z0, N)` over a
+      `StepFn` abstraction (`ivcProve` is now the cubic wrapper; `ivcVerify` was already generic). Added
+      a **MiMC permutation** (R rounds of `x ↦ (x+c)³`, two mults each) chained into a sequential hash —
+      `mimcR1CS`/`mimcAssign`/`mimcStep`. The `/nova` page gained an **application selector** (cubic vs.
+      MiMC hash chain), the relaxed-R1CS panel adapts to the chosen circuit, and 5 more self-tests fold
+      an 8-step MiMC chain and reject a tampered MiMC witness. Nova group **11 → 16**, suite
+      **416 → 432/432 across 65 groups**.
 - [ ] **Future:** make the commitment **hiding** (blinding factors that also fold) so the folded
       instance is zero-knowledge, not just succinct.
-- [ ] **Future:** a **generic R1CS gadget builder** (linear-combination DSL) so any circuit — not just
-      the cubic — can be folded, e.g. a MiMC/Poseidon round chain as a sequential VDF proven by folding.
+- [ ] **Future:** a **generic R1CS gadget builder** (a linear-combination DSL) so any circuit can be
+      folded without hand-writing its matrices, e.g. a full Poseidon round chain (MiMC is currently
+      hand-emitted, like the cubic).
 - [ ] **Future:** **SuperNova** (a per-step branch selector so a VM's different opcodes fold into one
       accumulator) and the in-circuit folding verifier over a **2-cycle of curves** (real recursive IVC).
 - [ ] **Future:** **CycleFold / HyperNova** — fold higher-degree (CCS) constraints, or compress the
@@ -1219,8 +1235,11 @@ existing BLS12-381 𝔾₁ already gives, and reuses the R1CS shape from the Gro
   that rejects a corrupted witness, a forged cross-term, and broken chaining live. Correctness proven
   before shipping: the folded assignment satisfies the folded instance, and the cross-term identity
   holds numerically at a random challenge. Node-validated (18-assertion rolldown harness + the full
-  `runSelfTest()`), then the exact `verify-project.mjs` gate green. Nova group **11** tests, suite
-  **416 → 427/427 across 65 groups**.
+  `runSelfTest()`), then the exact `verify-project.mjs` gate green. Then a **second IVC application**
+  (`nova_mimc.ts`) to prove the folding core is generic: the driver became `ivcProveWith` over a
+  `StepFn`, and a **MiMC arithmetic permutation** (R rounds of `x ↦ (x+c)³`) folds into a sequential
+  hash chain — a `/nova` application selector switches cubic ↔ MiMC, with 5 more self-tests. Nova
+  group **16** tests, suite **416 → 432/432 across 65 groups**. No new deps.
 
 - 2026-07-04 (claude / claude-opus-4-8[1m]): **BBS, round 2 — blind issuance (holder binding).**
   Follow-up to the BBS lab: the issuer can now sign attributes it never sees. `blindCommit` has the

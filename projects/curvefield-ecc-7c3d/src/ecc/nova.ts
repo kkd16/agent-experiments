@@ -345,6 +345,28 @@ export function stepEval(zIn: bigint): bigint {
   return mod(z * z * z + z + 5n, R)
 }
 
+// ── a step function, abstracted ─────────────────────────────────────────────────
+//
+// The folding scheme is entirely generic — it folds any two R1CS instances. Only
+// the *application* differs: which circuit each step runs. A StepFn packages the
+// step's R1CS with a witness assigner (public IO must be x = [z_in, z_out]) so the
+// IVC driver can fold a chain of any computation, not just the cubic.
+
+export interface StepFn {
+  r1cs: R1CS
+  assign: (zIn: bigint) => { x: bigint[]; W: bigint[]; zOut: bigint }
+  eval: (z: bigint) => bigint
+  label: string
+}
+
+/** The canonical Nova example, z ↦ z³ + z + 5. */
+export const CUBIC_STEP: StepFn = {
+  r1cs: stepR1CS(),
+  assign: stepAssign,
+  eval: stepEval,
+  label: 'z ↦ z³ + z + 5',
+}
+
 // ── IVC: fold an N-step chain into a single relaxed instance ─────────────────────
 
 export interface IvcProof {
@@ -362,7 +384,13 @@ export interface IvcProof {
   finalInstance: RelaxedInstance
 }
 
-export function ivcProve(p: NovaParams, z0: bigint, numSteps: number): IvcProof {
+/** Fold an N-step chain of an arbitrary step function into one relaxed instance. */
+export function ivcProveWith(
+  p: NovaParams,
+  step: StepFn,
+  z0: bigint,
+  numSteps: number,
+): IvcProof {
   const tr = new NovaTranscript('ivc')
   tr.absorbField(z0)
   let acc = trivialInstance(p)
@@ -371,10 +399,10 @@ export function ivcProve(p: NovaParams, z0: bigint, numSteps: number): IvcProof 
   const accInstances: RelaxedInstance[] = []
   let z = mod(z0, R)
   for (let i = 0; i < numSteps; i++) {
-    const s = stepAssign(z)
-    const step = strictInstance(p, s.x, s.W)
-    stepInstances.push(step.U)
-    const folded = foldProve(p, acc.U, acc.wit, step.U, step.wit, tr)
+    const s = step.assign(z)
+    const inst = strictInstance(p, s.x, s.W)
+    stepInstances.push(inst.U)
+    const folded = foldProve(p, acc.U, acc.wit, inst.U, inst.wit, tr)
     commTs.push(folded.commT)
     acc = { U: folded.U, wit: folded.wit }
     accInstances.push(folded.U)
@@ -390,6 +418,11 @@ export function ivcProve(p: NovaParams, z0: bigint, numSteps: number): IvcProof 
     finalWit: acc.wit,
     finalInstance: acc.U,
   }
+}
+
+/** The canonical cubic chain — the default IVC application. */
+export function ivcProve(p: NovaParams, z0: bigint, numSteps: number): IvcProof {
+  return ivcProveWith(p, CUBIC_STEP, z0, numSteps)
 }
 
 export interface IvcReport {

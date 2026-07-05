@@ -4,15 +4,36 @@ import { g1Hex, R } from '../ecc/bls12381'
 import { ellipsize } from '../ui/format'
 import {
   setup,
-  stepR1CS,
-  stepEval,
-  ivcProve,
+  CUBIC_STEP,
+  ivcProveWith,
   ivcVerify,
   type IvcProof,
+  type StepFn,
+  type NovaParams,
 } from '../ecc/nova'
+import { mimcStep } from '../ecc/nova_mimc'
 
-const cs = stepR1CS()
-const params = setup(cs)
+// The two IVC applications share one generic folding core; only the step circuit
+// differs. Generators are built once per circuit at module load.
+const APPS: { key: string; label: string; blurb: string; step: StepFn; params: NovaParams }[] = [
+  {
+    key: 'cubic',
+    label: 'Cubic — z ↦ z³ + z + 5',
+    blurb: 'The canonical Nova example: one cube per step, 3 constraints.',
+    step: CUBIC_STEP,
+    params: setup(CUBIC_STEP.r1cs),
+  },
+  (() => {
+    const step = mimcStep(6)
+    return {
+      key: 'mimc',
+      label: 'MiMC — a sequential hash chain',
+      blurb: 'A MiMC permutation (6 rounds of x ↦ (x+c)³) per step, 13 constraints — an arithmetic hash nobody can shortcut, the MinRoot-VDF skeleton.',
+      step,
+      params: setup(step.r1cs),
+    }
+  })(),
+]
 
 type Tamper = 'none' | 'witness' | 'crossterm' | 'chaining'
 
@@ -27,7 +48,7 @@ function commHex(P: Parameters<typeof g1Hex>[0]): string {
 }
 
 /** Apply the chosen corruption to a fresh honest proof, mirroring the selftest. */
-function corrupt(proof: IvcProof, mode: Tamper): IvcProof {
+function corrupt(proof: IvcProof, mode: Tamper, params: NovaParams): IvcProof {
   if (mode === 'none') return proof
   const p: IvcProof = {
     ...proof,
@@ -44,19 +65,22 @@ function corrupt(proof: IvcProof, mode: Tamper): IvcProof {
 }
 
 export function NovaPage() {
+  const [appKey, setAppKey] = useState('cubic')
   const [z0, setZ0] = useState(5)
   const [numSteps, setNumSteps] = useState(6)
   const [tamper, setTamper] = useState<Tamper>('none')
 
-  const { proof, report, chain, naive } = useMemo(() => {
-    const honest = ivcProve(params, BigInt(z0), numSteps)
-    const shown = corrupt(honest, tamper)
-    const rep = ivcVerify(params, shown)
-    // the true iterated sequence, for display
+  const app = APPS.find((a) => a.key === appKey) ?? APPS[0]
+
+  const { proof, report, chain, naive, nConstraints } = useMemo(() => {
+    const honest = ivcProveWith(app.params, app.step, BigInt(z0), numSteps)
+    const shown = corrupt(honest, tamper, app.params)
+    const rep = ivcVerify(app.params, shown)
     const seq: bigint[] = [((BigInt(z0) % R) + R) % R]
-    for (let i = 0; i < numSteps; i++) seq.push(stepEval(seq[seq.length - 1]))
-    return { proof: shown, report: rep, chain: seq, naive: numSteps * cs.A.length }
-  }, [z0, numSteps, tamper])
+    for (let i = 0; i < numSteps; i++) seq.push(app.step.eval(seq[seq.length - 1]))
+    const n = app.step.r1cs.A.length
+    return { proof: shown, report: rep, chain: seq, naive: numSteps * n, nConstraints: n }
+  }, [z0, numSteps, tamper, app])
 
   return (
     <main className="page">
@@ -78,17 +102,17 @@ export function NovaPage() {
         title="The statement"
         sub="Prove that z₀ was pushed through the step map F, N times, ending at z_N — revealing only the endpoints."
       >
-        <div className="note mono" style={{ marginBottom: '0.8rem' }}>
-          F(z) = z³ + z + 5 &nbsp;&nbsp;·&nbsp;&nbsp; z_{'{i+1}'} = F(z_i)
-        </div>
+        <label className="field" style={{ marginBottom: '0.7rem' }}>
+          <span>IVC application (the step circuit — the folding core is identical)</span>
+          <select value={appKey} onChange={(e) => setAppKey(e.target.value)}>
+            {APPS.map((a) => (
+              <option key={a.key} value={a.key}>{a.label}</option>
+            ))}
+          </select>
+        </label>
+        <div className="note" style={{ marginBottom: '0.8rem' }}>{app.blurb}</div>
         <Slider label="initial z₀" value={z0} min={0} max={99} onChange={setZ0} />
-        <Slider
-          label="number of steps N"
-          value={numSteps}
-          min={1}
-          max={16}
-          onChange={setNumSteps}
-        />
+        <Slider label="number of steps N" value={numSteps} min={1} max={16} onChange={setNumSteps} />
         <div className="mono" style={{ fontSize: '0.82rem', lineHeight: 1.9, marginTop: '0.6rem', wordBreak: 'break-all' }}>
           {chain.map((z, i) => (
             <span key={i}>
@@ -108,11 +132,22 @@ export function NovaPage() {
         </div>
         <div className="mono" style={{ fontSize: '0.8rem', lineHeight: 1.8 }}>
           <div className="note" style={{ marginBottom: '0.3rem', opacity: 0.7 }}>
-            step circuit for F, wires Z = [one, z_in, z_out, sym1 = z², y = z³]:
+            step circuit — {nConstraints} rank-1 constraints, public IO x = [z_in, z_out]:
           </div>
-          <div>c₁: &nbsp;z_in · z_in = sym1</div>
-          <div>c₂: &nbsp;sym1 · z_in = y</div>
-          <div>c₃: &nbsp;(y + z_in + 5·one) · one = z_out</div>
+          {app.key === 'cubic' ? (
+            <>
+              <div>c₁: &nbsp;z_in · z_in = sym1</div>
+              <div>c₂: &nbsp;sym1 · z_in = y</div>
+              <div>c₃: &nbsp;(y + z_in + 5·one) · one = z_out</div>
+            </>
+          ) : (
+            <>
+              <div>per round r on the running value xᵣ (x₀ = z_in):</div>
+              <div>&nbsp;&nbsp;sqᵣ &nbsp;&nbsp;= (xᵣ + cᵣ) · (xᵣ + cᵣ)</div>
+              <div>&nbsp;&nbsp;cubeᵣ = sqᵣ · (xᵣ + cᵣ) &nbsp;&nbsp;(= xᵣ₊₁)</div>
+              <div>final: cube_R−1 · one = z_out</div>
+            </>
+          )}
         </div>
         <p className="note" style={{ marginTop: '0.7rem' }}>
           An ordinary step instance embeds as <span className="mono">u = 1, E = 0</span> — the
@@ -162,11 +197,7 @@ export function NovaPage() {
       <Panel
         title="3 · Verify — one relaxed check for the whole chain"
         sub="The verifier replays every folding challenge, re-folds the committed instances, then runs a single relaxed-R1CS satisfaction test on the final accumulator."
-        right={
-          <Verdict ok={report.ok}>
-            {report.ok ? 'ACCEPT ✓' : 'REJECT ✕'}
-          </Verdict>
-        }
+        right={<Verdict ok={report.ok}>{report.ok ? 'ACCEPT ✓' : 'REJECT ✕'}</Verdict>}
       >
         <label className="field" style={{ marginBottom: '0.8rem' }}>
           <span>inject a fault (soundness demo)</span>
@@ -193,7 +224,7 @@ export function NovaPage() {
         <div className="grid cols-2" style={{ gap: '1rem', marginTop: '1rem' }}>
           <div className="hexbox violet" style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '1.6rem', fontWeight: 700 }}>{naive}</div>
-            <div className="note">ordinary R1CS row-checks the naïve verifier would run (N × {cs.A.length})</div>
+            <div className="note">ordinary R1CS row-checks the naïve verifier would run (N × {nConstraints})</div>
           </div>
           <div className="hexbox lavender" style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '1.6rem', fontWeight: 700 }}>1</div>
