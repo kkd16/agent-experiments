@@ -27,6 +27,20 @@ import { reassignSpectrogram, makeTfrSignal, instantaneousFreq } from './reassig
 import { makePhantom } from './phantom'
 import { forwardRadon, fbp, directFourier, affineError, correlation } from './radon'
 import { traceContour } from './contour'
+import {
+  recover,
+  buildProblem,
+  basisMatrix,
+  matVec,
+  matTVec,
+  softThreshold,
+  fista,
+  ista,
+  phaseTransition,
+  mulberry32,
+  type BasisKind,
+  type RecoverConfig,
+} from './cs'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -761,6 +775,118 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       if (r > hi) hi = r
     }
     check('contour of a disk is a closed near-circular loop', contour.length > 32 && hi - lo < 0.15)
+  }
+
+  // ---- Compressed sensing (the Sensing mode) --------------------------------
+  const relL2 = (a: Float64Array, b: Float64Array): number => {
+    let num = 0
+    let den = 0
+    for (let i = 0; i < a.length; i++) {
+      const d = a[i] - b[i]
+      num += d * d
+      den += b[i] * b[i]
+    }
+    return Math.sqrt(num / Math.max(den, 1e-30))
+  }
+
+  // 32. Every sparsifying basis is orthonormal: x = Mᵀ(Mx) to machine precision.
+  {
+    const N = 48
+    let worst = 0
+    for (const kind of ['spike', 'dct', 'fourier'] as BasisKind[]) {
+      const M = basisMatrix(kind, N)
+      const rng = mulberry32(11)
+      const x = new Float64Array(N)
+      for (let i = 0; i < N; i++) x[i] = rng() - 0.5
+      const xr = matTVec(M, matVec(M, x, N, N), N, N)
+      worst = Math.max(worst, relL2(xr, x))
+    }
+    check('every CS basis is orthonormal (exact round trip)', worst < 1e-9)
+  }
+
+  // 33. The composite operator's transpose is a true adjoint: ⟨Bx,y⟩ = ⟨x,Bᵀy⟩.
+  {
+    const cfg: RecoverConfig = { N: 40, k: 5, m: 20, basis: 'dct', operator: 'gaussian', solver: 'fista', lambda: 0.02, iterations: 10, noise: 0, seed: 3 }
+    const { B } = buildProblem(cfg)
+    const rng = mulberry32(5)
+    const x = new Float64Array(40)
+    for (let i = 0; i < 40; i++) x[i] = rng() - 0.5
+    const yv = new Float64Array(20)
+    for (let i = 0; i < 20; i++) yv[i] = rng() - 0.5
+    const Bx = matVec(B, x, 20, 40)
+    let lhs = 0
+    for (let i = 0; i < 20; i++) lhs += Bx[i] * yv[i]
+    const Bty = matTVec(B, yv, 20, 40)
+    let rhs = 0
+    for (let i = 0; i < 40; i++) rhs += x[i] * Bty[i]
+    check('CS operator transpose is a true adjoint', Math.abs(lhs - rhs) < 1e-9)
+  }
+
+  // 34. Soft-threshold (the ℓ₁ proximal operator) shrinks toward zero correctly.
+  {
+    const t = softThreshold(new Float64Array([3, -3, 0.5, -0.4, 0]), 1)
+    check('soft-threshold shrinks by the threshold', approxEqual(t[0], 2) && approxEqual(t[1], -2) && t[2] === 0 && t[3] === 0 && t[4] === 0)
+  }
+
+  // 35. FISTA recovers a k-sparse spike train exactly from m ≪ N measurements.
+  {
+    const cfg: RecoverConfig = { N: 128, k: 8, m: 48, basis: 'spike', operator: 'gaussian', solver: 'fista', lambda: 0.02, iterations: 400, noise: 0, seed: 42 }
+    const r = recover(cfg)
+    check('FISTA: exact recovery from 48 of 128 (spike/Gaussian)', r.exact && r.supportRecall > 0.999)
+  }
+
+  // 36. FISTA works transform-domain too: a DCT-sparse signal sensed by an
+  //     (incoherent) Gaussian operator recovers exactly from 50 of 128.
+  {
+    const cfg: RecoverConfig = { N: 128, k: 6, m: 50, basis: 'dct', operator: 'gaussian', solver: 'fista', lambda: 0.02, iterations: 400, noise: 0, seed: 7 }
+    const r = recover(cfg)
+    check('FISTA: exact recovery (DCT-sparse signal)', r.exact)
+  }
+
+  // 36b. Partial-Fourier sensing of the same signal also works, but needs more
+  //      measurements — DCT and Fourier are coherent bases (incoherence matters).
+  {
+    const cfg: RecoverConfig = { N: 128, k: 6, m: 64, basis: 'dct', operator: 'fourier', solver: 'fista', lambda: 0.02, iterations: 400, noise: 0, seed: 7 }
+    const r = recover(cfg)
+    check('FISTA: partial-Fourier recovery (coherent bases need more m)', r.exact)
+  }
+
+  // 37. OMP recovers the same signal exactly, by a different (greedy) route.
+  {
+    const cfg: RecoverConfig = { N: 128, k: 8, m: 48, basis: 'spike', operator: 'gaussian', solver: 'omp', lambda: 0, iterations: 0, noise: 0, seed: 42 }
+    const r = recover(cfg)
+    check('OMP: exact recovery of the same problem', r.exact)
+  }
+
+  // 38. The ℓ₂ (least-energy) baseline provably FAILS on the same data — the
+  //     whole point: minimising energy spreads the answer, ℓ₁ finds the spikes.
+  {
+    const cfg: RecoverConfig = { N: 128, k: 8, m: 48, basis: 'spike', operator: 'gaussian', solver: 'l2', lambda: 0, iterations: 300, noise: 0, seed: 42 }
+    const r = recover(cfg)
+    check('min-ℓ₂ baseline fails where ℓ₁ succeeds', r.relError > 0.2)
+  }
+
+  // 39. ISTA's objective decreases monotonically (step ≤ 1/L), and FISTA's
+  //     acceleration reaches a strictly lower objective in the same budget.
+  {
+    const cfg: RecoverConfig = { N: 96, k: 6, m: 40, basis: 'spike', operator: 'gaussian', solver: 'ista', lambda: 0.03, iterations: 150, noise: 0, seed: 9 }
+    const { B, y } = buildProblem(cfg)
+    const hi = ista(B, y, 0.03, 150, 40, 96).history
+    const hf = fista(B, y, 0.03, 150, 40, 96).history
+    let mono = true
+    for (let i = 1; i < hi.length; i++) if (hi[i] > hi[i - 1] + 1e-9) mono = false
+    check('ISTA monotone & FISTA accelerates below it', mono && hi[hi.length - 1] < hi[0] && hf[hf.length - 1] < hi[hi.length - 1])
+  }
+
+  // 40. The phase transition has the right corners: easy (few spikes, many
+  //     measurements) recovers; hard (many spikes, few measurements) does not.
+  {
+    const pt = phaseTransition({ N: 40, basis: 'spike', operator: 'gaussian', solver: 'fista', mSteps: 5, kSteps: 5, trials: 4, iterations: 120, lambda: 0.02, seed: 1 })
+    const cols = pt.mVals.length
+    const rows = pt.kVals.length
+    const easy = pt.field[0 * cols + (cols - 1)] // smallest k, largest m
+    const hard = pt.field[(rows - 1) * cols + 0] // largest k, smallest m
+    check('phase transition: easy corner recovers, hard corner does not', easy > 0.9 && hard < 0.5)
   }
 
   return { passed, failed, messages }

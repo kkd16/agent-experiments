@@ -80,6 +80,45 @@ vectors / pure frequencies, and lets you manipulate them.
 
 ## Ideas / backlog
 
+### v9 plan — the **Sensing** mode (compressed sensing / sparse recovery) — this session
+
+The whole lab has, so far, preached one gospel: **Nyquist**. To pin down a signal you need at
+least two samples per period — or the aliasing modes show you get garbled ghosts. Compressed
+sensing (Candès–Romberg–Tao, Donoho, 2006) is the beautiful heresy that overturns it: *if the
+signal is sparse in some basis*, you can nail it **exactly** from far fewer measurements than
+Nyquist demands — by solving an ℓ₁ optimisation instead of an ℓ₂ one. This mode makes that
+landmark result playable, and it reuses the lab's own FFT/DCT as the sparsifying basis.
+
+Why this is the right addition: it is the natural capstone to the Nyquist/aliasing story the
+lab already tells, it is one of the deepest results in modern signal processing, it is visually
+dramatic (perfect recovery from a handful of dots; the ℓ₂ baseline smears while ℓ₁ nails it),
+and every headline number is checkable in-browser.
+
+- [x] **`lib/cs.ts`** — a from-scratch compressed-sensing engine, all real-valued, all matrix-based
+  for legibility: a seeded PRNG (mulberry32 + Box–Muller Gaussians); three **orthonormal sparsifying
+  bases** built as explicit N×N matrices (spike/identity, DCT-II, a real orthonormal Fourier basis);
+  two canonical **sensing operators** (a Gaussian random matrix and a partial-orthobasis "random rows
+  of a transform" operator, the MRI-style measurement); the composite operator `B = A·Ψ`; a
+  **power-method** Lipschitz/step estimate; and four recovery algorithms from scratch —
+  **ISTA** (iterative soft-thresholding), **FISTA** (Nesterov-accelerated, the headline O(1/k²) solver),
+  **OMP** (orthogonal matching pursuit, greedy, with a normal-equations least-squares refit on the
+  support), and a **min-ℓ₂ / CGLS baseline** (the least-norm solution that provably fails). Plus a
+  `sparseSignal` generator, a **debiasing** least-squares refit (removes the LASSO shrinkage so a
+  correct support reads exactly), a high-level `recover()`, and a **Donoho–Tanner phase-transition** sweep.
+- [x] **`modes/Sensing.tsx`** — the mode: pick a sparsity basis, N, sparsity k, #measurements m, an
+  operator, a solver, λ, iterations, noise; and see (A) the **true vs recovered signal** overlaid with
+  the relative error and an exact-recovery verdict; (B) the **sparse coefficients** as true-vs-recovered
+  stems (support recovery made visible); (C) the **compressed measurements** the sensor actually sees;
+  (D) a **convergence** chart comparing FISTA vs ISTA objective decay (acceleration, visible); and
+  (E) the **phase-transition diagram** — success fraction over (k, m) with the `m ≈ 2k·ln(N/k)`
+  reference curve threading through the empirical boundary.
+- [x] Wired the mode into `App.tsx` (route + nav), added a **Sensing** pillar + a "Below Nyquist"
+  math card to the About page, and added **10 self-tests** (42 → 52): every basis orthonormal + exact
+  round-trip, operator adjoint consistency `⟨Bx,y⟩=⟨x,Bᵀy⟩`, soft-threshold correctness, FISTA & OMP
+  exact recovery of a k-sparse signal from m ≪ N (spike *and* DCT-sparse), the ℓ₂ min-norm baseline
+  provably failing on the same data, partial-Fourier needing more m (coherent bases), ISTA monotone +
+  FISTA accelerating below it, and the phase-transition corners (easy recovers / hard does not).
+
 - [x] From-scratch iterative radix-2 FFT/IFFT + DFT, verified against known transforms
 - [x] Complex-number core on typed arrays
 - [x] Epicycle drawing machine (draw + presets + harmonic slider + animation)
@@ -462,3 +501,23 @@ state is deep-linkable.
   its attenuation at the stopband edge. Ran the CI gate (scope + conformance + lint + build ✓) and drove
   it in headless Chromium: 32/32 self-tests pass, and the elliptic/Remez/spec-designer UI renders with
   zero console/runtime errors. Eleven modes, still zero math libraries.
+- 2026-07-05 (claude, v9): "Below Nyquist — the **Sensing** mode (compressed sensing)." Added a
+  fourteenth mode and the landmark result the whole lab had been building toward: if a signal is
+  *sparse*, a handful of random measurements **far below Nyquist** recover it **exactly** — by ℓ₁, not
+  ℓ₂. A new from-scratch `lib/cs.ts` carries it all, real-valued and matrix-based so every solver reads
+  like its textbook line: a seeded mulberry32 + Box–Muller PRNG; three **orthonormal sparsifying bases**
+  as explicit N×N matrices (spike, DCT-II, a real Fourier basis) that invert by transpose to ~4e-15; two
+  canonical **sensing operators** (Gaussian, and partial-orthobasis "random transform rows", the MRI
+  measurement); the composite `B = A·Ψ`; a **power-method** step-size estimate; and four solvers —
+  **ISTA**, Nesterov-accelerated **FISTA**, greedy **OMP** (with a normal-equations refit), and a
+  **CGLS min-ℓ₂ baseline** — plus a **debiasing** least-squares refit that strips the LASSO shrinkage so
+  a correct support reads *exactly* (6e-16). `modes/Sensing.tsx` shows the true-vs-recovered signal with
+  an exact-recovery verdict, true-vs-recovered coefficient **stems**, the compressed measurement vector,
+  a **FISTA-vs-ISTA convergence** race (acceleration made visible), and — on demand — the razor-sharp
+  **Donoho–Tanner phase transition** over (k, m) with the `m ≈ 2k·ln(N/k)` curve threading right through
+  the empirical boundary. Ten new self-tests (**42 → 52**): basis orthonormality, operator adjoint
+  consistency, soft-threshold, FISTA/OMP exact recovery (spike & DCT-sparse), the ℓ₂ baseline provably
+  failing, coherent bases (DCT+Fourier) needing more m, ISTA-monotone-while-FISTA-accelerates, and the
+  phase-transition corners. Ran the CI gate (scope + conformance + lint + build ✓) and drove it in
+  headless Chromium: 52/52 self-tests pass, all five panels render, the phase sweep computes, and the
+  ℓ₁-beats-ℓ₂ story is visible with zero console/runtime errors. Fourteen modes, still zero math libraries.

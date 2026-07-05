@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The thirteen modes</h3>
+        <h3>The fourteen modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a curve's points as complex numbers, FFT them, and
@@ -84,6 +84,14 @@ export default function About() {
             direct <strong>Fourier Slice Theorem</strong> reconstruction that grids each
             projection's spectrum into k-space. An RMSE error map and a live view of the radial
             slices filling the frequency plane keep it honest.
+          </li>
+          <li>
+            <strong>Sensing</strong> — <em>compressed sensing</em>, the beautiful heresy that
+            overturns Nyquist. If a signal is <strong>sparse</strong> in some basis, a handful of
+            random measurements — <em>far</em> below Nyquist — pin it down <strong>exactly</strong>,
+            recovered by minimising the <strong>ℓ₁ norm</strong> (FISTA / OMP) instead of the energy.
+            Watch the least-energy solution smear while ℓ₁ nails the spikes, and sweep the razor-sharp{' '}
+            <strong>Donoho–Tanner phase transition</strong> that says exactly when it works.
           </li>
           <li>
             <strong>Vocoder</strong> — the FFT put to work: a <em>phase vocoder</em> time-stretches
@@ -250,6 +258,37 @@ export default function About() {
           cosine, Hann and Hamming windows trade a little resolution for noise rejection, exactly the
           knobs a radiologist turns. Everything runs on the same from-scratch FFT — no CT library,
           no linear-algebra package.
+        </p>
+      </div>
+
+      <div className="card">
+        <h3>Below Nyquist — compressed sensing</h3>
+        <div className="formula">min ‖s‖₁ &nbsp; s.t. &nbsp; A·Ψ·s = y &nbsp;&nbsp;⟺&nbsp;&nbsp; min ½‖A·Ψ·s − y‖²₂ + λ‖s‖₁</div>
+        <p>
+          Every other mode obeys <strong>Nyquist</strong>: two samples per period, or the signal
+          aliases. The <strong>Sensing</strong> mode breaks it. A length-<code>N</code> signal that is{' '}
+          <strong>k-sparse</strong> in a basis Ψ carries only <code>k</code> real numbers of
+          information, so it should take only about <code>k</code> measurements to read — not{' '}
+          <code>N</code>. Compressed sensing (Candès–Romberg–Tao, Donoho, 2006) makes that precise:
+          sense <code>m = O(k·log(N/k))</code> random linear combinations{' '}
+          <code>y = A·x</code>, then recover by minimising the <strong>ℓ₁ norm</strong> of the
+          coefficients. Because the ℓ₁ ball has corners on the axes, its minimiser is <em>sparse</em>{' '}
+          — and, astonishingly, equal to the true signal. The naive least-energy (<strong>ℓ₂</strong>)
+          answer spreads across every coordinate and never recovers a spike train; the mode shows the
+          two side by side.
+        </p>
+        <div className="formula">s ← soft(s − t·Aᵀ(A·s − y), &nbsp; t·λ), &nbsp;&nbsp; soft(v,τ) = sign(v)·max(|v|−τ, 0)</div>
+        <p>
+          The recovery is the <strong>ISTA</strong> iteration above — a gradient step on the residual,
+          then a soft-threshold that is exactly the proximal operator of the ℓ₁ penalty — and its
+          Nesterov-accelerated cousin <strong>FISTA</strong>, which reaches the same answer with an{' '}
+          <code>O(1/k²)</code> rather than <code>O(1/k)</code> error decay (watch the convergence
+          plot). <strong>OMP</strong> takes the greedy road instead, adding one atom at a time and
+          re-fitting by least squares. Sweeping every <code>(k, m)</code> traces the razor-sharp{' '}
+          <strong>Donoho–Tanner phase transition</strong> — a hard line between <em>always recovers</em>{' '}
+          and <em>never</em> — with the <code>m ≈ 2k·ln(N/k)</code> curve threading right through it.
+          Every basis, operator and solver is a from-scratch matrix; the ℓ₁ magic needs no math
+          library at all.
         </p>
       </div>
 
