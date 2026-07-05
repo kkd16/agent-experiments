@@ -1,6 +1,7 @@
 // types.ts — plain, structured-clone-friendly types shared between the UI
-// thread and the render workers. Nothing here holds class instances, functions,
-// or typed arrays so a SceneDef can cross a postMessage boundary verbatim.
+// thread and the render workers. Nothing here holds class instances or functions,
+// so a SceneDef can cross a postMessage boundary verbatim. (Typed arrays — the
+// 25.0 `hdriData` panorama — are structured-clone-safe and cross intact too.)
 
 import type { Vec3 } from './vec3'
 import type { Material } from './material'
@@ -40,6 +41,20 @@ export type EnvDef =
   // sampling so the estimate stays unbiased. `intensity` scales the radiance;
   // `rotation` (radians) spins the panorama about the vertical axis.
   | { kind: 'hdri'; preset: HdriPreset; intensity?: number; rotation?: number }
+  // (25.0) A user-supplied HDRI: a decoded equirectangular panorama (a real
+  // `.hdr` dropped onto the viewport — see hdr.ts) carried as an interleaved
+  // linear-radiance Float32Array. It importance-samples through the identical
+  // path as the `hdri` presets; the typed array survives the SceneDef's
+  // structured-clone to the workers verbatim. `label` names it for the UI.
+  | {
+      kind: 'hdriData'
+      width: number
+      height: number
+      pixels: Float32Array
+      intensity?: number
+      rotation?: number
+      label?: string
+    }
 
 // A procedural 3D density field that modulates a medium's extinction in space,
 // turning a uniformly-foggy sphere into a real cloud / smoke plume / fog layer.

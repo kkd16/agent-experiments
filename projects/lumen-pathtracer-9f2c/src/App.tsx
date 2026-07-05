@@ -18,6 +18,20 @@ import { orbitEye } from './engine/camera'
 import type { CameraDef } from './engine/camera'
 import type { SceneDef } from './engine/types'
 import { distance, len, scale, sub, clamp } from './engine/vec3'
+import { decodeHdr, downsampleEquirect, encodeHdr } from './engine/hdr'
+
+// (25.0) The largest equirectangular width kept for a loaded HDRI. Real panoramas
+// ship at 2K–8K; the importance sampler and the postMessage payload both scale
+// with texel count, so a dropped map is box-downsampled to this before use — plenty
+// of resolution for lighting (the bright features stay resolved), a fraction of the
+// cost. The bilinear lookup keeps the reflected backdrop smooth.
+const MAX_HDRI_WIDTH = 1024
+
+interface CustomHdri {
+  width: number
+  height: number
+  pixels: Float32Array
+}
 
 interface Orbit {
   target: CameraDef['target']
@@ -61,6 +75,9 @@ const DEFAULTS: ControlState = {
   chromAberration: 0,
   filmGrain: 0,
   objText: '',
+  customHdriName: '',
+  customHdriInfo: '',
+  hdriError: '',
 }
 
 function deriveOrbit(cam: CameraDef): Orbit {
@@ -79,7 +96,7 @@ function sceneCamera(id: string): CameraDef {
   return SCENES.find((s) => s.id === id)!.build().camera
 }
 
-function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
+function buildScene(ctrl: ControlState, orbit: Orbit, customHdri: CustomHdri | null): SceneDef {
   const preset = SCENES.find((s) => s.id === ctrl.sceneId)!
   const def = preset.obj ? buildCustomScene(ctrl.objText) : preset.build()
   // Sky scenes: drive the sun position + turbidity from the live controls.
@@ -110,6 +127,21 @@ function buildScene(ctrl: ControlState, orbit: Orbit): SceneDef {
       }
       return next
     })
+  }
+  // (25.0) A user-loaded HDRI overrides whatever environment the scene shipped
+  // with — it lights any world you drop it on. The rotation/intensity controls
+  // (shared with the preset HDRIs) drive it live; the decoded panorama itself
+  // lives in a ref (out of ControlState) so it never bloats the render key.
+  if (customHdri) {
+    def.env = {
+      kind: 'hdriData',
+      width: customHdri.width,
+      height: customHdri.height,
+      pixels: customHdri.pixels,
+      rotation: (ctrl.envRotation * Math.PI) / 180,
+      intensity: ctrl.envIntensity,
+      label: ctrl.customHdriName,
+    }
   }
   const eye = orbitEye(orbit.target, orbit.radius, orbit.yaw, orbit.pitch)
   def.camera = {
@@ -157,6 +189,10 @@ export default function App() {
   const [route, navigate] = useHashRoute()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<Renderer | null>(null)
+  // The decoded custom HDRI panorama, held outside React state so the (heavy)
+  // Float32Array never lands in the render-key JSON. A load bumps ctrl.customHdri*,
+  // which is what actually re-triggers the render effect.
+  const customHdriRef = useRef<CustomHdri | null>(null)
   const [ctrl, setCtrl] = useState<ControlState>(DEFAULTS)
   const [orbit, setOrbit] = useState<Orbit>(() => deriveOrbit(sceneCamera(DEFAULTS.sceneId)))
   const [stats, setStats] = useState<RenderStats | null>(null)
@@ -189,7 +225,7 @@ export default function App() {
     if (route !== 'render') return
     const canvas = canvasRef.current
     if (!canvas) return
-    const r = new Renderer(canvas, buildScene(ctrl, orbit), buildDisplay(ctrl))
+    const r = new Renderer(canvas, buildScene(ctrl, orbit, customHdriRef.current), buildDisplay(ctrl))
     r.setAdaptive(buildAdaptive(ctrl))
     r.onStats = (st) => {
       setStats(st)
@@ -227,6 +263,8 @@ export default function App() {
     erot: ctrl.envRotation,
     eint: ctrl.envIntensity,
     obj: ctrl.objText,
+    hdri: ctrl.customHdriName,
+    hdriInfo: ctrl.customHdriInfo,
     o: orbit,
   })
   useEffect(() => {
@@ -235,7 +273,7 @@ export default function App() {
     if (!r) return
     const id = window.setTimeout(() => {
       const res = RES_PRESETS[ctrl.resIndex]
-      r.setScene(buildScene(ctrl, orbit))
+      r.setScene(buildScene(ctrl, orbit, customHdriRef.current))
       r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights, sphereLights: ctrl.sphereLights })
       r.setResolution(res.w, res.h)
       r.setTarget(ctrl.spp)
@@ -275,7 +313,7 @@ export default function App() {
     const r = rendererRef.current
     if (!r) return
     const res = RES_PRESETS[ctrl.resIndex]
-    r.setScene(buildScene(ctrl, orbit))
+    r.setScene(buildScene(ctrl, orbit, customHdriRef.current))
     r.setSettings({ maxDepth: ctrl.maxDepth, rrStart: ctrl.rrStart, clampIndirect: ctrl.clampIndirect, integrator: ctrl.integrator, manyLights: ctrl.manyLights, sphereLights: ctrl.sphereLights })
     r.setResolution(res.w, res.h)
     r.setTarget(ctrl.spp)
@@ -293,6 +331,51 @@ export default function App() {
     a.href = r.toDataURL()
     a.download = `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.png`
     a.click()
+  }
+
+  // (25.0) Decode a dropped/loaded Radiance .hdr, downsample it for the sampler,
+  // stash the panorama in the ref, and bump the control state (which re-triggers
+  // the render effect). Any decode failure surfaces as a message in the panel.
+  const loadHdri = useCallback(async (file: File) => {
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer())
+      const full = decodeHdr(buf)
+      const img = downsampleEquirect(full, MAX_HDRI_WIDTH)
+      customHdriRef.current = { width: img.width, height: img.height, pixels: img.pixels }
+      const info =
+        img.width === full.width
+          ? `${full.width}×${full.height}`
+          : `${full.width}×${full.height} → ${img.width}×${img.height}`
+      setCtrl((c) => ({ ...c, customHdriName: file.name, customHdriInfo: info, hdriError: '' }))
+    } catch (err) {
+      customHdriRef.current = null
+      setCtrl((c) => ({
+        ...c,
+        customHdriName: '',
+        customHdriInfo: '',
+        hdriError: `Couldn't read "${file.name}": ${(err as Error).message}`,
+      }))
+    }
+  }, [])
+
+  const onClearHdri = useCallback(() => {
+    customHdriRef.current = null
+    setCtrl((c) => ({ ...c, customHdriName: '', customHdriInfo: '', hdriError: '' }))
+  }, [])
+
+  // Export the current linear HDR frame as a real Radiance .hdr (physical
+  // radiance, not tone-mapped) — the same encoder the self-tests round-trip.
+  const onSaveHdr = () => {
+    const r = rendererRef.current
+    if (!r) return
+    const { pixels, width, height } = r.hdrImage()
+    const bytes = encodeHdr(pixels, width, height)
+    const blob = new Blob([bytes as BlobPart], { type: 'image/vnd.radiance' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.hdr`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
   }
 
   // ---- Orbit camera interaction ----
@@ -326,6 +409,25 @@ export default function App() {
     setShowHint(false)
   }
 
+  // ---- Drag-and-drop an .hdr onto the viewport ----
+  const [hdriDragOver, setHdriDragOver] = useState(false)
+  const onDragOver = (e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer.types).includes('Files')) {
+      e.preventDefault()
+      if (!hdriDragOver) setHdriDragOver(true)
+    }
+  }
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setHdriDragOver(false)
+  }
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setHdriDragOver(false)
+    const f = e.dataTransfer.files?.[0]
+    if (f) void loadHdri(f)
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -355,10 +457,25 @@ export default function App() {
       {route === 'render' && (
         <main className="studio">
           <aside className="sidebar">
-            <Controls state={ctrl} set={set} running={running} onRender={onRender} onStop={onStop} onSave={onSave} />
+            <Controls
+              state={ctrl}
+              set={set}
+              running={running}
+              onRender={onRender}
+              onStop={onStop}
+              onSave={onSave}
+              onLoadHdri={loadHdri}
+              onClearHdri={onClearHdri}
+              onSaveHdr={onSaveHdr}
+            />
           </aside>
           <div className="viewport">
-            <div className="canvas-wrap">
+            <div
+              className={hdriDragOver ? 'canvas-wrap drag-over' : 'canvas-wrap'}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
+            >
               <canvas
                 ref={canvasRef}
                 className="render-canvas"
@@ -367,7 +484,8 @@ export default function App() {
                 onPointerUp={onPointerUp}
                 onWheel={onWheel}
               />
-              {showHint && <div className="hint">drag to orbit · scroll to dolly</div>}
+              {showHint && <div className="hint">drag to orbit · scroll to dolly · drop an .hdr to relight</div>}
+              {hdriDragOver && <div className="drop-overlay">⤒ Drop a Radiance .hdr to light the scene</div>}
             </div>
             <Stats stats={stats} />
           </div>
@@ -385,7 +503,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled, drop your own .hdr) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

@@ -38,7 +38,8 @@ export function SelfTests() {
           consistency, the analytic Fresnel &amp; Snell laws, a neutral spectral white point, Cauchy
           dispersion ordering, Beer–Lambert tinting, smooth-normal interpolation, mesh integrity
           (icosphere Euler characteristic, OBJ round-trip, torus normals), Preetham sky positivity,
-          and the env-sun sampler's solid angle. No pixels are judged by eye.
+          the env-sun sampler's solid angle, and a byte-exact round-trip of the Radiance{' '}
+          <code>.hdr</code> codec (flat &amp; RLE). No pixels are judged by eye.
         </p>
         <button className="btn primary" onClick={run} disabled={running} type="button">
           {running ? 'Running…' : 'Run verification'}

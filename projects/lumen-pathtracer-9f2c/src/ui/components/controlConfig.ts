@@ -78,4 +78,12 @@ export interface ControlState {
   filmGrain: number // photographic film grain (midtone-peaked, zero-mean)
   // Custom-OBJ scene only: the pasted model text.
   objText: string
+  // (25.0) A real HDRI loaded by the user (drag-and-drop / file-pick of a Radiance
+  // `.hdr`). The heavy decoded panorama lives outside this state (in a ref) to keep
+  // the render-key JSON small; these fields are just the metadata that drives the
+  // UI and, via the render key, the re-render. Empty name ⇒ no custom HDRI loaded,
+  // and every scene keeps its own environment.
+  customHdriName: string // filename, or '' when none loaded
+  customHdriInfo: string // e.g. "2048×1024 → 1024×512" for the UI label
+  hdriError: string // a decode-failure message to surface, or '' when fine
 }

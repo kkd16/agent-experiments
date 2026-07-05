@@ -95,8 +95,9 @@ export class Scene {
   readonly buildMs: number
   readonly sky: SkyState | null
   readonly envSun: EnvSun | null
-  // (21.0) The importance-sampleable HDRI environment, when env.kind === 'hdri'.
-  // null for every other env kind, so those scenes are unchanged bit-for-bit.
+  // (21.0) The importance-sampleable HDRI environment, for env.kind 'hdri' (a
+  // procedural preset) or 'hdriData' (a decoded real `.hdr`, 25.0). null for every
+  // other env kind, so those scenes are unchanged bit-for-bit.
   readonly envMap: EnvMap | null
   readonly hasEnvLight: boolean
   readonly media: MediumDef[]
@@ -141,7 +142,13 @@ export class Scene {
     this.envMap =
       def.env.kind === 'hdri'
         ? new EnvMap(def.env.preset, def.env.intensity ?? 1, def.env.rotation ?? 0)
-        : null
+        : def.env.kind === 'hdriData'
+          ? new EnvMap(
+              { pixels: def.env.pixels, width: def.env.width, height: def.env.height },
+              def.env.intensity ?? 1,
+              def.env.rotation ?? 0,
+            )
+          : null
     // (21.0) The environment occupies one slot in the NEE selection pool when it
     // carries *any* sampleable light — a sun cone (gradient/sky) or a full HDRI.
     this.hasEnvLight = this.envSun !== null || this.envMap !== null
@@ -227,7 +234,7 @@ export class Scene {
   envRadiance(dir: Vec3): Vec3 {
     const e = this.env
     if (e.kind === 'solid') return e.color
-    if (e.kind === 'hdri') return this.envMap!.radiance(dir)
+    if (e.kind === 'hdri' || e.kind === 'hdriData') return this.envMap!.radiance(dir)
     if (e.kind === 'sky') return skyRadiance(this.sky!, dir, true)
     const tt = 0.5 * (dir.y + 1)
     let col = lerp(e.bottom, e.top, clamp(tt, 0, 1))

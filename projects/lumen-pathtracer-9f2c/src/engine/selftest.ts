@@ -35,6 +35,7 @@ import { Bvh } from './bvh'
 import { Scene } from './scene'
 import { EnvMap, Distribution2D } from './envmap'
 import type { HdriPreset } from './envmap'
+import { decodeHdr, encodeHdr, downsampleEquirect, floatToRgbe } from './hdr'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
@@ -3796,6 +3797,275 @@ function testEnvRotationInvariant(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `Δradiance=${maxRad.toExponential(1)}, Δpdf=${maxPdf.toExponential(1)}, |azimuth−φ|=${maxAz.toExponential(1)}` }
 }
 
+// ---- (25.0) real HDRI ingestion — the Radiance RGBE codec --------------------
+
+// The RGBE format quantises each pixel to a shared 8-bit exponent + three 8-bit
+// mantissas, then truncates — so a decoded channel is always ≤ the original by
+// strictly less than one quantisation step f = 2^(E−8) (with E the pixel's max
+// channel). This bound, |orig−decoded| < pixelMax/128, is the exact tolerance the
+// round-trip tests hold the codec to.
+
+// A deterministic float panorama with wide dynamic range (bright specks over a
+// dim field — the shape real HDRIs take), for the codec round-trips.
+function makeHdrTestImage(W: number, H: number, seed: number): Float32Array {
+  const rng = new Rng(seed, 3)
+  const px = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      const base = 0.02 + 0.5 * rng.next()
+      const spike = rng.next() < 0.08 ? 40 + 900 * rng.next() : 0
+      px[o] = base * (0.6 + 0.8 * rng.next()) + spike
+      px[o + 1] = base * (0.6 + 0.8 * rng.next()) + spike * 0.8
+      px[o + 2] = base * (0.6 + 0.8 * rng.next()) + spike * 0.5
+    }
+  }
+  return px
+}
+
+// Largest per-channel round-trip error, expressed as a fraction of that pixel's
+// quantisation step (pixelMax/128). A correct truncating RGBE codec keeps this < 1.
+function maxRgbeErrorRatio(orig: Float32Array, dec: Float32Array): number {
+  let worst = 0
+  const n = orig.length / 3
+  for (let p = 0; p < n; p++) {
+    const o = p * 3
+    const pm = Math.max(orig[o], orig[o + 1], orig[o + 2])
+    if (pm < 1e-6) continue
+    const step = pm / 128
+    for (let c = 0; c < 3; c++) {
+      const e = Math.abs(orig[o + c] - dec[o + c])
+      const ratio = e / step
+      if (ratio > worst) worst = ratio
+    }
+  }
+  return worst
+}
+
+// (1) RGBE round-trip through FLAT scanlines. A narrow image (W<8) forces the
+// non-RLE path; encode → decode recovers every channel to within one quantisation
+// step, and a genuinely-black pixel decodes to exactly zero (E=0 is the format's
+// black sentinel). This pins floatToRgbe∘rgbeToFloat to the identity-mod-quantum.
+function testRgbeFlatRoundtrip(): { pass: boolean; detail: string } {
+  const W = 6
+  const H = 40
+  const px = makeHdrTestImage(W, H, 0xf1a7)
+  // Force one exact-black pixel to check the E=0 path.
+  px[0] = 0
+  px[1] = 0
+  px[2] = 0
+  const enc = encodeHdr(px, W, H, false)
+  const dec = decodeHdr(enc)
+  const dimsOk = dec.width === W && dec.height === H
+  const blackOk = dec.pixels[0] === 0 && dec.pixels[1] === 0 && dec.pixels[2] === 0
+  const ratio = maxRgbeErrorRatio(px, dec.pixels)
+  const ok = dimsOk && blackOk && ratio < 1
+  return { pass: ok, detail: `dims=${dec.width}×${dec.height}, black→0=${blackOk}, max err=${ratio.toFixed(3)}·step` }
+}
+
+// (2) New-style per-channel RLE is LOSSLESS and agrees byte-for-byte with the flat
+// path. A banded image (long runs of identical exponents/mantissas) is encoded
+// both RLE and flat; the two decodes are bit-identical (RLE only recodes, never
+// approximates), both match the source to within a quantum, AND the RLE stream is
+// materially smaller — proving the compression actually fired.
+function testRgbeRleRoundtrip(): { pass: boolean; detail: string } {
+  const W = 96
+  const H = 24
+  const px = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      // Horizontal bands of constant radiance (runs) with a few bright columns.
+      const band = 0.05 + 0.5 * Math.floor(j / 4)
+      const spike = i % 31 === 0 ? 120 : 0
+      px[o] = band + spike
+      px[o + 1] = band * 0.9 + spike
+      px[o + 2] = band * 0.7 + spike
+    }
+  }
+  const encRle = encodeHdr(px, W, H, true)
+  const encFlat = encodeHdr(px, W, H, false)
+  const decRle = decodeHdr(encRle)
+  const decFlat = decodeHdr(encFlat)
+  // The two decodes must be bit-identical.
+  let maxDiff = 0
+  for (let k = 0; k < decRle.pixels.length; k++) maxDiff = Math.max(maxDiff, Math.abs(decRle.pixels[k] - decFlat.pixels[k]))
+  const ratio = maxRgbeErrorRatio(px, decRle.pixels)
+  const smaller = encRle.length < encFlat.length * 0.8
+  const ok = maxDiff === 0 && ratio < 1 && smaller && decRle.width === W && decRle.height === H
+  return {
+    pass: ok,
+    detail: `RLE≡flat Δ=${maxDiff.toExponential(1)}, err=${ratio.toFixed(3)}·step, size ${encRle.length}/${encFlat.length}B (${((1 - encRle.length / encFlat.length) * 100).toFixed(0)}% smaller)`,
+  }
+}
+
+// (3) Orientation: the codec's default "-Y H +X X" writes row 0 as the top and
+// column 0 as the left, and the decoder honours the sign flags. We (a) round-trip
+// a positional ramp (each pixel's red = its row, green = its column) and confirm
+// the mapping is preserved, and (b) hand-build "+Y" (bottom-up) and "-X"
+// (right-to-left) flat buffers and confirm the decoder flips them back to canonical.
+function testHdrOrientation(): { pass: boolean; detail: string } {
+  const W = 6
+  const H = 5
+  const ramp = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      ramp[o] = 1 + j // row index (avoid 0 so E≠0)
+      ramp[o + 1] = 1 + i // col index
+      ramp[o + 2] = 1
+    }
+  }
+  const dec = decodeHdr(encodeHdr(ramp, W, H, false))
+  let rampOk = true
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      // Row/col recovered to within a quantum (< 0.5 for these small integers).
+      if (Math.abs(dec.pixels[o] - (1 + j)) > 0.5 || Math.abs(dec.pixels[o + 1] - (1 + i)) > 0.5) rampOk = false
+    }
+  }
+  // Hand-built flat buffers with flipped axes. W<8 keeps decode on the flat path.
+  const buildFlat = (ySign: string, xSign: string): Uint8Array => {
+    const header = `#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n${ySign}Y ${H} ${xSign}X ${W}\n`
+    const head = new TextEncoder().encode(header)
+    const body = new Uint8Array(W * H * 4)
+    const one = new Uint8Array(4)
+    for (let sy = 0; sy < H; sy++) {
+      // File row sy corresponds to canonical row (ySign==='+' ? H-1-sy : sy).
+      const cj = ySign === '+' ? H - 1 - sy : sy
+      for (let sx = 0; sx < W; sx++) {
+        const ci = xSign === '-' ? W - 1 - sx : sx
+        floatToRgbe(1 + cj, 1 + ci, 1, one, 0)
+        body.set(one, (sy * W + sx) * 4)
+      }
+    }
+    const out = new Uint8Array(head.length + body.length)
+    out.set(head, 0)
+    out.set(body, head.length)
+    return out
+  }
+  let flipOk = true
+  for (const [ys, xs] of [
+    ['+', '+'],
+    ['-', '-'],
+    ['+', '-'],
+  ] as const) {
+    const d = decodeHdr(buildFlat(ys, xs))
+    for (let j = 0; j < H && flipOk; j++) {
+      for (let i = 0; i < W; i++) {
+        const o = (j * W + i) * 3
+        if (Math.abs(d.pixels[o] - (1 + j)) > 0.5 || Math.abs(d.pixels[o + 1] - (1 + i)) > 0.5) {
+          flipOk = false
+          break
+        }
+      }
+    }
+  }
+  // (c) a malformed buffer is rejected, not silently mis-decoded.
+  let throws = false
+  try {
+    decodeHdr(new TextEncoder().encode('not an hdr file\n'))
+  } catch {
+    throws = true
+  }
+  const ok = rampOk && flipOk && throws
+  return { pass: ok, detail: `ramp=${rampOk}, ±axis flips=${flipOk}, rejects-garbage=${throws}` }
+}
+
+// (4) A decoded panorama drives the SAME importance sampler as the presets. Fed a
+// CONSTANT-radiance Float32 panorama through the EnvPixels constructor, EnvMap
+// importance-samples UNIFORMLY over the sphere (the luminance×sinθ weights collapse
+// to the lat-long area element): the sampled directions are uniform on S² — mean
+// direction ≈ 0 and E[cosθ]=0, E[cos²θ]=1/3 — its directional density integrates to
+// 1 over the sphere, and the sampler's reported pdf equals pdf(wi) to machine ε (the
+// MIS guarantee, now honoured for user HDRIs). Also exercises the Float32→Float64
+// widen (the radiance read back must be the exact constant).
+function testEnvFromPixels(): { pass: boolean; detail: string } {
+  const W = 128
+  const H = 64
+  const pixels = new Float32Array(W * H * 3)
+  for (let k = 0; k < pixels.length; k++) pixels[k] = 0.37 // constant radiance
+  const em = new EnvMap({ pixels, width: W, height: H }, 1, 0)
+  const rng = new Rng(9182, 4)
+  let mx = 0
+  let my = 0
+  let mz = 0
+  let my2 = 0
+  let maxPdfDev = 0
+  let allPos = true
+  let radOk = true
+  const N = 60000
+  let n = 0
+  for (let i = 0; i < N; i++) {
+    const s = em.sample(rng.next(), rng.next())
+    if (!s) continue
+    n++
+    if (!(s.pdf > 0)) allPos = false
+    mx += s.wi.x
+    my += s.wi.y
+    mz += s.wi.z
+    my2 += s.wi.y * s.wi.y
+    const p2 = em.pdf(s.wi)
+    const rel = Math.abs(p2 - s.pdf) / (s.pdf + 1e-30)
+    if (rel > maxPdfDev) maxPdfDev = rel
+    if (Math.abs(s.radiance.x - 0.37) > 1e-6) radOk = false // Float32→Float64 exact
+  }
+  mx /= n
+  my /= n
+  mz /= n
+  my2 /= n
+  // Validity: the directional density integrates to 1 over S² (uniform-sphere MC).
+  const rp = new Rng(5150, 7)
+  let integ = 0
+  const M = 200000
+  for (let i = 0; i < M; i++) integ += em.pdf(uniformSphereDir(rp.next(), rp.next()))
+  integ = (integ / M) * 4 * Math.PI
+  const meanDir = Math.hypot(mx, my, mz)
+  const uniform = meanDir < 0.02 && Math.abs(my) < 0.02 && Math.abs(my2 - 1 / 3) < 0.02
+  const ok = allPos && radOk && uniform && Math.abs(integ - 1) < 0.03 && maxPdfDev < 1e-9
+  return {
+    pass: ok,
+    detail: `|E[ω]|=${meanDir.toFixed(4)}, E[cos²θ]=${my2.toFixed(4)} (1/3), ∫_S²p=${integ.toFixed(3)}, sampler↔pdf=${maxPdfDev.toExponential(1)}`,
+  }
+}
+
+// (5) Box-downsampling an equirectangular map preserves its light. On an exact
+// integer reduction the plain mean is conserved bit-for-bit, and — the physically
+// meaningful quantity — the sinθ-weighted mean radiance (the total irradiance the
+// environment casts, EnvMap.meanRadiance) is conserved to well under a percent, so
+// the down-rezzed map lights the scene with the same energy as the full one.
+function testHdrDownsampleEnergy(): { pass: boolean; detail: string } {
+  const W = 256
+  const H = 128
+  const px = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      const val = 0.1 + 0.5 * (1 + Math.sin(i * 0.1) * Math.cos(j * 0.13))
+      px[o] = val
+      px[o + 1] = val * 0.8
+      px[o + 2] = val * 1.2
+    }
+  }
+  const meanOf = (a: Float32Array): number => {
+    let s = 0
+    for (let k = 0; k < a.length; k += 3) s += a[k]
+    return s / (a.length / 3)
+  }
+  const small = downsampleEquirect({ width: W, height: H, pixels: px }, 64) // factor 4 → 64×32 exact
+  const meanDev = Math.abs(meanOf(px) - meanOf(small.pixels)) / meanOf(px)
+  const emFull = new EnvMap({ pixels: px, width: W, height: H }, 1, 0)
+  const emSmall = new EnvMap({ pixels: small.pixels, width: small.width, height: small.height }, 1, 0)
+  const irrDev = Math.abs(emFull.meanRadiance.x - emSmall.meanRadiance.x) / emFull.meanRadiance.x
+  const dimsOk = small.width === 64 && small.height === 32
+  const ok = dimsOk && meanDev < 1e-6 && irrDev < 0.01
+  return {
+    pass: ok,
+    detail: `${W}×${H}→${small.width}×${small.height}, plain-mean Δ=${meanDev.toExponential(1)}, sin-weighted irradiance Δ=${(irrDev * 100).toFixed(3)}%`,
+  }
+}
+
 // ---- 22.0 — physically based image formation --------------------------------
 
 // Aperture (1): the polygonal bokeh sampler is area-uniform, lies inside the unit
@@ -4304,6 +4574,11 @@ export function runSelfTests(): TestResult[] {
     test('IBL — env NEE MIS-consistent (envSunPdf ≡ p/N ≡ sampler)', testEnvMisConsistency),
     test('IBL — importance unbiased, far lower variance than uniform', testEnvImportanceVariance),
     test('IBL — env rotation is a measure-preserving symmetry', testEnvRotationInvariant),
+    test('HDR codec — RGBE flat round-trip (≤1 quantum, black→0)', testRgbeFlatRoundtrip),
+    test('HDR codec — RLE lossless ≡ flat + actually compresses', testRgbeRleRoundtrip),
+    test('HDR codec — orientation + ±axis flips + rejects garbage', testHdrOrientation),
+    test('HDR codec — decoded panorama drives sampler (≈1/4π, MIS)', testEnvFromPixels),
+    test('HDR codec — downsample conserves mean + sinθ irradiance', testHdrDownsampleEnergy),
     test('Bokeh — polygon aperture area-uniform, in-disk, zero-mean', testAperturePolygon),
     test('Bokeh — reduces to disk sampler + fills disk as blades→∞', testApertureDiskLimit),
     test('Glare — energy-conserving (centred) + identity off', testBloomEnergy),

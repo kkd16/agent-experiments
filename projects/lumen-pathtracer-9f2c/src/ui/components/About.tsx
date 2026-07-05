@@ -367,6 +367,23 @@ export function About() {
           horizon of ~520 city lights) — each lit by the environment <em>alone</em>. Try{' '}
           <em>Studio/Sunset/Twilight HDRI</em> and spin <strong>Env rotation</strong>.
         </Card>
+        <Card title="Bring your own HDRI (25.0)">
+          The three panoramas were baked in. Now you can <strong>drop a real <code>.hdr</code></strong> —
+          any equirectangular Radiance file from Poly&nbsp;Haven, Blender or a 360° capture — onto the
+          viewport and it lights the scene. Lumen carries a <strong>from-scratch Radiance RGBE codec</strong>:
+          RGBE packs a float RGB triple into four bytes (a shared exponent + three mantissas, decoded as{' '}
+          <code>c·2^(E−136)</code>), and real files store each scanline as four <em>run-length-encoded</em>{' '}
+          channels — this reads both that and the flat/old formats, honouring the <code>±Y ±X</code>{' '}
+          orientation flags. The decoded panorama is box-downsampled and handed to the <em>same</em>{' '}
+          importance sampler as the built-ins (its typed-array pixels cross to the worker pool by
+          structured clone), so a dropped HDRI is luminance-importance-sampled and MIS-paired the instant
+          it lands. The codec runs <em>both ways</em>: <strong>Export ⤓ HDR</strong> writes the linear
+          frame back out as a real <code>.hdr</code> — physical radiance above display range, not a
+          tone-mapped PNG. The <strong>Verify</strong> tab round-trips the codec (flat and RLE, to within
+          one quantisation step), checks the RLE path is lossless <em>and</em> actually compresses,
+          exercises the axis flips, and confirms a decoded map reduces to uniform sampling and conserves
+          irradiance under downsampling.
+        </Card>
         <Card title="Procedural textures">
           Checkerboards, blueprint grids and value-noise marble are evaluated analytically in world
           space — no UVs, no image files — and resolved to a flat colour at each hit so the BSDF math

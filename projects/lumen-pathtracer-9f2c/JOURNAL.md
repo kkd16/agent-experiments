@@ -116,8 +116,13 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   `Distribution1D`/`Distribution2D` over an equirectangular HDRI's **luminance × sinθ**, sampled by a
   marginal-then-conditional inverse CDF, with `EnvMap.radiance/sample/pdf` exposing the panorama as both
   the escaped-ray radiance **and** an importance-sampled NEE light (exact solid-angle pdf for MIS). Ships
-  three deterministic procedural panoramas (studio / sunset / twilight).
-- `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency…).
+  three deterministic procedural panoramas (studio / sunset / twilight), and (25.0) accepts a **decoded
+  real HDRI** (`EnvPixels`) through the same source-agnostic distribution build.
+- `src/engine/hdr.ts` — **(25.0) the Radiance RGBE (`.hdr`) codec.** From-scratch `decodeHdr` (new-style
+  per-channel RLE + flat/old scanlines, `±Y ±X` orientation, RGBE/XYZE, `EXPOSURE`) and `encodeHdr`
+  (RLE + flat), `floatToRgbe`/`rgbeToFloat`, and `downsampleEquirect` — so a dropped `.hdr` lights the
+  scene and the studio can export the linear frame back to a real `.hdr`.
+- `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency, HDR codec…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
 - `src/App.tsx` + `src/ui/` — the studio UI (orbit camera, controls, stats, verify, about).
@@ -219,7 +224,15 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       two proofs (120 total).
 - [ ] **(22.0 follow-ups) Tilt-shift / Scheimpflug focal plane** — tilt the plane of focus for a
       wedge-of-focus look (a non-fronto-parallel focus distance)
-- [ ] **(21.0 follow-ups) Load a real `.hdr`/`.exr` panorama** — Radiance RGBE / OpenEXR decode, drag-and-drop
+- [x] **(21.0 follow-ups) Load a real `.hdr` panorama (25.0)** — a from-scratch Radiance **RGBE** codec
+      (`hdr.ts`): decodes new-style per-channel **RLE** + flat/old scanlines, honours the `±Y ±X`
+      orientation flags, `RGBE→float` = `c·2^(E−136)`; **encodes** too (so the suite round-trips it and
+      the app can **export a real `.hdr`** of the linear frame). Drag-and-drop / file-pick on the viewport
+      → decode → box-downsample → the *same* importance sampler as the presets (a new `hdriData` env whose
+      typed-array pixels cross to the workers by structured clone). Five proofs (RGBE flat & RLE round-trip
+      ≤1 quantum, RLE lossless+compresses, orientation/flip/reject-garbage, decoded map ⇒ uniform sampling
+      + MIS, downsample conserves mean & sinθ-weighted irradiance) — 130 total. *`.exr` (OpenEXR) is still open.*
+- [ ] **Load a real `.exr` (OpenEXR) panorama** — half-float/PIZ/ZIP decode, drag-and-drop (RGBE `.hdr` done in 25.0)
 - [ ] **Two-strategy env MIS** — also draw the BSDF lobe and weight both samples against the env importance pdf
 - [ ] **Fold the env into the light tree** — a bright env region competes with triangle/sphere emitters in one unified selection
 - [ ] **Prefiltered env mip-chain** — a fast diffuse/rough-gloss IBL path (irradiance + split-sum specular)
@@ -364,6 +377,66 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-07-05 Lumen 25.0: bring your own HDRI — the Radiance `.hdr` codec (claude)
+
+Since 21.0 Lumen's image-based lighting has been *real* — a `luminance × sinθ` importance distribution
+over an equirectangular panorama, MIS-paired with BSDF sampling — but the panoramas themselves were
+three **baked procedural presets**. There was no way to bring your own, which is the whole point of an
+HDRI pipeline: relight a scene under a captured environment. 25.0 closes that gap by teaching Lumen the
+file format the entire HDRI ecosystem ships in — Greg Ward's **Radiance RGBE** (`.hdr`) — so any panorama
+from Poly Haven / HDRI-Haven / Blender / a 360° capture can be **dropped onto the viewport** and lights
+the scene, importance-sampled exactly like the built-ins.
+
+The design keeps every house invariant. The decoder/encoder is a self-contained module with **no engine
+dependencies**; a loaded panorama becomes a plain serialisable `hdriData` env whose `Float32Array` pixels
+cross to the worker pool by **structured clone** (typed arrays are clone-safe — the one small amendment to
+the "no typed arrays in `types.ts`" note); the `EnvMap` importance sampler is **source-agnostic** (a preset
+name *or* raw pixels feed the identical `luminance×sinθ` 2D distribution), so sampling, pdf and MIS didn't
+change a line; and every new primitive is pinned by a proof.
+
+**The codec (`hdr.ts`).** RGBE packs a float RGB triple into four bytes — a shared 8-bit exponent E and
+three 8-bit mantissas — decoded as `channel · 2^(E−136)`; eight mantissa bits give ~0.4 % precision across
+the format's ~76-decade range, which is why it became the interchange standard. The reader:
+
+- parses the ASCII header (`#?RADIANCE`, `FORMAT=32-bit_rle_rgbe`, an optional `EXPOSURE=`), then the
+  `±Y h ±X w` resolution line, honouring all four axis-sign flips (row/column flips to canonical row-0=top);
+- decodes **new-style per-channel run-length encoding** (the near-universal form for real files: a scanline
+  header `[2,2,widthHi,widthLo]` then four RLE streams, each a mix of literal segments and `(128+n),value`
+  runs) **and** the flat / old-format `(1,1,1)`-repeat scanlines;
+- supports the rare `32-bit_rle_xyze` variant (CIE-XYZ → linear-sRGB) and throws a **descriptive error** on
+  any malformed input, so the UI surfaces a clean message instead of a silent black render.
+
+It also **encodes** — `floatToRgbe`, a proper per-channel RLE compressor, flat scanlines — which earns its
+keep twice: the verification suite round-trips real images through it (the only honest proof a decoder is
+correct), and the studio gains a **true-HDR export** (`renderer.hdrImage()` → `encodeHdr`) that writes the
+linear frame back out as a physical-radiance `.hdr`, not a tone-mapped PNG.
+
+**The plumbing.** A dropped file is decoded, **box-downsampled** to ≤1024 px wide (real HDRIs are 2K–8K;
+the sampler build and the postMessage payload both scale with texel count, and the sinθ-weighted mean
+radiance — the map's total irradiance — is conserved to <0.01 % by the box average), stashed in a ref
+(never in the render-key JSON), and injected as an `hdriData` env that **overrides whatever environment the
+scene shipped with** — so one HDRI relights any world. The env rotation/intensity controls (shared with the
+presets) drive it live.
+
+Steps:
+
+- [x] `hdr.ts`: `decodeHdr` (RLE + flat + old-format, `±Y ±X`, RGBE/XYZE, `EXPOSURE`), `encodeHdr`
+      (RLE + flat), `floatToRgbe`/`rgbeToFloat` via a `frexp`, and `downsampleEquirect`.
+- [x] Generalise `EnvMap` to a `HdriPreset | EnvPixels` source (Float32→Float64 widen once), unchanged
+      importance-distribution build; add the `hdriData` `EnvDef` variant + wire it through `scene.ts`.
+- [x] `renderer.hdrImage()` — the averaged linear HDR frame for export.
+- [x] UI: a **Custom HDRI** panel (load / clear / error), **viewport drag-and-drop** with a drop overlay,
+      the env panel now shows for a custom HDRI too, and an **Export ⤓ HDR** action; App owns the decoded
+      panorama in a ref and `buildScene` overrides the env.
+- [x] Five new proofs (RGBE flat round-trip ≤1 quantum + black→0; RLE lossless ≡ flat + compresses;
+      orientation + `±axis` flips + rejects garbage; a decoded map ⇒ uniform sampling + MIS to machine ε;
+      downsample conserves plain-mean & sinθ-weighted irradiance). **130/130** green headless.
+- [x] Verified end-to-end in a real browser (Playwright): a generated 1024×512 `.hdr` loads, reads its
+      dims, relights the Material Gallery (chrome reflects the sky, metals catch the sun), and **Export HDR**
+      writes a `.hdr` whose decode carries max radiance ~107 with 52 k super-display-range channels.
+- [ ] Follow-ups (see backlog): OpenEXR (`.exr`) decode; fold the env into the light tree; a prefiltered
+      env mip-chain for a fast diffuse/rough-gloss IBL path.
 
 ## Roadmap — 2026-07-02 Lumen 24.0: the procedural material tree + bump mapping (claude)
 
@@ -1656,6 +1729,23 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-07-05 (claude): **Lumen 25.0 — bring your own HDRI (the Radiance `.hdr` codec).** Added
+  `src/engine/hdr.ts`, a from-scratch Radiance **RGBE** reader *and* writer: `decodeHdr` parses the ASCII
+  header + `±Y ±X` resolution line and decodes new-style **per-channel RLE** as well as flat/old-format
+  `(1,1,1)`-repeat scanlines (plus the `xyze` variant + `EXPOSURE`), `RGBE→float` = `c·2^(E−136)`;
+  `encodeHdr` re-emits RLE/flat scanlines so the suite can round-trip it and the app can **export a real
+  `.hdr`**. Generalised `EnvMap` to a source-agnostic `HdriPreset | EnvPixels` constructor (the importance
+  build is untouched), added an `hdriData` `EnvDef` variant carrying a structured-clone-safe `Float32Array`
+  panorama through to the workers, and wired it through `scene.ts`. UI: a **Custom HDRI** panel + **viewport
+  drag-and-drop** (decode → `downsampleEquirect` to ≤1024 px → a ref, injected by `buildScene` to override
+  any scene's env), the env rotation/intensity panel now shows for custom maps, and an **Export ⤓ HDR**
+  action off a new `renderer.hdrImage()`. Five new proofs (RGBE flat & RLE round-trip ≤1 quantum, RLE
+  lossless+compresses, orientation/flip/reject-garbage, decoded map ⇒ uniform sampling + MIS to machine ε,
+  downsample conserves mean & sinθ irradiance) — **130/130** self-tests green headless (rolldown-bundled).
+  Verified end-to-end in a real browser (Playwright): a generated 1024×512 `.hdr` loads, reads its dims,
+  relights the Material Gallery (chrome reflects the sky, metals catch the sun), and **Export HDR** writes a
+  file that decodes back with max radiance ~107 (52 k super-display-range channels). Clean `pnpm lint` +
+  `pnpm build`; the exact CI gate (`verify-project.mjs`) passes.
 - 2026-07-02 (claude): **Lumen 24.0 — the procedural material tree + bump mapping.** Rebuilt
   `texture.ts` from three fixed world-space patterns into a composable tree. Added a `ScalarField`
   layer (Perlin gradient-noise fBm, ridged multifractal, value-noise turbulence, Worley/Voronoi F1/F2,
