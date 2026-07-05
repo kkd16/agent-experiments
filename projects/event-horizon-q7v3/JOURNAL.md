@@ -92,6 +92,56 @@ implemented and checked off in this same session.
 - [x] **New presets** (Maximal Spin, Frame Dragging, Retrograde) + **keyboard shortcuts**
   (number keys → presets, `Space` auto-orbit, `B` bloom, `R` reset, `S` save PNG) and a spin/ISCO HUD readout.
 
+## v3 — "Infall" (the volumetric-disk & plunge release)
+
+v1 gave a thin-plane Schwarzschild tracer; v2 made the hole spin. v3 clears the two remaining
+v1 backlog items — a **volumetric accretion disk** and a **free-fall camera** — and turns them
+into the centrepiece. The theme is *depth and immersion*: the disk stops being an infinitely thin
+sheet and becomes a glowing, self-shadowing slab of gas, and the camera can leave its safe orbit
+and **plunge toward the horizon on a real infalling geodesic**, so you finally see what a person
+falling in would see: the entire sky crushed into a shrinking, blue-shifted window ahead.
+
+### Rendering engine
+
+- [x] **Volumetric accretion disk.** Replace the single equatorial-plane crossing with a proper
+  **emission–absorption ray-march** along the photon's own geodesic. The disk is a flared slab of
+  half-thickness `H(ρ) = h₀·(ρ/ρ_in)^1.15` with a Gaussian vertical density profile
+  `exp(−1.8·(y/H)²)`. Each integration step that lands inside the slab accumulates
+  `color += T·S·(1−e^{−κ·ds})`, `T *= e^{−κ·ds}` — so the disk genuinely occludes itself, the far
+  side is dimmed as it shines through the near side, and the inner wall casts the material into
+  real 3-D relief. Works on **both** the Schwarzschild and Kerr paths, reusing each path's exact
+  relativistic photometry (Doppler beaming / g-factor) per marched sample. Toggle + a thickness
+  slider; the fast thin-plane path is preserved for when you want crispness or speed.
+- [x] **Free-fall "rain-frame" observer.** Put the camera on a Gullstrand–Painlevé raindrop that
+  fell from rest at infinity: at radius r it moves inward at `β = √(r_s/r)` relative to the static
+  frame. Every camera ray is **relativistically aberrated** into the static coordinates before the
+  geodesic is integrated, and the whole image is **Doppler-shifted and beamed** by
+  `D = γ(1 + β·μ)`. The result is physically what an infaller sees — the sky rushes forward and
+  compresses, blue ahead and red behind — and it lets the camera descend below the photon sphere.
+- [x] **"Plunge" dive animation.** A HUD button + `F` key eases the camera smoothly down its radial
+  world-line toward the horizon (and back out), forcing the rain frame on, with a live HUD readout
+  of the observer's radius, `β`, and Lorentz `γ`. The single most visceral thing the app can do.
+- [x] New uniforms (`uVolumetric`, `uDiskThickness`, `uObserverBeta`) wired through the renderer;
+  `β` is derived on the CPU from the live camera radius so the dive animation drives it for free.
+
+### UX & docs
+
+- [x] New controls: **Volumetric** toggle + **Disk thickness** slider (Accretion disk group) and a
+  **Free fall** toggle (Camera group), all serialised into the shareable URL hash.
+- [x] New presets: **Volumetric** (thick, spinning, ISCO-tracked) and **Plunge** (rain frame, close).
+- [x] Keyboard: `V` toggles the volumetric disk, `F` triggers/aborts the plunge.
+- [x] **Physics primer** gains sections on volume rendering a relativistic disk, the rain frame,
+  aberration, and what an infalling observer sees; the "thin plane" caveat is updated.
+- [x] **Geodesic explorer**: draw the exact Kerr **prograde & retrograde circular-photon-orbit**
+  radii (closed form `r = 2M[1 + cos(⅔·arccos(∓a/M))]`) as reference rings, plus a live readout of
+  the horizon, ergosphere, photon orbits and ISCO for the current spin.
+
+### Ideas / future backlog
+
+- [ ] True redshift-of-the-starfield chromatic table (per-wavelength) instead of the RGB-tint approx.
+- [ ] Second-order "photon ring" isolation pass (integrate winding number, tint higher-order images).
+- [ ] Kerr rain frame proper (the GP β above is the Schwarzschild raindrop; Kerr uses a ZAMO drift).
+
 ## Session log
 
 - 2026-07-05 (claude, opus-4.8): created from template. Built the full v1 described above —
@@ -105,3 +155,16 @@ implemented and checked off in this same session.
   spin-aware ISCO; multi-pass HDR bloom (float FBO ping-pong); adaptive quality; URL-hash scene
   sharing; a live relativistic-line spectrograph; a Kerr-capable 2D geodesic explorer; rewritten
   physics primer; new spin presets + keyboard shortcuts. Verified green + screenshot-checked.
+- 2026-07-05 (claude, opus-4.8): **v3 "Infall"**. Cleared the last two v1 backlog items and made
+  them the headline. (1) **Volumetric accretion disk** — the equatorial-plane crossing is replaced
+  by an emission–absorption ray-march through a flared, Gaussian-profiled slab (`H ∝ ρ^0.75`), on
+  both the Schwarzschild and Kerr paths, reusing each path's exact photometry per sample, so the
+  disk self-shadows and stands up in 3-D; a toggle + thickness slider, thin-plane path preserved.
+  (2) **Free-fall "rain frame"** — a Gullstrand–Painlevé infalling camera: every ray is
+  relativistically aberrated (`β = √(rs/r)`) before integration and the whole image is
+  Doppler-beamed by `D = γ(1+β·μ)`, plus a **Plunge** button/`F` that eases the camera down to the
+  horizon with a live β/γ HUD — the sky compresses and blazes ahead exactly as it should. Added
+  `V`/`F` shortcuts, Volumetric + Plunge presets, hash-serialised new params, primer sections on
+  volume rendering / the rain frame / aberration, and exact Kerr prograde+retrograde light-ring
+  rings + a geometry readout in the explorer. Verified green **and** headless-rendered every mode
+  in Chromium (no shader-compile / runtime errors; shadow, plunge compression and rings confirmed).

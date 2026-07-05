@@ -48,12 +48,16 @@ uniform float uDiskOuter;
 uniform float uDiskBrightness;
 uniform float uDiskTemp;
 uniform float uDiskDensity;
+uniform bool  uVolumetric;   // ray-march a finite-thickness slab instead of a thin plane
+uniform float uDiskThickness;// half-thickness scale h₀ at the inner edge (rs); slab flares outward
 
 uniform int   uSteps;
 uniform float uStepSize;
 
 uniform bool  uDoppler;
 uniform bool  uRedshift;
+
+uniform float uObserverBeta; // free-fall rain-observer speed β = √(rs/r); 0 = static camera
 
 uniform float uStarBrightness;
 uniform float uExposure;
@@ -232,6 +236,74 @@ vec3 sampleDiskKerr(vec3 hit, float r, float E, float L, out float alpha) {
   return blackbody(kelvin) * emit;
 }
 
+// ---------------------------------------------------------------- volumetric disk
+// The volumetric path treats the disk as a flared slab of gas. Its half-thickness grows with the
+// cylindrical radius ρ, and the density falls off as a Gaussian in the vertical (y) direction. A
+// geodesic step that lands inside the slab contributes emission attenuated by everything already
+// in front of it (classic emission–absorption), so the disk self-shadows and the far side glows
+// through the near side. Sampling reuses each path's exact relativistic photometry.
+// Half-thickness of the slab at cylindrical radius ρ. A mild sub-linear flare (H ∝ ρ^0.75 about a
+// fixed 3 rs reference) keeps the disk geometrically thin — H/ρ shrinks outward, as for a real
+// radiatively-efficient disk — so the shadow stays clean instead of drowning in a puffy sphere.
+float diskH(float rho) {
+  return uDiskThickness * pow(max(rho / 3.0, 0.2), 0.75);
+}
+
+// Schwarzschild volumetric sample at world point "pos" (y may be off the plane); "pdir" is the
+// photon's local direction of travel there. Returns emission (with beaming baked in) + density.
+void diskVolSchw(vec3 pos, vec3 pdir, out vec3 emission, out float dens) {
+  float rho = length(pos.xz);
+  float density, kelvin, emit;
+  diskBase(vec3(pos.x, 0.0, pos.z), rho, density, kelvin, emit);
+  float z = pos.y / max(diskH(rho), 1e-3);
+  dens = density * exp(-1.8 * z * z);
+
+  vec3 vdir = normalize(cross(vec3(0.0, 1.0, 0.0), vec3(pos.x, 0.0, pos.z)));
+  float beta = min(sqrt(0.5 / max(rho, uDiskInner)), 0.95);
+  float gamma = 1.0 / sqrt(1.0 - beta * beta);
+  vec3 nObs = -normalize(pdir);
+  float doppler = 1.0 / (gamma * (1.0 - beta * dot(vdir, nObs)));
+  float shift = 1.0;
+  if (uDoppler) shift *= doppler;
+  if (uRedshift) shift *= sqrt(max(1.0 - 1.0 / max(rho, 1.0001), 0.0));
+  kelvin *= clamp(shift, 0.2, 5.0);
+  emit *= clamp(pow(shift, 3.0), 0.03, 9.0);
+  emission = blackbody(kelvin) * emit;
+}
+
+// Kerr volumetric sample — the exact g-factor evaluated at the cylindrical radius ρ.
+void diskVolKerr(vec3 pos, float E, float L, out vec3 emission, out float dens) {
+  float rho = length(pos.xz);
+  float density, kelvin, emit;
+  diskBase(vec3(pos.x, 0.0, pos.z), rho, density, kelvin, emit);
+  float z = pos.y / max(diskH(rho), 1e-3);
+  dens = density * exp(-1.8 * z * z);
+
+  float a = uSpin * MASS;
+  float sqrtM = sqrt(MASS);
+  float rr = max(rho, uDiskInner);
+  float Om = sqrtM / (pow(rr, 1.5) + a * sqrtM);
+  float Sig = rr * rr;
+  float gtt = -(1.0 - 2.0 * MASS * rr / Sig);
+  float gtp = -2.0 * MASS * rr * a / Sig;
+  float gpp = (rr * rr + a * a + 2.0 * MASS * rr * a * a / Sig);
+  float denom = -(gtt + 2.0 * Om * gtp + Om * Om * gpp);
+  float b = L / max(abs(E), 1e-6) * sign(E);
+  float g = sqrt(max(denom, 1e-6)) / max(1.0 - Om * b, 1e-3);
+  float shift = (uDoppler || uRedshift) ? g : 1.0;
+  kelvin *= clamp(shift, 0.15, 6.0);
+  emit *= clamp(pow(shift, 3.0), 0.02, 12.0);
+  emission = blackbody(kelvin) * emit;
+}
+
+// Doppler chromatic tint for the free-fall observer: D>1 (blueshift) pushes toward blue and
+// dims red; D<1 does the reverse. A cheap perceptual stand-in for a full per-wavelength shift.
+vec3 dopplerTint(vec3 c, float D) {
+  float s = clamp(log(max(D, 1e-3)), -1.2, 1.2);
+  vec3 gain = vec3(1.0 - 0.28 * s, 1.0 - 0.04 * s, 1.0 + 0.24 * s);
+  return c * max(gain, vec3(0.0));
+}
+
 // ---------------------------------------------------------------- Schwarzschild geodesic
 vec3 accel(vec3 p, float h2) {
   float r2 = max(dot(p, p), 0.09); // clamp near the horizon to keep the integrator finite
@@ -347,7 +419,19 @@ void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out f
     vec3 newPos = pos + dt / 6.0 * (vel + 2.0 * v2 + 2.0 * v3 + v4);
     vec3 newVel = vel + dt / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
 
-    if (pos.y * newPos.y < 0.0 && transmit > 0.01) {
+    if (uVolumetric) {
+      // emission–absorption march: accumulate wherever this step is inside the flared slab
+      vec3 mid = 0.5 * (pos + newPos);
+      float rhoM = length(mid.xz);
+      if (transmit > 0.004 && rhoM > uDiskInner * 0.8 && rhoM < uDiskOuter * 1.1 && abs(mid.y) < diskH(rhoM) * 3.0) {
+        vec3 em; float dn;
+        diskVolSchw(mid, normalize(vel + newVel), em, dn);
+        float ds = length(newPos - pos);
+        float alpha = 1.0 - exp(-dn * uDiskDensity * 3.2 * ds);
+        color += transmit * em * alpha * 1.2;
+        transmit *= (1.0 - alpha);
+      }
+    } else if (pos.y * newPos.y < 0.0 && transmit > 0.01) {
       float tt = pos.y / (pos.y - newPos.y);
       vec3 hit = mix(pos, newPos, tt);
       float rr = length(hit);
@@ -452,8 +536,20 @@ void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float t
       }
     }
 
-    // equatorial-plane crossing → sample the disk
-    if (prevY * world.y < 0.0 && transmit > 0.01) {
+    if (uVolumetric) {
+      // volumetric slab march (Kerr) — same emission–absorption accumulation as the flat path
+      vec3 mid = 0.5 * (prevWorld + world);
+      float rhoM = length(mid.xz);
+      if (transmit > 0.004 && rhoM > uDiskInner * 0.8 && rhoM < uDiskOuter * 1.1 && abs(mid.y) < diskH(rhoM) * 3.0) {
+        vec3 em; float dn;
+        diskVolKerr(mid, E, L, em, dn);
+        float ds = length(world - prevWorld);
+        float alpha = 1.0 - exp(-dn * uDiskDensity * 3.2 * ds);
+        color += transmit * em * alpha * 1.2;
+        transmit *= (1.0 - alpha);
+      }
+    } else if (prevY * world.y < 0.0 && transmit > 0.01) {
+      // equatorial-plane crossing → sample the thin disk
       float tt = prevY / (prevY - world.y);
       vec3 hit = mix(prevWorld, world, tt);
       float rHit = mix(r, nr, tt);
@@ -481,6 +577,20 @@ void main() {
   vec3 dir = normalize(uCamForward + uv.x * uTanHalfFov * uCamRight + uv.y * uTanHalfFov * uCamUp);
   vec3 pos = uCamPos;
 
+  // Free-fall (Gullstrand–Painlevé rain) observer: aberrate the camera ray into the static frame
+  // before integrating, and remember the Doppler factor so the whole sky beams and shifts as it
+  // would for someone plunging in. β = 0 collapses this to the ordinary static camera.
+  float dopplerD = 1.0;
+  float beta = clamp(uObserverBeta, 0.0, 0.9985);
+  if (beta > 0.0002) {
+    vec3 eHat = -normalize(uCamPos);        // the raindrop moves radially inward
+    float mu = dot(dir, eHat);              // look-direction cosine along the motion
+    float g = 1.0 / sqrt(1.0 - beta * beta);
+    vec3 perp = dir - mu * eHat;
+    dir = normalize(perp / (g * (1.0 + beta * mu)) + eHat * ((mu + beta) / (1.0 + beta * mu)));
+    dopplerD = g * (1.0 + beta * mu);       // ν_observed / ν_static for light from this direction
+  }
+
   float camR = length(uCamPos);
   float escapeR = max(32.0, camR * 1.7);
 
@@ -497,6 +607,11 @@ void main() {
 
   vec3 bg = captured ? vec3(0.0) : starField(outDir);
   color += transmit * bg;
+
+  // Apply the observer Doppler shift + relativistic beaming to the assembled (linear) image.
+  if (beta > 0.0002) {
+    color = dopplerTint(color, dopplerD) * clamp(pow(dopplerD, 3.0), 0.05, 24.0);
+  }
 
   if (uToneMap) {
     color *= uExposure;

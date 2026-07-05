@@ -4,6 +4,9 @@ import { BlackHoleRenderer, RendererError } from '../gl/renderer'
 import { effectiveDiskInner, kerrISCO } from '../state'
 import Spectrograph from './Spectrograph'
 
+/** Target camera radius (rs) at the bottom of a plunge — just outside the photon sphere. */
+const DIVE_R = 1.15
+
 interface Props {
   params: Params
   /** Relative camera nudge from dragging (degrees) — parent clamps & stores. */
@@ -22,6 +25,21 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
   const [fps, setFps] = useState(0)
   const [effScale, setEffScale] = useState(1)
   const [showSpectro, setShowSpectro] = useState(true)
+  const [diving, setDiving] = useState(false)
+  const [obs, setObs] = useState<{ active: boolean; r: number; beta: number; gamma: number }>({
+    active: false,
+    r: 0,
+    beta: 0,
+    gamma: 1,
+  })
+
+  // Dive state read by the animation loop without re-subscribing it.
+  const divingRef = useRef(false)
+  const diveEaseRef = useRef(0) // 0 = orbiting, 1 = at the bottom of the plunge
+  const obsFrameRef = useRef<{ ff: boolean; r: number }>({ ff: false, r: 0 })
+  useEffect(() => {
+    divingRef.current = diving
+  }, [diving])
 
   // Drag state kept in refs so it never triggers React re-renders mid-gesture.
   const drag = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 })
@@ -62,13 +80,27 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       const p = paramsRef.current
       if (p.autoRotate) autoPhase += dt * 6 // degrees per second
 
+      // Plunge animation: ease the effective camera radius toward the horizon and back. The rain
+      // frame is forced on while diving so the sky compresses; β follows the radius in the renderer.
+      const diveTarget = divingRef.current ? 1 : 0
+      diveEaseRef.current += (diveTarget - diveEaseRef.current) * Math.min(1, dt * 1.4)
+      const e = diveEaseRef.current
+      const eDist = e > 0.001 ? p.cameraDistance * (1 - e) + DIVE_R * e : p.cameraDistance
+      const freeFall = p.freeFall || e > 0.002
+      obsFrameRef.current = { ff: freeFall, r: eDist }
+
       // Effective internal scale: auto-tuned when adaptive quality is on, else the slider value.
       const scale = p.adaptiveQuality ? autoScale : p.renderScale
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const w = Math.max(1, Math.round(container.clientWidth * dpr * scale))
       const h = Math.max(1, Math.round(container.clientHeight * dpr * scale))
 
-      rendererRef.current?.render({ ...p, azimuth: p.azimuth + autoPhase }, (now - start) / 1000, w, h)
+      rendererRef.current?.render(
+        { ...p, azimuth: p.azimuth + autoPhase, cameraDistance: eDist, freeFall },
+        (now - start) / 1000,
+        w,
+        h,
+      )
 
       frames += 1
       acc += dt
@@ -83,6 +115,14 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
         } else {
           autoScale = p.renderScale
           setEffScale(p.renderScale)
+        }
+        // Observer HUD readout (rain frame): β = √(rs/r), γ = 1/√(1−β²).
+        const { ff, r } = obsFrameRef.current
+        if (ff) {
+          const b = Math.min(Math.sqrt(1 / Math.max(r, 1.0001)), 0.9985)
+          setObs({ active: true, r, beta: b, gamma: 1 / Math.sqrt(1 - b * b) })
+        } else {
+          setObs((o) => (o.active ? { ...o, active: false } : o))
         }
         frames = 0
         acc = 0
@@ -156,12 +196,15 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
     }
   }
 
-  // 'S' saves a PNG (kept here because the canvas ref lives in this component).
+  // 'S' saves a PNG, 'F' toggles the plunge (both kept here — they own the canvas / dive state).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
-      if (e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey) savePng()
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const k = e.key.toLowerCase()
+      if (k === 's') savePng()
+      else if (k === 'f') setDiving((d) => !d)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -196,6 +239,18 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
             Kerr a/M {params.spin.toFixed(2)} · ISCO {kerrISCO(params.spin).toFixed(2)} rs
           </span>
         )}
+        {obs.active && (
+          <span className="hud__fps hud__rain">
+            Rain frame · r {obs.r.toFixed(2)} rs · β {obs.beta.toFixed(3)} · γ {obs.gamma.toFixed(2)}
+          </span>
+        )}
+        <button
+          className={diving ? 'hud__btn hud__btn--active' : 'hud__btn'}
+          onClick={() => setDiving((d) => !d)}
+          title="Plunge toward the horizon on an infalling geodesic (F)"
+        >
+          {diving ? 'Ascend' : 'Plunge'}
+        </button>
         <button className="hud__btn" onClick={() => setShowSpectro((s) => !s)} title="Toggle the relativistic line-profile overlay">
           {showSpectro ? 'Hide spectrum' : 'Spectrum'}
         </button>
@@ -205,7 +260,7 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       </div>
       {showSpectro && <Spectrograph params={{ ...params, diskInner: inner }} />}
       <div className="hud hud--hint" aria-hidden="true">
-        drag to orbit · scroll to zoom · 1–{7} presets · space auto-orbit · B bloom
+        drag orbit · scroll zoom · V volume · F plunge · space auto-orbit · B bloom
       </div>
     </div>
   )

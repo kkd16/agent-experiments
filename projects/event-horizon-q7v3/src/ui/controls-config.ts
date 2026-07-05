@@ -11,6 +11,7 @@ export type NumericParamKey =
   | 'diskBrightness'
   | 'diskTemperature'
   | 'diskDensity'
+  | 'diskThickness'
   | 'steps'
   | 'stepSize'
   | 'starBrightness'
@@ -23,8 +24,10 @@ export type ToggleParamKey =
   | 'doppler'
   | 'redshift'
   | 'autoRotate'
+  | 'freeFall'
   | 'ergosphere'
   | 'iscoTrack'
+  | 'volumetric'
   | 'bloom'
   | 'adaptiveQuality'
 
@@ -62,7 +65,14 @@ export const CONTROL_GROUPS: ControlGroup[] = [
       { key: 'azimuth', label: 'Azimuth', min: -180, max: 180, step: 0.5, format: deg, help: 'Orbital angle of the camera around the hole.' },
       { key: 'fov', label: 'Field of view', min: 25, max: 100, step: 1, format: deg, help: 'Vertical field of view — lower values zoom in.' },
     ],
-    toggles: [{ key: 'autoRotate', label: 'Auto-orbit', help: 'Slowly spin the camera around the hole on its own.' }],
+    toggles: [
+      { key: 'autoRotate', label: 'Auto-orbit', help: 'Slowly spin the camera around the hole on its own.' },
+      {
+        key: 'freeFall',
+        label: 'Free fall (rain frame)',
+        help: 'Ride an infalling raindrop: every ray is relativistically aberrated and the whole sky is Doppler-beamed. Combine with the Plunge button (F) to dive toward the horizon.',
+      },
+    ],
   },
   {
     title: 'Black hole',
@@ -90,8 +100,10 @@ export const CONTROL_GROUPS: ControlGroup[] = [
       { key: 'diskBrightness', label: 'Brightness', min: 0, max: 4, step: 0.05, help: 'Overall emission from the disk material.' },
       { key: 'diskTemperature', label: 'Temperature', min: 0.5, max: 1.6, step: 0.01, help: 'Scales the black-body colour ramp — higher is bluer/hotter.' },
       { key: 'diskDensity', label: 'Density', min: 0.2, max: 1.5, step: 0.01, help: 'Opacity of the disk material.' },
+      { key: 'diskThickness', label: 'Thickness', min: 0.1, max: 1.0, step: 0.02, format: rs, help: 'Half-height of the volumetric slab near the inner edge (only used when Volumetric is on). The slab flares gently outward.' },
     ],
     toggles: [
+      { key: 'volumetric', label: 'Volumetric disk', help: 'Ray-march the disk as a thick, self-shadowing volume instead of an infinitely thin plane. Slower, but far more three-dimensional (V).' },
       { key: 'doppler', label: 'Doppler beaming', help: 'Relativistic brightening + blueshift of the approaching side of the disk.' },
       { key: 'redshift', label: 'Gravitational redshift', help: 'Light climbing out of the well loses energy — dimmer and redder near the hole.' },
     ],

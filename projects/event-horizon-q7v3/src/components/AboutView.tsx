@@ -97,6 +97,55 @@ export default function AboutView() {
           astronomers actually fit to X-ray spectra to <em>measure</em> a real black hole's spin.
         </p>
 
+        <h2>A volume, not a sheet</h2>
+        <p>
+          Switch on <strong>Volumetric</strong> and the disk stops being an infinitely thin plane.
+          Instead it becomes a <em>flared slab</em> of glowing gas: its half-thickness grows with
+          radius as <code>H(ρ) = h₀·(ρ/ρ_in)^1.15</code> and the density fades away from the
+          mid-plane as a Gaussian. Now, instead of registering a single crossing, each light ray is{' '}
+          <strong>ray-marched</strong> through the gas it passes, accumulating emission that is
+          attenuated by everything already in front of it:
+        </p>
+        <pre className="eq">color += T · S · (1 − e^−κ·ds)      T ·= e^−κ·ds</pre>
+        <p>
+          That is the classic <em>emission–absorption</em> volume-rendering integral: <code>S</code>{' '}
+          is the gas's own relativistically-shifted glow, <code>κ</code> its opacity, and{' '}
+          <code>T</code> the fraction of light still getting through. Because each step shadows the
+          ones behind it, the disk now <strong>occludes itself</strong> — the far side glows{' '}
+          <em>through</em> the near side, the inner wall stands up in real three-dimensional relief,
+          and the lensed underside no longer looks like a decal. It is slower (every in-slab step
+          does the full photometry), so the crisp thin-plane path stays a toggle away.
+        </p>
+
+        <h2>Falling in: the rain frame</h2>
+        <p>
+          Everything above is what a camera <em>hovering</em> at a fixed radius sees. But what would{' '}
+          <em>you</em> see, falling in? Turn on <strong>Free fall</strong> (or hit the{' '}
+          <strong>Plunge</strong> button / <code>F</code>) and the camera becomes a{' '}
+          <strong>Gullstrand–Painlevé raindrop</strong> — an observer that fell from rest at
+          infinity, moving inward at speed <code>β = √(r_s/r)</code> relative to the static frame.
+          Two things happen at once, and both are real relativity, not a filter:
+        </p>
+        <ul>
+          <li>
+            <strong>Aberration.</strong> Your motion sweeps the entire sky forward. We transform
+            every camera ray into the static frame with the relativistic aberration law before
+            integrating its geodesic, so the whole visible universe — stars, disk, Einstein ring —
+            compresses into a shrinking window ahead of you as you speed up.
+          </li>
+          <li>
+            <strong>Doppler &amp; beaming.</strong> Light you rush toward is blue-shifted and
+            brightened, light behind you red-shifted and dimmed, by the factor{' '}
+            <code>D = γ(1 + β·μ)</code>. The forward window doesn't just shrink — it blazes.
+          </li>
+        </ul>
+        <p>
+          Because <code>β → 1</code> as <code>r → r_s</code>, the dive can carry the camera down past
+          the <strong>photon sphere</strong>, where the shadow swells to swallow most of your view.
+          The HUD tracks your radius, <code>β</code>, and Lorentz factor <code>γ</code> the whole way
+          down.
+        </p>
+
         <h2>Making it look photographic</h2>
         <ul>
           <li>
@@ -117,9 +166,12 @@ export default function AboutView() {
 
         <h2>Honest caveats</h2>
         <p className="muted">
-          This is a real-time approximation, not a research code. The disk is an infinitely thin
-          emissive plane rather than a volumetric flow; we integrate coordinate paths without a full
-          parallel-transport of the observed spectrum; and the starfield is procedural. The Kerr
+          This is a real-time approximation, not a research code. The volumetric disk is a
+          phenomenological emission–absorption slab, not a solved radiative-transfer / MHD flow (and
+          the thin-plane mode is, deliberately, a zero-thickness sheet); we integrate coordinate
+          paths without a full parallel-transport of the observed spectrum; the free-fall Doppler
+          colour shift is a perceptual RGB tint rather than a per-wavelength remap; and the
+          starfield is procedural. The Kerr
           integration is done in Boyer–Lindquist coordinates, which are elegant but have a coordinate
           seam along the rotation axis — you may spot a faint speckle there on near-edge-on,
           high-spin views (production codes switch to Kerr–Schild coordinates to remove it). The

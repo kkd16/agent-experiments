@@ -5,6 +5,7 @@ export const DEFAULT_PARAMS: Params = {
   inclination: 9,
   azimuth: 0,
   fov: 55,
+  freeFall: false,
 
   spin: 0.0,
   ergosphere: false,
@@ -15,6 +16,8 @@ export const DEFAULT_PARAMS: Params = {
   diskBrightness: 1.3,
   diskTemperature: 1.0,
   diskDensity: 1.0,
+  volumetric: false,
+  diskThickness: 0.4,
 
   steps: 320,
   stepSize: 0.14,
@@ -82,6 +85,18 @@ export function kerrOmega(spin: number, r: number): number {
   return Math.sqrt(M) / (Math.pow(r, 1.5) + a * Math.sqrt(M))
 }
 
+/**
+ * Radius of an equatorial *circular photon orbit* for spin a* (Bardeen), in rs units.
+ * The closed form r/M = 2·[1 + cos(⅔·arccos(∓a*))] gives the prograde (−, tighter) and
+ * retrograde (+, wider) light rings; both collapse to the 1.5 rs photon sphere at a* = 0.
+ */
+export function kerrPhotonOrbit(spin: number, prograde: boolean): number {
+  const aStar = Math.min(Math.max(spin, 0), 0.99999)
+  const sign = prograde ? -1 : 1
+  const rOverM = 2 * (1 + Math.cos((2 / 3) * Math.acos(sign * aStar)))
+  return rOverM * M
+}
+
 export const PRESETS: Preset[] = [
   {
     name: 'Cinematic',
@@ -122,5 +137,15 @@ export const PRESETS: Preset[] = [
     name: 'Ergosphere',
     blurb: 'The static-limit shell switched on, so you can see the region where nothing can stand still.',
     params: { spin: 0.95, ergosphere: true, iscoTrack: true, cameraDistance: 9, inclination: 22, fov: 62, diskInner: 2, diskOuter: 9, diskBrightness: 1.7, exposure: 1.2 },
+  },
+  {
+    name: 'Volumetric',
+    blurb: 'The disk as a thick, self-shadowing slab of gas — you can see its far side glowing through the near side.',
+    params: { spin: 0.6, iscoTrack: true, volumetric: true, diskThickness: 0.32, cameraDistance: 16, inclination: 20, fov: 50, diskOuter: 13, diskBrightness: 1.3, diskDensity: 1.2, exposure: 1.0 },
+  },
+  {
+    name: 'Plunge',
+    blurb: 'Ride an infalling raindrop toward the horizon — hit F (or the Plunge button) to dive and watch the sky compress ahead of you.',
+    params: { freeFall: true, spin: 0, cameraDistance: 8, inclination: 14, fov: 68, diskInner: 3, diskOuter: 11, diskBrightness: 2.0, exposure: 1.15 },
   },
 ]
