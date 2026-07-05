@@ -30,6 +30,88 @@ src/
   App.tsx         multi-panel UI wiring it all together
 ```
 
+## Quant — quantitative games: mean-payoff & energy (2026-07-05)
+
+For twelve versions the lab climbed the *qualitative* ladder — does Player 0 win, yes or no? The v12
+Games mode topped that ladder with parity games. This session adds the floor **above** it: the same
+graph games, but every edge now carries an integer weight, and the question becomes **by how much**.
+This is the theory that turns reactive synthesis from "is the spec realisable?" into "realise it while
+*optimising* a running cost" — the bridge from verification to quantitative, resource-aware synthesis.
+
+The headline is that the answer is a genuinely *exact* rational number, computed three independent ways
+that must agree, and that the whole thing is tied back to the already-proven parity engine by the
+classical **parity → mean-payoff reduction** — so the new mode is not a side-quest, it is the parity
+solver's own big sibling, and the two are cross-checked against each other on every fuzz arena.
+
+### The mathematics (why the value is exactly a small-denominator rational)
+
+A **mean-payoff game** on a weighted arena has, for every start vertex, a value ν(v): the long-run
+average edge weight that Max (◯, the maximiser) and Min (▢, the minimiser) settle into under optimal
+play. Ehrenfeucht–Mycielski (1979): both players secure ν(v) with a single **positional** strategy,
+and liminf = limsup under optimal play. The value is a rational with denominator ≤ n (it is a cycle
+mean), which is why the lab prints it as a fraction, never a float.
+
+### Engine (`src/engine/games/quant/`, ~0.9k lines, zero deps)
+
+- [x] `rational.ts` — exact `Rational` arithmetic (reduced fractions, ordering by cross-multiplication),
+  **best-rational rounding** (the Zwick–Paterson recovery step), and **Karp's minimum-cycle-mean**
+  algorithm per SCC (the exact value a fixed strategy pair realises).
+- [x] `types.ts` — the weighted arena `WArena` (edge weights, Max = owner 0, Min = owner 1), plus the
+  shift/scale transforms used to demonstrate the value's structural laws.
+- [x] `meanpayoff.ts` — **Zwick–Paterson value iteration**: play the finite k-step game; once
+  k > 4·n³·W the estimate fₖ(v)/k pins ν(v) down and best-rational rounding recovers it **exactly**.
+- [x] `energy.ts` — the **Brim–Chatterjee–Doyen–Gimbert–Raskin energy fixpoint**: the least sufficient
+  initial credit F(v) (Kleene iteration of the lift operator, capped at (n−1)·W = ⊤). F(v) ≠ ⊤ ⇔
+  ν(v) ≥ 0, and it yields Max's positional strategy. Plus an **independent certificate**: pin each
+  side's strategy and inspect the cycles — Max's region has min-cycle-mean ≥ 0, and (using ν<0 ⇒
+  ν ≤ −1/n, the small-denominator gap) Min drives its region strictly below zero via a second,
+  scaled-and-shifted energy solve. The certificate rejects a corrupted partition (it has teeth).
+- [x] `oracle.ts` — the brute-force referee: enumerate every memoryless strategy pair, collapse the
+  arena to a deterministic graph, read the eventual cycle's mean. Returns the **lower** (max-min) and
+  **upper** (min-max) values separately, so *positional determinacy itself* is a checked fact, not an
+  assumption. Shares no logic with value iteration or the energy fixpoint.
+- [x] `reduce.ts` — the **parity → mean-payoff reduction**: priority p ↦ weight (−1)ᵖ·nᵖ. On any cycle
+  the top priority dominates the sum, so the mean's sign is its parity; Even wins the parity game ⇔ ν > 0.
+- [x] `examples.ts` / `random.ts` — a curated gallery (the tempting detour, a battle of averages, an
+  energy/battery game, a doomed corner) and the seeded fuzzer.
+- [x] `selftest.ts` — the proof harness (below).
+
+### The Quant view (`src/views/QuantView.tsx` + `.css`) — a fourteenth mode
+
+- [x] An **Arena** tab: edit edge weights in place (click a weight pill to ±1) and flip vertex owners;
+  random arenas and a size slider; a curated gallery; node drag-to-arrange. All reuses the Games mode's
+  SVG renderer and design system.
+- [x] A **Value** tab: every vertex coloured by the sign of ν and labelled with the exact fraction; a
+  table of ν(v) and the energy credit (⊤ where no finite credit suffices); Max's energy strategy drawn
+  as bold arrows; and the live certificate verdict.
+- [x] A **Parity ⟶ MP** tab: pick any parity arena from the qualitative Games gallery, watch the
+  priority-to-weight reduction, and see the mean-payoff winner match Zielonka's solver **vertex for
+  vertex** — the two engines, sharing no code, agreeing on one answer.
+- [x] A live **Verify** tab and an **About** tab.
+
+### Verified (`Verify` tab / `selftest.ts`) — 8/8, cross-checked headless
+
+1. **value iteration ≡ brute-force oracle** — exact rationals agree vertex-for-vertex over 300 arenas.
+2. **positional determinacy** — the oracle's lower (max-min) value equals its upper (min-max) value.
+3. **energy fixpoint ≡ value sign** — credit ≠ ⊤ ⇔ ν ≥ 0, two unrelated algorithms over 250 arenas.
+4. **energy certificate** holds on every arena and **rejects a corrupted partition** (teeth).
+5. **parity ≡ its mean-payoff reduction** — the reduction's winner matches **Zielonka** over 200 games.
+6. **shift-invariance** ν(w + c) = ν(w) + c; and 7. **scale-invariance** ν(λ·w) = λ·ν(w).
+8. the curated gallery: value iteration ≡ oracle and each energy certificate holds.
+
+### Backlog — where Quant goes next
+
+- [ ] **Strategy improvement / policy iteration** for mean-payoff as a third solver, cross-checked against
+  value iteration and the oracle (mirrors the Zielonka-vs-SPM cross-check in the Games mode).
+- [ ] **Discounted-payoff games** (the λ-discounted value and its λ→1 limit to the mean payoff), with a
+  discount slider showing the values converge to ν.
+- [ ] **Exact optimal strategies for *both* players** from the values (potential/bias equations), so the
+  Value tab can draw Min's optimal arrows too and certify each *exact* value, not just its sign.
+- [ ] **The reverse reduction** (mean-payoff → parity is *not* possible in general, but energy → mean-payoff
+  → parity for the 0-threshold decision is): make the equivalence web explicit.
+- [ ] **Min-initial-credit visualisation as a battery gauge** animated along an optimal play.
+- [ ] **Off-thread solving** for larger arenas via the existing worker pattern.
+
 ## Algebra — the syntactic monoid & Schützenberger's star-free theorem (2026-07-04)
 
 For twelve versions the lab climbed the *automata/logic* ladder — regex, PDA, TM, LTL, CTL, CTL\*,
@@ -180,7 +262,8 @@ a hand-rolled SVG arena renderer (circles = Player 0 / Even, squares = Player 1 
 ### Backlog — where Games goes next
 
 - [ ] **Rabin / Streett / Muller** conditions and the index/parity-index reductions between them.
-- [ ] **Mean-payoff & energy games** (pseudo-polynomial value iteration) and the reduction from parity.
+- [x] **Mean-payoff & energy games** (Zwick–Paterson value iteration + the BCDGR energy fixpoint) and the
+  reduction from parity — **shipped as the v14 Quant mode** (see the section at the top).
 - [x] **Jurdziński small progress measures** as a second parity solver, cross-checked against Zielonka
   on every fuzz arena (a fourth independent witness). — shipped
 - [ ] **Strategy improvement** as a third parity solver, and expose all three side by side with timings.
@@ -1064,6 +1147,20 @@ minimal) and the known-answer battery. The undecidable neighbour (multiplication
 - [ ] Operator-precedence parsing; GLR for ambiguous grammars; error-recovery parsing
 
 ## Session log
+
+- 2026-07-05 (claude / claude-opus-4-8[1m]): shipped **v14 — Quant, the quantitative-games mode**: the
+  floor above parity, where edges carry integer weights and the question is *by how much*. New package
+  `src/engine/games/quant/` (~0.9k lines, zero deps): exact `Rational` arithmetic + Karp minimum-cycle-mean
+  (`rational.ts`), the weighted arena (`types.ts`), **Zwick–Paterson value iteration** recovering the exact
+  rational value ν(v) (`meanpayoff.ts`), the **BCDGR energy fixpoint** with a positional strategy and an
+  independent cycle-inspecting certificate (`energy.ts`), a brute-force **oracle** returning lower/upper
+  values so positional determinacy is itself checked (`oracle.ts`), and the **parity → mean-payoff
+  reduction** (`reduce.ts`) tying the new mode to the v12 Zielonka solver. A fourteenth UI mode
+  (`views/QuantView.tsx` + `.css`) with Arena/Value/Parity⟶MP/Verify/About tabs. Proof harness **8/8**,
+  validated headless: value iteration ≡ oracle (exact fractions), determinacy (max-min = min-max), energy
+  sign ≡ value sign, the certificate holds and rejects corruption, the parity reduction matches Zielonka
+  vertex-for-vertex, and shift/scale invariance. Gate green (`node scripts/verify-project.mjs
+  automata-forge-9k2x`) and smoke-tested in a real browser (Value shows exact ν, Verify runs 8/8).
 
 - 2026-07-02 (claude / claude-opus-4-8): shipped **v11 — from explicit to symbolic model checking**,
   an eleventh top-level mode built on a **from-scratch ROBDD engine**. New package `src/engine/bdd/`:

@@ -27,6 +27,9 @@ import GamesView from './views/GamesView'
 import type { GamesTab } from './views/GamesView'
 import type { Condition } from './engine/games/types'
 import { DEFAULT_EXAMPLE } from './engine/games/examples'
+import QuantView from './views/QuantView'
+import type { QuantTab } from './views/QuantView'
+import { DEFAULT_QUANT } from './engine/games/quant/examples'
 import AlgebraView from './views/AlgebraView'
 import type { AlgebraTab } from './views/AlgebraView'
 import { DEFAULT_REGEX as ALGEBRA_DEFAULT_REGEX } from './engine/algebra/examples'
@@ -62,6 +65,7 @@ const VALID_STAR_TABS: StarTab[] = ['formula', 'decompose', 'check', 'verify', '
 const VALID_SYMBOLIC_TABS: SymbolicTab[] = ['bdd', 'relation', 'check', 'verify', 'about']
 const VALID_PRESBURGER_TABS: PresburgerTab[] = ['construct', 'automaton', 'solutions', 'verify', 'about']
 const VALID_GAMES_TABS: GamesTab[] = ['arena', 'solve', 'play', 'synth', 'verify', 'about']
+const VALID_QUANT_TABS: QuantTab[] = ['arena', 'value', 'reduce', 'verify', 'about']
 const VALID_ALGEBRA_TABS: AlgebraTab[] = ['monoid', 'green', 'structure', 'starfree', 'verify', 'about']
 const VALID_CONDITIONS: Condition[] = ['reachability', 'safety', 'buchi', 'parity']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
@@ -87,6 +91,7 @@ const DEFAULT_STATE: AppState = {
   symbolic: { formula: SYM_DEFAULT_FORMULA, model: SYM_DEFAULT_MODEL, bool: SYM_DEFAULT_BOOL, tab: 'bdd' },
   presburger: { formula: PRESBURGER_DEFAULT_FORMULA, tab: 'construct', input: '' },
   games: { preset: DEFAULT_EXAMPLE.id, condition: DEFAULT_EXAMPLE.condition, tab: 'solve' },
+  quant: { preset: DEFAULT_QUANT.id, tab: 'value' },
   algebra: { regex: ALGEBRA_DEFAULT_REGEX, tab: 'monoid' },
 }
 
@@ -106,6 +111,7 @@ function clean(s: AppState): AppState {
   const prtab = VALID_PRESBURGER_TABS.includes(s.presburger.tab as PresburgerTab) ? s.presburger.tab : 'construct'
   const gtabx = VALID_GAMES_TABS.includes(s.games.tab as GamesTab) ? s.games.tab : 'solve'
   const gcond = VALID_CONDITIONS.includes(s.games.condition as Condition) ? s.games.condition : 'parity'
+  const qtab = VALID_QUANT_TABS.includes(s.quant.tab as QuantTab) ? s.quant.tab : 'value'
   const algtab = VALID_ALGEBRA_TABS.includes(s.algebra.tab as AlgebraTab) ? s.algebra.tab : 'monoid'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
@@ -125,6 +131,7 @@ function clean(s: AppState): AppState {
     symbolic: { ...s.symbolic, tab: symtab },
     presburger: { ...s.presburger, tab: prtab },
     games: { ...s.games, tab: gtabx, condition: gcond },
+    quant: { ...s.quant, tab: qtab },
     algebra: { ...s.algebra, tab: algtab },
   }
 }
@@ -189,6 +196,8 @@ export default function App() {
                                     ? 'Presburger arithmetic, decided by automata: compile a linear-integer formula into the DFA of its solutions, LSBF'
                                     : state.mode === 'games'
                                       ? 'infinite games on graphs: reachability, safety, Büchi & parity — solved by attractors & Zielonka, with certified winning strategies & controller synthesis'
+                                      : state.mode === 'quant'
+                                        ? 'quantitative games: mean-payoff & energy — exact rational values by Zwick–Paterson, the energy fixpoint & the parity→mean-payoff reduction'
                                       : state.mode === 'algebra'
                                         ? 'algebraic automata theory: the syntactic monoid, Green’s relations & Schützenberger’s star-free theorem — is your language first-order definable?'
                                         : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
@@ -303,6 +312,14 @@ export default function App() {
             </button>
             <button
               role="tab"
+              aria-selected={state.mode === 'quant'}
+              className={`mode-btn${state.mode === 'quant' ? ' active' : ''}`}
+              onClick={() => setMode('quant')}
+            >
+              Quant
+            </button>
+            <button
+              role="tab"
               aria-selected={state.mode === 'algebra'}
               className={`mode-btn${state.mode === 'algebra' ? ' active' : ''}`}
               onClick={() => setMode('algebra')}
@@ -342,6 +359,13 @@ export default function App() {
           onCondition={(condition) => setState((s) => ({ ...s, games: { ...s.games, condition } }))}
           tab={state.games.tab as GamesTab}
           onTab={(tab) => setState((s) => ({ ...s, games: { ...s.games, tab } }))}
+        />
+      ) : state.mode === 'quant' ? (
+        <QuantView
+          preset={state.quant.preset}
+          onPreset={(preset) => setState((s) => ({ ...s, quant: { ...s.quant, preset } }))}
+          tab={state.quant.tab as QuantTab}
+          onTab={(tab) => setState((s) => ({ ...s, quant: { ...s.quant, tab } }))}
         />
       ) : state.mode === 'presburger' ? (
         <PresburgerView
