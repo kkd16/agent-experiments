@@ -248,14 +248,47 @@ export default function About() {
           </li>
         </ul>
 
+        <h2>The third dimension</h2>
+        <p>
+          Every tab above lives in the plane. The <strong>Space</strong> tab is the first that leaves
+          it — a whole new axis, rendered by a from-scratch software 3-D projector (no WebGL): the
+          solids are projected, depth-sorted and flat-shaded by hand into the same 2-D canvas. Drag to
+          orbit.
+        </p>
+        <ul>
+          <li>
+            <strong>3-D convex hull</strong> — the space analogue of the plane's hull, by the{' '}
+            <strong>incremental</strong> algorithm: seed a tetrahedron, then fold each point in by
+            finding the faces it can see, carving that cap away along its <em>horizon</em>, and coning
+            the horizon back to the point. Reads out V, E, F with Euler's <strong>V − E + F = 2</strong>,
+            plus volume, surface area and sphericity.
+          </li>
+          <li>
+            <strong>The lifting map</strong> — the deepest idea in the studio, finally visible. Lift the
+            flat points onto the paraboloid <em>z = x² + y²</em>, take the <em>lower</em> convex hull,
+            and drop its down-facing faces back to the plane: you get <strong>exactly the Delaunay
+            triangulation</strong>. The in-circle test in the plane <em>is</em> an orientation test one
+            dimension up. Raise the points onto the bowl with a slider and watch Delaunay emerge; the
+            result is verified to contain every Bowyer–Watson triangle.
+          </li>
+          <li>
+            <strong>3-D Delaunay &amp; Voronoi</strong> — <strong>Bowyer–Watson in space</strong> builds
+            the Delaunay tetrahedralization (insphere-carved cavities re-coned to each site), and its
+            dual is the 3-D <strong>Voronoi foam</strong> — a vertex at every tetrahedron's circumcentre,
+            an edge across every shared face. Verified by the empty-circumsphere property.
+          </li>
+        </ul>
+
         <h2>The predicates</h2>
         <p>
-          Everything rests on two determinants. The <em>orientation</em> test tells whether three
-          points turn left, right, or stay collinear — it drives the hull's left-turn rule and keeps
-          triangles consistently wound. The <em>in-circle</em> test asks whether a fourth point lies
-          inside the circumcircle of a triangle — the single check that makes a triangulation
-          Delaunay. Both are evaluated in coordinates relative to the query point to keep
-          floating-point error small.
+          Everything rests on determinants. In the plane, the <em>orientation</em> test tells whether
+          three points turn left, right, or stay collinear — it drives the hull's left-turn rule and
+          keeps triangles consistently wound — and the <em>in-circle</em> test asks whether a fourth
+          point lies inside the circumcircle of a triangle, the single check that makes a triangulation
+          Delaunay. In space they gain a coordinate: <em>orient3d</em> is the signed volume of a
+          tetrahedron and <em>insphere</em> its circumsphere test — the same two ideas, one dimension
+          up. All are evaluated in coordinates relative to the query point to keep floating-point error
+          small.
         </p>
 
         <h2>Why it stays fast</h2>
@@ -295,6 +328,7 @@ export default function About() {
           <li>Open the <strong>Search</strong> tab, turn on the k-d partition, and move the probe to watch nearest-neighbour search prune — then flip on <em>Approximate</em> and raise ε to trade accuracy for visits, or drag a window to race the range tree's canonical subtrees against the k-d scan.</li>
           <li>Open the <strong>Curves</strong> tab, hit <em>Play</em> to sweep a Hilbert curve through the grid, then switch to the point tour and compare its locality against Z-order.</li>
           <li>Open the <strong>Arrangements</strong> tab: watch Euler's formula hold as you add lines, drag three points collinear in <em>Duality</em> to make their duals concur, climb the <em>k-levels</em>, drag a <em>ham-sandwich</em> cut, and aim a <em>linear program</em>'s objective at its optimum.</li>
+          <li>Open the <strong>Space</strong> tab and switch to <em>Lifting map</em>: drag the <em>Raise onto paraboloid</em> slider and watch the flat Delaunay triangulation rise into the lower hull of a 3-D convex polytope — the plane's in-circle test, one dimension up.</li>
         </ul>
 
         <p className="colophon">

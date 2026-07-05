@@ -127,6 +127,13 @@ import {
   type SILine,
   type HalfPlane,
 } from './arrangement'
+import type { Vec3 } from './vector3'
+import { v3, dist3sq } from './vector3'
+import { orient3d, inSphere, circumsphere } from './predicates3'
+import { convexHull3, faceNormal } from './hull3'
+import { liftedDelaunay, triKey } from './lift'
+import { delaunay3 } from './delaunay3'
+import { makeCloud3 } from './cloud3'
 
 let failures = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -1744,6 +1751,139 @@ function canonicalHull(hull: number[]): number[] {
       if (p.x < -1e-6 || p.x > 1 + 1e-6 || p.y < -1e-6 || p.y > 1 + 1e-6) traceBad++
   }
   check(`LP: Seidel trace ends at the optimum, is non-increasing & in-frame (${traceChecked})`, traceBad === 0, `(${traceBad} off)`)
+}
+
+// ── The Space axis: 3-D predicates, convex hull, the lifting map, 3-D Delaunay ──
+{
+  console.log('\n— 3-D: predicates —')
+  const a = v3(0, 0, 0), b = v3(1, 0, 0), c = v3(0, 1, 0), d = v3(0, 0, 1)
+  check('orient3d: positive tetra > 0', orient3d(a, b, c, d) > 0)
+  check('orient3d: mirrored tetra < 0', orient3d(a, b, c, v3(0, 0, -1)) < 0)
+  check('orient3d: coplanar = 0', Math.abs(orient3d(v3(0, 0, 0), v3(1, 0, 0), v3(0, 1, 0), v3(1, 1, 0))) < 1e-12)
+  const sph = circumsphere(a, b, c, d)!
+  check('circumsphere: exists', sph !== null)
+  check('circumsphere: equidistant (r = √3/2)', Math.abs(Math.sqrt(sph.r2) - Math.sqrt(3) / 2) < 1e-12)
+  check('inSphere: centre is inside (+)', inSphere(a, b, c, d, sph.center) > 0)
+  check('inSphere: far point outside (−)', inSphere(a, b, c, d, v3(3, 3, 3)) < 0)
+
+  console.log('\n— 3-D: convex hull —')
+  const cube: Vec3[] = []
+  for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) cube.push(v3(x, y, z))
+  cube.push(v3(0, 0, 0), v3(0.4, -0.2, 0.3)) // interior points
+  const ch = convexHull3(cube)
+  check('hull(cube): 8 vertices (interior excluded)', ch.vertices.length === 8)
+  check('hull(cube): 12 faces', ch.faces.length === 12)
+  check('hull(cube): 18 edges', ch.edges.length === 18)
+  check('hull(cube): Euler V−E+F = 2', ch.vertices.length - ch.edges.length + ch.faces.length === 2)
+  check('hull(cube): volume = 8', Math.abs(ch.volume - 8) < 1e-9, `(${ch.volume})`)
+  check('hull(cube): area = 24', Math.abs(ch.area - 24) < 1e-9, `(${ch.area})`)
+
+  // Random balls: convexity, Euler, outward normals, positive volume.
+  let eulerBad = 0, convexBad = 0, outwardBad = 0, volBad = 0, trials = 0
+  for (let seed = 1; seed <= 25; seed++) {
+    const rng = mulberry32(seed * 71 + 3)
+    const pts: Vec3[] = []
+    while (pts.length < 90) {
+      const x = rng() * 2 - 1, y = rng() * 2 - 1, z = rng() * 2 - 1
+      if (x * x + y * y + z * z <= 1) pts.push(v3(x, y, z))
+    }
+    const h = convexHull3(pts)
+    if (h.degenerate) continue
+    trials++
+    if (h.vertices.length - h.edges.length + h.faces.length !== 2) eulerBad++
+    if (h.volume <= 0) volBad++
+    const scale = 2
+    for (const f of h.faces) {
+      for (const p of pts) if (orient3d(pts[f.a], pts[f.b], pts[f.c], p) > 1e-9 * scale) { convexBad++; break }
+      const nrm = faceNormal(pts, f)
+      const fc = v3((pts[f.a].x + pts[f.b].x + pts[f.c].x) / 3, (pts[f.a].y + pts[f.b].y + pts[f.c].y) / 3, (pts[f.a].z + pts[f.b].z + pts[f.c].z) / 3)
+      const out = nrm.x * (fc.x - h.centroid.x) + nrm.y * (fc.y - h.centroid.y) + nrm.z * (fc.z - h.centroid.z)
+      if (out <= 0) outwardBad++
+    }
+  }
+  check(`hull(ball): Euler = 2 on all ${trials} trials`, eulerBad === 0, `(${eulerBad} bad)`)
+  check('hull(ball): every point inside/on the hull (convex)', convexBad === 0, `(${convexBad} outside)`)
+  check('hull(ball): all face normals point outward', outwardBad === 0, `(${outwardBad} inward)`)
+  check('hull(ball): positive volume', volBad === 0)
+
+  // Fibonacci sphere: all points extreme (vertices), and F = 2V − 4 (a triangulated sphere).
+  {
+    const sp = makeCloud3('sphere', 200, 7)
+    const h = convexHull3(sp)
+    check('hull(sphere): every point is a vertex', h.vertices.length === sp.length, `(${h.vertices.length}/${sp.length})`)
+    check('hull(sphere): F = 2V − 4', h.faces.length === 2 * h.vertices.length - 4)
+  }
+
+  console.log('\n— 3-D: the lifting map = 2-D Delaunay —')
+  // The centrepiece cross-check: lower-hull faces of the paraboloid lift, dropped to the
+  // plane, are exactly the Delaunay triangulation — verified by the empty-circumcircle
+  // property, exact hull-area coverage, and superset agreement with Bowyer–Watson.
+  {
+    const FRAME = { minX: 0.05, minY: 0.05, maxX: 0.95, maxY: 0.95 }
+    let worstIn = 0, worstArea = 0, agreeNum = 0, agreeDen = 0, cases = 0
+    for (const dist of ['uniform', 'grid', 'poisson'] as const) {
+      for (let seed = 1; seed <= 25; seed++) {
+        const rng = mulberry32(seed * 131 + dist.length)
+        const n = 6 + Math.floor(rng() * 60)
+        const pts = dist === 'uniform' ? uniformPoints(n, FRAME, rng) : dist === 'grid' ? jitteredGrid(n, FRAME, rng) : poissonDisk(n, FRAME, rng)
+        if (pts.length < 3) continue
+        cases++
+        const lift = liftedDelaunay(pts)
+        for (const t of lift) {
+          const pa = pts[t.a]
+          let pb = pts[t.b], pc = pts[t.c]
+          if (orient(pa, pb, pc) < 0) { const tmp = pb; pb = pc; pc = tmp }
+          for (let i = 0; i < pts.length; i++) {
+            if (i === t.a || i === t.b || i === t.c) continue
+            const val = inCircle(pa, pb, pc, pts[i])
+            if (val > worstIn) worstIn = val
+          }
+        }
+        const hull = convexHull(pts).map((i) => pts[i])
+        const hullArea = Math.abs(area(hull))
+        let triArea = 0
+        for (const t of lift) triArea += Math.abs(orient(pts[t.a], pts[t.b], pts[t.c])) / 2
+        const relErr = Math.abs(triArea - hullArea) / Math.max(hullArea, 1e-9)
+        if (relErr > worstArea) worstArea = relErr
+        const lset = new Set(lift.map(triKey))
+        const bw = delaunay(pts)
+        agreeDen += bw.length
+        agreeNum += bw.filter((t) => lset.has(triKey(t))).length
+      }
+    }
+    check(`lifting: every lifted triangle is empty-circumcircle Delaunay (${cases} cases)`, worstIn <= 1e-9, `(worst ${worstIn.toExponential(2)})`)
+    check('lifting: lower hull exactly tiles the convex hull', worstArea < 1e-9, `(worst ${worstArea.toExponential(2)})`)
+    check('lifting: every Bowyer–Watson triangle is present in the lift', agreeNum === agreeDen, `(${agreeNum}/${agreeDen})`)
+  }
+
+  console.log('\n— 3-D: Delaunay tetrahedralization & Voronoi dual —')
+  {
+    let worstInside = 0, worstVol = 0, cases = 0, emptyTet = 0
+    for (const kind of ['ball', 'gauss', 'cube', 'clusters'] as const) {
+      for (let seed = 1; seed <= 8; seed++) {
+        const pts = makeCloud3(kind, 40 + seed * 6, seed * 17 + 1)
+        const d3 = delaunay3(pts)
+        if (d3.degenerate || d3.tetra.length === 0) { emptyTet++; continue }
+        cases++
+        for (let ti = 0; ti < d3.tetra.length; ti++) {
+          const t = d3.tetra[ti], cc = d3.circumcenters[ti], r2 = d3.circumradii[ti] * d3.circumradii[ti]
+          for (let i = 0; i < pts.length; i++) {
+            if (i === t.a || i === t.b || i === t.c || i === t.d) continue
+            const inside = r2 - dist3sq(pts[i], cc)
+            if (inside > worstInside) worstInside = inside
+          }
+        }
+        const hv = convexHull3(pts).volume
+        let tv = 0
+        for (const t of d3.tetra) tv += Math.abs(orient3d(pts[t.a], pts[t.b], pts[t.c], pts[t.d])) / 6
+        const rel = Math.abs(tv - hv) / Math.max(hv, 1e-9)
+        if (rel > worstVol) worstVol = rel
+      }
+    }
+    check(`delaunay3: no site inside any tetra's circumsphere (${cases} cases)`, worstInside <= 1e-9, `(worst ${worstInside.toExponential(2)})`)
+    check('delaunay3: tetrahedra fill the convex hull (volume)', worstVol < 5e-3, `(worst ${worstVol.toExponential(2)})`)
+    check('delaunay3: every cloud tetrahedralized', emptyTet === 0)
+  }
 }
 
 export const result = { failures }

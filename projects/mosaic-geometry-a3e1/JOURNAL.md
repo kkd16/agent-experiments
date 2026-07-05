@@ -133,6 +133,82 @@ libraries.
 
 ## Ideas / backlog
 
+### 2026-07-05 — the third dimension: 3-D hulls, the lifting map, Delaunay & Voronoi in space (planned this session)
+
+Every one of Mosaic's six axes lives in the **plane**. This session opens a **seventh, orthogonal
+axis** — the first that leaves 2-D — and it is chosen deliberately, because 3-D is where the deepest
+idea in the whole studio finally becomes visible: **the lifting map**. Lift the flat point set onto
+the paraboloid `z = x² + y²`, take the **lower convex hull** of the lifted points, and drop its
+downward faces back to the plane — you get **exactly the Delaunay triangulation** we already build by
+Bowyer–Watson. The empty-circle test *is* an orient3d test one dimension up. So this axis does not
+just add 3-D primitives; it **explains** the 2-D ones the studio has shown since day one, and
+cross-verifies the new machinery against the old (`liftedDelaunay(P)` must equal `delaunay(P)` as a
+set of triangles — a self-test that ties the two dimensions together).
+
+Everything is from scratch, no 3-D library and **no WebGL** — the polytopes are projected, depth-
+sorted and flat-shaded by hand into the same 2-D canvas, so a rotatable solid renders with a painter's
+algorithm and a single directional light. New pure modules under `src/geometry/`, a tiny software 3-D
+renderer under `src/render/`, and a new **Space** tab.
+
+Planned this session — all shipped:
+
+- [x] **3-D vector core** (`vector3.ts`): `Vec3` + `sub3/add3/scale3/dot3/cross3/len3/normalize3/…`,
+  `bounds3`, `centroid3` — the allocation-light spine every 3-D routine shares.
+- [x] **3-D predicates** (`predicates3.ts`): `orient3d` (signed volume of a tetra = the 3×3
+  determinant), `circumsphere` (solve the 3×3 linear system for the circumcentre + radius²), and an
+  `inSphere` insphere test built on it — the exact analogues of the plane's `orient`/`inCircle`.
+- [x] **3-D convex hull** (`hull3.ts`): the **randomized-incremental** algorithm — seed a
+  non-degenerate tetrahedron, then for each point find its **visible** faces, extract the **horizon**
+  loop (edges between a visible and a hidden face), delete the visible cap and **cone** the horizon to
+  the new point. Faces re-oriented outward against the interior centroid so the winding is bullet-proof.
+  Returns faces (CCW-outward triangles), unique edges, the vertex set, **volume** (divergence theorem),
+  **surface area**, and an insertion-order stamp so the build can animate.
+- [x] **The lifting map** (`lift.ts`): `liftParaboloid` (P ↦ (x, y, x²+y²)); `lowerHullFaces` (the
+  hull faces whose outward normal points **down**); `liftedDelaunay` (drop those to the plane) and the
+  dual `liftedFarthestDelaunay` (the **upper** faces ↦ the farthest-point Delaunay we already draw).
+  The centrepiece cross-check: `liftedDelaunay(P) ≡ delaunay(P)`.
+- [x] **3-D Delaunay & Voronoi** (`delaunay3.ts`): **Bowyer–Watson in space** — a super-tetrahedron,
+  insphere-based cavity carving, re-coning to each inserted site → a **tetrahedralization**; then its
+  **dual**, the 3-D Voronoi **skeleton** (a Voronoi vertex at every tetra circumcentre, an edge across
+  every shared internal face) — the gorgeous "foam." Verified by the **empty-circumsphere** property.
+- [x] **Software 3-D renderer** (`render/scene3.ts`): yaw/pitch orbit, perspective projection,
+  back-face cull, **painter's-algorithm** depth sort, flat Lambert shading from a key light, wireframe
+  + point overlays, and a subtle ground-shadow — all into the existing 2-D `useCanvas` context.
+- [x] **Space tab** (`pages/Space.tsx`, new **Space** nav entry): drag-to-orbit; presets (random
+  ball, cube shell, gaussian blob, torus, spiral, fibonacci sphere); and three modes — **Convex Hull**
+  (the solid + V/E/F, Euler χ, volume, area, sphericity), **Lifting Map** (flat points, their
+  paraboloid lift, the lower-hull "tent", and the projected Delaunay — with a slider that raises the
+  points onto the bowl so you *watch* Delaunay emerge), and **Delaunay · Voronoi** (the tetrahedral
+  mesh and the Voronoi foam).
+- [x] **Self-tests** (`selftest.ts`, +25): orient3d/insphere signs on known tetrahedra; hull convexity
+  (every point on the non-positive side of every face plane), Euler **V − E + F = 2**, only extreme
+  points are vertices, the exact cube (V/E/F/volume/area), all-normals-outward; the lifting map's
+  **empty-circumcircle** property + **exact hull-area coverage** + Bowyer–Watson-superset agreement
+  across uniform/grid/poisson seeds; 3-D Delaunay **empty-circumsphere** + volume-coverage. Grew the
+  suite **225 → 250**, all green.
+- [x] **About + catalog**: document the Space axis and the lifting-map insight; add 3-D tags.
+
+**Shipped 2026-07-05.** The seventh axis is live — Mosaic leaves the plane. Six new from-scratch,
+dependency-free modules: `vector3.ts` (Vec3 spine), `predicates3.ts` (orient3d + a circumsphere-based
+insphere, verified to machine precision), `hull3.ts` (incremental 3-D convex hull — the cube comes out
+V=8/E=18/F=12, χ=2, volume 8, area 24 exactly; random balls give χ=2 with every point inside to ~1e-17
+and all normals outward), `lift.ts` (the paraboloid lifting map — its lower-hull Delaunay has **zero**
+in-circle violations, tiles the hull to 8e-16, and contains **100 %** (8591/8591 across the harness) of
+every triangle 2-D Bowyer–Watson produces — it is in fact the *complete* triangulation, filling even the
+boundary slivers the 2-D reference drops), `delaunay3.ts` (Bowyer–Watson in space + the Voronoi foam —
+**zero** empty-circumsphere violations over ~16 k tetrahedra, volume coverage to ~3e-4), and
+`render/scene3.ts` (a hand-rolled software 3-D renderer: look-at orbit, perspective projection,
+painter's-algorithm depth sort, back-face cull, two-sided Lambert shading — no WebGL). One new **Space**
+tab (`pages/Space.tsx`) with drag-to-orbit and three modes (Convex hull, Lifting map with a raise-onto-
+the-bowl slider + live "= Bowyer–Watson ✓" badge, Delaunay·Voronoi), seven 3-D cloud presets
+(`cloud3.ts`). *Two rendering bugs found and fixed while verifying the built app headless (Chromium):*
+(1) the lift bowl opened along world-z (the camera's up is world-y) so it read edge-on → mapped the
+plane to the world x–z ground and the lift to +y; (2) the 3-D Voronoi's unbounded boundary edges shot to
+the canvas rim → clipped the whole foam to a sphere around the cloud (segment-sphere clip) and rendered
+boundary rays short + dashed. Verified: the built app mounts all three modes with **zero** console
+errors, and the 25 new self-test checks (250 total) pass. Passed `verify-project.mjs` (scope +
+conformance + lint + build) before pushing.
+
 ### 2026-07-03 — the dual world: line arrangements, duality, ham-sandwich & 2-D LP (planned this session)
 
 The sixth axis, and the first that is fundamentally about **lines** rather than points. Every prior
