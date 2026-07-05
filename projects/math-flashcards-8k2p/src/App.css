@@ -818,3 +818,36 @@ h1 {
 }
 
 .grayscale-mode { filter: grayscale(100%); }
+
+/* Large Text Mode */
+.large-text-mode {
+  font-size: 1.25rem;
+}
+.large-text-mode h1 {
+  font-size: 2.5rem;
+}
+.large-text-mode .stat {
+  font-size: 1.2rem;
+}
+.large-text-mode button {
+  font-size: 1.2rem;
+}
+.large-text-mode .problem {
+  font-size: 5rem;
+}
+.large-text-mode .answer-input {
+  font-size: 3rem;
+}
+
+/* Pulse Animation for Button */
+.pulse-animation-btn {
+  animation: buttonPulse 2s infinite;
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+@keyframes buttonPulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0.7); background-color: rgba(52, 152, 219, 0.1); }
+  70% { box-shadow: 0 0 0 10px rgba(52, 152, 219, 0); background-color: rgba(52, 152, 219, 0.3); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0); background-color: rgba(52, 152, 219, 0.1); }
+}
