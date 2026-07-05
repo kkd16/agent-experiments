@@ -1136,7 +1136,208 @@ function financeLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// The Bond Lab (v10) — a three-sheet fixed-income model that exercises the whole
+// securities pillar end-to-end:
+//   • Bond — a coupon bond priced from its yield (PRICE), with accrued interest read
+//     off the COUP* day counts, the yield round-tripped back out (YIELD), Macaulay &
+//     modified DURATION, a DV01, and a live price↔yield curve (one MAKEARRAY).
+//   • Cash Flows — the coupon schedule spilled by one MAKEARRAY (cross-sheet refs to
+//     Bond), each flow discounted to a present value whose sum equals the dirty price
+//     to the penny — a proof the pricing closes.
+//   • Money Market — a Treasury bill (TBILLPRICE/TBILLYIELD/TBILLEQ) and a discounted
+//     note (DISC/PRICEDISC/YIELDDISC/INTRATE/RECEIVED), each with a rate comparison.
+function bondLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const bondId = wb.activeSheetId
+  wb.renameSheet(bondId, 'Bond')
+  const mk = (sheetId: string) => {
+    const set = (a1: string, raw: string) => {
+      const ref = parseRef(a1)
+      if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, sheetId)
+    }
+    const fmt = (a1: string, a2: string, patch: CellFormat) => {
+      const f = parseRef(a1)!
+      const t = parseRef(a2)!
+      wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, sheetId)
+    }
+    return { set, fmt }
+  }
+  const muted = '#97a0b8'
+  const label = '#cdd3e6'
+
+  // ---- Sheet 1: bond pricing & analytics ----
+  {
+    const { set, fmt } = mk(bondId)
+    set('A1', 'Bond Lab — a 5% coupon bond priced from its yield')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'PRICE values the bond; the COUP* day counts give accrued interest; YIELD round-trips; DURATION measures rate risk.')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Bond terms'); fmt('A4', 'A4', { bold: true })
+    set('A5', 'Settlement'); set('B5', '=DATE(2025,3,20)')
+    set('A6', 'Maturity'); set('B6', '=DATE(2032,1,15)')
+    set('A7', 'Coupon rate'); set('B7', '0.05')
+    set('A8', 'Payments / year'); set('B8', '2')
+    set('A9', 'Day-count basis'); set('B9', '0')
+    set('A10', 'Redemption / 100'); set('B10', '100')
+    set('A11', 'Market yield'); set('B11', '0.056')
+    fmt('A5', 'A11', { color: label })
+    fmt('B5', 'B6', { nf: 'date' })
+    fmt('B7', 'B7', { nf: 'percent', decimals: 2 })
+    fmt('B11', 'B11', { nf: 'percent', decimals: 2 })
+
+    set('D4', 'Analytics'); fmt('D4', 'D4', { bold: true })
+    set('D5', 'Clean price'); set('E5', '=PRICE(B5,B6,B7,B11,B10,B8,B9)')
+    set('D6', 'Accrued interest'); set('E6', '=100*B7/B8*COUPDAYBS(B5,B6,B8,B9)/COUPDAYS(B5,B6,B8,B9)')
+    set('D7', 'Dirty price'); set('E7', '=E5+E6')
+    set('D8', 'Yield (round-trip)'); set('E8', '=YIELD(B5,B6,B7,E5,B10,B8,B9)')
+    set('D9', 'Macaulay duration'); set('E9', '=DURATION(B5,B6,B7,B11,B8,B9)')
+    set('D10', 'Modified duration'); set('E10', '=MDURATION(B5,B6,B7,B11,B8,B9)')
+    set('D11', 'DV01 (per +1% yield)'); set('E11', '=E5-PRICE(B5,B6,B7,B11+0.01,B10,B8,B9)')
+    set('D12', 'Coupons remaining'); set('E12', '=COUPNUM(B5,B6,B8,B9)')
+    set('D13', 'Next coupon'); set('E13', '=COUPNCD(B5,B6,B8,B9)')
+    set('D14', 'Previous coupon'); set('E14', '=COUPPCD(B5,B6,B8,B9)')
+    fmt('D5', 'D14', { color: label })
+    fmt('E5', 'E7', { nf: 'currency', decimals: 4 })
+    fmt('E8', 'E8', { nf: 'percent', decimals: 3 })
+    fmt('E9', 'E11', { nf: 'plain', decimals: 4 })
+    fmt('E12', 'E12', { align: 'left' })
+    fmt('E13', 'E14', { nf: 'date' })
+
+    set('A13', 'Yield > coupon, so the bond prices below par; the round-tripped yield returns the input to the basis point.')
+    fmt('A13', 'A13', { color: muted })
+
+    // The price↔yield curve: one MAKEARRAY sweeps the yield 2%→12% and reprices.
+    set('G4', 'Yield'); set('H4', 'Price')
+    fmt('G4', 'H4', { bold: true, align: 'center' })
+    set('G5', '=MAKEARRAY(21,2,LAMBDA(i,k,IFS(k=1,0.02+(i-1)*0.005,k=2,PRICE($B$5,$B$6,$B$7,0.02+(i-1)*0.005,100,$B$8,$B$9))))')
+    fmt('G5', 'G25', { nf: 'percent', decimals: 1 })
+    fmt('H5', 'H25', { nf: 'plain', decimals: 2 })
+
+    wb.addChart(
+      { type: 'line', range: { top: 3, left: 6, bottom: 24, right: 7 }, title: 'Price vs yield (the discount curve)', x: 40, y: 330, w: 560, h: 300, headers: true, labels: true },
+      bondId,
+    )
+  }
+
+  // ---- Sheet 2: the coupon cash-flow schedule (cross-sheet, closes to dirty price) ----
+  const cfId = wb.addSheet('Cash Flows')
+  {
+    const { set, fmt } = mk(cfId)
+    set('A1', 'Coupon cash flows — discounted to today')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'One MAKEARRAY spills every coupon (cross-sheet refs to Bond); the present values sum to the dirty price to the penny.')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Inputs (from the Bond sheet)'); fmt('A4', 'A4', { bold: true })
+    set('A5', 'Settlement'); set('B5', '=Bond!B5')
+    set('A6', 'Maturity'); set('B6', '=Bond!B6')
+    set('A7', 'Coupon rate'); set('B7', '=Bond!B7')
+    set('A8', 'Frequency'); set('B8', '=Bond!B8')
+    set('A9', 'Basis'); set('B9', '=Bond!B9')
+    set('A10', 'Market yield'); set('B10', '=Bond!B11')
+    set('A11', 'Coupons (N)'); set('B11', '=COUPNUM(B5,B6,B8,B9)')
+    set('A12', 'First-period frac'); set('B12', '=COUPDAYSNC(B5,B6,B8,B9)/COUPDAYS(B5,B6,B8,B9)')
+    fmt('A5', 'A12', { color: label })
+    fmt('B5', 'B6', { nf: 'date' })
+    fmt('B7', 'B7', { nf: 'percent', decimals: 2 })
+    fmt('B10', 'B10', { nf: 'percent', decimals: 2 })
+    fmt('B12', 'B12', { nf: 'plain', decimals: 4 })
+
+    // period · PV · cash flow · coupon date · years-to-flow · discount factor
+    set('D4', 'Period'); set('E4', 'PV'); set('F4', 'Cash flow'); set('G4', 'Coupon date'); set('H4', 'Years'); set('I4', 'Disc factor')
+    fmt('D4', 'I4', { bold: true, align: 'center' })
+    set(
+      'D5',
+      '=MAKEARRAY($B$11,6,LAMBDA(k,c,IFS(' +
+        'c=1,k,' +
+        'c=2,(100*$B$7/$B$8+IF(k=$B$11,100,0))/(1+$B$10/$B$8)^($B$12+(k-1)),' +
+        'c=3,100*$B$7/$B$8+IF(k=$B$11,100,0),' +
+        'c=4,EDATE($B$6,-($B$11-k)*(12/$B$8)),' +
+        'c=5,($B$12+(k-1))/$B$8,' +
+        'c=6,1/(1+$B$10/$B$8)^($B$12+(k-1)))))',
+    )
+    fmt('E5', 'F18', { nf: 'currency', decimals: 2 })
+    fmt('G5', 'G18', { nf: 'date' })
+    fmt('H5', 'H18', { nf: 'plain', decimals: 2 })
+    fmt('I5', 'I18', { nf: 'plain', decimals: 4 })
+    fmt('D5', 'D18', { align: 'center' })
+
+    set('D21', 'Σ present values'); set('E21', '=SUM(CHOOSECOLS(D5#,2))')
+    set('D22', 'Clean price + accrued (dirty)'); set('E22', '=PRICE(B5,B6,B7,B10,100,B8,B9)+100*B7/B8*COUPDAYBS(B5,B6,B8,B9)/COUPDAYS(B5,B6,B8,B9)')
+    set('D23', 'Difference (closes to ≈0)'); set('E23', '=E21-E22')
+    fmt('D21', 'D23', { color: label })
+    fmt('E21', 'E22', { nf: 'currency', decimals: 4 })
+    fmt('E23', 'E23', { nf: 'plain', decimals: 8 })
+    fmt('D23', 'E23', { bold: true })
+
+    wb.addChart(
+      { type: 'column', range: { top: 3, left: 3, bottom: 17, right: 4 }, title: 'Present value of each coupon (final = redemption)', x: 40, y: 300, w: 560, h: 290, headers: true, labels: true },
+      cfId,
+    )
+  }
+
+  // ---- Sheet 3: money-market instruments ----
+  const mmId = wb.addSheet('Money Market')
+  {
+    const { set, fmt } = mk(mmId)
+    set('A1', 'Money-market securities — discount pricing')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'A Treasury bill and a discounted note, each priced on an actual/360 discount basis and cross-checked three ways.')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Treasury bill'); fmt('A4', 'A4', { bold: true })
+    set('A5', 'Settlement'); set('B5', '=DATE(2025,2,3)')
+    set('A6', 'Maturity'); set('B6', '=DATE(2025,8,1)')
+    set('A7', 'Discount rate'); set('B7', '0.0425')
+    set('A8', 'Price / 100'); set('B8', '=TBILLPRICE(B5,B6,B7)')
+    set('A9', 'Yield (from price)'); set('B9', '=TBILLYIELD(B5,B6,B8)')
+    set('A10', 'Bond-equivalent yield'); set('B10', '=TBILLEQ(B5,B6,B7)')
+    fmt('A5', 'A10', { color: label })
+    fmt('B5', 'B6', { nf: 'date' })
+    fmt('B7', 'B7', { nf: 'percent', decimals: 3 })
+    fmt('B8', 'B8', { nf: 'plain', decimals: 4 })
+    fmt('B9', 'B10', { nf: 'percent', decimals: 3 })
+
+    set('D4', 'Discounted note'); fmt('D4', 'D4', { bold: true })
+    set('D5', 'Settlement'); set('E5', '=DATE(2025,2,3)')
+    set('D6', 'Maturity'); set('E6', '=DATE(2025,11,1)')
+    set('D7', 'Price'); set('E7', '97.4')
+    set('D8', 'Redemption'); set('E8', '100')
+    set('D9', 'Basis'); set('E9', '2')
+    set('D10', 'Discount rate'); set('E10', '=DISC(E5,E6,E7,E8,E9)')
+    set('D11', 'Annual yield'); set('E11', '=YIELDDISC(E5,E6,E7,E8,E9)')
+    set('D12', 'Price check (PRICEDISC)'); set('E12', '=PRICEDISC(E5,E6,E10,E8,E9)')
+    set('D13', 'Implied rate (INTRATE)'); set('E13', '=INTRATE(E5,E6,974000,1000000,E9)')
+    set('D14', 'Received on $974k (RECEIVED)'); set('E14', '=RECEIVED(E5,E6,974000,E10,E9)')
+    fmt('D5', 'D14', { color: label })
+    fmt('E5', 'E6', { nf: 'date' })
+    fmt('E7', 'E8', { nf: 'plain', decimals: 2 })
+    fmt('E10', 'E11', { nf: 'percent', decimals: 3 })
+    fmt('E12', 'E12', { nf: 'plain', decimals: 4 })
+    fmt('E13', 'E13', { nf: 'percent', decimals: 3 })
+    fmt('E14', 'E14', { nf: 'currency', decimals: 2 })
+
+    // T-bill rate comparison chart
+    set('A12', 'T-bill rate measures'); fmt('A12', 'A12', { bold: true })
+    set('A13', 'Discount'); set('B13', '=B7')
+    set('A14', 'Simple yield'); set('B14', '=B9')
+    set('A15', 'Bond-equivalent'); set('B15', '=B10')
+    fmt('A13', 'A15', { color: label })
+    fmt('B13', 'B15', { nf: 'percent', decimals: 3 })
+
+    wb.addChart(
+      { type: 'column', range: { top: 12, left: 0, bottom: 14, right: 1 }, title: 'A discount rate understates the true yield', x: 360, y: 210, w: 380, h: 250, headers: false, labels: true },
+      mmId,
+    )
+  }
+
+  wb.setActiveSheet(bondId)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'bond', name: 'Bond Lab', blurb: 'A coupon bond priced from its yield (PRICE/YIELD/DURATION with COUP* day counts), a spilled cash-flow schedule that closes to the dirty price, and a T-bill/discount-note money-market sheet', snapshot: bondLab },
   { id: 'finance', name: 'Finance Lab', blurb: 'A loan amortized to the penny (PMT/IPMT/PPMT/CUMPRINC), a DCF project valued by NPV/IRR/XIRR/MIRR, and one asset depreciated four ways — with charts', snapshot: financeLab },
   { id: 'inference', name: 'Inference Lab', blurb: 'Two-sample/paired T.TEST, F.TEST & a χ² test; a symmetric eigen/SVD spectral block with MPINV least squares; and a 95% prediction interval + OLS trendline', snapshot: inferenceLab },
   { id: 'stats', name: 'Statistics Lab', blurb: 'A live multiple regression (LINEST full stats block), a one-sample t-test, and a 3×3 linear system solved with MINVERSE/MMULT', snapshot: statisticsLab },

@@ -40,6 +40,17 @@ import {
   type Mat,
 } from './linalg'
 import * as fin from './finance'
+import * as sec from './securities'
+import {
+  couponPCD,
+  couponNCD,
+  couponNum,
+  coupDays,
+  coupDaysBS,
+  coupDaysNC,
+  days360Excel,
+  type Basis,
+} from './daycount'
 import {
   gamma as gammaFn,
   lgamma,
@@ -1373,6 +1384,69 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   DB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 12], (a) => fin.db(a[0], a[1], a[2], a[3], a[4])),
   DDB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 2], (a) => fin.ddb(a[0], a[1], a[2], a[3], a[4])),
   VDB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 1, 2, 0], (a) => fin.vdb(a[0], a[1], a[2], a[3], a[4], a[5], a[6] !== 0)),
+
+  // ---- Securities (v10): the fixed-income analytics pillar --------------------
+  // Coupon bonds, accrued interest, discounted (money-market) securities, Treasury
+  // bills and interest-at-maturity securities — each delegating to the pure
+  // `securities.ts` / `daycount.ts` core, with a `null` domain result → `#NUM!`.
+  // Date arguments are Excel serials (truncated to whole days); `basis` defaults to
+  // 0 (US 30/360) like Excel.
+  //
+  // Day-count & coupon scheduling.
+  YEARFRAC: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.yearFrac(a[0], a[1], a[2])),
+  DAYS360: (args, h) => {
+    const a = numAt(args, 0, h)
+    if (isError(a)) return a
+    const b = numAt(args, 1, h)
+    if (isError(b)) return b
+    const method = boolAt(args, 2, h, false)
+    if (isError(method)) return method
+    return days360Excel(Math.trunc(a), Math.trunc(b), method)
+  },
+  COUPPCD: (args, h) => coupFn(args, h, (s, m, fr) => couponPCD(s, m, fr)),
+  COUPNCD: (args, h) => coupFn(args, h, (s, m, fr) => couponNCD(s, m, fr)),
+  COUPNUM: (args, h) => coupFn(args, h, (s, m, fr) => couponNum(s, m, fr)),
+  COUPDAYBS: (args, h) => coupFn(args, h, (s, m, fr, b) => coupDaysBS(s, m, fr, b)),
+  COUPDAYS: (args, h) => coupFn(args, h, (s, m, fr, b) => coupDays(s, m, fr, b)),
+  COUPDAYSNC: (args, h) => coupFn(args, h, (s, m, fr, b) => coupDaysNC(s, m, fr, b)),
+
+  // Coupon bonds — price/yield/duration.
+  PRICE: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0], (a) => sec.price(a[0], a[1], a[2], a[3], a[4], a[5], a[6])),
+  YIELD: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0], (a) => sec.bondYield(a[0], a[1], a[2], a[3], a[4], a[5], a[6])),
+  DURATION: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 1, 0], (a) => sec.duration(a[0], a[1], a[2], a[3], a[4], a[5])),
+  MDURATION: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 1, 0], (a) => sec.mduration(a[0], a[1], a[2], a[3], a[4], a[5])),
+
+  // Accrued interest.
+  ACCRINT: (args, h) => {
+    // issue, first_interest, settlement, rate, [par=1000], [frequency=1], [basis=0], [calc_method=TRUE]
+    const defs = [0, 0, 0, 0, 1000, 1, 0]
+    const a: number[] = []
+    for (let i = 0; i < defs.length; i++) {
+      const v = numAt(args, i, h, defs[i])
+      if (isError(v)) return v
+      a.push(i < 3 ? Math.trunc(v) : v)
+    }
+    const calc = args.length > 7 ? boolAt(args, 7, h, true) : true
+    if (isError(calc)) return calc
+    return finNum(sec.accrint(a[0], a[1], a[2], a[3], a[4], a[5], a[6], calc))
+  },
+  ACCRINTM: (args, h) => secArgs(args, h, 2, [0, 0, 0, 1000, 0], (a) => sec.accrintm(a[0], a[1], a[2], a[3], a[4])),
+
+  // Discounted (money-market) securities.
+  DISC: (args, h) => secArgs(args, h, 2, [0, 0, 0, 100, 0], (a) => sec.disc(a[0], a[1], a[2], a[3], a[4])),
+  PRICEDISC: (args, h) => secArgs(args, h, 2, [0, 0, 0, 100, 0], (a) => sec.priceDisc(a[0], a[1], a[2], a[3], a[4])),
+  YIELDDISC: (args, h) => secArgs(args, h, 2, [0, 0, 0, 100, 0], (a) => sec.yieldDisc(a[0], a[1], a[2], a[3], a[4])),
+  INTRATE: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 0], (a) => sec.intrate(a[0], a[1], a[2], a[3], a[4])),
+  RECEIVED: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 0], (a) => sec.received(a[0], a[1], a[2], a[3], a[4])),
+
+  // Interest-at-maturity securities.
+  PRICEMAT: (args, h) => secArgs(args, h, 3, [0, 0, 0, 0, 0, 0], (a) => sec.priceMat(a[0], a[1], a[2], a[3], a[4], a[5])),
+  YIELDMAT: (args, h) => secArgs(args, h, 3, [0, 0, 0, 0, 0, 0], (a) => sec.yieldMat(a[0], a[1], a[2], a[3], a[4], a[5])),
+
+  // Treasury bills.
+  TBILLEQ: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillEq(a[0], a[1], a[2])),
+  TBILLPRICE: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillPrice(a[0], a[1], a[2])),
+  TBILLYIELD: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillYield(a[0], a[1], a[2])),
 }
 
 /** Map a finance-core result (a number or `null` domain error) to a runtime value. */
@@ -1391,6 +1465,39 @@ function finArgs(args: Node[], h: FnHelpers, defaults: number[], f: (a: number[]
     a.push(v)
   }
   return finNum(f(a))
+}
+
+/** Marshal a securities function's scalar args. The first `dates` arguments are
+ *  truncated to whole-day serials; `defaults[i]` supplies an omitted argument (its
+ *  true Excel default for optional tails, a harmless placeholder for required ones).
+ *  A `null` domain result from the core becomes `#NUM!`. */
+function secArgs(args: Node[], h: FnHelpers, dates: number, defaults: number[], f: (a: number[]) => sec.Sec): RuntimeValue {
+  const a: number[] = []
+  for (let i = 0; i < defaults.length; i++) {
+    const v = numAt(args, i, h, defaults[i])
+    if (isError(v)) return v
+    a.push(i < dates ? Math.trunc(v) : v)
+  }
+  return finNum(f(a))
+}
+
+/** The COUP* family shares a shape: settlement · maturity · frequency · [basis=0],
+ *  with `settlement < maturity`, `frequency ∈ {1,2,4}` and `basis ∈ 0..4` enforced. */
+function coupFn(args: Node[], h: FnHelpers, f: (s: number, m: number, fr: number, b: Basis) => number): RuntimeValue {
+  const settle = numAt(args, 0, h)
+  if (isError(settle)) return settle
+  const mat = numAt(args, 1, h)
+  if (isError(mat)) return mat
+  const freq = numAt(args, 2, h)
+  if (isError(freq)) return freq
+  const basis = numAt(args, 3, h, 0)
+  if (isError(basis)) return basis
+  const s = Math.trunc(settle)
+  const m = Math.trunc(mat)
+  const fr = Math.trunc(freq)
+  const b = Math.trunc(basis)
+  if (s >= m || !(fr === 1 || fr === 2 || fr === 4) || b < 0 || b > 4) return err('#NUM!')
+  return f(s, m, fr, b as Basis)
 }
 
 /** DOLLARDE/DOLLARFR share a shape: a zero fraction denominator is `#DIV/0!`. */
