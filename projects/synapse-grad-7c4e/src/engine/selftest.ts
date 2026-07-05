@@ -62,6 +62,15 @@ import {
   type Transition,
 } from './dqn';
 import { GRID_LAYOUTS } from './rl-env';
+import {
+  GP,
+  makeGPDataset,
+  cholesky,
+  gpMarginalNLL,
+  solveLower,
+  DEFAULT_SHAPE,
+  type KernelKind,
+} from './gp';
 
 export interface OpCheck {
   name: string;
@@ -1555,6 +1564,66 @@ export function runSelfTest(seed = 7): SelfTestReport {
       );
       ops.push({ name: 'snn (BPTT, e2e)', maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
     }
+  }
+
+  // ---- Gaussian process (kernels · marginal likelihood through Cholesky) ------------
+  //
+  // The headline gradient of the GP lab is ∂(−log marginal likelihood)/∂θ for the kernel
+  // hyperparameters θ = (logℓ, logσ_f, logσ_n) — back-propagated straight through a Cholesky
+  // factorization. The kernel matrix K = σ_f²·Φ(θ) + σ_n²·I is assembled on the tape from the
+  // log-hyperparameter leaves (via `tile`), so a full end-to-end gradcheck of the fused
+  // `gpMarginalNLL` op (whose VJP is the textbook K̄ = ½(K⁻¹ − ααᵀ)) covers both the linear-
+  // algebra adjoint and the whole kernel construction. Every kernel family is checked.
+  {
+    const dsG = makeGPDataset('sine', 3);
+    for (const kind of ['rbf', 'matern12', 'matern32', 'matern52', 'rq', 'periodic'] as KernelKind[]) {
+      const gp = new GP(dsG.X, dsG.y, { kind, logEll: -0.1, logSf: 0.0, logSn: -1.2, shape: DEFAULT_SHAPE });
+      const gc = gradCheck(gp.allParams(), () => gp.nll(), { samplesPerParam: 1, eps: 1e-5 });
+      ops.push({ name: `gp-nll·${kind} (∂/∂θ through Cholesky)`, maxRelError: gc.maxRelError, meanRelError: gc.meanRelError, checked: gc.checked });
+    }
+  }
+  {
+    // Cholesky reconstruction: L Lᵀ = K to machine precision (the factorization itself is exact).
+    const dsG = makeGPDataset('damped', 5);
+    const gp = new GP(dsG.X, dsG.y, { kind: 'rbf', logEll: 0, logSf: 0, logSn: -1, shape: DEFAULT_SHAPE });
+    const K = gp.buildK();
+    const n = K.rows;
+    const { L } = cholesky(K.data, n);
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j <= i; j++) {
+        let s = 0;
+        for (let k = 0; k <= j; k++) s += L[i * n + k] * L[j * n + k];
+        pairs.push([s, K.data[i * n + j]]);
+      }
+    ops.push(relCheck('gp-cholesky (LLᵀ=K)', pairs));
+  }
+  {
+    // Value identity: the fused NLL equals a hand-computed ½yᵀK⁻¹y + Σlog Lᵢᵢ + n⁄2·log2π.
+    const dsG = makeGPDataset('cubic', 7);
+    const gp = new GP(dsG.X, dsG.y, { kind: 'matern32', logEll: 0.1, logSf: 0.2, logSn: -1.5, shape: DEFAULT_SHAPE });
+    const K = gp.buildK();
+    const n = K.rows;
+    const fused = gpMarginalNLL(K, gp.yc).data[0];
+    const { L } = cholesky(K.data, n);
+    const z = solveLower(L, gp.yc, n);
+    let quad = 0;
+    for (let i = 0; i < n; i++) quad += z[i] * z[i];
+    let logdet = 0;
+    for (let i = 0; i < n; i++) logdet += Math.log(L[i * n + i]);
+    const manual = 0.5 * quad + logdet + 0.5 * n * Math.log(2 * Math.PI);
+    ops.push(relCheck('gp-nll (identity)', [[fused, manual]]));
+  }
+  {
+    // A GP interpolates: with vanishing noise the posterior mean passes through every target.
+    const dsG = makeGPDataset('sine', 11);
+    const gp = new GP(dsG.X, dsG.y, { kind: 'rbf', logEll: -0.2, logSf: 0.1, logSn: -6, shape: DEFAULT_SHAPE });
+    const post = gp.posterior(Float64Array.from(dsG.X));
+    // shift both sides by a constant so targets that happen to sit near 0 don't blow up the
+    // *relative* error — this is an absolute-accuracy check that the mean passes through y.
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < dsG.y.length; i++) pairs.push([post.mean[i] + 5, dsG.y[i] + 5]);
+    ops.push(relCheck('gp-posterior (interpolation)', pairs));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
