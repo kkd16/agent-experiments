@@ -11,7 +11,7 @@ import { classifyKoppen } from './koppen'
 import { buildPolitical } from './political'
 import { traceNamedRivers } from './rivers'
 import { buildEconomy } from './economy'
-import { buildChronicle } from './history'
+import { simulateHistory } from './simulation'
 import { B, classify } from './biomes'
 import { generateLabels } from './names'
 
@@ -96,16 +96,20 @@ export function generateWorld(params: WorldParams): WorldMap {
     buildEconomy(mesh, params, fields, continentality, political),
   )
 
-  // --- History: a generated chronicle of the age ---
+  // --- The Ages: a turn-by-turn history simulation, and the emergent chronicle it writes ---
   const history = stage('history', () =>
-    buildChronicle(mesh, params, {
-      cities: political.cities,
-      province: political.province,
-      provinceInfo: economy.provinceInfo,
-      namedRivers,
-      plateBoundary,
+    simulateHistory(mesh, params, {
       elevation,
+      ocean: hydro.ocean,
+      lake: hydro.lake,
+      coast: hydro.coast,
+      flux: hydro.flux,
+      moisture: hydro.moisture,
+      temperature,
       biome,
+      continentality,
+      plateBoundary,
+      namedRivers,
     }),
   )
 
@@ -159,6 +163,7 @@ export function generateWorld(params: WorldParams): WorldMap {
     provinceInfo: economy.provinceInfo,
     chronicle: history.events,
     era: history.era,
+    history,
     timings,
   }
 }

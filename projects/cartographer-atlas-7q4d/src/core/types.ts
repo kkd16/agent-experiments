@@ -120,6 +120,8 @@ export type ChronicleKind =
   | 'golden'
   | 'famine'
   | 'road'
+  | 'collapse'
+  | 'secession'
 export interface ChronicleEvent {
   year: number
   title: string
@@ -128,6 +130,74 @@ export interface ChronicleEvent {
   /** Optional map location the event refers to. */
   x?: number
   y?: number
+}
+
+// --- The Ages: a turn-based history simulation (Session 4) ----------------
+
+/** A polity in the history simulation — a realm that rises, spreads and may fall. */
+export interface SimRealm {
+  id: number
+  name: string
+  /** Colour hue 0..360 for the ages overlay (stable across its whole life). */
+  hue: number
+  /** Region the realm was founded on (its first seat). */
+  origin: number
+  foundedYear: number
+  /** Year the realm fell, or -1 if it survives to the present age. */
+  deathYear: number
+  /** Greatest population it ever reached. */
+  peakPop: number
+  /** Greatest land area (cells) it ever held. */
+  peakArea: number
+}
+
+/** A city as it stands during one turn of the simulation. */
+export interface SimCity {
+  /** Region the city sits on. */
+  r: number
+  name: string
+  /** Owning realm id, or -1 if the realm has fallen and it is a free town / ruin. */
+  realm: number
+  capital: boolean
+  /** Size tier 0..3, driven by the local realm's fortunes. */
+  tier: number
+}
+
+/** Per-realm live statistics at one instant on the timeline. */
+export interface RealmSnapshot {
+  id: number
+  /** Land cells held this turn. */
+  area: number
+  /** People this turn. */
+  population: number
+  /** Capital region index (its principal seat), or -1. */
+  capital: number
+}
+
+/** One turn of the simulation, snapshotted so the timeline can scrub through it. */
+export interface HistoryFrame {
+  year: number
+  /** Realm id owning each region, or -1 for unclaimed land / water. */
+  owner: Int32Array
+  /** Live stats for the realms alive this turn, largest first. */
+  realms: RealmSnapshot[]
+  /** Cities standing this turn. */
+  cities: SimCity[]
+  /** Indices into `WorldHistory.events` for events that fell on this turn. */
+  events: number[]
+}
+
+/** The fully simulated history of the world: realms, per-turn frames and the chronicle. */
+export interface WorldHistory {
+  era: string
+  startYear: number
+  endYear: number
+  /** Every realm that ever existed, in the order they were founded. */
+  realms: SimRealm[]
+  /** One snapshot per turn, oldest first; the last is the present age. */
+  frames: HistoryFrame[]
+  /** The emergent chronicle drawn from the run, oldest first. */
+  events: ChronicleEvent[]
 }
 
 /** The dual mesh: Voronoi regions and their Delaunay triangle duals. */
@@ -232,10 +302,14 @@ export interface WorldMap {
   resource: Uint8Array
   /** Per-province aggregated economy, indexed by province/city id. */
   provinceInfo: ProvinceInfo[]
-  /** A generated timeline of the world's history. */
+  /** A generated timeline of the world's history (the emergent chronicle from `history`). */
   chronicle: ChronicleEvent[]
   /** The name of the era the chronicle is set in. */
   era: string
+
+  // --- The Ages: the simulated, scrubbable history (Session 4) --------------
+  /** The full turn-by-turn history simulation: realms, frames and events. */
+  history: WorldHistory
 
   /** Wall-clock milliseconds spent in each pipeline stage, for the HUD. */
   timings: Record<string, number>

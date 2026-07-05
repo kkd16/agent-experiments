@@ -14,6 +14,7 @@ import MapCanvas from './ui/MapCanvas'
 import Legend from './ui/Legend'
 import Inspector from './ui/Inspector'
 import Chronicle from './ui/Chronicle'
+import Timeline from './ui/Timeline'
 
 const STORE_KEY = 'cartographer.state.v2'
 
@@ -53,13 +54,24 @@ export default function App(): ReactElement {
   const [selected, setSelected] = useState<number | null>(null)
   const [showChronicle, setShowChronicle] = useState(false)
 
-  // A fresh world invalidates the old cell selection — reset during render (the
-  // sanctioned React pattern for deriving state from a changed value).
+  // --- The Ages timeline (transient — never persisted, like the cell selection) ---
+  const [agesOpen, setAgesOpen] = useState(false)
+  const [frameIdx, setFrameIdx] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const [speed, setSpeed] = useState(1)
+
+  // A fresh world invalidates the old cell selection and rewinds the timeline to the
+  // present age — reset during render (the sanctioned React pattern for deriving state
+  // from a changed value).
   const [prevWorld, setPrevWorld] = useState(world)
   if (world !== prevWorld) {
     setPrevWorld(world)
     setSelected(null)
+    setPlaying(false)
+    setFrameIdx(world ? world.history.frames.length - 1 : 0)
   }
+
+  const frame = agesOpen && world ? world.history.frames[Math.min(frameIdx, world.history.frames.length - 1)] : null
 
   useEffect(() => {
     save(params, view)
@@ -109,15 +121,37 @@ export default function App(): ReactElement {
         generating={generating}
         chronicleOpen={showChronicle}
         onToggleChronicle={() => setShowChronicle((s) => !s)}
+        agesOpen={agesOpen}
+        onToggleAges={() => setAgesOpen((s) => !s)}
       />
       <main className="stage">
-        <MapCanvas world={world} view={view} selected={selected} onPick={setSelected} />
-        {world && <Legend world={world} view={view} />}
+        <MapCanvas world={world} view={view} selected={selected} onPick={setSelected} frame={frame} />
+        {world && !agesOpen && <Legend world={world} view={view} />}
         {world && selected != null && (
-          <Inspector world={world} region={selected} onClose={() => setSelected(null)} />
+          <Inspector
+            world={world}
+            region={selected}
+            frame={frame}
+            onClose={() => setSelected(null)}
+          />
         )}
         {world && showChronicle && (
           <Chronicle world={world} onClose={() => setShowChronicle(false)} />
+        )}
+        {world && agesOpen && (
+          <Timeline
+            world={world}
+            frameIdx={frameIdx}
+            setFrameIdx={setFrameIdx}
+            playing={playing}
+            setPlaying={setPlaying}
+            speed={speed}
+            setSpeed={setSpeed}
+            onClose={() => {
+              setAgesOpen(false)
+              setPlaying(false)
+            }}
+          />
         )}
         {!world && generating && <div className="loading">Generating world…</div>}
       </main>

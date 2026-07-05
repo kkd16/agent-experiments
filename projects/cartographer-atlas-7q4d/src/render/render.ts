@@ -5,12 +5,13 @@
 // All drawing is in world units (0..width, 0..height); the caller applies any
 // device-pixel-ratio scaling.
 
-import type { WorldMap } from '../core/types'
+import type { HistoryFrame, WorldMap } from '../core/types'
 import type { Palette, RGB } from './palettes'
 import { rgbToCss } from './palettes'
 import { computeContours, defaultLevels } from '../core/contours'
 import type { Overlay, ViewOptions } from '../ui/viewOptions'
 import { overlayLandColor } from './overlay'
+import { drawAgesTerritory, drawAgesFurniture } from './history'
 import { Noise2D } from '../core/noise'
 import { Rng } from '../core/rng'
 
@@ -19,6 +20,11 @@ export interface RenderOptions {
   view: ViewOptions
   /** Region index highlighted by the inspector, or null. */
   selected?: number | null
+  /**
+   * When the timeline is active, the history frame to draw. Its realm-tinted territories,
+   * capitals and dated cartouche replace the static province / road / city layers.
+   */
+  frame?: HistoryFrame | null
 }
 
 const nextHalfedge = (e: number): number => (e % 3 === 2 ? e - 2 : e + 1)
@@ -755,22 +761,29 @@ export function renderWorld(
   ctx.fillStyle = pal.background
   ctx.fillRect(0, 0, W, H)
 
+  // When the timeline is active, the ages layer stands in for the present-day civilisation
+  // layers (provinces, roads, cities & place labels) — the map becomes a political snapshot
+  // of the scrubbed year.
+  const ages = opts.frame ?? null
+
   drawCells(ctx, world, opts)
-  if (v.showPlates) drawPlates(ctx, world)
-  if (v.showProvinces) drawProvinceFills(ctx, world, pal)
+  if (v.showPlates && !ages) drawPlates(ctx, world)
+  if (ages) drawAgesTerritory(ctx, world, ages, pal)
+  if (v.showProvinces && !ages) drawProvinceFills(ctx, world, pal)
   if (v.showContours) drawContours(ctx, world, pal)
-  if (v.showBorders) drawBorders(ctx, world, pal)
-  if (v.showProvinces) drawProvinceBorders(ctx, world, pal)
+  if (v.showBorders && !ages) drawBorders(ctx, world, pal)
+  if (v.showProvinces && !ages) drawProvinceBorders(ctx, world, pal)
   if (v.showCoast) drawCoast(ctx, world, pal)
-  if (v.showWind) drawWind(ctx, world, pal)
+  if (v.showWind && !ages) drawWind(ctx, world, pal)
   if (v.showRivers) drawRivers(ctx, world, pal)
-  if (v.showRoads) drawRoads(ctx, world, pal)
+  if (v.showRoads && !ages) drawRoads(ctx, world, pal)
   if (v.showGraticule) drawGraticule(ctx, world, pal)
-  if (v.showLabels) drawLabels(ctx, world, pal)
-  if (v.showCities) {
+  if (v.showLabels && !ages) drawLabels(ctx, world, pal)
+  if (v.showCities && !ages) {
     drawCities(ctx, world, pal)
     drawCityLabels(ctx, world, pal)
   }
+  if (ages) drawAgesFurniture(ctx, world, ages, pal)
   if (v.showGrain) drawGrain(ctx, world, pal)
   drawVignette(ctx, world)
   if (v.showFrame) drawFrame(ctx, world, pal)

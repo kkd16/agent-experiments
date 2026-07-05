@@ -4,7 +4,7 @@
 // seasonal temperature range, the river the cell drains to, and its realm's economy.
 
 import type { ReactElement } from 'react'
-import type { WorldMap } from '../core/types'
+import type { HistoryFrame, WorldMap } from '../core/types'
 import { BIOMES } from '../core/biomes'
 import { KOPPEN, KOPPEN_NONE } from '../core/koppen'
 import { RESOURCES } from '../core/economy'
@@ -13,6 +13,8 @@ interface Props {
   world: WorldMap
   region: number
   onClose: () => void
+  /** When the timeline is open, the frame whose ruling realm to report. */
+  frame?: HistoryFrame | null
 }
 
 function row(label: string, value: string): ReactElement {
@@ -27,7 +29,7 @@ function row(label: string, value: string): ReactElement {
 const RES_NAME: Record<string, string> = {}
 RESOURCES.forEach((r) => (RES_NAME[r.key] = r.name))
 
-export default function Inspector({ world, region, onClose }: Props): ReactElement | null {
+export default function Inspector({ world, region, onClose, frame }: Props): ReactElement | null {
   if (region < 0 || region >= world.mesh.numSolid) return null
   const p = world.params
   const denom = 1 - p.seaLevel || 1
@@ -58,6 +60,10 @@ export default function Inspector({ world, region, onClose }: Props): ReactEleme
   const kop = world.koppen[region]
   const riverIdx = world.riverName[region]
   const river = riverIdx >= 0 ? world.namedRivers[riverIdx] : null
+
+  // When the timeline is open, report who ruled this cell in the scrubbed year.
+  const agesOwner = frame && !isOcean && !isLake ? frame.owner[region] : -1
+  const agesRealm = agesOwner >= 0 ? world.history.realms[agesOwner] : null
 
   return (
     <div className="inspector">
@@ -91,6 +97,9 @@ export default function Inspector({ world, region, onClose }: Props): ReactEleme
         {info && info.population > 0 && row('Realm pop.', `≈ ${info.population.toLocaleString()}`)}
         {info && info.exports.length > 0 &&
           row('Exports', info.exports.map((e) => RES_NAME[e] ?? e).join(', '))}
+        {frame && !isOcean && !isLake && <div className="insp-sep" />}
+        {frame && !isOcean && !isLake &&
+          row(`Ruler · ${frame.year}`, agesRealm ? agesRealm.name : 'Unclaimed wild')}
       </div>
     </div>
   )

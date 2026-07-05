@@ -19,6 +19,8 @@ const ICON: Record<ChronicleKind, string> = {
   golden: '✨',
   famine: '🥀',
   road: '🛤️',
+  collapse: '🏚️',
+  secession: '⚑',
 }
 
 export default function Chronicle({ world, onClose }: Props): ReactElement {
