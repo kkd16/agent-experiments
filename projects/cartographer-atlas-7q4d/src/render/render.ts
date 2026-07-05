@@ -589,6 +589,45 @@ function drawWind(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette):
   }
 }
 
+/** Great-current ribbons + italic labels, drawn over the Currents / Sea-temp overlays. */
+function drawNamedCurrents(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { mesh } = world
+  const named = world.circulation.atlas.named
+  if (named.length === 0) return
+  const ink = pal.riverLabel ?? pal.water
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  for (const nc of named) {
+    if (nc.cells.length < 2) continue
+    const w = 1.4 + nc.meanSpeed * 4
+    // Casing, then the ribbon, for a little depth.
+    for (const pass of [0, 1]) {
+      ctx.strokeStyle = pass === 0 ? 'rgba(6,18,30,0.5)' : ink
+      ctx.lineWidth = pass === 0 ? w + 1.8 : w
+      ctx.globalAlpha = pass === 0 ? 0.5 : 0.85
+      ctx.beginPath()
+      ctx.moveTo(mesh.px[nc.cells[0]], mesh.py[nc.cells[0]])
+      for (let i = 1; i < nc.cells.length; i++) ctx.lineTo(mesh.px[nc.cells[i]], mesh.py[nc.cells[i]])
+      ctx.stroke()
+    }
+  }
+  ctx.globalAlpha = 1
+  // Labels along the middle of the top few ribbons.
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (const nc of named.slice(0, 4)) {
+    const mid = nc.cells[Math.floor(nc.cells.length / 2)]
+    const size = 10.5
+    ctx.font = `italic 600 ${size}px Georgia, "Times New Roman", serif`
+    ctx.lineWidth = 2.4
+    ctx.strokeStyle = pal.labelStroke
+    ctx.lineJoin = 'round'
+    ctx.strokeText(nc.name, mesh.px[mid], mesh.py[mid] - 6)
+    ctx.fillStyle = ink
+    ctx.fillText(nc.name, mesh.px[mid], mesh.py[mid] - 6)
+  }
+}
+
 /** A compass rose in a corner, engraved in the palette's ink. */
 function drawCompass(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
   const W = world.params.width
@@ -800,6 +839,7 @@ export function renderWorld(
       /* thumbnails / degraded canvases: skip the flow layer */
     }
   }
+  if ((v.overlay === 'current' || v.overlay === 'sst') && !ages) drawNamedCurrents(ctx, world, pal)
   if (v.showRivers) drawRivers(ctx, world, pal)
   if (v.showRoads && !ages) drawRoads(ctx, world, pal)
   if (v.showGraticule) drawGraticule(ctx, world, pal)

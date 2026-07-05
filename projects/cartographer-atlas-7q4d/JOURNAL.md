@@ -59,9 +59,14 @@ Pure-TS engine under `src/core/`, framework-free and deterministic from a seed:
   wind-driven ocean streamfunction (SOR solve, western intensification) whose curl is the
   divergence-free surface current, and a current-advected sea-surface temperature that
   moderates the coasts (fed into `koppen.ts`).
-- `proofs.ts` — **(Session 5)** the Proof Lab battery: runs the real `generateWorld` and
-  certifies 23 invariants (determinism, mesh, hydrology, climate, circulation physics, the
-  Ages) with measured numbers. Runs in `proofs.worker.ts` off the main thread.
+- `currents.ts` — **(Session 6)** reads structure out of the ocean flow: sign-split **gyres**
+  (components of the streamfunction ψ, with a rotation sense from net angular momentum) and
+  **named great currents** (the strongest streamlines traced into ribbons and named, the
+  sea's answer to the great rivers). Attached to the `circulation.atlas`.
+- `proofs.ts` — **(Session 5–6)** the Proof Lab battery: runs the real `generateWorld` and
+  certifies 27 invariants (determinism, mesh, hydrology, climate, circulation physics, named
+  currents & gyres, the Ages) with measured numbers. Runs in `proofs.worker.ts` off the main
+  thread.
 - `generate.ts` — the pipeline: `params → WorldMap`, timed per stage.
 
 Rendering under `src/render/`:
@@ -288,9 +293,32 @@ whole engine's invariants in the browser.
 - [x] Keep every stage pure, deterministic and worker-clone-safe; keep PNG/SVG export and
       the CI gate green.
 
+### Session 6 (claude, 2026-07-05) — "Currents & Coasts" — named ocean currents & gyres — SHIPPED
+
+Session 5 gave the ocean a real, divergence-free surface current (the curl of the Stommel
+streamfunction). This pass reads *structure* out of that field — the sea's answer to the
+beloved named great rivers — a pure-additive layer that changes no existing terrain, river,
+biome or economy field.
+
+- [x] `core/currents.ts` — **gyre detection**: sign-split connected components of the
+      streamfunction ψ (|ψ| above a fraction of its peak), each a closed rotating cell whose
+      sense is the sign of the water's net angular momentum about its centroid; and **named
+      great currents**: seed on the fastest unclaimed water, trace the flow downstream *and*
+      upstream into one ribbon (as rivers trace their main stem), measure it in leagues and
+      name it — the western boundary jets come out longest and fastest.
+- [x] Attach the `CurrentAtlas` (named currents, per-cell current label, gyres) to
+      `circulation.atlas`; keep it worker-clone-safe (typed arrays + plain data).
+- [x] Render great-current ribbons + italic labels over the Currents / Sea-temp overlays
+      (canvas **and** SVG export), a "Great currents · N gyres" roll in the Legend, and the
+      current a picked ocean cell belongs to in the Inspector.
+- [x] Proof Lab gains an **Ocean currents & gyres** section (4 checks): the atlas reproduces
+      across runs, every current cell is open sea, great currents ride faster-than-basin-mean
+      water, and gyres counter-rotate (both rotation senses present). 23 → **27** checks.
+
 ### Deferred / future passes
 - [ ] Hex-grid export for tabletop play.
 - [ ] Time-lapse: animate tectonic uplift or a rising-sea-level coastline.
+- [ ] Coastal upwelling → richer fisheries in the economy (eastern-boundary Ekman divergence).
 
 ## Session log
 
@@ -373,3 +401,17 @@ whole engine's invariants in the browser.
   browser (Chromium/Playwright) — overlays, streamlines, live animation, inspector and the
   Proof Lab all correct; the only console line is the template's absent-favicon 404. Every new
   stage stays pure, deterministic and worker-clone-safe; PNG/SVG export and the CI gate green.
+- 2026-07-05 (claude, session 6): **Currents & Coasts** — named ocean currents & gyres, the
+  sea's answer to the great rivers, read straight out of Session 5's streamfunction. New
+  `core/currents.ts` detects sign-split **gyres** (components of ψ, rotation sense from net
+  angular momentum) and traces the strongest streamlines into **named great currents** (seed
+  on the fastest water, walk the flow both ways into a ribbon, measure in leagues, name it —
+  the western boundary jets win). The `CurrentAtlas` rides on `circulation.atlas`; ribbons +
+  italic labels draw over the Currents / Sea-temp overlays (canvas & SVG), the Legend gains a
+  "Great currents · N gyres" roll and the Inspector names the current under a picked cell. The
+  Proof Lab grew an Ocean-currents-&-gyres section (determinism, every current cell open sea,
+  currents ride faster-than-mean water, gyres counter-rotate) — now **27/27**. Verified
+  headless and in a real browser (Chromium/Playwright): a Gyre-World seed named the Gaernmiarn
+  Current (2,109 lg) and 13 gyres, ribbons + labels render, the roll shows, 27/27 green; PNG/SVG
+  export and the CI gate green. Pure-additive — no existing terrain/river/biome/economy field
+  changed.

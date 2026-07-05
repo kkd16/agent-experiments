@@ -34,6 +34,8 @@ export default function Legend({ world, view }: Props): ReactElement {
 
   const legend = useMemo(() => overlayLegend(world, view.overlay), [world, view.overlay])
   const topRivers = world.namedRivers.slice(0, 3)
+  const showCurrents = view.overlay === 'current' || view.overlay === 'sst'
+  const topCurrents = world.circulation.atlas.named.slice(0, 3)
 
   return (
     <div className="legend">
@@ -105,16 +107,30 @@ export default function Legend({ world, view }: Props): ReactElement {
         </div>
       )}
 
-      {topRivers.length > 0 && (
+      {showCurrents && topCurrents.length > 0 ? (
         <div className="legend-rivers">
-          <div className="legend-heading">Great rivers</div>
-          {topRivers.map((r) => (
-            <div key={r.name} className="river-row">
-              <span className="river-name">{r.name}</span>
-              <span className="river-len">{r.lengthLeagues.toLocaleString()} lg</span>
+          <div className="legend-heading">
+            Great currents · {world.circulation.atlas.gyres.length} gyres
+          </div>
+          {topCurrents.map((c) => (
+            <div key={c.name} className="river-row">
+              <span className="river-name">{c.name}</span>
+              <span className="river-len">{c.lengthLeagues.toLocaleString()} lg</span>
             </div>
           ))}
         </div>
+      ) : (
+        topRivers.length > 0 && (
+          <div className="legend-rivers">
+            <div className="legend-heading">Great rivers</div>
+            {topRivers.map((r) => (
+              <div key={r.name} className="river-row">
+                <span className="river-name">{r.name}</span>
+                <span className="river-len">{r.lengthLeagues.toLocaleString()} lg</span>
+              </div>
+            ))}
+          </div>
+        )
       )}
     </div>
   )
