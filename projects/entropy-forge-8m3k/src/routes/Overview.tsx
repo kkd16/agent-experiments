@@ -19,6 +19,7 @@ const MODULES = [
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
   { route: 'deflate', name: 'DEFLATE & gzip', desc: 'The real RFC 1951/1952 codec — its output round-trips through the browser’s own gunzip.' },
+  { route: 'jpeg', name: 'JPEG · Rate–Distortion', desc: 'The lossy pillar — Shannon’s third theorem. DCT + quantisation, and the browser decodes our .jpg.' },
   { route: 'channel', name: 'The Noisy Channel', desc: 'Shannon’s other theorem — capacity, and why redundancy becomes resilience.' },
   { route: 'reedsolomon', name: 'Reed–Solomon', desc: 'The code in QR/CD/DVD/Voyager — corrects byte errors and bursts over GF(256).' },
   { route: 'convolutional', name: 'Convolutional · Viterbi', desc: 'The trellis code + maximum-likelihood decoder that flew on Voyager.' },
@@ -38,7 +39,7 @@ export function Overview() {
   return (
     <div>
       <PageHeader
-        kicker="Information Theory · Both of Shannon's Theorems"
+        kicker="Information Theory · All Three of Shannon's Theorems"
         title="Entropy Forge"
         lede={
           <>
@@ -47,10 +48,13 @@ export function Overview() {
             Huffman, arithmetic, <strong>rANS/tANS</strong>, <strong>PPM</strong>, context mixing, LZ77/LZW,
             a Burrows–Wheeler stack, and the real DEFLATE/gzip, LZMA and PNG formats — each provably
             round-tripping its input. The <strong>channel-coding</strong> half builds Shannon's{' '}
-            <em>other</em> theorem: <strong>Hamming</strong>, <strong>Reed–Solomon</strong>,{' '}
-            <strong>convolutional/Viterbi</strong> and <strong>LDPC</strong> error-correction, each
-            provably repairing every corruption within its guarantee. Watch entropy turn into bits — then
-            watch redundancy turn into resilience.
+            <em>second</em> theorem: <strong>Hamming</strong>, <strong>Reed–Solomon</strong>,{' '}
+            <strong>convolutional/Viterbi</strong>, <strong>LDPC</strong> and <strong>polar</strong>{' '}
+            error-correction, each provably repairing every corruption within its guarantee. And the{' '}
+            <strong>rate–distortion</strong> pillar builds the <em>third</em>: a from-scratch{' '}
+            <strong>JPEG</strong> that steps past the entropy floor by discarding only what the eye
+            can't see — the browser's own decoder renders the file it emits. Watch entropy turn into
+            bits, redundancy turn into resilience, and bits buy fidelity.
           </>
         }
       />

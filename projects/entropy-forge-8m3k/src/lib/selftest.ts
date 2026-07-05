@@ -63,6 +63,10 @@ import {
   CRC8,
 } from './polar.ts'
 import { RNG as ChannelRNG, awgn as channelAwgn, ebN0dBtoEsN0 } from './channel.ts'
+import { fdct8x8, idct8x8, ZIGZAG as JZIGZAG, DEZIGZAG as JDEZIGZAG } from './dct.ts'
+import { encodeJPEG, decodeJPEG, psnr as jpsnr, rgbToYCbCr, yCbCrToRgb, type Subsampling } from './jpeg.ts'
+import { SAMPLES as IMG_SAMPLES } from './pngSamples.ts'
+import type { RGBAImage } from './png.ts'
 
 export interface TestCase {
   group: string
@@ -351,10 +355,132 @@ export function runSelfTest(): TestCase[] {
   // ---- PNG codec (from scratch, on our own DEFLATE) ----
   runPngTests(results)
 
+  // ---- JPEG codec (the lossy pillar — DCT + quantisation + Huffman) ----
+  runJpegTests(results)
+
   // ---- Channel coding (Shannon's other theorem) ----
   runChannelTests(results)
 
   return results
+}
+
+// The lossy pillar gets its own correctness gate. Unlike the lossless codecs it
+// cannot be checked by bit-exact round-trip (lossy means the pixels legitimately
+// differ), so the invariants are: (1) the DCT is an exact orthonormal transform,
+// (2) the colour transform inverts to ≤1 LSB, (3) the full codec reconstructs
+// within a fidelity floor that rises with quality and never *beats* 4:4:4 when
+// subsampling, (4) the bitstream is a well-formed, byte-stuffed JFIF file, and
+// (5) the encoder is deterministic (which is what lets a decoder replay it).
+function runJpegTests(results: TestCase[]): void {
+  // (1) DCT / zig-zag
+  let dctErr = 0
+  let ls = 0x9e3779b9 >>> 0
+  const rnd = () => {
+    ls = (1103515245 * ls + 12345) >>> 0
+    return (ls >>> 8) / (1 << 24)
+  }
+  for (let t = 0; t < 300; t++) {
+    const b = new Float64Array(64)
+    for (let i = 0; i < 64; i++) b[i] = Math.round(rnd() * 255) - 128
+    const r = idct8x8(fdct8x8(b))
+    for (let i = 0; i < 64; i++) dctErr = Math.max(dctErr, Math.abs(b[i] - r[i]))
+  }
+  results.push({ group: 'JPEG · DCT', name: 'idct∘fdct = identity (orthonormal)', pass: dctErr < 1e-9, detail: `max err ${dctErr.toExponential(1)} over 300 blocks` })
+  const constBlk = new Float64Array(64).fill(10)
+  const cf = fdct8x8(constBlk)
+  let ac = 0
+  for (let i = 1; i < 64; i++) ac += Math.abs(cf[i])
+  results.push({ group: 'JPEG · DCT', name: 'flat block → DC=8·v, all AC = 0', pass: Math.abs(cf[0] - 80) < 1e-9 && ac < 1e-9, detail: `DC=${cf[0].toFixed(3)}` })
+  const eb = new Float64Array(64)
+  for (let i = 0; i < 64; i++) eb[i] = ((i * 37) % 200) - 100
+  const ef = fdct8x8(eb)
+  let e0 = 0, e1 = 0
+  for (let i = 0; i < 64; i++) { e0 += eb[i] * eb[i]; e1 += ef[i] * ef[i] }
+  results.push({ group: 'JPEG · DCT', name: 'energy preserved (Parseval)', pass: Math.abs(e0 - e1) < 1e-6, detail: `Σ|f|² ${e0.toFixed(1)} = Σ|F|² ${e1.toFixed(1)}` })
+  const zzSet = new Set(JZIGZAG)
+  results.push({ group: 'JPEG · DCT', name: 'zig-zag scan is a bijection of 0..63', pass: zzSet.size === 64 && JZIGZAG.every((v, k) => JDEZIGZAG[v] === k), detail: '64 distinct positions, inverse consistent' })
+
+  // (2) colour transform
+  let cErr = 0
+  for (let r = 0; r <= 255; r += 17) for (let g = 0; g <= 255; g += 17) for (let b = 0; b <= 255; b += 17) {
+    const [Y, Cb, Cr] = rgbToYCbCr(r, g, b)
+    const [rr, gg, bb] = yCbCrToRgb(Y, Cb, Cr)
+    cErr = Math.max(cErr, Math.abs(r - rr), Math.abs(g - gg), Math.abs(b - bb))
+  }
+  results.push({ group: 'JPEG · colour', name: 'RGB↔YCbCr inverts to ≤1 LSB', pass: cErr <= 1, detail: `max err ${cErr}` })
+
+  // (3)+(4)+(5) the full codec
+  const sample = (id: string, w: number, h: number): RGBAImage => IMG_SAMPLES.find((s) => s.id === id)!.make(w, h)
+  const subs: Subsampling[] = ['4:4:4', '4:2:2', '4:2:0']
+  for (const id of ['gradient', 'wheel', 'photo', 'rings']) {
+    const img = sample(id, 48, 40)
+    let pFull = 0
+    let allSane = true
+    let framing = true
+    let stuffing = true
+    for (const sub of subs) {
+      const enc = encodeJPEG(img, { quality: 90, subsampling: sub })
+      const dec = decodeJPEG(enc.bytes)
+      const p = jpsnr(img, dec.image)
+      if (sub === '4:4:4') pFull = p
+      if (dec.width !== img.width || dec.height !== img.height) allSane = false
+      if (sub === '4:4:4' ? p < 30 : p < 18 || p > pFull + 0.5) allSane = false
+      if (enc.bytes[0] !== 0xff || enc.bytes[1] !== 0xd8 || enc.bytes[enc.bytes.length - 2] !== 0xff || enc.bytes[enc.bytes.length - 1] !== 0xd9) framing = false
+      const seg = enc.markers.find((m) => m.name === 'entropy data')
+      if (seg) for (let i = seg.offset; i < seg.offset + seg.length - 1; i++) if (enc.bytes[i] === 0xff && enc.bytes[i + 1] !== 0x00) stuffing = false
+    }
+    results.push({ group: 'JPEG · codec', name: `${id}: 4:4:4 high-fidelity, subsampling ≤ 4:4:4`, pass: allSane, detail: allSane ? `4:4:4 PSNR ${pFull.toFixed(1)} dB` : 'fidelity out of range' })
+    results.push({ group: 'JPEG · container', name: `${id}: SOI…EOI framing + entropy byte-stuffing`, pass: framing && stuffing, detail: framing && stuffing ? 'valid JFIF, every 0xFF stuffed' : 'malformed stream' })
+  }
+
+  // near-lossless at q100 4:4:4
+  {
+    const img = sample('gradient', 32, 32)
+    const p = jpsnr(img, decodeJPEG(encodeJPEG(img, { quality: 100, subsampling: '4:4:4' }).bytes).image)
+    results.push({ group: 'JPEG · codec', name: 'quality 100 / 4:4:4 is near-lossless', pass: p > 45, detail: `PSNR ${p.toFixed(1)} dB` })
+  }
+
+  // quality monotonicity + rate–distortion (more bits buy more fidelity)
+  {
+    const img = sample('photo', 64, 48)
+    let prevP = -1, prevSize = -1
+    let monoP = true, monoS = true
+    for (const q of [20, 40, 60, 80, 95]) {
+      const enc = encodeJPEG(img, { quality: q, subsampling: '4:2:0' })
+      const p = jpsnr(img, decodeJPEG(enc.bytes).image)
+      if (p < prevP - 0.5) monoP = false
+      if (enc.bytes.length < prevSize) monoS = false
+      prevP = p
+      prevSize = enc.bytes.length
+    }
+    results.push({ group: 'JPEG · rate–distortion', name: 'PSNR rises monotonically with quality', pass: monoP, detail: 'the operational R–D curve is well-ordered' })
+    results.push({ group: 'JPEG · rate–distortion', name: 'file size grows with quality', pass: monoS, detail: 'more rate → less distortion' })
+  }
+
+  // grayscale + determinism
+  {
+    const img = sample('photo', 40, 32)
+    const enc = encodeJPEG(img, { quality: 85, grayscale: true })
+    const dec = decodeJPEG(enc.bytes)
+    const gray = dec.components === 1 && dec.image.rgba[0] === dec.image.rgba[1] && dec.image.rgba[1] === dec.image.rgba[2]
+    results.push({ group: 'JPEG · codec', name: 'grayscale: 1 component, R=G=B out', pass: gray, detail: `${dec.components} component` })
+    const a = encodeJPEG(img, { quality: 77 }).bytes
+    const b = encodeJPEG(img, { quality: 77 }).bytes
+    results.push({ group: 'JPEG · codec', name: 'encoder is deterministic', pass: bytesEqual(a, b), detail: `${a.length}B, identical twice` })
+  }
+
+  // odd dimensions (MCU edge padding), isolated from chroma subsampling
+  {
+    let ok = true
+    for (const [w, h] of [[7, 5], [17, 3], [1, 1], [33, 31]] as [number, number][]) {
+      const img = sample('gradient', w, h)
+      const dec = decodeJPEG(encodeJPEG(img, { quality: 90, subsampling: '4:4:4' }).bytes)
+      if (dec.width !== w || dec.height !== h || jpsnr(img, dec.image) < 30) ok = false
+      const dec2 = decodeJPEG(encodeJPEG(img, { quality: 85, subsampling: '4:2:0' }).bytes)
+      if (dec2.width !== w || dec2.height !== h) ok = false
+    }
+    results.push({ group: 'JPEG · codec', name: 'odd dimensions padded & cropped exactly', pass: ok, detail: '7×5, 17×3, 1×1, 33×31 · 4:4:4 & 4:2:0' })
+  }
 }
 
 // The channel-coding pillar earns its own correctness gate: every error-
@@ -825,6 +951,100 @@ export async function runInterop(samples?: { name: string; data: Uint8Array }[])
       })
     } catch (e) {
       out.push({ name: `interop · ${name}`, pass: false, detail: (e as Error).message })
+    }
+  }
+  return out
+}
+
+// ---- JPEG native interoperability (the lossy-pillar showstopper) ----
+//
+// The strongest proof a from-scratch image codec can offer: the *browser's own*
+// JPEG decoder must render the file we emit, and our decoder must read the file
+// the browser emits. Because JPEG is lossy the pixels legitimately differ, so
+// the bar is a PSNR agreement threshold rather than a bit-for-bit match — but
+// the two independent codecs converging on the same picture is exactly the
+// interop guarantee the gzip/PNG pillars prove losslessly.
+
+export function jpegInteropAvailable(): boolean {
+  return (
+    typeof (globalThis as { createImageBitmap?: unknown }).createImageBitmap !== 'undefined' &&
+    typeof document !== 'undefined'
+  )
+}
+
+function rgbaToCanvas(img: RGBAImage): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  c.width = img.width
+  c.height = img.height
+  const ctx = c.getContext('2d')
+  if (!ctx) throw new Error('no 2d context')
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0)
+  return c
+}
+
+async function sourceToRGBA(source: CanvasImageSource, w: number, h: number): Promise<RGBAImage> {
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  const ctx = c.getContext('2d')
+  if (!ctx) throw new Error('no 2d context')
+  ctx.drawImage(source, 0, 0)
+  const id = ctx.getImageData(0, 0, w, h)
+  return { width: w, height: h, rgba: Uint8Array.from(id.data) }
+}
+
+function canvasToBlob(c: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob returned null'))), 'image/jpeg', quality)
+  })
+}
+
+export async function runJpegInterop(): Promise<InteropResult[]> {
+  const out: InteropResult[] = []
+  if (!jpegInteropAvailable()) return out
+  const samples = [
+    { id: 'gradient', w: 64, h: 64 },
+    { id: 'photo', w: 80, h: 64 },
+    { id: 'wheel', w: 64, h: 64 },
+  ]
+  for (const s of samples) {
+    const def = IMG_SAMPLES.find((d) => d.id === s.id)
+    if (!def) continue
+    const img = def.make(s.w, s.h)
+    // Direction A — our encoder → the browser's decoder.
+    try {
+      const enc = encodeJPEG(img, { quality: 92, subsampling: '4:4:4' })
+      const bmp = await createImageBitmap(new Blob([enc.bytes as unknown as BlobPart], { type: 'image/jpeg' }))
+      const browserPixels = await sourceToRGBA(bmp, img.width, img.height)
+      const ourPixels = decodeJPEG(enc.bytes).image
+      const pOrig = jpsnr(img, browserPixels)
+      const pAgree = jpsnr(ourPixels, browserPixels)
+      const dimsOk = browserPixels.width === img.width && browserPixels.height === img.height
+      out.push({
+        name: `native decode(ours) · ${s.id}`,
+        pass: dimsOk && pOrig > 30 && pAgree > 34,
+        detail: `browser reads our .jpg — ${pOrig.toFixed(1)} dB vs original, ${pAgree.toFixed(1)} dB vs our decoder`,
+      })
+    } catch (e) {
+      out.push({ name: `native decode(ours) · ${s.id}`, pass: false, detail: (e as Error).message })
+    }
+    // Direction B — the browser's encoder → our decoder.
+    try {
+      const canvas = rgbaToCanvas(img)
+      const blob = await canvasToBlob(canvas, 0.92)
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      const ourPixels = decodeJPEG(bytes).image
+      const bmp = await createImageBitmap(blob)
+      const browserPixels = await sourceToRGBA(bmp, img.width, img.height)
+      const pAgree = jpsnr(ourPixels, browserPixels)
+      const dimsOk = ourPixels.width === img.width && ourPixels.height === img.height
+      out.push({
+        name: `ours.decode(native) · ${s.id}`,
+        pass: dimsOk && pAgree > 34,
+        detail: `we read the browser's .jpg — ${pAgree.toFixed(1)} dB agreement`,
+      })
+    } catch (e) {
+      out.push({ name: `ours.decode(native) · ${s.id}`, pass: false, detail: (e as Error).message })
     }
   }
   return out
