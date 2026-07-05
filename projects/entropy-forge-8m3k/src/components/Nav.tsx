@@ -35,6 +35,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
       { route: 'deflate', name: 'DEFLATE & gzip' },
       { route: 'lzma', name: 'LZMA' },
       { route: 'png', name: 'PNG · Image Studio' },
+      { route: 'jpeg', name: 'JPEG · Rate–Distortion' },
     ],
   },
   {

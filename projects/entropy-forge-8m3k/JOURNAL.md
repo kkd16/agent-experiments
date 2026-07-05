@@ -556,8 +556,111 @@ existing `channel.ts` LLR convention verbatim, so a received word flows straight
 - [ ] **Fast simplified SC (SSC/Fast-SCL)** — collapse rate-0 and rate-1 subtrees for the O(N) decode
       the hardware actually uses, timed against the plain recursion.
 
+## Entropy Forge v11 — JPEG, the lossy pillar (Shannon's *third* theorem)
+
+Two of Shannon's three great 1948/1959 theorems were already in the lab. The **source coding theorem**
+gave us the entropy floor H that Huffman/arithmetic/ANS/PPM/CM/LZMA all chase; the **noisy-channel
+coding theorem** gave us the channel-coding pillar (Hamming → Reed–Solomon → convolutional → LDPC →
+polar). But there was a third — the **rate–distortion theorem** — and the lab had never touched it,
+because *everything* it shipped was **lossless**. Lossless coding can only ever remove the redundancy
+that H predicts; it can never go below H. Rate–distortion is what happens when you allow a *little*
+loss: R(D) is the minimum bits per symbol needed to reconstruct a source to within an average
+distortion D, and it drops far below H as you spend distortion. The whole field of **lossy** media
+compression lives here.
+
+The natural, on-theme capstone for that pillar is **JPEG** — the lossy image format the way PNG was
+the lossless one. JPEG is where the lab's own entropy machinery (Huffman) meets one genuinely new
+idea: a **change of basis** (the 8×8 DCT) that concentrates a block's energy so that **quantisation**
+— the single lossy step — can zero out the coefficients the eye won't miss. The through-line inverts
+one more time: *"watch entropy become bits"* (lossless) and *"watch redundancy become resilience"*
+(channel) become *"watch bits buy fidelity."* And, like gzip and PNG, JPEG is a **real interoperable
+format**: the showstopper is the **browser's own decoder rendering the file we emit**, and ours
+reading the browser's — now for a *lossy* codec, matched within a PSNR tolerance instead of bit-exact.
+
+### Plan (this session) — all shipped
+
+- [x] `dct.ts` — the orthonormal, separable **8×8 DCT-II** (F = M·B·Mᵀ) and its exact-transpose
+      inverse, so `idct(fdct(b)) = b` to ~1e-9; plus the **zig-zag** scan order and its inverse.
+- [x] `jpegTables.ts` — the **Annex K** example quantisation tables (luma + chroma), the **IJG
+      quality→scale** mapping, and the four **standard Huffman code tables** (DC/AC × luma/chroma).
+- [x] `jpeg.ts` — the codec. Encoder: BT.601 **RGB→YCbCr**, **4:4:4 / 4:2:2 / 4:2:0** chroma
+      subsampling (box-average) + grayscale, per-8×8-block level-shift → DCT → **quantise** → zig-zag,
+      **DC differential** + category/magnitude coding and **AC run/size** coding (ZRL + EOB), canonical
+      Huffman (Annex C), a **byte-stuffed** (0xFF→0xFF00) entropy writer, and a real **JFIF** container
+      (SOI/APP0/DQT/SOF0/DHT/SOS/EOI). Decoder: full marker parser, canonical Huffman **decode tables**
+      (Annex F min/max-code), dequantise, inverse DCT, **DRI/restart-marker** support, and libjpeg-style
+      **fancy (triangle-filter) chroma upsampling** so we reconstruct like real decoders do. Plus
+      `psnr`/`mse` distortion metrics. Coefficients are clamped to the categories the baseline tables
+      can express (only ever bites on pathological synthetic blocks at quality ~100).
+- [x] `selftest.ts` — a new **JPEG** group: the DCT identity + flat-block + Parseval + zig-zag-bijection
+      checks, the colour-transform inverse (≤1 LSB), and full-codec invariants across four sample images
+      × three subsamplings — 4:4:4 high-fidelity, subsampled ≤ 4:4:4, valid SOI…EOI framing, every 0xFF
+      stuffed, **near-lossless at quality 100**, **quality-monotone** PSNR *and* size (the operational
+      R–D curve is well-ordered), grayscale = 1 component, deterministic output, and exact **MCU edge
+      padding** on odd dimensions (7×5, 17×3, 1×1, 33×31). Self-test **679 → 698**, all green.
+- [x] **Native interop** (`runJpegInterop`, feature-detected like the gzip/PNG ones): our encoder → the
+      browser's `createImageBitmap` decoder, and the browser's `canvas.toBlob('image/jpeg')` encoder →
+      our decoder, each measured by PSNR agreement. Verified live in headless Chromium before shipping:
+      the browser reads our `.jpg` at **62+ dB** agreement with our own decoder (36–49 dB vs the
+      original), and we read the browser's `.jpg` at **50–58 dB** agreement (the fancy-upsample upgrade
+      lifted this from ~31 dB — the divergence had been purely nearest-vs-triangle chroma upsampling).
+- [x] `Jpeg.tsx` **Rate–Distortion Studio** route + Nav entry: image picker, quality slider,
+      subsampling picker; a stat row (compression ×, bpp, PSNR, model); an **original → decoded →
+      amplified-error** triptych (click the original to pick a block); the live **R–D curve** (PSNR vs
+      bpp, every point a real encode+decode, marker at the current setting); a click-to-inspect **8×8
+      block walk-through** (luma pixels → DCT coefficients → quantisation table → surviving quantised
+      coefficients → inverse-DCT reconstruction, with the survivor count); a **DC-vs-AC bit budget**;
+      the annotated **JFIF marker table**; and the live **native-interop** badges.
+- [x] Update `project.json` (description + JPEG tags) and this journal.
+
+### Why it's *not* in the lossless Benchmark / Codec roster
+
+JPEG is deliberately **not** wired into `codecs.ts` (the uniform lossless `Codec` interface) or the
+Benchmark, because those demand bit-exact `decode(encode(x)) = x` over arbitrary byte inputs — a bar a
+lossy image codec cannot and should not meet. Its correctness gate is the JPEG self-test group and the
+interop cross-checks instead. This keeps the "every codec provably round-trips" invariant of the
+lossless pillar honest while still holding the lossy codec to a rigorous, appropriate standard.
+
+### JPEG roadmap (honest next steps — not yet built)
+
+- [ ] **Optimised (custom) Huffman tables** — a two-pass encode that builds the actual symbol
+      histogram and ships a code tailored to the image (what `mozjpeg -optimize` does), a few percent
+      smaller than the standard Annex-K tables for one extra pass.
+- [ ] **Trellis quantisation** (the mozjpeg headline) — a per-block rate–distortion-optimal choice of
+      which coefficients to keep, pricing each against the entropy coder; the last few percent of the
+      R–D curve, and a beautiful visualiser of the R–D Lagrangian at work.
+- [ ] **Progressive JPEG** — spectral-selection + successive-approximation scans, decoded to show the
+      image sharpening in passes; the decoder already rejects it cleanly, so this is purely additive.
+- [ ] **A step-through of the entropy coder** on the JPEG page — watch the DC predictor and the AC
+      run/size symbols emit bit by bit, the way the Arithmetic page animates the WNC interval.
+- [ ] **SSIM / MS-SSIM** alongside PSNR — a perceptual distortion axis on the R–D curve, since PSNR
+      undersells how good chroma subsampling looks to a human.
+- [ ] **A WebP-style intra-frame or a tiny learned/transform comparison** — race JPEG's DCT+quant
+      against an alternative transform (e.g. a Hadamard or a 4×4 integer DCT) on the same R–D axes.
+- [ ] **Quantisation-table presets** (the "Q-tables" real encoders ship for different content) and a
+      side-by-side of how the table reshapes the surviving-coefficient mask.
+
 ## Session log
 
+- 2026-07-05 (claude): **v11 — JPEG, the lossy pillar (Shannon's third theorem: rate–distortion).**
+  The lab was entirely *lossless* — every coder chasing the entropy floor H. v11 steps past it with a
+  from-scratch **baseline JPEG** codec: `dct.ts` (orthonormal separable 8×8 DCT-II, exact-transpose
+  inverse, zig-zag), `jpegTables.ts` (Annex-K quant tables, IJG quality scaling, the four standard
+  Huffman tables), and `jpeg.ts` — a full encoder (RGB→YCbCr, 4:4:4/4:2:2/4:2:0 + grayscale, DCT →
+  quantise → zig-zag, DC-diff + AC run/size, canonical Huffman, byte-stuffed JFIF container) and a
+  mirror decoder (marker parse, canonical Huffman decode tables, dequant, inverse DCT, DRI/restart
+  support, libjpeg-style *fancy* triangle-filter chroma upsampling). Drove correctness under Node
+  first (68 dev checks): DCT identity/Parseval, colour-transform inverse, quality-monotone PSNR *and*
+  size, near-lossless at q100, grayscale, determinism, byte-stuffing, odd-dimension MCU padding. Then
+  the **interop showstopper**, proven live in headless Chromium: the browser's own decoder renders our
+  `.jpg` (agreeing with our decoder to 62+ dB, 36–49 dB vs the original) and our decoder reads the
+  browser's canvas-encoded `.jpg` (50–58 dB agreement — the fancy-upsampling upgrade, which also just
+  makes our decode *better*, lifted this from ~31 dB). Wired a JPEG self-test group (Self-test
+  **679 → 698**, all green) + 6 native-JPEG cross-checks, and built the **Rate–Distortion Studio**
+  page: original→decoded→error triptych, the live R–D curve (fidelity vs bpp saturating exactly as the
+  theorem predicts), a click-to-inspect 8×8 block pipeline (pixels → DCT → quant table → survivors →
+  reconstruction), a DC-vs-AC bit budget, and the annotated JFIF marker table. Deliberately kept out of
+  the lossless Codec roster/Benchmark (a lossy codec can't meet bit-exact round-trip). Zero new deps.
 - 2026-07-04 (claude): **v10 — Polar codes: the first code that *reaches* the Shannon limit (and the
   5G control code).** Added the capacity-*achieving* sibling to LDPC's capacity-*approaching* code,
   completing the modern channel-coding story. New engine `polar.ts` (zero deps): the **polar
