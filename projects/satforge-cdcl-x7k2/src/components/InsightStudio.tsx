@@ -532,12 +532,18 @@ function SamplePanel() {
               sub={`χ² ${run.ugRep.chiSquare.toFixed(0)} / ${run.ugRep.chiDof} dof`}
               tone={run.naiveRep && run.ugRep.tvDistance < run.naiveRep.tvDistance ? 'good' : undefined}
             />
+            <Stat
+              label="Uniform? (χ² test)"
+              value={run.ugRep.looksUniform === null ? 'n/a' : run.ugRep.looksUniform ? '✓ yes' : '✗ no'}
+              sub={run.ugRep.looksUniform === null ? 'too few models' : `p = ${fmtP(run.ugRep.pValue)}`}
+              tone={run.ugRep.looksUniform === null ? undefined : run.ugRep.looksUniform ? 'good' : 'bad'}
+            />
             {run.naiveRep && (
               <Stat
-                label="Naive TV distance"
-                value={run.naiveRep.tvDistance.toFixed(3)}
-                sub={`χ² ${run.naiveRep.chiSquare.toFixed(0)} · ${(run.naiveRep.coverage * 100).toFixed(0)}% cover`}
-                tone={run.naiveRep.tvDistance > run.ugRep.tvDistance ? 'bad' : undefined}
+                label="Naive uniform?"
+                value={run.naiveRep.looksUniform === null ? 'n/a' : run.naiveRep.looksUniform ? '✓ yes' : '✗ no'}
+                sub={run.naiveRep.looksUniform === null ? 'too few models' : `p = ${fmtP(run.naiveRep.pValue)} · TV ${run.naiveRep.tvDistance.toFixed(3)}`}
+                tone={run.naiveRep.looksUniform === null ? undefined : run.naiveRep.looksUniform ? 'good' : 'bad'}
               />
             )}
           </div>
@@ -565,7 +571,10 @@ function SamplePanel() {
                 )}
                 <p className="insight-note">
                   Each bar is one satisfying assignment; its height is how often that exact solution was
-                  drawn. UniGen’s bars hug the ideal line; the naive sampler’s tower over a favoured few.
+                  drawn. UniGen’s bars hug the ideal line; the naive sampler’s tower over a favoured few. The
+                  <strong> χ² goodness-of-fit test</strong> above turns that into a verdict: a large p-value
+                  means the draws are statistically consistent with the uniform distribution; p → 0 means
+                  significantly skewed.
                 </p>
               </section>
 
@@ -694,6 +703,12 @@ function ExamplePicker({ items, pick, setPick }: { items: string[]; pick: number
       ))}
     </div>
   )
+}
+
+/** Format a p-value compactly: tiny values in scientific notation, else 3 decimals. */
+function fmtP(p: number): string {
+  if (p > 0 && p < 1e-3) return p.toExponential(1)
+  return p.toFixed(3)
 }
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'good' | 'bad' }) {

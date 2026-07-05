@@ -2249,18 +2249,25 @@ implication-chain example its bars tower 4× over a favoured few while UniGen's 
       projected solution space and scores a batch of draws by **total-variation distance**, **Pearson
       χ²** (with dof), **coverage**, min/max frequency, and an **out-of-support** counter (any
       positive value = a non-solution was emitted → soundness alarm). `marginalComparison` puts each
-      variable's exact marginal next to its sampled estimate.
-- [x] **Four sampling tests in `src/insight/selftest.ts`** — UniGen's fast path is exactly uniform
-      (χ² near dof, full coverage, zero out-of-support), its hashing path is sound and near-uniform on
-      a 70-model instance, its marginals track the exact ones to <0.06, and the naive baseline is
-      provably far more skewed (χ² > 4× UniGen's) though still sound. Suite now **19/19**.
+      variable's exact marginal next to its sampled estimate. A **from-scratch χ² p-value** — the
+      regularized upper-incomplete-gamma survival function `Q(k/2, x/2)` by the Numerical-Recipes
+      series/continued-fraction split (validated exactly against textbook critical values: p=0.05 at
+      χ²=3.841/df1, 11.070/df5, 18.307/df10) — turns "looks flat" into a real **hypothesis test**:
+      `looksUniform` accepts the uniform null at the 1% level.
+- [x] **Six sampling tests in `src/insight/selftest.ts`** — UniGen's fast path is exactly uniform
+      (χ² near dof, full coverage, zero out-of-support) and the χ² test *accepts* it (p≈0.4); its
+      hashing path is sound and near-uniform on a 70-model instance; its marginals track the exact
+      ones to <0.06; and the naive baseline is provably far more skewed (χ² > 4× UniGen's, χ² test
+      *rejects* it at p≈1e-43) though still sound. Suite now **21/21**.
 - [x] **A fifth Insight panel** ("Sampling — uniform witnesses"): example picker + samples/κ/seed
       sliders + a "compare naive" toggle, a stat row (exact #models, method = *exact* vs *hashed 2^q*,
-      coverage, UniGen vs naive TV/χ²), twin **frequency histograms** (UniGen flat vs naive lumpy,
-      each with the uniform-ideal line), and a **per-variable marginal** chart (sampled vs exact).
+      coverage, UniGen vs naive TV, and a **χ² "uniform? ✓/✗" verdict with its p-value** for both
+      samplers), twin **frequency histograms** (UniGen flat vs naive lumpy, each with the uniform-ideal
+      line), and a **per-variable marginal** chart (sampled vs exact).
 - [x] Four curated sampling instances (biased implication chain, parity ladder, two-cluster, and a
       symmetric 3-colouring where even the naive sampler is fair — a useful "target confirmed" case).
 - [x] Verified `node scripts/verify-project.mjs satforge-cdcl-x7k2` green (scope + conformance + lint
       + tsc + build), and drove the live app in headless Chromium: **chain** → fast path, 14/14
-      coverage, UniGen TV **0.062** vs naive **0.256**; **two clusters** → *hashed 2³*, 70/70 coverage;
-      in-app self-tests **19/19**; **zero console errors**.
+      coverage, UniGen TV **0.062** vs naive **0.256**, χ² verdict UniGen **✓ p=0.45** vs naive
+      **✗ p=3.5e-43**; **two clusters** → *hashed 2³*, 70/70 coverage; in-app self-tests **21/21**;
+      **zero console errors**.
