@@ -19,6 +19,8 @@ import type { CameraDef } from './engine/camera'
 import type { SceneDef } from './engine/types'
 import { distance, len, scale, sub, clamp } from './engine/vec3'
 import { decodeHdr, downsampleEquirect, encodeHdr } from './engine/hdr'
+import type { HdrImage } from './engine/hdr'
+import { decodePfm, encodePfm, sniffHdrFormat } from './engine/pfm'
 
 // (25.0) The largest equirectangular width kept for a loaded HDRI. Real panoramas
 // ship at 2K–8K; the importance sampler and the postMessage payload both scale
@@ -78,6 +80,56 @@ const DEFAULTS: ControlState = {
   customHdriName: '',
   customHdriInfo: '',
   hdriError: '',
+  customHdriPreview: '',
+}
+
+// (26.0) Tone-map a decoded panorama to a small PNG data-URL for the UI preview
+// strip. A quick Reinhard + sRGB gamma (this is cosmetic — the render uses the
+// full HDR pixels), nearest-sampled into a ~180-px-wide thumbnail. Returns '' if a
+// canvas isn't available (e.g. the sandboxed catalog thumbnail).
+// Trigger a browser download of a binary buffer under `name`.
+function downloadBytes(bytes: Uint8Array, name: string, mime: string): void {
+  const blob = new Blob([bytes as BlobPart], { type: mime })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+}
+
+function makeEnvPreview(img: HdrImage, targetW = 180): string {
+  try {
+    const aspect = img.height / img.width
+    const w = Math.min(targetW, img.width)
+    const h = Math.max(1, Math.round(w * aspect))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
+    const out = ctx.createImageData(w, h)
+    const enc = (x: number): number => {
+      const t = x / (1 + x) // Reinhard
+      const s = t <= 0.0031308 ? 12.92 * t : 1.055 * Math.pow(t, 1 / 2.4) - 0.055
+      return Math.max(0, Math.min(255, Math.round(s * 255)))
+    }
+    for (let j = 0; j < h; j++) {
+      const sj = Math.min(img.height - 1, Math.floor((j / h) * img.height))
+      for (let i = 0; i < w; i++) {
+        const si = Math.min(img.width - 1, Math.floor((i / w) * img.width))
+        const o3 = (sj * img.width + si) * 3
+        const d = (j * w + i) * 4
+        out.data[d] = enc(img.pixels[o3])
+        out.data[d + 1] = enc(img.pixels[o3 + 1])
+        out.data[d + 2] = enc(img.pixels[o3 + 2])
+        out.data[d + 3] = 255
+      }
+    }
+    ctx.putImageData(out, 0, 0)
+    return canvas.toDataURL('image/png')
+  } catch {
+    return ''
+  }
 }
 
 function deriveOrbit(cam: CameraDef): Orbit {
@@ -333,26 +385,38 @@ export default function App() {
     a.click()
   }
 
-  // (25.0) Decode a dropped/loaded Radiance .hdr, downsample it for the sampler,
-  // stash the panorama in the ref, and bump the control state (which re-triggers
-  // the render effect). Any decode failure surfaces as a message in the panel.
+  // (25.0/26.0) Decode a dropped/loaded HDR panorama — Radiance `.hdr` (RGBE) or a
+  // Portable FloatMap `.pfm` — downsample it for the sampler, stash the panorama in
+  // the ref, build a preview thumbnail, and bump the control state (which
+  // re-triggers the render). Any decode failure surfaces as a message in the panel.
   const loadHdri = useCallback(async (file: File) => {
     try {
       const buf = new Uint8Array(await file.arrayBuffer())
-      const full = decodeHdr(buf)
+      // Sniff by magic bytes, falling back to the file extension.
+      const fmt =
+        sniffHdrFormat(buf) ?? (/\.pfm$/i.test(file.name) ? 'pfm' : /\.(hdr|pic)$/i.test(file.name) ? 'hdr' : null)
+      if (!fmt) throw new Error('unrecognised format (expected a Radiance .hdr or a .pfm)')
+      const full = fmt === 'pfm' ? decodePfm(buf) : decodeHdr(buf)
       const img = downsampleEquirect(full, MAX_HDRI_WIDTH)
       customHdriRef.current = { width: img.width, height: img.height, pixels: img.pixels }
-      const info =
+      const dims =
         img.width === full.width
           ? `${full.width}×${full.height}`
           : `${full.width}×${full.height} → ${img.width}×${img.height}`
-      setCtrl((c) => ({ ...c, customHdriName: file.name, customHdriInfo: info, hdriError: '' }))
+      setCtrl((c) => ({
+        ...c,
+        customHdriName: file.name,
+        customHdriInfo: `${fmt} · ${dims}`,
+        hdriError: '',
+        customHdriPreview: makeEnvPreview(img),
+      }))
     } catch (err) {
       customHdriRef.current = null
       setCtrl((c) => ({
         ...c,
         customHdriName: '',
         customHdriInfo: '',
+        customHdriPreview: '',
         hdriError: `Couldn't read "${file.name}": ${(err as Error).message}`,
       }))
     }
@@ -360,7 +424,7 @@ export default function App() {
 
   const onClearHdri = useCallback(() => {
     customHdriRef.current = null
-    setCtrl((c) => ({ ...c, customHdriName: '', customHdriInfo: '', hdriError: '' }))
+    setCtrl((c) => ({ ...c, customHdriName: '', customHdriInfo: '', hdriError: '', customHdriPreview: '' }))
   }, [])
 
   // Export the current linear HDR frame as a real Radiance .hdr (physical
@@ -370,12 +434,17 @@ export default function App() {
     if (!r) return
     const { pixels, width, height } = r.hdrImage()
     const bytes = encodeHdr(pixels, width, height)
-    const blob = new Blob([bytes as BlobPart], { type: 'image/vnd.radiance' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.hdr`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+    downloadBytes(bytes, `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.hdr`, 'image/vnd.radiance')
+  }
+
+  // (26.0) Export the linear HDR frame as a LOSSLESS Portable FloatMap (.pfm) —
+  // raw float32, the same encoder the suite round-trips bit-for-bit.
+  const onSavePfm = () => {
+    const r = rendererRef.current
+    if (!r) return
+    const { pixels, width, height } = r.hdrImage()
+    const bytes = encodePfm(pixels, width, height)
+    downloadBytes(bytes, `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.pfm`, 'image/x-pfm')
   }
 
   // ---- Orbit camera interaction ----
@@ -467,6 +536,7 @@ export default function App() {
               onLoadHdri={loadHdri}
               onClearHdri={onClearHdri}
               onSaveHdr={onSaveHdr}
+              onSavePfm={onSavePfm}
             />
           </aside>
           <div className="viewport">
@@ -503,7 +573,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled, drop your own .hdr) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled, drop your own .hdr / .pfm) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

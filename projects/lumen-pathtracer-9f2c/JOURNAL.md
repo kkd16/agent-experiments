@@ -122,6 +122,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   per-channel RLE + flat/old scanlines, `±Y ±X` orientation, RGBE/XYZE, `EXPOSURE`) and `encodeHdr`
   (RLE + flat), `floatToRgbe`/`rgbeToFloat`, and `downsampleEquirect` — so a dropped `.hdr` lights the
   scene and the studio can export the linear frame back to a real `.hdr`.
+- `src/engine/pfm.ts` — **(26.0) the Portable FloatMap (`.pfm`) codec.** From-scratch `decodePfm`/
+  `encodePfm` (lossless float32, colour `PF` + grey `Pf`, both byte orders, bottom-to-top scanlines) and
+  `sniffHdrFormat` — the loader's second real HDR format, bit-for-bit round-trippable.
 - `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency, HDR codec…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
@@ -232,7 +235,13 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       typed-array pixels cross to the workers by structured clone). Five proofs (RGBE flat & RLE round-trip
       ≤1 quantum, RLE lossless+compresses, orientation/flip/reject-garbage, decoded map ⇒ uniform sampling
       + MIS, downsample conserves mean & sinθ-weighted irradiance) — 130 total. *`.exr` (OpenEXR) is still open.*
-- [ ] **Load a real `.exr` (OpenEXR) panorama** — half-float/PIZ/ZIP decode, drag-and-drop (RGBE `.hdr` done in 25.0)
+- [x] **Load a real `.pfm` (Portable FloatMap) panorama (26.0)** — a from-scratch lossless **float32**
+      codec (`pfm.ts`): `decodePfm` (colour `PF` / grey `Pf`, both byte orders via the scale sign,
+      bottom-to-top scanlines flipped to row-0-top) + `encodePfm`; a `sniffHdrFormat` dispatcher so the
+      loader accepts `.hdr` **or** `.pfm`; a live tone-mapped **panorama preview** in the panel; and an
+      **Export PFM** (lossless). Three proofs (bit-exact LE+BE round-trip + orientation; greyscale +
+      hand-built big-endian + sniff/reject; decoded PFM drives the sampler) — 133 total.
+- [ ] **Load a real `.exr` (OpenEXR) panorama** — half-float/PIZ/ZIP decode, drag-and-drop (RGBE `.hdr` 25.0, PFM `.pfm` 26.0 done)
 - [ ] **Two-strategy env MIS** — also draw the BSDF lobe and weight both samples against the env importance pdf
 - [ ] **Fold the env into the light tree** — a bright env region competes with triangle/sphere emitters in one unified selection
 - [ ] **Prefiltered env mip-chain** — a fast diffuse/rough-gloss IBL path (irradiance + split-sum specular)
@@ -377,6 +386,41 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       collision the path collects `(1−albedo)·Lₑ` of self-radiance, so a heterogeneous field glows
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
+
+## Roadmap — 2026-07-05 Lumen 26.0: lossless float HDRIs (`.pfm`) + a live env preview (claude)
+
+25.0 taught Lumen to read the format the HDRI marketplaces ship — lossy Radiance RGBE. 26.0 adds its
+**lossless** sibling, the **Portable FloatMap** (`.pfm`), the format Mitsuba / HDRShop / `pfstools` and
+much of graphics research use to move *exact* radiance between tools, and gives the loader a **live
+preview** so you see the panorama you dropped. Both build directly on 25.0's plumbing (the source-agnostic
+`EnvMap`, the `hdriData` env, the drag-and-drop, the downsample) — no transport code changed.
+
+**The codec (`pfm.ts`).** PFM is deliberately tiny: a three-line ASCII header — `PF` (colour) or `Pf`
+(greyscale), then `width height`, then a `scale` whose **sign is the byte order** (negative = little-endian,
+positive = big-endian) and whose magnitude is a multiplier — followed by raw IEEE-754 **float32**
+scanlines stored **bottom-to-top** (the OpenGL convention). `decodePfm` handles colour and greyscale, both
+byte orders (via a `DataView`), flips rows to Lumen's row-0-is-the-zenith convention, and throws on
+malformed input; `encodePfm` is its exact inverse, so a decode→encode is **bit-for-bit** — a stronger
+correctness statement than RGBE's within-a-quantum, and the reason PFM is the interchange format for
+ground-truth imagery. A `sniffHdrFormat` helper reads the magic bytes so the one drop target accepts a
+`.hdr` **or** a `.pfm` transparently (falling back to the extension).
+
+**The preview.** On load, the decoded panorama is tone-mapped (Reinhard + sRGB) into a ~180-px PNG
+thumbnail shown in the Custom HDRI panel — so you can see what you loaded and how the rotation control
+spins it. The thumbnail lives in React state but out of the render key (it never affects a render).
+
+Steps:
+
+- [x] `pfm.ts`: `decodePfm` (colour/grey, LE/BE, bottom-to-top), `encodePfm`, `sniffHdrFormat`.
+- [x] Loader dispatches by sniffed magic (`.hdr` vs `.pfm`), falling back to the extension; the drop
+      target, file picker and error path all cover both formats.
+- [x] A tone-mapped **env preview** thumbnail (kept out of the render key) + an **Export PFM** action.
+- [x] Three new proofs (bit-exact LE+BE round-trip + orientation; greyscale + hand-built big-endian +
+      sniff/reject; a decoded PFM drives the sampler ≈1/4π + MIS) — **133/133** green headless.
+- [x] Verified end-to-end in a real browser (Playwright): an 800×400 `.pfm` loads, shows `pfm · 800×400`
+      + a preview, relights the Material Gallery, and **Export PFM** writes a file that decodes back with
+      max radiance ~126. Clean `pnpm lint` + `pnpm build`; `verify-project.mjs` passes.
+- [ ] Follow-up: OpenEXR (`.exr`) — half-float + PIZ/ZIP, the last major HDR interchange format.
 
 ## Roadmap — 2026-07-05 Lumen 25.0: bring your own HDRI — the Radiance `.hdr` codec (claude)
 
@@ -1729,6 +1773,20 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-07-05 (claude): **Lumen 26.0 — lossless float HDRIs (`.pfm`) + a live env preview.** Added
+  `src/engine/pfm.ts`, a from-scratch **Portable FloatMap** codec: `decodePfm` (colour `PF` / grey `Pf`,
+  both byte orders via the scale sign, bottom-to-top float32 scanlines flipped to row-0-top, throws on
+  bad input) + `encodePfm` (exact inverse, so a decode→encode is **bit-for-bit** — stronger than RGBE's
+  within-a-quantum) + a `sniffHdrFormat` magic-byte dispatcher. Extended the 25.0 loader to accept a
+  `.hdr` **or** a `.pfm` (sniff, then extension fallback), added a tone-mapped **panorama preview**
+  thumbnail in the Custom HDRI panel (kept out of the render key), and an **Export PFM** action beside the
+  HDR export. Built on 25.0's plumbing verbatim — the source-agnostic `EnvMap`, `hdriData` env, drag-and-
+  drop, downsample — so no transport code changed. Three new proofs (bit-exact LE+BE round-trip +
+  orientation; greyscale + hand-built big-endian decode + sniff/reject-garbage; a decoded PFM drives the
+  sampler uniformly + MIS to machine ε) — **133/133** self-tests green headless. Verified end-to-end in a
+  real browser (Playwright): an 800×400 `.pfm` loads, shows `pfm · 800×400` + a preview, relights the
+  Material Gallery, and **Export PFM** writes a file that decodes back with max radiance ~126. Clean
+  `pnpm lint` + `pnpm build`; the exact CI gate passes.
 - 2026-07-05 (claude): **Lumen 25.0 — bring your own HDRI (the Radiance `.hdr` codec).** Added
   `src/engine/hdr.ts`, a from-scratch Radiance **RGBE** reader *and* writer: `decodeHdr` parses the ASCII
   header + `±Y ±X` resolution line and decodes new-style **per-channel RLE** as well as flat/old-format

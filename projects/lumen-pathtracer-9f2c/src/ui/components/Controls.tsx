@@ -19,8 +19,9 @@ export function Controls(props: {
   onLoadHdri: (file: File) => void
   onClearHdri: () => void
   onSaveHdr: () => void
+  onSavePfm: () => void
 }) {
-  const { state, set, running, onRender, onStop, onSave, onLoadHdri, onClearHdri, onSaveHdr } = props
+  const { state, set, running, onRender, onStop, onSave, onLoadHdri, onClearHdri, onSaveHdr, onSavePfm } = props
   const preset = SCENES.find((s) => s.id === state.sceneId)
   const hdriActive = !!preset?.hdri || !!state.customHdriName
 
@@ -41,19 +42,19 @@ export function Controls(props: {
         </div>
       </Panel>
 
-      <Panel title="Custom HDRI" subtitle="Drop a Radiance .hdr on the viewport — it lights any scene, importance-sampled">
+      <Panel title="Custom HDRI" subtitle="Drop a .hdr / .pfm on the viewport — it lights any scene, importance-sampled">
         <div className="hdri-loader">
           <label className="hdri-load-btn">
             <input
               type="file"
-              accept=".hdr,.pic,image/vnd.radiance,application/octet-stream"
+              accept=".hdr,.pic,.pfm,image/vnd.radiance,application/octet-stream"
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) onLoadHdri(f)
                 e.currentTarget.value = '' // allow re-loading the same file
               }}
             />
-            ⤒ Load .hdr…
+            ⤒ Load .hdr / .pfm…
           </label>
           {state.customHdriName ? (
             <div className="hdri-status">
@@ -69,9 +70,13 @@ export function Controls(props: {
             </div>
           ) : (
             <p className="hdri-hint">
-              A real equirectangular Radiance <code>.hdr</code> — grab one from Poly&nbsp;Haven. It is decoded,
-              luminance-importance-sampled and MIS-paired the moment it lands, lighting whichever scene is loaded.
+              A real equirectangular <code>.hdr</code> (Radiance RGBE) or <code>.pfm</code> (lossless float) —
+              grab one from Poly&nbsp;Haven. It is decoded, luminance-importance-sampled and MIS-paired the
+              moment it lands, lighting whichever scene is loaded.
             </p>
+          )}
+          {state.customHdriPreview && (
+            <img className="hdri-preview" src={state.customHdriPreview} alt="loaded environment preview" />
           )}
           {state.hdriError && <p className="hdri-error">{state.hdriError}</p>}
         </div>
@@ -458,6 +463,14 @@ export function Controls(props: {
           title="Export the linear HDR frame as a Radiance .hdr (physical radiance, not tone-mapped)"
         >
           ⤓ HDR
+        </button>
+        <button
+          className="btn"
+          type="button"
+          onClick={onSavePfm}
+          title="Export the linear HDR frame as a lossless Portable FloatMap .pfm (raw float32)"
+        >
+          ⤓ PFM
         </button>
       </div>
     </div>

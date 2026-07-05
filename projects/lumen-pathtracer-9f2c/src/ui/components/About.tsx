@@ -384,6 +384,20 @@ export function About() {
           exercises the axis flips, and confirms a decoded map reduces to uniform sampling and conserves
           irradiance under downsampling.
         </Card>
+        <Card title="Lossless float HDRIs — PFM (26.0)">
+          RGBE is compact but <em>lossy</em> (8 mantissa bits). Its sibling the <strong>Portable
+          FloatMap</strong> (<code>.pfm</code>) stores raw <strong>float32</strong> per channel — the
+          format Mitsuba, HDRShop and much of graphics research use to move <em>exact</em> radiance
+          between tools — so Lumen now reads and writes it too. A three-line ASCII header (<code>PF</code>{' '}
+          colour / <code>Pf</code> grey, <code>w h</code>, then a <code>scale</code> whose <em>sign</em> is
+          the byte order) precedes raw <em>bottom-to-top</em> scanlines; the decoder handles colour and
+          greyscale, both endiannesses, and flips rows to Lumen's convention. Drop a <code>.pfm</code> (or
+          a <code>.hdr</code>) and a small tone-mapped <strong>preview</strong> of the panorama appears in
+          the panel. Because it's raw float, a decode→encode is <strong>bit-for-bit</strong> — a stronger
+          proof than RGBE can give, and the <strong>Verify</strong> tab holds it to exact equality in both
+          byte orders, checks the greyscale and hand-built big-endian paths, the format sniffer, and that a
+          decoded PFM drives the sampler. Export ⤓ <strong>PFM</strong> writes the frame back out losslessly.
+        </Card>
         <Card title="Procedural textures">
           Checkerboards, blueprint grids and value-noise marble are evaluated analytically in world
           space — no UVs, no image files — and resolved to a flat colour at each hit so the BSDF math
