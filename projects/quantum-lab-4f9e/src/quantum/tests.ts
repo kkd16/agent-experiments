@@ -19,6 +19,12 @@ import {
   runVQE, runQAOA, tfimHamiltonian, exactGroundEnergy, expectation, type Graph,
 } from './variational';
 import { toQASM } from './qasm';
+import {
+  buildBasis, oneElectronIntegrals, twoElectronIntegrals, boys0,
+} from './chem/integrals';
+import { runRHF } from './chem/scf';
+import { getMolecule } from './chem/molecules';
+import { solvePoint, runVQEChem, dissociationCurve, equilibrium, hartreeFockState } from './chem/vqe';
 import { circuitMetrics } from './metrics';
 import { Stabilizer } from './Stabilizer';
 import { schmidtDecompose } from './Schmidt';
@@ -2097,6 +2103,80 @@ export function runTests(): TestResult[] {
       }
       add('Entanglement', 'Optimal witness: Tr(Wρ)=λ_min<0 on entangled, Tr(Wσ)≥0 on all separable',
         entOK && valErr < 1e-9 && minSep > -1e-9, `val err ${valErr.toExponential(1)}, min Tr(Wσ) ${minSep.toExponential(1)}`);
+    }
+  }
+
+  // --- Quantum chemistry (Hartree–Fock → Jordan–Wigner → VQE) ----------------------------
+  {
+    // (1) The Boys function and the STO-3G integrals reproduce Szabo & Ostlund's H₂ numbers.
+    add('Chemistry', 'Boys function F₀(0)=1', Math.abs(boys0(0) - 1) < 1e-9, '');
+    {
+      const atoms = getMolecule('h2').geometry(1.4);
+      const basis = buildBasis(atoms);
+      const { S, T } = oneElectronIntegrals(basis, atoms);
+      const eri = twoElectronIntegrals(basis);
+      const ok = Math.abs(S[0][1] - 0.6593) < 1e-3 && Math.abs(T[0][0] - 0.7600) < 1e-3
+        && Math.abs(eri[0][0][0][0] - 0.7746) < 1e-3 && Math.abs(eri[0][0][1][1] - 0.5697) < 1e-3;
+      add('Chemistry', 'STO-3G integrals match Szabo & Ostlund (S₁₂, T₁₁, (11|11), (11|22))', ok,
+        `S₁₂=${S[0][1].toFixed(4)}, (11|11)=${eri[0][0][0][0].toFixed(4)}`);
+    }
+
+    // (2) Restricted Hartree–Fock energies hit the textbook values.
+    {
+      const he = runRHF(getMolecule('he').geometry(0), 2);
+      add('Chemistry', 'RHF He atom = −2.8077 Eₕ', Math.abs(he.total + 2.8077) < 2e-3, he.total.toFixed(5));
+      const h2 = runRHF(getMolecule('h2').geometry(1.4), 2);
+      add('Chemistry', 'RHF H₂ (R=1.4 a₀) = −1.1167 Eₕ', Math.abs(h2.total + 1.1167) < 2e-3, h2.total.toFixed(5));
+      add('Chemistry', 'RHF converged', he.converged && h2.converged, '');
+    }
+
+    // (3) H₃⁺'s D₃ₕ symmetry forces a degenerate e′ orbital pair — a nontrivial physics check.
+    {
+      const h3 = runRHF(getMolecule('h3p').geometry(1.65), 2);
+      const e = h3.orbitalEnergies;
+      add('Chemistry', 'H₃⁺ shows a degenerate e′ orbital pair (D₃ₕ)', Math.abs(e[1] - e[2]) < 1e-4,
+        `ε=[${e.map((x) => x.toFixed(3)).join(', ')}]`);
+    }
+
+    // (4) The Jordan–Wigner qubit Hamiltonian: Hermitian, 15 terms for H₂, and FCI = −1.1373.
+    {
+      const pt = solvePoint(getMolecule('h2'), 1.398);
+      const hermitian = pt.hamiltonian.terms.every((t) => Number.isFinite(t.coeff));
+      // The famous H₂ operator has 15 terms including the identity, which we fold into `constant`.
+      add('Chemistry', 'H₂ qubit Hamiltonian is the 15-term operator (14 Pauli + identity)',
+        pt.hamiltonian.terms.length === 14 && hermitian, `${pt.hamiltonian.terms.length} Pauli + identity`);
+      add('Chemistry', 'FCI H₂ = −1.1373 Eₕ (qubit-Hamiltonian diagonalisation)',
+        pt.fci != null && Math.abs(pt.fci + 1.1373) < 2e-3, pt.fci?.toFixed(5) ?? 'n/a');
+
+      // (5) ⟨HF|H|HF⟩ equals the RHF energy — the qubit/HF-prep convention is consistent.
+      const hf = hartreeFockState(pt.hamiltonian.nQubits, pt.hamiltonian.hfOccupation);
+      const eHF = expectation(hf, pt.hamiltonian.terms) + pt.hamiltonian.constant;
+      add('Chemistry', '⟨HF|H|HF⟩ equals the RHF energy', Math.abs(eHF - pt.hf) < 1e-6,
+        `${eHF.toFixed(6)} vs ${pt.hf.toFixed(6)}`);
+    }
+
+    // (6) The UCCSD VQE converges to the FCI energy (recovers all the correlation energy).
+    {
+      const vqe = runVQEChem(getMolecule('h2'), 1.398);
+      add('Chemistry', 'UCCSD VQE reaches FCI for H₂ (< 1e-4 Eₕ)', Math.abs(vqe.energy - vqe.fci) < 1e-4,
+        `err ${Math.abs(vqe.energy - vqe.fci).toExponential(1)}, corr ${vqe.correlation.toFixed(5)}`);
+      add('Chemistry', 'VQE recovers correlation below Hartree–Fock', vqe.energy < vqe.hf - 1e-4,
+        `VQE ${vqe.energy.toFixed(5)} < HF ${vqe.hf.toFixed(5)}`);
+      // Heteronuclear HeH⁺ and the 6-qubit H₃⁺ also converge to their (particle-number-restricted) FCI.
+      const vHeH = runVQEChem(getMolecule('hehp'), 1.75);
+      add('Chemistry', 'UCCSD VQE reaches FCI for HeH⁺', Math.abs(vHeH.energy - vHeH.fci) < 1e-4,
+        `err ${Math.abs(vHeH.energy - vHeH.fci).toExponential(1)}`);
+      const vH3 = runVQEChem(getMolecule('h3p'), 1.65);
+      add('Chemistry', 'UCCSD VQE reaches FCI for H₃⁺ (6 qubits)', Math.abs(vH3.energy - vH3.fci) < 5e-4,
+        `err ${Math.abs(vH3.energy - vH3.fci).toExponential(1)}, ${vH3.nParams} params`);
+    }
+
+    // (7) The dissociation curve's minimum lands near the known STO-3G equilibrium bond length.
+    {
+      const curve = dissociationCurve(getMolecule('h2'), 40);
+      const eq = equilibrium(curve);
+      add('Chemistry', 'H₂ equilibrium bond length ≈ 1.35–1.42 a₀',
+        eq != null && eq.param > 1.30 && eq.param < 1.45, `${eq?.param.toFixed(3)} a₀`);
     }
   }
 
