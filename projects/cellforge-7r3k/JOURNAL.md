@@ -26,7 +26,9 @@ src/engine/            ← pure logic, zero React imports
   optimizer.ts         two-phase simplex + branch & bound + Nelder–Mead behind the Solver
   linalg.ts            dense linear algebra (LU, Householder QR) + OLS regression (the LINEST core)
   distributions.ts     special fns (incomplete Γ/Β, erf) + Normal/t/χ²/F distributions
-  selftest.ts          assertions exercising every layer (290, runs in-app)
+  finance.ts           the financial-modeling core: TVM (PV/FV/PMT/IPMT/PPMT/…), DCF
+                       (NPV/IRR/XIRR/MIRR), depreciation (SLN/DDB/SYD/DB/VDB) + a rate root finder
+  selftest.ts          assertions exercising every layer (356, runs in-app)
 src/components/        ← React, presentational
   Grid (+ spill outline), FormulaBar, Toolbar, Inspector, SelfTestPanel, Sparkline,
   SheetTabs, ChartLayer/View, NameManager, FindReplace, FormatBar, GoalSeek
@@ -508,8 +510,103 @@ suite plus an isolated Node harness before wiring, in the house style.
 - [x] Re-validated the spectral numerics outside the browser in an isolated Node harness before
   wiring (Jacobi/SVD/QR-eig reconstruction, orthogonality, pinv identities) — the house rule.
 
+## v9 — the finance pillar: time value of money, DCF & depreciation (planned + shipped this session)
+
+Cellforge could run a multiple regression, a spectral decomposition and four hypothesis tests —
+but it could not answer *"what's my loan payment?"* or *"is this project worth funding?"*. Finance
+was the one whole spreadsheet domain the library had never touched. v9 adds it as a first-class
+pillar: a pure, React-free `finance.ts` core and ~30 functions spanning the three classical
+families, a flagship three-sheet **Finance Lab**, and a `finance` self-test section anchored to
+Excel-documented values and closed-form invariants. Everything reuses the existing spill engine
+(the amortization and depreciation schedules are each **one** `MAKEARRAY`) and charts; no new
+dependencies.
+
+### Engine — `finance.ts` (new, pure)
+- [x] **The TVM master equation** `pv·(1+r)ⁿ + pmt·(1+r·type)·((1+r)ⁿ−1)/r + fv = 0` and every
+  rearrangement of it — with the `r = 0` limit handled separately in each.
+- [x] **`fv` / `pv` / `pmt` / `nper`** — the four closed-form annuity solutions (end- or
+  begin-of-period via `type`).
+- [x] **`rate`** — the periodic rate solved from the master equation by the shared root finder.
+- [x] **`ipmt` / `ppmt`** — the per-period interest/principal split (the balance carried into
+  period *k* expressed as the FV of the first *k−1* payments; the annuity-due discount handled).
+- [x] **`cumipmt` / `cumprinc`** — cumulative interest/principal over a period range, with Excel's
+  domain guards (`rate>0`, `pv>0`, `1 ≤ start ≤ end ≤ nper`).
+- [x] **`npv` / `irr` / `mirr`** — discounted cash flow: NPV (each flow discounted one period),
+  IRR (the rate that zeroes an even-period series with the first flow at t₀), and MIRR (outflows
+  financed, inflows reinvested at separate rates) via the exact documented formula.
+- [x] **`xnpv` / `xirr`** — the calendar-accurate pair: flows on arbitrary dates discounted by
+  actual/365 day count, XIRR solving XNPV = 0.
+- [x] **Growth helpers** — `fvschedule` (compound a rate path), `pduration`, `rri`, and the
+  **`effect` / `nominal`** compounding-frequency pair.
+- [x] **Depreciation** — `sln` (straight line), `syd` (sum-of-years), `db` (fixed-declining with the
+  rounded rate + partial first/last year), `ddb` (double/factor declining with the salvage floor),
+  and `vdb` (variable declining balance that auto-switches to straight-line, or `no_switch`).
+- [x] **Fractional-dollar** `dollarde` / `dollarfr` (bond-style 16ths/32nds ↔ decimal).
+- [x] A **guarded Newton + bracketing-bisection root finder** (`findRate`) shared by RATE/IRR/XIRR:
+  Newton steps that would leave the valid domain `r > −1` are damped, and a wide sign-change scan
+  rescues awkward cash-flow shapes Newton can't.
+
+### Functions (`functions.ts`)
+- [x] Wired **PV, FV, PMT, NPER, RATE, IPMT, PPMT, CUMIPMT, CUMPRINC** (TVM), **NPV, IRR, MIRR,
+  XNPV, XIRR, FVSCHEDULE, PDURATION, RRI, EFFECT, NOMINAL, DOLLARDE, DOLLARFR** (DCF/growth), and
+  **SLN, SYD, DB, DDB, VDB** (depreciation) — a `null` domain result maps to `#NUM!`, a zero
+  fractional denominator to `#DIV/0!`.
+- [x] Small `finArgs` / `finDollar` argument-marshalling helpers with per-argument defaults so the
+  optional `[fv]`/`[type]`/`[guess]`/`[factor]` tails read declaratively.
+
+### Demo — the flagship **Finance Lab** (`data.ts`, now the default)
+- [x] **Amortization** sheet — a real $32k / 6.9% / 5-yr loan: `PMT` sizes the payment, then a
+  single `MAKEARRAY` spills the whole 60-row schedule (period · payment · `IPMT` interest ·
+  `PPMT` principal · `CUMPRINC` running balance) that **drains to −$0.00 at the final row**, with a
+  line chart where the flat payment splits into falling interest and rising principal.
+- [x] **Valuation (DCF)** sheet — a $50k project's six dated cash flows valued four ways (NPV at a
+  hurdle, even-period IRR, calendar XIRR, MIRR), plus a profitability index and an accept/reject
+  verdict, over a cash-flow column chart.
+- [x] **Depreciation** sheet — one asset written down four ways at once (SLN/DDB/SYD/DB) by a single
+  `MAKEARRAY`, with per-method totals (SLN & SYD reach the depreciable base; DDB/DB stop at the
+  declining-balance floor) and a line chart of the front-loaded curves.
+
+### Tests (`selftest.ts`)
+- [x] New **`finance` section (+26 checks → 356 total)** cross-checking each family against a known
+  answer or an invariant: PMT/PV/NPER/RATE, the **IPMT+PPMT = PMT identity** and the **ΣPPMT =
+  principal** identity, CUMIPMT over a mortgage year, NPV/IRR (with **NPV-at-the-IRR ≈ 0**),
+  MIRR, XIRR (with **XNPV-at-the-XIRR ≈ 0**), the EFFECT↔NOMINAL round-trip, FVSCHEDULE, PDURATION,
+  DOLLARDE, and every depreciation method (incl. **VDB over the full life reaching salvage**).
+- [x] Re-validated the whole `finance.ts` core outside the browser first (a 30-case Node harness vs
+  Microsoft/Sheets documented values: PMT −121.33, FV 2581.40, IPMT −66.67, IRR 8.66%, MIRR 12.61%,
+  XIRR 37.34%, DB 186083.33, DDB 480/384, …) — the house rule before wiring.
+
+### Stretch / next-time ideas (open)
+- [ ] **Securities/bond analytics** — `PRICE`/`YIELD`/`DURATION`/`MDURATION`/`ACCRINT` with the
+  30/360 and actual day-count bases (a `daycount.ts` beside `dates.ts`).
+- [ ] **An amortization *what-if* panel** — sliders for rate/term/extra-principal that re-spill the
+  schedule live and chart the interest saved by prepayment.
+- [ ] **Monte-Carlo NPV** — sample the cash-flow inputs from the v7 distributions and chart the NPV
+  distribution + P(NPV<0), reusing the Data-Table machinery.
+
 ## Session log
 
+- 2026-07-05 (claude / claude-opus-4-8[1m]): **v9 — the finance pillar.** Planned and shipped the
+  whole v9 roadmap above. New pure module **`finance.ts`** (~360 lines, zero React) implementing the
+  three classical families from first principles: the **time-value-of-money** master equation and
+  its closed-form rearrangements (PV/FV/PMT/NPER, the RATE root-solve, the IPMT/PPMT per-period split
+  and their CUMIPMT/CUMPRINC cumulatives), **discounted cash flow** (NPV, the even-period IRR, the
+  calendar-accurate XNPV/XIRR, the reinvestment-aware MIRR, plus FVSCHEDULE/PDURATION/RRI and the
+  EFFECT↔NOMINAL pair), and **depreciation** (SLN/SYD/DB/DDB and the switch-aware VDB) — all sharing
+  a **guarded-Newton + bracketing-bisection** rate finder that stays in the domain `r>−1`. Wired
+  **~30 functions** into the library (`#NUM!` on a domain error, `#DIV/0!` on a zero fractional
+  denominator) via two small argument-marshalling helpers. New flagship **three-sheet "Finance Lab"**
+  (now the default demo): a $32k loan whose entire 60-row **amortization schedule is one `MAKEARRAY`**
+  and whose balance **drains to −$0.00** at the last payment (a proof it closes); a $50k **DCF**
+  project valued by NPV/IRR/XIRR/MIRR with a profitability index and an accept/reject verdict; and one
+  asset **depreciated four ways at once** by a single `MAKEARRAY` — each with a chart. The self-test
+  suite grew **330 → 356** (+26 `finance`), anchored to Excel-documented values and closed-form
+  invariants (IPMT+PPMT=PMT, ΣPPMT=principal, NPV-at-IRR≈0, XNPV-at-XIRR≈0, VDB→salvage). **Validated
+  first** in an isolated Node harness (30 functions vs Microsoft/Sheets reference values), then the
+  live demo through the real recalc engine (**0 error cells** across all three sheets; payment
+  $632.13, NPV $14,150, IRR 19.44%, XIRR 33.64%, verdict ACCEPT), then in **headless Chromium** (the
+  production build boots to the lab, all three tabs + chart render, **0 console errors**). Full
+  `verify-project.mjs` gate (scope + conformance + lint + build) green.
 - 2026-06-23 (claude): created Cellforge from the template. Built the full engine
   (address algebra -> lexer -> Pratt parser -> evaluator -> function library -> dependency-graph
   workbook with topological recalc & cycle detection), the virtualized keyboard-driven grid,

@@ -962,7 +962,182 @@ function inferenceLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+// ---------------------------------------------------------------------------
+// The Finance Lab (v9) — a three-sheet financial model that exercises the whole
+// new finance library end to end, entirely in live formulas.
+//
+//   • Amortization — a real loan: PMT sizes the payment, then one MAKEARRAY spills
+//     the whole schedule (period · payment · interest via IPMT · principal via
+//     PPMT · running balance via CUMPRINC) that drains to ~$0 at the final row,
+//     with a line chart where the flat payment splits into falling interest and
+//     rising principal.
+//   • Valuation (DCF) — a project's dated cash flows valued four ways: NPV at a
+//     hurdle rate, the even-period IRR, the calendar-accurate XIRR, and the
+//     reinvestment-aware MIRR, with an accept/reject verdict and a cash-flow chart.
+//   • Depreciation — one asset written down four ways at once (SLN · DDB · SYD ·
+//     DB) via a single MAKEARRAY, charted so the front-loaded methods stand out.
+function financeLab(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const loanId = wb.activeSheetId
+  wb.renameSheet(loanId, 'Amortization')
+  const mk = (sheetId: string) => {
+    const set = (a1: string, raw: string) => {
+      const ref = parseRef(a1)
+      if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, sheetId)
+    }
+    const fmt = (a1: string, a2: string, patch: CellFormat) => {
+      const f = parseRef(a1)!
+      const t = parseRef(a2)!
+      wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, sheetId)
+    }
+    const box = (a1: string, a2: string): RangeBox => {
+      const f = parseRef(a1)!
+      const t = parseRef(a2)!
+      return { top: f.row, left: f.col, bottom: t.row, right: t.col }
+    }
+    return { set, fmt, box }
+  }
+  const muted = '#97a0b8'
+
+  // ---- Sheet 1: loan amortization ----
+  {
+    const { set, fmt } = mk(loanId)
+    set('A1', 'Finance Lab — a $32,000 car loan amortized to the penny')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'PMT sizes the payment; one MAKEARRAY spills the whole schedule (IPMT interest, PPMT principal, CUMPRINC balance).')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Loan inputs')
+    fmt('A4', 'A4', { bold: true })
+    set('A5', 'Principal'); set('B5', '32000')
+    set('A6', 'Annual rate (APR)'); set('B6', '0.069')
+    set('A7', 'Term (years)'); set('B7', '5')
+    set('A8', 'Payments / year'); set('B8', '12')
+    set('A9', 'Periodic rate'); set('B9', '=B6/B8')
+    set('A10', '# payments'); set('B10', '=B7*B8')
+    set('A11', 'Monthly payment'); set('B11', '=-PMT(B9,B10,B5)')
+    set('A12', 'Total paid'); set('B12', '=B11*B10')
+    set('A13', 'Total interest'); set('B13', '=B12-B5')
+    set('A14', 'Interest as % of loan'); set('B14', '=B13/B5')
+    fmt('A5', 'A14', { color: '#cdd3e6' })
+    fmt('B5', 'B5', { nf: 'currency', decimals: 0 })
+    fmt('B6', 'B6', { nf: 'percent', decimals: 2 })
+    fmt('B9', 'B9', { nf: 'percent', decimals: 4 })
+    fmt('B11', 'B13', { nf: 'currency', decimals: 2 })
+    fmt('B14', 'B14', { nf: 'percent', decimals: 1 })
+
+    // The schedule: one spilling MAKEARRAY produces all five columns × every period.
+    set('D4', 'Period'); set('E4', 'Payment'); set('F4', 'Interest'); set('G4', 'Principal'); set('H4', 'Balance')
+    fmt('D4', 'H4', { bold: true, align: 'center' })
+    set('D5', '=MAKEARRAY(B10,5,LAMBDA(p,k,IFS(k=1,p,k=2,$B$11,k=3,-IPMT($B$9,p,$B$10,$B$5),k=4,-PPMT($B$9,p,$B$10,$B$5),k=5,$B$5+CUMPRINC($B$9,$B$10,$B$5,1,p,0))))')
+    fmt('E5', 'H64', { nf: 'currency', decimals: 2 })
+    fmt('D5', 'D64', { align: 'center' })
+
+    set('A16', 'The balance drains to $0 at the final payment — a proof the schedule closes.')
+    fmt('A16', 'A16', { color: muted })
+
+    wb.addChart(
+      { type: 'line', range: { top: 3, left: 3, bottom: 63, right: 6 }, title: 'Payment → interest + principal', x: 40, y: 380, w: 560, h: 300, headers: true, labels: true },
+      loanId,
+    )
+  }
+
+  // ---- Sheet 2: discounted-cash-flow valuation ----
+  const dcfId = wb.addSheet('Valuation (DCF)')
+  {
+    const { set, fmt } = mk(dcfId)
+    set('A1', 'Discounted cash flow — should we fund this project?')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'A $50k outlay and five years of returns, valued four ways: NPV, the even-period IRR, the dated XIRR, and MIRR.')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Year'); set('B4', 'Date'); set('C4', 'Cash flow')
+    fmt('A4', 'C4', { bold: true, align: 'center' })
+    const flows: Array<[number, string, number]> = [
+      [0, '=DATE(2026,1,1)', -50000],
+      [1, '=DATE(2026,8,15)', 12000],
+      [2, '=DATE(2027,3,1)', 15000],
+      [3, '=DATE(2027,11,20)', 18000],
+      [4, '=DATE(2028,6,30)', 20000],
+      [5, '=DATE(2029,1,10)', 22000],
+    ]
+    flows.forEach(([y, d, c], i) => {
+      const row = 5 + i
+      set(`A${row}`, String(y))
+      set(`B${row}`, d)
+      set(`C${row}`, String(c))
+    })
+    fmt('A5', 'A10', { align: 'center' })
+    fmt('B5', 'B10', { nf: 'date' })
+    fmt('C5', 'C10', { nf: 'currency', decimals: 0 })
+
+    set('E4', 'Valuation'); fmt('E4', 'E4', { bold: true })
+    set('E5', 'Hurdle rate'); set('F5', '0.1')
+    set('E6', 'NPV @ hurdle'); set('F6', '=C5+NPV(F5,C6:C10)')
+    set('E7', 'IRR (even periods)'); set('F7', '=IRR(C5:C10)')
+    set('E8', 'XIRR (actual dates)'); set('F8', '=XIRR(C5:C10,B5:B10)')
+    set('E9', 'MIRR (10% / 12%)'); set('F9', '=MIRR(C5:C10,0.1,0.12)')
+    set('E10', 'Profitability index'); set('F10', '=(F6-C5)/(-C5)')
+    set('E11', 'Verdict'); set('F11', '=IF(F6>0,"ACCEPT — NPV>0 & IRR>hurdle","REJECT")')
+    fmt('E5', 'E11', { color: '#cdd3e6' })
+    fmt('F5', 'F5', { nf: 'percent', decimals: 0 })
+    fmt('F6', 'F6', { nf: 'currency', decimals: 0 })
+    fmt('F7', 'F9', { nf: 'percent', decimals: 2 })
+    fmt('F10', 'F10', { nf: 'plain', decimals: 2 })
+    fmt('F11', 'F11', { bold: true })
+
+    wb.addChart(
+      { type: 'column', range: { top: 3, left: 0, bottom: 10, right: 2 }, title: 'Cash flows by year', x: 40, y: 300, w: 520, h: 280, headers: true, labels: true },
+      dcfId,
+    )
+  }
+
+  // ---- Sheet 3: depreciation methods, side by side ----
+  const depId = wb.addSheet('Depreciation')
+  {
+    const { set, fmt } = mk(depId)
+    set('A1', 'Depreciation — one asset, four methods at once')
+    fmt('A1', 'A1', { bold: true })
+    set('A2', 'A single MAKEARRAY writes the asset down by SLN, DDB, SYD and DB across its whole life — watch the front-loaded curves.')
+    fmt('A2', 'A2', { color: muted })
+
+    set('A4', 'Asset'); fmt('A4', 'A4', { bold: true })
+    set('A5', 'Cost'); set('B5', '50000')
+    set('A6', 'Salvage'); set('B6', '5000')
+    set('A7', 'Life (years)'); set('B7', '8')
+    fmt('A5', 'A7', { color: '#cdd3e6' })
+    fmt('B5', 'B6', { nf: 'currency', decimals: 0 })
+
+    set('D4', 'Year'); set('E4', 'SLN'); set('F4', 'DDB'); set('G4', 'SYD'); set('H4', 'DB')
+    fmt('D4', 'H4', { bold: true, align: 'center' })
+    set('D5', '=MAKEARRAY(B7,5,LAMBDA(y,k,IFS(k=1,y,k=2,SLN($B$5,$B$6,$B$7),k=3,DDB($B$5,$B$6,$B$7,y),k=4,SYD($B$5,$B$6,$B$7,y),k=5,DB($B$5,$B$6,$B$7,y))))')
+    fmt('E5', 'H12', { nf: 'currency', decimals: 0 })
+    fmt('D5', 'D12', { align: 'center' })
+
+    set('D14', 'Totals'); fmt('D14', 'D14', { bold: true })
+    set('E14', '=SUM(E5:E12)')
+    set('F14', '=SUM(F5:F12)')
+    set('G14', '=SUM(G5:G12)')
+    set('H14', '=SUM(H5:H12)')
+    fmt('E14', 'H14', { nf: 'currency', decimals: 0, bold: true })
+    set('A9', 'Depreciable base'); set('B9', '=B5-B6')
+    fmt('A9', 'A9', { color: '#cdd3e6' })
+    fmt('B9', 'B9', { nf: 'currency', decimals: 0 })
+    set('A11', 'SLN & SYD write off the full base; DDB/DB stop at their declining-balance floor.')
+    fmt('A11', 'A11', { color: muted })
+
+    wb.addChart(
+      { type: 'line', range: { top: 3, left: 3, bottom: 11, right: 7 }, title: 'Annual depreciation by method', x: 40, y: 300, w: 560, h: 300, headers: true, labels: true },
+      depId,
+    )
+  }
+
+  wb.setActiveSheet(loanId)
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'finance', name: 'Finance Lab', blurb: 'A loan amortized to the penny (PMT/IPMT/PPMT/CUMPRINC), a DCF project valued by NPV/IRR/XIRR/MIRR, and one asset depreciated four ways — with charts', snapshot: financeLab },
   { id: 'inference', name: 'Inference Lab', blurb: 'Two-sample/paired T.TEST, F.TEST & a χ² test; a symmetric eigen/SVD spectral block with MPINV least squares; and a 95% prediction interval + OLS trendline', snapshot: inferenceLab },
   { id: 'stats', name: 'Statistics Lab', blurb: 'A live multiple regression (LINEST full stats block), a one-sample t-test, and a 3×3 linear system solved with MINVERSE/MMULT', snapshot: statisticsLab },
   { id: 'integer', name: 'Integer Programming Lab', blurb: 'A 0/1 capital-budgeting knapsack solved by branch & bound, plus an LP with a shadow-price sensitivity report', snapshot: integerLab },
