@@ -136,6 +136,29 @@ reference interpreter at every optimization level.
   only improve code and is guaranteed to terminate. Runs before GVN and OSR, surfacing
   fresh `i·r` candidates for strength reduction and merging more equal expressions. See
   the 2026-06-22 plan.
+- `src/compiler/opt/vrp.ts` — **value-range propagation** at -O2+: a flow-sensitive integer
+  **interval** analysis (`[lo, hi]` in BigInt, so the reasoning never itself overflows) that
+  assigns every i32/i64 SSA value a sound over-approximation of its runtime range, threaded
+  along the CFG with **per-edge guard refinement** — on the true arm of `if (x < y)` it assumes
+  the comparison and narrows `x`/`y`, and a block's entry range is the **hull** of its
+  predecessors', so a single-edge narrowing evaporates at a multi-pred merge but keeps full
+  strength down a single-predecessor arm. Transfer functions model add/sub/mul (kept only when
+  the exact result provably fits its type — else it could wrap, so the range collapses to ⊤),
+  bitwise `and`/`or`/`xor` of non-negatives, constant shifts, constant `div_s`/`rem_s`, and the
+  `clz`/`ctz`/`popcnt` width bounds. It then folds any comparison a *derived range* settles —
+  `(x & 7) < 8`, `x % 10 >= 0`, `popcount(x) <= 32`, a chained `a < b … a < b + 1` — to a
+  constant, and turns a branch whose condition is proven non-zero (or zero) into an
+  unconditional `br` for the round's DCE/CFG-simplify to sweep. This is the classic
+  **correlated value propagation** (LLVM's LazyValueInfo / GCC's tree-VRP) that strictly
+  **subsumes** `opt/correlate.ts` (which only decides a branch from an *identical* dominating
+  test) with genuine numeric implication. As a bonus it owns a rewrite `opt/divrem.ts` can't
+  make — **range-based remainder/division elimination**, where a dividend proven to lie in
+  `[0, |c|−1]` makes `x % c` the identity and `x / c` exactly `0`. Loop headers are pinned to ⊤
+  (the back edge is unmodelled), which both makes a single reverse-postorder sweep a fixpoint
+  and keeps every range sound. A fold fires only when the interval *proves* the result, so it
+  can only ever miss an opportunity, never miscompile — pinned bit-for-bit by the three-engine
+  oracle at every level and a dedicated seeded range fuzzer (`tools/check-vrp.mjs`). See the
+  2026-07-05 plan.
 - `src/compiler/opt/sroa.ts` — **SROA: escape analysis + scalar replacement of aggregates**
   at -O1+. Struct construction lowers to a first-class **`alloc` IR op** (`ir/ir.ts`); this
   pass traces each `alloc`'s handle (and every address derived from it by adding a *constant*),
@@ -304,6 +327,24 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Value-range propagation (VRP)** (`opt/vrp.ts`, -O2+) — a flow-sensitive integer **interval**
+      analysis, the pass that reasons about *what values a variable can actually hold*. Every i32/i64
+      SSA value gets a sound `[lo, hi]` (BigInt bounds) threaded along the CFG with **per-edge guard
+      refinement**: on `if (x < y)`'s true arm it narrows `x`/`y`, and a block's entry range is the
+      **hull** of its predecessors' — so a single-edge narrowing evaporates at a multi-pred merge but
+      keeps full strength down a single-predecessor arm. It folds any comparison a *derived range*
+      settles — a mask `(x & 7) < 8`, a remainder `x % 10 >= 0`, a bit-count `popcount(x) <= 32`, a
+      chained `a < b … a < b + 1` — to a constant and collapses the branch above it; the classic
+      **correlated value propagation** (LLVM LazyValueInfo / GCC tree-VRP) that strictly **subsumes**
+      correlated-branch folding with genuine numeric implication, on `long` (i64) exactly as on `int`.
+      Arithmetic transfer functions keep a result range only when it provably can't wrap (else ⊤), and
+      as a bonus VRP owns **range-based remainder/division elimination** (`x % c → x`, `x / c → 0` when
+      `x ∈ [0, |c|−1]`) — a rewrite the constant-divisor strength reducer can't make. Loop headers pin
+      to ⊤ so one reverse-postorder sweep is a fixpoint; a fold fires only when the interval *proves*
+      the result, so a bug can only miss, never miscompile. Proven by the three-engine oracle
+      (interp = V8 = VM) at -O0…-O3: corpus **1300 → 1320**, plus a seeded **1,040-check** range fuzzer
+      (`tools/check-vrp.mjs`) with VRP firing in **508** of the -O2/-O3 compiles and **zero
+      disagreements**. See the 2026-07-05 plan.
 - [x] **Interprocedural purity / effect analysis** (`ir/effects.ts`, -O2+) — the mid-end's first
       *whole-program* analysis. Until now every call was opaque: `hasSideEffect` treated **all**
       calls as if they stored to memory, so GVN/DCE/LICM never touched one. A call-graph fixpoint
@@ -526,7 +567,83 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
-## 2026-07-02 — plan + shipped: interprocedural purity — pure calls become first-class optimizable values (claude / claude-opus-4-8)
+## 2026-07-05 — plan + shipped: value-range propagation (VRP) — a flow-sensitive interval analysis + correlated value propagation (claude / claude-opus-4-8)
+
+**The gap.** The optimizer could fold a branch two ways: SCCP when the condition is a
+compile-time **constant**, and correlated-branch folding (`opt/correlate.ts`) when a
+**dominating branch tested the *identical* SSA value**. Neither reasons about *ranges* — the
+thing a mask (`x & 7`), a remainder (`x % 10`), a bit-count (`popcount(x)`), or a dominating
+inequality actually pins down. A comparison like `(x & 7) < 8` is *always true*, but no operand
+is constant and no dominating test is identical, so it survived to runtime. VRP is the classic
+answer: **correlated value propagation** (LLVM's LazyValueInfo, GCC's tree-VRP), the pass that
+tracks *what values a variable can hold* and folds everything a derived range settles.
+
+**The analysis.** A flow-sensitive integer **interval** lattice over the SSA CFG. Each i32/i64
+value gets a signed `[lo, hi]` in **BigInt** (so the reasoning is exact and never itself
+overflows) that is a sound **over-approximation**: on every execution reaching the value's
+definition, its runtime value lies in `[lo, hi]`. Precision comes from **edge refinement** —
+at `condbr(c, T, F)` whose condition `c` is an `icmp x <cmp> y`, the environment handed to `T`
+assumes the comparison true and narrows `x`/`y` (`x < y` ⇒ `x ≤ hi(y)−1`, `y ≥ lo(x)+1`) and
+the one handed to `F` assumes it false. A block's entry environment is the **hull (union)** of
+its predecessors' refined out-environments, which is exactly what makes a single-edge
+refinement sound at a merge (it evaporates) while a single-predecessor arm keeps the guard's
+full strength — the same insight `correlate.ts` uses, generalized from equality to intervals.
+
+**Soundness, the whole game.** Every transfer function is a sound over-approximation under
+wasm's **wrapping** integer semantics: an arithmetic result interval is used only when it
+provably fits its result type (`[i32.MIN, i32.MAX]` / `[i64.MIN, i64.MAX]`) — otherwise the
+value could wrap, so the range collapses to ⊤. **Loop headers are pinned to ⊤** (the
+loop-carried back edge is not modelled), which both guarantees termination — the only narrowing
+is acyclic edge refinement, so a single reverse-postorder sweep is a fixpoint — and keeps every
+range a safe over-approximation (a guard *inside* the loop still refines on its arm). A value's
+def dominates all its uses, and a refinement that tightened a value held on *every* path into
+the block that defines the derived `icmp`, so the folded result is valid at every use of it.
+Nothing is ever narrower than reality, so a fold can only be right; the worst a bug could do is
+make a range too *wide*, which just misses an opportunity.
+
+**Steps (all shipped this session):**
+
+- [x] `opt/vrp.ts` — the interval lattice (`Iv = {lo, hi}` BigInt, ⊤ = `null`), `hull`/`meet`,
+      type-bounds clamping, and the flow-sensitive environment threaded in one RPO sweep.
+- [x] Transfer functions: `add`/`sub`/`mul` with an exact-fit-or-⊤ wrap guard; `and`/`or`/`xor`
+      of non-negatives (masks, `fillBits` upper bounds); constant `shl`/`shr_s` (floor-div);
+      constant `div_s`/`rem_s` (sign-aware, trap cases declined); `clz`/`ctz`/`popcnt` → `[0, w]`;
+      `icmp` → `{0}`/`{1}`/`{0,1}`; `select` hull; `cast` `i2l`/`l2i`; `copy`.
+- [x] Edge refinement for all six signed comparisons + `eq`/`ne` (endpoint clip), with the
+      predicate negated on the false arm, clamped and written back only to `val` operands.
+- [x] Application: fold a `condbr` whose condition range excludes / equals `0`; replace an
+      `icmp` whose result range is a singleton with that `0`/`1`; **range-based rem/div
+      elimination** (`x % c → x`, `x / c → 0` for `x ∈ [0, |c|−1]`).
+- [x] Wired into the pass pipeline right after `correlated-fold` at -O2+, so GVN has unified
+      equal subexpressions and the round's DCE/CFG-simplify sweep the dead arms it leaves.
+- [x] Five adversarial regression programs in `tests.ts` (mask range, remainder+popcount,
+      chained guards, `long` ranges, rem/div elimination) — proven by all three oracles.
+- [x] `vrpProbe.ts` + `tools/check-vrp.mjs` — a fire/decline activity probe and a seeded
+      **260-program** range fuzzer: **1,040/1,040** differential checks (interp = V8 = VM) across
+      -O0..-O3, VRP firing in **508** of the -O2/-O3 compiles, **zero disagreements**.
+- [x] The pass surfaces automatically in the Optimizer pipeline panel (generic `optLog` table)
+      with its per-pass change count and a clickable before/after IR diff.
+- [x] Full gate green (`verify-project.mjs`: scope + conformance + lint + build); the differential
+      battery grows **1300 → 1320 checks**, all green.
+
+**Next (open — VRP has more to give):**
+
+- [ ] **Loop-header widening → narrowing** instead of pinning headers to ⊤: a bounded widening
+      to type extremes followed by a narrowing pass would recover **induction-variable ranges**
+      (`for (i=0; i<n; i++)` ⇒ `i ∈ [0, n−1]` in the body), unlocking bound-check-style folds and
+      composing with OSR/unroll.
+- [ ] **Known-bits / congruence lattice** alongside intervals (a `(value, mask)` pair) so
+      `x & 1 == 0` after `x = y << 1`, alignment facts, and low-bit tests fold — the half of
+      LLVM's LazyValueInfo intervals miss.
+- [ ] **Narrow the operations themselves**, not just comparisons: a `div_s`/`rem_s` on a proven
+      non-negative dividend → unsigned form; a value proven to fit i32 stored in a `long` → drop
+      a widening; strength-reduce a `%` whose divisor a range proves a power-of-two-bound.
+- [ ] **Feed ranges to the vectorizer / unroller** as an aliasing + trip-count oracle (two
+      subscripts with disjoint proven ranges never alias).
+- [ ] A dedicated **Ranges** inspector tab: hover any SSA value to see its inferred interval,
+      the way the Loops tab shows induction variables.
+
+
 
 Every optimization in this compiler so far has been **intraprocedural**: a call is a black box.
 `hasSideEffect` conservatively declares *every* `call` side-effecting (as if it stored to memory),
@@ -2900,6 +3017,24 @@ Plan + progress (all shipped this session):
 
 ## Session log
 
+- 2026-07-05 (claude / claude-opus-4-8): **Value-range propagation (VRP) — a flow-sensitive
+  interval analysis + correlated value propagation.** ✅ **Shipped** (`opt/vrp.ts`, -O2+, see the
+  dated plan above). The optimizer could fold a branch on a compile-time constant (SCCP) or an
+  *identical* dominating test (correlate), but never reasoned about **ranges** — so `(x & 7) < 8`,
+  `x % 10 >= 0`, `popcount(x) <= 32`, a chained `a < b … a < b + 1`, all survived to runtime. VRP
+  assigns every i32/i64 SSA value a sound BigInt interval, threaded along the CFG with per-edge
+  **guard refinement** (a merge takes the **hull** of its predecessors, so a single-edge narrowing
+  evaporates but a single-pred arm keeps full strength), and folds every comparison — and the
+  branch above it — that a derived range settles; loop headers pin to ⊤ so one RPO sweep is a
+  fixpoint and every range stays a safe over-approximation. It **subsumes** correlated-branch
+  folding with genuine numeric implication (on `long` as on `int`) and adds range-based
+  remainder/division elimination (`x % c → x`, `x / c → 0` for `x ∈ [0, |c|−1]`) — a rewrite the
+  constant-divisor strength reducer can't make. A fold fires only when the interval *proves* the
+  result, so it can only miss, never miscompile: proven by the three-engine oracle (interp = V8 =
+  VM) at -O0…-O3 (**1300 → 1320 checks**) plus a seeded **1,040-check** range fuzzer
+  (`tools/check-vrp.mjs`, VRP firing in 508 of the -O2/-O3 compiles, zero disagreements). Full
+  `verify-project.mjs` gate green (scope + conformance + lint + build). Left the harder VRP
+  extensions — loop-IV widening, a known-bits lattice, a Ranges inspector tab — open in the plan.
 - 2026-07-03 (claude / claude-opus-4-8): **Algebraic data types — `enum` tagged unions +
   `match` pattern matching, end to end.** ✅ **Shipped.** The last big "makes it a real
   language" feature, threaded through every stage and proven by the differential harness at

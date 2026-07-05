@@ -3420,4 +3420,84 @@ fn main() {
   print(colors);
 }`,
   },
+  {
+    // VRP — a bit-mask pins a value's range, so a following comparison folds to a
+    // constant even though neither operand is itself constant (SCCP can't; the
+    // dominating test is not identical, so correlated-fold can't either).
+    name: 'vrp-mask-range',
+    source: `fn classify(a: int) -> int {
+  let x = a & 7;                 // x in [0,7]
+  let s = 0;
+  if (x < 8) { s = s + 1; } else { print(-99); s = s + 100; }   // always true
+  if (x > 7) { print(-88); s = s + 200; } else { s = s + 2; }   // always false
+  if (x >= 0) { s = s + 4; } else { print(-77); }               // always true (masked)
+  return s;
+}
+fn main(){ for (let i = 0; i < 8; i = i + 1) { print(classify(i * 37 - 11)); } }`,
+  },
+  {
+    // VRP — a non-negative dividend's remainder is bounded and non-negative, and a
+    // popcount / clz are bounded by the bit width; every guard below is decided.
+    name: 'vrp-remainder-popcount',
+    source: `fn f(a: int) -> int {
+  let x = a & 1023;              // x in [0,1023]
+  let r = x % 10;                // x >= 0 -> r in [0,9]
+  let s = 0;
+  if (r < 10) { s = s + r; } else { print(-1); }                // always true
+  if (r >= 0) { s = s + 1; } else { print(-2); }                // always true
+  if (popcount(x) <= 32) { s = s + 2; } else { print(-3); }     // always true
+  if (clz(x) >= 22) { s = s + 4; } else { s = s + 8; }          // runtime (declines)
+  return s;
+}
+fn main(){ for (let i = 0; i < 6; i = i + 1) { print(f(i * 271)); } }`,
+  },
+  {
+    // VRP — chained guards: inside the arm where a < b holds, a < b + 1 is implied,
+    // and inside a >= 3 the range narrows enough to settle a following a > 2 test.
+    name: 'vrp-chained-guards',
+    source: `fn g(a: int, b: int) -> int {
+  let s = 0;
+  if (a < b) {
+    s = s + 1;
+    if (a < b + 1) { s = s + 2; }          // implied by a < b (no overflow: b small)
+    else { print(-1); s = s + 400; }
+  }
+  let y = a & 15;
+  if (y >= 3) { if (y > 2) { s = s + y; } else { print(-2); s = s - 1; } }  // y>2 implied by y>=3
+  return s;
+}
+fn main(){
+  for (let i = 0; i < 6; i = i + 1) {
+    for (let j = 0; j < 4; j = j + 1) { print(g(i, j + 2)); }
+  }
+}`,
+  },
+  {
+    // VRP over `long` (i64): the same interval reasoning on 64-bit masks/remainders.
+    name: 'vrp-long-range',
+    source: `fn h(a: long) -> long {
+  let x = a & 0xFFL;             // x in [0,255]
+  let s = 0L;
+  if (x < 256L) { s = s + 1L; } else { print(-1L); s = s + 1000L; }  // always true
+  let r = x % 7L;                // r in [0,6]
+  if (r < 7L) { s = s + r; } else { print(-2L); }                    // always true
+  return s;
+}
+fn main(){ for (let i = 0; i < 5; i = i + 1) { print(h(long(i) * 123456789L)); } }`,
+  },
+  {
+    // VRP — range-based remainder/division elimination: a dividend proven to lie in
+    // [0, |c|-1] makes x % c the identity and x / c exactly zero (a rewrite the
+    // constant-divisor strength reducer can't make — it never learns x's range).
+    name: 'vrp-rem-div-elim',
+    source: `fn f(a: int) -> int {
+  let x = a & 7;                 // x in [0,7]
+  let m = x % 8;                 // == x
+  let d = x / 16;                // == 0
+  let n = x % 100;               // == x
+  let e = x / 8;                 // == 0
+  return m + n * 3 + d * 1000 + e * 1000;
+}
+fn main(){ for (let i = 0; i < 8; i = i + 1) { print(f(i * 13 + 2)); } }`,
+  },
 ];
