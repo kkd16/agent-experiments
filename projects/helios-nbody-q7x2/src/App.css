@@ -1186,3 +1186,69 @@ select {
   background: none !important;
   flex: none !important;
 }
+
+/* ---- Choreography Lab ---------------------------------------------------- */
+.anosova-chip.active {
+  background: rgba(255, 120, 71, 0.18);
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
+.choreo-computing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-2);
+  background: rgba(5, 6, 12, 0.55);
+  pointer-events: none;
+}
+.choreo-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 2px;
+}
+.choreo-speed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+  flex: 1;
+}
+.choreo-speed input {
+  flex: 1;
+}
+.choreo-verdict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0;
+}
+.choreo-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+}
+.choreo-badge.stable {
+  color: #7ae6b0;
+  border-color: rgba(122, 230, 176, 0.4);
+  background: rgba(122, 230, 176, 0.08);
+}
+.choreo-badge.unstable {
+  color: #ff8a8a;
+  border-color: rgba(255, 138, 138, 0.4);
+  background: rgba(255, 138, 138, 0.08);
+}
+.choreo-maxmod {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
