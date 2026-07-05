@@ -19,6 +19,7 @@ import {
   conservedWith,
   refineOrbit,
   figureEight,
+  EightDiscoverer,
   DEFAULT_CONFIG,
 } from '../sim/periodic'
 import type { OrbitSeed, FloquetAnalysis, Complex, TrajectorySample } from '../sim/periodic'
@@ -86,13 +87,16 @@ function analyze(orbit: OrbitSeed): Analysis {
 
 export function ChoreographyPanel({ onLaunch }: ChoreographyPanelProps) {
   const gallery = useMemo(() => buildGallery(), [])
+  const [discovered, setDiscovered] = useState<OrbitSeed | null>(null)
+  const allOrbits = useMemo(() => (discovered ? [...gallery, discovered] : gallery), [gallery, discovered])
   const [selId, setSelId] = useState(gallery[0].id)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [playing, setPlaying] = useState(true)
   const [speed, setSpeed] = useState(1)
   const [refineHist, setRefineHist] = useState<number[] | null>(null)
+  const [discovering, setDiscovering] = useState(false)
 
-  const orbit = useMemo(() => gallery.find((o) => o.id === selId) ?? gallery[0], [gallery, selId])
+  const orbit = useMemo(() => allOrbits.find((o) => o.id === selId) ?? allOrbits[0], [allOrbits, selId])
   // Derived — no effect needed. The analysis lags the selection by one solve.
   const computing = !analysis || analysis.id !== orbit.id
 
@@ -291,6 +295,20 @@ export function ChoreographyPanel({ onLaunch }: ChoreographyPanelProps) {
         scratch. On the unit circle ⇒ stable; flung off it ⇒ unstable.
       </p>
 
+      <button className="chaos-run" onClick={() => setDiscovering(true)}>
+        ✦ Discover the eight (minimise the action)
+      </button>
+      {discovering && (
+        <DiscoverEight
+          onDone={(orb) => {
+            setDiscovered(orb)
+            setSelId(orb.id)
+            setDiscovering(false)
+          }}
+          onCancel={() => setDiscovering(false)}
+        />
+      )}
+
       <div className="anosova-named">
         <span className="anosova-named-label">Choreographies:</span>
         {choreos.map((o) => (
@@ -374,6 +392,119 @@ export function ChoreographyPanel({ onLaunch }: ChoreographyPanelProps) {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// The action-minimisation discovery: run a few conjugate-gradient steps per
+// animation frame and watch a near-circular loop relax into the figure-eight,
+// the action ticking down toward its known value ≈ 24.372.
+function DiscoverEight({ onDone, onCancel }: { onDone: (o: OrbitSeed) => void; onCancel: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [action, setAction] = useState<number | null>(null)
+  const [iters, setIters] = useState(0)
+  const [done, setDone] = useState(false)
+  const orbitRef = useRef<OrbitSeed | null>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const cssW = canvas.clientWidth || 280
+    const cssH = Math.round(cssW * 0.7)
+    canvas.style.height = `${cssH}px`
+    canvas.width = Math.round(cssW * dpr)
+    canvas.height = Math.round(cssH * dpr)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const d = new EightDiscoverer(200)
+    let raf = 0
+    let stopped = false
+
+    const drawCurve = () => {
+      const curve = d.sampleCurve(240)
+      const W = canvas.width, H = canvas.height
+      // Fixed frame so the morphing reads as motion, not rescaling.
+      const span = 2.8
+      const scale = Math.min(W, H) / span
+      const toX = (x: number) => W / 2 + x * scale
+      const toY = (y: number) => H / 2 - y * scale
+      ctx.clearRect(0, 0, W, H)
+      ctx.fillStyle = '#05060c'
+      ctx.fillRect(0, 0, W, H)
+      // The shared track.
+      ctx.strokeStyle = '#7ab2ff88'
+      ctx.lineWidth = Math.max(1.4, 1.5 * dpr)
+      ctx.beginPath()
+      for (let s = 0; s < 240; s++) {
+        const x = toX(curve[2 * s]), y = toY(curve[2 * s + 1])
+        if (s === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+      }
+      ctx.closePath()
+      ctx.stroke()
+      // The three bodies at their phase offsets (indices 0, 1/3, 2/3 of the loop).
+      const idx = [0, 80, 160]
+      for (let b = 0; b < 3; b++) {
+        const col = BODY_COLORS[b]
+        ctx.fillStyle = col
+        ctx.beginPath()
+        ctx.arc(toX(curve[2 * idx[b]]), toY(curve[2 * idx[b] + 1]), Math.max(3.5, 4 * dpr), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    const loop = () => {
+      if (stopped) return
+      d.iterate(5)
+      drawCurve()
+      setAction(d.action)
+      setIters(d.iters)
+      if (d.gradNorm() < 1e-5 || d.iters >= 260) {
+        // Polish the truncated-Fourier extraction to a genuine periodic orbit.
+        const raw = d.orbit()
+        const r = refineOrbit(raw.psi, 3, raw.mass, raw.period, {
+          steps: 6000,
+          maxIter: 30,
+          tol: 1e-12,
+          cfg: DEFAULT_CONFIG,
+          tBand: 0.15,
+        })
+        orbitRef.current = { ...raw, psi: r.psi, period: r.period }
+        setDone(true)
+        return
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => {
+      stopped = true
+      cancelAnimationFrame(raf)
+    }
+  }, [])
+
+  return (
+    <div className="choreo-discover">
+      <div className="choreo-discover-head">
+        <strong>Action minimisation</strong>
+        <span className="choreo-maxmod">
+          {iters} iters · A = {action != null ? action.toFixed(4) : '—'}{' '}
+          <span style={{ color: 'var(--muted-2)' }}>(eight ≈ 24.372)</span>
+        </span>
+      </div>
+      <canvas ref={canvasRef} className="atlas-canvas" style={{ width: '100%' }} />
+      <p className="preset-desc" style={{ margin: '4px 0' }}>
+        A near-circular loop, restricted to the eight's symmetry class (x from odd cosine harmonics,
+        y from even sine harmonics), sliding downhill on the Lagrangian action by conjugate gradient —
+        exactly how the figure-eight was first found.
+      </p>
+      <div className="choreo-controls">
+        <button className="chaos-run" disabled={!done} onClick={() => orbitRef.current && onDone(orbitRef.current)}>
+          {done ? '✓ Use this orbit ▶' : 'minimising…'}
+        </button>
+        <button className="anosova-chip" onClick={onCancel}>Close</button>
+      </div>
     </div>
   )
 }

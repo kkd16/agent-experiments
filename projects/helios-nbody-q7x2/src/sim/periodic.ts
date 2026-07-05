@@ -1367,3 +1367,253 @@ export function buildGallery(): OrbitSeed[] {
     regularPolygon(6),
   ]
 }
+
+// ===========================================================================
+// Discovering the figure-eight by action minimisation
+// ===========================================================================
+//
+// The figure-eight was not found by shooting — it was found by Chenciner &
+// Montgomery (2000) as a *minimiser of the Lagrangian action* over loops with a
+// particular symmetry. This reproduces that discovery from scratch: represent the
+// single shared choreography curve q(t) (period 2π) by a Fourier series and slide
+// its coefficients downhill on the action
+//   A[q] = ∫₀^{2π} [ Σⱼ ½|q̇(t+jT/N)|² + Σ_{i<j} 1/|qᵢ−qⱼ| ] dt.
+// The catch: in the *full* loop space the action's minimiser is the rigid
+// rotating triangle (Lagrange), not the eight — the eight is only a minimiser
+// within its symmetry class. So we restrict the ansatz to that class: x(t) uses
+// only ODD cosine harmonics and y(t) only EVEN sine harmonics (both skipping
+// multiples of N so the centre of mass stays pinned). The rotating circle lives
+// outside this class, so a near-circular start relaxes straight into the eight —
+// and the action lands on its known value ≈ 24.372.
+
+const EIGHT_KX = [1, 5, 7, 11, 13] // x(t) = Σ ax_k cos(k t), k odd, not a multiple of 3
+const EIGHT_KY = [2, 4, 8, 10, 14] // y(t) = Σ by_k sin(k t), k even, not a multiple of 3
+const EIGHT_TAU = [0, (2 * Math.PI) / 3, (4 * Math.PI) / 3]
+
+function eightPos(coef: Float64Array, t: number): [number, number] {
+  let x = 0
+  let y = 0
+  for (let m = 0; m < EIGHT_KX.length; m++) x += coef[m] * Math.cos(EIGHT_KX[m] * t)
+  for (let m = 0; m < EIGHT_KY.length; m++) y += coef[EIGHT_KX.length + m] * Math.sin(EIGHT_KY[m] * t)
+  return [x, y]
+}
+
+function eightVel(coef: Float64Array, t: number): [number, number] {
+  let x = 0
+  let y = 0
+  for (let m = 0; m < EIGHT_KX.length; m++) x += -EIGHT_KX[m] * coef[m] * Math.sin(EIGHT_KX[m] * t)
+  for (let m = 0; m < EIGHT_KY.length; m++) y += EIGHT_KY[m] * coef[EIGHT_KX.length + m] * Math.cos(EIGHT_KY[m] * t)
+  return [x, y]
+}
+
+export interface DiscoveryFrame {
+  /** The single shared curve, sampled as [x0,y0,x1,y1,…] over one period. */
+  curve: Float64Array
+  action: number
+  iter: number
+}
+
+export interface DiscoveryResult {
+  frames: DiscoveryFrame[]
+  history: number[]
+  action: number
+  orbit: OrbitSeed
+}
+
+/**
+ * A stateful, incremental figure-eight discoverer. It precomputes the (fixed)
+ * trigonometric basis on the S quadrature nodes so each action/gradient
+ * evaluation is table lookups and arithmetic — no `Math.cos` in the hot loop —
+ * and exposes `iterate(n)` so a UI can drive a few conjugate-gradient steps per
+ * animation frame and watch the curve relax from a circle into the eight without
+ * ever blocking the main thread.
+ */
+export class EightDiscoverer {
+  private readonly S: number
+  private readonly nx = EIGHT_KX.length
+  private readonly dim = EIGHT_KX.length + EIGHT_KY.length
+  private readonly coef: Float64Array
+  // Precomputed basis: cosX[(j*nx+m)*S + s] = cos(kx_m·(t_s+τ_j)); sinY similarly.
+  private readonly cosX: Float64Array
+  private readonly sinY: Float64Array
+  private grad: Float64Array
+  private dir: Float64Array
+  private gg: number
+  private A: number
+  private step = 0.02
+  readonly history: number[] = []
+  iters = 0
+
+  constructor(sampleCount = 200) {
+    const S = sampleCount
+    this.S = S
+    const nx = this.nx
+    const ny = EIGHT_KY.length
+    this.cosX = new Float64Array(3 * nx * S)
+    this.sinY = new Float64Array(3 * ny * S)
+    for (let j = 0; j < 3; j++) {
+      for (let s = 0; s < S; s++) {
+        const t = (s / S) * 2 * Math.PI + EIGHT_TAU[j]
+        for (let m = 0; m < nx; m++) this.cosX[(j * nx + m) * S + s] = Math.cos(EIGHT_KX[m] * t)
+        for (let m = 0; m < ny; m++) this.sinY[(j * ny + m) * S + s] = Math.sin(EIGHT_KY[m] * t)
+      }
+    }
+    this.coef = new Float64Array(this.dim)
+    this.coef[0] = 1.0 // x = cos t
+    this.coef[nx] = 0.3 // y = 0.3 sin 2t — a squashed near-circle
+    const r = this.actionGrad(this.coef)
+    this.A = r.A
+    this.grad = r.grad
+    this.dir = Float64Array.from(this.grad, (g) => -g)
+    this.gg = this.grad.reduce((a, b) => a + b * b, 0)
+    this.history.push(this.A)
+  }
+
+  private actionGrad(coef: Float64Array): { A: number; grad: Float64Array } {
+    const S = this.S
+    const nx = this.nx
+    const ny = EIGHT_KY.length
+    const dim = this.dim
+    const grad = new Float64Array(dim)
+    let Akin = 0
+    for (let m = 0; m < nx; m++) {
+      const k = EIGHT_KX[m]
+      Akin += 3 * Math.PI * 0.5 * k * k * coef[m] * coef[m]
+      grad[m] += 3 * Math.PI * k * k * coef[m]
+    }
+    for (let m = 0; m < ny; m++) {
+      const k = EIGHT_KY[m]
+      const idx = nx + m
+      Akin += 3 * Math.PI * 0.5 * k * k * coef[idx] * coef[idx]
+      grad[idx] += 3 * Math.PI * k * k * coef[idx]
+    }
+    const dt = (2 * Math.PI) / S
+    const px = [0, 0, 0]
+    const py = [0, 0, 0]
+    let Apot = 0
+    for (let s = 0; s < S; s++) {
+      for (let j = 0; j < 3; j++) {
+        let x = 0
+        let y = 0
+        for (let m = 0; m < nx; m++) x += coef[m] * this.cosX[(j * nx + m) * S + s]
+        for (let m = 0; m < ny; m++) y += coef[nx + m] * this.sinY[(j * ny + m) * S + s]
+        px[j] = x
+        py[j] = y
+      }
+      for (let i = 0; i < 3; i++) {
+        for (let j = i + 1; j < 3; j++) {
+          const dx = px[i] - px[j]
+          const dy = py[i] - py[j]
+          const rr = Math.sqrt(dx * dx + dy * dy) + 1e-12
+          Apot += dt / rr
+          const inv3 = 1 / (rr * rr * rr)
+          const gx = -dt * inv3 * dx
+          const gy = -dt * inv3 * dy
+          for (let m = 0; m < nx; m++) {
+            grad[m] += gx * (this.cosX[(i * nx + m) * S + s] - this.cosX[(j * nx + m) * S + s])
+          }
+          for (let m = 0; m < ny; m++) {
+            grad[nx + m] += gy * (this.sinY[(i * ny + m) * S + s] - this.sinY[(j * ny + m) * S + s])
+          }
+        }
+      }
+    }
+    return { A: Akin + Apot, grad }
+  }
+
+  /** Run `n` conjugate-gradient steps. Returns the current action. */
+  iterate(n: number): number {
+    const dim = this.dim
+    for (let it = 0; it < n; it++) {
+      // Expanding/backtracking line search along the search direction.
+      let step = this.step
+      let best = this.A
+      let bestStep = 0
+      for (let ls = 0; ls < 32; ls++) {
+        const trial = Float64Array.from(this.coef, (c, i) => c + step * this.dir[i])
+        const At = this.actionGrad(trial).A
+        if (At < best) {
+          best = At
+          bestStep = step
+          step *= 1.5
+        } else {
+          step *= 0.5
+        }
+        if (step < 1e-10) break
+      }
+      if (bestStep === 0) {
+        for (let i = 0; i < dim; i++) this.coef[i] -= 1e-3 * this.grad[i]
+      } else {
+        for (let i = 0; i < dim; i++) this.coef[i] += bestStep * this.dir[i]
+        this.step = bestStep
+      }
+      const r = this.actionGrad(this.coef)
+      let beta = 0
+      for (let i = 0; i < dim; i++) beta += r.grad[i] * (r.grad[i] - this.grad[i])
+      beta = Math.max(0, beta / (this.gg || 1))
+      for (let i = 0; i < dim; i++) this.dir[i] = -r.grad[i] + beta * this.dir[i]
+      this.grad = r.grad
+      this.gg = this.grad.reduce((a, b) => a + b * b, 0)
+      this.A = r.A
+      this.iters++
+      this.history.push(this.A)
+    }
+    return this.A
+  }
+
+  /** Current gradient norm — a convergence gauge. */
+  gradNorm(): number {
+    return Math.sqrt(this.gg)
+  }
+
+  get action(): number {
+    return this.A
+  }
+
+  /** Sample the current shared curve as [x0,y0,x1,y1,…]. */
+  sampleCurve(sampleCount = 240): Float64Array {
+    const out = new Float64Array(sampleCount * 2)
+    for (let s = 0; s < sampleCount; s++) {
+      const t = (s / sampleCount) * 2 * Math.PI
+      const p = eightPos(this.coef, t)
+      out[2 * s] = p[0]
+      out[2 * s + 1] = p[1]
+    }
+    return out
+  }
+
+  /** Extract the current curve's choreography as an orbit seed (period 2π). */
+  orbit(): OrbitSeed {
+    const psi = makePsi(3)
+    for (let j = 0; j < 3; j++) {
+      const p = eightPos(this.coef, EIGHT_TAU[j])
+      const v = eightVel(this.coef, EIGHT_TAU[j])
+      setBody(psi, 3, j, p[0], p[1], v[0], v[1])
+    }
+    return {
+      id: 'discovered-eight',
+      name: 'Discovered Eight',
+      blurb:
+        'The figure-eight, discovered from a near-circular loop by minimising the Lagrangian action in its symmetry class — the way Chenciner & Montgomery found it.',
+      family: 'choreography',
+      n: 3,
+      mass: new Float64Array([1, 1, 1]),
+      psi,
+      period: 2 * Math.PI,
+    }
+  }
+}
+
+/**
+ * Batch discovery — runs the whole minimisation and returns curve snapshots for
+ * a caller that does not animate incrementally (and for the self-test).
+ */
+export function discoverEight(iters = 400, sampleCount = 120, frameEvery = 20): DiscoveryResult {
+  const d = new EightDiscoverer(200)
+  const frames: DiscoveryFrame[] = [{ curve: d.sampleCurve(sampleCount), action: d.action, iter: 0 }]
+  for (let done = 0; done < iters; done += frameEvery) {
+    d.iterate(Math.min(frameEvery, iters - done))
+    frames.push({ curve: d.sampleCurve(sampleCount), action: d.action, iter: d.iters })
+  }
+  return { frames, history: d.history, action: d.action, orbit: d.orbit() }
+}

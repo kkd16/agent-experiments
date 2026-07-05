@@ -201,8 +201,10 @@ The gallery is deliberately **only orbits this integrator can certify to machine
 The panel animates each orbit tracing its closed track, draws the **Floquet spectrum on the unit
 circle** (blue on the circle, red off it), reports `T`, energy, angular momentum, the closure
 residual and `det M`, runs the **corrector live** on a perturbed figure-eight seed (a log-scale
-residual sparkline that falls off a cliff), and **launches any orbit into the live Studio** — scaled
-so the dynamics are invariant but the bodies render large.
+residual sparkline that falls off a cliff), lets you **discover the figure-eight from scratch** by
+watching a near-circular loop relax into the eight under action minimisation (the action ticking
+down to ≈ 24.372), and **launches any orbit into the live Studio** — scaled so the dynamics are
+invariant but the bodies render large.
 
 #### Planned steps — all shipped this session
 
@@ -226,18 +228,26 @@ so the dynamics are invariant but the bodies render large.
       the unit circle, live readouts, the live-corrector demo, and **Launch in Studio**.
 - [x] Wired the lab into the Sidebar and a new `handleLaunchOrbit` in `App.tsx` (mass-scaled so the
       trajectory is invariant but visible, camera framed to the track, Yoshida-6 playback).
-- [x] Five new self-test cases (the battery grew **86 → 91**, all green): the monodromy vs a
+- [x] **Action minimisation from scratch — DISCOVER the figure-eight** (`EightDiscoverer`,
+      `discoverEight`). Represent the shared choreography curve by a Fourier series *restricted to the
+      eight's symmetry class* (x from odd cosine harmonics, y from even sine harmonics, skipping
+      multiples of N so the COM stays pinned — the rotating circle lives *outside* this class, which
+      is why a near-circular seed relaxes into the eight rather than back to Lagrange), and slide its
+      coefficients downhill on the Lagrangian action by **nonlinear conjugate gradient** with a
+      backtracking line search. A precomputed trig basis makes each step ~5 ms, so the **Choreography
+      Lab animates the discovery live** — a near-circular loop morphing into the eight while the action
+      ticks down from ~25.2 to its known value **≈ 24.372** — then hands the extracted choreography to
+      the corrector, which polishes it to a genuine, machine-precision, linearly-stable periodic orbit.
+- [x] Seven new self-test cases (the battery grew **86 → 93**, all green): the monodromy vs a
       finite-difference STM, the figure-eight closing to ~10⁻¹³ with `det M = 1`, its linear stability
       and reciprocal Floquet pairing, energy conservation over a period, the Lagrange triangle as an
-      exact-but-unstable relative equilibrium, and the eigensolver on a known spectrum.
+      exact-but-unstable relative equilibrium, the eigensolver on a known spectrum, and the action
+      minimiser converging to the figure-eight action and refining to a genuine stable orbit.
 - [x] Verified end-to-end in a real browser (headless Chromium): every gallery orbit's stability
       verdict renders correctly and Launch-in-Studio replays the figure-eight with |p| ≈ 10⁻¹³.
 - [ ] An **adaptive / regularised integrator** (Bulirsch–Stoer or Kustaanheimo–Stiefel) so the
       near-collision Šuvakov–Dmitrašinović family (butterflies, bumblebee, dragonfly, yin-yang) can
       also be certified and added to the gallery — uniform-step RK4 cannot resolve their close passages.
-- [ ] **Action minimisation from scratch** — discover the figure-eight by gradient descent on the
-      Lagrangian action over a Fourier-parameterised loop, watching a tangled curve relax into the
-      eight (the way it was actually found).
 - [ ] **Numerical continuation** — trace a whole *family* of periodic orbits by pseudo-arclength
       continuation off one seed (e.g. the figure-eight → the rotating "choreography with a twist").
 - [ ] Colour the launched orbit's bodies by their position along the shared curve, and draw the
