@@ -90,6 +90,47 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   states (`randomSeparable`).
 - [x] Wired the tab into `App.tsx` (type, nav, render), added the **Mixed-State Entanglement** About pillar,
   and added **7 new self-tests** to the suite (**195 → 202**).
+- [x] **Quantum Chemistry pillar (⚗️ Chemistry tab) — Hartree–Fock → Jordan–Wigner → VQE, from scratch.**
+  A Gaussian-basis integral engine (`chem/integrals.ts`): STO-3G s-orbital overlap/kinetic/nuclear/ERI in
+  closed form via the Boys function; a restricted Hartree–Fock SCF (`chem/scf.ts`) on the lab's own Hermitian
+  eigensolver with Löwdin S^{−1/2} orthogonalisation and AO→MO integral transforms; a symbolic Pauli algebra +
+  Jordan–Wigner map (`chem/pauli.ts`, `chem/hamiltonian.ts`) building the qubit Hamiltonian + UCCSD singles/
+  doubles generators + a particle-number penalty for sector-correct FCI; a molecule library (`chem/molecules.ts`:
+  H₂, HeH⁺, H₃⁺, He, H₄); and a VQE driver (`chem/vqe.ts`) preparing |HF⟩ and applying UCCSD as exact Pauli
+  rotations, optimised by the existing Nelder–Mead. `ChemLab.tsx` ties it together: molecule picker, bond-length
+  slider, live HF/FCI/correlation/orbital-energy readout, a hand-drawn dissociation-curve plot with equilibrium
+  marker, a VQE convergence plot, and the full Pauli Hamiltonian. **14 new self-tests (202 → 216).**
+
+### Verified (all green — suite now 216/216)
+
+- **STO-3G integrals** reproduce Szabo & Ostlund's H₂ (R=1.4 a₀) numbers to every printed digit —
+  `S₁₂=0.6593`, `T₁₁=0.7600`, `(11|11)=0.7746`, `(11|22)=0.5697` — cross-checked against a naïve O(n⁸)
+  reference and (for the trickier `(12|12)`) an independent Monte-Carlo. `F₀(0)=1`.
+- **Restricted Hartree–Fock** lands **He = −2.8077 Eₕ** and **H₂ (R=1.4) = −1.1167 Eₕ** (textbook), converged;
+  **H₃⁺** shows the **degenerate e′ orbital pair** (`ε₂=ε₃` to <1e-4) forced by its D₃ₕ symmetry — a physics
+  check no bug survives.
+- The **Jordan–Wigner qubit Hamiltonian** for H₂ is the celebrated operator — **14 Pauli terms + the identity
+  (15 total)**, real to machine precision — and its particle-number-restricted diagonalisation gives
+  **FCI = −1.1373 Eₕ**; `⟨HF|H|HF⟩` equals the RHF energy exactly (the qubit/HF-prep convention is consistent).
+- The **UCCSD VQE** converges to FCI to **~1e-10** for H₂, HeH⁺ **and** the 6-qubit H₃⁺, recovering the full
+  correlation energy (H₂: 0.0205 Eₕ below HF) — the gate-based ansatz's 8 double-excitation Pauli strings carry
+  the exact ±0.125 coefficients.
+- The **dissociation curve** minimum pins the **H₂ equilibrium bond length to 0.73 Å** (experiment 0.741 Å),
+  and Hartree–Fock peels visibly above the exact curve at large separation — static correlation, live.
+- `pnpm lint` + `tsc` + `pnpm build` all pass (the exact CI gate); the full in-app suite runs **216/216**.
+
+### Follow-ups (open for a later session)
+
+- [ ] **Møller–Plesset (MP2) & CISD** on the same MO integrals — a cheap classical correlation baseline to
+  overlay on the VQE/FCI curves.
+- [ ] **Parity/Bravyi–Kitaev encodings + qubit tapering** — reduce H₂ to the famous 2-qubit Hamiltonian and
+  HeH⁺/H₃⁺ likewise, halving the qubit count and letting VQE run a single-parameter ansatz.
+- [ ] **p-orbitals (STO-3G for Li…Ne)** via the McMurchie–Davidson / Hermite-Gaussian recursion — unlocks LiH,
+  BeH₂, H₂O and the real periodic table beyond s-only.
+- [ ] **A proper quasi-Newton / BFGS optimiser** and analytic parameter-shift gradients for VQE (the lab already
+  has parameter-shift for the Ising VQE) to scale the ansatz past a handful of parameters.
+- [ ] **Adiabatic state preparation / Trotterised time evolution** of the molecular Hamiltonian, and a Quantum
+  Phase Estimation route to the energy alongside VQE.
 
 ### Verified (all green — suite now 202/202)
 
@@ -124,6 +165,26 @@ Jacobi eigensolver, and — like every pillar here — pins every headline numbe
   (decomposable) ones to detect the PPT-entangled states that only appear in 3×3 and higher.
 
 ### Session log
+
+- 2026-07-05 (claude/claude-opus-4-8[1m]): **Quantum Lab 22.0 — Quantum chemistry, end to end.** Built the
+  flagship near-term-quantum application the lab had circled but never landed: computing a real molecule's
+  ground-state energy from first principles — Gaussian integrals → Hartree–Fock → Jordan–Wigner → VQE — with no
+  external chemistry libraries (no PySCF, no OpenFermion, no Qiskit). The crux was getting the physics *exactly*
+  right, so every stage was validated in a throwaway Node oracle before a line of production code: the STO-3G
+  s-orbital integrals (closed forms in the Boys function — s-only, but that still spans H₂/HeH⁺/H₃⁺/He/H-chains)
+  reproduce Szabo & Ostlund to every printed digit; RHF SCF (on the lab's own Hermitian eigensolver, Löwdin
+  S^{−1/2}) hits H₂ −1.1167 and He −2.8077 and — the moment I trusted it — H₃⁺'s **degenerate e′ orbital pair**
+  fell straight out of its D₃ₕ symmetry. A tiny symbolic Pauli algebra does the Jordan–Wigner map: for H₂ it
+  produces the celebrated **15-term** operator, purely real, whose diagonalisation gives FCI −1.1373 — but only
+  after catching that exact diagonalisation over the *full* Fock space finds the ground state in the wrong
+  particle-number sector (HeH⁺'s "FCI" came out 0.27 Eₕ too low until a number-operator **penalty** restricted it
+  to N electrons; H₂ had passed by luck). The gate-based **UCCSD** ansatz — |HF⟩ dressed by exponentiated
+  singles/doubles generators, each applied as an exact product of Pauli rotations exp(iθcₖPₖ) — then converges to
+  FCI to ~1e-10 for H₂, HeH⁺ and H₃⁺ alike (its 8 double-excitation strings carry the textbook ±0.125). Six new
+  modules under `chem/`, one tab (`ChemLab.tsx`) with a live dissociation curve (H₂ equilibrium 0.73 Å vs 0.741
+  experiment; HF visibly failing at dissociation — static correlation, live), the Pauli Hamiltonian, and a VQE
+  convergence trace, plus an About pillar and **14 self-tests**. Suite **202 → 216**, all green; lint + tsc +
+  build pass (the exact CI gate).
 
 - 2026-07-03 (claude/claude-opus-4-8[1m]): **Quantum Lab 21.0 — Mixed-state entanglement as a resource.**
   Built the resource theory the lab was missing: given any two-qubit mixed state, *how much* entanglement

@@ -29,14 +29,15 @@ import EntanglementLab from './components/EntanglementLab';
 import MetrologyLab from './components/MetrologyLab';
 import ShadowsLab from './components/ShadowsLab';
 import WalkLab from './components/WalkLab';
+import ChemLab from './components/ChemLab';
 import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'entangle' | 'metrology' | 'shadows' | 'walks' | 'mbqc' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'entangle' | 'metrology' | 'shadows' | 'walks' | 'mbqc' | 'chem' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -148,7 +149,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -178,6 +179,7 @@ export default function App() {
                 : tab === 'shadows' ? '🃏 Shadows'
                 : tab === 'walks' ? '🚶 Walks'
                 : tab === 'mbqc' ? '🕹️ One-Way'
+                : tab === 'chem' ? '⚗️ Chemistry'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'freefermion' ? '🪢 Free Fermion'
@@ -249,6 +251,7 @@ export default function App() {
               {activeTab === 'shadows' && <ShadowsLab />}
               {activeTab === 'walks' && <WalkLab />}
               {activeTab === 'mbqc' && <MBQCLab />}
+              {activeTab === 'chem' && <ChemLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
               {activeTab === 'surface' && <SurfaceLab />}
@@ -614,6 +617,10 @@ function AboutPage() {
         {
           title: 'Variational Algorithms (VQE & QAOA)',
           content: 'A hybrid quantum-classical loop: the simulator is the "QPU" and a from-scratch optimizer tunes circuit angles. VQE finds the ground-state energy of a transverse-field Ising Hamiltonian via BOTH derivative-free Nelder–Mead and exact analytic parameter-shift gradient descent (the method real hardware uses), matching exact diagonalization; QAOA solves MaxCut on small graphs.',
+        },
+        {
+          title: 'Quantum Chemistry (Hartree–Fock → Jordan–Wigner → VQE)',
+          content: 'The flagship near-term-quantum application, built end-to-end from scratch — no PySCF, no OpenFermion, no Qiskit. A Gaussian-basis integral engine evaluates the STO-3G overlap, kinetic, nuclear-attraction and four-index electron-repulsion integrals in closed form (verified against Szabo & Ostlund to every printed digit); a restricted Hartree–Fock SCF then solves the Roothaan equations for real molecules — H₂, HeH⁺, H₃⁺, He and a hydrogen chain — landing H₂ on −1.1167 Eₕ and reproducing H₃⁺\'s degenerate e′ orbital pair. The electronic Hamiltonian is transformed to the molecular-orbital basis and mapped to qubits by a from-scratch Jordan–Wigner encoding (for H₂, the celebrated 15-term operator), whose exact diagonalisation gives the FCI energy −1.1373 Eₕ. Finally a UCCSD Variational Quantum Eigensolver — the Hartree–Fock state prepared on the qubits, dressed by exponentiated singles/doubles excitation generators and driven by the lab\'s Nelder–Mead optimiser — converges to that FCI energy, recovering the electron-correlation energy Hartree–Fock cannot see. Sweeping the geometry traces the full dissociation curve and pinpoints the equilibrium bond length (H₂: 0.73 Å vs 0.741 Å experiment), with Hartree–Fock visibly failing at large separation — the textbook static-correlation error, live.',
         },
         {
           title: 'Randomized Benchmarking & Schmidt',
