@@ -112,6 +112,21 @@ export const PRESETS: readonly Preset[] = [
       cities: 10,
     },
   },
+  {
+    name: 'Empires',
+    blurb: 'A broad fertile pangaea for sprawling realms — play the Ages',
+    patch: {
+      shape: 'pangaea',
+      terrainMode: 'tectonic',
+      plates: 12,
+      seaLevel: 0.34,
+      islandFalloff: 0.5,
+      rainfall: 1.3,
+      octaves: 6,
+      orographic: 0.7,
+      cities: 22,
+    },
+  },
 ]
 
 export const SHAPES: readonly { value: WorldShape; label: string }[] = [

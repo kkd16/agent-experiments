@@ -76,6 +76,38 @@ export default function Timeline({
     setPlaying((p) => !p)
   }
 
+  // Keyboard transport: space = play/pause, ←/→ = step, Home/End = founding/present.
+  // Native handling on the focused slider/buttons is left alone (guarded below).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return
+      if (e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault()
+        if (!playing && idx >= last) setFrameIdx(0)
+        setPlaying((p) => !p)
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        setPlaying(false)
+        setFrameIdx((i) => Math.max(0, i - 1))
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        setPlaying(false)
+        setFrameIdx((i) => Math.min(last, i + 1))
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        setPlaying(false)
+        setFrameIdx(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        setPlaying(false)
+        setFrameIdx(last)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [playing, idx, last, setFrameIdx, setPlaying])
+
   const realms = world.history.realms
   const board = frame.realms.slice(0, 7)
   const totalPop = frame.realms.reduce((s, r) => s + r.population, 0)
