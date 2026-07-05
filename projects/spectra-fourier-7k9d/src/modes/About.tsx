@@ -79,11 +79,14 @@ export default function About() {
           </li>
           <li>
             <strong>Tomography</strong> — a CT scanner from scratch. Project a phantom into a{' '}
-            <strong>sinogram</strong> of line integrals, then invert it two ways: filtered
-            back-projection (watch each reading smear back and resolve into a sharp slice) and a
-            direct <strong>Fourier Slice Theorem</strong> reconstruction that grids each
-            projection's spectrum into k-space. An RMSE error map and a live view of the radial
-            slices filling the frequency plane keep it honest.
+            <strong>sinogram</strong> of line integrals, then invert it two ways: the{' '}
+            <em>direct</em> methods — filtered back-projection (watch each reading smear back and
+            resolve into a sharp slice) and a <strong>Fourier Slice Theorem</strong> reconstruction
+            that grids each projection's spectrum into k-space — or the <em>iterative</em> family
+            (<strong>SIRT / SART / CGLS</strong>) that solves the whole scan as one least-squares
+            system <code>A x = b</code> with a non-negativity prior. Starve the scan (few angles, a
+            missing wedge) and watch the iterative convergence curve duck under the FBP baseline. An
+            RMSE error map and the radial slices filling the frequency plane keep it honest.
           </li>
           <li>
             <strong>Sensing</strong> — <em>compressed sensing</em>, the beautiful heresy that
@@ -259,6 +262,26 @@ export default function About() {
           knobs a radiologist turns. Everything runs on the same from-scratch FFT — no CT library,
           no linear-algebra package.
         </p>
+        <div className="formula">
+          x̂ = arg min ‖A·x − b‖²₂ &nbsp;→&nbsp; SIRT: x ← x + λ·C&nbsp;Aᵀ&nbsp;R(b − A&nbsp;x) &nbsp;·&nbsp; CGLS: (AᵀA + μ²I)x = Aᵀb
+        </div>
+        <p>
+          That analytic inverse is exact only in the limit of many clean angles over a full 180°.
+          Real scans are starved — few projections (dose!), noisy readings, a missing wedge of
+          angles — and there the ramp filter streaks. The <strong>iterative</strong> family takes the
+          algebraic view instead: stack every ray as one equation <code>⟨aᵢ, x⟩ = bᵢ</code> and solve{' '}
+          <code>A x = b</code> in the least-squares sense. We never build the matrix <code>A</code> —
+          it <em>is</em> the Radon transform, applied matrix-free, and its transpose <code>Aᵀ</code>{' '}
+          is back-projection. The one non-negotiable is that <code>Aᵀ</code> be the{' '}
+          <strong>exact adjoint</strong> of <code>A</code> (⟨A x, y⟩ = ⟨x, Aᵀ y⟩); we guarantee it by
+          walking the same rays with the same weights in both directions. <strong>SIRT</strong> is
+          preconditioned gradient descent, <strong>SART</strong> the same correction one angle at a
+          time (block-iterative, far fewer sweeps), and <strong>CGLS</strong> the conjugate-gradient
+          solver for the normal equations. Add the physical prior that attenuation is never negative
+          (<code>x ≥ 0</code>) and, under sparse or limited-angle data, iterative reconstruction
+          roughly <strong>halves</strong> FBP's error — the convergence plot shows the curve ducking
+          under the FBP baseline in real time. Still no linear-algebra package.
+        </p>
       </div>
 
       <div className="card">
@@ -322,7 +345,13 @@ export default function About() {
           filtered back-projection is held to a 0.9 correlation on the Shepp–Logan phantom, the
           Fourier-slice reconstruction is confirmed both recognisable and sharper than raw
           back-projection, and the contour tracer is checked to pull a closed, near-circular loop
-          out of a disk. Open the console to see all forty-two pass.
+          out of a disk. The <strong>iterative</strong> reconstruction engine is held to the highest
+          bar of all: its back-projector is proven the <em>exact adjoint</em> of the projector
+          (⟨A x, y⟩ = ⟨x, Aᵀ y⟩ to 1e-9), CGLS's residual is confirmed to fall monotonically, SART is
+          verified to converge faster per sweep than SIRT, the stepped solver is checked to match the
+          batch solver bit-for-bit, and — the headline — on a <em>sparse</em> 20-angle scan CGLS is
+          confirmed to beat filtered back-projection outright. Open the console to see all fifty-nine
+          pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>
