@@ -149,6 +149,21 @@ import {
 import * as groth16 from './groth16'
 import * as plonk from './plonk'
 import * as bp from './bulletproofs'
+import {
+  setup as novaSetup,
+  stepR1CS as novaStepR1CS,
+  stepAssign as novaStepAssign,
+  stepEval as novaStepEval,
+  strictInstance as novaStrictInstance,
+  relaxedSatisfied as novaRelaxedSatisfied,
+  foldProve as novaFoldProve,
+  foldVerify as novaFoldVerify,
+  crossTerm as novaCrossTerm,
+  instanceEq as novaInstanceEq,
+  ivcProve as novaIvcProve,
+  ivcVerify as novaIvcVerify,
+  NovaTranscript,
+} from './nova'
 import { commit as pedersenCommit } from './sigma'
 import { randomScalar } from './rng'
 import {
@@ -2478,6 +2493,81 @@ export function runSelfTest(): TestCase[] {
     const bProof = bSig !== null ? bbsProofGen({ pk: key.pk }, bSig, header, ph, bFull, [0, 3], bGens) : null
     check(BG, 'a blind-issued credential presents with selective disclosure', bProof !== null && bbsProofVerify(key.pk, bProof, header, ph, [bFull[0], bFull[3]], bGens) && bProof.mHat.length === 3, 'link secret + private id stay hidden through presentation')
     check(BG, 'the issuer refuses to blind-sign a bad commitment', bbsBlindSign(key, header, { ...req, U: bGens.P1 }, issuerMsgs, bGens) === null, 'no valid opening proof ⇒ no signature')
+  }
+
+  // ── Nova: a folding scheme for IVC (relaxed R1CS + Pedersen homomorphism) ──
+  {
+    const NV = 'Nova (folding IVC)'
+    const cs = novaStepR1CS()
+    const params = novaSetup(cs)
+
+    // An ordinary step instance embeds as a relaxed instance with u=1, E=0.
+    const s0 = novaStepAssign(3n)
+    const st0 = novaStrictInstance(params, s0.x, s0.W)
+    check(NV, 'strict step instance satisfies relaxed R1CS', novaRelaxedSatisfied(params, st0.U, st0.wit), 'u=1, E=0 ⇒ (A·Z)∘(B·Z) = C·Z')
+    check(NV, 'F(z) = z³+z+5 computed in the circuit', s0.zOut === novaStepEval(3n) && s0.zOut === 35n, '3 ↦ 27+3+5 = 35')
+
+    // A single fold of two satisfying instances yields a satisfying instance,
+    // and the verifier re-derives the identical challenge and folded instance.
+    const s1 = novaStepAssign(s0.zOut)
+    const st1 = novaStrictInstance(params, s1.x, s1.W)
+    const trP = new NovaTranscript('selftest')
+    const fp = novaFoldProve(params, st0.U, st0.wit, st1.U, st1.wit, trP)
+    check(NV, 'folded witness satisfies the folded instance', novaRelaxedSatisfied(params, fp.U, fp.wit), 'relaxed R1CS is closed under a random linear combination')
+    const trV = new NovaTranscript('selftest')
+    const fv = novaFoldVerify(st0.U, st1.U, fp.commT, trV)
+    check(NV, 'verifier folds committed instances homomorphically', fv.r === fp.r && novaInstanceEq(fv.U, fp.U), 'same Fiat–Shamir r, same commE/commW/u/x — with no witness')
+
+    // The cross-term identity, checked numerically at a random r: the folded
+    // assignment satisfies with E = E₁ + r·T + r²·E₂.
+    {
+      const T = novaCrossTerm(cs, st0.U, st0.wit, st1.U, st1.wit)
+      const r = 0x9e3779b97f4a7c15n
+      const z1 = [st0.U.u, ...st0.U.x, ...st0.wit.W]
+      const z2 = [st1.U.u, ...st1.U.x, ...st1.wit.W]
+      const dot = (row: bigint[], zz: bigint[]) => row.reduce((acc, cc, k) => (acc + cc * zz[k]) % BLS_R, 0n)
+      const zf = z1.map((v, k) => (((v + r * z2[k]) % BLS_R) + BLS_R) % BLS_R)
+      const uf = (st0.U.u + r * st1.U.u) % BLS_R
+      const Ef = st0.wit.E.map((e, k) => (((e + r * T[k] + r * r * st1.wit.E[k]) % BLS_R) + BLS_R) % BLS_R)
+      let idOk = true
+      for (let k = 0; k < cs.A.length; k++) {
+        const lhs = (((dot(cs.A[k], zf) * dot(cs.B[k], zf)) % BLS_R) + BLS_R) % BLS_R
+        const rhs = (((uf * dot(cs.C[k], zf) + Ef[k]) % BLS_R) + BLS_R) % BLS_R
+        if (lhs !== rhs) idOk = false
+      }
+      check(NV, 'cross-term identity holds at a random challenge', idOk, 'T is exactly the degree-1 coefficient of the folded quadratic')
+    }
+
+    // End-to-end IVC: fold a 6-step chain into one relaxed instance.
+    const proof = novaIvcProve(params, 5n, 6)
+    const rep = novaIvcVerify(params, proof)
+    let z = 5n
+    for (let i = 0; i < 6; i++) z = novaStepEval(z)
+    check(NV, 'IVC honest 6-step proof verifies', rep.ok, 'one relaxed check replaces 6·3 = 18 ordinary R1CS checks')
+    check(NV, 'folded chain output = direct iteration', proof.zN === z, `z₆ = ${proof.zN.toString().slice(0, 12)}…`)
+
+    // Soundness battery: every tamper is caught.
+    {
+      const bad = novaIvcProve(params, 5n, 5)
+      bad.finalWit.W[0] = (bad.finalWit.W[0] + 1n) % BLS_R
+      check(NV, 'tampered final witness is rejected', !novaIvcVerify(params, bad).ok, 'the commitment no longer opens / the relaxed check fails')
+    }
+    {
+      const bad = novaIvcProve(params, 5n, 5)
+      bad.commTs[2] = params.gW[0] // a bogus cross-term commitment
+      check(NV, 'forged cross-term commitment is rejected', !novaIvcVerify(params, bad).ok, 'the verifier re-fold diverges from the prover')
+    }
+    {
+      const bad = novaIvcProve(params, 5n, 5)
+      bad.stepInstances[2].x[1] = (bad.stepInstances[2].x[1] + 1n) % BLS_R
+      check(NV, 'broken public-IO chaining is rejected', !novaIvcVerify(params, bad).ok, 'z_out of step i must equal z_in of step i+1')
+    }
+    {
+      const s = novaStepAssign(9n)
+      const badW = [(s.W[0] + 1n) % BLS_R, s.W[1]] // wrong sym1 = z²
+      const inst = novaStrictInstance(params, s.x, badW)
+      check(NV, 'an unsatisfiable step is detected', !novaRelaxedSatisfied(params, inst.U, inst.wit), 'a bad intermediate wire fails its constraint')
+    }
   }
 
   return t
