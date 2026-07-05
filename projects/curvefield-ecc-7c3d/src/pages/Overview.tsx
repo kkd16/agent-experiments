@@ -147,6 +147,12 @@ const LABS = [
     desc: 'The one proof system here that needs no curve and no trusted setup — just a hash. Prove an execution over the Goldilocks field with an NTT, Merkle commitments, DEEP out-of-domain sampling and a FRI low-degree test, then watch a forged step get rejected live.',
   },
   {
+    path: '/nova',
+    ix: '40',
+    title: 'Nova — a Folding Scheme for IVC',
+    desc: 'Prove a function was applied N times without an N-sized proof. Each step emits an ordinary R1CS instance; Nova folds it into a running accumulator with one linear combination — relaxed R1CS closed under a random fold, the cross-term T, and a homomorphic Pedersen commitment on 𝔾₁. One relaxed check certifies the whole chain; every tamper is rejected live. No trusted setup, no pairings, no FFTs.',
+  },
+  {
     path: '/poseidon',
     ix: '26',
     title: 'Poseidon — a Hash You Can Prove',

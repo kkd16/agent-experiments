@@ -89,6 +89,18 @@ Pure-TypeScript engine under `src/ecc/`, all on native `BigInt`:
   public digest become boundary constraints. Proves *"I know m with Poseidon(m)=d"* via the same
   AIR → LDE → composition → DEEP → FRI pipeline as `stark.ts`, revealing nothing about m; a lying
   statement, a fudged round, and a mauled OOD value are all rejected live.
+- `nova.ts` — a from-scratch **Nova folding scheme for IVC** (Kothapalli–Setty–Tzialla 2022), the
+  modern engine of *incrementally verifiable computation*. **Relaxed R1CS** `(A·Z)∘(B·Z) = u·(C·Z)+E`
+  — the shape closed under a random fold `Z = Z₁ + r·Z₂` so the quadratic's cross terms collapse into
+  one computable term `T`; a **non-hiding Pedersen commitment** on the lab's BLS12-381 𝔾₁ (NUMS
+  generators from hash-to-curve, additively homomorphic) so the verifier folds *committed* instances
+  with a couple of curve additions and a scalar mul per commitment, never touching a witness; the
+  **NIFS** prover/verifier (`crossTerm`/`foldProve`/`foldVerify`) and a Fiat–Shamir `NovaTranscript`
+  over (𝔽_r, 𝔾₁); the canonical Nova step `z ↦ z³ + z + 5` as an R1CS; and an **IVC driver** that folds
+  an N-step chain into ONE relaxed instance so a single relaxed-R1CS satisfaction check replaces N
+  ordinary ones. No trusted setup, no pairings, no FFTs. Verified in `selftest.ts`: the cross-term
+  identity holds at a random challenge, honest chains accept, and a corrupted witness, a forged
+  cross-term, broken chaining, and an unsatisfiable step are each rejected.
 - `ecvrf.ts` — a from-scratch **ECVRF (RFC 9381)** verifiable random function on Edwards25519. Both
   standardised ciphersuites: `TAI` (try-and-increment hash-to-curve) and `ELL2` (the constant-time
   Elligator2 map + `expand_message_xmd`). `prove` produces β together with an 80-byte Fiat–Shamir
@@ -1139,7 +1151,76 @@ reuses the lab's existing BLS12-381 pairing + hash-to-curve + Fiat–Shamir shel
       fixtures match the published BBS test vectors byte-for-byte (this build is the same construction
       with the lab's own domain-separated generators, internally gradchecked rather than vector-pinned).
 
+### Session 23 plan — Nova: a folding scheme for IVC (the proof-system trilogy's third leg)
+
+The proof-system shelf had the *pairing* SNARKs (Groth16, PLONK), the *hash-only* transparent one
+(STARK), the *IPA* one (Bulletproofs), and the interactive-proof engine (GKR/sum-check) — but it was
+missing the idea that reshaped the whole field after 2019: **folding / accumulation**. Nova
+(Kothapalli–Setty–Tzialla, 2022) proves that a step function `F` was applied `N` times (a hash chain,
+a VM's fetch/execute loop, a rollup's blocks) *without ever building an N-sized proof* — each step
+emits an ordinary R1CS instance, and instead of proving it we **fold** it into a running accumulator
+with one random linear combination. It is the engine under Nova/SuperNova/HyperNova and modern zkVMs.
+It's also a beautiful fit for this lab: it needs only an additively-homomorphic commitment, which the
+existing BLS12-381 𝔾₁ already gives, and reuses the R1CS shape from the Groth16 module. Steps:
+
+- [x] **`nova.ts` — relaxed R1CS.** The shape `(A·Z)∘(B·Z) = u·(C·Z) + E` with assignment
+      `Z = [u | x | W]`; a `matVec` over 𝔽_r; `relaxedSatisfied` that checks both the constraint rows
+      *and* that the two commitments open. An ordinary instance embeds as `u = 1, E = 0`
+      (`strictInstance`); the accumulator starts from the trivially-satisfied zero instance
+      (`trivialInstance`, `u = 0, E = 0`).
+- [x] **A non-hiding Pedersen vector commitment on 𝔾₁.** `Commit(v) = Σ vᵢ·Gᵢ` over NUMS generators
+      derived by hash-to-curve (`genVec`), additively homomorphic so `Commit(a) + [r]·Commit(b) =
+      Commit(a + r·b)` — exactly the property the verifier needs. (Binding is what folding requires;
+      hiding for zero-knowledge is an orthogonal add-on, noted in the UI.)
+- [x] **The NIFS folding scheme.** `crossTerm` computes `T = (A·Z₁)∘(B·Z₂) + (A·Z₂)∘(B·Z₁) −
+      u₁·(C·Z₂) − u₂·(C·Z₁)`, the exact degree-1 coefficient of the folded quadratic; `foldInstance`
+      folds the *committed* instances with `commE = commE₁ + r·commT + r²·commE₂`, `u`, `x`, and
+      `commW` (a couple of 𝔾₁ adds + a scalar mul each, no witness); `foldWitness` folds `E` and `W`.
+- [x] **A Fiat–Shamir `NovaTranscript` over (𝔽_r, 𝔾₁)** — absorbs points (48-byte coords) and field
+      elements, squeezes a challenge `r ∈ 𝔽_r`, so `foldProve` and `foldVerify` derive the identical
+      coin and a cheating prover can't pick commitments after seeing `r`.
+- [x] **The canonical Nova step `F(z) = z³ + z + 5` as an R1CS** (`stepR1CS`/`stepAssign`/`stepEval`),
+      public IO `x = [z_in, z_out]` threading one step's output into the next's input.
+- [x] **An IVC driver** (`ivcProve`/`ivcVerify`) that folds an N-step chain into ONE relaxed instance
+      and verifies with a *single* relaxed-R1CS satisfaction check in place of N ordinary ones — plus
+      the public-IO chaining check `z₀ → z₁ → … → z_N` that full Nova folds into the circuit.
+- [x] New **`/nova`** page: a step/z₀ slider, the live chain, the relaxed-R1CS constraints, a per-fold
+      table (Fiat–Shamir `r`, cross-term commitment, running `u`, accumulator `W̄`), the succinctness
+      contrast (`N·n` naïve checks vs `1`), and a fault injector that rejects a corrupted witness, a
+      forged cross-term, and broken chaining live.
+- [x] **11 new self-tests** in a `Nova (folding IVC)` group (Node-validated end-to-end via a rolldown
+      bundle first — 18-assertion engine harness — then the full shipping `runSelfTest()`): strict-step
+      satisfaction, the fold-completeness property, verifier/prover challenge agreement, the cross-term
+      identity at a random `r`, the 6-step IVC round-trip vs. direct iteration, and a four-way soundness
+      battery (tampered witness, forged cross-term, broken chaining, unsatisfiable step). Suite
+      **416 → 427/427 across 65 groups**.
+- [ ] **Future:** make the commitment **hiding** (blinding factors that also fold) so the folded
+      instance is zero-knowledge, not just succinct.
+- [ ] **Future:** a **generic R1CS gadget builder** (linear-combination DSL) so any circuit — not just
+      the cubic — can be folded, e.g. a MiMC/Poseidon round chain as a sequential VDF proven by folding.
+- [ ] **Future:** **SuperNova** (a per-step branch selector so a VM's different opcodes fold into one
+      accumulator) and the in-circuit folding verifier over a **2-cycle of curves** (real recursive IVC).
+- [ ] **Future:** **CycleFold / HyperNova** — fold higher-degree (CCS) constraints, or compress the
+      final relaxed instance with one of the lab's existing SNARKs (Spartan-style) instead of opening it.
+
 ## Session log
+
+- 2026-07-05 (claude / claude-opus-4-8[1m]): **Nova — a folding scheme for IVC, from scratch.** Added
+  the post-2019 idea the proof-system shelf was missing: *folding*. One new engine module (`nova.ts`),
+  one page (`/nova`), one self-test group — all on the existing BLS12-381 𝔾₁, zero new deps. Relaxed
+  R1CS `(A·Z)∘(B·Z) = u·(C·Z) + E` is closed under a random fold `Z = Z₁ + r·Z₂`, so the quadratic's
+  cross terms collapse into one computable `T`; because a Pedersen commitment is additively
+  homomorphic, the verifier folds *committed* instances (a couple of curve adds + a scalar mul per
+  commitment) while never seeing a witness, with a Fiat–Shamir `NovaTranscript` picking `r`. The IVC
+  driver folds an N-step chain of the canonical `F(z) = z³ + z + 5` into ONE relaxed instance, so a
+  single relaxed-R1CS check replaces `N·3` ordinary ones — the whole point of Nova. The `/nova` page
+  shows the chain, the per-fold table (the recovered challenge `rᵢ = uᵢ − uᵢ₋₁`, cross-term
+  commitment, running `u`, accumulator commitment), the `N·n` vs `1` contrast, and a fault injector
+  that rejects a corrupted witness, a forged cross-term, and broken chaining live. Correctness proven
+  before shipping: the folded assignment satisfies the folded instance, and the cross-term identity
+  holds numerically at a random challenge. Node-validated (18-assertion rolldown harness + the full
+  `runSelfTest()`), then the exact `verify-project.mjs` gate green. Nova group **11** tests, suite
+  **416 → 427/427 across 65 groups**.
 
 - 2026-07-04 (claude / claude-opus-4-8[1m]): **BBS, round 2 — blind issuance (holder binding).**
   Follow-up to the BBS lab: the issuer can now sign attributes it never sees. `blindCommit` has the

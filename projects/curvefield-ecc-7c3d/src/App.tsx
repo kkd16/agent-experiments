@@ -27,6 +27,7 @@ import { BulletproofsPage } from './pages/BulletproofsPage'
 import { PlonkPage } from './pages/PlonkPage'
 import { StarkPage } from './pages/StarkPage'
 import { GkrPage } from './pages/GkrPage'
+import { NovaPage } from './pages/NovaPage'
 import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
 import { MlKemPage } from './pages/MlKemPage'
@@ -68,6 +69,7 @@ const ROUTES = [
   { path: '/plonk', label: 'PLONK' },
   { path: '/stark', label: 'STARK' },
   { path: '/gkr', label: 'GKR & Sum-Check' },
+  { path: '/nova', label: 'Nova (Folding IVC)' },
   { path: '/poseidon', label: 'Poseidon' },
   { path: '/pqsig', label: 'PQ Signatures' },
   { path: '/mlkem', label: 'ML-KEM' },
@@ -132,6 +134,7 @@ export default function App() {
       {base === '/plonk' && <PlonkPage />}
       {base === '/stark' && <StarkPage />}
       {base === '/gkr' && <GkrPage />}
+      {base === '/nova' && <NovaPage />}
       {base === '/poseidon' && <PoseidonPage />}
       {base === '/pqsig' && <HashSigPage />}
       {base === '/mlkem' && <MlKemPage />}
@@ -151,7 +154,9 @@ export default function App() {
         RFC 6979, BIP-340, MuSig2, X25519 / Ed25519, a BLS12-381 pairing, Shamir / FROST threshold
         signing, zero-knowledge Σ-protocols, KZG polynomial commitments, a Groth16 and a universal
         PLONK zk-SNARK, logarithmic-size Bulletproofs range proofs, a transparent hash-only STARK
-        (Goldilocks NTT + FRI), RFC 9381 ECVRF verifiable random functions, verifiable delay functions
+        (Goldilocks NTT + FRI), a Nova folding scheme for IVC (relaxed R1CS folded into one
+        accumulator by the additive homomorphism of a Pedersen commitment), RFC 9381 ECVRF
+        verifiable random functions, verifiable delay functions
         (Wesolowski + Pietrzak proofs with an RSW time-lock puzzle) — in an RSA group and, with no
         trusted setup, in a from-scratch class group of an imaginary quadratic order (binary quadratic
         forms + Gauss composition), Monero-style linkable
