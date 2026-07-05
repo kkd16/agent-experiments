@@ -21,6 +21,7 @@ import {
   floquet,
   eigenvalues,
   conservedWith,
+  discoverEight,
   DEFAULT_CONFIG as PERIODIC_CFG,
 } from './periodic'
 import { fft, ifft } from './fft'
@@ -2306,6 +2307,25 @@ export function runSelfTest(): SelfTestReport {
     const has = (re: number, im: number) => ev.some((l) => Math.abs(l.re - re) < 1e-6 && Math.abs(l.im - im) < 1e-6)
     const ok = has(3, 0) && has(2, 0) && has(c, s) && has(c, -s)
     add('Periodic — eigensolver recovers a known spectrum', ok, `{${ev.map((l) => `${l.re.toFixed(3)}${l.im >= 0 ? '+' : ''}${l.im.toFixed(3)}i`).join(', ')}}`)
+  }
+
+  // 92 — Action minimisation *discovers* the figure-eight: a near-circular loop,
+  // restricted to the eight's symmetry class, relaxes by conjugate gradient to
+  // the known figure-eight action (≈ 24.372), and the extracted choreography
+  // refines to a genuine periodic orbit that is linearly stable.
+  {
+    const d = discoverEight(360, 60, 60)
+    const actionOk = Math.abs(d.action - 24.372) < 0.02
+    add('Periodic — action minimisation finds the figure-eight action', actionOk, `A → ${d.action.toFixed(4)} (figure-eight ≈ 24.372)`)
+    const r = refineOrbit(d.orbit.psi, 3, d.orbit.mass, d.orbit.period, {
+      steps: 5000,
+      maxIter: 40,
+      tol: 1e-11,
+      cfg: PERIODIC_CFG,
+      tBand: 0.15,
+    })
+    const f = floquet(r.monodromy, 12, 3e-3)
+    add('Periodic — the discovered eight is a genuine stable orbit', r.residual < 1e-9 && f.verdict === 'stable', `refined residual ${r.residual.toExponential(2)}, ${f.verdict}, T = ${r.period.toFixed(4)}`)
   }
 
   const passed = cases.filter((c) => c.pass).length
