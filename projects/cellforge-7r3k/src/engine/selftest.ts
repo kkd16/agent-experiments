@@ -441,6 +441,58 @@ export function runSelfTests(): TestResult[] {
   near('VDB first period = DDB', 'VDB(2400,300,10,0,1)', 480, 1e-9)
   near('VDB over full life reaches salvage', 'VDB(2400,300,10,0,10)', 2100, 1e-6)
 
+  // --- securities (v10): fixed-income analytics ---
+  // Anchored to Microsoft/Excel-documented values and to closed-form invariants
+  // (round-trips and a finite-difference price-sensitivity cross-check).
+  const nearS = (name: string, expr: string, ref: number, tol: number) =>
+    eq('securities', name, ev(`ABS((${expr})-(${ref}))<${tol}`), 'TRUE')
+  const cpn = 'DATE(2011,1,25),DATE(2011,11,15),2,1' // Excel COUP* documented example
+  // Day count & coupon scheduling
+  eq('securities', 'YEARFRAC US 30/360', ev('ROUND(YEARFRAC(DATE(2012,1,1),DATE(2012,7,30),0),8)'), '0.58055556')
+  nearS('YEARFRAC actual/actual over a leap year', 'YEARFRAC(DATE(2012,1,1),DATE(2012,7,30),1)', 0.57650273, 1e-7)
+  eq('securities', 'DAYS360 European clamps both 31sts', ev('DAYS360(DATE(2008,1,31),DATE(2008,3,31),TRUE)'), '60')
+  eq('securities', 'COUPDAYS actual (Excel 181)', ev(`COUPDAYS(${cpn})`), '181')
+  eq('securities', 'COUPDAYBS (Excel 71)', ev(`COUPDAYBS(${cpn})`), '71')
+  eq('securities', 'COUPDAYSNC (Excel 110)', ev(`COUPDAYSNC(${cpn})`), '110')
+  eq('securities', 'COUPNUM (Excel 2)', ev(`COUPNUM(${cpn})`), '2')
+  eq('securities', 'COUPNCD is the next coupon date', ev(`COUPNCD(${cpn})=DATE(2011,5,15)`), 'TRUE')
+  eq('securities', 'COUPPCD is the previous coupon date', ev(`COUPPCD(${cpn})=DATE(2010,11,15)`), 'TRUE')
+  eq('securities', 'COUPDAYBS + COUPDAYSNC = COUPDAYS', ev(`COUPDAYBS(${cpn})+COUPDAYSNC(${cpn})=COUPDAYS(${cpn})`), 'TRUE')
+  // Coupon bonds — price / yield / duration
+  nearS('PRICE (Excel 94.63436)', 'PRICE(DATE(2008,2,15),DATE(2017,11,15),0.0575,0.065,100,2,0)', 94.63436, 1e-4)
+  nearS('YIELD recovers 6.5% (Excel)', 'YIELD(DATE(2008,2,15),DATE(2016,11,15),0.0575,95.04287,100,2,0)', 0.065, 1e-5)
+  eq('securities', 'PRICE∘YIELD round-trips', ev('ABS(PRICE(DATE(2010,1,1),DATE(2030,1,1),0.05,YIELD(DATE(2010,1,1),DATE(2030,1,1),0.05,96.5,100,2,0),100,2,0)-96.5)<0.0001'), 'TRUE')
+  nearS('DURATION (Excel 5.993775)', 'DURATION(DATE(2008,1,1),DATE(2016,1,1),0.08,0.09,2,1)', 5.993775, 1e-3)
+  nearS('MDURATION (Excel 5.735674)', 'MDURATION(DATE(2008,1,1),DATE(2016,1,1),0.08,0.09,2,1)', 5.735674, 1e-3)
+  // MDURATION equals −(dP/dy)/P — a finite-difference cross-check on PRICE (redemption 100)
+  eq(
+    'securities',
+    'MDURATION = price sensitivity (finite diff)',
+    ev(
+      'ABS(MDURATION(DATE(2012,7,1),DATE(2030,7,1),0.06,0.05,2,0)-' +
+        '(-(PRICE(DATE(2012,7,1),DATE(2030,7,1),0.06,0.0501,100,2,0)-' +
+        'PRICE(DATE(2012,7,1),DATE(2030,7,1),0.06,0.0499,100,2,0))/0.0002)/' +
+        'PRICE(DATE(2012,7,1),DATE(2030,7,1),0.06,0.05,100,2,0))<0.001',
+    ),
+    'TRUE',
+  )
+  // Accrued interest
+  nearS('ACCRINT within the first period (Excel 16.66667)', 'ACCRINT(DATE(2008,3,1),DATE(2008,8,31),DATE(2008,5,1),0.1,1000,2,0)', 16.66667, 1e-4)
+  nearS('ACCRINTM interest-at-maturity (Excel 20.54795)', 'ACCRINTM(DATE(2008,4,1),DATE(2008,6,15),0.1,1000,3)', 20.54795, 1e-4)
+  // Discounted (money-market) securities
+  nearS('DISC discount rate (Excel 0.05242)', 'DISC(DATE(2007,1,25),DATE(2007,6,15),97.975,100,1)', 0.0524202, 1e-6)
+  nearS('INTRATE (Excel 0.05768)', 'INTRATE(DATE(2008,2,15),DATE(2008,5,15),1000000,1014420,2)', 0.05768, 1e-5)
+  nearS('RECEIVED at maturity (Excel 1014584.65)', 'RECEIVED(DATE(2008,2,15),DATE(2008,5,15),1000000,0.0575,2)', 1014584.654, 0.01)
+  nearS('PRICEDISC (Excel 99.79583)', 'PRICEDISC(DATE(2008,2,16),DATE(2008,3,1),0.0525,100,2)', 99.795833, 1e-4)
+  // Treasury bills
+  nearS('TBILLYIELD (Excel 0.091417)', 'TBILLYIELD(DATE(2008,3,31),DATE(2008,6,1),98.45)', 0.09141696, 1e-6)
+  nearS('TBILLEQ bond-equivalent (Excel 0.094151)', 'TBILLEQ(DATE(2008,3,31),DATE(2008,6,1),0.0914)', 0.09415149, 1e-6)
+  eq('securities', 'TBILLPRICE ↔ discount is exact', ev('ABS((100-TBILLPRICE(DATE(2008,3,31),DATE(2008,6,1),0.0914))/100*360/(DATE(2008,6,1)-DATE(2008,3,31))-0.0914)<0.0000001'), 'TRUE')
+  // Interest-at-maturity securities
+  nearS('YIELDMAT (Excel 0.060954)', 'YIELDMAT(DATE(2008,3,15),DATE(2008,11,3),DATE(2007,11,8),0.0625,100.0123,0)', 0.060954, 1e-4)
+  nearS('PRICEMAT (Excel 99.98449)', 'PRICEMAT(DATE(2008,2,15),DATE(2008,4,13),DATE(2007,11,11),0.061,0.061,0)', 99.98449, 1e-4)
+  eq('securities', 'PRICEMAT∘YIELDMAT round-trips', ev('ABS(YIELDMAT(DATE(2020,1,1),DATE(2021,1,1),DATE(2019,7,1),0.05,PRICEMAT(DATE(2020,1,1),DATE(2021,1,1),DATE(2019,7,1),0.05,0.06,0),0)-0.06)<0.0000001'), 'TRUE')
+
   // --- the Solver (v5: constrained multi-cell optimization) ---
   r.push(solverTests())
   // --- structured table references (v5) ---
