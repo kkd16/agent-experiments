@@ -85,6 +85,13 @@ export function classifyKoppen(
   temperature: Float64Array,
   precip: Float64Array,
   continentality: Float64Array,
+  /**
+   * Optional maritime temperature (°C) each coastal land cell feels from its adjacent seas
+   * (the ocean-circulation coupling, Session 5). Where present, the cell's monthly cycle is
+   * pulled toward the sea's temperature and its seasonal swing is damped — so a warm
+   * western-boundary current turns a coast mild & oceanic and a cold current chills it.
+   */
+  seaTempC?: Float32Array,
 ): KoppenResult {
   const n = mesh.numRegions
   const koppen = new Uint8Array(n).fill(KOPPEN_NONE)
@@ -108,9 +115,19 @@ export function classifyKoppen(
     const cont = continentality[r]
 
     // Annual-mean temperature in °C (shares the inspector's mapping: 0..1 → -25..35 °C).
-    const meanT = temperature[r] * 60 - 25
+    let meanT = temperature[r] * 60 - 25
     // Half of the peak-to-peak seasonal swing. Grows with latitude and continentality.
-    const amp = (2 + 16 * lat) * (0.35 + 0.9 * cont)
+    let amp = (2 + 16 * lat) * (0.35 + 0.9 * cont)
+
+    // Ocean-circulation coupling: a coastal cell is moderated by the sea it faces. Its mean
+    // temperature is pulled toward the adjacent SST and its seasonal amplitude is damped.
+    if (seaTempC) {
+      const sea = seaTempC[r]
+      if (!Number.isNaN(sea)) {
+        meanT = meanT * 0.58 + sea * 0.42
+        amp *= 0.68
+      }
+    }
     // Warmest month: July (index 6) in the north, January (0) in the south.
     const warmMonth = north ? 6 : 0
 

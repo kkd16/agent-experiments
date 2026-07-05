@@ -1002,3 +1002,138 @@ input[type='range']::-moz-range-thumb {
     max-height: 96px;
   }
 }
+
+/* ---------- Proof Lab (Session 5) ---------- */
+.prooflab {
+  position: absolute;
+  left: 50%;
+  top: 22px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 48px));
+  max-height: min(84vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 15, 24, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  z-index: 20;
+}
+
+.proof-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 15px;
+  background: rgba(125, 227, 181, 0.1);
+  border-bottom: 1px solid var(--line);
+}
+
+.proof-title {
+  font: 700 16px Georgia, 'Times New Roman', serif;
+  color: var(--text);
+}
+
+.proof-sub {
+  margin-left: 8px;
+  font: italic 500 12px Georgia, serif;
+  color: var(--muted);
+}
+
+.proof-status {
+  padding: 10px 15px;
+  border-bottom: 1px solid var(--line);
+  font: 600 13px 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.proof-running {
+  color: var(--accent);
+}
+
+.proof-err {
+  color: #ff9b9b;
+}
+
+.proof-score.ok {
+  color: var(--accent-2);
+}
+
+.proof-score.bad {
+  color: #ff9b9b;
+}
+
+.proof-ms {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.proof-body {
+  overflow-y: auto;
+  padding: 8px 10px 12px;
+}
+
+.proof-section {
+  margin: 8px 0 12px;
+}
+
+.proof-section-title {
+  font: 700 11px 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.proof-check {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.proof-mark {
+  font-weight: 700;
+  text-align: center;
+}
+
+.proof-check.pass .proof-mark {
+  color: var(--accent-2);
+}
+
+.proof-check.fail .proof-mark {
+  color: #ff9b9b;
+}
+
+.proof-name {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.proof-check.fail .proof-name {
+  color: #ffd0d0;
+}
+
+.proof-detail {
+  font: 500 11px 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .proof-check {
+    grid-template-columns: 18px 1fr;
+  }
+  .proof-detail {
+    grid-column: 2;
+    text-align: left;
+    white-space: normal;
+  }
+}

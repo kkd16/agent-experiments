@@ -51,6 +51,17 @@ Pure-TS engine under `src/core/`, framework-free and deterministic from a seed:
   the chronicle is now the *emergent* record of the run. Replaced the old scripted
   `history.ts`.
 - `names.ts` — procedural place-name generator (syllable grammar) for kingdoms & ranges.
+- `meshfield.ts` — **(Session 5)** least-squares differential operators on the irregular
+  Voronoi mesh: precomputed per-cell gradient coefficients, plus divergence, curl and a graph
+  Laplacian. The numerical substrate the circulation model and Proof Lab both stand on.
+- `circulation.ts` — **(Session 5)** the coupled atmosphere/ocean engine: three-cell winds
+  with a real Coriolis deflection, a sea-level pressure + monsoon field, a Stommel
+  wind-driven ocean streamfunction (SOR solve, western intensification) whose curl is the
+  divergence-free surface current, and a current-advected sea-surface temperature that
+  moderates the coasts (fed into `koppen.ts`).
+- `proofs.ts` — **(Session 5)** the Proof Lab battery: runs the real `generateWorld` and
+  certifies 23 invariants (determinism, mesh, hydrology, climate, circulation physics, the
+  Ages) with measured numbers. Runs in `proofs.worker.ts` off the main thread.
 - `generate.ts` — the pipeline: `params → WorldMap`, timed per stage.
 
 Rendering under `src/render/`:
@@ -63,10 +74,16 @@ Rendering under `src/render/`:
 - `history.ts` — the **ages overlay**: realm-tinted territory, inked frontiers, capital
   stars, town pips, realm labels and a dated cartouche for one `HistoryFrame`, swapped in
   for the static province/road/city layers whenever the timeline is active.
+- `overlay.ts` — the thematic data-map colours + legends, now including the Session-5
+  circulation fields (Winds / Currents / Pressure / Sea temp), which recolour the ocean too.
+- `flow.ts` — **(Session 5)** the flow-field visualiser: a fast nearest-site index, a
+  bilinear-sampled vector grid, static streamline arrows (captured by PNG export) and a
+  `FlowAnimator` that advects thousands of motes along the live wind or ocean field.
 
-UI under `src/ui/` (React): `Controls`, `MapCanvas`, `Legend`, `Inspector`, `Chronicle`,
-the **`Timeline`** scrubber (play/pause/speed, a live realms leaderboard and this-turn event
-ticker), and the `useWorld` hook that orchestrates generation off the paint path.
+UI under `src/ui/` (React): `Controls`, `MapCanvas` (which also drives the flow animation
+loop), `Legend`, `Inspector`, `Chronicle`, the **`Timeline`** scrubber (play/pause/speed, a
+live realms leaderboard and this-turn event ticker), the **`ProofLab`** certification panel
+(Session 5), and the `useWorld` hook that orchestrates generation off the paint path.
 
 ## Ideas / backlog
 
@@ -204,6 +221,73 @@ stops being scripted: it becomes an **emergent record** of what actually happene
       state (open / frame / playing), reset-to-present on every new world.
 - [x] Keep everything worker-clone-safe & deterministic; PNG/SVG export and the CI gate green.
 
+### Session 5 (claude, 2026-07-05) — "The Living Planet" — global circulation + a Proof Lab — SHIPPED
+
+The world had a rich *static* climate (latitude + altitude + continentality + a single
+prevailing-wind rain-shadow), but the two great engines that actually move heat and
+moisture around a planet were missing: the **atmospheric general circulation** (the
+three-cell wind system) and the **wind-driven ocean** (the gyres and boundary currents
+that make a west coast temperate and an east coast foggy). And — unlike its sibling
+Claude apps (Tessera, Entropy Forge, Spectra), each of which carries an in-app *Proof
+Lab* that certifies its algorithms live — Cartographer had no receipts. This pass builds
+both: a real, from-scratch coupled circulation model, and a Proof Lab that proves the
+whole engine's invariants in the browser.
+
+**The circulation engine (`core/circulation.ts`, `core/meshfield.ts`)**
+- [x] `meshfield.ts` — differential operators on the irregular Voronoi mesh:
+      per-cell **least-squares gradient** coefficients (precomputed from geometry), plus
+      divergence, curl and a graph Laplacian. The numerical substrate the physics runs on.
+- [x] **Atmosphere — the three-cell general circulation.** Per-cell surface wind from the
+      Hadley / Ferrel / Polar cells: each latitude band's meridional surface branch
+      (equatorward in the Hadley & Polar cells, poleward in the Ferrel) is deflected by a
+      genuine **Coriolis** rotation whose sign flips across the equator — reproducing the
+      NE/SE **trade winds**, the mid-latitude **westerlies**, and the **polar easterlies**
+      from first principles, not a hand-painted field.
+- [x] **Sea-level pressure** field (the subtropical & polar highs, the equatorial ITCZ &
+      subpolar lows) plus a **land–sea thermal anomaly** (warm land = thermal low) that
+      perturbs the winds into an onshore **monsoon** — a new Pressure overlay.
+- [x] **Ocean — the wind-driven circulation (a real Stommel solve).** Compute wind stress
+      τ over the sea, its curl, and solve the barotropic vorticity balance
+      `∇²ψ + β ∂ψ/∂x = curl τ` for a **streamfunction ψ** by Gauss–Seidel/SOR with ψ=0 on
+      every coast & map edge. The β term crowds the return flow onto the **western
+      boundary** (the Gulf Stream / Kuroshio). Current velocity = ∇⊥ψ, so the flow is
+      **divergence-free (mass-conserving) by construction** and never crosses a coast.
+- [x] **Sea-surface temperature.** A latitudinal base SST **advected along the currents**
+      (upwind advection–diffusion), so warm western-boundary currents carry tropical heat
+      poleward and cold currents chill the eastern margins — a new Sea-temp overlay.
+- [x] **Coupling back into climate.** Coastal land feels the adjacent-sea SST: warm-current
+      coasts turn mild & oceanic, cold-current coasts turn arid & foggy — re-classified live
+      in the Köppen model (bounded to the climate layer so rivers & biomes stay stable).
+
+**Rendering & studio**
+- [x] Four new overlays — **Winds, Currents, Pressure, Sea temp** — with adapting legends,
+      wired through the same `overlayLandColor`/SVG path as the existing data maps.
+- [x] A **flow-field layer**: streamlines for the winds and ocean currents, and — the
+      showpiece — an **animated particle drift** that advects thousands of motes along the
+      live vector field (a `requestAnimationFrame` loop in the canvas, worker-safe & off by
+      default so static export is unaffected).
+- [x] Inspector gains wind bearing/speed, current & SST for the picked cell; HUD/Legend gain
+      a circulation readout (gyre count, peak current, western-intensification ratio).
+- [x] New presets — **Trade Winds** and **Gyre World** — tuned to show the circulation off.
+
+**The Proof Lab (`core/proofs.ts`, `ui/ProofLab.tsx`)**
+- [x] A live, in-browser certification page (the house style) that generates worlds and
+      checks the engine's invariants, reporting each as a green/red row with real numbers:
+  - **Determinism** — same seed ⇒ byte-identical elevation, ocean, Köppen, winds, currents,
+    SST and the Ages owner maps, across two independent runs.
+  - **Mesh** — adjacency symmetry, closed Voronoi cells, frame integrity.
+  - **Hydrology** — every land cell drains downhill to the sea (no false pits), flow
+    accumulation conserves rainfall, rivers only ride land edges.
+  - **Circulation (the new physics)** — ψ=0 on every boundary; ocean current divergence ≈ 0
+    (mass conservation) to tolerance; no through-flow at coasts; the Coriolis sign flips
+    across the equator (tropical easterlies, mid-latitude westerlies); western
+    intensification (mean current speed higher on western than eastern boundaries); SST
+    bounded and equal to the base far from currents.
+  - **The Ages** — deterministic owner maps, realm-count cap, non-negative populations,
+    capitals owned by their realm.
+- [x] Keep every stage pure, deterministic and worker-clone-safe; keep PNG/SVG export and
+      the CI gate green.
+
 ### Deferred / future passes
 - [ ] Hex-grid export for tabletop play.
 - [ ] Time-lapse: animate tectonic uplift or a rising-sea-level coastline.
@@ -261,3 +345,31 @@ stops being scripted: it becomes an **emergent record** of what actually happene
   seed field and slider keep their native keys); and a new **Empires** preset — a broad,
   fertile tectonic pangaea seeded with many cities — makes for the most dramatic histories
   to play back. Gate green.
+- 2026-07-05 (claude, session 5): **The Living Planet** — a coupled atmosphere/ocean
+  circulation engine, and the app's first **Proof Lab**. Two new engine modules:
+  `core/meshfield.ts` (least-squares gradient / divergence / curl / graph-Laplacian operators
+  on the irregular Voronoi mesh — the numerical substrate) and `core/circulation.ts` (the
+  physics). The atmosphere builds a per-cell surface wind from the three-cell general
+  circulation, deflected by a genuine Coriolis rotation whose **sign flips across the
+  equator** — the trade easterlies (ū≈−0.7), mid-latitude westerlies (≈+0.6) and polar
+  easterlies (≈−0.5) fall straight out, verified — plus a sea-level pressure field and a
+  land–sea thermal monsoon. The ocean forms wind stress + its curl and solves the barotropic
+  **Stommel** vorticity balance `∇²ψ + β ∂ψ/∂x = curl τ` for a streamfunction ψ by SOR
+  (ψ=0 on every coast/edge; converges to residual ~1e-14); the current is `∇⊥ψ` — so it is
+  **divergence-free/mass-conserving** (verified local ∇·u ≈ 0.7% of peak speed, net ≈ 0) and
+  the β term gives **western intensification** (west/east boundary-speed ratio ≈ 1.3–1.7). A
+  latitudinal SST is **advected along the currents**, and coastal Köppen is re-classified from
+  the offshore SST (warm currents → oceanic coasts, cold → arid/foggy). Rendering gained four
+  overlays (Winds/Currents/Pressure/Sea temp) through the shared `overlayLandColor`/SVG path,
+  a static streamline layer captured by PNG export, and — the showpiece — an **animated
+  particle drift** (`render/flow.ts`: a fast site index, a bilinear-sampled vector grid, and a
+  `FlowAnimator` advecting thousands of motes; the expensive base map is snapshotted once and
+  blitted each frame). Inspector reports the local wind, current & sea temperature; two new
+  presets (Trade Winds, Gyre World). The **Proof Lab** (`core/proofs.ts` + a worker +
+  `ui/ProofLab.tsx`) runs the *real* `generateWorld` in-browser and certifies 23 invariants
+  with measured numbers — determinism (byte-identical terrain/climate/winds/currents/SST/Ages
+  across two runs), mesh integrity, hydrology (drains + conserves rainfall to 1e-15), climate
+  sanity, the whole circulation physics, and the Ages. Verified: 23/23 headless and in a real
+  browser (Chromium/Playwright) — overlays, streamlines, live animation, inspector and the
+  Proof Lab all correct; the only console line is the template's absent-favicon 404. Every new
+  stage stays pure, deterministic and worker-clone-safe; PNG/SVG export and the CI gate green.

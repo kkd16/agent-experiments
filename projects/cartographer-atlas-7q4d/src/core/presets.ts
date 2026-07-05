@@ -127,6 +127,35 @@ export const PRESETS: readonly Preset[] = [
       cities: 22,
     },
   },
+  {
+    name: 'Trade Winds',
+    blurb: 'A continent set in a wide ocean — turn on the wind streamlines',
+    patch: {
+      shape: 'continent',
+      seaLevel: 0.5,
+      islandFalloff: 1.1,
+      noiseScale: 3.0,
+      orographic: 0.85,
+      windAngle: 250,
+      rainfall: 1.2,
+      cities: 12,
+    },
+  },
+  {
+    name: 'Gyre World',
+    blurb: 'Great enclosed seas that spin up ocean gyres — animate the currents',
+    patch: {
+      shape: 'archipelago',
+      terrainMode: 'tectonic',
+      plates: 8,
+      seaLevel: 0.5,
+      islandFalloff: 0.75,
+      noiseScale: 3.4,
+      rainfall: 1.1,
+      orographic: 0.7,
+      cities: 10,
+    },
+  },
 ]
 
 export const SHAPES: readonly { value: WorldShape; label: string }[] = [

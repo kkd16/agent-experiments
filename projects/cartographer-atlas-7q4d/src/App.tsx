@@ -15,6 +15,7 @@ import Legend from './ui/Legend'
 import Inspector from './ui/Inspector'
 import Chronicle from './ui/Chronicle'
 import Timeline from './ui/Timeline'
+import ProofLab from './ui/ProofLab'
 
 const STORE_KEY = 'cartographer.state.v2'
 
@@ -53,6 +54,7 @@ export default function App(): ReactElement {
   const [view, setView] = useState<ViewOptions>({ ...DEFAULT_VIEW, ...stored.view })
   const [selected, setSelected] = useState<number | null>(null)
   const [showChronicle, setShowChronicle] = useState(false)
+  const [showProofs, setShowProofs] = useState(false)
 
   // --- The Ages timeline (transient — never persisted, like the cell selection) ---
   const [agesOpen, setAgesOpen] = useState(false)
@@ -125,6 +127,8 @@ export default function App(): ReactElement {
         onToggleChronicle={() => setShowChronicle((s) => !s)}
         agesOpen={agesOpen}
         onToggleAges={() => setAgesOpen((s) => !s)}
+        proofsOpen={showProofs}
+        onToggleProofs={() => setShowProofs((s) => !s)}
       />
       <main className="stage">
         <MapCanvas world={world} view={view} selected={selected} onPick={setSelected} frame={frame} />
@@ -140,6 +144,7 @@ export default function App(): ReactElement {
         {world && showChronicle && (
           <Chronicle world={world} onClose={() => setShowChronicle(false)} />
         )}
+        {showProofs && <ProofLab onClose={() => setShowProofs(false)} />}
         {world && agesOpen && (
           <Timeline
             world={world}

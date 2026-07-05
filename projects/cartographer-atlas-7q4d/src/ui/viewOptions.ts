@@ -2,7 +2,18 @@
 // so they stay serialisable and cheap to store.
 
 /** A full-cell thematic recolour of the land — the atlas's data maps. */
-export type Overlay = 'none' | 'koppen' | 'resource' | 'temperature' | 'precip' | 'elevation'
+export type Overlay =
+  | 'none'
+  | 'koppen'
+  | 'resource'
+  | 'temperature'
+  | 'precip'
+  | 'elevation'
+  // --- Session-5 circulation fields (recolour the ocean too) ---
+  | 'pressure'
+  | 'wind'
+  | 'current'
+  | 'sst'
 
 export interface ViewOptions {
   paletteKey: string
@@ -27,6 +38,13 @@ export interface ViewOptions {
   // --- Session-3 layers ---
   /** Prevailing-wind rhumb arrows over the sea. */
   showWind: boolean
+  // --- Session-5 circulation layers ---
+  /** Static streamline arrows for the chosen circulation field. */
+  showFlow: boolean
+  /** Animate the circulation field with drifting particles (live app only). */
+  animateFlow: boolean
+  /** Which field the flow layer visualises. */
+  flowField: 'wind' | 'current'
 }
 
 export const DEFAULT_VIEW: ViewOptions = {
@@ -48,6 +66,9 @@ export const DEFAULT_VIEW: ViewOptions = {
   showCities: true,
   showPlates: false,
   showWind: false,
+  showFlow: false,
+  animateFlow: false,
+  flowField: 'wind',
 }
 
 export const OVERLAYS: readonly { value: Overlay; label: string }[] = [
@@ -57,4 +78,8 @@ export const OVERLAYS: readonly { value: Overlay; label: string }[] = [
   { value: 'temperature', label: 'Temperature' },
   { value: 'precip', label: 'Rainfall' },
   { value: 'elevation', label: 'Elevation' },
+  { value: 'pressure', label: 'Pressure' },
+  { value: 'wind', label: 'Winds' },
+  { value: 'current', label: 'Currents' },
+  { value: 'sst', label: 'Sea temp' },
 ]

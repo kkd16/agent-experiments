@@ -1,6 +1,9 @@
 // Shared types for the Cartographer engine. Kept framework-free so the whole
 // pipeline (mesh → terrain → hydrology → biomes) is pure, deterministic TypeScript.
 
+import type { Circulation } from './circulation'
+export type { Circulation } from './circulation'
+
 /** The shape a landmass is pushed toward by the radial island mask. */
 export type WorldShape = 'continent' | 'archipelago' | 'pangaea'
 
@@ -310,6 +313,10 @@ export interface WorldMap {
   // --- The Ages: the simulated, scrubbable history (Session 4) --------------
   /** The full turn-by-turn history simulation: realms, frames and events. */
   history: WorldHistory
+
+  // --- The Living Planet: coupled atmosphere/ocean circulation (Session 5) ---
+  /** Global wind, pressure, ocean current, streamfunction and SST fields. */
+  circulation: Circulation
 
   /** Wall-clock milliseconds spent in each pipeline stage, for the HUD. */
   timings: Record<string, number>

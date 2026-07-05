@@ -7,6 +7,7 @@ import { assignElevation, computeTemperature } from './terrain'
 import { buildPlates, tectonicElevation } from './tectonics'
 import { computeHydrology } from './hydrology'
 import { computeContinentality } from './climate'
+import { computeCirculation } from './circulation'
 import { classifyKoppen } from './koppen'
 import { buildPolitical } from './political'
 import { traceNamedRivers } from './rivers'
@@ -61,12 +62,30 @@ export function generateWorld(params: WorldParams): WorldMap {
     return out
   })
 
-  // --- Deep climate: continentality → Köppen–Geiger zones ---
+  // --- The Living Planet: coupled atmosphere + ocean circulation ---
+  const circulation = stage('circulation', () =>
+    computeCirculation(mesh, params, {
+      ocean: hydro.ocean,
+      lake: hydro.lake,
+      coast: hydro.coast,
+      temperature,
+    }),
+  )
+
+  // --- Deep climate: continentality → Köppen–Geiger zones (ocean-moderated on the coasts) ---
   const water = new Uint8Array(mesh.numRegions)
   for (let r = 0; r < mesh.numRegions; r++) water[r] = hydro.ocean[r] || hydro.lake[r] ? 1 : 0
   const continentality = stage('continentality', () => computeContinentality(mesh, water))
   const koppen = stage('koppen', () =>
-    classifyKoppen(mesh, params, water, temperature, hydro.precip, continentality),
+    classifyKoppen(
+      mesh,
+      params,
+      water,
+      temperature,
+      hydro.precip,
+      continentality,
+      circulation.seaTempC,
+    ),
   )
 
   const fields = {
@@ -164,6 +183,7 @@ export function generateWorld(params: WorldParams): WorldMap {
     chronicle: history.events,
     era: history.era,
     history,
+    circulation,
     timings,
   }
 }

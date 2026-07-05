@@ -29,6 +29,16 @@ function row(label: string, value: string): ReactElement {
 const RES_NAME: Record<string, string> = {}
 RESOURCES.forEach((r) => (RES_NAME[r.key] = r.name))
 
+const COMPASS8 = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE']
+/** Compass point a screen-space vector points toward (0°=E, +y=S — the app's convention). */
+function vecBearing(u: number, v: number): string {
+  const deg = (Math.atan2(v, u) * 180) / Math.PI
+  return COMPASS8[Math.round(((deg % 360) + 360) / 45) % 8]
+}
+function strength(norm: number): string {
+  return norm < 0.12 ? 'calm' : norm < 0.4 ? 'light' : norm < 0.7 ? 'moderate' : 'strong'
+}
+
 export default function Inspector({ world, region, onClose, frame }: Props): ReactElement | null {
   if (region < 0 || region >= world.mesh.numSolid) return null
   const p = world.params
@@ -61,6 +71,17 @@ export default function Inspector({ world, region, onClose, frame }: Props): Rea
   const riverIdx = world.riverName[region]
   const river = riverIdx >= 0 ? world.namedRivers[riverIdx] : null
 
+  // Circulation fields (Session 5).
+  const circ = world.circulation
+  const wind = `${strength(circ.windSpeed[region])} ${vecBearing(circ.windU[region], circ.windV[region])}`
+  const curSpeed = circ.curSpeed[region]
+  const current =
+    isOcean && curSpeed > 0.02
+      ? `${strength(curSpeed)} ${vecBearing(circ.curU[region], circ.curV[region])}`
+      : null
+  const oceanSst = isOcean && !Number.isNaN(circ.sst[region]) ? circ.sst[region] : null
+  const coastSea = !isOcean && !isLake && !Number.isNaN(circ.seaTempC[region]) ? circ.seaTempC[region] : null
+
   // When the timeline is open, report who ruled this cell in the scrubbed year.
   const agesOwner = frame && !isOcean && !isLake ? frame.owner[region] : -1
   const agesRealm = agesOwner >= 0 ? world.history.realms[agesOwner] : null
@@ -91,6 +112,11 @@ export default function Inspector({ world, region, onClose, frame }: Props): Rea
         {p.terrainMode === 'tectonic' &&
           world.plateId.length > 0 &&
           row('Plate', `#${world.plateId[region]}${world.plateBoundary[region] ? ' (boundary)' : ''}`)}
+        <div className="insp-sep" />
+        {row('Wind', wind)}
+        {current && row('Current', current)}
+        {oceanSst != null && row('Sea temp', `${Math.round(oceanSst)}°C`)}
+        {coastSea != null && row('Offshore sea', `${Math.round(coastSea)}°C`)}
         {city && <div className="insp-sep" />}
         {city && row('Realm', city.realm)}
         {city && row('Seat', `${city.name}${city.capital ? ' ★' : ''}`)}
