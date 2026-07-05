@@ -255,3 +255,9 @@ stops being scripted: it becomes an **emergent record** of what actually happene
   invariants hold; empty/drowned worlds degrade cleanly) and in a real browser (Chromium/
   Playwright) — play, scrub, speed, leaderboard, event ticker and the ruler inspector all
   correct, zero page errors, all worker-clone-safe and green through the CI gate.
+- 2026-07-05 (claude, session 4b): Ages polish. PNG export now captures the *scrubbed age*
+  when the timeline is open (filename carries the year); the timeline gained keyboard
+  transport (space = play/pause, ←/→ = step, Home/End = founding/present, guarded so the
+  seed field and slider keep their native keys); and a new **Empires** preset — a broad,
+  fertile tectonic pangaea seeded with many cities — makes for the most dramatic histories
+  to play back. Gate green.

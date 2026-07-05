@@ -89,12 +89,14 @@ export default function App(): ReactElement {
       const ctx = c.getContext('2d')
       if (!ctx) return
       ctx.setTransform(scale, 0, 0, scale, 0, 0)
-      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected: null })
-      download(c.toDataURL('image/png'), `cartographer-${world.params.seed}.png`)
+      // When the timeline is open, capture the scrubbed age; otherwise the present map.
+      renderWorld(ctx, world, { palette: paletteByKey(view.paletteKey), view, selected: null, frame })
+      const suffix = frame ? `-year-${frame.year}` : ''
+      download(c.toDataURL('image/png'), `cartographer-${world.params.seed}${suffix}.png`)
     } catch (err) {
       console.error('PNG export failed', err)
     }
-  }, [world, view])
+  }, [world, view, frame])
 
   const onExportSvg = useCallback(() => {
     if (!world) return
