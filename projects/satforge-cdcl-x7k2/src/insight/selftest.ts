@@ -13,6 +13,8 @@ import { marco, deletionMus, quickXplainMus } from './mus'
 import { SoftSolver } from './core'
 import type { SoftSystem } from './core'
 import { approxModelCount } from './approxmc'
+import { uniGen, naiveSample } from './sampling'
+import { uniformityReport, marginalComparison } from './uniformity'
 
 export interface TestCase {
   name: string
@@ -252,6 +254,55 @@ export function runSelfTests(): SelfTestReport {
     const hi = Number(exact) * 3
     record('ApproxMC within 3× of exact', est >= lo && est <= hi,
       `exact ${exact}, estimate ${est.toFixed(1)} (thresh ${approx.thresh}, ${approx.rounds} rounds)`)
+  }
+
+  // ---------- UniGen almost-uniform sampling ----------
+  // The whole solution space is enumerable here, so uniformity is checked *exactly*
+  // against the flat 1/K target — not merely asserted. Seeds are fixed for
+  // reproducibility. See ./sampling and ./uniformity.
+
+  // A lopsided "implication chain": 14 models with a few hub solutions the naive
+  // solver over-serves. 14 ≤ the accept-band ceiling ⇒ UniGen's exact fast path.
+  const CHAIN: CNF = { numVars: 8, clauses: [[-1, 2], [-2, 3], [-3, 4], [-4, 5], [1, 6], [6, 7], [-7, 8], [8, 1]] }
+  // A bigger "two clusters" formula (70 models) that forces the hashing path.
+  const CLUSTERS: CNF = {
+    numVars: 10,
+    clauses: [[1, 2, 3, 4], [-1, -2], [-3, -4], [5, 6], [-5, -6, 7], [8, -9], [9, -10], [10, -8], [1, 5, 8]],
+  }
+
+  {
+    const seed = 1234
+    const ug = uniGen(CHAIN, { numSamples: 1000, seed })
+    const rep = uniformityReport(CHAIN, ug.samplingVars, ug.samples)
+    // Fast path taken, every draw is a genuine solution, all 14 reached, and the χ²
+    // sits near its dof (≈ perfectly uniform; generous 2.5× envelope absorbs noise).
+    const ok = ug.fastPath && rep.outOfSupport === 0 && rep.coverage === 1 && rep.chiSquare <= 2.5 * rep.chiDof
+    record('UniGen fast path is exactly uniform (chain)', ok,
+      `χ²=${rep.chiSquare.toFixed(1)}/${rep.chiDof}, TV=${rep.tvDistance.toFixed(3)}, cover ${rep.distinct}/${rep.support}, out-of-support ${rep.outOfSupport}`)
+
+    // Sampled marginals must track the exact per-variable marginals.
+    const mg = marginalComparison(CHAIN, ug.samplingVars, ug.samples)
+    record('UniGen marginals match exact (chain)', mg.maxError < 0.06,
+      `max |exact − sampled| = ${mg.maxError.toFixed(3)}`)
+
+    // The naive baseline, on the same instance and seed, is provably far more biased:
+    // both are *sound* (only real solutions), but its χ² dwarfs UniGen's.
+    const nv = naiveSample(CHAIN, { numSamples: 1000, seed })
+    const nrep = uniformityReport(CHAIN, nv.samplingVars, nv.samples)
+    record('Naive sampler is sound but skewed vs UniGen (chain)',
+      nrep.outOfSupport === 0 && nrep.chiSquare > 4 * rep.chiSquare && nrep.tvDistance > 2 * rep.tvDistance,
+      `naive χ²=${nrep.chiSquare.toFixed(0)} vs UniGen ${rep.chiSquare.toFixed(0)}; naive TV=${nrep.tvDistance.toFixed(3)} vs ${rep.tvDistance.toFixed(3)}`)
+  }
+
+  {
+    const seed = 1234
+    const ug = uniGen(CLUSTERS, { numSamples: 800, seed })
+    const rep = uniformityReport(CLUSTERS, ug.samplingVars, ug.samples)
+    // Hashing path (q>0): still sound, still reaches every model, and stays within a
+    // loose χ² envelope consistent with UniGen's (1+κ)-almost-uniform guarantee.
+    const ok = !ug.fastPath && ug.hashBits > 0 && rep.outOfSupport === 0 && rep.coverage === 1 && rep.chiSquare <= 3 * rep.chiDof
+    record('UniGen hashing path is sound & near-uniform (clusters)', ok,
+      `q=${ug.hashBits}, χ²=${rep.chiSquare.toFixed(1)}/${rep.chiDof}, cover ${rep.distinct}/${rep.support}, out-of-support ${rep.outOfSupport}`)
   }
 
   const passed = cases.filter((c) => c.passed).length

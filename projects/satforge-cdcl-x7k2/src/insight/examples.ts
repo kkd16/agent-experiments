@@ -129,6 +129,52 @@ export const CNF_EXAMPLES: CnfExample[] = [
   },
 ]
 
+// --- CNF formulas curated for *sampling* (almost-uniform witness generation) ---
+//
+// These are deliberately small (their whole solution space is enumerable, so the
+// studio can measure uniformity exactly) and chosen to tell the story: some have a
+// lopsided solution landscape a naive "ask the solver" sampler collapses onto, others
+// are symmetric enough that even the naive sampler looks fair — a useful contrast that
+// shows UniGen matching the truth in *both* regimes.
+
+export const SAMPLE_EXAMPLES: CnfExample[] = [
+  {
+    name: 'Implication chain (biased)',
+    blurb:
+      'A ring of implications with a few "hub" solutions. Naive solving piles onto the hubs; UniGen spreads flat. Small enough (14 models) to enumerate — the exact fast path, no hashing.',
+    cnf: {
+      numVars: 8,
+      clauses: [[-1, 2], [-2, 3], [-3, 4], [-4, 5], [1, 6], [6, 7], [-7, 8], [8, 1]],
+    },
+    varLabels: ['', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+  },
+  {
+    name: 'Parity ladder (hashed)',
+    blurb:
+      '20 models over three exclusive-or pairs plus a coupling clause — past the fast-path threshold, so UniGen must actually hash the space into cells.',
+    cnf: {
+      numVars: 8,
+      clauses: [[1, 2], [-1, -2], [3, 4], [-3, -4], [5, 6], [-5, -6], [1, 3, 5], [-1, -3, -5, 7], [7, 8]],
+    },
+    varLabels: ['', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+  },
+  {
+    name: 'Two clusters (hashed)',
+    blurb:
+      '70 models split across a dense region and a sparse one. The naive sampler over-serves the dense side; UniGen hashes into ~2³ cells and comes out uniform.',
+    cnf: {
+      numVars: 10,
+      clauses: [[1, 2, 3, 4], [-1, -2], [-3, -4], [5, 6], [-5, -6, 7], [8, -9], [9, -10], [10, -8], [1, 5, 8]],
+    },
+  },
+  {
+    name: 'Symmetric 3-colouring',
+    blurb:
+      'Proper 3-colourings of a 5-cycle: 30 models related by symmetry, so even the naive sampler is roughly fair here — UniGen agrees, confirming the flat target.',
+    cnf: cycleColoring(5, 3),
+  },
+]
+
 // A proper k-colouring of an n-cycle, one-hot per vertex.
 function cycleColoring(n: number, k: number): CNF {
   const v = (i: number, c: number) => (i - 1) * k + c // vertex i (1..n), colour c (1..k)

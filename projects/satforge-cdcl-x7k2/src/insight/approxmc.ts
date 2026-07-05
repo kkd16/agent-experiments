@@ -15,8 +15,10 @@
 import type { CNF } from '../sat/cnf'
 import { allModels } from './enumerate'
 
-/** A tiny deterministic PRNG (mulberry32) so a seeded estimate is reproducible. */
-function mulberry32(seed: number): () => number {
+/** A tiny deterministic PRNG (mulberry32) so a seeded estimate is reproducible.
+ *  Exported so the sampler (see ./sampling) draws its XOR hashes from the very same
+ *  reproducible stream shape. */
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0
   return () => {
     a |= 0
@@ -63,8 +65,11 @@ const nowFn = () => (typeof performance !== 'undefined' ? performance.now() : Da
 /**
  * Append the CNF encoding of one XOR constraint  (⊕ vars) = parity  to `clauses`,
  * allocating fresh Tseitin variables starting at `nextVar`. Returns the new nextVar.
+ *
+ * Exported: the almost-uniform sampler (see ./sampling) hashes the solution space with
+ * the identical parity-constraint family, so it shares this single encoding.
  */
-function appendXor(clauses: number[][], vars: number[], parity: 0 | 1, nextVar: number): number {
+export function appendXor(clauses: number[][], vars: number[], parity: 0 | 1, nextVar: number): number {
   if (vars.length === 0) {
     if (parity === 1) clauses.push([]) // empty ⊕ = 0 ≠ 1  ⇒  contradiction
     return nextVar
