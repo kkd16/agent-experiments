@@ -23,6 +23,8 @@ interface Props {
   onToggleChronicle: () => void
   agesOpen: boolean
   onToggleAges: () => void
+  proofsOpen: boolean
+  onToggleProofs: () => void
 }
 
 function Slider(props: {
@@ -93,6 +95,8 @@ export default function Controls({
   onToggleChronicle,
   agesOpen,
   onToggleAges,
+  proofsOpen,
+  onToggleProofs,
 }: Props): ReactElement {
   const setV = (partial: Partial<ViewOptions>): void => setView({ ...view, ...partial })
 
@@ -348,6 +352,31 @@ export default function Controls({
       </section>
 
       <section className="group">
+        <h2>Circulation</h2>
+        <label className="ctl">
+          <span className="ctl-label">Flow field</span>
+          <div className="seg">
+            {([
+              { value: 'wind', label: 'Winds' },
+              { value: 'current', label: 'Ocean' },
+            ] as const).map((m) => (
+              <button
+                key={m.value}
+                className={`seg-btn ${view.flowField === m.value ? 'active' : ''}`}
+                onClick={() => setV({ flowField: m.value })}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </label>
+        <div className="toggle-grid">
+          <Toggle label="Streamlines" checked={view.showFlow} onChange={(v) => setV({ showFlow: v })} />
+          <Toggle label="Animate" checked={view.animateFlow} onChange={(v) => setV({ animateFlow: v })} />
+        </div>
+      </section>
+
+      <section className="group">
         <button
           className={`btn chronicle-btn ${agesOpen ? 'active' : ''}`}
           onClick={onToggleAges}
@@ -359,6 +388,12 @@ export default function Controls({
           onClick={onToggleChronicle}
         >
           📜 {chronicleOpen ? 'Hide' : 'Read'} the Chronicle
+        </button>
+        <button
+          className={`btn chronicle-btn ${proofsOpen ? 'active' : ''}`}
+          onClick={onToggleProofs}
+        >
+          ✔ {proofsOpen ? 'Close' : 'Open'} the Proof Lab
         </button>
       </section>
 
@@ -372,8 +407,9 @@ export default function Controls({
       </section>
 
       <footer className="panel-foot">
-        Tectonics · Köppen climate · named rivers · biomes · a resource economy & trade ·
-        a generated chronicle — all in your browser. Click any cell to inspect it.
+        Tectonics · three-cell winds & wind-driven ocean currents · Köppen climate · named
+        rivers · a resource economy & trade · a living history — all in your browser, all
+        proven in the Proof Lab. Click any cell to inspect it.
       </footer>
     </aside>
   )

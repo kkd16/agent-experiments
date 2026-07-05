@@ -10,8 +10,9 @@ import type { Palette, RGB } from './palettes'
 import { rgbToCss } from './palettes'
 import { computeContours, defaultLevels } from '../core/contours'
 import type { Overlay, ViewOptions } from '../ui/viewOptions'
-import { overlayLandColor } from './overlay'
+import { overlayLandColor, isCirculationOverlay, circulationOverlayColor } from './overlay'
 import { drawAgesTerritory, drawAgesFurniture } from './history'
+import { drawFlowArrows } from './flow'
 import { Noise2D } from '../core/noise'
 import { Rng } from '../core/rng'
 
@@ -104,6 +105,22 @@ export function regionColor(
   const seaLevel = params.seaLevel
   const denom = 1 - seaLevel || 1
   let col: RGB
+
+  // Circulation overlays (wind / pressure / current / SST) recolour the ocean too. A null
+  // result means "leave this cell natural" (e.g. land under a Current or SST overlay).
+  if (isCirculationOverlay(overlay)) {
+    const isWater = ocean[r] === 1 || lake[r] === 1
+    const field = circulationOverlayColor(world, r, overlay, isWater)
+    if (field) {
+      col = field
+      if (shade) {
+        const f = 0.82 + (shade[r] - 1) * 0.45
+        col = [col[0] * f, col[1] * f, col[2] * f]
+      }
+      return [clampByte(col[0]), clampByte(col[1]), clampByte(col[2])]
+    }
+  }
+
   if (ocean[r]) {
     const depth = Math.min(1, Math.max(0, (seaLevel - elevation[r]) / (seaLevel || 1)))
     col = pal.ocean(depth)
@@ -115,10 +132,11 @@ export function regionColor(
     }
   } else {
     const above = Math.max(0, elevation[r] - seaLevel) / denom
-    col = overlay === 'none' ? pal.land(biome[r], above, world.moisture[r]) : overlayLandColor(world, r, overlay)
+    const scalarOverlay = overlay !== 'none' && !isCirculationOverlay(overlay)
+    col = scalarOverlay ? overlayLandColor(world, r, overlay) : pal.land(biome[r], above, world.moisture[r])
     if (shade) {
       // Data overlays keep only a gentle relief so the field colour stays legible.
-      const f = overlay === 'none' ? shade[r] : 0.82 + (shade[r] - 1) * 0.45
+      const f = scalarOverlay ? 0.82 + (shade[r] - 1) * 0.45 : shade[r]
       col = [col[0] * f, col[1] * f, col[2] * f]
     }
   }
@@ -775,6 +793,13 @@ export function renderWorld(
   if (v.showProvinces && !ages) drawProvinceBorders(ctx, world, pal)
   if (v.showCoast) drawCoast(ctx, world, pal)
   if (v.showWind && !ages) drawWind(ctx, world, pal)
+  if (v.showFlow) {
+    try {
+      drawFlowArrows(ctx, world, v.flowField, pal)
+    } catch {
+      /* thumbnails / degraded canvases: skip the flow layer */
+    }
+  }
   if (v.showRivers) drawRivers(ctx, world, pal)
   if (v.showRoads && !ages) drawRoads(ctx, world, pal)
   if (v.showGraticule) drawGraticule(ctx, world, pal)
