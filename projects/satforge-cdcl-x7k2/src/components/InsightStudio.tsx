@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react'
 import './InsightStudio.css'
 import type { CNF } from '../sat/cnf'
 import { countModels } from '../sat/modelCount'
-import { SOFT_EXAMPLES, CNF_EXAMPLES } from '../insight/examples'
+import { SOFT_EXAMPLES, CNF_EXAMPLES, SAMPLE_EXAMPLES } from '../insight/examples'
 import { marco, deletionMus, quickXplainMus } from '../insight/mus'
 import { SoftSolver } from '../insight/core'
 import { allModels, backbone, minimalModel } from '../insight/enumerate'
 import { approxModelCount } from '../insight/approxmc'
+import { uniGen, naiveSample } from '../insight/sampling'
+import { uniformityReport, marginalComparison } from '../insight/uniformity'
 import { runSelfTests } from '../insight/selftest'
 
-type Panel = 'mus' | 'space' | 'count' | 'tests'
+type Panel = 'mus' | 'space' | 'count' | 'sample' | 'tests'
 
 export function InsightStudio() {
   const [panel, setPanel] = useState<Panel>('mus')
@@ -20,8 +22,9 @@ export function InsightStudio() {
           <strong>Insight</strong> reasons about the whole solution space, not one yes/no. On the
           same CDCL core it enumerates every model, isolates the <strong>backbone</strong> (facts
           true in all of them), diagnoses infeasibility into minimal <strong>MUS/MCS</strong> reasons
-          by <strong>MARCO</strong>, and estimates model counts by <strong>XOR hashing</strong> with
-          an (ε,δ) guarantee — each answer cross-checked against a brute-force oracle.
+          by <strong>MARCO</strong>, estimates model counts by <strong>XOR hashing</strong> with
+          an (ε,δ) guarantee, and draws <strong>almost-uniform witnesses</strong> from the same
+          hashing (<strong>UniGen</strong>) — each answer cross-checked against a brute-force oracle.
         </p>
         <nav className="insight-nav">
           <button className={panel === 'mus' ? 'active' : ''} onClick={() => setPanel('mus')}>
@@ -33,6 +36,9 @@ export function InsightStudio() {
           <button className={panel === 'count' ? 'active' : ''} onClick={() => setPanel('count')}>
             Counting — exact vs approximate
           </button>
+          <button className={panel === 'sample' ? 'active' : ''} onClick={() => setPanel('sample')}>
+            Sampling — uniform witnesses
+          </button>
           <button className={panel === 'tests' ? 'active' : ''} onClick={() => setPanel('tests')}>
             Self-tests
           </button>
@@ -42,6 +48,7 @@ export function InsightStudio() {
         {panel === 'mus' && <MusPanel />}
         {panel === 'space' && <SpacePanel />}
         {panel === 'count' && <CountPanel />}
+        {panel === 'sample' && <SamplePanel />}
         {panel === 'tests' && <TestsPanel />}
       </main>
     </div>
@@ -434,6 +441,198 @@ function RoundBars({ estimates, exact }: { estimates: number[]; exact: number | 
         </div>
       ))}
       {exact !== null && <div className="exact-line" style={{ bottom: `${(exact / max) * 100}%` }} title={`exact ${exact}`} />}
+    </div>
+  )
+}
+
+// ---------- Sampling panel (UniGen almost-uniform witnesses) ----------
+
+function SamplePanel() {
+  const [pick, setPick] = useState(0)
+  const ex = SAMPLE_EXAMPLES[pick]
+  const cnf = ex.cnf
+  const [nSamples, setNSamples] = useState(600)
+  const [kappa, setKappa] = useState(0.9)
+  const [seed, setSeed] = useState(7)
+  const [showNaive, setShowNaive] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [run, setRun] = useState<null | {
+    ug: ReturnType<typeof uniGen>
+    ugRep: ReturnType<typeof uniformityReport>
+    marg: ReturnType<typeof marginalComparison>
+    naiveRep: ReturnType<typeof uniformityReport> | null
+  }>(null)
+
+  const go = () => {
+    setBusy(true)
+    setTimeout(() => {
+      const ug = uniGen(cnf, { numSamples: nSamples, kappa, seed })
+      const ugRep = uniformityReport(cnf, ug.samplingVars, ug.samples)
+      const marg = marginalComparison(cnf, ug.samplingVars, ug.samples)
+      let naiveRep: ReturnType<typeof uniformityReport> | null = null
+      if (showNaive) {
+        const nv = naiveSample(cnf, { numSamples: nSamples, seed, sampling: ug.samplingVars })
+        naiveRep = uniformityReport(cnf, nv.samplingVars, nv.samples)
+      }
+      setRun({ ug, ugRep, marg, naiveRep })
+      setBusy(false)
+    }, 0)
+  }
+
+  // Clear stale results whenever the example changes.
+  const choose = (i: number) => {
+    setPick(i)
+    setRun(null)
+  }
+
+  return (
+    <div className="insight-panel">
+      <ExamplePicker items={SAMPLE_EXAMPLES.map((e) => e.name)} pick={pick} setPick={choose} />
+      <p className="insight-blurb">{ex.blurb}</p>
+      <p className="insight-note">
+        <strong>UniGen</strong> draws witnesses <em>almost uniformly</em> by the same trick that powers
+        ApproxMC: hash the models into 2<sup>q</sup> random XOR cells, keep hashing until a typical cell
+        is small enough to enumerate, then return one survivor of a cell chosen uniformly at random. The
+        two uniform choices compose into a near-flat draw. The naive baseline — just ask the solver — is
+        shown for contrast: it is <em>sound</em> (only real solutions) but <em>skewed</em> toward whatever
+        the search finds first.
+      </p>
+
+      <div className="controls-row">
+        <Slider label={`samples = ${nSamples}`} min={100} max={1500} step={100} value={nSamples} onChange={(v) => setNSamples(Math.round(v))} />
+        <Slider label={`κ (tolerance) = ${kappa.toFixed(1)}`} min={0.4} max={1.6} step={0.1} value={kappa} onChange={setKappa} />
+        <Slider label={`seed = ${seed}`} min={1} max={100} step={1} value={seed} onChange={(v) => setSeed(Math.round(v))} />
+        <label className="toggle">
+          <input type="checkbox" checked={showNaive} onChange={(e) => setShowNaive(e.target.checked)} />
+          <span>compare naive</span>
+        </label>
+        <button className="run-btn" onClick={go} disabled={busy}>
+          {busy ? 'Sampling…' : 'Draw witnesses'}
+        </button>
+      </div>
+
+      {run && (
+        <>
+          <div className="stat-row">
+            <Stat label="Exact #models" value={run.ugRep.support.toLocaleString()} sub="enumerated support" />
+            <Stat
+              label="Method"
+              value={run.ug.fastPath ? 'exact' : `hashed 2^${run.ug.hashBits}`}
+              sub={run.ug.fastPath ? 'space fit one cell' : `cell band [${run.ug.loThresh},${run.ug.hiThresh}]`}
+            />
+            <Stat
+              label="Coverage"
+              value={`${run.ugRep.distinct}/${run.ugRep.support}`}
+              sub={`${(run.ugRep.coverage * 100).toFixed(0)}% of solutions hit`}
+              tone={run.ugRep.coverage === 1 ? 'good' : undefined}
+            />
+            <Stat
+              label="UniGen TV distance"
+              value={run.ugRep.tvDistance.toFixed(3)}
+              sub={`χ² ${run.ugRep.chiSquare.toFixed(0)} / ${run.ugRep.chiDof} dof`}
+              tone={run.naiveRep && run.ugRep.tvDistance < run.naiveRep.tvDistance ? 'good' : undefined}
+            />
+            {run.naiveRep && (
+              <Stat
+                label="Naive TV distance"
+                value={run.naiveRep.tvDistance.toFixed(3)}
+                sub={`χ² ${run.naiveRep.chiSquare.toFixed(0)} · ${(run.naiveRep.coverage * 100).toFixed(0)}% cover`}
+                tone={run.naiveRep.tvDistance > run.ugRep.tvDistance ? 'bad' : undefined}
+              />
+            )}
+          </div>
+
+          {run.ug.samples.length === 0 ? (
+            <p className="muted">No witnesses drawn — the formula is unsatisfiable.</p>
+          ) : (
+            <>
+              <section className="insight-card">
+                <h3>
+                  Sample frequency per solution{' '}
+                  <span className="muted">
+                    lower &amp; flatter is more uniform · the dashed line is the {run.ugRep.expected.toFixed(1)}-per-solution
+                    ideal
+                  </span>
+                </h3>
+                <Histogram label="UniGen (almost-uniform)" kind="ug" counts={run.ugRep.counts} expected={run.ugRep.expected} />
+                {run.naiveRep && (
+                  <Histogram
+                    label="Naive (ask the solver)"
+                    kind="naive"
+                    counts={run.naiveRep.counts}
+                    expected={run.naiveRep.expected}
+                  />
+                )}
+                <p className="insight-note">
+                  Each bar is one satisfying assignment; its height is how often that exact solution was
+                  drawn. UniGen’s bars hug the ideal line; the naive sampler’s tower over a favoured few.
+                </p>
+              </section>
+
+              <section className="insight-card">
+                <h3>
+                  Per-variable marginals{' '}
+                  <span className="muted">sampled vs exact · max error {run.marg.maxError.toFixed(3)}</span>
+                </h3>
+                <MarginalBars rows={run.marg.rows} labels={ex.varLabels} />
+                <p className="insight-note">
+                  P(variable = true) estimated from the UniGen draws (solid) against the exact marginal over
+                  every model (outline). Uniform sampling recovers each marginal to within sampling noise.
+                </p>
+              </section>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function Histogram({
+  label,
+  kind,
+  counts,
+  expected,
+}: {
+  label: string
+  kind: 'ug' | 'naive'
+  counts: { key: string; count: number }[]
+  expected: number
+}) {
+  const max = Math.max(expected, ...counts.map((c) => c.count), 1)
+  return (
+    <div className="histo-block">
+      <div className="histo-label">{label}</div>
+      <div className="histo">
+        <div className={`histo-bars ${kind}`}>
+          {counts.map((c, i) => (
+            <div
+              key={i}
+              className="histo-bar"
+              style={{ height: `${(c.count / max) * 100}%` }}
+              title={`solution ${i + 1} (${c.key}): ${c.count}×`}
+            />
+          ))}
+        </div>
+        <div className="histo-ideal" style={{ bottom: `${(expected / max) * 100}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function MarginalBars({ rows, labels }: { rows: { v: number; exact: number; sampled: number }[]; labels?: string[] }) {
+  return (
+    <div className="marg-grid">
+      {rows.map((r) => (
+        <div key={r.v} className="marg-row">
+          <span className="marg-name">{labels?.[r.v] || `x${r.v}`}</span>
+          <div className="marg-track">
+            <div className="marg-exact" style={{ width: `${r.exact * 100}%` }} title={`exact ${(r.exact * 100).toFixed(0)}%`} />
+            <div className="marg-samp" style={{ width: `${r.sampled * 100}%` }} title={`sampled ${(r.sampled * 100).toFixed(0)}%`} />
+          </div>
+          <span className="marg-val">{(r.sampled * 100).toFixed(0)}%</span>
+        </div>
+      ))}
     </div>
   )
 }

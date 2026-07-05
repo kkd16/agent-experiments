@@ -242,10 +242,21 @@ Open ideas for next time:
       interactive — click an MCS, watch it hit every MUS.
 - [ ] **Projected #SAT** in the counter (count distinct assignments to a chosen support), and an
       **XOR-native** propagator so ApproxMC's parity constraints don't pay the Tseitin blow-up.
-- [ ] **Uniform witness sampling** (UniGen) on the same hashing machinery — near-uniform samples of
-      the solution space, not just its size.
+- [x] **Uniform witness sampling** (UniGen) on the same hashing machinery — near-uniform samples of
+      the solution space, not just its size. *(Session 25 — `src/insight/sampling.ts` + `uniformity.ts`,
+      a fifth Insight panel, and a biased "just ask the solver" baseline shown for contrast.)*
 - [ ] **MARCO off the main thread** via the existing worker/task runner for larger systems, with a
       live lattice-coverage meter.
+
+Open ideas after Session 25 (sampling):
+- [ ] **Weighted / literal-weighted UniGen** — draw from a non-uniform target (weights per literal),
+      the sampling twin of weighted model counting; cross-check against `ddnnfWmc`.
+- [ ] **Independent-support minimisation** — compute a small definability support (gate detection)
+      so the XOR hashes ride only the "free" variables, shrinking cells on structured instances.
+- [ ] **Off-the-main-thread sampling** via the worker pool, with a live "cells opened" ticker and a
+      streaming histogram, so bigger instances (hundreds–thousands of models) stay interactive.
+- [ ] **A χ² p-value / goodness-of-fit verdict** (not just the statistic) and a Kolmogorov–Smirnov
+      style band on the histogram, turning "looks flat" into a reported confidence.
 
 - [x] Tolerant DIMACS parser + serializer + model verifier
 - [x] Two-watched-literals unit propagation
@@ -2199,3 +2210,57 @@ problems) with the counts the SAT `#SAT` engine already trusts.
       the gallery — parsed into the same `Model` builder the examples use.
 - [ ] **Run the heavy searches off the main thread** via the existing worker/task runner (Golomb with
       more marks, magic squares of order 5), with cancellation and a live node-count ticker.
+
+### Session 25 — from *counting* the models to *drawing* one: almost-uniform sampling (UniGen)
+
+Session 14's ApproxMC answered *how many* solutions a formula has. The natural twin question —
+*give me one, fairly* — is the workhorse behind constrained-random hardware verification,
+statistical software testing, and sampling-based inference: you want a witness nobody hand-picked,
+drawn with exactly the odds the solution space assigns it. This session builds that, reusing the
+very same XOR-hashing machinery, and — because these instances are small enough to enumerate — it
+*proves* the draws come out flat by measuring them against the exact distribution.
+
+**The idea (UniGen, Chakraborty–Meel–Vardi 2014/15).** Uniform witness generation is the mirror of
+approximate counting. Hash the 2ⁿ solutions into 2^q random cells with q XOR (parity) constraints
+from a pairwise-independent family — so each solution lands in a cell almost independently of every
+other — and pick q so a *typical* cell holds only a small, bounded number of survivors. Enumerate
+that one cell exactly, then return one survivor chosen uniformly at random. Two uniform choices —
+which cell the random XORs carve, which survivor inside it — compose into an almost-uniform draw
+over the whole space, tunable by a tolerance κ. The hash count q is sized from a quick ApproxMC
+pass (aim for ~pivot survivors per cell); if the whole formula already fits one accept-band cell it
+is enumerated and sampled *exactly* uniformly (the "fast path", no hashing).
+
+**Why the naive way fails (and why the contrast is the point).** "Just ask the solver for a model"
+is not a sampler: a CDCL search returns whatever its heuristics reach first, so its answers pile
+onto a handful of hub solutions. The panel shows this honestly with a `naiveSample` baseline — made
+into a *sampler* at all by a zero-core-change trick: pick a random flip mask f, rewrite every
+literal on a flipped variable to its negation, solve the flipped formula (whose models are the real
+ones XOR f), and map back. The solver now explores from a random corner each draw, reaching many
+models — but with the lumpy, search-order frequencies that make it *not* uniform. On the
+implication-chain example its bars tower 4× over a favoured few while UniGen's hug the ideal line.
+
+**What shipped:**
+- [x] **`src/insight/sampling.ts`** — `uniGen(cnf, {numSamples, kappa, seed, sampling})`: the
+      hashing sampler (fast path + κ-banded cell search with bounded retries), reusing the exported
+      `appendXor`/`mulberry32` from `approxmc.ts`, `approxModelCount` to size q, and `projectedModels`
+      to enumerate a cell's survivors over the (optional) independent support. Plus `naiveSample` —
+      the biased random-polarity baseline. Both return witnesses over the sampling set.
+- [x] **`src/insight/uniformity.ts`** — the exact judge: `uniformityReport` enumerates the whole
+      projected solution space and scores a batch of draws by **total-variation distance**, **Pearson
+      χ²** (with dof), **coverage**, min/max frequency, and an **out-of-support** counter (any
+      positive value = a non-solution was emitted → soundness alarm). `marginalComparison` puts each
+      variable's exact marginal next to its sampled estimate.
+- [x] **Four sampling tests in `src/insight/selftest.ts`** — UniGen's fast path is exactly uniform
+      (χ² near dof, full coverage, zero out-of-support), its hashing path is sound and near-uniform on
+      a 70-model instance, its marginals track the exact ones to <0.06, and the naive baseline is
+      provably far more skewed (χ² > 4× UniGen's) though still sound. Suite now **19/19**.
+- [x] **A fifth Insight panel** ("Sampling — uniform witnesses"): example picker + samples/κ/seed
+      sliders + a "compare naive" toggle, a stat row (exact #models, method = *exact* vs *hashed 2^q*,
+      coverage, UniGen vs naive TV/χ²), twin **frequency histograms** (UniGen flat vs naive lumpy,
+      each with the uniform-ideal line), and a **per-variable marginal** chart (sampled vs exact).
+- [x] Four curated sampling instances (biased implication chain, parity ladder, two-cluster, and a
+      symmetric 3-colouring where even the naive sampler is fair — a useful "target confirmed" case).
+- [x] Verified `node scripts/verify-project.mjs satforge-cdcl-x7k2` green (scope + conformance + lint
+      + tsc + build), and drove the live app in headless Chromium: **chain** → fast path, 14/14
+      coverage, UniGen TV **0.062** vs naive **0.256**; **two clusters** → *hashed 2³*, 70/70 coverage;
+      in-app self-tests **19/19**; **zero console errors**.
