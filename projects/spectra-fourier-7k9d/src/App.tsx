@@ -9,6 +9,7 @@ import Reassign from './modes/Reassign'
 import Wavelet from './modes/Wavelet'
 import ImageFFT from './modes/ImageFFT'
 import Tomography from './modes/Tomography'
+import Sensing from './modes/Sensing'
 import Vocoder from './modes/Vocoder'
 import Compress from './modes/Compress'
 import Cepstrum from './modes/Cepstrum'
@@ -25,6 +26,7 @@ const ROUTES = [
   { id: 'wavelet', label: 'Wavelet' },
   { id: 'image', label: 'Image 2D' },
   { id: 'tomography', label: 'Tomography' },
+  { id: 'sensing', label: 'Sensing' },
   { id: 'vocoder', label: 'Vocoder' },
   { id: 'compress', label: 'Compress' },
   { id: 'cepstrum', label: 'Cepstrum' },
@@ -88,6 +90,7 @@ export default function App() {
       {active === 'wavelet' && <Wavelet />}
       {active === 'image' && <ImageFFT />}
       {active === 'tomography' && <Tomography />}
+      {active === 'sensing' && <Sensing />}
       {active === 'vocoder' && <Vocoder />}
       {active === 'compress' && <Compress />}
       {active === 'cepstrum' && <Cepstrum />}
