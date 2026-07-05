@@ -4,7 +4,7 @@
 
 import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
 import { SYSCALLS } from '../vm/syscalls';
-import { DATA_BASE, FB_BASE, GLOBAL_POINTER, STACK_TOP, TEXT_BASE } from '../vm/constants';
+import { DATA_BASE, FB_BASE, GLOBAL_POINTER, PLIC_BASE, STACK_TOP, TEXT_BASE, UART0_BASE } from '../vm/constants';
 import { hexWord } from '../vm/format';
 
 interface InsDoc {
@@ -156,6 +156,19 @@ const GROUPS: { title: string; items: InsDoc[] }[] = [
       { m: 'sret', desc: 'return from a supervisor trap: restore SIE from SPIE, drop to SPP (mstatus.TSR traps it)' },
       { m: 'sfence.vma', desc: 'flush the (incoherent) TLB after editing a page table (mstatus.TVM traps it)' },
       { m: 'A/D bits', desc: 'the walk sets PTE Accessed on any access and Dirty on a store (Svadu), in hardware' },
+    ],
+  },
+  {
+    title: 'External interrupts — PLIC + UART (MMIO)',
+    items: [
+      { m: 'PLIC 0x0c00_0000', desc: 'platform-level interrupt controller: routes off-core device interrupts to the hart' },
+      { m: 'priority (+4·id)', desc: 'per-source priority; a source is forwarded only when its priority exceeds a context threshold' },
+      { m: 'pending (+0x1000)', desc: 'read-only gateway bitmap of sources asserting an interrupt' },
+      { m: 'enable (+0x2000 / +0x2080)', desc: 'per-context source-enable bitmap: context 0 → mip.MEIP, context 1 → mip.SEIP' },
+      { m: 'threshold (+0x20_0000 / +0x20_1000)', desc: 'per-context priority threshold' },
+      { m: 'claim/complete (+4)', desc: 'read → claims the top pending source (id); write id back → completes it (re-arms)' },
+      { m: 'UART 0x1000_0000', desc: 'RBR/THR: read pops a received byte, write transmits to the console (PLIC source 1)' },
+      { m: 'UART IER (+4) / LSR (+8)', desc: 'IER bit 0 = receive-data-available IRQ enable · LSR bit 0 = data-ready, bits 5/6 = TX ready' },
     ],
   },
   {
@@ -332,6 +345,14 @@ export default function Docs() {
                 <td className="doc-d">CLINT — msip (+0x0000), mtimecmp (+0x4000) &amp; mtime (+0xbff8): software + timer interrupts (MMIO)</td>
               </tr>
               <tr>
+                <td className="doc-m">{hexWord(PLIC_BASE)}</td>
+                <td className="doc-d">PLIC — external-interrupt controller: priority / pending / enable / threshold / claim (MMIO)</td>
+              </tr>
+              <tr>
+                <td className="doc-m">{hexWord(UART0_BASE)}</td>
+                <td className="doc-d">UART — memory-mapped serial port; its receive line is PLIC source 1 (MMIO)</td>
+              </tr>
+              <tr>
                 <td className="doc-m">{hexWord(FB_BASE)}</td>
                 <td className="doc-d">framebuffer — 128×128 palette bytes (MMIO)</td>
               </tr>
@@ -396,6 +417,24 @@ export default function Docs() {
             together: <em>Demand paging</em> (a fault handler that maps fresh frames lazily and
             retries the faulting instruction), the <em>Supervisor timer</em> (Sstc preemption), and
             a <em>Software interrupt</em> self-IPI.
+          </p>
+          <p className="docs-intro">
+            <strong>External interrupts (PLIC + UART).</strong> The CLINT handles the{' '}
+            <em>core-local</em> software and timer interrupts; the other half of the story is the{' '}
+            <strong>PLIC</strong> (Platform-Level Interrupt Controller), which routes{' '}
+            <em>external</em> device interrupts. Each source has a <strong>priority</strong>; a
+            per-context <strong>enable</strong> bitmap and a <strong>threshold</strong> gate it; and
+            a <strong>claim/complete</strong> register hands the winning source to software and
+            takes it back. Two contexts are wired to the hart — context&nbsp;0 drives{' '}
+            <code>mip.MEIP</code>, context&nbsp;1 drives <code>mip.SEIP</code> — so an external
+            interrupt can be delegated to S-mode with <code>mideleg</code> exactly like the timer,
+            reusing the same trap machinery. The bundled device is a memory-mapped{' '}
+            <strong>UART</strong> whose receive line is PLIC source&nbsp;1: type into the{' '}
+            <em>UART stdin</em> box on the Console tab and the bytes stream into the port on a fixed
+            cycle cadence (so runs stay deterministic and time-travellable). The{' '}
+            <em>UART echo (PLIC)</em> example enables the interrupt, idles in <code>wfi</code>, and
+            echoes each received byte from its handler — the exact shape of every real driver&rsquo;s
+            interrupt path: <em>claim → service the device → complete</em>.
           </p>
         </section>
 

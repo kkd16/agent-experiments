@@ -36,6 +36,50 @@ export const MTIMECMP_HI = CLINT_BASE + 0x4004;
 export const MTIME_LO = CLINT_BASE + 0xbff8;
 export const MTIME_HI = CLINT_BASE + 0xbffc;
 
+/**
+ * PLIC — the Platform-Level Interrupt Controller: the standard RISC-V router for *external*
+ * (off-core) device interrupts, complementing the CLINT's core-local software/timer interrupts.
+ * It gates each source through a priority + per-context enable + threshold, and hands the winning
+ * source to software via a claim/complete register. Two contexts are modelled: context 0 = hart 0
+ * M-mode (drives `mip.MEIP`) and context 1 = hart 0 S-mode (drives `mip.SEIP`). The register
+ * layout matches the SiFive/QEMU `virt` PLIC so bare-metal drivers port unchanged.
+ */
+export const PLIC_BASE = 0x0c00_0000;
+export const PLIC_SIZE = 0x0040_0000;
+/** Interrupt source ids 1..N (id 0 is the reserved "no interrupt"). */
+export const PLIC_NUM_SOURCES = 8;
+/** Contexts wired to this hart: 0 → M-mode external, 1 → S-mode external. */
+export const PLIC_NUM_CONTEXTS = 2;
+export const PLIC_PENDING_OFF = 0x1000; // pending bitmap (one word for ≤ 32 sources)
+export const PLIC_ENABLE_OFF = 0x2000; // enable bitmap, per context
+export const PLIC_ENABLE_STRIDE = 0x80;
+export const PLIC_CONTEXT_OFF = 0x20_0000; // threshold (+0) & claim/complete (+4), per context
+export const PLIC_CONTEXT_STRIDE = 0x1000;
+/** Priorities are capped at this width (plenty for teaching; keeps the undo snapshot compact). */
+export const PLIC_PRIO_BITS = 3;
+export const PLIC_PRIO_MAX = (1 << PLIC_PRIO_BITS) - 1;
+
+/**
+ * UART — a memory-mapped NS16550-subset serial port. Reading `RBR` pops the next received byte;
+ * writing `THR` transmits a byte to the syscall console. Its receive-data-available line is wired
+ * to PLIC source `UART_IRQ`. Received input is a host-provided byte stream metered into the RX
+ * FIFO on a fixed cycle cadence, so execution stays fully deterministic (and time-travellable).
+ */
+export const UART0_BASE = 0x1000_0000;
+export const UART_SIZE = 0x100;
+export const UART_IRQ = 1; // PLIC source id for the UART receive line
+export const UART_RBR = 0x00; // read: RX data (+ pop);  write: TX (THR)
+export const UART_IER = 0x04; // interrupt enable (bit 0 = receive-data-available)
+export const UART_LSR = 0x08; // line status (read-only)
+export const UART_IER_RX = 0x1; // IER: receive-data-available interrupt enable
+export const UART_LSR_DR = 0x01; // LSR: receive data ready
+export const UART_LSR_THRE = 0x20; // LSR: transmit-hold register empty (always, here)
+export const UART_LSR_TEMT = 0x40; // LSR: transmitter empty (always, here)
+export const UART_RX_START = 4; // cycle at which the first received byte arrives
+export const UART_RX_INTERVAL = 6; // cycles between subsequent received bytes
+/** The receive stream a fresh machine starts with, so the UART echo example runs out of the box. */
+export const DEFAULT_UART_INPUT = 'RISC-V!\n';
+
 /** Memory-mapped framebuffer: FB_W × FB_H bytes, one palette index per pixel. */
 export const FB_BASE = 0x2000_0000;
 export const FB_W = 128;

@@ -881,6 +881,61 @@ msg:        .asciz "demand-paged 16 fresh frames; sum of pages = "
 nl:         .asciz "\\n"
 `;
 
+const UART_ECHO = `# Interrupt-driven UART echo — external interrupts through the PLIC.
+#
+# The UART's receive line is wired to PLIC source 1. We give it a priority, open the PLIC's
+# M-mode context (threshold 0 + source-1 enable), enable the UART's receive interrupt, then
+# enable machine external interrupts and idle in a wfi loop. As each byte "arrives" over the
+# wire the PLIC raises mip.MEIP; the handler claims the interrupt, reads the byte, echoes it,
+# and completes it — re-arming for the next byte — until a newline ends the program.
+#
+# Type the received text in the Console tab's "UART stdin" box (default: "RISC-V!").
+.equ PLIC_PRIO1,  0x0c000004      # priority of source 1
+.equ PLIC_ENABLE, 0x0c002000      # context 0 (M-mode) enable bitmap
+.equ PLIC_THRESH, 0x0c200000      # context 0 priority threshold
+.equ PLIC_CLAIM,  0x0c200004      # context 0 claim / complete
+.equ UART,        0x10000000      # UART RBR/THR
+.equ UART_IER,    0x10000004      # UART interrupt-enable
+.text
+main:
+        la   t0, handler
+        csrw mtvec, t0            # install the trap vector
+        li   t0, 1
+        li   t1, PLIC_PRIO1
+        sw   t0, 0(t1)            # source 1 priority = 1
+        li   t0, 0
+        li   t1, PLIC_THRESH
+        sw   t0, 0(t1)           # threshold 0 → any priority > 0 is forwarded
+        li   t0, 2               # bit 1 = source 1
+        li   t1, PLIC_ENABLE
+        sw   t0, 0(t1)           # enable source 1 in the M-mode context
+        li   t0, 1               # IER bit 0 = receive-data-available
+        li   t1, UART_IER
+        sw   t0, 0(t1)
+        li   t0, 0x800           # mie.MEIE (bit 11)
+        csrs mie, t0
+        csrsi mstatus, 0x8       # mstatus.MIE — globally enable machine interrupts
+idle:
+        wfi                      # wait for the receive interrupt
+        j    idle
+handler:
+        li   t1, PLIC_CLAIM
+        lw   t0, 0(t1)           # claim → the interrupting source id
+        beqz t0, ret_irq         # spurious? nothing to service
+        li   t2, UART
+        lw   a0, 0(t2)           # read the received byte
+        li   a7, 11
+        ecall                    # echo it (print_char)
+        sw   t0, 0(t1)           # complete — write the id back
+        li   t3, 10
+        beq  a0, t3, fin         # a newline ends the program
+ret_irq:
+        mret
+fin:
+        li   a7, 10
+        ecall                    # exit
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
@@ -900,6 +955,7 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'demand', title: 'Demand paging', blurb: 'page-fault handler maps fresh frames lazily', focus: 'console', code: DEMAND },
   { id: 'stimer', title: 'Supervisor timer (Sstc)', blurb: 'stimecmp preempts S-mode (cause 5)', focus: 'console', code: STIMER },
   { id: 'swint', title: 'Software interrupt (IPI)', blurb: 'CLINT msip → machine software interrupt', focus: 'console', code: SOFT_IRQ },
+  { id: 'uart', title: 'UART echo (PLIC)', blurb: 'external interrupt: PLIC + memory-mapped UART', focus: 'console', code: UART_ECHO },
   { id: 'mandelbrot', title: 'Mandelbrot (fixed)', blurb: 'Q12 fixed-point fractal → framebuffer', focus: 'framebuffer', code: MANDELBROT },
   { id: 'mandelf', title: 'Mandelbrot (float)', blurb: 'RV32F fractal → framebuffer', focus: 'framebuffer', code: MANDEL_FLOAT },
   { id: 'rings', title: 'Colour rings', blurb: 'memory-mapped graphics', focus: 'framebuffer', code: RINGS },

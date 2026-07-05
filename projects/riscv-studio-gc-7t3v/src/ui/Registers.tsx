@@ -6,6 +6,7 @@ import { useState } from 'react';
 import type { Cpu } from '../vm/cpu';
 import { ABI_NAMES, REG_ROLES, FREG_ABI_NAMES, FREG_ROLES } from '../vm/registers';
 import { privName, privLong, SSTATUS_MASK } from '../vm/mmu';
+import { PLIC_NUM_SOURCES, UART_IRQ } from '../vm/constants';
 import { formatWord, hexWord } from '../vm/format';
 import type { Radix } from '../vm/format';
 import { f32FromBits, f64FromBits } from '../vm/fp';
@@ -207,6 +208,55 @@ export default function Registers({ cpu, prevRegs }: Props) {
           </span>
         </div>
       </div>
+      <div className="reg-subhead">
+        <span>external interrupts — PLIC + UART</span>
+        <span className="reg-fcsr" title="the PLIC gateway's pending sources">
+          {(() => {
+            const pending = cpu.dev.pending();
+            const srcs: string[] = [];
+            for (let id = 1; id <= PLIC_NUM_SOURCES; id++) if ((pending >>> id) & 1) srcs.push(`#${id}`);
+            return `pending: ${srcs.length ? srcs.join(' ') : '—'}`;
+          })()}
+        </span>
+      </div>
+      <div className="reg-grid mcsr-grid">
+        <div className="reg-cell" title="PLIC pending bitmap (gateway output)">
+          <span className="reg-name">plic.pending</span>
+          <span className="reg-val">{hexWord(cpu.dev.pending())}</span>
+        </div>
+        <div className="reg-cell" title="Sources currently in service (claimed, awaiting complete)">
+          <span className="reg-name">plic.claimed</span>
+          <span className="reg-val">{hexWord(cpu.dev.claimed)}</span>
+        </div>
+        <div className="reg-cell" title="Context 0 (M-mode) source-enable bitmap → drives mip.MEIP">
+          <span className="reg-name">M enable</span>
+          <span className="reg-val">{hexWord(cpu.dev.enable[0])}</span>
+        </div>
+        <div className="reg-cell" title="Context 1 (S-mode) source-enable bitmap → drives mip.SEIP">
+          <span className="reg-name">S enable</span>
+          <span className="reg-val">{hexWord(cpu.dev.enable[1])}</span>
+        </div>
+        <div className="reg-cell" title="Context 0 / 1 priority thresholds">
+          <span className="reg-name">threshold</span>
+          <span className="reg-val">M={cpu.dev.threshold[0]} · S={cpu.dev.threshold[1]}</span>
+        </div>
+        <div className="reg-cell" title={`UART source #${UART_IRQ} priority`}>
+          <span className="reg-name">uart.prio</span>
+          <span className="reg-val">{cpu.dev.priority[UART_IRQ]}</span>
+        </div>
+        <div className="reg-cell" title="UART interrupt-enable (bit 0 = receive-data-available)">
+          <span className="reg-name">uart.ier</span>
+          <span className="reg-val">{hexWord(cpu.dev.ier)}</span>
+        </div>
+        <div className="reg-cell" title="UART receive FIFO: bytes read / total in the stream">
+          <span className="reg-name">uart.rx</span>
+          <span className="reg-val">
+            {cpu.dev.rxPos}/{cpu.dev.rxTotal()}
+            {cpu.dev.rxRemaining() > 0 ? ' ●' : ''}
+          </span>
+        </div>
+      </div>
+
       {cpu.error && <div className="reg-error">⚠ {cpu.error}</div>}
     </div>
   );
