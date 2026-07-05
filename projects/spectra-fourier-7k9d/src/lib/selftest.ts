@@ -26,6 +26,13 @@ import type { FilterSpec } from './filterspec'
 import { reassignSpectrogram, makeTfrSignal, instantaneousFreq } from './reassign'
 import { makePhantom } from './phantom'
 import { forwardRadon, fbp, directFourier, affineError, correlation } from './radon'
+import {
+  geometryFromSino,
+  project,
+  backproject,
+  makeSolver,
+  reconstructIterative,
+} from './iterative'
 import { traceContour } from './contour'
 import {
   recover,
@@ -775,6 +782,128 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       if (r > hi) hi = r
     }
     check('contour of a disk is a closed near-circular loop', contour.length > 32 && hi - lo < 0.15)
+  }
+
+  // ---- Iterative CT reconstruction (the Tomography mode, algebraic solvers) ---
+
+  // I1. The back-projector is the EXACT transpose of the projector:
+  //     ⟨A x, y⟩ = ⟨x, Aᵀ y⟩. This is the one property the ART family needs to
+  //     converge, and the reason SIRT/SART/CGLS are well posed here.
+  {
+    const size = 40
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 30)
+    const g = geometryFromSino(sino, size)
+    const rng = mulberry32(17)
+    const x = new Float64Array(size * size)
+    for (let i = 0; i < x.length; i++) x[i] = rng() - 0.5
+    const y = new Float64Array(g.nAngles * g.nDet)
+    for (let i = 0; i < y.length; i++) y[i] = rng() - 0.5
+    const Ax = project(x, g)
+    const Aty = backproject(y, g)
+    let lhs = 0
+    for (let i = 0; i < Ax.length; i++) lhs += Ax[i] * y[i]
+    let rhs = 0
+    for (let i = 0; i < x.length; i++) rhs += x[i] * Aty[i]
+    const rel = Math.abs(lhs - rhs) / (Math.abs(lhs) + 1e-12)
+    check('iterative projector: Aᵀ is the exact adjoint of A (⟨Ax,y⟩=⟨x,Aᵀy⟩)', rel < 1e-9)
+  }
+
+  // I2. The matrix-free forward projector reproduces the library's forwardRadon
+  //     to machine precision — so a measured sinogram is a consistent b for Ax=b.
+  {
+    const size = 48
+    const ph = makePhantom('circles', size)
+    const sino = forwardRadon(ph, size, 24)
+    const g = geometryFromSino(sino, size)
+    const Ax = project(ph, g)
+    let maxErr = 0
+    for (let i = 0; i < Ax.length; i++) maxErr = Math.max(maxErr, Math.abs(Ax[i] - sino.data[i]))
+    check('iterative forward projector matches forwardRadon (max err < 1e-9)', maxErr < 1e-9)
+  }
+
+  // I3. CGLS drives the least-squares residual down monotonically and
+  //     reconstructs Shepp–Logan faithfully in a handful of iterations.
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 90)
+    const g = geometryFromSino(sino, size)
+    const { x, history } = reconstructIterative(
+      sino.data,
+      g,
+      { method: 'cgls', relax: 1, nonneg: false, lambda: 0 },
+      12,
+    )
+    let monotone = true
+    for (let i = 1; i < history.length; i++) if (history[i] > history[i - 1] + 1e-9) monotone = false
+    check('CGLS: residual monotone ↓ and reconstructs Shepp–Logan (corr > 0.9)', monotone && correlation(x, ph) > 0.9)
+  }
+
+  // I4. SIRT and SART both converge (residual falls) and recover the phantom;
+  //     the non-negativity projection keeps SIRT ≥ 0 everywhere.
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 90)
+    const g = geometryFromSino(sino, size)
+    const sirt = reconstructIterative(sino.data, g, { method: 'sirt', relax: 1, nonneg: true, lambda: 0 }, 30)
+    const sart = reconstructIterative(sino.data, g, { method: 'sart', relax: 1, nonneg: false, lambda: 0 }, 8)
+    const sirtFell = sirt.history[sirt.history.length - 1] < sirt.history[0]
+    const sartFell = sart.history[sart.history.length - 1] < sart.history[0]
+    let nonneg = true
+    for (let i = 0; i < sirt.x.length; i++) if (sirt.x[i] < -1e-9) nonneg = false
+    const recovers = correlation(sirt.x, ph) > 0.85 && correlation(sart.x, ph) > 0.85
+    check('SIRT & SART converge & recover; SIRT non-negativity holds', sirtFell && sartFell && nonneg && recovers)
+  }
+
+  // I5. SART reaches a given residual in FEWER sweeps than SIRT — the payoff of
+  //     block-iterative updates (fresh information used sooner per sweep).
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 60)
+    const g = geometryFromSino(sino, size)
+    const nSweeps = 6
+    const sirt = reconstructIterative(sino.data, g, { method: 'sirt', relax: 1, nonneg: false, lambda: 0 }, nSweeps)
+    const sart = reconstructIterative(sino.data, g, { method: 'sart', relax: 1, nonneg: false, lambda: 0 }, nSweeps)
+    check('SART converges faster per sweep than SIRT', sart.history[nSweeps - 1] < sirt.history[nSweeps - 1])
+  }
+
+  // I6. THE HEADLINE: under SPARSE views, iterative reconstruction beats FBP.
+  //     With only 20 angles the ramp filter streaks; CGLS fits all rays jointly
+  //     and correlates markedly better with the truth.
+  {
+    const size = 64
+    const ph = makePhantom('shepp', size)
+    const sino = forwardRadon(ph, size, 20)
+    const g = geometryFromSino(sino, size)
+    const fbpRec = fbp(sino, size, 'ramlak')
+    const { x } = reconstructIterative(
+      sino.data,
+      g,
+      { method: 'cgls', relax: 1, nonneg: false, lambda: 0 },
+      20,
+    )
+    const cCgls = correlation(x, ph)
+    const cFbp = correlation(fbpRec, ph)
+    check('sparse-view (20 angles): CGLS beats FBP correlation', cCgls > cFbp)
+  }
+
+  // I7. The incremental solver (stepped like the UI drives it) reaches the same
+  //     estimate as the batch helper — the animation and the math agree.
+  {
+    const size = 48
+    const ph = makePhantom('circles', size)
+    const sino = forwardRadon(ph, size, 45)
+    const g = geometryFromSino(sino, size)
+    const opts = { method: 'sirt' as const, relax: 1, nonneg: false, lambda: 0 }
+    const solver = makeSolver(sino.data, g, opts)
+    for (let k = 0; k < 15; k++) solver.step()
+    const batch = reconstructIterative(sino.data, g, opts, 15)
+    let maxErr = 0
+    for (let i = 0; i < solver.x.length; i++) maxErr = Math.max(maxErr, Math.abs(solver.x[i] - batch.x[i]))
+    check('stepped solver == batch solver (animation matches the math)', maxErr < 1e-9)
   }
 
   // ---- Compressed sensing (the Sensing mode) --------------------------------

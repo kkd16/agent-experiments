@@ -68,12 +68,18 @@ function sampleNorm(img: ArrayLike<number>, size: number, x: number, y: number):
  * Forward Radon transform: ray-driven line integrals producing the sinogram.
  * Detectors span t ∈ [−tMax, tMax] with tMax = √2 so the whole square is seen;
  * each ray is integrated over its chord by dense bilinear sampling.
+ *
+ * `arcRad` is the angular span the gantry sweeps (default π = a full parallel
+ * scan). A smaller arc is a *limited-angle* scan — a missing wedge of directions
+ * that leaves a bow-tie hole in k-space; FBP streaks there, iterative + priors
+ * cope. Angles are spread uniformly over [0, arcRad).
  */
 export function forwardRadon(
   img: ArrayLike<number>,
   size: number,
   nAngles: number,
   nDet = Math.round(size * SQRT2),
+  arcRad = Math.PI,
 ): Sinogram {
   const tMax = SQRT2
   const sMax = SQRT2
@@ -82,7 +88,7 @@ export function forwardRadon(
   const data = new Float64Array(nAngles * nDet)
   const angles = new Float64Array(nAngles)
   for (let a = 0; a < nAngles; a++) {
-    const theta = (a * Math.PI) / nAngles
+    const theta = (a * arcRad) / nAngles
     angles[a] = theta
     const cos = Math.cos(theta)
     const sin = Math.sin(theta)

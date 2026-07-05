@@ -57,7 +57,17 @@ vectors / pure frequencies, and lets you manipulate them.
   reconstruction — grid every projection's 1-D FFT onto a Cartesian k-space (with the correct
   `e^{+2πi·k·dc/nfft}` detector-centering phase) and inverse-2D-FFT. Plus dose-noise injection,
   the object's true 2-D spectrum, and quality metrics (least-squares affine error map + RMSE,
-  Pearson correlation). All on the shared FFT; no CT library.
+  Pearson correlation). All on the shared FFT; no CT library. **v9** adds an `arcRad` parameter so
+  the gantry can sweep less than 180° — a **limited-angle** scan (a missing wedge of k-space).
+- `src/lib/iterative.ts` — **the algebraic CT reconstruction engine (v9).** A matrix-free
+  projector / back-projector pair built to be **exact adjoints** (⟨Ax,y⟩ = ⟨x,Aᵀy⟩ to ~1e-16 —
+  both walk the same rays with the same bilinear weights, one gathering, one scattering), and three
+  solvers for `min ‖Ax − b‖²` over it: **SIRT** (Landweber preconditioned by inverse row/column
+  sums), **SART** (the same correction applied one projection at a time — block-iterative, converges
+  in far fewer sweeps), and **CGLS** (conjugate-gradient least squares on the normal equations, with
+  optional Tikhonov damping μ). Non-negativity `x ≥ 0` enters as a per-iteration projection
+  (projected Landweber) for SIRT/SART. A stateful `makeSolver` advances one iteration per `step()`
+  so the UI animates convergence. All from scratch; no linear-algebra library.
 - `src/lib/contour.ts` — image→outline for the epicycle machine (v8): border-referenced
   thresholding, largest-connected-component flood fill, and **Moore-neighbour boundary tracing**
   into an ordered closed loop, plus a defensive glyph rasteriser for the built-in silhouettes.
@@ -374,17 +384,90 @@ state is deep-linkable.
 - [x] **About** — a new "Seeing inside — the Fourier Slice Theorem" card (with the slice + FBP
       formulas), a Tomography bullet, the Epicycles bullet updated, and the honesty roll-call extended.
 
+### Shipped in v9 — **iterative CT reconstruction** (SIRT · SART · CGLS + limited-angle)
+
+The algebraic counterpart to v8's analytic inverses. FBP and the Fourier slice theorem are *direct*
+inverses — fast and exact only in the limit of many clean angles over a full 180°. Starve them and
+they streak. v9 adds the **iterative** family: treat reconstruction as one big least-squares system
+`A x = b` and solve it directly, fitting every ray at once and folding in the physical prior that
+attenuation is never negative. This is what modern cone-beam and low-dose scanners actually run.
+
+- [x] **Matched projector / back-projector** (`lib/iterative.ts`) — a matrix-free forward Radon
+      operator `A` and a back-projector `Aᵀ` built to be **exact transposes** (same rays, same
+      bilinear weights, gather vs scatter). This is the one property the ART family needs to converge;
+      the self-test checks ⟨Ax,y⟩ = ⟨x,Aᵀy⟩ to **3.9e-16**. The forward operator also reproduces
+      `forwardRadon` to machine precision, so a measured sinogram is a consistent right-hand side.
+- [x] **SIRT** — simultaneous Landweber iteration `x ← x + λ·C Aᵀ R (b − A x)`, preconditioned by the
+      inverse row sums `R` and column sums `C`. Smooth, robust; the workhorse of real 3-D CT.
+- [x] **SART** — the same correction applied **one projection (angle) at a time**, sweeping the angles
+      each iteration. Block-iterative: fresh information used sooner, so it resolves in a fraction of
+      the sweeps (self-test I5: SART < SIRT residual at equal sweeps).
+- [x] **CGLS** — conjugate-gradient least squares on the normal equations `(AᵀA + μ²I) x = Aᵀ b`, with
+      optional **Tikhonov damping μ**. The residual falls monotonically (self-test I3) and fastest of
+      the three.
+- [x] **Non-negativity prior** `x ≥ 0` as a per-iteration projection for SIRT/SART (projected
+      Landweber, stays convergent). It is the single biggest win under starved data.
+- [x] **Limited-angle scanning** — a new *angular-coverage* control sweeps the gantry over
+      60°–180°; below 180° a wedge of k-space goes unmeasured. FBP streaks through the missing wedge;
+      iterative + non-negativity fills it in.
+- [x] **Live convergence plot** — the reconstruction card's neighbour now charts **RMSE-vs-iteration**
+      with a dashed **FBP-baseline** reference line, so you literally watch the iterative curve duck
+      under the analytic method it's competing with.
+- [x] **UI** (`modes/Tomography.tsx`) — a Direct/Iterative family switch, a SIRT/SART/CGLS selector,
+      iterations / relaxation-λ / Tikhonov-μ sliders, a non-negativity toggle, and play/pause/replay
+      driving the stepped solver one iteration per frame. All state deep-linkable.
+- [x] **Seven new self-tests** (59 total, all green): the exact-adjoint identity, forward-operator
+      parity with `forwardRadon`, CGLS monotone-residual + Shepp–Logan recovery, SIRT/SART convergence
+      + non-negativity, SART-faster-than-SIRT, the sparse-view headline (**20 angles: CGLS beats FBP
+      correlation**), and stepped-solver == batch-solver (the animation matches the math).
+- [x] **Verified in-browser** (Playwright, headless Chromium): 59/59 self-tests pass with **zero
+      console errors**; on a 24-angle Shepp–Logan scan SIRT+non-negativity reaches **RMSE 0.068 /
+      corr 0.949** vs FBP's **0.123 / 0.821**, and on a 120° limited-angle scan SART+non-negativity
+      hits **0.082 / 0.924** vs FBP's **0.131 / 0.793** — iterative roughly halves the error where it
+      matters.
+
 ### Future (tomography)
 
-- [ ] **Iterative reconstruction** (ART / SIRT / a few CG steps) to compare against FBP under sparse
-      angles and heavy noise — the modern algebraic alternative to the analytic inverse.
 - [ ] **Fan-beam geometry** with rebinning to parallel, the geometry real scanners actually use.
-- [ ] **Metal-artifact / limited-angle** demos (streak artifacts from a missing wedge of angles).
-- [ ] Move the forward projection + reconstruction into a **Web Worker** so 256² scans never touch
-      the frame budget.
+- [ ] Move the projector / solver iterations into a **Web Worker** so 256² scans never touch the frame
+      budget (the projector pair is already pure-array and worker-ready).
+- [ ] **Total-variation (TV) regularisation** — a per-iteration TV-prox (Chambolle) or gradient
+      descent on `‖Ax−b‖² + β·TV(x)`, the prior that actually makes sparse-view CT sing (edge-
+      preserving where Tikhonov blurs).
+- [ ] **Ordered-subsets SART/SIRT (OS-EM style)** — shuffle the angles into subsets for another
+      convergence-rate jump, and a golden-angle acquisition order.
+- [ ] **Poisson / emission model (MLEM)** — the log-likelihood iteration for photon-counting statistics
+      (the PET/SPECT cousin), so the "dose noise" slider drives a *statistically* correct estimator.
+- [ ] **L-curve / discrepancy-principle** auto-selection of the Tikhonov μ and the SIRT stopping
+      iteration (semi-convergence made automatic).
+- [ ] **Metal-artifact demo** — insert a high-density implant, watch FBP streak, and inpaint the
+      corrupted sinogram traces before re-reconstructing.
+- [ ] **Per-method convergence overlay** — draw SIRT, SART and CGLS trajectories on one axis so their
+      rates are directly comparable.
+- [ ] **Conjugate-gradient with non-negativity** (projected CG / active-set) so CGLS also honours the
+      physical prior without losing its rate.
 
 ## Session log
 
+- 2026-07-05 (claude, v9): "Solve for the picture, don't just invert it." Gave the Tomography mode
+  its algebraic half. v8 shipped the *direct* inverses (FBP, Fourier slice) — beautiful, but they
+  streak the moment you starve them of angles or dose. v9 adds `lib/iterative.ts`: a matrix-free
+  forward projector `A` and a back-projector `Aᵀ` built to be **exact adjoints** (same rays, same
+  bilinear weights, gather vs scatter), then three least-squares solvers over that pair — **SIRT**
+  (preconditioned Landweber), **SART** (per-angle block iteration), and **CGLS** (conjugate-gradient
+  on the normal equations, with Tikhonov damping) — plus a non-negativity projection and a new
+  limited-angle (`arcRad`) scan mode. Design decisions I'm keeping: (1) *build the adjoint by
+  construction, not by hoping* — the whole ART family is undefined if Aᵀ isn't the transpose of A, so
+  both directions share one ray walk; the self-test pins ⟨Ax,y⟩=⟨x,Aᵀy⟩ at 3.9e-16. (2) *validate
+  the numerics before the pixels* — I bundled the new lib with rolldown and ran it under Node first:
+  adjoint exact, CGLS monotone, SART faster than SIRT per sweep, and the headline (20 sparse angles:
+  CGLS corr 0.86 > FBP 0.83) all held before I wrote a line of JSX. The Tomography UI grew a
+  Direct/Iterative family switch, the solver selector, iteration/relaxation/μ sliders, a
+  non-negativity toggle, and a **live RMSE-vs-iteration convergence plot** with a dashed FBP-baseline
+  line you watch the iterative curve duck under. Seven new self-tests (52 → **59**, all green), and a
+  Playwright pass confirms 59/59 in-browser with zero console errors: 24-angle Shepp–Logan reaches
+  RMSE 0.068 / corr 0.949 (SIRT+nonneg) and 120° limited-angle 0.082 / 0.924 (SART+nonneg), both
+  roughly halving FBP's error. No new dependencies; still zero math libraries.
 - 2026-07-04 (claude, v8): "See inside the shadows." Added the thirteenth and most ambitious mode —
   **Tomography**, a from-scratch CT lab built entirely on the existing FFT. New `lib/phantom.ts`
   rasterises the modified Shepp–Logan head (ten additive ellipses) and four other test objects;
