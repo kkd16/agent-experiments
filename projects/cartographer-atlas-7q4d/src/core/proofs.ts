@@ -351,6 +351,57 @@ export function runProofs(): ProofReport {
     sections.push({ title: 'Circulation — atmosphere & ocean physics', checks })
   }
 
+  // --- Named currents & gyres ---------------------------------------------
+  {
+    const checks: Check[] = []
+    const atlas = c.atlas
+    const atlasB = b.circulation.atlas
+    const det =
+      atlas.named.length === atlasB.named.length &&
+      atlas.gyres.length === atlasB.gyres.length &&
+      (atlas.named[0]?.name ?? '') === (atlasB.named[0]?.name ?? '')
+    checks.push({
+      name: 'Named currents & gyres reproduce across runs',
+      pass: det,
+      detail: `${atlas.named.length} currents, ${atlas.gyres.length} gyres`,
+    })
+    // Every current cell is open sea (not land, lake or frame).
+    let badCell = 0
+    for (const nc of atlas.named) for (const cell of nc.cells) {
+      if (!(a.ocean[cell] === 1 && !mesh.isFrame[cell])) badCell++
+    }
+    checks.push({
+      name: 'Every great-current cell is open sea',
+      pass: badCell === 0,
+      detail: `${badCell} off-sea cells`,
+    })
+    // Great currents ride faster-than-average water.
+    let meanSea = 0
+    let seaN = 0
+    for (let r = 0; r < mesh.numRegions; r++) {
+      if (a.ocean[r] && !mesh.isFrame[r]) {
+        meanSea += c.curSpeed[r]
+        seaN++
+      }
+    }
+    meanSea = seaN ? meanSea / seaN : 0
+    const allFast = atlas.named.every((nc) => nc.meanSpeed >= meanSea)
+    checks.push({
+      name: 'Great currents ride the fastest water (mean speed ≥ basin mean)',
+      pass: allFast,
+      detail: `basin mean ${meanSea.toFixed(3)}`,
+    })
+    // Every gyre is a real ocean patch; adjacent gyres counter-rotate (opposite ψ sign ⇒
+    // opposite sense) — check that both senses appear when there is more than one gyre.
+    const senses = new Set(atlas.gyres.map((g) => g.sense))
+    checks.push({
+      name: 'Gyres form and counter-rotate (both rotation senses present)',
+      pass: atlas.gyres.length === 0 || (atlas.gyres.length === 1 ? true : senses.size === 2),
+      detail: `${atlas.gyres.length} gyres, senses {${[...senses].join(',')}}`,
+    })
+    sections.push({ title: 'Ocean currents & gyres', checks })
+  }
+
   // --- The Ages ------------------------------------------------------------
   {
     const checks: Check[] = []

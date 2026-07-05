@@ -27,6 +27,8 @@
 
 import type { Mesh, WorldParams } from './types'
 import { MeshDiff } from './meshfield'
+import { buildCurrentAtlas } from './currents'
+import type { CurrentAtlas } from './currents'
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v)
 const bump = (x: number, c: number, w: number): number => {
@@ -76,6 +78,8 @@ export interface Circulation {
   sst: Float32Array
   /** Maritime temperature each coastal land cell feels, °C (NaN where no adjacent sea). */
   seaTempC: Float32Array
+  /** Named great currents, sign-split gyres, and the per-region current label. */
+  atlas: CurrentAtlas
   meta: CirculationMeta
 }
 
@@ -396,6 +400,9 @@ export function computeCirculation(
     if (cnt) seaTempC[r] = sum / cnt
   }
 
+  // Read named currents & gyres out of the finished flow field.
+  const atlas = buildCurrentAtlas(mesh, params, ocean, curU, curV, curSpeed, psiOut)
+
   const meta: CirculationMeta = {
     residual,
     wbiRatio,
@@ -405,5 +412,5 @@ export function computeCirculation(
     oceanCells: interior.length,
   }
 
-  return { windU, windV, windSpeed, pressure, curU, curV, curSpeed, psi: psiOut, sst, seaTempC, meta }
+  return { windU, windV, windSpeed, pressure, curU, curV, curSpeed, psi: psiOut, sst, seaTempC, atlas, meta }
 }

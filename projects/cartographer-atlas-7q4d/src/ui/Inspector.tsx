@@ -80,6 +80,8 @@ export default function Inspector({ world, region, onClose, frame }: Props): Rea
       ? `${strength(curSpeed)} ${vecBearing(circ.curU[region], circ.curV[region])}`
       : null
   const oceanSst = isOcean && !Number.isNaN(circ.sst[region]) ? circ.sst[region] : null
+  const currentIdx = circ.atlas.currentName[region]
+  const namedCurrent = currentIdx >= 0 ? circ.atlas.named[currentIdx] : null
   const coastSea = !isOcean && !isLake && !Number.isNaN(circ.seaTempC[region]) ? circ.seaTempC[region] : null
 
   // When the timeline is open, report who ruled this cell in the scrubbed year.
@@ -115,6 +117,7 @@ export default function Inspector({ world, region, onClose, frame }: Props): Rea
         <div className="insp-sep" />
         {row('Wind', wind)}
         {current && row('Current', current)}
+        {namedCurrent && row('Named', `${namedCurrent.name} (${namedCurrent.lengthLeagues.toLocaleString()} lg)`)}
         {oceanSst != null && row('Sea temp', `${Math.round(oceanSst)}°C`)}
         {coastSea != null && row('Offshore sea', `${Math.round(coastSea)}°C`)}
         {city && <div className="insp-sep" />}

@@ -112,6 +112,26 @@ export function worldToSvg(world: WorldMap, view: ViewOptions): string {
     out.push('</g>')
   }
 
+  // --- Great ocean currents (over the Currents / Sea-temp overlays) ---
+  if (view.overlay === 'current' || view.overlay === 'sst') {
+    const named = world.circulation.atlas.named
+    const ink = pal.riverLabel ?? pal.water
+    for (const nc of named) {
+      if (nc.cells.length < 2) continue
+      let d = `M${f1(mesh.px[nc.cells[0]])},${f1(mesh.py[nc.cells[0]])}`
+      for (let i = 1; i < nc.cells.length; i++) d += `L${f1(mesh.px[nc.cells[i]])},${f1(mesh.py[nc.cells[i]])}`
+      const w = 1.4 + nc.meanSpeed * 4
+      out.push(`<path d="${d}" fill="none" stroke="rgba(6,18,30,0.5)" stroke-width="${f1(w + 1.8)}" stroke-linecap="round" stroke-linejoin="round"/>`)
+      out.push(`<path d="${d}" fill="none" stroke="${ink}" stroke-width="${f1(w)}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.85"/>`)
+    }
+    for (const nc of named.slice(0, 4)) {
+      const mid = nc.cells[Math.floor(nc.cells.length / 2)]
+      out.push(
+        `<text x="${f1(mesh.px[mid])}" y="${f1(mesh.py[mid] - 6)}" text-anchor="middle" dominant-baseline="middle" font-family="Georgia, serif" font-style="italic" font-weight="600" font-size="10.5" fill="${ink}" stroke="${pal.labelStroke}" stroke-width="2.4" paint-order="stroke">${esc(nc.name)}</text>`,
+      )
+    }
+  }
+
   // --- Roads (weighted by trade volume) ---
   if (view.showRoads && world.roads.length) {
     for (const rd of world.roads) {
