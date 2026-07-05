@@ -241,6 +241,90 @@ code {
   }
 }
 
+/* Resolve mode: the resolution scoreboard + verdict badge */
+.resolve-board {
+  margin-top: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: rgba(6, 9, 20, 0.4);
+  font-size: 12.5px;
+}
+.resolve-board-head,
+.resolve-board-row {
+  display: grid;
+  grid-template-columns: 1.3fr 2.4fr 0.9fr 0.7fr;
+  gap: 10px;
+  padding: 9px 14px;
+  align-items: center;
+}
+.resolve-board-head {
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(120, 140, 220, 0.06);
+}
+.resolve-board-row {
+  border-bottom: 1px solid rgba(120, 140, 220, 0.07);
+}
+.resolve-board-row:last-of-type {
+  border-bottom: none;
+}
+.resolve-board .rb-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+.resolve-board .rb-est,
+.resolve-board .rb-err {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-dim);
+}
+.resolve-board .rb-ok {
+  color: var(--accent);
+  font-weight: 700;
+}
+.resolve-board .rb-no {
+  color: var(--warn);
+  font-weight: 700;
+}
+.resolve-truth {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--ink-faint);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  border-top: 1px solid var(--panel-border);
+  background: rgba(120, 140, 220, 0.04);
+}
+.resolve-badge {
+  margin-top: 10px;
+  text-align: center;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+.resolve-badge.ok {
+  color: #052e25;
+  background: linear-gradient(180deg, #5eead4, #34d3b6);
+}
+.resolve-badge.no {
+  color: var(--warn);
+  background: rgba(251, 113, 133, 0.12);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+}
+
+@media (max-width: 720px) {
+  .resolve-board-head,
+  .resolve-board-row {
+    grid-template-columns: 1.2fr 1.8fr 0.9fr 0.5fr;
+    font-size: 11px;
+  }
+}
+
 .split-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

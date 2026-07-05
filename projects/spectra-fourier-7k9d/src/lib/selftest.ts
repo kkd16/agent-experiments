@@ -48,6 +48,23 @@ import {
   type BasisKind,
   type RecoverConfig,
 } from './cs'
+import { cmul as spCmul, cconj as spCconj } from './cplx'
+import {
+  generateSignal as spGenerate,
+  sampleCovariance as spCovariance,
+  hermitianEig as spHermitianEig,
+  rootMusic as spRootMusic,
+  esprit as spEsprit,
+  music as spMusic,
+  welch as spWelch,
+  burg as spBurg,
+  arSpectrum as spArSpectrum,
+  periodogram as spPeriodogram,
+  aicMdl as spAicMdl,
+  analyze as spAnalyze,
+  mulberry32 as spMulberry,
+  type SignalConfig as SpSignalConfig,
+} from './spectral'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1016,6 +1033,229 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const easy = pt.field[0 * cols + (cols - 1)] // smallest k, largest m
     const hard = pt.field[(rows - 1) * cols + 0] // largest k, smallest m
     check('phase transition: easy corner recovers, hard corner does not', easy > 0.9 && hard < 0.5)
+  }
+
+  // ---- Resolve mode: super-resolution spectral estimation (v10) ----
+
+  const angErr = (a: number, b: number) =>
+    Math.abs((((a - b + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) - Math.PI)
+  const nearestErr = (est: number[], truth: number[]) =>
+    Math.max(...truth.map((t) => Math.min(...est.map((e) => angErr(e, t)))))
+  const peaksOf = (grid: Float64Array, spec: Float64Array, count: number): number[] => {
+    const ps: { w: number; v: number }[] = []
+    for (let i = 1; i < spec.length - 1; i++)
+      if (spec[i] > spec[i - 1] && spec[i] >= spec[i + 1]) ps.push({ w: grid[i], v: spec[i] })
+    ps.sort((a, b) => b.v - a.v)
+    return ps.slice(0, count).map((p) => p.w)
+  }
+
+  // 41. The Hermitian eigensolver reconstructs R and yields an orthonormal basis.
+  {
+    const M = 6
+    const rng = spMulberry(7)
+    const g = () => {
+      const u = Math.max(rng(), 1e-12)
+      const v = rng()
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+    }
+    const Hre = new Float64Array(M * M)
+    const Him = new Float64Array(M * M)
+    for (let i = 0; i < M; i++)
+      for (let j = i; j < M; j++) {
+        const a = g()
+        const b = i === j ? 0 : g()
+        Hre[i * M + j] = a
+        Hre[j * M + i] = a
+        Him[i * M + j] = b
+        Him[j * M + i] = -b
+      }
+    const eig = spHermitianEig(Hre, Him, M)
+    let maxErr = 0
+    for (let i = 0; i < M; i++)
+      for (let j = 0; j < M; j++) {
+        let re = 0
+        let im = 0
+        for (let e = 0; e < M; e++) {
+          const q = eig[e].vec
+          const v = spCmul(q[i], spCconj(q[j]))
+          re += eig[e].value * v.re
+          im += eig[e].value * v.im
+        }
+        maxErr = Math.max(maxErr, Math.abs(re - Hre[i * M + j]), Math.abs(im - Him[i * M + j]))
+      }
+    let orth = 0
+    for (let a = 0; a < M; a++)
+      for (let b = 0; b < M; b++) {
+        let re = 0
+        let im = 0
+        for (let k = 0; k < M; k++) {
+          const v = spCmul(spCconj(eig[a].vec[k]), eig[b].vec[k])
+          re += v.re
+          im += v.im
+        }
+        orth = Math.max(orth, Math.abs(re - (a === b ? 1 : 0)), Math.abs(im))
+      }
+    check('Hermitian eig reconstructs R & is orthonormal', maxErr < 1e-8 && orth < 1e-8)
+  }
+
+  // A pair of complex tones separated by 0.35 of a DFT bin — deep sub-Rayleigh.
+  const N1 = 64
+  const M1 = 24
+  const fs1 = N1
+  const w1 = 0.6
+  const w2 = 0.6 + 0.35 * ((2 * Math.PI) / N1)
+  const t1 = (w1 / (2 * Math.PI)) * fs1
+  const t2 = (w2 / (2 * Math.PI)) * fs1
+  const cfg1: SpSignalConfig = {
+    N: N1,
+    fs: fs1,
+    tones: [
+      { freq: t1, amp: 1 },
+      { freq: t2, amp: 1 },
+    ],
+    snrDb: 30,
+    complex: true,
+    seed: 12345,
+  }
+  const sig1 = spGenerate(cfg1)
+  const cov1 = spCovariance(sig1.data, M1, true)
+  const eig1 = spHermitianEig(cov1.Hre, cov1.Him, M1)
+  const truth1 = [w1, w2]
+
+  // 42. Root-MUSIC resolves the sub-Rayleigh pair to < 1% of a bin.
+  {
+    const est = spRootMusic(eig1, 2, M1).omegas.sort((a, b) => a - b)
+    check('Root-MUSIC resolves two sub-Rayleigh tones', nearestErr(est, truth1) < 0.01)
+  }
+  // 43. ESPRIT resolves the same pair, by a completely different route.
+  {
+    const est = spEsprit(eig1, 2, M1).omegas.sort((a, b) => a - b)
+    check('ESPRIT resolves two sub-Rayleigh tones', nearestErr(est, truth1) < 0.01)
+  }
+  // 44. The MUSIC pseudospectrum shows two distinct peaks at the tones.
+  {
+    const gridA = new Float64Array(4000)
+    for (let i = 0; i < 4000; i++) gridA[i] = -Math.PI + (2 * Math.PI * i) / 4000
+    const ps = spMusic(eig1, 2, M1, gridA)
+    check('MUSIC pseudospectrum splits the pair into two peaks', nearestErr(peaksOf(gridA, ps, 2), truth1) < 0.02)
+  }
+  // 45. The FFT periodogram provably CANNOT split them — a single blurred lobe.
+  {
+    const gridA = new Float64Array(4000)
+    for (let i = 0; i < 4000; i++) gridA[i] = -Math.PI + (2 * Math.PI * i) / 4000
+    const per = spPeriodogram(sig1.data, gridA)
+    check('periodogram fails to resolve (the Rayleigh wall)', nearestErr(peaksOf(gridA, per, 2), truth1) > 0.02)
+  }
+  // 46. Burg (max-entropy AR) resolves a moderately-separated pair (0.8 bin).
+  {
+    const wa = 0.6
+    const wb = 0.6 + 0.8 * ((2 * Math.PI) / N1)
+    const cfg: SpSignalConfig = {
+      N: N1,
+      fs: fs1,
+      tones: [
+        { freq: (wa / (2 * Math.PI)) * fs1, amp: 1 },
+        { freq: (wb / (2 * Math.PI)) * fs1, amp: 1 },
+      ],
+      snrDb: 30,
+      complex: true,
+      seed: 77,
+    }
+    const s = spGenerate(cfg)
+    const gridA = new Float64Array(4000)
+    for (let i = 0; i < 4000; i++) gridA[i] = -Math.PI + (2 * Math.PI * i) / 4000
+    const ar = spArSpectrum(spBurg(s.data, 14), gridA)
+    check('Burg MEM resolves a moderately-separated pair', nearestErr(peaksOf(gridA, ar, 2), [wa, wb]) < 0.02)
+  }
+  // 47. MDL correctly counts three well-separated complex sources.
+  {
+    const cfg: SpSignalConfig = {
+      N: 128,
+      fs: 1,
+      tones: [
+        { freq: -0.25, amp: 1 },
+        { freq: 0.05, amp: 0.8 },
+        { freq: 0.3, amp: 1.2 },
+      ],
+      snrDb: 25,
+      complex: true,
+      seed: 999,
+    }
+    const s = spGenerate(cfg)
+    const cov = spCovariance(s.data, 40, true)
+    const eig = spHermitianEig(cov.Hre, cov.Him, 40)
+    const om = spAicMdl(
+      eig.map((e) => e.value),
+      cov.L,
+      40,
+    )
+    check('MDL counts three complex sources', om.kMDL === 3)
+  }
+  // 48. analyze() end-to-end recovers three real tones (120/128/300 Hz) via
+  //     root-MUSIC, and MDL counts the six underlying complex exponentials.
+  {
+    const cfg: SpSignalConfig = {
+      N: 160,
+      fs: 1000,
+      tones: [
+        { freq: 120, amp: 1 },
+        { freq: 128, amp: 0.9 },
+        { freq: 300, amp: 1 },
+      ],
+      snrDb: 25,
+      complex: false,
+      seed: 4242,
+    }
+    const s = spGenerate(cfg)
+    const res = spAnalyze(s, cfg, {
+      M: 40,
+      p: 6,
+      autoOrder: false,
+      forwardBackward: true,
+      burgOrder: 20,
+      gridSize: 2000,
+      methods: ['periodogram', 'music'],
+    })
+    const got = res.rootMusic.freqsHz
+    const near = (f: number) => Math.min(...got.map((x) => Math.abs(x - f)))
+    const om = spAicMdl(res.eigenvalues, res.L, 40)
+    check(
+      'analyze() recovers 120/128/300 Hz and MDL counts 6',
+      near(120) < 2 && near(128) < 2 && near(300) < 2 && om.kMDL === 6,
+    )
+  }
+  // 49. The FFT baselines resolve WELL-separated tones (guards the fftshift/resample
+  //     path that feeds the periodogram + Welch overlays onto the shared ω axis).
+  {
+    const cfg: SpSignalConfig = {
+      N: 128,
+      fs: 128,
+      tones: [
+        { freq: 20, amp: 1 },
+        { freq: 45, amp: 0.8 },
+      ],
+      snrDb: 40,
+      complex: true,
+      seed: 3,
+    }
+    const s = spGenerate(cfg)
+    const G = 2000
+    const gridA = new Float64Array(G)
+    for (let i = 0; i < G; i++) gridA[i] = -Math.PI + (2 * Math.PI * i) / G
+    const gridHz = Array.from(gridA, (w) => (w / (2 * Math.PI)) * 128)
+    const peakHz = (curve: Float64Array): number[] => {
+      const p: { f: number; v: number }[] = []
+      for (let i = 1; i < curve.length - 1; i++)
+        if (curve[i] > curve[i - 1] && curve[i] >= curve[i + 1]) p.push({ f: gridHz[i], v: curve[i] })
+      p.sort((a, b) => b.v - a.v)
+      return p.slice(0, 2).map((x) => x.f).sort((a, b) => a - b)
+    }
+    const pp = peakHz(spPeriodogram(s.data, gridA))
+    const wp = peakHz(spWelch(s.data, gridA, 64, 0.5))
+    check(
+      'periodogram & Welch locate two separated tones (20/45 Hz)',
+      Math.abs(pp[0] - 20) < 1 && Math.abs(pp[1] - 45) < 1 && Math.abs(wp[0] - 20) < 1.5 && Math.abs(wp[1] - 45) < 1.5,
+    )
   }
 
   return { passed, failed, messages }
