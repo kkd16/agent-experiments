@@ -280,6 +280,10 @@ export function runSelfTests(): SelfTestReport {
     record('UniGen fast path is exactly uniform (chain)', ok,
       `χ²=${rep.chiSquare.toFixed(1)}/${rep.chiDof}, TV=${rep.tvDistance.toFixed(3)}, cover ${rep.distinct}/${rep.support}, out-of-support ${rep.outOfSupport}`)
 
+    // The χ² goodness-of-fit test *accepts* the uniform null for UniGen (large p).
+    record('χ² test accepts UniGen as uniform (chain)', rep.looksUniform === true && rep.pValue > 0.05,
+      `p=${rep.pValue.toFixed(3)} ≥ 0.01 ⇒ consistent with uniform`)
+
     // Sampled marginals must track the exact per-variable marginals.
     const mg = marginalComparison(CHAIN, ug.samplingVars, ug.samples)
     record('UniGen marginals match exact (chain)', mg.maxError < 0.06,
@@ -292,6 +296,10 @@ export function runSelfTests(): SelfTestReport {
     record('Naive sampler is sound but skewed vs UniGen (chain)',
       nrep.outOfSupport === 0 && nrep.chiSquare > 4 * rep.chiSquare && nrep.tvDistance > 2 * rep.tvDistance,
       `naive χ²=${nrep.chiSquare.toFixed(0)} vs UniGen ${rep.chiSquare.toFixed(0)}; naive TV=${nrep.tvDistance.toFixed(3)} vs ${rep.tvDistance.toFixed(3)}`)
+
+    // …and the χ² test *rejects* the naive sampler decisively (vanishing p-value).
+    record('χ² test rejects the naive sampler (chain)', nrep.looksUniform === false && nrep.pValue < 1e-6,
+      `p=${nrep.pValue.toExponential(1)} ≪ 0.01 ⇒ significantly non-uniform`)
   }
 
   {
