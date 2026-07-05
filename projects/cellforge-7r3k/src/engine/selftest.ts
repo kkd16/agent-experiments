@@ -396,6 +396,51 @@ export function runSelfTests(): TestResult[] {
   r.push(nameCycleTest())
   r.push(renameSheetTest())
 
+  // --- finance (v9): time value of money, cash flow, depreciation ---
+  // Anchored to Excel/Sheets documented values and to closed-form invariants.
+  // Each asserts the engine lands within tolerance of the known answer.
+  const near = (name: string, expr: string, ref: number, tol: number, seed?: Record<string, string>) =>
+    eq('finance', name, ev(`ABS((${expr})-(${ref}))<${tol}`, seed), 'TRUE')
+  // Time value of money
+  near('PMT amortizes a $10k loan', 'PMT(0.08/12,120,10000)', -121.3276, 1e-3)
+  near('FV of an annuity due (Excel 2581.40)', 'FV(0.005,10,-200,-500,1)', 2581.4034, 1e-3)
+  near('PV of a 20-yr annuity', 'PV(0.08,20,500)', -4909.0737, 1e-3)
+  near('NPER to reach a goal', 'NPER(0.01,-100,-1000,10000,1)', 59.6739, 1e-3)
+  near('RATE recovers the periodic rate', 'RATE(48,-200,8000)', 0.0077015, 1e-5)
+  near('IPMT first-month interest = P·r', 'IPMT(0.1/12,1,36,8000)', -66.6667, 1e-3)
+  eq('finance', 'IPMT+PPMT = PMT (identity)', ev('ROUND(IPMT(0.1,2,3,8000)+PPMT(0.1,2,3,8000)-PMT(0.1,3,8000),8)'), '0')
+  eq('finance', 'ΣPPMT repays the whole principal', ev('ROUND(CUMPRINC(0.1,3,8000,1,3,0)+8000,6)'), '0')
+  near('CUMIPMT over year 2 of a mortgage', 'CUMIPMT(0.09/12,360,125000,13,24,0)', -11135.2321, 0.02)
+  // Discounted cash flow
+  near('NPV discounts each flow one period', 'NPV(0.1,-10000,3000,4200,6800)', 1188.4434, 1e-3)
+  near('IRR zeroes the NPV', 'IRR(A1:A6)', 0.086631, 1e-4, {
+    A1: '-70000', A2: '12000', A3: '15000', A4: '18000', A5: '21000', A6: '26000',
+  })
+  eq('finance', 'NPV at the IRR is ≈ 0', ev('ABS(NPV(IRR(A1:A6),A2:A6)+A1)<0.01', {
+    A1: '-70000', A2: '12000', A3: '15000', A4: '18000', A5: '21000', A6: '26000',
+  }), 'TRUE')
+  near('MIRR with split finance/reinvest', 'MIRR(A1:A6,0.1,0.12)', 0.126094, 1e-4, {
+    A1: '-120000', A2: '39000', A3: '30000', A4: '21000', A5: '37000', A6: '46000',
+  })
+  const dateSeed = {
+    A1: '-10000', A2: '2750', A3: '4250', A4: '3250', A5: '2750',
+    B1: '39448', B2: '39508', B3: '39751', B4: '39859', B5: '39904',
+  }
+  near('XIRR on irregular dates (Excel 0.3734)', 'XIRR(A1:A5,B1:B5)', 0.373363, 1e-4, dateSeed)
+  eq('finance', 'XNPV at the XIRR is ≈ 0', ev('ABS(XNPV(XIRR(A1:A5,B1:B5),A1:A5,B1:B5))<0.01', dateSeed), 'TRUE')
+  near('EFFECT vs NOMINAL round-trip', 'NOMINAL(EFFECT(0.0525,4),4)', 0.0525, 1e-6)
+  near('FVSCHEDULE compounds a rate path', 'FVSCHEDULE(1,B1:B3)', 1.33089, 1e-5, { B1: '0.09', B2: '0.11', B3: '0.1' })
+  near('PDURATION to grow 2000→2200', 'PDURATION(0.025,2000,2200)', 3.859866, 1e-5)
+  near('DOLLARDE reads 1.02 in 16ths', 'DOLLARDE(1.02,16)', 1.125, 1e-9)
+  // Depreciation
+  near('SLN straight line', 'SLN(30000,7500,10)', 2250, 1e-9)
+  near('SYD sum-of-years year 1', 'SYD(30000,7500,10,1)', 4090.909091, 1e-4)
+  near('DB fixed-declining first (partial) year', 'DB(1000000,100000,6,1,7)', 186083.3333, 1e-2)
+  near('DDB double-declining year 1', 'DDB(2400,300,10,1)', 480, 1e-9)
+  near('DDB double-declining year 2', 'DDB(2400,300,10,2)', 384, 1e-9)
+  near('VDB first period = DDB', 'VDB(2400,300,10,0,1)', 480, 1e-9)
+  near('VDB over full life reaches salvage', 'VDB(2400,300,10,0,10)', 2100, 1e-6)
+
   // --- the Solver (v5: constrained multi-cell optimization) ---
   r.push(solverTests())
   // --- structured table references (v5) ---

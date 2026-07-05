@@ -39,6 +39,7 @@ import {
   eigenvaluesGeneral,
   type Mat,
 } from './linalg'
+import * as fin from './finance'
 import {
   gamma as gammaFn,
   lgamma,
@@ -1290,6 +1291,116 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     }
     return matrix(out)
   },
+
+  // ---- Finance (v9): time value of money, cash-flow analysis, depreciation ----
+  // A whole spreadsheet domain that was missing. Every function delegates to the
+  // pure `finance.ts` core; a `null` domain result becomes `#NUM!`, and the two
+  // fractional-dollar functions raise `#DIV/0!` on a zero denominator like Excel.
+  //
+  // Time value of money — PV/FV/PMT/NPER/RATE and the payment split IPMT/PPMT.
+  PV: (args, h) => finArgs(args, h, [1, 1, 1, 0, 0], (a) => fin.pv(a[0], a[1], a[2], a[3], a[4])),
+  FV: (args, h) => finArgs(args, h, [1, 1, 1, 0, 0], (a) => fin.fv(a[0], a[1], a[2], a[3], a[4])),
+  PMT: (args, h) => finArgs(args, h, [1, 1, 1, 0, 0], (a) => fin.pmt(a[0], a[1], a[2], a[3], a[4])),
+  NPER: (args, h) => finArgs(args, h, [1, 1, 1, 0, 0], (a) => fin.nper(a[0], a[1], a[2], a[3], a[4])),
+  RATE: (args, h) => finArgs(args, h, [1, 1, 1, 0, 0, 0.1], (a) => fin.rate(a[0], a[1], a[2], a[3], a[4], a[5])),
+  IPMT: (args, h) => finArgs(args, h, [1, 1, 1, 1, 0, 0], (a) => fin.ipmt(a[0], a[1], a[2], a[3], a[4], a[5])),
+  PPMT: (args, h) => finArgs(args, h, [1, 1, 1, 1, 0, 0], (a) => fin.ppmt(a[0], a[1], a[2], a[3], a[4], a[5])),
+  CUMIPMT: (args, h) => finArgs(args, h, [1, 1, 1, 1, 1, 0], (a) => fin.cumipmt(a[0], a[1], a[2], a[3], a[4], a[5])),
+  CUMPRINC: (args, h) => finArgs(args, h, [1, 1, 1, 1, 1, 0], (a) => fin.cumprinc(a[0], a[1], a[2], a[3], a[4], a[5])),
+
+  // Discounted cash flow — NPV takes a rate then a variadic flow list; the rest take ranges.
+  NPV: (args, h) => {
+    const rate = numAt(args, 0, h)
+    if (isError(rate)) return rate
+    const vals = numbers(args.slice(1), h)
+    if (isError(vals)) return vals
+    if (!vals.length) return err('#NUM!', 'NPV needs at least one value')
+    return finNum(fin.npv(rate, vals))
+  },
+  IRR: (args, h) => {
+    const vals = numbers([args[0]], h)
+    if (isError(vals)) return vals
+    const guess = args.length > 1 ? numAt(args, 1, h, 0.1) : 0.1
+    if (isError(guess)) return guess
+    return finNum(fin.irr(vals, guess))
+  },
+  MIRR: (args, h) => {
+    const vals = numbers([args[0]], h)
+    if (isError(vals)) return vals
+    const fr = numAt(args, 1, h)
+    if (isError(fr)) return fr
+    const rr = numAt(args, 2, h)
+    if (isError(rr)) return rr
+    return finNum(fin.mirr(vals, fr, rr))
+  },
+  XNPV: (args, h) => {
+    const rate = numAt(args, 0, h)
+    if (isError(rate)) return rate
+    const vals = numbers([args[1]], h)
+    if (isError(vals)) return vals
+    const dates = numbers([args[2]], h)
+    if (isError(dates)) return dates
+    if (vals.length !== dates.length) return err('#NUM!', 'XNPV values/dates length mismatch')
+    return finNum(fin.xnpv(rate, vals, dates.map(Math.trunc)))
+  },
+  XIRR: (args, h) => {
+    const vals = numbers([args[0]], h)
+    if (isError(vals)) return vals
+    const dates = numbers([args[1]], h)
+    if (isError(dates)) return dates
+    if (vals.length !== dates.length) return err('#NUM!', 'XIRR values/dates length mismatch')
+    const guess = args.length > 2 ? numAt(args, 2, h, 0.1) : 0.1
+    if (isError(guess)) return guess
+    return finNum(fin.xirr(vals, dates.map(Math.trunc), guess))
+  },
+  FVSCHEDULE: (args, h) => {
+    const principal = numAt(args, 0, h)
+    if (isError(principal)) return principal
+    const sched = numbers([args[1]], h)
+    if (isError(sched)) return sched
+    return fin.fvschedule(principal, sched)
+  },
+  PDURATION: (args, h) => finArgs(args, h, [1, 1, 1], (a) => fin.pduration(a[0], a[1], a[2])),
+  RRI: (args, h) => finArgs(args, h, [1, 1, 1], (a) => fin.rri(a[0], a[1], a[2])),
+  EFFECT: (args, h) => finArgs(args, h, [1, 1], (a) => fin.effect(a[0], a[1])),
+  NOMINAL: (args, h) => finArgs(args, h, [1, 1], (a) => fin.nominal(a[0], a[1])),
+  DOLLARDE: (args, h) => finDollar(args, h, fin.dollarde),
+  DOLLARFR: (args, h) => finDollar(args, h, fin.dollarfr),
+
+  // Depreciation — straight line, sum-of-years, and the declining-balance family.
+  SLN: (args, h) => finArgs(args, h, [1, 1, 1], (a) => fin.sln(a[0], a[1], a[2])),
+  SYD: (args, h) => finArgs(args, h, [1, 1, 1, 1], (a) => fin.syd(a[0], a[1], a[2], a[3])),
+  DB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 12], (a) => fin.db(a[0], a[1], a[2], a[3], a[4])),
+  DDB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 2], (a) => fin.ddb(a[0], a[1], a[2], a[3], a[4])),
+  VDB: (args, h) => finArgs(args, h, [1, 1, 1, 1, 1, 2, 0], (a) => fin.vdb(a[0], a[1], a[2], a[3], a[4], a[5], a[6] !== 0)),
+}
+
+/** Map a finance-core result (a number or `null` domain error) to a runtime value. */
+function finNum(v: fin.Fin): RuntimeValue {
+  return v === null ? err('#NUM!') : v
+}
+
+/** Evaluate a fixed list of scalar numeric args (with defaults) and hand them to a
+ *  finance-core function. `defaults[i]` supplies a value when arg `i` is omitted;
+ *  any argument that evaluates to an error short-circuits. */
+function finArgs(args: Node[], h: FnHelpers, defaults: number[], f: (a: number[]) => fin.Fin | number): RuntimeValue {
+  const a: number[] = []
+  for (let i = 0; i < defaults.length; i++) {
+    const v = numAt(args, i, h, defaults[i])
+    if (isError(v)) return v
+    a.push(v)
+  }
+  return finNum(f(a))
+}
+
+/** DOLLARDE/DOLLARFR share a shape: a zero fraction denominator is `#DIV/0!`. */
+function finDollar(args: Node[], h: FnHelpers, f: (x: number, frac: number) => fin.Fin): RuntimeValue {
+  const x = numAt(args, 0, h)
+  if (isError(x)) return x
+  const frac = numAt(args, 1, h)
+  if (isError(frac)) return frac
+  if (Math.floor(frac) === 0) return err('#DIV/0!')
+  return finNum(f(x, frac))
 }
 
 /** A hard ceiling on how big a generated array can be, to keep the UI responsive. */
