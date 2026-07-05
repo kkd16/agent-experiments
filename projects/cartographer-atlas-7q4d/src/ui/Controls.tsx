@@ -8,7 +8,8 @@ import type { TerrainMode, WorldParams, WorldShape } from '../core/types'
 import { PRESETS, SHAPES } from '../core/presets'
 import { PALETTES } from '../render/palettes'
 import { randomSeed } from '../core/rng'
-import type { ViewOptions } from './viewOptions'
+import type { Overlay, ViewOptions } from './viewOptions'
+import { OVERLAYS } from './viewOptions'
 
 interface Props {
   params: WorldParams
@@ -18,6 +19,8 @@ interface Props {
   onExportPng: () => void
   onExportSvg: () => void
   generating: boolean
+  chronicleOpen: boolean
+  onToggleChronicle: () => void
 }
 
 function Slider(props: {
@@ -84,6 +87,8 @@ export default function Controls({
   onExportPng,
   onExportSvg,
   generating,
+  chronicleOpen,
+  onToggleChronicle,
 }: Props): ReactElement {
   const setV = (partial: Partial<ViewOptions>): void => setView({ ...view, ...partial })
 
@@ -285,6 +290,21 @@ export default function Controls({
       </section>
 
       <section className="group">
+        <h2>Overlay</h2>
+        <div className="overlay-grid">
+          {OVERLAYS.map((o) => (
+            <button
+              key={o.value}
+              className={`seg-btn ${view.overlay === o.value ? 'active' : ''}`}
+              onClick={() => setV({ overlay: o.value as Overlay })}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="group">
         <h2>Style</h2>
         <div className="palette-row">
           {PALETTES.map((p) => (
@@ -314,12 +334,22 @@ export default function Controls({
           <Toggle label="Scale" checked={view.showScale} onChange={(v) => setV({ showScale: v })} />
           <Toggle label="Graticule" checked={view.showGraticule} onChange={(v) => setV({ showGraticule: v })} />
           <Toggle label="Plates" checked={view.showPlates} onChange={(v) => setV({ showPlates: v })} />
+          <Toggle label="Wind" checked={view.showWind} onChange={(v) => setV({ showWind: v })} />
         </div>
         <div className="toggle-grid civ-toggles">
           <Toggle label="Provinces" checked={view.showProvinces} onChange={(v) => setV({ showProvinces: v })} />
           <Toggle label="Roads" checked={view.showRoads} onChange={(v) => setV({ showRoads: v })} />
           <Toggle label="Cities" checked={view.showCities} onChange={(v) => setV({ showCities: v })} />
         </div>
+      </section>
+
+      <section className="group">
+        <button
+          className={`btn chronicle-btn ${chronicleOpen ? 'active' : ''}`}
+          onClick={onToggleChronicle}
+        >
+          📜 {chronicleOpen ? 'Hide' : 'Read'} the Chronicle
+        </button>
       </section>
 
       <section className="group export-row">
@@ -332,8 +362,8 @@ export default function Controls({
       </section>
 
       <footer className="panel-foot">
-        Tectonics · orographic rain · rivers · biomes · provinces & roads — all generated in
-        your browser. Click any cell to inspect it.
+        Tectonics · Köppen climate · named rivers · biomes · a resource economy & trade ·
+        a generated chronicle — all in your browser. Click any cell to inspect it.
       </footer>
     </aside>
   )

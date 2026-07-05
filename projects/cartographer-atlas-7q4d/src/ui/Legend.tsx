@@ -1,16 +1,21 @@
-// Overlay shown on top of the map: a compact stats HUD (land coverage, river count,
-// generation timings) and a biome legend listing only the biomes actually present.
+// Overlay shown on top of the map: a compact stats HUD (land coverage, rivers, realms,
+// generation time) and a legend that adapts to the active thematic overlay — the biome
+// key by default, or the Köppen / resource swatches or a gradient bar for the data maps —
+// plus a short roll of the world's greatest rivers.
 
 import { useMemo } from 'react'
 import type { ReactElement } from 'react'
 import type { WorldMap } from '../core/types'
 import { BIOMES } from '../core/biomes'
+import type { ViewOptions } from './viewOptions'
+import { overlayLegend } from '../render/overlay'
 
 interface Props {
   world: WorldMap
+  view: ViewOptions
 }
 
-export default function Legend({ world }: Props): ReactElement {
+export default function Legend({ world, view }: Props): ReactElement {
   const stats = useMemo(() => {
     const { mesh, ocean, lake, biome } = world
     let land = 0
@@ -26,6 +31,9 @@ export default function Legend({ world }: Props): ReactElement {
     const total = Object.values(world.timings).reduce((a, b) => a + b, 0)
     return { landPct, lakeCells, present: [...present].sort((a, b) => a - b), total }
   }, [world])
+
+  const legend = useMemo(() => overlayLegend(world, view.overlay), [world, view.overlay])
+  const topRivers = world.namedRivers.slice(0, 3)
 
   return (
     <div className="legend">
@@ -46,7 +54,7 @@ export default function Legend({ world }: Props): ReactElement {
         )}
         {world.cities.length > 0 && (
           <div className="hud-item">
-            <span className="hud-k">cities</span>
+            <span className="hud-k">realms</span>
             <span className="hud-v">{world.cities.length}</span>
           </div>
         )}
@@ -59,14 +67,55 @@ export default function Legend({ world }: Props): ReactElement {
           <span className="hud-v">{stats.total.toFixed(0)} ms</span>
         </div>
       </div>
-      <div className="legend-biomes">
-        {stats.present.map((b) => (
-          <div key={b} className="legend-item">
-            <span className="swatch" style={{ background: BIOMES[b].color }} />
-            {BIOMES[b].name}
-          </div>
-        ))}
-      </div>
+
+      {legend ? (
+        <div className="legend-overlay">
+          <div className="legend-heading">{legend.title}</div>
+          {legend.swatches && (
+            <div className="legend-swatches">
+              {legend.swatches.map((s) => (
+                <div key={s.label} className="legend-item">
+                  <span className="swatch" style={{ background: s.color }} />
+                  {s.label}
+                </div>
+              ))}
+            </div>
+          )}
+          {legend.gradient && (
+            <div className="legend-gradient">
+              <div
+                className="grad-bar"
+                style={{ background: `linear-gradient(90deg, ${legend.gradient.stops.join(',')})` }}
+              />
+              <div className="grad-ends">
+                <span>{legend.gradient.lo}</span>
+                <span>{legend.gradient.hi}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="legend-biomes">
+          {stats.present.map((b) => (
+            <div key={b} className="legend-item">
+              <span className="swatch" style={{ background: BIOMES[b].color }} />
+              {BIOMES[b].name}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {topRivers.length > 0 && (
+        <div className="legend-rivers">
+          <div className="legend-heading">Great rivers</div>
+          {topRivers.map((r) => (
+            <div key={r.name} className="river-row">
+              <span className="river-name">{r.name}</span>
+              <span className="river-len">{r.lengthLeagues.toLocaleString()} lg</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

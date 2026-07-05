@@ -9,7 +9,9 @@ import type { WorldMap } from '../core/types'
 import type { Palette, RGB } from './palettes'
 import { rgbToCss } from './palettes'
 import { computeContours, defaultLevels } from '../core/contours'
-import type { ViewOptions } from '../ui/viewOptions'
+import type { Overlay, ViewOptions } from '../ui/viewOptions'
+import { overlayLandColor } from './overlay'
+import { Noise2D } from '../core/noise'
 import { Rng } from '../core/rng'
 
 export interface RenderOptions {
@@ -84,12 +86,13 @@ function fillCell(ctx: CanvasRenderingContext2D, world: WorldMap, r: number): vo
   ctx.stroke() // hairline in the same colour hides sub-pixel seams
 }
 
-/** Base fill colour for one region (ocean depth / lake / shaded biome). */
+/** Base fill colour for one region (ocean depth / lake / shaded biome or overlay). */
 export function regionColor(
   world: WorldMap,
   r: number,
   pal: Palette,
   shade: Float32Array | null,
+  overlay: Overlay = 'none',
 ): RGB {
   const { ocean, lake, biome, elevation, params } = world
   const seaLevel = params.seaLevel
@@ -106,9 +109,10 @@ export function regionColor(
     }
   } else {
     const above = Math.max(0, elevation[r] - seaLevel) / denom
-    col = pal.land(biome[r], above, world.moisture[r])
+    col = overlay === 'none' ? pal.land(biome[r], above, world.moisture[r]) : overlayLandColor(world, r, overlay)
     if (shade) {
-      const f = shade[r]
+      // Data overlays keep only a gentle relief so the field colour stays legible.
+      const f = overlay === 'none' ? shade[r] : 0.82 + (shade[r] - 1) * 0.45
       col = [col[0] * f, col[1] * f, col[2] * f]
     }
   }
@@ -118,9 +122,10 @@ export function regionColor(
 function drawCells(ctx: CanvasRenderingContext2D, world: WorldMap, opts: RenderOptions): void {
   const { mesh } = world
   const pal = opts.palette
+  const overlay = opts.view.overlay
   const shade = opts.view.showHillshade ? computeShade(world, pal.hillshade) : null
   for (let r = 0; r < mesh.numSolid; r++) {
-    const css = rgbToCss(regionColor(world, r, pal, shade))
+    const css = rgbToCss(regionColor(world, r, pal, shade, overlay))
     ctx.fillStyle = css
     ctx.strokeStyle = css
     ctx.lineWidth = 0.7
@@ -281,10 +286,12 @@ function drawRoads(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette)
   if (roads.length === 0) return
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
-  // Casing pass, then the road itself, for a subtle engraved look.
+  // Casing pass, then the road itself, for a subtle engraved look. Busy trade arteries
+  // (high `trade`) draw heavier than quiet local links.
   for (const pass of [0, 1]) {
     for (const rd of roads) {
-      const w = rd.trunk ? 2.4 : 1.5
+      const t = rd.trade ?? (rd.trunk ? 0.7 : 0.3)
+      const w = (rd.trunk ? 1.7 : 1.1) + t * 2.1
       ctx.strokeStyle = pass === 0 ? pal.roadCasing : pal.road
       ctx.lineWidth = pass === 0 ? w + 1.6 : w
       if (pass === 1 && !rd.trunk) ctx.setLineDash([4, 3])
@@ -369,36 +376,98 @@ function drawStar(
   ctx.closePath()
 }
 
+/** Draw priority for placement: important places win the space, filler is culled. */
+const LABEL_PRIO: Record<string, number> = { kingdom: 5, sea: 4, lake: 3, range: 2, river: 1 }
+
+interface PlacedLabel {
+  text: string
+  size: number
+  style: string
+  tracked: boolean
+  fill: string
+  x: number
+  y: number
+  x0: number
+  x1: number
+  y0: number
+  y1: number
+}
+
 function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
   const W = world.params.width
   const H = world.params.height
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  for (const l of world.labels) {
+
+  // 1) Measure every candidate and clamp it inside the frame.
+  const cands = world.labels.map((l) => {
     let size: number
     let style = ''
     if (l.kind === 'kingdom') size = 15 + 15 * l.weight
     else if (l.kind === 'range') {
       size = 11 + 6 * l.weight
       style = 'italic '
+    } else if (l.kind === 'river') {
+      size = 10 + 5 * l.weight
+      style = 'italic '
     } else {
       size = 13 + 6 * l.weight
       style = 'italic '
     }
     ctx.font = `${style}600 ${size.toFixed(1)}px Georgia, "Times New Roman", serif`
-    const halfW = ctx.measureText(l.text).width / 2 + 4
+    const tracked = l.kind === 'sea' || l.kind === 'lake'
+    const text = tracked ? l.text.toUpperCase() : l.text
+    let w = ctx.measureText(text).width
+    if (tracked) w += (text.length - 1) * size * 0.14
+    const halfW = w / 2 + 4
     const x = Math.min(W - halfW, Math.max(halfW, l.x))
     const y = Math.min(H - size, Math.max(size, l.y))
-    ctx.lineWidth = Math.max(2, size * 0.16)
+    const fill = l.kind === 'river' ? pal.riverLabel ?? pal.water : pal.labelFill
+    const placed: PlacedLabel = {
+      text,
+      size,
+      style,
+      tracked,
+      fill,
+      x,
+      y,
+      x0: x - halfW,
+      x1: x + halfW,
+      y0: y - size * 0.62,
+      y1: y + size * 0.62,
+    }
+    return { l, placed }
+  })
+
+  // 2) Greedily place high-priority labels first; drop any that would collide.
+  cands.sort(
+    (a, b) => (LABEL_PRIO[b.l.kind] - LABEL_PRIO[a.l.kind]) || b.l.weight - a.l.weight,
+  )
+  const kept: PlacedLabel[] = []
+  for (const c of cands) {
+    const p = c.placed
+    let clash = false
+    for (const q of kept) {
+      if (!(p.x1 < q.x0 || p.x0 > q.x1 || p.y1 < q.y0 || p.y0 > q.y1)) {
+        clash = true
+        break
+      }
+    }
+    if (!clash) kept.push(p)
+  }
+
+  // 3) Draw the survivors.
+  ctx.lineJoin = 'round'
+  for (const p of kept) {
+    ctx.font = `${p.style}600 ${p.size.toFixed(1)}px Georgia, "Times New Roman", serif`
+    ctx.lineWidth = Math.max(2, p.size * 0.16)
     ctx.strokeStyle = pal.labelStroke
-    ctx.lineJoin = 'round'
-    // Sea & lake labels get letter-spacing for a nautical-chart feel.
-    if (l.kind === 'sea' || l.kind === 'lake') {
-      drawTracked(ctx, l.text.toUpperCase(), x, y, size * 0.14, pal)
+    if (p.tracked) {
+      drawTracked(ctx, p.text, p.x, p.y, p.size * 0.14, pal)
     } else {
-      ctx.strokeText(l.text, x, y)
-      ctx.fillStyle = pal.labelFill
-      ctx.fillText(l.text, x, y)
+      ctx.strokeText(p.text, p.x, p.y)
+      ctx.fillStyle = p.fill
+      ctx.fillText(p.text, p.x, p.y)
     }
   }
 }
@@ -443,6 +512,57 @@ function drawGraticule(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Pale
     ctx.lineTo(W, y)
   }
   ctx.stroke()
+}
+
+/** Prevailing-wind rhumb arrows over open sea — an old-chart flourish. The stream is
+ * bent by a little curl noise so the arrows flow rather than march in lockstep. */
+function drawWind(ctx: CanvasRenderingContext2D, world: WorldMap, pal: Palette): void {
+  const { mesh, ocean } = world
+  const base = (world.params.windAngle * Math.PI) / 180
+  const curl = new Noise2D(`${world.params.seed}:wind`)
+  // Open-sea cells only: every neighbour is also water, so arrows never crowd the coast.
+  const open: number[] = []
+  for (let r = 0; r < mesh.numSolid; r++) {
+    if (!ocean[r] || mesh.isFrame[r]) continue
+    let allSea = true
+    for (const j of mesh.neighbors[r]) {
+      if (!ocean[j]) {
+        allSea = false
+        break
+      }
+    }
+    if (allSea) open.push(r)
+  }
+  if (open.length === 0) return
+  const stride = Math.max(1, Math.round(open.length / 130))
+  const L = Math.min(world.params.width, world.params.height) * 0.028
+  ctx.strokeStyle = pal.wind ?? 'rgba(255,255,255,0.16)'
+  ctx.fillStyle = ctx.strokeStyle
+  ctx.lineWidth = 1
+  ctx.lineCap = 'round'
+  for (let i = 0; i < open.length; i += stride) {
+    const r = open[i]
+    const x = mesh.px[r]
+    const y = mesh.py[r]
+    const n = curl.fbm((x / world.params.width) * 3, (y / world.params.height) * 3, 2)
+    const ang = base + (n - 0.5) * 0.9
+    const dx = Math.cos(ang)
+    const dy = Math.sin(ang)
+    const x0 = x - dx * L
+    const y0 = y - dy * L
+    const x1 = x + dx * L
+    const y1 = y + dy * L
+    ctx.beginPath()
+    ctx.moveTo(x0, y0)
+    ctx.lineTo(x1, y1)
+    // Arrowhead.
+    const hl = L * 0.5
+    const a2 = 0.42
+    ctx.lineTo(x1 - hl * Math.cos(ang - a2), y1 - hl * Math.sin(ang - a2))
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x1 - hl * Math.cos(ang + a2), y1 - hl * Math.sin(ang + a2))
+    ctx.stroke()
+  }
 }
 
 /** A compass rose in a corner, engraved in the palette's ink. */
@@ -642,6 +762,7 @@ export function renderWorld(
   if (v.showBorders) drawBorders(ctx, world, pal)
   if (v.showProvinces) drawProvinceBorders(ctx, world, pal)
   if (v.showCoast) drawCoast(ctx, world, pal)
+  if (v.showWind) drawWind(ctx, world, pal)
   if (v.showRivers) drawRivers(ctx, world, pal)
   if (v.showRoads) drawRoads(ctx, world, pal)
   if (v.showGraticule) drawGraticule(ctx, world, pal)

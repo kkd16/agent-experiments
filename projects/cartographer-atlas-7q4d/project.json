@@ -1,8 +1,8 @@
 {
   "title": "Cartographer",
-  "description": "A procedural fantasy-atlas studio: plate tectonics, orographic rain, river hydrology, lakes, Whittaker biomes, and a civilisation of cities, provinces & roads — restylable, inspectable, and exportable to PNG or SVG.",
+  "description": "A procedural fantasy-atlas studio: plate tectonics, orographic rain, river hydrology & lakes, Whittaker biomes, and a real Köppen–Geiger climate model driven by latitude, altitude, hemisphere and continentality. It names the great rivers by tracing their main stems, grows a resource economy of grain, ore, wine and furs with trade-weighted roads, and writes a deterministic chronicle of foundings, wars, eruptions, floods and golden ages. Thematic overlays turn it into an atlas of climate, resources, temperature, rainfall and elevation — restylable across five palettes (including a luminous Nocturne night-map), inspectable cell by cell, and exportable to PNG or SVG.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["procedural", "generative", "cartography", "voronoi", "tectonics", "simulation", "canvas"],
+  "tags": ["procedural", "generative", "cartography", "voronoi", "tectonics", "hydrology", "koppen", "climate", "biomes", "rivers", "economy", "trade", "history", "worldbuilding", "simulation", "canvas", "react"],
   "createdAt": "2026-07-04"
 }

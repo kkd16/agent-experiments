@@ -97,3 +97,43 @@ export function computePrecipitation(
   }
   return precip
 }
+
+/**
+ * Continentality 0..1: a normalised distance-from-open-water field over land. Coastal
+ * cells sit near 0; deep-interior cells near 1. It's the second great control on climate
+ * after latitude — interiors bake in summer and freeze in winter (large seasonal swing)
+ * while maritime margins stay mild, and it steers the wet-season regime in koppen.ts.
+ *
+ * @param water 1 for ocean + lake cells, else 0.
+ */
+export function computeContinentality(mesh: Mesh, water: Uint8Array): Float64Array {
+  const n = mesh.numRegions
+  const hops = new Int32Array(n).fill(-1)
+  let queue: number[] = []
+  for (let r = 0; r < n; r++) {
+    if (water[r] || mesh.isFrame[r]) {
+      hops[r] = 0
+      queue.push(r)
+    }
+  }
+  while (queue.length) {
+    const next: number[] = []
+    for (const c of queue) {
+      for (const j of mesh.neighbors[c]) {
+        if (hops[j] === -1) {
+          hops[j] = hops[c] + 1
+          next.push(j)
+        }
+      }
+    }
+    queue = next
+  }
+  // ~24 cell-hops inland reads as fully continental; unreached cells (none, in practice) → 1.
+  const SCALE = 24
+  const cont = new Float64Array(n)
+  for (let r = 0; r < mesh.numSolid; r++) {
+    const h = hops[r] < 0 ? SCALE : hops[r]
+    cont[r] = clamp01(h / SCALE)
+  }
+  return cont
+}

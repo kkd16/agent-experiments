@@ -77,6 +77,41 @@ export const PRESETS: readonly Preset[] = [
     blurb: 'A low, wet world thick with lakes',
     patch: { shape: 'continent', seaLevel: 0.34, rainfall: 1.8, erosion: 0, riverThreshold: 0.006, orographic: 0.5 },
   },
+  {
+    name: 'Köppen Earth',
+    blurb: 'A broad, varied world spanning every climate belt',
+    patch: {
+      shape: 'pangaea',
+      terrainMode: 'tectonic',
+      plates: 11,
+      seaLevel: 0.36,
+      islandFalloff: 0.6,
+      octaves: 6,
+      rainfall: 1.2,
+      orographic: 0.75,
+      windAngle: 210,
+      cities: 16,
+    },
+  },
+  {
+    name: 'Ice Age',
+    blurb: 'A frozen world of tundra, taiga and glaciers',
+    patch: { shape: 'continent', seaLevel: 0.46, rainfall: 0.9, orographic: 0.6, octaves: 6, cities: 8 },
+  },
+  {
+    name: 'Desert World',
+    blurb: 'Vast rain-shadow deserts behind sharp ranges',
+    patch: {
+      shape: 'pangaea',
+      seaLevel: 0.4,
+      islandFalloff: 0.55,
+      rainfall: 0.6,
+      orographic: 1,
+      windAngle: 180,
+      octaves: 7,
+      cities: 10,
+    },
+  },
 ]
 
 export const SHAPES: readonly { value: WorldShape; label: string }[] = [

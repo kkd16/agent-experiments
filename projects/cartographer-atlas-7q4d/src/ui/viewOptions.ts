@@ -1,8 +1,13 @@
 // The user-toggleable rendering flags, kept separate from the heavy Palette object
 // so they stay serialisable and cheap to store.
 
+/** A full-cell thematic recolour of the land — the atlas's data maps. */
+export type Overlay = 'none' | 'koppen' | 'resource' | 'temperature' | 'precip' | 'elevation'
+
 export interface ViewOptions {
   paletteKey: string
+  /** Active thematic overlay (recolours the land by a data field). */
+  overlay: Overlay
   showRivers: boolean
   showCoast: boolean
   showHillshade: boolean
@@ -19,10 +24,14 @@ export interface ViewOptions {
   showRoads: boolean
   showCities: boolean
   showPlates: boolean
+  // --- Session-3 layers ---
+  /** Prevailing-wind rhumb arrows over the sea. */
+  showWind: boolean
 }
 
 export const DEFAULT_VIEW: ViewOptions = {
   paletteKey: 'terra',
+  overlay: 'none',
   showRivers: true,
   showCoast: true,
   showHillshade: true,
@@ -38,4 +47,14 @@ export const DEFAULT_VIEW: ViewOptions = {
   showRoads: true,
   showCities: true,
   showPlates: false,
+  showWind: false,
 }
+
+export const OVERLAYS: readonly { value: Overlay; label: string }[] = [
+  { value: 'none', label: 'Natural' },
+  { value: 'koppen', label: 'Köppen' },
+  { value: 'resource', label: 'Resources' },
+  { value: 'temperature', label: 'Temperature' },
+  { value: 'precip', label: 'Rainfall' },
+  { value: 'elevation', label: 'Elevation' },
+]
