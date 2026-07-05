@@ -15,6 +15,8 @@ import { SpectralPanel } from './SpectralPanel'
 import { PoincarePanel } from './PoincarePanel'
 import { AtlasPanel } from './AtlasPanel'
 import { AnosovaPanel } from './AnosovaPanel'
+import { ChoreographyPanel } from './ChoreographyPanel'
+import type { OrbitSeed } from '../sim/periodic'
 import { ProfilePanel } from './ProfilePanel'
 import { RelativityPanel } from './RelativityPanel'
 import { GravWavePanel } from './GravWavePanel'
@@ -70,6 +72,7 @@ export interface SidebarProps {
   onAnalyzePoincare: () => void
   poincareTargetLabel: string
   onLaunchThreeBody: (x3: number, y3: number) => void
+  onLaunchOrbit: (orbit: OrbitSeed) => void
 }
 
 const integrator = INTEGRATORS.reduce<Record<string, (typeof INTEGRATORS)[number]>>((acc, it) => {
@@ -330,6 +333,10 @@ export function Sidebar(p: SidebarProps) {
 
       <Section title="Three-Body Atlas" defaultOpen={false}>
         <AnosovaPanel onLaunch={p.onLaunchThreeBody} />
+      </Section>
+
+      <Section title="Choreography Lab" defaultOpen={false}>
+        <ChoreographyPanel onLaunch={p.onLaunchOrbit} />
       </Section>
 
       <Section title="Frequency Map (1-D)" defaultOpen={false}>

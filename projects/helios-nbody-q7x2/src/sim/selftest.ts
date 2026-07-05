@@ -13,6 +13,16 @@ import { fmmAccel, directAccel, forceError, kernelTaylor } from './fmm'
 import { orbitElements } from './orbit'
 import { jacobiConstant, omegaGradient, solveLagrangeNormalized } from './restricted3body'
 import { accelAndVariational, analyzeChaos } from './chaos'
+import {
+  figureEight,
+  lagrangeTriangle,
+  integrateMonodromy,
+  refineOrbit,
+  floquet,
+  eigenvalues,
+  conservedWith,
+  DEFAULT_CONFIG as PERIODIC_CFG,
+} from './periodic'
 import { fft, ifft } from './fft'
 import { fft2, ifft2, dft2Ref, wavenumber } from './fft2'
 import {
@@ -2213,6 +2223,89 @@ export function runSelfTest(): SelfTestReport {
     const ps = measurePowerSpectrum(field.delta, m)
     const slope = powerLawSlope(ps, 2, 30)
     add('PM — power spectrum recovers its input slope n', Math.abs(slope - n) < 0.3, `measured n = ${slope.toFixed(3)} (want ${n})`)
+  }
+
+  // 88 — The monodromy matrix IS the linearisation of the period-advance map:
+  // one column of M, formed by the tangent integration, matches a finite-
+  // difference perturbation of the real flow. This certifies the variational
+  // integrator behind every Floquet analysis.
+  {
+    const seed = figureEight()
+    const { n, mass } = seed
+    const D = 4 * n
+    const T = 1.7
+    const steps = 2000
+    const base = integrateMonodromy(seed.psi, n, mass, T, steps, PERIODIC_CFG)
+    const col = 0 // perturb x₀
+    const h = 1e-6
+    const pert = seed.psi.slice()
+    pert[col] += h
+    const bumped = integrateMonodromy(pert, n, mass, T, steps, PERIODIC_CFG)
+    let maxErr = 0
+    for (let r = 0; r < D; r++) {
+      const fd = (bumped.psiT[r] - base.psiT[r]) / h
+      const analytic = base.monodromy[r * D + col]
+      maxErr = Math.max(maxErr, Math.abs(fd - analytic))
+    }
+    add('Periodic — monodromy matches finite-difference STM', maxErr < 1e-4, `max |M_col − Δψ/Δx| = ${maxErr.toExponential(2)} (want < 1e-4)`)
+  }
+
+  // 89 — The corrector polishes the literature figure-eight seed to machine
+  // precision: Newton on the shooting residual φ_T(ψ₀) − ψ₀ converges, and the
+  // resulting monodromy is symplectic (det = 1) as a Hamiltonian flow demands.
+  {
+    const seed = figureEight()
+    const r = refineOrbit(seed.psi, seed.n, seed.mass, seed.period, {
+      steps: 5000,
+      maxIter: 30,
+      tol: 1e-12,
+      cfg: PERIODIC_CFG,
+    })
+    const f = floquet(r.monodromy, 4 * seed.n, 3e-3)
+    add('Periodic — figure-eight closes to machine precision', r.residual < 1e-10, `‖φ_T(ψ₀) − ψ₀‖ = ${r.residual.toExponential(2)} after ${r.iterations} Newton steps`)
+    add('Periodic — figure-eight monodromy is symplectic (det = 1)', Math.abs(f.determinant - 1) < 1e-4, `det M = ${f.determinant.toFixed(6)}`)
+    add('Periodic — figure-eight is linearly stable (Floquet on unit circle)', f.verdict === 'stable' && f.maxModulus < 1.01, `max |λ| = ${f.maxModulus.toFixed(5)}, off-circle = ${f.offCircle.toExponential(1)}`)
+    add('Periodic — Floquet multipliers pair as {λ, 1/λ}', f.reciprocityError < 1e-6, `reciprocity error = ${f.reciprocityError.toExponential(2)}`)
+    // Energy is conserved around the orbit to the integrator's accuracy.
+    const e0 = conservedWith(r.psi, seed.n, seed.mass, PERIODIC_CFG).energy
+    add('Periodic — energy conserved over one period', r.energyDrift < 1e-8, `|ΔE/E| ≤ ${r.energyDrift.toExponential(2)} (E = ${e0.toFixed(4)})`)
+  }
+
+  // 90 — Lagrange's equilateral relative equilibrium is exact by construction
+  // (closes without correction) yet linearly UNSTABLE for equal masses — the
+  // Gascheau/Routh result, read straight off the Floquet spectrum.
+  {
+    const seed = lagrangeTriangle()
+    const steps = 20000
+    const mono = integrateMonodromy(seed.psi, seed.n, seed.mass, seed.period, steps, PERIODIC_CFG)
+    let res = 0
+    for (let i = 0; i < 4 * seed.n; i++) {
+      const d = mono.psiT[i] - seed.psi[i]
+      res += d * d
+    }
+    res = Math.sqrt(res)
+    const f = floquet(mono.monodromy, 4 * seed.n, 3e-3)
+    add('Periodic — Lagrange triangle is an exact relative equilibrium', res < 1e-9, `closure ‖φ_T − id‖ = ${res.toExponential(2)}`)
+    add('Periodic — Lagrange triangle (equal masses) is unstable', f.verdict === 'unstable' && f.maxModulus > 2, `max |λ| = ${f.maxModulus.toFixed(2)} (≫ 1 ⇒ hyperbolic)`)
+  }
+
+  // 91 — The from-scratch eigensolver (Hessenberg + Francis QR) recovers a known
+  // spectrum: a block with real eigenvalues 2 and 3 beside a 2×2 rotation whose
+  // eigenvalues are e^{±iθ} on the unit circle.
+  {
+    const th = 0.7
+    const c = Math.cos(th)
+    const s = Math.sin(th)
+    const A = Float64Array.from([
+      2, 0, 0, 0,
+      0, 3, 0, 0,
+      0, 0, c, -s,
+      0, 0, s, c,
+    ])
+    const ev = eigenvalues(A, 4)
+    const has = (re: number, im: number) => ev.some((l) => Math.abs(l.re - re) < 1e-6 && Math.abs(l.im - im) < 1e-6)
+    const ok = has(3, 0) && has(2, 0) && has(c, s) && has(c, -s)
+    add('Periodic — eigensolver recovers a known spectrum', ok, `{${ev.map((l) => `${l.re.toFixed(3)}${l.im >= 0 ? '+' : ''}${l.im.toFixed(3)}i`).join(', ')}}`)
   }
 
   const passed = cases.filter((c) => c.pass).length

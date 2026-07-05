@@ -16,6 +16,7 @@ import type { FreqDiffusion, NaffResult } from './sim/naff'
 import { poincareSection, POINCARE_BODY_LIMIT } from './sim/poincare'
 import type { PoincareResult } from './sim/poincare'
 import { anosovaState } from './sim/threebody'
+import type { OrbitSeed } from './sim/periodic'
 import { SPECTRAL_BODY_LIMIT } from './components/SpectralPanel'
 import { Ring } from './util/ring'
 import { Sidebar } from './components/Sidebar'
@@ -702,6 +703,61 @@ export default function App() {
     setRunning(true)
   }, [])
 
+  // Launch a periodic orbit / choreography from the Choreography Lab into the
+  // live engine. The orbits live in G = 1, unit-scale coordinates; we scale the
+  // masses up (and G down by the same factor) so the dynamics are identical but
+  // the bodies render large enough to see, then frame the camera to the track.
+  const handleLaunchOrbit = useCallback((orbit: OrbitSeed) => {
+    const sim = simRef.current!
+    const alpha = 40 // mass scale; G ← G/alpha keeps the trajectory invariant
+    const posX = new Float64Array(orbit.n)
+    const posY = new Float64Array(orbit.n)
+    const velX = new Float64Array(orbit.n)
+    const velY = new Float64Array(orbit.n)
+    const mass = new Float64Array(orbit.n)
+    let rMax = 0
+    for (let i = 0; i < orbit.n; i++) {
+      const x = orbit.psi[i]
+      const y = orbit.psi[orbit.n + i]
+      posX[i] = x
+      posY[i] = y
+      velX[i] = orbit.psi[2 * orbit.n + i]
+      velY[i] = orbit.psi[3 * orbit.n + i]
+      mass[i] = alpha * orbit.mass[i]
+      rMax = Math.max(rMax, Math.hypot(x, y))
+    }
+    sim.setBodies(orbit.n, posX, posY, velX, velY, mass)
+    const extent = Math.max(0.5, rMax) * 2.6
+    fitExtentRef.current = extent
+    cameraRef.current.centerX = 0
+    cameraRef.current.centerY = 0
+    cameraRef.current.fitExtent(extent)
+    energyRing.current.clear()
+    momentumRing.current.clear()
+    trajRef.current = null
+    lastMergeRef.current = 0
+    setSelectedIndex(-1)
+    setChaosResult(null)
+    setSpectralResult(null)
+    setSpectralDiffusion(null)
+    setPoincareResult(null)
+    setCount(orbit.n)
+    // dt chosen so one period is ~2000 integration steps; the Steps/frame slider
+    // sets the playback speed. G = 1/alpha, softening 0 (exact Newtonian).
+    setParams((prev) => ({
+      ...prev,
+      g: 1 / alpha,
+      dt: orbit.period / 2000,
+      softening: 0,
+      theta: 0.2,
+      integrator: 'yoshida6',
+      gr: false,
+      collide: false,
+    }))
+    setSubSteps(8)
+    setRunning(true)
+  }, [])
+
   return (
     <div className="app">
       <header className="topbar">
@@ -796,6 +852,7 @@ export default function App() {
             selectedIndex >= 0 ? `#${selectedIndex} (selected)` : 'auto — lightest particle'
           }
           onLaunchThreeBody={handleLaunchThreeBody}
+          onLaunchOrbit={handleLaunchOrbit}
         />
 
         <main className="stage" ref={containerRef}>

@@ -141,6 +141,108 @@ an honest demonstration: symplectic schemes keep the trace flat; Explicit Euler 
 
 ## Ideas / backlog
 
+### Helios 13.0 — Periodic Orbits & Choreographies: the skeleton inside the chaos (this session, planned + shipped)
+
+The Three-Body Atlas (Helios 10.0) is a monument to chaos: almost every triangle of masses dropped
+from rest ends in a fractal of ejections. But woven invisibly through that chaos is a **measure-zero
+skeleton of exact periodic orbits** — initial conditions that return to themselves after a finite
+time `T` and then repeat forever, tracing a single closed curve. The crown jewel is the
+**figure-eight choreography** (Moore 1993; Chenciner–Montgomery 2000): three equal masses chasing
+one another around one ∞-shaped track, with zero angular momentum, and — astonishingly — *linearly
+stable*. This session builds the machinery to find these orbits from first principles and to measure
+their stability, and ships a **Choreography Lab** that renders the skeleton the Atlas can only hint at.
+
+Three from-scratch numerical engines, no libraries, in `src/sim/periodic.ts`:
+
+#### 1 — The monodromy: linearising the "advance by T" map
+
+A periodic orbit's stability is governed by its **monodromy matrix** `M = ∂φ_T/∂ψ₀`, the state-
+transition matrix of the period-advance flow. We compute it *exactly* by carrying the **variational
+(tangent) equations** alongside the trajectory: the same softened-Newtonian tidal tensor the Chaos
+Lab already derives (`δaᵢ = G Σⱼ mⱼ[δdᵢⱼ/s³ − 3(dᵢⱼ·δdᵢⱼ)dᵢⱼ/s⁵]`), now applied to all **4N tangent
+vectors at once** — one per phase coordinate — inside a single classical **RK4** map that advances
+the real state and the whole `4N×4N` monodromy together. Because a gravitational flow is
+Hamiltonian, the monodromy is **symplectic**: `det M = 1` exactly (verified to 6 digits) and its
+eigenvalues come in reciprocal pairs `{λ, 1/λ}`. The tangent integration is certified in the
+self-tests against a **finite-difference** perturbation of the real flow (agreement ~2·10⁻⁵).
+
+#### 2 — The differential corrector: Newton on the shooting residual
+
+A literature seed is only periodic to a few digits. We polish it with **Newton's method on the
+shooting residual** `F(ψ₀,T) = φ_T(ψ₀) − ψ₀`, whose Jacobian is `[M − I | f(ψ(T))]` — the monodromy
+against the initial condition, the vector field against the period. The system is rank-deficient
+(the orbit's time-translation symmetry is a null direction), so we damp it **Levenberg–Marquardt**
+style, solving `(JᵀJ + μ·diag)δ = −JᵀF` by a from-scratch **Cholesky** factorisation, shrinking `μ`
+toward Gauss–Newton on success and growing it on failure, with a **period-band clamp** that stops
+the corrector collapsing onto a shorter nearby orbit. Convergence is quadratic: the figure-eight
+polishes from the Chenciner seed to a closure residual of **~10⁻¹³** in ~7 iterations.
+
+#### 3 — The eigensolver: Floquet multipliers from scratch
+
+The **Floquet multipliers** are the eigenvalues of `M`. We find them the textbook way with no
+library: **Householder reduction to upper Hessenberg**, then the **Francis double-shift QR
+algorithm** (a faithful port of EISPACK's `hqr`) chasing the subdiagonal to a real Schur form whose
+1×1 and 2×2 blocks carry the real and complex-conjugate eigenvalues. Their moduli decide linear
+stability: **all on the unit circle ⇒ stable**; any off it ⇒ hyperbolically unstable, its modulus
+the amplification per period. The solver is checked against a matrix with a known spectrum, and its
+output against the symplectic invariants (`det = 1`, reciprocal pairing).
+
+#### The payoff — a Choreography Lab that contrasts stable and unstable
+
+The gallery is deliberately **only orbits this integrator can certify to machine precision**:
+
+- **The figure-eight** and **Moth I** — genuine three-body choreographies, both found **linearly
+  stable** (every Floquet multiplier pinned to the unit circle).
+- **Lagrange's equilateral triangle**, **Euler's collinear chain**, and the **regular N-gon
+  Klemperer rosettes** (N = 4, 5, 6) — the classical **relative equilibria**, exact by construction
+  and shown to be **hyperbolically unstable** (the Gascheau/Routh and Klemperer instabilities), their
+  multipliers flung far off the unit circle (`max|λ|` from 85 to ~59 000).
+
+The panel animates each orbit tracing its closed track, draws the **Floquet spectrum on the unit
+circle** (blue on the circle, red off it), reports `T`, energy, angular momentum, the closure
+residual and `det M`, runs the **corrector live** on a perturbed figure-eight seed (a log-scale
+residual sparkline that falls off a cliff), and **launches any orbit into the live Studio** — scaled
+so the dynamics are invariant but the bodies render large.
+
+#### Planned steps — all shipped this session
+
+- [x] `src/sim/periodic.ts` — the whole engine: flat phase-space layout + diagnostics
+      (`conservedWith`, `centreOfMassFrame`), the combined real+tangent tidal pass
+      (`accelWithTangents`), the **augmented RK4** carrying the full monodromy (`integrateMonodromy`),
+      a cheap drawing-only trajectory sampler (`sampleTrajectory`), and the vector field for the
+      corrector Jacobian.
+- [x] The **from-scratch eigensolver**: `toHessenberg` (Householder) + `hqr` (Francis double-shift QR)
+      → `eigenvalues`, wrapped by `floquet` which classifies stability and measures the off-circle,
+      determinant and reciprocity errors.
+- [x] The **Levenberg–Marquardt differential corrector** (`refineOrbit`) with a from-scratch
+      `choleskySolve`, a period-band clamp, and a residual history for the live convergence plot.
+- [x] The **orbit gallery** (`buildGallery`): the Chenciner–Montgomery figure-eight, a
+      Šuvakov–Dmitrašinović moth, and the Lagrange / Euler / regular-N-gon relative equilibria built
+      analytically (`lagrangeTriangle`, `eulerCollinear`, `regularPolygon`), with the two
+      choreographies embedded at **machine-precision** initial conditions polished offline by the
+      corrector in this very module.
+- [x] `components/ChoreographyPanel.tsx` — the **Choreography Lab**: grouped gallery chips, an
+      animated orbit canvas (shared track + fading trails + glowing bodies), the Floquet spectrum on
+      the unit circle, live readouts, the live-corrector demo, and **Launch in Studio**.
+- [x] Wired the lab into the Sidebar and a new `handleLaunchOrbit` in `App.tsx` (mass-scaled so the
+      trajectory is invariant but visible, camera framed to the track, Yoshida-6 playback).
+- [x] Five new self-test cases (the battery grew **86 → 91**, all green): the monodromy vs a
+      finite-difference STM, the figure-eight closing to ~10⁻¹³ with `det M = 1`, its linear stability
+      and reciprocal Floquet pairing, energy conservation over a period, the Lagrange triangle as an
+      exact-but-unstable relative equilibrium, and the eigensolver on a known spectrum.
+- [x] Verified end-to-end in a real browser (headless Chromium): every gallery orbit's stability
+      verdict renders correctly and Launch-in-Studio replays the figure-eight with |p| ≈ 10⁻¹³.
+- [ ] An **adaptive / regularised integrator** (Bulirsch–Stoer or Kustaanheimo–Stiefel) so the
+      near-collision Šuvakov–Dmitrašinović family (butterflies, bumblebee, dragonfly, yin-yang) can
+      also be certified and added to the gallery — uniform-step RK4 cannot resolve their close passages.
+- [ ] **Action minimisation from scratch** — discover the figure-eight by gradient descent on the
+      Lagrangian action over a Fourier-parameterised loop, watching a tangled curve relax into the
+      eight (the way it was actually found).
+- [ ] **Numerical continuation** — trace a whole *family* of periodic orbits by pseudo-arclength
+      continuation off one seed (e.g. the figure-eight → the rotating "choreography with a twist").
+- [ ] Colour the launched orbit's bodies by their position along the shared curve, and draw the
+      monodromy's stable/unstable **eigenvectors** as an on-canvas frame at the start point.
+
 ### Helios 12.0 — the Hybrid (MERCURY) integrator: surviving close encounters (this session, planned + shipped)
 
 The Symplectic Lab shipped Wisdom–Holman (Helios 7.0): integrate the dominant Kepler motion
