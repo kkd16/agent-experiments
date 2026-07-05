@@ -84,6 +84,10 @@ export interface ControlState {
   // UI and, via the render key, the re-render. Empty name ⇒ no custom HDRI loaded,
   // and every scene keeps its own environment.
   customHdriName: string // filename, or '' when none loaded
-  customHdriInfo: string // e.g. "2048×1024 → 1024×512" for the UI label
+  customHdriInfo: string // e.g. "hdr · 2048×1024 → 1024×512" for the UI label
   hdriError: string // a decode-failure message to surface, or '' when fine
+  // (26.0) A small tone-mapped PNG data-URL preview of the loaded panorama, shown
+  // in the Custom HDRI panel. Kept out of the render key (it never affects a
+  // render) but in state so the panel re-renders when a new map is loaded.
+  customHdriPreview: string
 }

@@ -666,3 +666,14 @@ input[type='range']::-moz-range-thumb {
   text-align: center;
   padding: 1rem;
 }
+
+/* ---- (26.0) loaded-environment preview strip ---- */
+.hdri-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  image-rendering: auto;
+  background: #000;
+}

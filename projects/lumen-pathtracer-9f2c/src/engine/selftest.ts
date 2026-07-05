@@ -36,6 +36,7 @@ import { Scene } from './scene'
 import { EnvMap, Distribution2D } from './envmap'
 import type { HdriPreset } from './envmap'
 import { decodeHdr, encodeHdr, downsampleEquirect, floatToRgbe } from './hdr'
+import { decodePfm, encodePfm, sniffHdrFormat } from './pfm'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
@@ -4066,6 +4067,131 @@ function testHdrDownsampleEnergy(): { pass: boolean; detail: string } {
   }
 }
 
+// ---- (26.0) Portable FloatMap (`.pfm`) — the lossless HDR codec --------------
+
+// (1) A PFM stores raw float32, so a decode∘encode is BIT-FOR-BIT — a stronger
+// statement than RGBE's within-a-quantum. Round-trips a wide-dynamic-range image
+// through BOTH byte orders and checks every channel is recovered EXACTLY (float32
+// values, so exact equality is the correct assertion, not a tolerance), and that
+// the bottom-to-top scanline order is undone (row 0 stays the top).
+function testPfmRoundtrip(): { pass: boolean; detail: string } {
+  const W = 40
+  const H = 24
+  const px = makeHdrTestImage(W, H, 0x9c1f) // Float32Array already
+  let maxDiffLE = 0
+  let maxDiffBE = 0
+  for (const [le, label] of [
+    [true, 'LE'],
+    [false, 'BE'],
+  ] as const) {
+    const dec = decodePfm(encodePfm(px, W, H, le))
+    if (dec.width !== W || dec.height !== H) return { pass: false, detail: `${label} dims ${dec.width}×${dec.height}` }
+    let d = 0
+    for (let k = 0; k < px.length; k++) d = Math.max(d, Math.abs(px[k] - dec.pixels[k]))
+    if (le) maxDiffLE = d
+    else maxDiffBE = d
+  }
+  // Orientation: a positional ramp (red=row, green=col) survives the flip.
+  const ramp = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      ramp[o] = j
+      ramp[o + 1] = i
+      ramp[o + 2] = 1
+    }
+  const dr = decodePfm(encodePfm(ramp, W, H, true))
+  let orientOk = true
+  for (let j = 0; j < H && orientOk; j++)
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      if (dr.pixels[o] !== j || dr.pixels[o + 1] !== i) {
+        orientOk = false
+        break
+      }
+    }
+  const ok = maxDiffLE === 0 && maxDiffBE === 0 && orientOk
+  return { pass: ok, detail: `LE Δ=${maxDiffLE}, BE Δ=${maxDiffBE} (both exact), orientation=${orientOk}` }
+}
+
+// (2) Greyscale PFM (`Pf`) + a hand-built BIG-ENDIAN buffer decode. A `Pf` file
+// carries one float per pixel replicated to RGB; and a manually-assembled buffer
+// with a POSITIVE scale (big-endian) must be byte-swapped correctly — the two
+// endian paths agreeing on the same values is the proof the swap is right. Also
+// checks the format sniffer and that garbage is rejected.
+function testPfmGrayAndEndian(): { pass: boolean; detail: string } {
+  // Hand-build a 2×2 greyscale big-endian PFM with known values.
+  const vals = [0.25, 4.0, 100.0, 0.001] // stored bottom-to-top: file row0 = image row1
+  const header = new TextEncoder().encode('Pf\n2 2\n1.0\n') // +1.0 ⇒ big-endian
+  const body = new Uint8Array(2 * 2 * 4)
+  const view = new DataView(body.buffer)
+  // File order is bottom-to-top: file row 0 is image row 1 (bottom).
+  // We lay out file rows [imgRow1(=vals[2],vals[3]), imgRow0(=vals[0],vals[1])].
+  const fileOrder = [vals[2], vals[3], vals[0], vals[1]]
+  for (let k = 0; k < 4; k++) view.setFloat32(k * 4, fileOrder[k], false) // big-endian
+  const buf = new Uint8Array(header.length + body.length)
+  buf.set(header, 0)
+  buf.set(body, header.length)
+  const dec = decodePfm(buf)
+  // image row 0 = vals[0],vals[1]; image row 1 = vals[2],vals[3]; grey ⇒ r=g=b.
+  // The decode reads float32, so compare against the float32-rounded expectation.
+  const expect = [vals[0], vals[1], vals[2], vals[3]].map((x) => Math.fround(x))
+  let grayOk = true
+  for (let p = 0; p < 4; p++) {
+    const o = p * 3
+    if (dec.pixels[o] !== expect[p] || dec.pixels[o + 1] !== expect[p] || dec.pixels[o + 2] !== expect[p]) grayOk = false
+  }
+  const sniffOk =
+    sniffHdrFormat(encodePfm(new Float32Array(8 * 3), 8, 1, true)) === 'pfm' &&
+    sniffHdrFormat(encodeHdr(new Float32Array(8 * 3), 8, 1, false)) === 'hdr' &&
+    sniffHdrFormat(new TextEncoder().encode('junk')) === null
+  let rejects = false
+  try {
+    decodePfm(new TextEncoder().encode('XY\n2 2\n-1\n'))
+  } catch {
+    rejects = true
+  }
+  const ok = grayOk && sniffOk && rejects
+  return { pass: ok, detail: `grey+BE=${grayOk}, sniff=${sniffOk}, rejects-garbage=${rejects}` }
+}
+
+// (3) A decoded PFM drives the importance sampler like any other panorama: a
+// constant map ⇒ uniform sampling with pdf matched to machine ε (the MIS
+// guarantee), exercising the shared EnvPixels path from the .pfm side.
+function testPfmDrivesSampler(): { pass: boolean; detail: string } {
+  const W = 96
+  const H = 48
+  const px = new Float32Array(W * H * 3)
+  for (let k = 0; k < px.length; k++) px[k] = 0.6
+  const dec = decodePfm(encodePfm(px, W, H, true))
+  const em = new EnvMap({ pixels: dec.pixels, width: dec.width, height: dec.height }, 1, 0)
+  const rng = new Rng(2718, 6)
+  let my2 = 0
+  let mx = 0
+  let my = 0
+  let mz = 0
+  let maxPdfDev = 0
+  let n = 0
+  for (let i = 0; i < 40000; i++) {
+    const s = em.sample(rng.next(), rng.next())
+    if (!s) continue
+    n++
+    mx += s.wi.x
+    my += s.wi.y
+    mz += s.wi.z
+    my2 += s.wi.y * s.wi.y
+    const rel = Math.abs(em.pdf(s.wi) - s.pdf) / (s.pdf + 1e-30)
+    if (rel > maxPdfDev) maxPdfDev = rel
+  }
+  mx /= n
+  my /= n
+  mz /= n
+  my2 /= n
+  const uniform = Math.hypot(mx, my, mz) < 0.02 && Math.abs(my2 - 1 / 3) < 0.02
+  const ok = uniform && maxPdfDev < 1e-9
+  return { pass: ok, detail: `E[cos²θ]=${my2.toFixed(4)} (1/3), |E[ω]|=${Math.hypot(mx, my, mz).toFixed(4)}, sampler↔pdf=${maxPdfDev.toExponential(1)}` }
+}
+
 // ---- 22.0 — physically based image formation --------------------------------
 
 // Aperture (1): the polygonal bokeh sampler is area-uniform, lies inside the unit
@@ -4579,6 +4705,9 @@ export function runSelfTests(): TestResult[] {
     test('HDR codec — orientation + ±axis flips + rejects garbage', testHdrOrientation),
     test('HDR codec — decoded panorama drives sampler (≈1/4π, MIS)', testEnvFromPixels),
     test('HDR codec — downsample conserves mean + sinθ irradiance', testHdrDownsampleEnergy),
+    test('PFM codec — lossless round-trip (LE+BE, bit-exact, oriented)', testPfmRoundtrip),
+    test('PFM codec — greyscale + big-endian decode + sniff/reject', testPfmGrayAndEndian),
+    test('PFM codec — decoded map drives sampler (≈1/4π, MIS)', testPfmDrivesSampler),
     test('Bokeh — polygon aperture area-uniform, in-disk, zero-mean', testAperturePolygon),
     test('Bokeh — reduces to disk sampler + fills disk as blades→∞', testApertureDiskLimit),
     test('Glare — energy-conserving (centred) + identity off', testBloomEnergy),
