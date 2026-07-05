@@ -32,6 +32,7 @@ import { PoseidonPage } from './pages/PoseidonPage'
 import { HashSigPage } from './pages/HashSigPage'
 import { MlKemPage } from './pages/MlKemPage'
 import { MlDsaPage } from './pages/MlDsaPage'
+import { SlhDsaPage } from './pages/SlhDsaPage'
 import { VrfPage } from './pages/VrfPage'
 import { VdfPage } from './pages/VdfPage'
 import { ClassGroupVdfPage } from './pages/ClassGroupVdfPage'
@@ -74,6 +75,7 @@ const ROUTES = [
   { path: '/pqsig', label: 'PQ Signatures' },
   { path: '/mlkem', label: 'ML-KEM' },
   { path: '/mldsa', label: 'ML-DSA' },
+  { path: '/slhdsa', label: 'SLH-DSA' },
   { path: '/vrf', label: 'ECVRF' },
   { path: '/vdf', label: 'VDF' },
   { path: '/cgvdf', label: 'Class-Group VDF' },
@@ -139,6 +141,7 @@ export default function App() {
       {base === '/pqsig' && <HashSigPage />}
       {base === '/mlkem' && <MlKemPage />}
       {base === '/mldsa' && <MlDsaPage />}
+      {base === '/slhdsa' && <SlhDsaPage />}
       {base === '/vrf' && <VrfPage />}
       {base === '/vdf' && <VdfPage />}
       {base === '/cgvdf' && <ClassGroupVdfPage />}
@@ -163,7 +166,8 @@ export default function App() {
         ring signatures (bLSAG / CLSAG) with stealth addresses, post-quantum hash-based signatures
         (Lamport / WOTS⁺ / XMSS / SPHINCS⁺), the lattice KEM ML-KEM (FIPS 203 / Kyber) on a
         from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, the lattice signature
-        ML-DSA (FIPS 204 / Dilithium) with its Fiat–Shamir-with-aborts loop and hint mechanism, a Signal-style
+        ML-DSA (FIPS 204 / Dilithium) with its Fiat–Shamir-with-aborts loop and hint mechanism and the standardised
+        stateless hash-based signature SLH-DSA (FIPS 205 / SPHINCS⁺) pinned byte-for-byte to NIST's ACVP vectors, a Signal-style
         end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305),
         and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
         garbled circuits (free-XOR + half-gates) and the GMW secret-sharing protocol, running the

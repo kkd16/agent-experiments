@@ -227,6 +227,15 @@ import {
 import { xmssKeygen, xmssSign, xmssVerify, type XmssParams } from './xmss'
 import { sphincsKeygen, sphincsSign, sphincsVerify, SPHINCS_TOY } from './sphincs'
 import {
+  keyGenFromSeeds as slhKeyGen,
+  signTrace as slhSignTrace,
+  verify as slhVerify,
+  encodePk as slhEncodePk,
+  decodeSk as slhDecodeSk,
+  KEYGEN_KAT as slhKeygenKat,
+  SIGGEN_KAT as slhSiggenKat,
+} from './slhdsa'
+import {
   ecvrfKeygen,
   ecvrfProve,
   ecvrfVerify,
@@ -1600,6 +1609,29 @@ export function runSelfTest(): TestCase[] {
     const sBadHt = structuredClone(ssig)
     sBadHt.ht[0].wots[0][0] ^= 1
     check('HashSig', 'SPHINCS⁺ rejects a mauled hypertree sig', !sphincsVerify(spk, sm, sBadHt), 'the recovered subtree root no longer chains to PK.root')
+  }
+
+  // ── SLH-DSA (FIPS 205) — the standardised stateless hash-based signature ──
+  // The real, standards-grade scheme (not the toy above): pinned byte-for-byte to
+  // NIST's own ACVP known-answer vectors for the SHA-2 category-1 sets.
+  {
+    for (const kv of slhKeygenKat) {
+      const { pk } = slhKeyGen(kv.params, hexToBytes(kv.skSeed), hexToBytes(kv.skPrf), hexToBytes(kv.pkSeed))
+      check('SLH-DSA', `${kv.name} keyGen == NIST ACVP`, bytesToHex(slhEncodePk(pk)).toUpperCase() === kv.pk.toUpperCase(), `PK.root reproduces the standard's own vector`)
+    }
+    // sigGen: reproduce the deterministic signature and pin SHA-256(sig). The -128f
+    // set is included live (~10⁵ hashes); -128s (~2·10⁶) is validated in the page.
+    const fSig = slhSiggenKat.find((s) => s.name.endsWith('128f'))!
+    {
+      const sk = slhDecodeSk(fSig.params, hexToBytes(fSig.sk))
+      const pk = { pkSeed: sk.pkSeed, pkRoot: sk.pkRoot }
+      const { sig } = slhSignTrace(fSig.params, sk, hexToBytes(fSig.message), { ctx: hexToBytes(fSig.context), deterministic: true })
+      check('SLH-DSA', `${fSig.name} sigGen == NIST ACVP`, bytesToHex(sha256(sig)) === fSig.sigSha256 && sig.length === fSig.params.sigBytes, `deterministic signature (${(sig.length / 1024).toFixed(1)} KB) hashes to the pinned digest`)
+      check('SLH-DSA', `${fSig.name} verify accepts`, slhVerify(fSig.params, pk, hexToBytes(fSig.message), sig, hexToBytes(fSig.context)), 'the FORS pk climbs the hypertree to PK.root')
+      const bad = sig.slice(); bad[fSig.params.n + 7] ^= 1
+      check('SLH-DSA', `${fSig.name} verify rejects a mauled signature`, !slhVerify(fSig.params, pk, hexToBytes(fSig.message), bad, hexToBytes(fSig.context)), 'a flipped byte reaches a different root')
+      check('SLH-DSA', `${fSig.name} verify rejects a wrong context`, !slhVerify(fSig.params, pk, hexToBytes(fSig.message), sig, utf8('x')), 'the context is bound into the message digest')
+    }
   }
 
   // ── ECVRF (RFC 9381) — the official Edwards25519 test vectors ──
