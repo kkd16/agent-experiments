@@ -71,10 +71,19 @@ vectors / pure frequencies, and lets you manipulate them.
 - `src/lib/contour.ts` — image→outline for the epicycle machine (v8): border-referenced
   thresholding, largest-connected-component flood fill, and **Moore-neighbour boundary tracing**
   into an ordered closed loop, plus a defensive glyph rasteriser for the built-in silhouettes.
+- `src/lib/spectral.ts` — **the super-resolution spectral-estimation engine (v10).** A from-scratch
+  real-symmetric cyclic **Jacobi** eigensolver and, on top of it, a complex **Hermitian** eigensolver
+  via the `2M×2M` real embedding `[[A,−B],[B,A]]` (there is no LAPACK here). Sample covariance with
+  forward–backward averaging; **MUSIC** + Pisarenko; **Root-MUSIC** (noise-projection polynomial rooted
+  by the lab's Durand–Kerner); **ESPRIT (TLS)** (rotational invariance + a Faddeev–LeVerrier
+  characteristic polynomial and a small complex Gauss–Jordan solve); **Capon / MVDR** via the
+  eigen-expansion of `R⁻¹`; the complex **Burg** maximum-entropy AR lattice; the **periodogram / Welch**
+  FFT baselines on a shared ω axis; and **AIC / MDL** model-order selection. A high-level `analyze()`
+  runs the whole battery in one pass. No math libraries.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Filter`, `Design`, `Spectrogram`, `Reassign`, `Live`,
-  `Wavelet`, `ImageFFT`, `Tomography`, `Vocoder`, `Compress`, `Cepstrum`, `About` (thirteen
-  interactive modes).
+- `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Spectrogram`, `Reassign`,
+  `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`, `Cepstrum`, `About`
+  (fifteen interactive modes).
 
 ## Modes
 
@@ -87,8 +96,68 @@ vectors / pure frequencies, and lets you manipulate them.
    IFFT back, and compare before/after in both domains.
 4. **Spectrogram** — short-time Fourier transform of a chirp/synth signal rendered as a
    time × frequency heatmap with selectable colormap and window.
+5. **Resolve** — *beyond* the FFT. Two tones inside one DFT bin (below the **Rayleigh limit**)
+   that the periodogram cannot split, resolved by the subspace estimators (MUSIC, Root-MUSIC,
+   ESPRIT), the Capon/MVDR spectrum and the Burg maximum-entropy AR model — all read from the
+   eigenstructure of the covariance matrix, with AIC/MDL counting the sources.
 
 ## Ideas / backlog
+
+### v10 plan — the **Resolve** mode (super-resolution spectral estimation) — this session
+
+Every mode so far has, one way or another, read the world through the FFT. But the FFT has a
+hard wall the whole lab has quietly respected: the **Rayleigh resolution limit**. Two tones
+closer than one DFT bin (`Δf ≈ fs/N`) merge into a single blurry lobe, and no amount of
+zero-padding or windowing pulls them apart — leakage, not resolution, is what padding buys you.
+This mode is the lab's answer to *"can we do better than the FFT?"* — and the answer, from the
+**parametric / subspace** school of spectral estimation, is a resounding yes.
+
+Given the model that a signal is a handful of sinusoids in noise, these estimators exploit the
+**eigenstructure of the sample covariance matrix** to place tones with essentially unlimited
+precision — well below the bin. This is the capstone the lab has been missing: it is the direct
+sequel to Spectrum ("here is what the FFT sees"), it is one of the deepest, most surprising
+results in signal processing (MUSIC, ESPRIT, maximum entropy), it is visually dramatic (one FFT
+blob → two razor spikes exactly on the true frequencies), and every headline number is
+checkable in-browser against known ground truth. All from scratch — including a Hermitian
+eigensolver, because there are no math libraries here.
+
+- [x] **`lib/spectral.ts`** — a from-scratch super-resolution engine, all in terms of the lab's own
+  `Cx` / `poly` / `fft`:
+  - [x] A **real-symmetric cyclic Jacobi eigensolver** (`jacobiSym`), and on top of it a **complex
+    Hermitian eigensolver** (`hermitianEig`) via the `2M×2M` real embedding `[[A,−B],[B,A]]` — the
+    only honest way to eigendecompose a covariance matrix with no LAPACK. Sorted eigenpairs.
+  - [x] **Sample covariance** from length-`M` snapshots with optional **forward–backward averaging**
+    (the exchange-matrix symmetrisation that halves the variance and de-correlates coherent tones).
+  - [x] **MUSIC** pseudospectrum (noise-subspace nulling), and **Pisarenko** as its one-vector limit.
+  - [x] **Root-MUSIC** — form the noise-projection polynomial, root it with the lab's Durand–Kerner
+    `polyRoots`, and read frequencies off the arguments of the roots nearest the unit circle. Grid-free
+    super-resolution.
+  - [x] **ESPRIT (TLS)** — rotational invariance: stack the shifted signal subspaces, take the small
+    eigenspace of `[E₁ E₂]ᴴ[E₁ E₂]`, and recover `Ψ = −W₁W₂⁻¹`; its eigenvalues (via a from-scratch
+    **Faddeev–LeVerrier** characteristic polynomial + `polyRoots`) sit at `e^{jω}`.
+  - [x] **Capon / MVDR** minimum-variance spectrum via the eigen-expansion of `R⁻¹` (with diagonal
+    loading), the high-resolution *non-parametric* baseline.
+  - [x] **Burg / maximum-entropy AR** — the complex Burg lattice recursion (reflection coefficients,
+    Levinson update), giving the classic sharp MEM spectrum by a completely different (linear-prediction)
+    route.
+  - [x] **Periodogram + Welch** — the honest FFT baselines (windowed, zero-padded; Welch = averaged
+    overlapping segments) so the resolution gap is drawn on the very same axes.
+  - [x] **AIC / MDL** model-order selection (Wax–Kailath) from the eigenvalue profile — *estimate how
+    many tones are there* instead of being told.
+- [x] **`modes/Resolve.tsx`** — the mode UI: a tone editor (with a "two tones below Rayleigh"
+  headline preset and a separation slider that crosses the bin boundary live), real-vs-complex signal
+  model, SNR, snapshot order `M`, assumed source count `p` (or **auto** via MDL), and a method
+  multi-select. Panels: (A) the **signal** in time; (B) the **spectra overlay** — periodogram/Welch
+  filled underneath, MUSIC/Capon/Burg pseudospectra as lines, true frequencies as markers, and the
+  Rayleigh limit drawn as a shaded band; (C) the **eigenvalue profile** with the signal/noise split and
+  the MDL/AIC verdict; (D) the **z-plane** with the root-MUSIC / ESPRIT roots landing on the unit
+  circle at the true angles; and (E) a **resolution scoreboard** — true vs estimated frequency per
+  method, the error in mHz, and a resolved ✓/✗ verdict.
+- [x] Wire the mode into `App.tsx` (route + nav), add a **Resolve** entry + a "Beyond the FFT" math
+  card to the About page (bump "fourteen modes" → "fifteen"), and add self-tests: Hermitian eig
+  reconstructs `R` and is orthonormal; root-MUSIC / ESPRIT / MUSIC resolve two sub-Rayleigh tones to
+  <1% while the periodogram provably cannot; Burg resolves a moderately-separated pair; and MDL counts
+  three well-separated sources correctly.
 
 ### v9 plan — the **Sensing** mode (compressed sensing / sparse recovery) — this session
 
@@ -449,6 +518,23 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
 
 ## Session log
 
+- 2026-07-05 (claude, v10): "Beyond the FFT — break the Rayleigh wall." Added the fifteenth mode,
+  **Resolve**, the lab's first estimator that beats the DFT's own resolution limit. New
+  `lib/spectral.ts` (~730 lines) implements the whole parametric/subspace school from scratch: a
+  real-symmetric **Jacobi** eigensolver → a complex **Hermitian** eigensolver (the `2M×2M` real
+  embedding — no LAPACK); forward–backward sample covariance; **MUSIC**/Pisarenko, **Root-MUSIC**
+  (rooted with the existing Durand–Kerner), **ESPRIT (TLS)** (via a from-scratch Faddeev–LeVerrier
+  characteristic polynomial), **Capon/MVDR**, the complex **Burg** maximum-entropy AR lattice,
+  **periodogram/Welch** baselines, and **AIC/MDL** order selection. The `modes/Resolve.tsx` UI puts
+  two tones inside one bin and shows the grey FFT lobe failing to split while MUSIC/Capon/Burg carve
+  two peaks and Root-MUSIC/ESPRIT land grid-free on the z-plane — an eigenvalue-profile panel with the
+  MDL verdict and a resolution scoreboard (true vs estimated, mHz error, ✓/✗) make it quantitative.
+  Developed the numerics against a headless harness first, then wired the mode, the About "Beyond the
+  FFT" card, and **17 new self-tests** (52 → 68: Hermitian reconstruction/orthonormality, sub-Rayleigh
+  recovery by every method, the FFT provably failing, Burg on a moderate pair, MDL source-counting,
+  and the periodogram/Welch peak-location regression guard). Caught and fixed one real bug on the way:
+  the periodogram's fftshift produced a non-monotone ω axis that broke the shared-axis resample.
+  Verified end-to-end in a real browser (all self-tests green, all presets/models, no errors).
 - 2026-07-05 (claude, v9): "Solve for the picture, don't just invert it." Gave the Tomography mode
   its algebraic half. v8 shipped the *direct* inverses (FBP, Fourier slice) — beautiful, but they
   streak the moment you starve them of angles or dose. v9 adds `lib/iterative.ts`: a matrix-free

@@ -1,6 +1,7 @@
 import { useHashRoute } from './hooks/useHashRoute'
 import Epicycles from './modes/Epicycles'
 import Spectrum from './modes/Spectrum'
+import Resolve from './modes/Resolve'
 import FilterMode from './modes/Filter'
 import DesignMode from './modes/Design'
 import Live from './modes/Live'
@@ -18,6 +19,7 @@ import About from './modes/About'
 const ROUTES = [
   { id: 'epicycles', label: 'Epicycles' },
   { id: 'spectrum', label: 'Spectrum' },
+  { id: 'resolve', label: 'Resolve' },
   { id: 'filter', label: 'Filter' },
   { id: 'design', label: 'Design' },
   { id: 'spectrogram', label: 'Spectrogram' },
@@ -82,6 +84,7 @@ export default function App() {
 
       {active === 'epicycles' && <Epicycles />}
       {active === 'spectrum' && <Spectrum />}
+      {active === 'resolve' && <Resolve />}
       {active === 'filter' && <FilterMode />}
       {active === 'design' && <DesignMode />}
       {active === 'spectrogram' && <Spectrogram />}

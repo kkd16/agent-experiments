@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The fourteen modes</h3>
+        <h3>The fifteen modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a curve's points as complex numbers, FFT them, and
@@ -36,6 +36,16 @@ export default function About() {
             A square wave shows only odd harmonics; a window function tames the spectral leakage
             that appears when a frequency doesn't fit a whole number of cycles. Hit{' '}
             <em>Play</em> to <strong>hear</strong> the timbre you're building.
+          </li>
+          <li>
+            <strong>Resolve</strong> — <em>beyond</em> the FFT. Two tones closer than one DFT bin blur
+            into a single lobe — the <strong>Rayleigh limit</strong> — and no window or zero-pad pulls
+            them apart. The <strong>subspace</strong> estimators (<strong>MUSIC</strong>,{' '}
+            <strong>Root-MUSIC</strong>, <strong>ESPRIT</strong>), the <strong>Capon/MVDR</strong>{' '}
+            minimum-variance spectrum and the <strong>Burg maximum-entropy</strong> AR model read the
+            frequencies straight out of the eigenstructure of the covariance matrix and place them far
+            below the bin, while <strong>AIC/MDL</strong> counts how many tones are even there. All on a
+            from-scratch Hermitian eigensolver.
           </li>
           <li>
             <strong>Filter</strong> — filtering is just multiplication in the frequency domain.
@@ -133,6 +143,37 @@ export default function About() {
           And the <strong>cepstrum</strong> exploits a single algebraic fact — a log turns the
           product of a source spectrum and a filter spectrum into a <em>sum</em> — so a second
           Fourier transform separates them by rate: <code>c[q] = IFFT(log|FFT(x)|)</code>.
+        </p>
+      </div>
+
+      <div className="card">
+        <h3>Beyond the FFT — super-resolution spectral estimation</h3>
+        <div className="formula">P_MUSIC(ω) = 1 / Σ_{'{'}i&gt;p{'}'} |qᵢᴴ a(ω)|²</div>
+        <p>
+          Every other mode reads the world through the FFT, and the FFT has a hard wall: the{' '}
+          <strong>Rayleigh limit</strong>. Two sinusoids closer than one bin (<code>Δf = fs/N</code>)
+          merge into a single lobe, and zero-padding only interpolates the same blur — it buys no real
+          resolution. The <strong>Resolve</strong> mode breaks that wall the way modern radar, sonar and
+          MRI do: assume the signal is just a few sinusoids in noise, and exploit the{' '}
+          <strong>eigenstructure of the sample covariance matrix</strong>. Its eigenvectors split into a{' '}
+          <em>signal</em> subspace (spanned by the tone steering vectors) and an orthogonal{' '}
+          <em>noise</em> subspace. <strong>MUSIC</strong> scans for the steering vectors most orthogonal
+          to the noise subspace (the sharp peaks above); <strong>Root-MUSIC</strong> and{' '}
+          <strong>ESPRIT</strong> skip the grid entirely — one roots a polynomial with the lab's
+          Durand–Kerner solver, the other exploits the subspace's <em>rotational invariance</em> — and
+          land the frequencies on the unit circle to machine precision.
+        </p>
+        <div className="formula">P_Burg(ω) = σ² / |1 + Σ aₖ e^(−jωk)|²    ·    R̂ = QΛQᴴ</div>
+        <p>
+          Two more routes to the same super-resolution: <strong>Capon / MVDR</strong> builds a filter that
+          passes each frequency while nulling all others (a data-adaptive spectrum), and{' '}
+          <strong>Burg's method</strong> fits a maximum-entropy autoregressive model by a lattice
+          recursion, giving the sharpest line spectrum linear prediction allows. And because <em>how many
+          tones are there?</em> is itself unknown, the <strong>AIC / MDL</strong> criteria read the source
+          count off the eigenvalue profile — the noise eigenvalues cluster, the signal ones tower above.
+          All of this needs a real <strong>Hermitian eigensolver</strong>, which there is no library for
+          here: we build one from a real-symmetric cyclic <strong>Jacobi</strong> routine run on the{' '}
+          <code>2M×2M</code> real embedding <code>[[A,−B],[B,A]]</code> of the complex covariance.
         </p>
       </div>
 
