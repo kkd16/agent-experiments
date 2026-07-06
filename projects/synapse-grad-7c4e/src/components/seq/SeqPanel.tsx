@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useState, type Dispatch, type SetStateAction } from 'react';
 import type { SeqTrainerConfig, SeqMetrics } from '../../hooks/useSeqTrainer';
 import type { GradCheckResult } from '../../engine/gradcheck';
 import type { OptimizerKind } from '../../engine/optim';
@@ -17,6 +17,12 @@ interface Props {
   gradResult: GradCheckResult | null;
   metrics: SeqMetrics;
   paramCount: number;
+  slots: string[];
+  onSave: (name: string) => void;
+  onLoadSlot: (name: string) => void;
+  onDeleteSlot: (name: string) => void;
+  onShare: () => void;
+  shareMsg: string | null;
 }
 
 const OPTS: OptimizerKind[] = ['sgd', 'momentum', 'nesterov', 'rmsprop', 'adam', 'adamw'];
@@ -44,7 +50,14 @@ export default function SeqPanel({
   gradResult,
   metrics,
   paramCount,
+  slots,
+  onSave,
+  onLoadSlot,
+  onDeleteSlot,
+  onShare,
+  shareMsg,
 }: Props) {
+  const [slotName, setSlotName] = useState('gpt-1');
   const set = <K extends keyof SeqTrainerConfig>(key: K, value: SeqTrainerConfig[K]) =>
     setConfig((c) => ({ ...c, [key]: value }));
 
@@ -256,6 +269,37 @@ export default function SeqPanel({
           </div>
         )}
         <SelfTestPanel />
+      </section>
+
+      <section className="group">
+        <h3>Save &amp; share</h3>
+        <div className="save-row">
+          <input className="slot-input" value={slotName} onChange={(e) => setSlotName(e.target.value)} placeholder="slot name" />
+          <button className="ghost" onClick={() => onSave(slotName.trim() || 'gpt')}>
+            Save
+          </button>
+        </div>
+        {slots.length > 0 && (
+          <div className="slots">
+            {slots.map((name) => (
+              <div className="slot" key={name}>
+                <span className="slot-name">{name}</span>
+                <span className="slot-actions">
+                  <button className="link" onClick={() => onLoadSlot(name)}>
+                    load
+                  </button>
+                  <button className="link danger" onClick={() => onDeleteSlot(name)}>
+                    delete
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <button className="ghost wide" onClick={onShare}>
+          🔗 Copy shareable link
+        </button>
+        {shareMsg && <div className="share-msg">{shareMsg}</div>}
       </section>
     </aside>
   );
