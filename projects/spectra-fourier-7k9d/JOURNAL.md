@@ -120,8 +120,79 @@ vectors / pure frequencies, and lets you manipulate them.
    BER-vs-Eb/N0 curve that lands on the closed-form theory. A second tab builds **OFDM** (Wi-Fi/5G):
    an IFFT over hundreds of subcarriers, a cyclic prefix, a frequency-selective multipath channel,
    and a one-tap zero-forcing equalizer that snaps the smeared cloud back to a clean grid.
+7. **Coding** — *how the bits survive the noise.* A complete forward-error-correction pillar built
+   on the Modem's channel: from-scratch **convolutional encoders** (K=3…7, incl. the Voyager/802.11
+   (171,133) code), hard- **and** soft-decision **Viterbi** maximum-likelihood decoding, and
+   rate-compatible **puncturing** (1/2 → 2/3 → 3/4 → 5/6). Tab 1 animates the **Viterbi trellis**
+   live — the survivor sweep, per-node metrics, the ML path snapping onto the true path as channel
+   errors are repaired. Tab 2 draws the **coding gain**: measured BER beside the closed-form
+   **union bound** built from the code's own **distance spectrum** (d_free re-derived from the
+   trellis), with the whole curve sliding left. Tab 3 is a visceral **message demo** — the same text
+   through the same noise, shredded uncoded vs. perfectly repaired coded.
 
 ## Ideas / backlog
+
+### v12 plan — the **Coding** mode (forward error correction) — this session
+
+The Modem pillar carried bits to the edge of the noise and stopped at the hard decision. But every
+real link — deep-space, Wi-Fi, LTE, DVB, GSM — closes the last few dB with an **error-correcting
+code**. That was the biggest gap in the communications story: the lab could *measure* a bit-error
+rate but never *fix* one. v12 adds a complete convolutional-coding + Viterbi pillar whose claims are,
+like the rest of the lab, provable in front of the user: the measured Monte-Carlo BER must sit under
+the closed-form **union bound**, soft decisions must beat hard by the textbook ~2 dB, and the free
+distance the bound is built on must be re-derived from the trellis and match the published tables.
+All hold (see self-tests 51–58; the (171,133) code comes out at d_free = 10 with a₁₀ = 11, the
+canonical value).
+
+Shipped this session:
+
+- [x] **The FEC engine** (`fec.ts`) — an octal-generator convolutional encoder over a general rate-1/n
+  trellis (`buildTrellis`/`convEncode`, zero-terminated), a catalogue of five textbook codes
+  (K=3 (7,5) … K=7 (171,133) and the rate-1/3 (171,133,165)).
+- [x] **Viterbi decoding, hard and soft** — a single add–compare–select core with Hamming or squared
+  Euclidean branch metrics and full traceback, exposing per-step survivor metrics **and** back
+  pointers so the UI can animate the sweep.
+- [x] **Rate-compatible puncturing** — the standard 802.11/DVB patterns (2/3, 3/4, 5/6) on the 1/2
+  mother code, with a de-puncture step that reinserts erasures (zero-info branch metrics) for the
+  decoder; rates come out exact.
+- [x] **The distance spectrum + union bounds** — a weight-bounded dynamic program enumerates every
+  first-return-to-zero error event, giving `{d, a_d, c_d}`; `d_free` falls out, and the soft/hard
+  union bounds `Σ c_d·P₂(d)` (soft `Q(√(2Rdγ))`, hard the BSC majority-vote sum) become closed-form
+  oracles drawn beside the measured curve.
+- [x] **End-to-end Monte-Carlo link** — `simulateCoded` runs message → encode → puncture → BPSK →
+  AWGN → (hard slice + Viterbi) **and** (soft Viterbi), with an uncoded BPSK reference at matched
+  Eb/N0 (coded-bit energy R·Eb), returning every error count for the coding-gain curve.
+- [x] **The Coding mode UI** (`Coding.tsx`) — the live animated **trellis**, the **coding-gain**
+  plot (uncoded / hard / soft, measured dots + union bounds + distance-spectrum bars + gain
+  readouts), and the **message demo** (sent vs uncoded-through-noise vs coded-and-repaired, with a
+  character-level diff). All deep-linkable.
+- [x] **8 new self-tests** (51–58) — published d_free for all five codes + the exact (7,5) spectrum,
+  noiseless hard/soft round-trips, single-error correction, `soft ≤ hard < uncoded` with `measured ≤
+  bound`, a ≥10× soft coding gain, exact puncture rates + de-puncture round-trip, a punctured link
+  beating its channel BER, and text↔bits + a coded message outliving the uncoded one. All 90 green.
+
+Backlog (future sessions, natural extensions of this pillar):
+
+- [ ] **BCJR / MAP (soft-output) decoding** — the forward–backward algorithm producing per-bit
+  a-posteriori LLRs, the front half of a turbo decoder.
+- [ ] **Turbo codes** — two RSC encoders + an interleaver, iterative BCJR decoding, and the
+  waterfall-then-floor BER curve that stunned the field in 1993.
+- [ ] **A recursive systematic convolutional (RSC) code** option and the systematic-vs-nonsystematic
+  BER contrast (RSC helps below capacity, hurts the union bound).
+- [ ] **Hard-vs-soft on a genuine QAM channel** — feed the Modem's 16-/64-QAM LLRs into the decoder
+  so coding gain is shown on the constellations users already know, not just BPSK.
+- [ ] **Traceback depth** as a slider (the practical 5·K truncation) with the BER cost of shortening
+  it — the classic memory/latency trade every real Viterbi chip makes.
+- [ ] **A Fano / stack sequential decoder** for a long-constraint code, and its variable compute vs.
+  Viterbi's fixed cost.
+- [ ] **Reed–Muller / Hamming block codes** and a syndrome decoder, to sit the algebraic and
+  trellis worlds side by side.
+- [ ] **Punctured-code exact spectra** — a time-varying trellis over the puncture period so the
+  union bound is exact for the punctured rates too, not just the mother code.
+- [ ] **An interleaver + burst-error channel** to show why coding alone fails on bursts and how
+  interleaving rescues it.
+- [ ] **LDPC teaser** — a small regular LDPC code with a few belief-propagation iterations on its
+  Tanner graph, the modern successor to everything here.
 
 ### v11 plan — the **Modem** mode (digital communications) — this session
 
@@ -165,8 +236,9 @@ Backlog (future sessions, natural extensions of this pillar):
 
 - [ ] **Soft-decision demapping + LLRs** — per-bit log-likelihood ratios out of the demapper, the
   front-end every real decoder needs.
-- [ ] **A channel code** — a short convolutional code with Viterbi decoding (or a Hamming code),
-  and a coded-vs-uncoded BER curve showing the coding gain.
+- [x] **A channel code** — a short convolutional code with Viterbi decoding (or a Hamming code),
+  and a coded-vs-uncoded BER curve showing the coding gain. *(Shipped in v12 — the **Coding** mode:
+  convolutional codes K=3…7, hard/soft Viterbi, puncturing, union bounds, and an animated trellis.)*
 - [ ] **Non-square constellations** — 8-PSK and cross-QAM (32/128-QAM) with their own exact SER.
 - [ ] **Carrier & timing recovery** — a Costas loop for phase and a Gardner timing-error detector,
   so the receiver locks a rotated/offset constellation instead of assuming perfect sync.
@@ -591,6 +663,27 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
       physical prior without losing its rate.
 
 ## Session log
+
+- 2026-07-06 (claude, v12): "How the bits survive — convolutional codes, Viterbi, and the coding
+  gain." Added the **seventeenth mode, Coding**, a complete forward-error-correction pillar on top of
+  the Modem's channel. New `lib/fec.ts` (~560 lines): a general rate-1/n **convolutional encoder**
+  over an octal-generator trellis (five textbook codes, K=3 (7,5) → the K=7 Voyager/802.11 (171,133)
+  and rate-1/3 (171,133,165)); a single add–compare–select **Viterbi** core with **hard** (Hamming)
+  and **soft** (squared-Euclidean) branch metrics, full traceback, and exposed per-step survivor
+  metrics + back pointers for the animation; rate-compatible **puncturing** (2/3, 3/4, 5/6 with
+  erasure de-puncturing); a weight-bounded DP that enumerates every first-return-to-zero **error
+  event** into the code's **distance spectrum** `{d, a_d, c_d}`, from which `d_free` and the soft/hard
+  **union bounds** are drawn as closed-form oracles; and a full Monte-Carlo `simulateCoded` link
+  (coded-bit energy R·Eb, uncoded BPSK reference). The `modes/Coding.tsx` UI is three tabs: a live
+  **Viterbi trellis** (survivor sweep, per-node metrics, the ML path snapping onto the true path),
+  the **coding-gain** plot (uncoded/hard/soft measured dots + union bounds + distance-spectrum bars +
+  d_free/rate/gain readouts), and a **message demo** (the same text through the same noise — shredded
+  uncoded vs. perfectly repaired coded, character-diffed). Correctness is provable on screen: the
+  (171,133) trellis re-derives d_free = 10 with a₁₀ = 11 (the published value), soft beats hard by
+  the textbook ~2 dB, and measured BER sits under the union bound past threshold. **8 new self-tests
+  (51–58), all 90 green**; lint + `tsc` + `vite build` all pass; verified live in a headless browser
+  (all three tabs render, zero console errors, a 2 dB message repaired from 5 uncoded bit errors to
+  0). No coding libraries — every generator, trellis, metric and bound is hand-built here.
 
 - 2026-07-06 (claude, v11): "The FFT that runs the world — a digital radio, end to end." Added the
   **sixteenth mode, Modem**, the lab's communications pillar and its most consequential FFT

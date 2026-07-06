@@ -124,6 +124,24 @@ export default function About() {
             envelope), and detects the pitch two independent ways — cepstral peak and
             autocorrelation.
           </li>
+          <li>
+            <strong>Modem</strong> — <em>the FFT that runs the world.</em> A complete digital radio:
+            bits become Gray-coded <strong>BPSK/QPSK/16-/64-QAM</strong> symbols, get{' '}
+            root-raised-cosine shaped and pushed through an <strong>AWGN</strong> channel, and the
+            received constellation, the open <strong>eye diagram</strong> and the transmit spectrum
+            update live — while the measured bit-error rate lands on the closed-form theory. A second
+            tab builds <strong>OFDM</strong> (Wi-Fi/5G): an IFFT over hundreds of subcarriers, a{' '}
+            <strong>cyclic prefix</strong>, and a one-tap equalizer that undoes multipath.
+          </li>
+          <li>
+            <strong>Coding</strong> — <em>how the bits survive the noise.</em> Forward error
+            correction, from scratch: <strong>convolutional</strong> encoders (up to the K=7 (171,133)
+            code that flew on Voyager) with hard- and soft-decision <strong>Viterbi</strong> decoding.
+            Watch the <strong>trellis</strong> decode live as its survivor sweep repairs channel
+            errors, see the <strong>coding gain</strong> slide the BER curve left under a closed-form{' '}
+            <strong>union bound</strong> built from the code's own distance spectrum, and drop the
+            Eb/N0 in the message demo until even the code gives up.
+          </li>
         </ul>
       </div>
 
