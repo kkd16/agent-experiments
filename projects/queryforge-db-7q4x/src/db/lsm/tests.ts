@@ -20,6 +20,7 @@ import { SkipList, type Entry } from './skiplist'
 import { BloomFilter } from './bloom'
 import { SSTable, resetSSTableIds } from './sstable'
 import { LsmTree, mergeRuns, type Strategy } from './tree'
+import { runBench } from './bench'
 
 export interface LsmCase {
   group: string
@@ -255,6 +256,53 @@ test('tree: size-tiered differential + invariants across seeds', () => {
   for (let seed = 1; seed <= 5; seed++) differentialWorkload('tiered', seed * 17 + 3, 900)
 })
 
+test('tree: lazy-leveled differential + invariants across seeds', () => {
+  for (let seed = 1; seed <= 5; seed++) differentialWorkload('lazy', seed * 19 + 5, 900)
+})
+
+test('tree: lazy leveling keeps the deepest level a single sorted run', () => {
+  resetSSTableIds()
+  const rng = new Rng(31337)
+  const tree = new LsmTree({ strategy: 'lazy', memtableLimit: 10, blockSize: 4, fanout: 3, tierTrigger: 3, targetFileEntries: 10, seed: 2 })
+  let sawShallowTier = false
+  for (let op = 0; op < 1400; op++) {
+    const k: IndexKey = [rng.int(0, 120)]
+    if (rng.chance(0.72)) tree.put(k, rng.int(0, 9999))
+    else tree.del(k)
+    assert(tree.checkInvariants() === null, `lazy invariant broke at op ${op}`)
+    // The deepest non-empty level must be a non-overlapping sorted run (leveled);
+    // record whether shallower levels ever hold several runs (tiered).
+    let deepest = 0
+    for (let i = 0; i < tree.levels.length; i++) if (tree.levels[i].length) deepest = i
+    // The deepest *leveled* level (≥ L1) is one sorted, non-overlapping run. (L0
+    // is always tiered/overlapping, even when it is momentarily the deepest.)
+    if (deepest >= 1) {
+      for (let i = 1; i < tree.levels[deepest].length; i++) {
+        assert(
+          compareKeys(tree.levels[deepest][i - 1].maxKey, tree.levels[deepest][i].minKey) < 0,
+          `lazy deepest level L${deepest} is not a sorted non-overlapping run`,
+        )
+      }
+    }
+    for (let lv = 1; lv < deepest; lv++) if (tree.levels[lv].length >= 2) sawShallowTier = true
+  }
+  assert(deepestIsMostData(tree), 'lazy: the deepest level should hold most of the data')
+  assert(sawShallowTier, 'lazy: expected shallow levels to tier (hold multiple runs) at some point')
+})
+
+function deepestIsMostData(tree: LsmTree): boolean {
+  let deepest = 0
+  for (let i = 0; i < tree.levels.length; i++) if (tree.levels[i].length) deepest = i
+  let deep = 0
+  let total = 0
+  for (let i = 0; i < tree.levels.length; i++) {
+    const e = tree.levels[i].reduce((n, t) => n + t.count, 0)
+    total += e
+    if (i === deepest) deep = e
+  }
+  return total === 0 || deep >= total * 0.4
+}
+
 // ---- interesting events actually fire ------------------------------------
 
 test('tree: multi-level compaction and tombstone reclamation fire', () => {
@@ -370,6 +418,57 @@ test('tree: composite (multi-column) keys order and reconcile correctly', () => 
   assert(got.length === want.length, 'composite live count mismatch')
   for (let i = 0; i < got.length; i++)
     assert(compareKeys(got[i].key, want[i].key) === 0 && got[i].value === want[i].value, 'composite range mismatch')
+})
+
+// ---- the amplification benchmark ----------------------------------------
+
+test('bench: all three strategies return byte-identical live state', () => {
+  for (const seed of [0xa11, 0xb22, 0xc33, 0xd44]) {
+    const r = runBench(2500, seed)
+    assert(r.identical, `bench seed ${seed.toString(16)}: strategies disagreed on live state`)
+    // Sanity: the workload actually exercised the tree.
+    for (const s of r.results) {
+      assert(s.flushes > 5, `bench seed ${seed.toString(16)}: too few flushes (${s.strategy})`)
+      assert(s.compactions > 0, `bench seed ${seed.toString(16)}: no compaction (${s.strategy})`)
+    }
+  }
+})
+
+test('bench: amplification profile matches the RUM trade-off', () => {
+  // Aggregate over several seeds so the qualitative ordering is robust to noise.
+  const agg: Record<string, { w: number; r: number; sp: number; n: number }> = {
+    leveled: { w: 0, r: 0, sp: 0, n: 0 },
+    tiered: { w: 0, r: 0, sp: 0, n: 0 },
+    lazy: { w: 0, r: 0, sp: 0, n: 0 },
+  }
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const r = runBench(3000, seed * 101 + 7)
+    assert(r.identical, `bench seed ${seed}: strategies disagreed`)
+    for (const s of r.results) {
+      const a = agg[s.strategy]
+      a.w += s.writeAmp
+      a.r += s.avgReadTables
+      a.sp += s.spaceAmp
+      a.n++
+      assert(s.writeAmp >= 1, `${s.strategy}: writeAmp < 1`)
+      assert(s.spaceAmp >= 1, `${s.strategy}: spaceAmp < 1`)
+      assert(s.avgReadTables >= 0, `${s.strategy}: negative read amp`)
+    }
+  }
+  const mean = (a: { w: number; r: number; sp: number; n: number }) => ({ w: a.w / a.n, r: a.r / a.n, sp: a.sp / a.n })
+  const lv = mean(agg.leveled)
+  const ti = mean(agg.tiered)
+  const lz = mean(agg.lazy)
+  // Write amp: tiered writes least, leveled most (leveled rewrites a level on
+  // every absorbed merge). Lazy sits at or below leveled.
+  assert(ti.w <= lv.w + 1e-9, `expected tiered writeAmp (${ti.w.toFixed(2)}) ≤ leveled (${lv.w.toFixed(2)})`)
+  assert(lz.w <= lv.w + 1e-9, `expected lazy writeAmp (${lz.w.toFixed(2)}) ≤ leveled (${lv.w.toFixed(2)})`)
+  // Read amp: tiered reads the most tables per lookup (overlapping runs);
+  // leveled the fewest. Lazy is no worse than tiered.
+  assert(lv.r <= ti.r + 1e-9, `expected leveled readAmp (${lv.r.toFixed(2)}) ≤ tiered (${ti.r.toFixed(2)})`)
+  assert(lz.r <= ti.r + 1e-9, `expected lazy readAmp (${lz.r.toFixed(2)}) ≤ tiered (${ti.r.toFixed(2)})`)
+  // Space amp: leveled reclaims the most (single run per level), tiered the least.
+  assert(lv.sp <= ti.sp + 1e-9, `expected leveled spaceAmp (${lv.sp.toFixed(2)}) ≤ tiered (${ti.sp.toFixed(2)})`)
 })
 
 export const lsmCases = cases

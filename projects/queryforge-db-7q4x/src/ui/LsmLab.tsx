@@ -15,6 +15,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { LsmTree, type LsmSnapshot, type GetResult, type Strategy, type TableView } from '../db/lsm/tree'
+import { runBench, type BenchResult } from '../db/lsm/bench'
 import { Rng } from '../db/fuzz/rng'
 import type { IndexKey } from '../db/storage/btree'
 
@@ -56,6 +57,12 @@ export function LsmLab() {
   const [lastGet, setLastGet] = useState<{ key: number; res: GetResult } | null>(null)
   const [rangeResult, setRangeResult] = useState<{ lo: string; hi: string; rows: { key: IndexKey; value: unknown }[] } | null>(null)
   const [message, setMessage] = useState('Insert keys (or run a workload) and watch the memtable flush and levels compact.')
+  const [bench, setBench] = useState<BenchResult | null>(null)
+
+  const runBenchmark = useCallback(() => {
+    // A fixed seed so the race is reproducible; the same op stream feeds all three.
+    setBench(runBench(4000, 0xf00d))
+  }, [])
 
   const [view, setView] = useState<View>(() => {
     // A fresh, empty tree with the default config — identical to the ref's, but
@@ -193,12 +200,13 @@ export function LsmLab() {
       setLastGet(null)
       setRangeResult(null)
       setView({ snap: t.snapshot(), invariant: t.checkInvariants(), trace: t.trace.slice(-14).reverse() })
-      setMessage(
-        `Rebuilt as a ${nextStrategy} tree (memtable ${nextLimit}) from ${entries.length} live key(s). ` +
-          (nextStrategy === 'leveled'
-            ? 'Leveled: each level ≥ L1 is one sorted non-overlapping run — low read/space amp, higher write amp.'
-            : 'Size-tiered: each tier holds several overlapping runs merged wholesale — low write amp, higher read/space amp.'),
-      )
+      const blurb =
+        nextStrategy === 'leveled'
+          ? 'Leveled: each level ≥ L1 is one sorted non-overlapping run — low read/space amp, higher write amp.'
+          : nextStrategy === 'tiered'
+            ? 'Size-tiered: each tier holds several overlapping runs merged wholesale — low write amp, higher read/space amp.'
+            : 'Lazy-leveled (Dostoevsky): tiered shallow levels, one leveled run at the largest level — near-tiered writes, near-leveled reads/space.'
+      setMessage(`Rebuilt as a ${nextStrategy} tree (memtable ${nextLimit}) from ${entries.length} live key(s). ${blurb}`)
     },
     [],
   )
@@ -248,6 +256,9 @@ export function LsmLab() {
             </button>
             <button className={strategy === 'tiered' ? 'on' : ''} onClick={() => changeStrategy('tiered')}>
               size-tiered
+            </button>
+            <button className={strategy === 'lazy' ? 'on' : ''} onClick={() => changeStrategy('lazy')}>
+              lazy-leveled
             </button>
           </div>
         </div>
@@ -410,7 +421,78 @@ export function LsmLab() {
           </div>
         </div>
       </div>
+
+      {/* amplification benchmark */}
+      <div className="lsm-section-title">
+        Amplification benchmark <span className="lsm-dim">the RUM trade-off — same workload, three strategies</span>
+      </div>
+      <div className="lsm-bench">
+        <div className="lsm-bench-head">
+          <button className="btn" onClick={runBenchmark}>
+            race leveled vs tiered vs lazy ▸
+          </button>
+          {bench && (
+            <span className={`lsm-badge ${bench.identical ? 'ok' : 'bad'}`}>
+              {bench.identical ? '✓ identical live state' : '✗ strategies disagreed'}
+            </span>
+          )}
+          {bench && <span className="lsm-dim">{bench.ops} ops · {bench.probes} point probes</span>}
+        </div>
+        {!bench ? (
+          <div className="lsm-dim">
+            Run the same deterministic op stream through all three compaction strategies and compare write /
+            read / space amplification. Whatever the cost profile, the answers must be byte-identical.
+          </div>
+        ) : (
+          <BenchTable bench={bench} />
+        )}
+      </div>
     </div>
+  )
+}
+
+function BenchTable({ bench }: { bench: BenchResult }) {
+  const maxW = Math.max(...bench.results.map((r) => r.writeAmp), 1)
+  const maxR = Math.max(...bench.results.map((r) => r.avgReadTables), 0.01)
+  const maxS = Math.max(...bench.results.map((r) => r.spaceAmp), 1)
+  const label: Record<Strategy, string> = { leveled: 'leveled', tiered: 'size-tiered', lazy: 'lazy-leveled' }
+  return (
+    <div className="lsm-bench-grid">
+      <div className="lsm-bench-row lsm-bench-hd">
+        <span>strategy</span>
+        <span>write amp</span>
+        <span>read amp (tables/lookup)</span>
+        <span>space amp</span>
+        <span>flush / compact</span>
+      </div>
+      {bench.results.map((r) => (
+        <div key={r.strategy} className="lsm-bench-row">
+          <span className={`lsm-bench-name ${r.strategy}`}>{label[r.strategy]}</span>
+          <BenchBar value={r.writeAmp} max={maxW} suffix="×" kind="write" />
+          <BenchBar value={r.avgReadTables} max={maxR} suffix="" kind="read" />
+          <BenchBar value={r.spaceAmp} max={maxS} suffix="×" kind="space" />
+          <span className="lsm-bench-fc">
+            {r.flushes} / {r.compactions}
+          </span>
+        </div>
+      ))}
+      <div className="lsm-bench-note">
+        Leveled minimizes read + space amp (one run per level) at the cost of write amp; size-tiered minimizes
+        write amp at the cost of read + space; lazy-leveled sits between — near-tiered writes, near-leveled reads.
+      </div>
+    </div>
+  )
+}
+
+function BenchBar({ value, max, suffix, kind }: { value: number; max: number; suffix: string; kind: string }) {
+  return (
+    <span className="lsm-bench-cell">
+      <span className={`lsm-bench-bar ${kind}`} style={{ width: `${Math.max(4, (value / max) * 100)}%` }} />
+      <span className="lsm-bench-val">
+        {value.toFixed(2)}
+        {suffix}
+      </span>
+    </span>
   )
 }
 

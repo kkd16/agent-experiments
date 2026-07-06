@@ -44,8 +44,9 @@ plan visualizer and a built-in self-test suite.
   the whole file), `tree.ts` (the tree itself: memtable → **flush** to L0 → **compaction** down a level
   hierarchy, a monotonic **sequence number** giving a total newest-wins order, **tombstone** deletes
   reclaimed once no deeper level overlaps the key — LevelDB's `IsBaseLevelForKey` generalized to a range,
-  a **k-way merging iterator** for range reads and compaction, both **leveled** (LevelDB/RocksDB) and
-  **size-tiered** (Cassandra) strategies, a **major compaction** (RocksDB `CompactRange`), a
+  a **k-way merging iterator** for range reads and compaction, three compaction strategies — **leveled**
+  (LevelDB/RocksDB), **size-tiered** (Cassandra) and **lazy-leveled** (Dostoevsky) — a **major compaction**
+  (RocksDB `CompactRange`), an amplification **benchmark** (`bench.ts`, the RUM trade-off), a
   `checkInvariants()` structural oracle, and write/read/space-amplification metrics),
   `tests.ts` (the `lsm` self-test group — differential vs a last-write-wins reference **and** the
   invariant checker after **every** mutation across thousands of seeded ops under both strategies, plus
@@ -182,8 +183,23 @@ invariant self-test group and surfaced as the tenth interactive **LSM Lab**, ove
       cache-hit metric in the Lab.
 - [ ] **Snapshots / MVCC reads at a sequence number** — retain superseded versions in the memtable and
       read as-of a seq, so the LSM backs snapshot isolation like the MVCC engine.
-- [ ] **Leveled↔tiered *hybrid* (Leveled-N / lazy leveling)** — Dostoevsky's tiered-lower / leveled-upper
-      mix that Pareto-dominates both on the read/write/space frontier.
+- [x] **Lazy-leveled hybrid (Dostoevsky, SIGMOD 2018)** — tier the shallow levels, keep the *largest*
+      level a single leveled run; because the deepest level holds most of the data, this buys almost all
+      of leveling's point-read and space-amp win while keeping tiering's low write amp. A third `Strategy`,
+      differential + invariant-tested like the other two (the deepest leveled level is proven a
+      non-overlapping sorted run; shallow levels tier).
+- [x] **The RUM amplification benchmark** (`lsm/bench.ts`) — run the **same deterministic op stream**
+      through all three strategies and measure write / read (tables touched per lookup) / space
+      amplification, with the load-bearing check that they return **byte-identical live state** (the
+      trade-off is only ever in cost, never in answers). Self-tests assert the qualitative RUM ordering
+      holds (tiered ≤ leveled write amp; leveled ≤ tiered read amp; leveled ≤ tiered space amp), and the
+      LSM Lab races the three live with amplification bars.
+- [x] **Fixed a latent size-tiered runaway** — a tiered merge that split its output into several SSTable
+      *files* was miscounted as several *runs*, so it could re-trigger its own tier endlessly (blowing the
+      level count up). A tiered merge now emits exactly **one** run (one SSTable, Cassandra-style); the
+      trigger counts runs, and runs grow geometrically down the tiers as they should.
+- [ ] **Wire the LSM as a real table storage backend** behind `CREATE TABLE … USING lsm`, so a table's
+      heap is an LSM and the planner costs its write-optimized profile.
 
 ### Worst-case-optimal joins — the WCOJ engine (`db/wcoj/*`, v27.0 — shipped this session)
 
@@ -1451,6 +1467,25 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-06 (claude / claude-opus-4-8): **v28.1 — LSM lazy leveling + the RUM benchmark.** Extended
+  the fresh LSM engine with the third production compaction strategy and a benchmark that makes the
+  storage-engine trade-off measurable. **(1) Lazy leveling** (Dayan & Idreos, *Dostoevsky*, SIGMOD 2018)
+  — a `'lazy'` `Strategy` that tiers the shallow levels but keeps the **largest** level a single leveled
+  run; since the deepest level holds the bulk of the data, it captures almost all of leveling's point-read
+  and space-amp win while keeping tiering's low write amp, a point that Pareto-dominates both pure
+  strategies. Differential + invariant-tested like the others (the deepest leveled level is proven a
+  non-overlapping sorted run). **(2) The RUM amplification benchmark** (`lsm/bench.ts`) — runs the **same
+  deterministic op stream** through all three strategies and measures write / read / space amplification,
+  with the load-bearing gate that all three return **byte-identical live state** (the trade-off is only in
+  cost, never in answers); self-tests assert the qualitative RUM ordering (tiered ≤ leveled write amp,
+  leveled ≤ tiered read + space amp), and the LSM Lab races the three live with amplification bars and a
+  lazy-leveled toggle. **(3)** Building the benchmark surfaced — and this fixes — a **latent size-tiered
+  runaway**: a tiered merge that split its output across several SSTable *files* was miscounted as several
+  *runs* and could re-trigger its own tier without bound (blowing the level count into the tens of
+  thousands on some workloads); a tiered merge now emits exactly **one** run (one SSTable, Cassandra-style)
+  so the trigger counts runs and tiers grow geometrically. Suite **585 → 589** (4 new `lsm` cases: lazy
+  differential + invariants, and the two benchmark cases), all green head-less; `verify-project.mjs` green
+  (scope + conformance + lint + build).
 - 2026-07-06 (claude / claude-opus-4-8): **v28.0 — the LSM-tree storage engine.** QueryForge had one
   storage structure — the read-optimized, update-in-place B+Tree. This session builds its mirror image,
   the one major structure it was missing: the **Log-Structured Merge tree**, the write-optimized engine
