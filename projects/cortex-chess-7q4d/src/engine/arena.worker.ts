@@ -66,6 +66,12 @@ export interface GameLine {
   plies: number
 }
 
+export interface OpeningTally {
+  name: string
+  points: number // A's points over the games from this opening
+  games: number
+}
+
 export interface SprtProgress {
   type: 'sprt-progress'
   tally: MatchTally
@@ -83,6 +89,12 @@ export interface SprtProgress {
   maxPairs: number
   last: GameLine[]
   llrTrack: number[]
+  /** Estimated pairs still needed to decide, from the current LLR drift. */
+  expectedRemaining: number
+  /** A's score broken down by opening. */
+  byOpening: OpeningTally[]
+  /** Full multi-game PGN of the match — populated only on the final message. */
+  pgn: string
   done: boolean
 }
 
@@ -120,6 +132,35 @@ function reasonToDot(white: number, aWhite: boolean): 'a' | 'b' | 'draw' {
   return whiteWon === aWhite ? 'a' : 'b'
 }
 
+const resultStr = (white: number): string => (white === 1 ? '1-0' : white === 0 ? '0-1' : '1/2-1/2')
+
+// Assemble a single valid PGN game from a start FEN + SAN movetext, honouring the
+// opening's side-to-move and full-move number so the numbering is correct.
+function buildGamePgn(startFen: string, san: string, whiteName: string, blackName: string, white: number, opening: string): string {
+  const fields = startFen.split(/\s+/)
+  const blackToStart = fields[1] === 'b'
+  let moveNo = parseInt(fields[5] || '1', 10)
+  if (!Number.isFinite(moveNo) || moveNo < 1) moveNo = 1
+  const moves = san ? san.split(' ').filter(Boolean) : []
+  const res = resultStr(white)
+  const parts: string[] = []
+  let i = 0
+  if (blackToStart && moves.length > 0) {
+    parts.push(`${moveNo}...${moves[0]}`)
+    i = 1
+    moveNo++
+  }
+  for (; i < moves.length; i += 2) {
+    if (moves[i + 1] !== undefined) parts.push(`${moveNo}.${moves[i]} ${moves[i + 1]}`)
+    else parts.push(`${moveNo}.${moves[i]}`)
+    moveNo++
+  }
+  const header =
+    `[Event "Cortex Arena"]\n[Site "The Arena"]\n[White "${whiteName}"]\n[Black "${blackName}"]\n` +
+    `[Result "${res}"]\n[Opening "${opening}"]\n[SetUp "1"]\n[FEN "${startFen}"]\n`
+  return `${header}\n${parts.join(' ')} ${res}\n`
+}
+
 // ---- SPRT match ------------------------------------------------------------
 
 async function runSprt(req: SprtRequest): Promise<void> {
@@ -130,6 +171,9 @@ async function runSprt(req: SprtRequest): Promise<void> {
   const tally = emptyTally()
   const llrTrack: number[] = []
   let pairsDone = 0
+  const openingMap = new Map<string, OpeningTally>()
+  const pgnGames: string[] = []
+  const PGN_CAP = 400 // bound the payload sent on completion
 
   for (let pair = 0; pair < req.maxPairs && !cancelled; pair++) {
     const opening = req.openings[pair % req.openings.length]
@@ -141,6 +185,16 @@ async function runSprt(req: SprtRequest): Promise<void> {
     const aScore2 = 1 - g2.white // A was Black
     addPair(tally, aScore1, aScore2)
     pairsDone++
+
+    // Per-opening breakdown (A's points).
+    const ot = openingMap.get(opening.name) ?? { name: opening.name, points: 0, games: 0 }
+    ot.points += aScore1 + aScore2
+    ot.games += 2
+    openingMap.set(opening.name, ot)
+
+    // Accumulate PGN (A as White in game 1, B as White in game 2).
+    if (pgnGames.length < PGN_CAP) pgnGames.push(buildGamePgn(opening.fen, g1.san, req.a.label, req.b.label, g1.white, opening.name))
+    if (pgnGames.length < PGN_CAP) pgnGames.push(buildGamePgn(opening.fen, g2.san, req.b.label, req.a.label, g2.white, opening.name))
 
     const s = sprt(tally, req.params)
     const est = estimate(tally)
@@ -169,6 +223,9 @@ async function runSprt(req: SprtRequest): Promise<void> {
       maxPairs: req.maxPairs,
       last,
       llrTrack: llrTrack.slice(),
+      expectedRemaining: s.expectedRemaining,
+      byOpening: [...openingMap.values()],
+      pgn: done ? pgnGames.join('\n') : '',
       done,
     }
     ;(self as unknown as Worker).postMessage(msg)

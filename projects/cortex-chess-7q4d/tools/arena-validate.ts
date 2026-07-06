@@ -123,6 +123,62 @@ function runSprt(trueElo: number, drawRate: number, seed: number, cap = 60000): 
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n== Exact (empirical-likelihood) pentanomial GSPRT ==')
+{
+  // Build a decisive tally and compare the exact LLR to the normal-approx one:
+  // same sign, same verdict, and close in magnitude (they agree to first order).
+  const rand = rng(9090)
+  const t = emptyTally()
+  const p = scoreFromElo(25)
+  for (let i = 0; i < 300; i++) {
+    const [a, b] = simPair(p, 0.3, rand)
+    addPair(t, a, b)
+  }
+  const approx = sprt(t, { ...params, model: 'pentanomial' })
+  const exact = sprt(t, { ...params, model: 'pentanomial-exact' })
+  check('exact & approx agree in sign', Math.sign(approx.llr) === Math.sign(exact.llr), `approx=${approx.llr.toFixed(3)} exact=${exact.llr.toFixed(3)}`)
+  check('exact & approx close in magnitude', Math.abs(approx.llr - exact.llr) < 0.15 * Math.abs(approx.llr) + 0.5, `Δ=${Math.abs(approx.llr - exact.llr).toFixed(3)}`)
+  check('exact LLR finite', Number.isFinite(exact.llr))
+  check('expectedRemaining ≥ 0', exact.expectedRemaining >= 0)
+}
+{
+  // Exact-model verdict correctness on real streams: strong patch → accept-H1.
+  const paramsExact = { ...params, model: 'pentanomial-exact' as const }
+  let h1 = 0
+  let tot = 0
+  for (let s = 0; s < 30; s++) {
+    const rand = rng(45000 + s)
+    const p = scoreFromElo(30)
+    const t = emptyTally()
+    let done = false
+    for (let pair = 0; pair < 60000 && !done; pair++) {
+      const [a, b] = simPair(p, 0.3, rand)
+      addPair(t, a, b)
+      if (pair >= 10) {
+        const r = sprt(t, paramsExact)
+        if (r.verdict !== 'continue') { if (r.verdict === 'accept-h1') h1++; done = true }
+      }
+    }
+    tot++
+  }
+  check('exact model: true +30 Elo ⇒ mostly accept-H1', h1 / tot >= 0.9, `${h1}/${tot}`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n== Degenerate (one-sided) result decides ==')
+{
+  // Every pair a double-win → all pentanomial mass in one bucket. A lopsided match
+  // is decisive, not uninformative: both models must produce a large positive LLR
+  // and accept H1, not stall at LLR≈0.
+  const t = emptyTally()
+  for (let i = 0; i < 30; i++) addPair(t, 1, 1)
+  for (const model of ['pentanomial', 'pentanomial-exact', 'trinomial'] as const) {
+    const r = sprt(t, { ...params, model })
+    check(`${model}: all-wins ⇒ accept-H1`, r.verdict === 'accept-h1' && r.llr > r.upper, `llr=${r.llr.toFixed(2)} upper=${r.upper.toFixed(2)}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n== SPRT Wald bounds ==')
 {
   const t = emptyTally()
