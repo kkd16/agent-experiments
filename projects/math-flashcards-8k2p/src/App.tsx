@@ -675,6 +675,9 @@ function App() {
   const [incorrectColor, setIncorrectColor] = useState<string>(getInitialIncorrectColor());
   const [dailyGoal, setDailyGoal] = useState<number>(getInitialDailyGoal());
   const [dailyQuestions, setDailyQuestions] = useState<{ date: string, count: number }>(getInitialDailyQuestions());
+  const [avatar, setAvatar] = useState<string>(window.localStorage.getItem('mathFlashcardsAvatar') || '👤');
+  const [dailyStreak, setDailyStreak] = useState<number>(parseInt(window.localStorage.getItem('mathFlashcardsDailyStreak') || '0', 10));
+  const [lastPlayedDate, setLastPlayedDate] = useState<string>(window.localStorage.getItem('mathFlashcardsLastPlayedDate') || '');
   const [hideStats, setHideStats] = useState<boolean>(getInitialHideStats());
   const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
@@ -778,6 +781,9 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsIncorrectColor', incorrectColor); } catch (e) { console.error(e); } }, [incorrectColor]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDailyGoal', dailyGoal.toString()); } catch (e) { console.error(e); } }, [dailyGoal]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDailyQuestions', JSON.stringify(dailyQuestions)); } catch (e) { console.error(e); } }, [dailyQuestions]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsAvatar', avatar); } catch (e) { console.error(e); } }, [avatar]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDailyStreak', dailyStreak.toString()); } catch (e) { console.error(e); } }, [dailyStreak]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLastPlayedDate', lastPlayedDate); } catch (e) { console.error(e); } }, [lastPlayedDate]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideStats', hideStats.toString()); } catch (e) { console.error(e); } }, [hideStats]);
 
 
@@ -1112,6 +1118,38 @@ function App() {
     document.body.removeChild(link);
   };
 
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = event.target?.result as string;
+        const data = JSON.parse(json);
+
+        if (data.history) setFullHistory(data.history);
+        if (data.favorites) setFavorites(data.favorites);
+        if (data.runScores) setRunScores(data.runScores);
+        if (data.stats) {
+          if (data.stats.lifetimeQuestions !== undefined) setLifetimeQuestions(data.stats.lifetimeQuestions);
+          if (data.stats.lifetimeCorrectAnswers !== undefined) setLifetimeCorrectAnswers(data.stats.lifetimeCorrectAnswers);
+          if (data.stats.lifetimeTimePlayed !== undefined) setLifetimeTimePlayed(data.stats.lifetimeTimePlayed);
+          if (data.stats.lifetimeLongestStreak !== undefined) setLifetimeLongestStreak(data.stats.lifetimeLongestStreak);
+          if (data.stats.lifetimeSkips !== undefined) setLifetimeSkips(data.stats.lifetimeSkips);
+          if (data.stats.highScore !== undefined) setHighScore(data.stats.highScore);
+        }
+        alert('Data imported successfully!');
+      } catch (error) {
+        console.error('Error importing JSON:', error);
+        alert('Failed to parse JSON file.');
+      }
+    };
+    reader.readAsText(file);
+    // Reset input value so same file can be selected again
+    e.target.value = '';
+  };
+
   const handleExportJSON = () => {
     const dataToExport = {
       history: fullHistory,
@@ -1429,6 +1467,26 @@ function App() {
     setLifetimeQuestions(newLifetime);
     setDailyQuestions(prev => ({ date: prev.date, count: prev.count + 1 }));
 
+    // Update Daily Streak
+    const today = new Date().toISOString().split('T')[0];
+    if (lastPlayedDate !== today) {
+      if (lastPlayedDate) {
+        const lastDateObj = new Date(lastPlayedDate);
+        const todayObj = new Date(today);
+        const diffTime = Math.abs(todayObj.getTime() - lastDateObj.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays === 1) {
+          setDailyStreak(prev => prev + 1);
+        } else if (diffDays > 1) {
+          setDailyStreak(1);
+        }
+      } else {
+        setDailyStreak(1);
+      }
+      setLastPlayedDate(today);
+    }
+
     const newCorrect = lifetimeCorrectAnswers + (isCorrect ? 1 : 0);
     setLifetimeCorrectAnswers(newCorrect);
 
@@ -1666,7 +1724,7 @@ function App() {
         </div>
       )}
       {!(isSpeedRunActive && focusMode) && (<div className="header-top">
-        <h1>Math Flashcards {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
+        <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -1701,6 +1759,7 @@ function App() {
 
       <div className="difficulty-selector" style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
+        <label htmlFor="avatar">Avatar: <input id="avatar" type="text" value={avatar} onChange={(e) => setAvatar(e.target.value)} maxLength={2} style={{ width: '40px', fontSize: '1rem', textAlign: 'center' }} /></label>
         <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
         <label htmlFor="inputMethod">Input: <select id="inputMethod" value={inputMethod} onChange={(e) => setInputMethod(e.target.value as 'numpad' | 'row')}><option value="numpad">Numpad</option><option value="row">Row</option></select></label>
         <label htmlFor="disableKeyboardShortcuts"><input id="disableKeyboardShortcuts" type="checkbox" checked={disableKeyboardShortcuts} onChange={(e) => setDisableKeyboardShortcuts(e.target.checked)} /> Disable Shortcuts</label>
@@ -1743,6 +1802,9 @@ function App() {
       <div className="header-stats-container" style={{ display: (hideStats || gameMode === 'zen') ? 'none' : 'flex' }}>
 
         {!hideStats && <div className="daily-goal-container" style={{ width: '100%', marginBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#7f8c8d', marginBottom: '0.2rem' }}>
+            <span>Daily Streak: <strong style={{color: dailyStreak > 0 ? '#e67e22' : 'inherit'}}>🔥 {dailyStreak}</strong></span>
+          </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#7f8c8d' }}>
             <span>Daily Goal</span>
             <span>{dailyQuestions.count} / {dailyGoal}</span>
@@ -2376,6 +2438,7 @@ function App() {
                   {fullHistory.length > 0 && (
                     <button onClick={handleExportJSON} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#8e44ad'}}>Export JSON</button>
                   )}
+                  <label className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#27ae60', cursor: 'pointer', marginLeft: '0.5rem'}}>Import JSON<input type="file" accept=".json" onChange={handleImportJSON} style={{display: 'none'}} /></label>
                 </div>
               </div>
               <ul className="history-list">
@@ -2404,6 +2467,7 @@ function App() {
             <div style={{marginTop: '1.5rem'}}>
               <button onClick={() => setShowSummary(false)} className="submit-button">Close</button>
               <button onClick={() => { setShowSummary(false); setTimeout(() => startSpeedRun(), 0); }} className="speed-run-button" style={{marginLeft: '1rem', backgroundColor: '#e67e22'}}>Quick Restart</button>
+              <a href={`https://twitter.com/intent/tweet?text=I scored ${runScores.length > 0 ? runScores[runScores.length - 1].score : 0} on ${difficulty} difficulty in Math Flashcards!`} target="_blank" rel="noopener noreferrer" className="submit-button" style={{marginLeft: '1rem', display: 'inline-block', textDecoration: 'none', backgroundColor: '#1DA1F2', color: 'white'}}>Share to X</a>
               <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
             </div>
           </div>
