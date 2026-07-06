@@ -8,7 +8,7 @@ import { Tensor } from './tensor';
 import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCols, stackRows, gatherCols } from './ops';
 import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './losses';
-import { GPT } from './transformer';
+import { GPT, attentionRollout } from './transformer';
 import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
 import { rmsNorm, causalConv1d, selectiveScan, MambaLM, defaultDtRank } from './ssm';
@@ -411,6 +411,37 @@ export function runSelfTest(seed = 7): SelfTestReport {
         rng,
       ),
     );
+  }
+
+  // The KV-cache incremental decode is a tape-free numeric mirror of `forward`. It must be
+  // *identical*, not merely close: the masked keys in the batched pass contribute exp(−1e9)=0,
+  // so nothing is lost by only attending over the cached prefix. Prove it position-by-position
+  // (a deeper, multi-head, multi-layer net than the gradcheck above, on the real 12-token vocab).
+  {
+    const gpt = new GPT({ vocab: 12, dModel: 16, nHeads: 4, nLayers: 3, dFF: 32, maxLen: 20, seed: 11 });
+    const ids = Int32Array.from([2, 7, 1, 9, 11, 3, 3, 5, 0, 8, 4, 6]);
+    const full = gpt.forward(ids); // [T, vocab]
+    const cached = gpt.cachedLogits(ids); // flat [T*vocab]
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < cached.length; i++) pairs.push([cached[i], full.data[i]]);
+    ops.push(relCheck('kv-cache (decode≡forward)', pairs));
+  }
+
+  // Attention rollout (Abnar & Zuidema) compounds Â = ½A + ½I across layers; a product of
+  // row-stochastic matrices is row-stochastic, so every row of the final attribution sums to 1.
+  {
+    const gpt = new GPT({ vocab: 12, dModel: 16, nHeads: 4, nLayers: 3, dFF: 32, maxLen: 20, seed: 13 });
+    const ids = Int32Array.from([1, 5, 9, 2, 11, 7, 0, 4]);
+    gpt.forward(ids, true);
+    const roll = attentionRollout(gpt.lastAttn!);
+    const T = roll.T;
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < T; i++) {
+      let s = 0;
+      for (let j = 0; j < T; j++) s += roll.final[i * T + j];
+      pairs.push([s, 1]);
+    }
+    ops.push(relCheck('attention-rollout (row-stochastic)', pairs));
   }
 
   // stackRows: glue per-timestep logit rows back into the [T,V] matrix the recurrent net trains

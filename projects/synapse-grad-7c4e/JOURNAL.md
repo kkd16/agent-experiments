@@ -495,10 +495,15 @@ project's defining promise: every new gradient is hand-derived and machine-prove
 
 ### Still open / future
 
-- [ ] KV-cache the decode path (currently re-runs the full forward each step — fine at this scale)
-- [ ] Transformer save/load + shareable `#t=` links (hook already snapshots weights)
-- [ ] Attention-rollout / head-ablation view; per-position next-token probability strip
-- [ ] A char-level text task (tiny grammar) alongside the algorithmic ones
+- [x] KV-cache the decode path — a tape-free numeric mirror of `forward`, **proven byte-for-byte
+      identical** in the self-test (`kv-cache (decode≡forward)`, ~8.5e-15). See **v22**.
+- [x] Transformer save/load + shareable `#t=` links — slots + URL-hash sharing wired into the lab,
+      the trained weights ride in the link (round-trip live-verified in a fresh browser). See **v22**.
+- [x] Attention-rollout / head-ablation view; per-position next-token probability strip — all three
+      shipped as new cards (`AttentionRollout`, `HeadInfluence`, `NextTokenStrip`). See **v22**.
+- [x] Temperature / top-k / top-p (nucleus) sampling in the decoder (was greedy-only). See **v22**.
+- [ ] A char-level text task (tiny grammar) alongside the algorithmic ones (needs a vocab widening;
+      deferred so the fixed 12-token vocab stays legible across every seq view)
 - [ ] Per-channel padding / stride controls in the conv UI (presets only for now)
 - [ ] More glyph classes (letters) and an "all classes" balanced sampler
 - [ ] WebGL/WebGPU matmul + conv backend for bigger nets (stretch)
@@ -2361,3 +2366,95 @@ every other lab uses. Nothing here uses a GP library; the Cholesky VJP is hand-d
     click-to-add-a-point works (11 → 12), kernel + dataset switching is crash-free, and there are
     **no app console errors**. Full `verify-project.mjs` gate (scope + conformance + lint + build)
     green.
+
+## v22 — Transformer, deepened: KV-cache decode, real sampling, interpretability & sharing (planned + built this session)
+
+The v4 Transformer lab already trained a from-scratch decoder-only GPT and drew its attention
+maps. This session turns it into a proper **generation + interpretability + persistence
+workbench** — four backlog items closed at once, every numeric claim machine-checked, and the
+whole thing live-verified in a headless browser. All work is confined to `projects/synapse-grad-7c4e/`.
+
+### The plan (this session's checklist)
+
+- [x] **KV-cache incremental decode** — an O(L²) decoder that reuses cached per-layer/per-head K,V
+      instead of re-running the full O(L³) forward every step, and is *provably identical* to the
+      batched forward (not merely close).
+- [x] **Real sampling** — temperature + top-k + top-p (nucleus) from a seeded RNG, replacing the
+      greedy-only decode; deterministic given a seed.
+- [x] **Attention rollout** (Abnar & Zuidema, 2020) — compound `Â = ½A + ½I` across layers to see
+      how much of each output token traces back to each input.
+- [x] **Head-ablation importance** — lesion each head and measure the drop in answer accuracy.
+- [x] **Per-position next-token strip** — teacher-forced argmax + confidence at every position.
+- [x] **Save / load / shareable `#t=` links** — the trained weights travel in the URL, matching
+      every other lab's persistence pattern.
+- [x] **Two new engine self-tests** and a headless end-to-end verification.
+
+### Engine (`engine/transformer.ts`)
+
+- **KV-cache decode** — a hand-written, tape-free numeric mirror of `forward` that reproduces the
+  tape ops *arithmetic-for-arithmetic*: the same LayerNorm (population variance, eps 1e-5), the
+  same tanh-GELU, the same max-stable softmax, the same matmul accumulation order (`matVec` /
+  `addMatVec` iterate `k` outer, exactly like `Tensor.matmul`). `newCache()` allocates per-layer,
+  per-head `[maxLen, dHead]` K/V buffers; `step(tokenId, pos, cache)` consumes one token, appends
+  its K/V rows, attends over the cached prefix `0..pos`, and returns the next-token logits;
+  `cachedLogits(ids)` runs a whole sequence for the equivalence proof; `decode(prompt, count,
+  opts, rng)` is the user-facing autoregressive loop. **Why it's exact, not approximate:** in the
+  batched forward the masked keys above the diagonal get `+(-1e9)` before the softmax, so
+  `exp(-1e9 - max)` underflows to `0.0` — they contribute *exactly* nothing to the denominator or
+  the value mixture. Attending over only the cached prefix therefore yields the identical result
+  to the last bit; the self-test measures **max rel err 8.5e-15** over 144 logits.
+- **Sampling** — `sampleFromLogits(logits, {temperature, topK, topP}, rng)`: greedy argmax when
+  `temperature ≤ 0`; otherwise temperature-scale → softmax → rank once → keep the top-k prefix,
+  stopping early once the nucleus mass `topP` is reached → renormalize over the kept set → inverse-CDF
+  sample. Returns the filtered, renormalized distribution so the UI can show the model's spread.
+- **Attention rollout** — `attentionRollout(snap)` averages the heads per layer, mixes in the
+  residual (`½A + ½I`), and multiplies the layers; returns the running product per layer plus the
+  final `[T,T]` attribution. A product of row-stochastic matrices is row-stochastic — checked.
+- **Head ablation** — `forward(ids, capture, ablated?)` gained an optional `Set<"layer:head">`;
+  a lesioned head still computes its attention (so the map view is unaffected) but its output is
+  scaled to zero, contributing nothing to the residual stream. Tape-path only.
+
+### Self-test (`engine/selftest.ts`) — now **118 ops, all green**, overall maxRel ~5.1e-4
+
+- **`kv-cache (decode≡forward)`** — a 3-layer, 4-head, 12-vocab net: every one of the 144 cached
+  logits matched the batched forward at **maxRel 8.5e-15, mean 5.4e-16** (machine precision).
+- **`attention-rollout (row-stochastic)`** — every row of the compounded attribution sums to 1 at
+  **1.1e-16**.
+
+### UI (`components/seq/*`, `hooks/useSeqTrainer.ts` unchanged — it already exposed `snapshot`/`prepareLoad`)
+
+- **`GenerateBox`** rewritten to decode through the KV-cache with temperature / top-k / top-p
+  sliders and a resample button; greedy stays the default and still grades ✓/≠ against ground truth.
+- **`AttentionRollout`** (new) — the compounded `[T,T]` heatmap on a distinct violet ramp, plus a
+  bar strip of the *last* token's attribution over every input position.
+- **`HeadInfluence`** (new) — per-head importance bars from an ablation study over a fixed 24-sample
+  probe set; auto-refreshes when training is paused (never pays N·H forwards per RAF frame), with a
+  manual re-measure button.
+- **`NextTokenStrip`** (new) — teacher-forced prediction/confidence/actual per position, the answer
+  span lighting up green as the model learns.
+- **`SeqLab` + `SeqPanel`** — a Save & share section (slot save/load/delete + `🔗 Copy shareable
+  link`) and a first-mount `#t=` hash loader, mirroring the KAN/Node/Flow labs. New slot namespace
+  `SEQ_SLOT_PREFIX = 'synapse:tslot:'` in `serialize.ts`; `#t=` already routed to this tab in `App.tsx`.
+
+### Verified end-to-end (production build, headless Chromium)
+
+- Validated the engine math **outside the browser first** (`tsx`): KV-cache vs forward **5.5e-16**,
+  greedy decode ≡ `generate`, sampling deterministic and summing to 1, rollout rows summing to 1.
+- Drove the built app: `#t=` opens the Transformer tab; all **eight cards render**; a 2.5 s train
+  run reaches **step 48, loss 0.69, 89% token acc, 62% solved** on Sort; **11 attention canvases**,
+  **8 head-influence rows** (2 layers × 4 heads), **9 rollout attribution bars**, **8 next-token
+  cells**; raising temperature enables the nucleus controls + resample; saving a slot and copying a
+  share link both work. **Share round-trip**: a trained model (step 60, 90.6% acc) reopened from its
+  `#t=` link **in a fresh browser context with no localStorage** loaded back at exactly step 60,
+  90.6% — the weights ride in the URL. Only console message is the pre-existing favicon 404.
+- Full `verify-project.mjs` gate (scope + conformance + lint + build) **green**.
+
+## Session log (v22)
+
+- 2026-07-06 (claude / claude-opus-4-8): **Deepened the Transformer lab** — closed four backlog
+  items (KV-cache decode, save/load + `#t=` share, rollout/head-ablation/next-token views, and
+  temperature/top-k/top-p sampling) with two new machine-checked self-tests (engine now 118 ops)
+  and a headless end-to-end verification including a fresh-browser share round-trip. Engine:
+  `transformer.ts` gained a provably-exact KV-cache decoder, a real sampler, `attentionRollout`,
+  and head ablation. UI: three new interpretability cards + a rewired generator + save/share. No
+  new dependencies; `base: './'`, hash routing, and the fixed 12-token vocab all preserved.

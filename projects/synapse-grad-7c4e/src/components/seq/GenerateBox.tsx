@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { GPT } from '../../engine/transformer';
 import { mulberry32 } from '../../engine/nn';
-import { TOK_EQ, TOK_PLUS, VOCAB, tokenLabel, type SeqTaskKind } from '../../engine/seqtasks';
+import { TOK_EQ, TOK_PLUS, tokenLabel, type SeqTaskKind } from '../../engine/seqtasks';
 
 interface Props {
   gpt: GPT;
@@ -31,39 +31,14 @@ function expectedAnswer(task: SeqTaskKind, a: number[], b: number[], n: number):
     .map((c) => c.charCodeAt(0) - 48);
 }
 
-// Greedy decode that also records the softmax probability of each chosen token, so the UI can
-// show how confident the model was at every step.
-function decodeWithConfidence(gpt: GPT, prompt: number[], count: number) {
-  const out = prompt.slice();
-  const steps: { tok: number; prob: number }[] = [];
-  for (let i = 0; i < count; i++) {
-    const logits = gpt.forward(Int32Array.from(out));
-    const T = out.length;
-    const base = (T - 1) * VOCAB;
-    let max = -Infinity;
-    for (let j = 0; j < VOCAB; j++) max = Math.max(max, logits.data[base + j]);
-    let sum = 0;
-    const probs = new Float64Array(VOCAB);
-    for (let j = 0; j < VOCAB; j++) {
-      const e = Math.exp(logits.data[base + j] - max);
-      probs[j] = e;
-      sum += e;
-    }
-    let best = 0;
-    for (let j = 0; j < VOCAB; j++) {
-      probs[j] /= sum;
-      if (probs[j] > probs[best]) best = j;
-    }
-    steps.push({ tok: best, prob: probs[best] });
-    out.push(best);
-  }
-  return steps;
-}
-
 export default function GenerateBox({ gpt, task, digits, tick }: Props) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
-  const [seed, setSeed] = useState(0);
+  const [exampleSeed, setExampleSeed] = useState(0);
+  const [sampleNonce, setSampleNonce] = useState(0);
+  const [temp, setTemp] = useState(0); // 0 ⇒ greedy
+  const [topK, setTopK] = useState(0); // 0 ⇒ off
+  const [topP, setTopP] = useState(1); // 1 ⇒ off
 
   const parse = (s: string): number[] => {
     const ds = s.replace(/\D/g, '').slice(-digits).split('').map(Number);
@@ -73,8 +48,8 @@ export default function GenerateBox({ gpt, task, digits, tick }: Props) {
 
   const inputs = useMemo(() => {
     if (a === '' && b === '') {
-      // A fresh random example, re-rolled deterministically each time the dice button bumps `seed`.
-      const rng = mulberry32((seed * 2654435761 + digits * 40503) >>> 0);
+      // A fresh random example, re-rolled deterministically each time the dice button bumps `exampleSeed`.
+      const rng = mulberry32((exampleSeed * 2654435761 + digits * 40503) >>> 0);
       const ra = () => Math.floor(rng() * 10);
       const da = Array.from({ length: digits }, ra);
       const db = Array.from({ length: digits }, ra);
@@ -82,11 +57,15 @@ export default function GenerateBox({ gpt, task, digits, tick }: Props) {
     }
     return { da: parse(a), db: parse(b), placeholder: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a, b, digits, seed]);
+  }, [a, b, digits, exampleSeed]);
 
   const result = useMemo(() => {
     const { ids, answerLen } = buildPrompt(task, inputs.da, inputs.db);
-    const steps = decodeWithConfidence(gpt, ids, answerLen);
+    // A KV-cache decode (O(L²) instead of the greedy path's O(L³)) that returns each step's
+    // sampled token and the probability the model put on it — identical to the batched forward
+    // when greedy, and a true temperature/top-k/top-p sampler otherwise.
+    const rng = mulberry32((sampleNonce * 40503 + exampleSeed * 2246822519 + 0x9e37) >>> 0);
+    const { steps } = gpt.decode(Int32Array.from(ids), answerLen, { temperature: temp, topK, topP }, rng);
     const expected = expectedAnswer(task, inputs.da, inputs.db, digits);
     const cells = steps.map((s, i) => ({
       ch: tokenLabel(s.tok),
@@ -96,17 +75,22 @@ export default function GenerateBox({ gpt, task, digits, tick }: Props) {
     const correct = cells.every((c) => c.ok);
     return { cells, expected: expected.map(tokenLabel).join(''), correct };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gpt, task, inputs, digits, tick]);
+  }, [gpt, task, inputs, digits, tick, temp, topK, topP, sampleNonce]);
 
   const promptStr =
     task === 'add'
       ? `${inputs.da.join('')}+${inputs.db.join('')}=`
       : `${inputs.da.join('')}=`;
 
+  const sampling = temp > 0;
+
   return (
     <div className="card">
       <div className="card-title">
-        Try it <span className="muted small">· type a problem and watch it decode, with per-token confidence</span>
+        Try it{' '}
+        <span className="muted small">
+          · type a problem — a KV-cache decoder runs it token by token, with per-step confidence
+        </span>
       </div>
       <div className="gen-inputs">
         <input
@@ -135,19 +119,20 @@ export default function GenerateBox({ gpt, task, digits, tick }: Props) {
           onClick={() => {
             setA('');
             setB('');
-            setSeed((s) => s + 1);
+            setExampleSeed((s) => s + 1);
           }}
           title="random example"
         >
           ⟳
         </button>
       </div>
+
       <div className="gen-out">
         <span className="gen-prompt">{promptStr}</span>
         <span className="gen-answer">
           {result.cells.map((c, i) => (
             <span key={i} className="gen-cell">
-              <span className={c.ok ? 'd-ok' : 'd-bad'}>{c.ch}</span>
+              <span className={sampling ? 'd-samp' : c.ok ? 'd-ok' : 'd-bad'}>{c.ch}</span>
               <span className="gen-bar">
                 <span className="gen-bar-fill" style={{ height: `${Math.round(c.prob * 100)}%` }} />
               </span>
@@ -157,6 +142,58 @@ export default function GenerateBox({ gpt, task, digits, tick }: Props) {
         <span className={`gen-verdict ${result.correct ? 'ok' : 'bad'}`}>
           {result.correct ? '✓' : `≠ ${result.expected}`}
         </span>
+      </div>
+
+      <div className="gen-sampler">
+        <div className="field tight">
+          <span>
+            temperature <b>{temp === 0 ? 'greedy' : temp.toFixed(2)}</b>
+          </span>
+          <input type="range" min={0} max={1.5} step={0.05} value={temp} onChange={(e) => setTemp(Number(e.target.value))} />
+        </div>
+        <div className="two">
+          <div className="field tight">
+            <span>
+              top-k <b>{topK === 0 ? 'off' : topK}</b>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={12}
+              step={1}
+              value={topK}
+              disabled={!sampling}
+              onChange={(e) => setTopK(Number(e.target.value))}
+            />
+          </div>
+          <div className="field tight">
+            <span>
+              top-p <b>{topP >= 1 ? 'off' : topP.toFixed(2)}</b>
+            </span>
+            <input
+              type="range"
+              min={0.1}
+              max={1}
+              step={0.05}
+              value={topP}
+              disabled={!sampling}
+              onChange={(e) => setTopP(Number(e.target.value))}
+            />
+          </div>
+        </div>
+        <button
+          className="ghost wide"
+          disabled={!sampling}
+          onClick={() => setSampleNonce((n) => n + 1)}
+          title="draw a new sample"
+        >
+          ↻ resample
+        </button>
+        <p className="muted small chart-foot">
+          {sampling
+            ? 'Sampling from the (temperature-scaled, top-k / nucleus-filtered) distribution — resample to see the model’s spread.'
+            : 'Greedy decode: always the argmax. Raise the temperature to sample, and the answer may drift.'}
+        </p>
       </div>
     </div>
   );
