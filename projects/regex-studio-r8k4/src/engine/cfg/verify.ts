@@ -22,6 +22,7 @@ import { cyk } from './cyk';
 import { earley } from './earley';
 import { derives } from './oracle';
 import { pdaAccepts } from './pda';
+import { analyzeLL1, parseLL1 } from './ll1';
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -89,6 +90,7 @@ export interface CfgFuzzReport {
   cnfChecks: number;
   trimChecks: number;
   pdaChecks: number;
+  ll1Checks: number;
   elapsedMs: number;
   failure: CfgFuzzFailure | null;
 }
@@ -98,10 +100,17 @@ export const DEFAULT_CFG_FUZZ = { seed: 1, trials: 120, maxLen: 5 };
 export function runCfgFuzz(opts: { seed: number; trials: number; maxLen: number }): CfgFuzzReport {
   const rnd = mulberry32(opts.seed);
   const started = nowMs();
-  let stringChecks = 0;
-  let cnfChecks = 0;
-  let trimChecks = 0;
-  let pdaChecks = 0;
+  const counts = { stringChecks: 0, cnfChecks: 0, trimChecks: 0, pdaChecks: 0, ll1Checks: 0 };
+
+  const report = (ok: boolean, failure: CfgFuzzFailure | null): CfgFuzzReport => ({
+    ok,
+    trials: opts.trials,
+    ...counts,
+    elapsedMs: nowMs() - started,
+    failure,
+  });
+  const fail = (kind: string, g: Grammar, detail: string): CfgFuzzReport =>
+    report(false, { kind, grammar: grammarText(g), detail });
 
   for (let t = 0; t < opts.trials; t++) {
     const g = randomGrammar(rnd);
@@ -112,12 +121,14 @@ export function runCfgFuzz(opts: { seed: number; trials: number; maxLen: number 
       continue; // skip a pathological CNF blow-up
     }
     const trimmed = removeUseless(g);
+    // LL(1) analysis: only run the predictive parser when the table is conflict-free.
+    const ll1 = analyzeLL1(g);
     const alphabet = [...g.terminals].sort();
     if (alphabet.length === 0) {
       // only ε possible
       const oEmpty = derives(g, '');
       if (cyk(cnf, '').accepted !== oEmpty || earley(g, '').accepted !== oEmpty) {
-        return fail('empty-alphabet', g, `ε membership disagreement`, t, stringChecks, cnfChecks, trimChecks, pdaChecks, started);
+        return fail('empty-alphabet', g, `ε membership disagreement`);
       }
       continue;
     }
@@ -128,62 +139,28 @@ export function runCfgFuzz(opts: { seed: number; trials: number; maxLen: number 
       const o = derives(g, w);
       const e = earley(g, w).accepted;
       const c = cyk(cnf, w).accepted;
-      stringChecks++;
-      if (e !== o) {
-        return fail('earley≠oracle', g, `on "${w || 'ε'}": Earley=${e}, oracle=${o}`, t, stringChecks, cnfChecks, trimChecks, pdaChecks, started);
-      }
-      cnfChecks++;
-      if (c !== o) {
-        return fail('cyk≠oracle', g, `on "${w || 'ε'}": CYK(CNF)=${c}, oracle=${o}`, t, stringChecks, cnfChecks, trimChecks, pdaChecks, started);
-      }
+      counts.stringChecks++;
+      if (e !== o) return fail('earley≠oracle', g, `on "${w || 'ε'}": Earley=${e}, oracle=${o}`);
+      counts.cnfChecks++;
+      if (c !== o) return fail('cyk≠oracle', g, `on "${w || 'ε'}": CYK(CNF)=${c}, oracle=${o}`);
       const trimO = derives(trimmed, w);
-      trimChecks++;
-      if (trimO !== o) {
-        return fail('trim≠oracle', g, `on "${w || 'ε'}": trimmed=${trimO}, oracle=${o}`, t, stringChecks, cnfChecks, trimChecks, pdaChecks, started);
-      }
+      counts.trimChecks++;
+      if (trimO !== o) return fail('trim≠oracle', g, `on "${w || 'ε'}": trimmed=${trimO}, oracle=${o}`);
       const p = pdaAccepts(g, w);
       if (!p.bounded) {
-        pdaChecks++;
-        if (p.accepted !== o) {
-          return fail('pda≠oracle', g, `on "${w || 'ε'}": PDA=${p.accepted}, oracle=${o}`, t, stringChecks, cnfChecks, trimChecks, pdaChecks, started);
-        }
+        counts.pdaChecks++;
+        if (p.accepted !== o) return fail('pda≠oracle', g, `on "${w || 'ε'}": PDA=${p.accepted}, oracle=${o}`);
+      }
+      // an LL(1) grammar's predictive parser must accept exactly the language.
+      if (ll1.isLL1) {
+        const parsed = parseLL1(g, ll1, w);
+        counts.ll1Checks++;
+        if (parsed.accepted !== o) return fail('ll1≠oracle', g, `on "${w || 'ε'}": LL(1)=${parsed.accepted}, oracle=${o}`);
       }
     }
   }
 
-  return {
-    ok: true,
-    trials: opts.trials,
-    stringChecks,
-    cnfChecks,
-    trimChecks,
-    pdaChecks,
-    elapsedMs: nowMs() - started,
-    failure: null,
-  };
-}
-
-function fail(
-  kind: string,
-  g: Grammar,
-  detail: string,
-  trials: number,
-  stringChecks: number,
-  cnfChecks: number,
-  trimChecks: number,
-  pdaChecks: number,
-  started: number,
-): CfgFuzzReport {
-  return {
-    ok: false,
-    trials,
-    stringChecks,
-    cnfChecks,
-    trimChecks,
-    pdaChecks,
-    elapsedMs: nowMs() - started,
-    failure: { kind, grammar: grammarText(g), detail },
-  };
+  return report(true, null);
 }
 
 function nowMs(): number {

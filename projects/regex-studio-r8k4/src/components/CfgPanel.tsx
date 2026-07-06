@@ -10,8 +10,12 @@ import {
   enumerateWords,
   buildPda,
   pdaRun,
+  analyzeLL1,
+  parseLL1,
+  END,
   CFG_EXAMPLES,
   type ParseTree,
+  type Ll1Analysis,
 } from '../engine/cfg';
 import { runCfgFuzz, DEFAULT_CFG_FUZZ, type CfgFuzzReport } from '../engine/cfg/verify';
 
@@ -59,6 +63,9 @@ export function CfgPanel({
   }, [g, compiled.trimmed]);
 
   const ambiguity = useMemo(() => (g ? findAmbiguity(g, 7) : null), [g]);
+
+  const ll1 = useMemo(() => (g ? analyzeLL1(g) : null), [g]);
+  const ll1Parse = useMemo(() => (g && ll1 && ll1.isLL1 ? parseLL1(g, ll1, query) : null), [g, ll1, query]);
 
   return (
     <div className="logic-panel deriv-panel cfg-panel">
@@ -292,6 +299,83 @@ export function CfgPanel({
             </>
           )}
 
+          {/* LL(1) predictive parsing */}
+          {ll1 && g.terminals.length > 0 && (
+            <>
+              <h3 className="lang-h3">LL(1) — predictive, table-driven parsing</h3>
+              <p className="muted-note">
+                A fourth parser, but a <em>committing</em> one: it picks a single production from the{' '}
+                <strong>(nonterminal, one-token lookahead)</strong> cell and never backtracks. That's only possible
+                when the <strong>FIRST</strong>/<strong>FOLLOW</strong> table has no cell with two productions — and
+                building it shows exactly what breaks it.
+              </p>
+              <div className="cfg-analysis">
+                <span className={`lang-badge ${ll1.isLL1 ? 'good' : 'bad'}`}>
+                  {ll1.isLL1 ? 'LL(1) ✓ — conflict-free table' : `not LL(1) — ${ll1.conflicts.length} conflict cell${ll1.conflicts.length === 1 ? '' : 's'}`}
+                </span>
+                {ll1.leftRecursive && (
+                  <span className="lang-badge warn" title="left recursion always breaks LL(1)">
+                    left-recursive
+                  </span>
+                )}
+              </div>
+
+              <FirstFollowTable g={g} ll1={ll1} />
+
+              {!ll1.isLL1 && ll1.conflicts.length > 0 && (
+                <div className="cfg-ll1-conflicts">
+                  <div className="cfg-lang-label">conflicts</div>
+                  {ll1.conflicts.map((c, i) => (
+                    <div key={i} className="cfg-ll1-conflict">
+                      cell <code>[{c.A}, {c.terminal === END ? '$' : c.terminal}]</code> wants{' '}
+                      {c.rules.map((ri) => (
+                        <code key={ri} className="cfg-ll1-rule">
+                          {g.rules[ri].lhs} → {rhsText(g.rules[ri].rhs)}
+                        </code>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Ll1Table g={g} ll1={ll1} />
+
+              {ll1.isLL1 && ll1Parse && (
+                <>
+                  <div className="cfg-lang-label" style={{ marginTop: 12 }}>
+                    predictive parse of {query === '' ? 'ε' : `“${query}”`} — {ll1Parse.accepted ? 'accepted ✓' : 'rejected'}
+                    {ll1Parse.error && !ll1Parse.accepted ? ` (${ll1Parse.error})` : ''}
+                  </div>
+                  <div className="cfg-ll1-trace-scroll">
+                    <table className="cfg-ll1-trace">
+                      <thead>
+                        <tr>
+                          <th>stack (top ▸)</th>
+                          <th>input</th>
+                          <th>action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ll1Parse.steps.map((s, i) => (
+                          <tr key={i}>
+                            <td><code>{s.stack.join(' ') || '—'}</code></td>
+                            <td>
+                              <code>
+                                <span className="cfg-consumed">{query.slice(0, s.pos)}</span>
+                                <span className="cfg-remaining">{query.slice(s.pos) || '$'}</span>
+                              </code>
+                            </td>
+                            <td className="cfg-ll1-act">{s.action}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
           {/* language card */}
           <h3 className="lang-h3">The language</h3>
           <div className="cfg-lang-card">
@@ -342,6 +426,79 @@ export function CfgPanel({
       )}
 
       <CrossCheck />
+    </div>
+  );
+}
+
+function FirstFollowTable({ g, ll1 }: { g: ReturnType<typeof compileCfg>['grammar']; ll1: Ll1Analysis }) {
+  if (!g) return null;
+  const fmt = (set: Set<string> | undefined) =>
+    set && set.size ? [...set].map((x) => (x === END ? '$' : x)).join(' ') : '∅';
+  return (
+    <div className="cfg-ff-scroll">
+      <table className="cfg-ff">
+        <thead>
+          <tr>
+            <th>A</th>
+            <th>FIRST(A)</th>
+            <th>FOLLOW(A)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {g.nonterminals.map((A) => (
+            <tr key={A}>
+              <td><code className="cfg-ff-nt">{A}</code></td>
+              <td>
+                <code>{fmt(ll1.first.get(A))}</code>
+                {ll1.nullable.has(A) && <span className="cfg-ff-null"> · ε</span>}
+              </td>
+              <td><code>{fmt(ll1.follow.get(A))}</code></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Ll1Table({ g, ll1 }: { g: ReturnType<typeof compileCfg>['grammar']; ll1: Ll1Analysis }) {
+  if (!g) return null;
+  const cols = ll1.terminals;
+  return (
+    <div className="cfg-ll1-scroll">
+      <table className="cfg-ll1">
+        <thead>
+          <tr>
+            <th />
+            {cols.map((a) => (
+              <th key={a}>{a === END ? '$' : a}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {g.nonterminals.map((A) => {
+            const row = ll1.table.get(A);
+            return (
+              <tr key={A}>
+                <th className="cfg-ll1-rowh">{A}</th>
+                {cols.map((a) => {
+                  const rules = row?.get(a) ?? [];
+                  const conflict = rules.length > 1;
+                  return (
+                    <td key={a} className={`cfg-ll1-cell${rules.length ? ' filled' : ''}${conflict ? ' conflict' : ''}`}>
+                      {rules.map((ri) => (
+                        <div key={ri} className="cfg-ll1-prod">
+                          {A} → {rhsText(g.rules[ri].rhs)}
+                        </div>
+                      ))}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -589,10 +746,11 @@ function CrossCheck() {
     <>
       <h3 className="lang-h3">Cross-check the whole pillar</h3>
       <p className="muted-note">
-        A seeded fuzzer draws random grammars and confronts them four ways: <strong>CYK ≡ Earley ≡ oracle</strong> on
+        A seeded fuzzer draws random grammars and confronts them five ways: <strong>CYK ≡ Earley ≡ oracle</strong> on
         every string up to a length horizon; <strong>CNF preserves the language</strong>; <strong>useless-symbol
-        removal preserves the language</strong>; and <strong>the PDA agrees with the oracle</strong> wherever its
-        bounded search is conclusive. Any disagreement is a real bug.
+        removal preserves the language</strong>; <strong>the PDA agrees with the oracle</strong> wherever its bounded
+        search is conclusive; and every <strong>LL(1) grammar's predictive parser accepts exactly the
+        language</strong>. Any disagreement is a real bug.
       </p>
       <div className="fuzz-controls">
         <label className="fuzz-field">
@@ -632,8 +790,9 @@ function CrossCheck() {
                 <span className="fuzz-big">✓ every grammar checks out</span>
                 <span className="fuzz-sub">
                   {report.trials} grammars — {report.stringChecks.toLocaleString()} recognizer-agreement checks,{' '}
-                  {report.cnfChecks.toLocaleString()} CNF-preservation, {report.trimChecks.toLocaleString()} trim, and{' '}
-                  {report.pdaChecks.toLocaleString()} PDA checks, all agree. {report.elapsedMs.toFixed(0)} ms.
+                  {report.cnfChecks.toLocaleString()} CNF-preservation, {report.trimChecks.toLocaleString()} trim,{' '}
+                  {report.pdaChecks.toLocaleString()} PDA, and {report.ll1Checks.toLocaleString()} LL(1) checks, all
+                  agree. {report.elapsedMs.toFixed(0)} ms.
                 </span>
               </>
             ) : (
@@ -649,6 +808,7 @@ function CrossCheck() {
             <St k="CNF" v={report.cnfChecks.toLocaleString()} />
             <St k="trim" v={report.trimChecks.toLocaleString()} />
             <St k="PDA" v={report.pdaChecks.toLocaleString()} />
+            <St k="LL(1)" v={report.ll1Checks.toLocaleString()} />
             <St k="time" v={`${report.elapsedMs.toFixed(0)} ms`} />
           </div>
           {report.failure && (

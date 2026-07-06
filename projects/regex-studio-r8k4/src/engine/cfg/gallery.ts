@@ -41,8 +41,14 @@ export const CFG_EXAMPLES: CfgExample[] = [
   },
   {
     name: 'precedence (unambiguous)',
-    note: 'The same arithmetic, disambiguated by precedence + associativity layers.',
+    note: 'The same arithmetic, disambiguated by precedence + associativity layers. Left-recursive ⇒ not LL(1).',
     source: ['E → E + T | T', 'T → T * F | F', 'F → ( E ) | a'].join('\n'),
+    sample: 'a+a*a',
+  },
+  {
+    name: 'LL(1) expressions',
+    note: 'The right-factored expression grammar — no left recursion, a conflict-free LL(1) table.',
+    source: ['E → T X', 'X → + T X | ε', 'T → F Y', 'Y → * F Y | ε', 'F → ( E ) | a'].join('\n'),
     sample: 'a+a*a',
   },
   {
