@@ -187,6 +187,46 @@ export type {
   ReviewSelftest,
 } from './review'
 
+export {
+  ARENA_OPENINGS,
+  specKey,
+  defaultLabel,
+  makeBrain,
+  playGame,
+  ADJUDICATION_DEFAULTS,
+  eloFromScore,
+  scoreFromElo,
+  erf,
+  phi,
+  emptyTally,
+  addPair,
+  addGame,
+  sprt,
+  SPRT_DEFAULTS,
+  estimate,
+  emptyCrossTable,
+  recordResult,
+  fitRatings,
+  losFromH2H,
+} from './arena'
+export type {
+  EngineSpec,
+  EvalKind,
+  Brain,
+  AdjudicationOptions,
+  GameReason,
+  GameOutcome,
+  MatchTally,
+  SprtModel,
+  SprtVerdict,
+  SprtParams,
+  SprtResult,
+  EloEstimate,
+  HeadToHead,
+  CrossTable,
+  Standing,
+} from './arena'
+
 export type GameResult = 'playing' | 'checkmate' | 'stalemate' | 'draw-fifty' | 'draw-repetition' | 'draw-material'
 
 export interface HistoryEntry {

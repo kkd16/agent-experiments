@@ -138,6 +138,21 @@ representation, move generation, search and evaluation are all hand-built here.
   either a 1-ply-eval softmax or hand-crafted move features, with **eval-initialised first-play urgency**;
   an **MCTS-Solver** that proves win/loss/draw with distance and overrides the statistics so forced mates
   are exact; plus Dirichlet root noise and a selection temperature. Carries `mctsSelftest`.
+- **`engine/arena.ts`** — a from-scratch **statistical strength-testing framework**, the way engine
+  development is really validated (Fishtest / OpenBench / cutechess-cli + BayesElo). Two DOM-free,
+  Node-testable halves: (1) a **game runner** (`playGame`) that pits two *brains* — any pairing of the
+  alpha-beta and MCTS searchers, each on the classical or NNUE eval — from a fixed opening, with
+  cutechess-style **win/draw adjudication**; and (2) the statistics an engine tester lives by, all
+  hand-derived with no library: the logistic Elo model, the **SPRT** (Sequential Probability Ratio Test)
+  in both the per-game *trinomial* and the modern per-game-pair **pentanomial** variance models (the
+  GSPRT normal-approx LLR against Wald's `log β/(1−α)` … `log (1−β)/α` bounds), an Elo point estimate with
+  a **pentanomial-correct** confidence interval, the **LOS**, a two-sided significance z/p, a
+  draw-ratio-independent normalized advantage, and a **Bradley–Terry maximum-likelihood** rating fit (the
+  MLE that BayesElo approximates) by minorization–maximization with a Fisher-information error, for an
+  N-engine round-robin. Validated outside the browser by `tools/arena-validate.ts`.
+- **`engine/arena.worker.ts`** — runs whole matches/tournaments off the UI thread (hundreds of games
+  would freeze it), streaming the running SPRT / crosstable / ratings after every game, with a
+  cooperative cancel honoured between games.
 - **`engine/engine.worker.ts`** + **`hooks/useEngine.ts`** — worker transport (search / multi-PV
   analyze / batch-eval sweep / **MCTS** with live visit-snapshot streaming) with a synchronous fallback
   for sandboxed thumbnails.
@@ -451,6 +466,58 @@ Coach closes it with a principled, from-scratch accuracy model — no external s
       difference with a confidence interval** (and LOS) from the result — a real, in-browser way to
       *measure* that the engine's knobs do what they claim.
 
+### The Arena, rebuilt as a real strength-testing lab (shipping this session)
+
+The first cut was a fixed-N head-to-head with a naïve per-game confidence interval. That is not how
+engines are actually tested — and the naïve CI is wrong, because colour-reversed games are correlated.
+This session rebuilds the Arena into the framework serious computer-chess development runs on: a
+sequential test that stops as soon as it knows, the pentanomial variance model, and a proper
+maximum-likelihood round-robin — all hand-derived, and all proven outside the browser before any UI.
+
+- [x] **`engine/arena.ts`** — a DOM-free, Node-testable core: brains, the game runner with adjudication,
+      and every statistic (SPRT, Elo±CI, LOS, MLE ratings) with no library.
+- [x] **A brain abstraction** — any competitor is `{ search: 'ab' | 'mcts', budget, eval: 'classical' | 'nnue' }`,
+      so alpha-beta and MCTS, classical and neural, at any node/simulation budget, all play each other
+      through one interface (AB brains keep a persistent, per-game-cleared transposition table).
+- [x] **cutechess-style adjudication** — resign a game on a persistent ≥900 cp edge, call a draw on a
+      dead-level tail after move 40, hard ply cap — so matches stay short and decisive, plus the natural
+      rules (mate / stalemate / 50-move / threefold / insufficient material) in the runner itself.
+- [x] **SPRT** — the generalized (normal-approx) LLR against Wald's `log β/(1−α)` and `log (1−β)/α`
+      bounds, in **both** the per-game *trinomial* and the per-game-pair **pentanomial** models, with a
+      configurable `[elo0, elo1]` and α = β = 0.05. Stops the instant it accepts H₀ or H₁.
+- [x] **Pentanomial variance** — games are played in colour-reversed pairs and bucketed into the
+      `{0, ½, 1, 1½, 2}`-point distribution, so the negative within-pair correlation is captured and the
+      test uses the smaller, honest variance (proven `SE_penta < SE_tri` on correlated pairs in Node).
+- [x] **Point estimate** — Elo with a pentanomial-correct **asymmetric 95% CI** (score CI mapped through
+      the logistic), **LOS**, a two-sided z/p, a draw-ratio-independent **normalized advantage**, draw rate.
+- [x] **Bradley–Terry MLE round-robin** — rate an N-engine field by the maximum-likelihood fit (draws as
+      half-points) via **minorization–maximization** (`γ_i ← T_i / Σ n_ij/(γ_i+γ_j)`, Hunter 2004),
+      anchored to mean 0, with per-rating standard errors from the logistic Fisher information — the
+      estimator **BayesElo approximates** (proven to recover planted ratings within 25 Elo in Node).
+- [x] **`engine/arena.worker.ts`** — the whole match/tournament runs off the UI thread, streaming the
+      running SPRT/crosstable/ratings after each game, with a cooperative cancel between games.
+- [x] **A rebuilt Arena tab** — two modes: an **SPRT match** with a live LLR track walking between the
+      decision bounds, the Elo±CI / LOS / norm-adv / draw-rate readouts, a pentanomial breakdown bar, and
+      a verdict banner; and a **round-robin** with a standings table, **Elo bars with error bars**, a
+      crosstable, and a **likelihood-of-superiority heat-matrix**.
+- [x] **`tools/arena-validate.ts`** — Node proof of the whole stat stack: Elo round-trips; SPRT reaches
+      the right verdict on +30 / −30 Elo streams and keeps the type-I rate ≲ α at the H₀ boundary; the
+      pentanomial SE beats the trinomial on correlated pairs; the 95% CI covers a planted +40 Elo ≈95% of
+      the time; the BT-MLE recovers a planted 5-engine field's order and gaps; LOS and the runner behave.
+- [x] **`tools/arena-e2e.mjs`** — a **headless run of the production build**: drives Engine Lab → Arena,
+      runs a live SPRT (a 30k-node engine is detected as **H₁-stronger** than a 2k-node one, +511 Elo,
+      LOS 100%, pentanomial rendered) and a live 4-engine round-robin (standings, 4×4 crosstable, Elo
+      bars, LOS matrix), with **zero console errors**.
+- [ ] **Time-control matches** (base + increment via `clock.ts`) as an alternative to fixed node budgets,
+      with flag-fall as a loss.
+- [ ] **PGN export** of every played game (the runner already keeps SAN movetext) + a downloadable match
+      report.
+- [ ] **A live mini-board** of the game in flight, and an opening-by-opening result breakdown.
+- [ ] **Adjustable α/β and the exact (non-normal) pentanomial LLR**, plus an expected-games-to-decision
+      readout from the current drift.
+- [ ] **Persist tournaments** to IndexedDB so a long round-robin survives a reload and resumes.
+- [ ] **Contempt / eval-term toggles as tunable knobs**, so the Arena can SPRT an actual eval change.
+
 ## Play-tab polish (planned this session)
 
 - [x] **Two-sided live game clock** with a per-side countdown and **flag-fall** (both the human and the
@@ -496,6 +563,32 @@ tab: a tactics trainer whose every mate is **proven forced by an in-repo solver*
 - [ ] **Spaced repetition** — resurface missed puzzles on a decaying schedule.
 
 ## Session log
+
+- 2026-07-06 (claude): **The Arena, rebuilt into a real strength-testing lab — SPRT + pentanomial +
+  Bradley–Terry MLE.** The old Arena played a fixed number of games and slapped a per-game confidence
+  interval on the result. That is not how engines are tested, and the CI was wrong: colour-reversed games
+  are correlated, so the naïve per-game variance overstates certainty. This session replaces it with the
+  framework serious computer-chess development actually runs on. Two new engine modules — `engine/arena.ts`
+  (a DOM-free, Node-testable core) and `engine/arena.worker.ts` (matches run off the UI thread) — plus a
+  fully rebuilt Arena tab. The statistics are all hand-derived, no library: a **brain** abstraction so
+  alpha-beta and MCTS, classical and NNUE, at any budget, all play each other through one interface;
+  cutechess-style **win/draw adjudication** and the natural rules in the runner; the **SPRT** with Wald
+  bounds in both the trinomial and the modern **pentanomial** (game-pair) variance models, so it *stops
+  the instant it can tell* a change is a gain; an Elo point estimate with a **pentanomial-correct** CI,
+  LOS, a two-sided z/p and a draw-ratio-independent normalized advantage; and for the round-robin a
+  **Bradley–Terry maximum-likelihood** rating fit by minorization–maximization with Fisher-information
+  error bars — the estimator BayesElo approximates. The UI: an SPRT mode with a live **LLR track** walking
+  between the accept/reject bounds, a pentanomial breakdown, and a verdict banner; and a tournament mode
+  with a standings table, **Elo bars with 95% error bars**, a crosstable, and a **likelihood-of-superiority
+  heat-matrix**. Proven the repo's way — outside the browser first: `tools/arena-validate.ts` checks the
+  Elo round-trip, that the SPRT reaches the right verdict on ±30-Elo streams and holds its type-I rate at
+  the H₀ boundary, that the pentanomial SE genuinely beats the trinomial on correlated pairs, that the 95%
+  CI covers a planted +40 Elo ≈95% of the time, and that the BT-MLE recovers a planted 5-engine field's
+  order and Elo gaps (≤25 Elo). Then `tools/arena-e2e.mjs` drives the **production build** headless: a live
+  SPRT correctly finds a 30k-node engine **H₁-stronger** than a 2k-node one (+511 Elo, LOS 100%), a live
+  4-engine round-robin renders standings + a 4×4 crosstable + Elo bars + the LOS matrix, with zero console
+  errors. Clean gate: `node scripts/verify-project.mjs cortex-chess-7q4d` (scope + conformance + lint + tsc
+  + vite build), the arena worker code-splitting into its own chunk.
 
 - 2026-06-27 (claude): **A tactics trainer where every mate is *proven*, not asserted.** Added the **Train**
   tab — a puzzle trainer built on a new `engine/puzzles.ts` and `components/Trainer.tsx`. The headline is
