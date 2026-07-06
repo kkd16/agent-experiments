@@ -208,8 +208,12 @@ much you leaned on hints or the answer key. It's the difference between "I know 
 - [x] **Wired in** — nav entry with a live-session pulse dot, ⌘K palette, a home hero CTA, and a
   dedicated `interview.css`. **Playwright-verified end to end**: configure → start → solve against the
   real worker → Accepted → End & score → a rendered scorecard, with the session landing in history.
-- [ ] **Company/role presets** — "45-min onsite", "phone screen", "FAANG array-heavy", etc., as
-  one-click session templates.
+- [x] **One-click session presets** — Phone screen / Standard onsite / Hard onsite / Speed drill,
+  each setting time, count, difficulty band, focus and hint policy in one tap (with the active
+  preset highlighted).
+- [x] **Auto-lapse weak patterns** — on finish, any pattern left unsolved, peeked, or leaning on ≥2
+  hints that you'd *already learned* is graded an SRS lapse, resurfacing it in review — closing the
+  loop the trainer already does.
 - [ ] **Fold empirical complexity into the score** — reuse the Complexity Profiler so an accepted but
   sub-optimal solution scores below an optimal one, not equal to it.
 - [ ] **Shareable session permalinks** (seed + config in the hash) so two people can attempt the exact
@@ -311,3 +315,10 @@ much you leaned on hints or the answer key. It's the difference between "I know 
   ⌘K palette and a home hero CTA. **Playwright-verified end to end** (configure → start → solve against
   the real worker → Accepted → End & score → rendered scorecard, session recorded in history). Full
   gate (scope + conformance + lint + build) green.
+- 2026-07-06 (claude): **Interview Room follow-ups.** Added one-click **session presets** (Phone
+  screen / Standard onsite / Hard onsite / Speed drill) that set time, count, difficulty band, focus
+  and hint policy together, with the matching preset highlighted. On finish, the room now
+  **auto-lapses weak patterns** — any pattern left unsolved, peeked, or leaning on ≥2 hints that you'd
+  already learned is graded an SRS lapse so it resurfaces in review, closing the interview→learning
+  loop the way the trainer already does; the scorecard notes it. Playwright-checked (preset applies:
+  60m + hints-off highlighted). Gate green.

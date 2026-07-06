@@ -27,6 +27,20 @@
 .iv-config, .iv-preview { padding: 20px 22px; }
 .iv-config-h { margin: 0 0 16px; font-size: 1.05rem; }
 
+/* ---- presets ---- */
+.iv-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 18px; }
+.iv-preset {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 9px 12px; border-radius: 11px; cursor: pointer; text-align: left;
+  background: var(--bg-soft); border: 1px solid var(--border-soft); color: var(--text);
+  transition: border-color .12s, transform .12s, background .12s;
+}
+.iv-preset:hover { border-color: var(--accent-glow); transform: translateY(-1px); }
+.iv-preset.on { border-color: var(--accent); background: linear-gradient(180deg, var(--body-glow-2), transparent); }
+.iv-preset-ic { font-size: 1.05rem; }
+.iv-preset-label { font-weight: 600; font-size: 0.9rem; }
+.iv-preset-blurb { font-variant-numeric: tabular-nums; }
+
 .iv-field { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .iv-field-label { font-size: 0.9rem; color: var(--text-dim); font-weight: 600; }
 

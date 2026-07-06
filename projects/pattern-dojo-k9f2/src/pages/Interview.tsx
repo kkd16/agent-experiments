@@ -43,6 +43,23 @@ function fmtAgo(ts: number, now: number): string {
 }
 const patternName = (id: string) => patternById(id)?.name ?? id;
 
+/** Distinct patterns the candidate struggled with — left unsolved, peeked, or
+ *  leaned on ≥2 hints — worth resurfacing in spaced repetition. */
+function weakPatternIds(session: LiveSession): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of session.problemIds) {
+    const a = session.attempts[id];
+    const ch = challengeById(id);
+    if (!a || !ch) continue;
+    if ((!a.solved || a.peeked || a.hintsUsed >= 2) && !seen.has(ch.patternId)) {
+      seen.add(ch.patternId);
+      out.push(ch.patternId);
+    }
+  }
+  return out;
+}
+
 /* ============================================================== root router */
 
 export default function Interview() {
@@ -62,6 +79,24 @@ const BANDS: { id: Band; label: string; hint: string }[] = [
   { id: "mixed", label: "Mixed", hint: "the full range" },
   { id: "standard", label: "Standard", hint: "mostly medium" },
   { id: "hard", label: "Onsite", hint: "medium → hard" },
+];
+
+interface Preset {
+  id: string;
+  icon: string;
+  label: string;
+  blurb: string;
+  durationMin: number;
+  problemCount: number;
+  band: Band;
+  focus: FocusMode;
+  hintsAllowed: boolean;
+}
+const PRESETS: Preset[] = [
+  { id: "phone", icon: "📞", label: "Phone screen", blurb: "20m · 2 · warm-up", durationMin: 20, problemCount: 2, band: "warmup", focus: "adaptive", hintsAllowed: true },
+  { id: "onsite", icon: "🏢", label: "Standard onsite", blurb: "45m · 3 · medium", durationMin: 45, problemCount: 3, band: "standard", focus: "adaptive", hintsAllowed: true },
+  { id: "onsite-hard", icon: "🔥", label: "Hard onsite", blurb: "60m · 4 · no hints", durationMin: 60, problemCount: 4, band: "hard", focus: "adaptive", hintsAllowed: false },
+  { id: "speed", icon: "⚡", label: "Speed drill", blurb: "20m · 4 · sprint", durationMin: 20, problemCount: 4, band: "warmup", focus: "balanced", hintsAllowed: false },
 ];
 
 function Lobby() {
@@ -95,6 +130,18 @@ function Lobby() {
   const preview = useMemo(() => selectProblems(config, ctx), [config, ctx]);
   const available = poolSize(focus, band);
   const shortfall = preview.length < problemCount;
+
+  const activePreset = PRESETS.find(
+    (p) => p.durationMin === durationMin && p.problemCount === problemCount && p.band === band && p.focus === focus && p.hintsAllowed === hintsAllowed,
+  );
+  const applyPreset = (p: Preset) => {
+    setDuration(p.durationMin);
+    setCount(p.problemCount);
+    setBand(p.band);
+    setFocus(p.focus);
+    setHints(p.hintsAllowed);
+    setSeed(hashSeed(`${p.id}:${now()}`));
+  };
 
   const start = () => {
     const ids = preview;
@@ -141,6 +188,21 @@ function Lobby() {
       <div className="iv-setup-grid">
         <div className="card iv-config">
           <h3 className="iv-config-h">Configure your session</h3>
+
+          <div className="iv-presets" role="group" aria-label="Session presets">
+            {PRESETS.map((p) => (
+              <button
+                key={p.id}
+                className={`iv-preset ${activePreset?.id === p.id ? "on" : ""}`}
+                onClick={() => applyPreset(p)}
+                title={p.blurb}
+              >
+                <span className="iv-preset-ic">{p.icon}</span>
+                <span className="iv-preset-label">{p.label}</span>
+                <span className="iv-preset-blurb muted small">{p.blurb}</span>
+              </button>
+            ))}
+          </div>
 
           <Field label="Time budget">
             <div className="seg">
@@ -409,10 +471,11 @@ function Room() {
     if (remainingSec <= 0) {
       finishedRef.current = true;
       if (currentId) iv.patchAttempt(currentId, { code });
+      for (const pid of weakPatternIds(session)) if (srs.isLearned(pid)) srs.grade(pid, 0);
       const done = iv.finish("time");
       if (done) navigate(`/interview/report/${done.id}`);
     }
-  }, [remainingSec, session, iv, currentId, code]);
+  }, [remainingSec, session, iv, srs, currentId, code]);
 
   if (!session || !ch || !currentId || !attempt) {
     return (
@@ -495,6 +558,7 @@ function Room() {
     if (!window.confirm("End the interview now and see your scorecard?")) return;
     finishedRef.current = true;
     flushCode();
+    for (const pid of weakPatternIds(session)) if (srs.isLearned(pid)) srs.grade(pid, 0);
     const done = iv.finish("manual");
     if (done) navigate(`/interview/report/${done.id}`);
   };
@@ -737,6 +801,9 @@ function ReportView({ report, config }: { report: Report; config: SessionConfig 
           {report.drill.length > 0 && (
             <>
               <h4 className="iv-drill-h">Drill these next</h4>
+              <p className="muted small" style={{ margin: "-4px 0 10px" }}>
+                Any of these you'd already learned were bumped up your spaced-repetition queue.
+              </p>
               <div className="iv-drill">
                 {report.drill.map((d) => {
                   const p = patternById(d.patternId);
