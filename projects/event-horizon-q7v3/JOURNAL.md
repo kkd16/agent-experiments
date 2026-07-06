@@ -139,8 +139,68 @@ falling in would see: the entire sky crushed into a shrinking, blue-shifted wind
 ### Ideas / future backlog
 
 - [ ] True redshift-of-the-starfield chromatic table (per-wavelength) instead of the RGB-tint approx.
-- [ ] Second-order "photon ring" isolation pass (integrate winding number, tint higher-order images).
+- [ ] Second-order "photon ring" isolation pass **in the render shader** (tint higher-order images).
+      The *physics* of the photon ring is now covered analytically in v4's Observatory (the deflection
+      curve shows the bending racing through π, 2π as `b → b_crit`); this remaining item is the GPU
+      image-space isolation of those higher-order rings in the main render.
 - [ ] Kerr rain frame proper (the GP β above is the Schwarzschild raindrop; Kerr uses a ZAMO drift).
+- [ ] A "trace this pixel" probe: click the main render and plot that one photon's geodesic + its
+      conserved (E, L, Q) using the new CPU integrators.
+
+## v4 — "Observatory" (the verification & shadow-science release)
+
+v1–v3 made a beautiful, physically-motivated picture. But every sibling lab in this repo earns its
+keep by being **proven from the inside** — a self-test suite that re-derives its results and a
+place where the theory and the simulation are checked against each other. Event Horizon had neither.
+v4 fixes that and, in doing so, turns the app from a renderer into an **instrument**: it now computes
+the exact GR observables an astronomer measures (the shadow outline, the light-bending curve) and
+verifies them live, in the browser, on every load.
+
+### New physics package (`src/physics/`), pure + headless-testable
+
+- [x] **`kerr.ts` — closed-form observables & the analytic shadow.** Horizons `r±`, ergosphere,
+      prograde/retrograde circular photon orbits, prograde ISCO (Bardeen), the exact `g`-factor, and
+      the star of the release: the **critical curve**. Each spherical photon orbit at BL radius `r`
+      fixes `ξ(r) = L/E` and `η(r) = Q/E²` (derived from `R(r)=R'(r)=0`), projected to the observer
+      sky by `α = −ξ/sinθ_o`, `β² = η + a²cos²θ_o − ξ²cot²θ_o`. Collapses to a circle of `3√3·M` at
+      `a=0`. Plus `isCaptured(α,β)` — an **independent** capture test via the Kerr radial potential
+      `R(r)` (a photon is trapped iff `R` never vanishes above the horizon), so the shadow can be
+      cross-checked two entirely different ways.
+- [x] **`cpu-geodesic.ts` — faithful CPU ports of the GPU integrators.** The Schwarzschild
+      reduced-Cartesian photon (now accumulating total winding so bending can exceed 2π), the full
+      **3-D Kerr Hamiltonian** integrator (line-for-line the shader's `kerrInv`/`kerrDeriv` + the
+      camera→covariant-momenta null init), and a lean equatorial Kerr tracer. These let us measure
+      **Carter's constant** and the null Hamiltonian along real geodesics and bisect capture edges.
+- [x] **`selftest.ts` — 20 checks, five groups.** *Light bending:* `b_crit` bisected from real
+      photons = `3√3·M` to 6 figures; deflection at `b = 20, 40 rs` matches the 2nd-order GR series
+      to <1%; bending diverges monotonically toward `b_crit`. *Kerr integrator:* Carter's `Q` and the
+      null condition `2H=0` conserved to `~10⁻⁵` along four integrated null geodesics. *Kerr shadow
+      (analytic):* the spherical-orbit `ξ(r),η(r)` satisfy `R=R'=0` (`|R|~10⁻¹⁴`); equatorial light
+      rings have `η=0`; the `a→0` curve is a circle of `b_crit`; the analytic curve is the exact
+      capture/escape knife-edge (300/300 boundary points). *Kerr shadow (integrated):* analytic
+      shadow edges match the renderer's **own** equatorial ray tracer to <2% across three spins.
+      *Closed-form:* horizon/photon-sphere/ISCO limits, the physics package agrees with the UI
+      helpers bit-for-bit, shadow area = `π·b_crit²`, displacement is zero at `a=0` and grows with spin.
+
+### New "Observatory" tab (`src/components/Observatory.tsx`)
+
+- [x] **Shadow / critical-curve panel.** Live `(α, β)` sky plot: the numerically-determined captured
+      region (from the radial-potential test) drawn as a black silhouette, the exact analytic critical
+      curve traced in cyan **exactly along its rim** (theory = simulation), and the Schwarzschild
+      reference circle dashed for scale. Spin + inclination sliders; read-outs for width, height,
+      area, frame-dragging displacement and asymmetry, plus the light-ring / ISCO geometry.
+- [x] **Light-bending & photon-ring panel.** The integrated deflection `α(b)` for Schwarzschild with
+      the weak-field `4M/b` asymptote and the `b_crit` divergence, `π`-multiple gridlines marking the
+      successive photon-ring orders (the curve climbs past `2π`, one full extra loop, near `b_crit`).
+- [x] **Verification panel.** The whole suite rendered as grouped pass/✓ badges with each measured
+      error inline and an `N/N passing` headline — the suite runs after first paint so the tab opens
+      instantly.
+- [x] Wired the tab + `#/observatory` route + the `O` keyboard shortcut; new Physics-primer section
+      ("The shadow — computed, and proven"); Observatory-themed CSS.
+- [x] Verified green via `node scripts/verify-project.mjs event-horizon-q7v3` (scope + conformance +
+      lint + tsc + build) **and** driven headless in Chromium against the production build: the tab
+      mounts, **20/20 self-tests pass live**, the shadow silhouette sits under the analytic curve, the
+      readouts update on spin/inclination, and there are **zero console errors**.
 
 ## Session log
 
@@ -168,3 +228,19 @@ falling in would see: the entire sky crushed into a shrinking, blue-shifted wind
   volume rendering / the rain frame / aberration, and exact Kerr prograde+retrograde light-ring
   rings + a geometry readout in the explorer. Verified green **and** headless-rendered every mode
   in Chromium (no shader-compile / runtime errors; shadow, plunge compression and rings confirmed).
+- 2026-07-06 (claude, opus-4.8): **v4 "Observatory"**. Gave the app the one thing every sibling lab
+  in this repo has and it lacked — a **verification story**. New pure `src/physics/` package: `kerr.ts`
+  (closed-form horizons/ergosphere/light-rings/ISCO/`g`-factor and the exact **analytic shadow
+  critical curve** `α=−ξ/sinθ_o`, `β²=η+a²cos²θ_o−ξ²cot²θ_o` from the spherical-photon-orbit
+  `ξ(r),η(r)`, plus an independent radial-potential capture test), `cpu-geodesic.ts` (faithful CPU
+  ports of the Schwarzschild and full 3-D Kerr Hamiltonian integrators + a lean equatorial tracer,
+  used to measure Carter's constant / the null condition and bisect capture edges), and `selftest.ts`
+  (**20 checks in five groups**). New **Observatory** tab: a live `(α,β)` shadow plot with the numeric
+  captured region under the exact analytic curve (theory = simulation, displaced into the Kerr "D" as
+  spin rises), a Schwarzschild light-bending/photon-ring plot (deflection hugging `4M/b`, diverging
+  through `π`,`2π` at `b_crit`), and the whole self-test suite as live pass badges. Wired `#/observatory`
+  + the `O` key + a new primer section. Validated every formula in a throwaway Node oracle first
+  (b_crit to 5e-8, Carter drift ~1e-5, R=R'=0 to 1e-14, a→0 shadow = exact circle), then ported;
+  full gate green (scope + conformance + lint + tsc + build) and driven headless in Chromium against
+  the production build — **20/20 self-tests pass live, zero console errors**, shadow silhouette hugs
+  the analytic curve, read-outs track the sliders. No shader/renderer files touched — purely additive.

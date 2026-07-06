@@ -146,6 +146,42 @@ export default function AboutView() {
           down.
         </p>
 
+        <h2>The shadow — computed, and proven</h2>
+        <p>
+          The dark disc at the centre of the image is the black hole’s <strong>shadow</strong>: the
+          set of directions on your sky along which a backwards-traced photon spirals onto an
+          unstable orbit and is lost. Its edge — the <strong>critical curve</strong> — has an exact
+          closed form. Every point of it corresponds to a <em>spherical photon orbit</em> at some
+          Boyer–Lindquist radius <code>r</code>, which fixes two conserved ratios, the specific
+          angular momentum <code>ξ = L/E</code> and Carter’s constant <code>η = Q/E²</code>, and
+          Bardeen’s projection turns those into sky coordinates:
+        </p>
+        <pre className="eq">α = −ξ / sinθ_o      β² = η + a²cos²θ_o − ξ² cot²θ_o</pre>
+        <p>
+          At zero spin this is a perfect circle of radius <code>b_crit = 3√3·M ≈ 2.598 rs</code>. Give
+          the hole spin and it slides sideways and flattens into the famous Kerr <strong>“D”</strong>:
+          the prograde light ring is dragged in tight while the retrograde one swings wide, so the
+          shadow is displaced and asymmetric — exactly the deformation the Event Horizon Telescope
+          hunts for. The new <strong>Observatory</strong> tab draws this curve live and, behind it,
+          fills in the shadow a second, independent way — by asking of every direction whether the
+          Kerr <em>radial potential</em> lets a photon turn around before the horizon. The two agree
+          to the pixel.
+        </p>
+        <p>
+          That agreement is the point. Everywhere else the app <em>asserts</em> its physics is right;
+          the Observatory <strong>proves</strong> it, in your browser, on every load. A suite of
+          self-tests re-derives the results from the inside: the critical impact parameter recovered
+          by bisecting real integrated photons matches <code>3√3·M</code> to six figures; the CPU port
+          of the Kerr integrator conserves Carter’s constant and the null condition to <code>~10⁻⁵</code>
+          along genuine geodesics; the spherical-orbit formulae satisfy <code>R(r) = R′(r) = 0</code>;
+          and the analytic shadow edges match the renderer’s own equatorial ray tracer. The{' '}
+          <strong>Light bending</strong> plot on the same tab shows the companion story for a
+          non-rotating hole — the deflection angle tracks Einstein’s <code>4M/b</code> far out and
+          diverges through <code>π</code> and <code>2π</code> as the impact parameter approaches
+          <code>b_crit</code>, each loop stacking another of the infinitely many images that pile up
+          into the photon ring.
+        </p>
+
         <h2>Making it look photographic</h2>
         <ul>
           <li>
@@ -180,7 +216,9 @@ export default function AboutView() {
         </p>
         <p className="muted small">
           Open the <strong>Geodesics</strong> tab to see the individual light rays that all of this
-          is built from — and drag the spin slider there to watch frame dragging directly.
+          is built from — and drag the spin slider there to watch frame dragging directly. Then open{' '}
+          the <strong>Observatory</strong> for the exact shadow outline, the light-bending curve, and
+          the live verification suite that keeps every number here honest.
         </p>
       </div>
     </div>
