@@ -31,6 +31,8 @@ import { ParikhPanel } from './components/ParikhPanel';
 import { OmegaPanel } from './components/OmegaPanel';
 import { LearnPanel } from './components/LearnPanel';
 import { AlternationPanel } from './components/AlternationPanel';
+import { CfgPanel } from './components/CfgPanel';
+import { DEFAULT_CFG_SOURCE, DEFAULT_CFG_SAMPLE } from './engine/cfg';
 import { DEFAULT_AFA_SOURCE } from './engine/afa';
 import type { LogicMode } from './engine/logic';
 import { CensusPanel } from './components/CensusPanel';
@@ -62,6 +64,7 @@ type Tab =
   | 'parikh'
   | 'omega'
   | 'afa'
+  | 'cfg'
   | 'learn'
   | 'compare'
   | 'coalgebra'
@@ -102,6 +105,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'parikh', label: 'Parikh' },
       { id: 'omega', label: 'ω / Büchi' },
       { id: 'afa', label: 'Alternation' },
+      { id: 'cfg', label: 'Context-Free' },
       { id: 'learn', label: 'Learn' },
       { id: 'compare', label: 'Compare' },
       { id: 'coalgebra', label: 'Coalgebra' },
@@ -126,6 +130,8 @@ interface Stored {
   presburger: string;
   omega: string;
   afa: string;
+  cfg: string;
+  cfgQuery: string;
 }
 
 const DEFAULT_EXTENDED = '.*[0-9].*&.*[a-z].*&.{6,}';
@@ -148,6 +154,8 @@ function loadStored(): Stored {
         presburger: parsed.presburger ?? DEFAULT_PRESBURGER,
         omega: parsed.omega ?? DEFAULT_OMEGA,
         afa: parsed.afa ?? DEFAULT_AFA_SOURCE,
+        cfg: parsed.cfg ?? DEFAULT_CFG_SOURCE,
+        cfgQuery: parsed.cfgQuery ?? DEFAULT_CFG_SAMPLE,
       };
     }
   } catch {
@@ -163,6 +171,8 @@ function loadStored(): Stored {
     presburger: DEFAULT_PRESBURGER,
     omega: DEFAULT_OMEGA,
     afa: DEFAULT_AFA_SOURCE,
+    cfg: DEFAULT_CFG_SOURCE,
+    cfgQuery: DEFAULT_CFG_SAMPLE,
   };
 }
 
@@ -177,18 +187,20 @@ export default function App() {
   const [presburgerSource, setPresburgerSource] = useState(initial.presburger);
   const [omegaSource, setOmegaSource] = useState(initial.omega);
   const [afaSource, setAfaSource] = useState(initial.afa);
+  const [cfgSource, setCfgSource] = useState(initial.cfg);
+  const [cfgQuery, setCfgQuery] = useState(initial.cfgQuery);
   const [tab, setTab] = useState<Tab>('nfa');
 
   useEffect(() => {
     try {
       localStorage.setItem(
         STORE_KEY,
-        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode, presburger: presburgerSource, omega: omegaSource, afa: afaSource }),
+        JSON.stringify({ pattern, text, compare: comparePattern, extended: extendedPattern, logic: logicSource, logicMode, presburger: presburgerSource, omega: omegaSource, afa: afaSource, cfg: cfgSource, cfgQuery }),
       );
     } catch {
       /* ignore */
     }
-  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode, presburgerSource, omegaSource, afaSource]);
+  }, [pattern, text, comparePattern, extendedPattern, logicSource, logicMode, presburgerSource, omegaSource, afaSource, cfgSource, cfgQuery]);
 
   const compiled = useMemo(() => compile(pattern), [pattern]);
   const regular = compiled.features ? compiled.features.regular : false;
@@ -237,7 +249,7 @@ export default function App() {
           <span className="logo">/<span className="logo-star">∗</span>/</span>
           <div>
             <h1>Regex Studio</h1>
-            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>read number theory as a machine — compile Presburger arithmetic to its automaton</strong> (Büchi–Bruyère–Villemaire: the first-order theory of <code>⟨ℕ,+,&lt;⟩</code> over the binary digits of its variables — <code>x+y=z</code> is a ripple-carry adder, <code>∃</code> is projection, and a whole sentence decides <strong>true/false</strong>), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, and now <strong>turn the head around — a two-way DFA</strong> compiled to a one-way DFA by Shepherdson's crossing-sequence construction (Rabin–Scott: two-way = regular), and now <strong>branch ∧ <em>and</em> ∨ at once — an alternating automaton</strong> (positive-boolean transitions; complement free by dualising, ∧/∨-closure with no product) determinised through the studio's own subset construction and cross-checked against its alternating semantics, and now <strong>throw the order away and keep the counts — Parikh's theorem</strong> compiles the language's <strong>commutative image</strong> to a <strong>semilinear set</strong> straight off the regex (<code>(ab)*</code> ↦ the diagonal #a=#b, <code>(aaa|aaaaa)*</code> ↦ the numerical semigroup ⟨3,5⟩ with the Frobenius gap 7) and <strong>bridges to arithmetic</strong> (semilinear ⇔ Presburger-definable) so the same set is confronted three ways against the studio's own digit-automaton, fuzz, compare and synthesise.</p>
+            <p>A regular-expression engine built from scratch — parse, compile four ways, minimise, run six engines, extend to the Boolean closure (&amp; ~ −), read the language's <strong>syntactic monoid</strong> (the variety ladder: piecewise-testable · DA/FO² · star-free? · the named group · the egg-box), speak <strong>Unicode</strong> via <code>\p{'{'}…{'}'}</code> derived live from the host, <strong>learn the minimal DFA back from queries</strong> (Angluin's L* · RPNI), <strong>count the language</strong> (the rational generating function · growth rate · entropy), classify its <strong>ambiguity</strong> — unambiguous · finite · polynomial-degree-d · exponential (Weber–Seidl, EDA/IDA on the squared &amp; cubed automata) — decide equivalence &amp; inclusion <strong>without determinising</strong> (bisimulation up to congruence · antichains), and now run the whole studio <strong>in reverse — compile a logic formula to its automaton</strong> (Büchi–Elgot–Trakhtenbrot: <code>MSO[&lt;]</code> = regular, <code>FO[&lt;]</code> = star-free, LTLf via Kamp), and now <strong>read number theory as a machine — compile Presburger arithmetic to its automaton</strong> (Büchi–Bruyère–Villemaire: the first-order theory of <code>⟨ℕ,+,&lt;⟩</code> over the binary digits of its variables — <code>x+y=z</code> is a ripple-carry adder, <code>∃</code> is projection, and a whole sentence decides <strong>true/false</strong>), and now <strong>cross into the infinite — compile an LTL spec to its Büchi automaton</strong> (Gerth–Peled–Vardi–Wolper; <code>ω-regular = S1S</code>, decided by a lasso witness u·(v)<sup>ω</sup>), and now <strong>weigh every run over a semiring</strong> — a weighted automaton (Boolean=recognition · counting=ambiguity · tropical=shortest-distance · Viterbi · probability), Schützenberger's rational power series with the all-words closure read back as a weighted regex, and now <strong>turn the head around — a two-way DFA</strong> compiled to a one-way DFA by Shepherdson's crossing-sequence construction (Rabin–Scott: two-way = regular), and now <strong>branch ∧ <em>and</em> ∨ at once — an alternating automaton</strong> (positive-boolean transitions; complement free by dualising, ∧/∨-closure with no product) determinised through the studio's own subset construction and cross-checked against its alternating semantics, and now <strong>throw the order away and keep the counts — Parikh's theorem</strong> compiles the language's <strong>commutative image</strong> to a <strong>semilinear set</strong> straight off the regex (<code>(ab)*</code> ↦ the diagonal #a=#b, <code>(aaa|aaaaa)*</code> ↦ the numerical semigroup ⟨3,5⟩ with the Frobenius gap 7) and <strong>bridges to arithmetic</strong> (semilinear ⇔ Presburger-definable) so the same set is confronted three ways against the studio's own digit-automaton, and now <strong>step past the regular fence entirely — a context-free grammar</strong> parsed three agreeing ways (<code>CYK</code> on its Chomsky normal form · an <code>Earley</code> chart on the raw grammar · a derivation oracle), compiled to a <strong>pushdown automaton</strong> you can single-step, and read for emptiness / finiteness / ambiguity — <code>S → a S b | ε</code> is <code>{'{'}aⁿbⁿ{'}'}</code>, the canonical non-regular language, fuzz, compare and synthesise.</p>
           </div>
         </div>
         <a className="repo-link" href="https://en.wikipedia.org/wiki/Thompson%27s_construction" target="_blank" rel="noreferrer">
@@ -436,6 +448,10 @@ export default function App() {
 
             {tab === 'afa' && <AlternationPanel source={afaSource} onSourceChange={setAfaSource} />}
 
+            {tab === 'cfg' && (
+              <CfgPanel source={cfgSource} onSourceChange={setCfgSource} query={cfgQuery} onQueryChange={setCfgQuery} />
+            )}
+
             {tab === 'learn' && <LearnPanel dfa={compiled.minDfa} notice={automataNotice} />}
 
             {tab === 'compare' && (
@@ -483,7 +499,7 @@ export default function App() {
         position automaton · Pike VM · backtracking VM) cross-checked by a seeded differential fuzzer · product-automaton equivalence — plus the modern road that skips
         determinisation: <strong>bisimulation up to congruence</strong> (Bonchi–Pous, the naïve / up-to-equivalence / up-to-congruence ladder) and
         <strong>antichain</strong> inclusion &amp; universality (De Wulf et al.), every verdict cross-checked against the DFA product · ReDoS
-        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>ambiguity analysis</strong> — the <strong>Weber–Seidl</strong> degree-of-ambiguity hierarchy (unambiguous ⊂ finitely ⊂ polynomially-degree-d ⊂ exponentially ambiguous) decided structurally by EDA (the squared automaton's doubled cycle) and IDA (the cubed automaton's <code>(p,p,q)⇝(p,q,q)</code>), every verdict cross-checked against an exact transfer-matrix run count Rₙ=e₀ᵀBⁿf and a brute-force enumeration · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · <strong>Presburger ⇒ automaton</strong> — the <strong>Büchi–Bruyère–Villemaire</strong> construction compiles first-order <code>⟨ℕ,+,&lt;⟩</code> arithmetic (with congruences) to an automaton over the <strong>binary digits</strong> of its variables (an equality is a carry automaton, ∃ is projection + 0-saturation, a sentence decides true/false); <code>x+y=z</code> is a ripple-carry adder and the compiler is proved four exact ways against an arithmetic oracle, ∀≡¬∃¬ duality and a Presburger identity battery · <strong>ω / Büchi — crossing into the infinite</strong>: LTL on infinite traces compiled to a <strong>Büchi automaton</strong> by the <strong>Gerth–Peled–Vardi–Wolper</strong> on-the-fly tableau (NNF, the ∨/U/R split over New/Old/Next, one accepting set per Until eventuality), degeneralized to an NBA (Baier–Katoen), then decided the only way ω-words allow — a reachable accepting cycle (Tarjan SCC) whose witness is a <strong>lasso</strong> u·(v)<sup>ω</sup> — giving satisfiability &amp; validity (the automata-theoretic approach, Vardi–Wolper); ω-regular <code>= S1S</code> (Büchi) and <code>LTL = FO[&lt;]</code> (Kamp), the studio's MSO theorem one level up, every automaton differentially checked against a brute-force ultimately-periodic LTL oracle and against its own complement (<code>NBA(φ)</code> ⊎ <code>NBA(¬φ)</code> partition Σ<sup>ω</sup>) · <strong>Parikh's theorem ⇒ a semilinear set</strong> — the language's <strong>commutative image</strong> π(L) built structurally off the regex (· ↦ Minkowski ⊕, | ↦ ∪, * ↦ the additive submonoid), so <code>(ab)*</code> is the diagonal #a=#b and <code>(aaa|aaaaa)*</code> the numerical semigroup ⟨3,5⟩ with the Frobenius gap 7 — then <strong>bridged to arithmetic</strong> (semilinear ⇔ Presburger-definable): the same image compiles to the studio's own Büchi–Bruyère–Villemaire digit-automaton, confronted tuple-for-tuple against the set three independent ways (structural algebra · brute-force word enumeration · the Presburger automaton) at zero disagreements · DOT/SVG export — all hand-written TypeScript, no regex library.
+        analysis · state-elimination synthesis · the <strong>syntactic monoid</strong> with Green's relations (the egg-box) and the full <strong>variety ladder</strong> — piecewise-testable (Simon) ⊂ DA / FO²[&lt;] ⊂ star-free / FO[&lt;] / counter-free (Schützenberger) — with the syntactic <strong>group named</strong> (ℤ/n, Klein four, Dₙ, Q₈…) and every element wired back to the state-map it induces · <strong>grammatical inference</strong> — Angluin's <strong>L*</strong> reconstructs the minimal DFA from membership &amp; equivalence queries (the observation table, Myhill–Nerode made tangible) and <strong>RPNI</strong> infers it passively from labelled data · <strong>enumerative census</strong> — the rational generating function S(x)=P(x)/Q(x) (Chomsky–Schützenberger) from the transfer matrix, exact word counts, and the growth rate λ (Perron root) with topological entropy ln λ, classifying the language finite / polynomial / exponential · <strong>ambiguity analysis</strong> — the <strong>Weber–Seidl</strong> degree-of-ambiguity hierarchy (unambiguous ⊂ finitely ⊂ polynomially-degree-d ⊂ exponentially ambiguous) decided structurally by EDA (the squared automaton's doubled cycle) and IDA (the cubed automaton's <code>(p,p,q)⇝(p,q,q)</code>), every verdict cross-checked against an exact transfer-matrix run count Rₙ=e₀ᵀBⁿf and a brute-force enumeration · <strong>logic ⇒ automaton</strong> — the <strong>Büchi–Elgot–Trakhtenbrot</strong> construction compiles an <strong>MSO[&lt;]</strong> sentence (∧ = product, ¬ = complement-within-validity, ∃ = projection + determinisation) to a finite automaton, lowered into the studio DFA; an FO[&lt;] formula provably lands star-free (McNaughton–Papert, checked against the syntactic monoid) and LTLf desugars to FO (Kamp), every formula differentially checked against a brute-force MSO oracle · <strong>Presburger ⇒ automaton</strong> — the <strong>Büchi–Bruyère–Villemaire</strong> construction compiles first-order <code>⟨ℕ,+,&lt;⟩</code> arithmetic (with congruences) to an automaton over the <strong>binary digits</strong> of its variables (an equality is a carry automaton, ∃ is projection + 0-saturation, a sentence decides true/false); <code>x+y=z</code> is a ripple-carry adder and the compiler is proved four exact ways against an arithmetic oracle, ∀≡¬∃¬ duality and a Presburger identity battery · <strong>ω / Büchi — crossing into the infinite</strong>: LTL on infinite traces compiled to a <strong>Büchi automaton</strong> by the <strong>Gerth–Peled–Vardi–Wolper</strong> on-the-fly tableau (NNF, the ∨/U/R split over New/Old/Next, one accepting set per Until eventuality), degeneralized to an NBA (Baier–Katoen), then decided the only way ω-words allow — a reachable accepting cycle (Tarjan SCC) whose witness is a <strong>lasso</strong> u·(v)<sup>ω</sup> — giving satisfiability &amp; validity (the automata-theoretic approach, Vardi–Wolper); ω-regular <code>= S1S</code> (Büchi) and <code>LTL = FO[&lt;]</code> (Kamp), the studio's MSO theorem one level up, every automaton differentially checked against a brute-force ultimately-periodic LTL oracle and against its own complement (<code>NBA(φ)</code> ⊎ <code>NBA(¬φ)</code> partition Σ<sup>ω</sup>) · <strong>Parikh's theorem ⇒ a semilinear set</strong> — the language's <strong>commutative image</strong> π(L) built structurally off the regex (· ↦ Minkowski ⊕, | ↦ ∪, * ↦ the additive submonoid), so <code>(ab)*</code> is the diagonal #a=#b and <code>(aaa|aaaaa)*</code> the numerical semigroup ⟨3,5⟩ with the Frobenius gap 7 — then <strong>bridged to arithmetic</strong> (semilinear ⇔ Presburger-definable): the same image compiles to the studio's own Büchi–Bruyère–Villemaire digit-automaton, confronted tuple-for-tuple against the set three independent ways (structural algebra · brute-force word enumeration · the Presburger automaton) at zero disagreements · <strong>context-free — beyond the regular fence</strong>: a context-free grammar recognised three agreeing ways (<strong>CYK</strong> on the Chomsky-normal-form grammar · an <strong>Earley</strong> chart on the raw grammar with the Aycock–Horspool nullable fix · an exact span-DP derivation oracle), the CNF pipeline (START·TERM·BIN·DEL·UNIT) and the top-down <strong>pushdown automaton</strong> (accept by empty stack, an accepting run = a leftmost derivation) built and single-stepped, with useless-symbol removal, emptiness / finiteness, and a sound bounded <strong>ambiguity</strong> witness — every recognizer and transform cross-checked by a seeded fuzzer (CYK ≡ Earley ≡ oracle · CNF &amp; trimming preserve the language · PDA ≡ oracle) at 141,000+ checks, zero disagreements · DOT/SVG export — all hand-written TypeScript, no regex library.
       </footer>
     </div>
   );
