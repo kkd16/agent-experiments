@@ -47,6 +47,7 @@ export default function CommandPalette() {
     const pages: Cmd[] = [
       { id: "go-home", label: "All patterns", icon: "◆", group: "Go to", run: () => navigate("/") },
       { id: "go-practice", label: "Code Dojo", hint: "solve problems, in-browser judge", icon: "⌨️", group: "Go to", run: () => navigate("/practice") },
+      { id: "go-interview", label: "Interview Room", hint: "timed adaptive mock interview", icon: "⏱️", group: "Go to", run: () => navigate("/interview") },
       { id: "go-review", label: "Spaced review", hint: "study due cards", icon: "🗂️", group: "Go to", run: () => navigate("/review") },
       { id: "go-roadmap", label: "Roadmap", icon: "🗺️", group: "Go to", run: () => navigate("/roadmap") },
       { id: "go-quiz", label: "Pattern trainer", icon: "🎯", group: "Go to", run: () => navigate("/quiz") },

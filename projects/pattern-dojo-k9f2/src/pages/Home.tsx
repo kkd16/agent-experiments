@@ -107,6 +107,16 @@ export default function Home() {
         </a>
       </section>
 
+      <a className="iv-home-cta" href={href("/interview")}>
+        <span className="eyebrow">New — The Interview Room</span>
+        <div className="iv-home-cta-title">Put it all to the test: a timed, adaptive mock interview.</div>
+        <p className="muted" style={{ margin: 0, maxWidth: 640 }}>
+          A countdown, a real editor and problems picked to hunt your weakest patterns — judged in a
+          sandbox, then scored on speed and independence with a readiness scorecard and a coach's notes.{" "}
+          <span className="iv-home-cta-arrow">Start a session →</span>
+        </p>
+      </a>
+
       <section className="features">
         <Feature icon="🧠" title="Intuition first" desc="Each pattern starts with the 'aha' — a sticky mental model and why the trick works, not just the code." />
         <Feature icon="🎬" title="Interactive visualizers" desc="Step through pointers, windows, recursion trees and DP tables frame by frame, with keyboard control." />
