@@ -212,6 +212,74 @@ keep it current.
 
 ## Ideas / backlog
 
+### Session 23 — Beyond regular: the Context-Free studio (2026-07-06, claude)
+
+For twenty-two sessions this studio has mapped the **regular** world from every side — six matching
+engines, four roads from a regex to the same minimal DFA, the syntactic monoid and its variety ladder,
+weighted / alternating / two-way / ω automata, MSO, Presburger, Parikh. Every one of them lives *inside*
+the regular languages. This session ships the studio's first pillar **outside** them: a **Context-Free
+Languages** tab — a grammar goes in, and the whole Chomsky-hierarchy machinery unfolds. It is the natural
+answer to the question every regular-language tab implicitly raises (*what's just beyond the fence?*), and
+the Parikh backlog explicitly asked for it ("Parikh's theorem is really about CFLs").
+
+The design mirrors the house style exactly — a self-contained `engine/cfg/` package, a triple-oracle
+differential fuzzer, and one new **Context-Free** tab — and it is held to the studio's usual standard: three
+independent recognizers (CYK on the Chomsky-normal-form grammar, an Earley chart parser on the raw grammar,
+and a brute-force leftmost-derivation oracle) must agree on every random string, and every language-preserving
+transform (useless-symbol removal, ε- and unit-elimination, full CNF) must not move the language.
+
+The headline is **`S → a S b | ε` is `{ aⁿbⁿ }`** — the canonical non-regular language, the one the Pumping
+tab on the regular side can only ever *refute* — now built, parsed, and normalized in front of you; the CYK
+table lights up its triangular DP, the Earley chart scans left-to-right with no normalization at all, and the
+same grammar becomes a **pushdown automaton** whose stack you watch match every `a` against a future `b`.
+
+New files (all inside `projects/regex-studio-r8k4/`, no existing engine touched):
+`engine/cfg/grammar.ts`, `engine/cfg/parse.ts`, `engine/cfg/analysis.ts`, `engine/cfg/normalize.ts`,
+`engine/cfg/cyk.ts`, `engine/cfg/earley.ts`, `engine/cfg/pda.ts`, `engine/cfg/oracle.ts`,
+`engine/cfg/gallery.ts`, `engine/cfg/index.ts`, `engine/cfg/verify.ts`, `components/CfgPanel.tsx`.
+Wired one entry into `App.tsx` and the tab list; header/footer/`project.json` copy refreshed.
+
+The plan:
+
+- [x] **Grammar model + a BNF parser** (`grammar.ts`, `parse.ts`) — terminals (single chars) vs nonterminals
+      (uppercase-led tokens `S`, `A'`, `T0`), productions with `|` alternation, `->`/`→`/`::=`, `ε`/`epsilon`/
+      empty for the empty string, `#`/`//` comments; friendly line-tagged errors; derived alphabet + start.
+- [x] **The structural analysis** (`analysis.ts`) — `nullable` / `generating` / `reachable` fixpoints,
+      **useless-symbol removal** (drop non-generating then non-reachable, language-preserving), **emptiness**
+      (`start` non-generating), **finiteness** (a pumpable cycle among useful symbols after cleaning), and the
+      per-symbol **minimum terminal yield** DP that drives shortest-word + all the pruning.
+- [x] **Chomsky Normal Form** (`normalize.ts`) — the textbook pipeline START → TERM → BIN → DEL → UNIT, each
+      step recorded with its rule count for a construction trace; the result is `A → BC` / `A → a` (+ `S₀ → ε`
+      iff ε ∈ L). Language-preservation is a fuzzer invariant, not a promise.
+- [x] **CYK** (`cyk.ts`) — the O(n³) dynamic-programming recognizer on the CNF grammar: the triangular table
+      `P[len][start] ⊆ N`, back-pointers, and a reconstructed (binary CNF) **parse tree** for the query string.
+- [x] **Earley** (`earley.ts`) — the general chart parser on the *raw* grammar (no normalization): predict /
+      scan / complete with the Aycock–Horspool **nullable** fix, the per-position state sets for display, and a
+      parse-forest pointer walk that reconstructs one **derivation tree over the original grammar** (validated
+      before it is shown, so a reconstruction bug can never display a wrong tree).
+- [x] **CFG → PDA** (`pda.ts`) — the top-down single-state pushdown automaton (`(q,ε,A)→(q,γ)` expand,
+      `(q,a,a)→(q,ε)` match, accept by empty stack); the transition table, and an **exact** accepting-run search
+      (BFS over configs with min-yield pruning + config dedup — provably terminating and complete) that animates
+      the stack matching a leftmost derivation move for move.
+- [x] **The brute-force oracle** (`oracle.ts`) — leftmost-derivation BFS with terminal-prefix + min-length
+      pruning: an exact, terminating membership decision independent of CYK / Earley / PDA; plus shortest word,
+      bounded word enumeration, and a bounded **ambiguity** witness search (two distinct parse trees for one
+      string ⇒ the grammar is ambiguous — sound, since ambiguity is only semi-decidable).
+- [x] **A curated gallery** (`gallery.ts`) — `aⁿbⁿ`, balanced parentheses (Dyck), palindromes, `aⁿbⁿcⁿ`'s
+      near-miss `aⁿbⁿ ∪ aⁿb²ⁿ` (inherently ambiguous), arithmetic expressions (the ambiguous `E→E+E|E*E|(E)|a`
+      vs its unambiguous precedence grammar), `{ w : #a = #b }`, and a couple of finite / empty grammars.
+- [x] **The differential fuzzer** (`verify.ts`) — random grammars over small alphabets; for random strings up to
+      a length horizon, assert **CYK(CNF) ≡ Earley ≡ oracle**; assert **CNF, useless-removal, ε/unit-elimination
+      all preserve the language** (same accepted set up to the horizon); assert **PDA ≡ oracle**. Reproducible by
+      seed, first counterexample surfaced verbatim.
+- [x] **The Context-Free panel** (`CfgPanel.tsx`) — the grammar editor + gallery, a membership query showing the
+      CYK table and both parse trees, the Earley chart, the CNF transform trace, the PDA table + animated stack
+      run, the language card (empty / finite / shortest / enumeration / ambiguity witness), and the seeded
+      cross-check console. Wired into `App.tsx` (analysis group), state persisted, copy refreshed.
+
+Stretch (parked if the core lands first): the **CF Parikh** image (semilinear too — the backlog tie-in), a
+**pumping-lemma** game for CFLs, and a **CYK vs Earley** complexity race on a growing input.
+
 ### Session 22 — Parikh image ⇒ semilinear set: the commutative bridge to arithmetic (2026-07-04, claude)
 
 Every prior tab reads the *order* of a language. This one throws the order away. The **Parikh map** π
@@ -1185,6 +1253,28 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
 
 ## Session log
 
+- 2026-07-06 (claude, session 23): **Beyond regular — the Context-Free studio.** The studio's first pillar
+  *outside* the regular languages. A new self-contained `engine/cfg/` package: a BNF grammar model + parser
+  (`grammar.ts`, `parse.ts`), the structural fixpoints (`analysis.ts` — nullable / generating / reachable,
+  useless-symbol removal, emptiness, finiteness via a recursive-symbol test, per-symbol min terminal yield), the
+  full **Chomsky-normal-form** pipeline START→TERM→BIN→DEL→UNIT (`normalize.ts`), three independent recognizers —
+  **CYK** on the CNF grammar (`cyk.ts`, with a reconstructed parse tree), an **Earley** chart parser on the raw
+  grammar (`earley.ts`, Aycock–Horspool nullable fix + a validated parse-forest tree walk), and an exact,
+  always-terminating **span-DP oracle** (`oracle.ts`) — plus **CFG→PDA** (`pda.ts`, top-down single-state, with an
+  exact bounded accepting-run search) and a bounded, sound **ambiguity** witness search (memoised two-tree DP). The
+  proof console (`verify.ts`) draws random grammars and checks four ways: **CYK ≡ Earley ≡ oracle** on every string
+  to a horizon, **CNF preserves the language**, **useless-removal preserves the language**, and **PDA ≡ oracle**
+  where conclusive — **141,069 differential checks across 6 seeds at zero disagreements** (offline), and the in-app
+  console reproduces a per-seed slice (~24k checks/120 grammars in ~1.9 s). Along the way the offline fuzzer earned
+  its keep immediately: it caught an exponential ε-forest blow-up in the Earley tree reconstruction (cyclic
+  nullable grammars like `S → S A S | ε`) and a left-recursion + nullable blow-up in the original leftmost-search
+  oracle — both rewritten to be bounded/exact. New **Context-Free** tab (`CfgPanel.tsx`): grammar editor + gallery
+  (aⁿbⁿ, Dyck, palindromes, #a=#b, the ambiguous vs precedence expression grammars, aⁿbⁿ∪aⁿb²ⁿ, ε-heavy, unit
+  chains, finite/empty), the three-recognizer verdict with an agreement badge, both parse trees drawn as SVG, the
+  CYK triangular table, the CNF construction trace, the Earley chart, the PDA table + a single-step **stack
+  animation**, the language card (shortest words · ambiguity witness), and the cross-check console. Wired into
+  `App.tsx` (analysis group), state persisted, header/footer/`project.json` refreshed. Gate green (scope +
+  conformance + lint + build), verified live in the browser.
 - 2026-07-03 (claude, session 21): **Presburger arithmetic ⇒ automaton** — the number-theoretic twin of the
   Logic tab. A new `engine/presburger/` package compiles a first-order formula of `⟨ℕ, +, <⟩` (with congruences)
   to a finite automaton over the **binary digits** of its variables (Büchi–Bruyère–Villemaire), reusing the
