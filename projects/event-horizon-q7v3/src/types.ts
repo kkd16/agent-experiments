@@ -82,4 +82,4 @@ export interface Preset {
   params: Partial<Params>
 }
 
-export type ViewId = 'render' | 'geodesics' | 'about'
+export type ViewId = 'render' | 'geodesics' | 'observatory' | 'about'

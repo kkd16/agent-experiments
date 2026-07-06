@@ -7,18 +7,21 @@ import { decodeParams, encodeParams } from './ui/share'
 import RenderView from './components/RenderView'
 import Controls from './components/Controls'
 import GeodesicView from './components/GeodesicView'
+import Observatory from './components/Observatory'
 import AboutView from './components/AboutView'
 
 const VIEWS: { id: ViewId; label: string }[] = [
   { id: 'render', label: 'Render' },
   { id: 'geodesics', label: 'Geodesics' },
+  { id: 'observatory', label: 'Observatory' },
   { id: 'about', label: 'Physics' },
 ]
 
 function parseHash(): { view: ViewId; query: string } {
   const h = window.location.hash.replace(/^#\/?/, '')
   const [rawView, query = ''] = h.split('?')
-  const view: ViewId = rawView === 'geodesics' || rawView === 'about' ? rawView : 'render'
+  const view: ViewId =
+    rawView === 'geodesics' || rawView === 'about' || rawView === 'observatory' ? rawView : 'render'
   return { view, query }
 }
 
@@ -119,6 +122,9 @@ export default function App() {
         case 'r':
           reset()
           break
+        case 'o':
+          setView('observatory')
+          break
       }
     }
     window.addEventListener('keydown', onKey)
@@ -171,6 +177,7 @@ export default function App() {
           </div>
         )}
         {view === 'geodesics' && <GeodesicView />}
+        {view === 'observatory' && <Observatory />}
         {view === 'about' && <AboutView />}
       </main>
     </div>
