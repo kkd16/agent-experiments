@@ -2806,3 +2806,23 @@ body {
 .lsm-trace-tag.compact { color: var(--violet); background: color-mix(in srgb, var(--violet) 16%, transparent); }
 .lsm-trace-tag.get { color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); }
 .lsm-trace-tag.reset { color: var(--txt-faint); background: var(--bg-2); }
+
+/* LSM Lab — amplification benchmark */
+.lsm-bench { background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.lsm-bench-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.lsm-bench-grid { display: flex; flex-direction: column; gap: 4px; }
+.lsm-bench-row { display: grid; grid-template-columns: 100px 1fr 1.4fr 1fr 90px; gap: 10px; align-items: center; }
+.lsm-bench-hd { font: 0.6rem var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--txt-faint); padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.lsm-bench-name { font: 0.72rem var(--mono); font-weight: 700; }
+.lsm-bench-name.leveled { color: var(--accent); }
+.lsm-bench-name.tiered { color: var(--amber); }
+.lsm-bench-name.lazy { color: var(--accent-2); }
+.lsm-bench-cell { position: relative; display: flex; align-items: center; height: 18px; background: var(--bg-2); border-radius: 4px; overflow: hidden; }
+.lsm-bench-bar { position: absolute; left: 0; top: 0; bottom: 0; opacity: 0.55; border-radius: 4px; }
+.lsm-bench-bar.write { background: var(--red); }
+.lsm-bench-bar.read { background: var(--amber); }
+.lsm-bench-bar.space { background: var(--violet); }
+.lsm-bench-val { position: relative; z-index: 1; font: 0.66rem var(--mono); color: var(--txt); padding-left: 7px; }
+.lsm-bench-fc { font: 0.66rem var(--mono); color: var(--txt-dim); }
+.lsm-bench-note { font: 0.66rem var(--sans); color: var(--txt-faint); line-height: 1.5; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line-2); }
+@media (max-width: 720px) { .lsm-bench-row { grid-template-columns: 80px 1fr 1fr; } .lsm-bench-row > :nth-child(4), .lsm-bench-row > :nth-child(5) { display: none; } }

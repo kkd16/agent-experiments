@@ -36,7 +36,7 @@ import { compareKeys, type IndexKey } from '../storage/btree'
 import { SkipList, estimateBytes, type Entry, type SkipSnapshot } from './skiplist'
 import { SSTable } from './sstable'
 
-export type Strategy = 'leveled' | 'tiered'
+export type Strategy = 'leveled' | 'tiered' | 'lazy'
 
 export interface LsmConfig {
   memtableLimit: number // entries before the active memtable flushes
@@ -193,6 +193,13 @@ export class LsmTree {
     return false
   }
 
+  /** Index of the deepest level that currently holds any data. */
+  private deepestNonEmpty(): number {
+    let d = 0
+    for (let i = 0; i < this.levels.length; i++) if (this.levels[i].length) d = i
+    return d
+  }
+
   private rangeOf(tables: SSTable[]): [IndexKey, IndexKey] {
     let min = tables[0].minKey
     let max = tables[0].maxKey
@@ -220,7 +227,74 @@ export class LsmTree {
 
   compact(): void {
     if (this.cfg.strategy === 'leveled') this.compactLeveled()
+    else if (this.cfg.strategy === 'lazy') this.compactLazy()
     else this.compactTiered()
+  }
+
+  /** **Lazy leveling** (Dayan & Idreos, *Dostoevsky*, SIGMOD 2018): tier every
+   *  level *except the largest*, which is leveled (a single sorted run). Because
+   *  the deepest level holds the overwhelming majority of the data, keeping just
+   *  it leveled buys almost all of leveling's point-read and space-amplification
+   *  win, while the shallow tiered levels keep tiering's low write amplification —
+   *  a point on the read/write/space frontier that Pareto-dominates both pure
+   *  strategies for many workloads. Mechanically it is the tiered loop, but a
+   *  merge *into the current deepest level* combines with that level's existing
+   *  run (leveled) instead of stacking a new overlapping run beside it (tiered). */
+  private compactLazy(): void {
+    let guard = 0
+    for (;;) {
+      if (guard++ > 10000) break
+      let acted = false
+      const deepest = this.deepestNonEmpty()
+      for (let n = 0; n < this.levels.length; n++) {
+        // The deepest level (≥ L1) is *leveled* — one sorted run, possibly split
+        // across several non-overlapping SSTable files. It must NOT be tiered on
+        // file count (those files are one run); it only pushes down when it
+        // outgrows its size budget, exactly like a leveled level.
+        const isDeepestLeveled = n === deepest && n >= 1
+        if (!isDeepestLeveled && this.levels[n].length >= this.cfg.tierTrigger) {
+          this.ensureLevel(n + 1)
+          const to = n + 1
+          const tier = this.levels[n]
+          const [tmin, tmax] = this.rangeOf(tier)
+          let runs: Entry[][]
+          let built: SSTable[]
+          if (to >= deepest) {
+            // Merge into the (new or current) largest level → fold into its single
+            // run so it stays leveled (non-overlapping, newest reconciled).
+            runs = [...tier.map((t) => t.all()), ...this.levels[to].map((t) => t.all())]
+            const drop = !this.anyOverlapAtOrBelow(to + 1, tmin, tmax)
+            built = this.splitIntoTables(mergeRuns(runs, drop))
+            this.levels[to] = built.sort((a, b) => compareKeys(a.minKey, b.minKey))
+          } else {
+            // Merge into a shallower level → stack ONE new run (tiered).
+            runs = tier.map((t) => t.all())
+            const drop = !this.anyOverlapAtOrBelow(to, tmin, tmax)
+            built = this.buildRun(mergeRuns(runs, drop))
+            this.levels[to] = [...built, ...this.levels[to]]
+          }
+          this.levels[n] = []
+          this.accountCompaction(runs, built, n, to)
+          acted = true
+          break
+        }
+        // The leveled bottom outgrew its budget → push its whole run down one
+        // level (it stays a single leveled run at the new deepest).
+        if (isDeepestLeveled && this.entriesAt(n) > this.levelCapacity(n)) {
+          this.ensureLevel(n + 1)
+          const runs = this.levels[n].map((t) => t.all())
+          const [tmin, tmax] = this.rangeOf(this.levels[n])
+          const drop = !this.anyOverlapAtOrBelow(n + 2, tmin, tmax)
+          const built = this.splitIntoTables(mergeRuns(runs, drop))
+          this.levels[n] = []
+          this.levels[n + 1] = built.sort((a, b) => compareKeys(a.minKey, b.minKey))
+          this.accountCompaction(runs, built, n, n + 1)
+          acted = true
+          break
+        }
+      }
+      if (!acted) break
+    }
   }
 
   private compactLeveled(): void {
@@ -301,7 +375,11 @@ export class LsmTree {
           const [tmin, tmax] = this.rangeOf(tier)
           const drop = !this.anyOverlapAtOrBelow(n + 1, tmin, tmax)
           const merged = mergeRuns(runs, drop)
-          const built = this.splitIntoTables(merged)
+          // A tiered merge yields ONE run (a single SSTable, Cassandra-style), so
+          // the destination reaches `tierTrigger` only after that many separate
+          // merges land — never by a single merge's own file split (which would
+          // re-trigger endlessly). Runs grow geometrically down the tiers.
+          const built = this.buildRun(merged)
           this.levels[n] = []
           // Newest run to the front of the next tier (recency order for reads).
           this.levels[n + 1] = [...built, ...this.levels[n + 1]]
@@ -350,6 +428,13 @@ export class LsmTree {
     return out
   }
 
+  /** A single-SSTable **run** — a tiered merge's output. One file so it counts as
+   *  one run against `tierTrigger` (a run split into many files would re-trigger
+   *  its own tier endlessly). */
+  private buildRun(entries: Entry[]): SSTable[] {
+    return entries.length ? [new SSTable(entries, this.cfg.blockSize, this.cfg.fpr)] : []
+  }
+
   private accountCompaction(inputs: Entry[][], outputs: SSTable[], from: number, to: number): void {
     this.metrics.compactions++
     let outBytes = 0
@@ -387,8 +472,9 @@ export class LsmTree {
     // Levels, newest first.
     for (let n = 0; n < this.levels.length; n++) {
       const level = this.levels[n]
-      if (n === 0 || this.cfg.strategy === 'tiered') {
-        // Overlapping runs — probe each, newest first.
+      if (n === 0 || this.cfg.strategy !== 'leveled') {
+        // Possibly-overlapping runs (all of tiered; every tiered level of lazy) —
+        // probe each, newest first. A non-overlapping level answers with ≤1 hit.
         for (const t of level) {
           const r = t.get(key)
           if (r.filtered) {
@@ -538,7 +624,12 @@ export class LsmTree {
         }
       }
       // Leveled ≥ L1: tables sorted by key and strictly non-overlapping.
-      if (this.cfg.strategy === 'leveled' && n >= 1) {
+      // Lazy: the *deepest* level is leveled (one sorted, non-overlapping run);
+      // shallower levels are tiered (no constraint).
+      const leveledHere =
+        (this.cfg.strategy === 'leveled' && n >= 1) ||
+        (this.cfg.strategy === 'lazy' && n === this.deepestNonEmpty() && n >= 1)
+      if (leveledHere) {
         for (let i = 1; i < level.length; i++) {
           if (compareKeys(level[i - 1].maxKey, level[i].minKey) >= 0)
             return `L${n}: tables overlap or are unsorted (#${level[i - 1].id}, #${level[i].id})`
