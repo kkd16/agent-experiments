@@ -1427,7 +1427,7 @@ function SprtMode({ net }: { net: () => Promise<NnueBlob | null> }) {
   const [a, setA] = useState<EngineSpec>(() => makeSpec('ab', 8000, 'classical'))
   const [b, setB] = useState<EngineSpec>(() => makeSpec('ab', 30000, 'classical'))
   const [rangeIdx, setRangeIdx] = useState(1)
-  const [model, setModel] = useState<'pentanomial' | 'trinomial'>('pentanomial')
+  const [model, setModel] = useState<SprtParams['model']>('pentanomial')
   const [maxPairs, setMaxPairs] = useState(200)
   const [prog, setProg] = useState<SprtProgress | null>(null)
   const [running, setRunning] = useState(false)
@@ -1495,8 +1495,8 @@ function SprtMode({ net }: { net: () => Promise<NnueBlob | null> }) {
         <div className="sprt-param">
           <span className="movetime-label">Variance model</span>
           <div className="mpv-seg">
-            {(['pentanomial', 'trinomial'] as const).map((m) => (
-              <button key={m} className={model === m ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setModel(m)}>{m}</button>
+            {([['pentanomial', 'pentanomial'], ['pentanomial-exact', 'penta (exact)'], ['trinomial', 'trinomial']] as [SprtParams['model'], string][]).map(([m, lbl]) => (
+              <button key={m} className={model === m ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setModel(m)}>{lbl}</button>
             ))}
           </div>
         </div>
@@ -1522,12 +1522,50 @@ function SprtMode({ net }: { net: () => Promise<NnueBlob | null> }) {
             <div className="sprt-stat"><span className="sprt-stat-label">LOS</span><span className="sprt-stat-val">{(prog.los * 100).toFixed(1)}%</span><span className="sprt-stat-sub">A stronger</span></div>
             <div className="sprt-stat"><span className="sprt-stat-label">norm. adv.</span><span className="sprt-stat-val">{prog.normAdvantage.toFixed(3)}</span><span className="sprt-stat-sub">σ / pair</span></div>
             <div className="sprt-stat"><span className="sprt-stat-label">draw rate</span><span className="sprt-stat-val">{(prog.drawRate * 100).toFixed(0)}%</span><span className="sprt-stat-sub">{prog.pairsDone} pairs</span></div>
+            <div className="sprt-stat"><span className="sprt-stat-label">est. to decide</span><span className="sprt-stat-val">{prog.verdict !== 'continue' ? '—' : prog.expectedRemaining > 0 ? `+${prog.expectedRemaining}` : '?'}</span><span className="sprt-stat-sub">more pairs</span></div>
           </div>
           <PentaBar penta={prog.tally.penta} />
+          {prog.byOpening.length > 0 && (
+            <details className="arena-games-detail" open>
+              <summary>Games by opening &amp; export{prog.pgn ? ` · ${prog.pgn.split('[Event').length - 1} games` : ''}</summary>
+              <div className="opening-breakdown">
+                {[...prog.byOpening].sort((x, y) => y.points / y.games - x.points / x.games).map((o) => {
+                  const rate = o.games > 0 ? o.points / o.games : 0
+                  return (
+                    <div key={o.name} className="opening-row">
+                      <span className="opening-name">{o.name}</span>
+                      <div className="opening-bar"><div className="opening-fill" style={{ width: `${rate * 100}%` }} /></div>
+                      <span className="opening-score">{(rate * 100).toFixed(0)}%<span className="opening-games"> ({o.games})</span></span>
+                    </div>
+                  )
+                })}
+              </div>
+              {prog.pgn && (
+                <div className="pgn-actions">
+                  <button className="btn" onClick={() => { try { navigator.clipboard?.writeText(prog.pgn) } catch { /* clipboard unavailable */ } }}>Copy PGN</button>
+                  <button className="btn" onClick={() => downloadPgn(prog.pgn)}>Download .pgn</button>
+                </div>
+              )}
+            </details>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+function downloadPgn(pgn: string): void {
+  try {
+    const blob = new Blob([pgn], { type: 'application/x-chess-pgn' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'cortex-arena.pgn'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch {
+    /* download unavailable in a sandboxed frame */
+  }
 }
 
 // ---- Round-robin tournament ----

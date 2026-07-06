@@ -144,8 +144,9 @@ representation, move generation, search and evaluation are all hand-built here.
   alpha-beta and MCTS searchers, each on the classical or NNUE eval — from a fixed opening, with
   cutechess-style **win/draw adjudication**; and (2) the statistics an engine tester lives by, all
   hand-derived with no library: the logistic Elo model, the **SPRT** (Sequential Probability Ratio Test)
-  in both the per-game *trinomial* and the modern per-game-pair **pentanomial** variance models (the
-  GSPRT normal-approx LLR against Wald's `log β/(1−α)` … `log (1−β)/α` bounds), an Elo point estimate with
+  in both the per-game *trinomial* and the modern per-game-pair **pentanomial** variance models — as the
+  GSPRT normal-approx LLR *and* the **exact empirical-likelihood** LLR (constrained-MLE tilting) — against
+  Wald's `log β/(1−α)` … `log (1−β)/α` bounds, an Elo point estimate with
   a **pentanomial-correct** confidence interval, the **LOS**, a two-sided significance z/p, a
   draw-ratio-independent normalized advantage, and a **Bradley–Terry maximum-likelihood** rating fit (the
   MLE that BayesElo approximates) by minorization–maximization with a Fisher-information error, for an
@@ -510,11 +511,16 @@ maximum-likelihood round-robin — all hand-derived, and all proven outside the 
       bars, LOS matrix), with **zero console errors**.
 - [ ] **Time-control matches** (base + increment via `clock.ts`) as an alternative to fixed node budgets,
       with flag-fall as a loss.
-- [ ] **PGN export** of every played game (the runner already keeps SAN movetext) + a downloadable match
-      report.
-- [ ] **A live mini-board** of the game in flight, and an opening-by-opening result breakdown.
-- [ ] **Adjustable α/β and the exact (non-normal) pentanomial LLR**, plus an expected-games-to-decision
-      readout from the current drift.
+- [x] **PGN export** of every played game — the worker assembles a valid multi-game PGN (Seven Tag
+      Roster + `[FEN]`/`[SetUp]` and correct move numbering from the opening's side-to-move), with
+      **Copy PGN** and **Download .pgn** buttons (both sandbox-guarded).
+- [x] **The exact (non-normal) pentanomial GSPRT** — an **empirical-likelihood** LLR (constrained-MLE
+      tilting `p_i = n_i/(N(1+t(v_i−m)))`, `t` found by bisection) selectable alongside the normal-approx
+      pentanomial and trinomial models, validated in Node to agree with the approximation (Δ≈0.03 LLR) and
+      to reach the right verdicts — plus an **expected-pairs-to-decision** readout from the current drift.
+- [x] **Opening-by-opening result breakdown** — A's score per opening as a live sorted bar list.
+- [ ] **A live mini-board** of the game currently in flight (stream the position from the worker).
+- [ ] **Adjustable α/β** in the UI (the exact LLR + ETA already ship).
 - [ ] **Persist tournaments** to IndexedDB so a long round-robin survives a reload and resumes.
 - [ ] **Contempt / eval-term toggles as tunable knobs**, so the Arena can SPRT an actual eval change.
 
@@ -563,6 +569,22 @@ tab: a tactics trainer whose every mate is **proven forced by an in-repo solver*
 - [ ] **Spaced repetition** — resurface missed puzzles on a decaying schedule.
 
 ## Session log
+
+- 2026-07-06 (claude): **Arena, part 2 — the *exact* pentanomial GSPRT, PGN export, and an opening
+  breakdown.** A follow-up to the strength-testing lab. Three additions. (1) The **exact
+  (empirical-likelihood) pentanomial GSPRT**: instead of the normal approximation, the constrained
+  maximum-likelihood distribution on the observed categories is found by tilting
+  `p_i = n_i/(N(1+t(v_i−m)))`, with the tilt `t` bisected from the mean constraint
+  `Σ n_i(v_i−m)/(1+t(v_i−m)) = 0`, and the LLR read off exactly as
+  `Σ n_i[log(1+t₀(v_i−m₀)) − log(1+t₁(v_i−m₁))]` — Van den Bergh's estimator. It's a selectable third
+  model beside the normal-approx pentanomial and the trinomial, validated in Node to agree with the
+  approximation (Δ≈0.03 LLR) and to reach the right verdicts. (2) An **expected-pairs-to-decision** readout
+  from the current LLR drift. (3) **PGN export** — the worker assembles a valid multi-game PGN (Seven Tag
+  Roster + `[FEN]`/`[SetUp]`, move numbering derived from each opening's side-to-move), surfaced as
+  Copy/Download buttons, plus a live **opening-by-opening** score breakdown. Extended
+  `tools/arena-validate.ts` (exact-vs-approx agreement, exact-model verdicts) and `tools/arena-e2e.mjs`
+  (drives the exact model, asserts the ETA readout, opening breakdown, and PGN export in the live build).
+  Gate green.
 
 - 2026-07-06 (claude): **The Arena, rebuilt into a real strength-testing lab — SPRT + pentanomial +
   Bradley–Terry MLE.** The old Arena played a fixed number of games and slapped a per-game confidence

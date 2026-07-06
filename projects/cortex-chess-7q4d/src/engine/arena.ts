@@ -403,7 +403,7 @@ function pentanomialMoments(t: MatchTally): { pairs: number; mean: number; varia
 // SPRT — Sequential Probability Ratio Test (generalized / normal-approx)
 // ============================================================================
 
-export type SprtModel = 'trinomial' | 'pentanomial'
+export type SprtModel = 'trinomial' | 'pentanomial' | 'pentanomial-exact'
 export type SprtVerdict = 'continue' | 'accept-h1' | 'accept-h0'
 
 export interface SprtParams {
@@ -431,6 +431,11 @@ export interface SprtResult {
   verdict: SprtVerdict
   /** Observations so far (games for trinomial, pairs for pentanomial). */
   n: number
+  /**
+   * A rough estimate of how many more observations the test needs to decide, from
+   * the current LLR drift per observation (0 if already decided or drift is flat).
+   */
+  expectedRemaining: number
 }
 
 /**
@@ -444,8 +449,99 @@ export interface SprtResult {
  * Wald's thresholds are `log(β/(1−α))` (accept H0) and `log((1−β)/α)` (accept H1).
  */
 function gsprtLlr(n: number, mean: number, variance: number, m0: number, m1: number): number {
-  if (n === 0 || variance <= 0) return 0
-  return (n * (mean - (m0 + m1) / 2) * (m1 - m0)) / variance
+  if (n === 0) return 0
+  // A perfectly one-sided result has zero sample variance — but it is decisive, not
+  // uninformative, so floor the variance instead of returning a null LLR. The floor
+  // only bites in that degenerate case; on any real spread it is negligible.
+  const v = Math.max(variance, 1e-6)
+  return (n * (mean - (m0 + m1) / 2) * (m1 - m0)) / v
+}
+
+/**
+ * The **exact** generalized SPRT via empirical likelihood — no normal
+ * approximation. For discrete outcome categories with values `v` and observed
+ * counts `n`, the maximum-likelihood distribution supported on the observed
+ * categories with mean constrained to `m` is
+ *
+ *     p_i(m) = n_i / (N · (1 + t·(v_i − m)))
+ *
+ * where the tilt `t` is the unique root of Σ n_i (v_i − m)/(1 + t(v_i − m)) = 0
+ * (the mean constraint; normalization then follows automatically). The exact LLR
+ * between the two hypotheses is then
+ *
+ *     LLR = Σ n_i [ log(1 + t₀(v_i − m₀)) − log(1 + t₁(v_i − m₁)) ]
+ *
+ * (the n_i·log(n_i/N) terms cancel). This is the estimator Michel Van den Bergh
+ * derived for pentanomial SPRT; it agrees with the normal-approx GSPRT to first
+ * order but is exact at any sample size.
+ */
+function empiricalTilt(counts: number[], values: number[], m: number): number {
+  const N = counts.reduce((a, b) => a + b, 0)
+  if (N === 0) return 0
+  // Valid range for t: keep 1 + t(v_i − m) > 0 for every populated category.
+  let tLo = -Infinity
+  let tHi = Infinity
+  for (let i = 0; i < values.length; i++) {
+    if (counts[i] === 0) continue
+    const d = values[i] - m
+    if (d > 0) tLo = Math.max(tLo, -1 / d)
+    else if (d < 0) tHi = Math.min(tHi, -1 / d)
+  }
+  if (!Number.isFinite(tLo)) tLo = -1e6
+  if (!Number.isFinite(tHi)) tHi = 1e6
+  // F(t) = Σ n_i (v_i − m)/(1 + t(v_i − m)) is strictly decreasing; bisect its root.
+  const F = (t: number): number => {
+    let s = 0
+    for (let i = 0; i < values.length; i++) {
+      if (counts[i] === 0) continue
+      const d = values[i] - m
+      s += (counts[i] * d) / (1 + t * d)
+    }
+    return s
+  }
+  let lo = tLo + 1e-9
+  let hi = tHi - 1e-9
+  if (F(lo) <= 0) return lo
+  if (F(hi) >= 0) return hi
+  for (let it = 0; it < 200; it++) {
+    const mid = (lo + hi) / 2
+    const f = F(mid)
+    if (Math.abs(f) < 1e-12) return mid
+    if (f > 0) lo = mid
+    else hi = mid
+  }
+  return (lo + hi) / 2
+}
+
+function exactLlr(counts: number[], values: number[], m0: number, m1: number): number {
+  const t0 = empiricalTilt(counts, values, m0)
+  const t1 = empiricalTilt(counts, values, m1)
+  let llr = 0
+  for (let i = 0; i < values.length; i++) {
+    if (counts[i] === 0) continue
+    llr += counts[i] * (Math.log(1 + t0 * (values[i] - m0)) - Math.log(1 + t1 * (values[i] - m1)))
+  }
+  return llr
+}
+
+/**
+ * Is the empirical-likelihood LLR well-conditioned? It requires each hypothesized
+ * mean to sit strictly inside the convex hull of the *observed* category values.
+ * On a degenerate result (e.g. every pair a double-win — all mass at value 2) the
+ * hull collapses and the constrained MLE for an interior mean is ill-defined, so we
+ * fall back to the normal approximation there.
+ */
+function exactWellConditioned(counts: number[], values: number[], m0: number, m1: number): boolean {
+  let minV = Infinity
+  let maxV = -Infinity
+  for (let i = 0; i < values.length; i++) {
+    if (counts[i] === 0) continue
+    minV = Math.min(minV, values[i])
+    maxV = Math.max(maxV, values[i])
+  }
+  const d = 1e-6
+  const inside = (m: number) => m > minV + d && m < maxV - d
+  return inside(m0) && inside(m1)
 }
 
 export function sprt(t: MatchTally, p: SprtParams): SprtResult {
@@ -456,11 +552,20 @@ export function sprt(t: MatchTally, p: SprtParams): SprtResult {
 
   let llr: number
   let n: number
-  if (p.model === 'pentanomial') {
+  if (p.model === 'pentanomial' || p.model === 'pentanomial-exact') {
     const { pairs, mean, variance } = pentanomialMoments(t)
     n = pairs
     // Hypothesized per-pair means are twice the per-game expected scores.
-    llr = gsprtLlr(pairs, mean, variance, 2 * s0, 2 * s1)
+    if (p.model === 'pentanomial-exact') {
+      const vals = [0, 0.5, 1, 1.5, 2]
+      // Exact where well-conditioned; robust normal-approx at the degenerate edges.
+      llr =
+        pairs > 0 && exactWellConditioned([...t.penta], vals, 2 * s0, 2 * s1)
+          ? exactLlr([...t.penta], vals, 2 * s0, 2 * s1)
+          : gsprtLlr(pairs, mean, variance, 2 * s0, 2 * s1)
+    } else {
+      llr = gsprtLlr(pairs, mean, variance, 2 * s0, 2 * s1)
+    }
   } else {
     const { n: games, mean, variance } = trinomialMoments(t)
     n = games
@@ -468,7 +573,15 @@ export function sprt(t: MatchTally, p: SprtParams): SprtResult {
   }
 
   const verdict: SprtVerdict = llr >= upper ? 'accept-h1' : llr <= lower ? 'accept-h0' : 'continue'
-  return { llr, lower, upper, verdict, n }
+  // Estimate observations remaining from the current per-observation LLR drift.
+  let expectedRemaining = 0
+  if (verdict === 'continue' && n > 0 && Math.abs(llr) > 1e-6) {
+    const drift = llr / n
+    const target = llr >= 0 ? upper : lower
+    const rem = (target - llr) / drift
+    expectedRemaining = rem > 0 && Number.isFinite(rem) ? Math.ceil(rem) : 0
+  }
+  return { llr, lower, upper, verdict, n, expectedRemaining }
 }
 
 // ============================================================================

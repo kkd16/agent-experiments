@@ -1864,6 +1864,30 @@
 }
 .los-cell.self { background: var(--bg-2); }
 
+/* ---- Games by opening + PGN export ---- */
+.arena-games-detail {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+.arena-games-detail summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.opening-breakdown { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+.opening-row { display: grid; grid-template-columns: 150px 1fr 74px; align-items: center; gap: 10px; }
+.opening-name { font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opening-bar { height: 12px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.opening-fill { height: 100%; background: linear-gradient(90deg, #ef5350, #ef8a4c 42%, #6b7688 50%, #4c9be8 58%, var(--accent-2)); }
+.opening-score { font-size: 12px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.opening-games { color: var(--muted); font-weight: 500; }
+.pgn-actions { display: flex; gap: 10px; margin-top: 12px; }
+
 /* ---- Games strip (shared) ---- */
 .arena-games-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .arena-dot { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border); background: var(--muted); }

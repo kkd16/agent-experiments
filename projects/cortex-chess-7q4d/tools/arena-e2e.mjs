@@ -34,11 +34,12 @@ await page.waitForTimeout(300)
 if (!(await page.getByText('The Arena.').first().isVisible())) fail('Arena intro missing')
 await page.locator('.arena-cfg').first().getByRole('button', { name: '30kn' }).click()
 await page.locator('.arena-cfg').nth(1).getByRole('button', { name: '2kn' }).click()
+await page.getByRole('button', { name: 'penta (exact)' }).click() // exercise the exact GSPRT path
 await page.getByRole('button', { name: '100', exact: true }).click()
 await page.getByRole('button', { name: 'Run SPRT' }).click()
 
 let sprtOk = false
-for (let i = 0; i < 60; i++) {
+for (let i = 0; i < 180; i++) {
   await page.waitForTimeout(1000)
   const verdict = await page.locator('.sprt-verdict').first().textContent().catch(() => '')
   if (/accepted|Inconclusive/.test(verdict)) { sprtOk = true; break }
@@ -48,9 +49,18 @@ const finalVerdict = (await page.locator('.sprt-verdict').first().textContent().
 const pentaKeys = await page.locator('.penta-key').count()
 console.log('SPRT verdict:', finalVerdict)
 console.log('penta buckets:', pentaKeys)
-if (!sprtOk) fail('SPRT did not reach a verdict in 60s')
+if (!sprtOk) fail('SPRT did not reach a verdict in time')
 if (!/H₁ accepted/.test(finalVerdict)) fail('expected H1 accepted for 30kn vs 2kn')
 if (pentaKeys !== 5) fail('pentanomial breakdown not rendered')
+
+// New: per-opening breakdown + PGN export render after the exact-model match.
+const openingRows = await page.locator('.opening-row').count()
+const pgnBtn = await page.getByRole('button', { name: 'Download .pgn' }).count()
+const etaShown = await page.locator('.sprt-stat', { hasText: 'est. to decide' }).count()
+console.log('opening rows:', openingRows, 'pgn button:', pgnBtn, 'eta stat:', etaShown)
+if (openingRows === 0) fail('per-opening breakdown not rendered')
+if (pgnBtn === 0) fail('PGN export button missing')
+if (etaShown === 0) fail('expected-to-decide readout missing')
 
 // --- Round-robin: standings + crosstable + Elo bars + LOS matrix ---
 await page.getByRole('button', { name: 'Round-robin' }).click()
