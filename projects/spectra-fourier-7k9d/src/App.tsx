@@ -15,6 +15,7 @@ import Vocoder from './modes/Vocoder'
 import Compress from './modes/Compress'
 import Cepstrum from './modes/Cepstrum'
 import Modem from './modes/Modem'
+import Coding from './modes/Coding'
 import About from './modes/About'
 
 const ROUTES = [
@@ -34,6 +35,7 @@ const ROUTES = [
   { id: 'compress', label: 'Compress' },
   { id: 'cepstrum', label: 'Cepstrum' },
   { id: 'modem', label: 'Modem' },
+  { id: 'coding', label: 'Coding' },
   { id: 'about', label: 'About' },
 ]
 
@@ -100,6 +102,7 @@ export default function App() {
       {active === 'compress' && <Compress />}
       {active === 'cepstrum' && <Cepstrum />}
       {active === 'modem' && <Modem />}
+      {active === 'coding' && <Coding />}
       {active === 'about' && <About />}
 
       <footer className="footer">

@@ -92,6 +92,25 @@ import {
   paprDb,
   CHANNELS,
 } from './ofdm'
+import {
+  CONV_CODES,
+  buildTrellis,
+  convEncode,
+  viterbiHard,
+  viterbiSoft,
+  distanceSpectrum,
+  simulateCoded,
+  unionBoundSoft,
+  unionBoundHard,
+  uncodedBer,
+  PUNCTURES,
+  punctureRate,
+  applyPuncture,
+  depuncture,
+  textToBits,
+  bitsToText,
+  mulberry32 as fecRng,
+} from './fec'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1556,6 +1575,128 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const full = modulate(sym.re, sym.im, cfg)
     const many = paprDb({ re: full.re, im: full.im, length: full.length })
     check('PAPR: single tone ≈ 0 dB, full OFDM symbol is peakier', single < 0.2 && many > single + 2)
+  }
+
+  // ---- forward error correction: convolutional codes + Viterbi (v10) --------
+
+  // 51. Published free distances are re-derived from each trellis, and the (7,5)
+  //     distance spectrum matches the textbook {1,2,4,8,…} / {1,4,12,32,…}.
+  {
+    const want: Record<string, number> = { k3_r12: 5, k4_r12: 6, k5_r12: 7, k7_r12: 10, k7_r13: 15 }
+    let ok = true
+    for (const c of CONV_CODES) {
+      const spec = distanceSpectrum(buildTrellis(c))
+      if (spec.dFree !== want[c.id]) ok = false
+    }
+    // the classic (7,5) K=3 spectrum
+    const s = distanceSpectrum(buildTrellis(CONV_CODES[0]))
+    const aOk = s.terms[0].aCount === 1 && s.terms[1].aCount === 2 && s.terms[2].aCount === 4
+    const cOk = s.terms[0].cInfo === 1 && s.terms[1].cInfo === 4 && s.terms[2].cInfo === 12
+    check('conv codes: d_free matches published values, (7,5) spectrum exact', ok && aOk && cOk)
+  }
+
+  // 52. Encode → decode is exact on a noiseless channel for every code, both
+  //     hard and soft, with the K−1 flush bits correctly removed.
+  {
+    let ok = true
+    for (const c of CONV_CODES) {
+      const tr = buildTrellis(c)
+      const rng = fecRng(7)
+      const msg = new Uint8Array(120)
+      for (let i = 0; i < msg.length; i++) msg[i] = rng() < 0.5 ? 0 : 1
+      const coded = convEncode(msg, tr)
+      const soft = Float64Array.from(coded, (b) => 1 - 2 * b)
+      const dh = viterbiHard(coded, tr)
+      const ds = viterbiSoft(soft, tr)
+      if (dh.decoded.length !== msg.length || ds.decoded.length !== msg.length) ok = false
+      for (let i = 0; i < msg.length; i++) if (dh.decoded[i] !== msg[i] || ds.decoded[i] !== msg[i]) ok = false
+    }
+    check('Viterbi (hard & soft) inverts the encoder exactly with no noise', ok)
+  }
+
+  // 53. The single-error-correcting reach: the (7,5) code, d_free 5, must fix any
+  //     one flipped coded bit within a block.
+  {
+    const tr = buildTrellis(CONV_CODES[0])
+    const rng = fecRng(31)
+    const msg = new Uint8Array(24)
+    for (let i = 0; i < msg.length; i++) msg[i] = rng() < 0.5 ? 0 : 1
+    const coded = convEncode(msg, tr)
+    let allFixed = true
+    for (let e = 0; e < coded.length; e++) {
+      const rx = coded.slice()
+      rx[e] ^= 1
+      const dec = viterbiHard(rx, tr)
+      for (let i = 0; i < msg.length; i++) if (dec.decoded[i] !== msg[i]) allFixed = false
+    }
+    check('(7,5) hard Viterbi corrects any single coded-bit error', allFixed)
+  }
+
+  // 54. The union bound is a valid *upper* bound past threshold, and soft beats
+  //     hard beats uncoded in Monte-Carlo at a useful Eb/N0.
+  {
+    const tr = buildTrellis(CONV_CODES[3]) // K=7 (171,133)
+    const spec = distanceSpectrum(tr)
+    const r = simulateCoded(tr, { msgBits: 20000, ebn0Db: 4, punc: PUNCTURES[0], seed: 4242 })
+    const ubS = unionBoundSoft(spec, r.rate, 4)
+    const ubH = unionBoundHard(spec, r.rate, 4)
+    const ordering = r.softBer <= r.hardBer + 1e-9 && r.hardBer < r.uncodedBer
+    const bounded = r.softBer <= ubS + 1e-6 && r.hardBer <= ubH + 1e-6
+    check('coded link: soft ≤ hard < uncoded, and measured ≤ union bound (4 dB)', ordering && bounded)
+  }
+
+  // 55. Soft decoding gives a real coding gain: at 4 dB the K=7 code's soft BER is
+  //     at least an order of magnitude below uncoded BPSK.
+  {
+    const tr = buildTrellis(CONV_CODES[3])
+    const r = simulateCoded(tr, { msgBits: 30000, ebn0Db: 4, punc: PUNCTURES[0], seed: 99 })
+    check('K=7 soft Viterbi is ≥10× below uncoded BPSK at 4 dB', r.softBer * 10 <= uncodedBer(4))
+  }
+
+  // 56. Puncturing raises the rate exactly (1/2 → 2/3 → 3/4 → 5/6) and the
+  //     depuncture/apply-puncture pair round-trips the kept bits with erasures.
+  {
+    const rateOk =
+      approxEqual(punctureRate(2, PUNCTURES[0]), 1 / 2, 1e-12) &&
+      approxEqual(punctureRate(2, PUNCTURES[1]), 2 / 3, 1e-12) &&
+      approxEqual(punctureRate(2, PUNCTURES[2]), 3 / 4, 1e-12) &&
+      approxEqual(punctureRate(2, PUNCTURES[3]), 5 / 6, 1e-12)
+    const tr = buildTrellis(CONV_CODES[3])
+    const rng = fecRng(5)
+    const msg = new Uint8Array(60)
+    for (let i = 0; i < msg.length; i++) msg[i] = rng() < 0.5 ? 0 : 1
+    const coded = convEncode(msg, tr)
+    const steps = coded.length / tr.n
+    const punc = PUNCTURES[2]
+    const tx = applyPuncture(coded, tr.n, punc)
+    const { full, mask } = depuncture(tx, tr.n, punc, steps, 0)
+    let rt = true
+    let r = 0
+    for (let i = 0; i < full.length; i++) {
+      if (mask[i]) {
+        if (full[i] !== coded[i]) rt = false
+        r++
+      }
+    }
+    check('puncturing: rates 1/2→2/3→3/4→5/6 exact and de-puncture round-trips', rateOk && rt && r === tx.length)
+  }
+
+  // 57. A punctured (rate-3/4) coded link still corrects: at a modest Eb/N0 the
+  //     decoded BER sits well below the raw channel bit-error rate.
+  {
+    const tr = buildTrellis(CONV_CODES[3])
+    const r = simulateCoded(tr, { msgBits: 30000, ebn0Db: 5, punc: PUNCTURES[2], seed: 606 })
+    check('rate-3/4 punctured link decodes below the channel BER (5 dB)', r.softBer < r.channelBer)
+  }
+
+  // 58. Text ⇄ bits round-trips, and a message wrapped in the K=7 code survives a
+  //     channel that shreds the same bits sent uncoded.
+  {
+    const text = 'HELLO WORLD 12345'
+    const rt = bitsToText(textToBits(text)) === text
+    const tr = buildTrellis(CONV_CODES[3])
+    const r = simulateCoded(tr, { msgBits: 4000, ebn0Db: 3, punc: PUNCTURES[0], seed: 2024 })
+    check('text↔bits round-trips; coded message far outlives uncoded at 3 dB', rt && r.softBer < r.uncodedBer)
   }
 
   return { passed, failed, messages }
