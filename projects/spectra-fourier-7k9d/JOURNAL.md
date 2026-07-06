@@ -80,10 +80,24 @@ vectors / pure frequencies, and lets you manipulate them.
   eigen-expansion of `R⁻¹`; the complex **Burg** maximum-entropy AR lattice; the **periodogram / Welch**
   FFT baselines on a shared ω axis; and **AIC / MDL** model-order selection. A high-level `analyze()`
   runs the whole battery in one pass. No math libraries.
+- `src/lib/comms.ts` — **the digital-communications core (v11).** Gray-coded square-QAM (plus BPSK)
+  constellations normalized to unit average energy (a binary-reflected Gray encode/decode drives
+  both the per-axis PAM mapping and hard-decision demapping); a seeded `mulberry32` + Box–Muller
+  **AWGN** source with the `Eb/N0 → σ` bookkeeping; a from-scratch **erfc** (Numerical-Recipes rational,
+  err < 1.2e-7) and the Gaussian tail `Q(x)`; **closed-form BER/SER** for BPSK/QPSK/M-QAM; and a
+  Monte-Carlo `simulateLink` / `berCurve` whose measured error rate tracks the theory. No libraries.
+- `src/lib/pulse.ts` — **the pulse-shaping engine (v11).** Closed-form **root-raised-cosine** and
+  raised-cosine impulse responses (removable singularities handled), upsampling, complex FIR
+  convolution, a matched-filter Tx→Rx chain, eye-diagram slicing, and symbol re-sampling. The
+  RRC⊛RRC cascade is the zero-ISI Nyquist pulse that opens the eye.
+- `src/lib/ofdm.ts` — **the OFDM engine (v11), built on the app's own FFT.** IFFT subcarrier
+  modulation with a **cyclic prefix**, a complex multipath channel + its FFT frequency response,
+  per-subcarrier **zero-forcing** demodulation/equalization (CP turns linear convolution circular →
+  `Y[k]=H[k]X[k]`, inverted by one complex divide), PAPR, and a small library of channel presets.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
 - `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Spectrogram`, `Reassign`,
-  `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`, `Cepstrum`, `About`
-  (fifteen interactive modes).
+  `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`, `Cepstrum`, `Modem`,
+  `About` (sixteen interactive modes).
 
 ## Modes
 
@@ -100,8 +114,68 @@ vectors / pure frequencies, and lets you manipulate them.
    that the periodogram cannot split, resolved by the subspace estimators (MUSIC, Root-MUSIC,
    ESPRIT), the Capon/MVDR spectrum and the Burg maximum-entropy AR model — all read from the
    eigenstructure of the covariance matrix, with AIC/MDL counting the sources.
+6. **Modem** — *the FFT that runs the world.* A complete digital radio: bits → Gray-coded
+   BPSK/QPSK/16-/64-QAM → root-raised-cosine pulse shaping → AWGN → matched filter → hard decision,
+   with a live received constellation, an eye diagram, the transmit spectrum, and a measured
+   BER-vs-Eb/N0 curve that lands on the closed-form theory. A second tab builds **OFDM** (Wi-Fi/5G):
+   an IFFT over hundreds of subcarriers, a cyclic prefix, a frequency-selective multipath channel,
+   and a one-tap zero-forcing equalizer that snaps the smeared cloud back to a clean grid.
 
 ## Ideas / backlog
+
+### v11 plan — the **Modem** mode (digital communications) — this session
+
+The lab has always studied the FFT as a *lens on signals*. But the FFT's single biggest footprint
+on the modern world isn't analysis at all — it's **carrying data**. Every Wi-Fi packet, LTE frame
+and DVB broadcast is an OFDM waveform painted by an IFFT. A Fourier lab without a communications
+pillar was missing its most consequential application. v11 adds a complete, from-scratch digital
+radio and, on top of it, OFDM — the clearest possible demonstration of *why the FFT matters*.
+
+The design goal was a mode whose correctness is **provable in front of the user**: the measured
+Monte-Carlo bit-error rate must fall exactly along the closed-form theory curve, and OFDM must
+recover multipath-corrupted symbols to machine precision. Both hold (see the self-tests).
+
+Shipped this session:
+
+- [x] **Constellations** — Gray-coded square QAM (BPSK/QPSK/16-QAM/64-QAM) normalized to unit
+  average symbol energy, built from a binary-reflected Gray code that drives both the per-axis
+  PAM mapping and the hard-decision demapper (`comms.ts`).
+- [x] **AWGN channel** — seeded `mulberry32` + Box–Muller Gaussian source with the `Eb/N0 → σ`
+  conversion so every scheme is compared fairly on energy-per-bit.
+- [x] **BER/SER theory** — a from-scratch rational **erfc** (< 1.2e-7 error) and `Q(x)`, exact
+  BPSK/QPSK and the tight Gray-QAM nearest-neighbour approximation, plus a Monte-Carlo
+  `simulateLink` / `berCurve` that measures the real thing.
+- [x] **Root-raised-cosine pulse shaping** (`pulse.ts`) — closed-form RRC + RC impulse responses,
+  upsample → RRC(Tx) → matched RRC(Rx), eye-diagram slicing; the RRC⊛RRC cascade is verified
+  zero-ISI (Nyquist), which is what opens the eye.
+- [x] **OFDM** (`ofdm.ts`) — IFFT subcarrier modulation, cyclic prefix, a complex multipath
+  channel + its FFT response, per-subcarrier zero-forcing equalization, and PAPR — all on the
+  app's own `fft`/`ifft`.
+- [x] **The Modem mode UI** (`Modem.tsx`) — a single-carrier tab (live constellation, eye diagram,
+  transmit spectrum, measured-vs-theory BER curve, BER/SER/EVM/efficiency readouts) and an OFDM
+  tab (equalized constellation, channel `|H(f)|`, the time-domain symbol with the CP highlighted,
+  PAPR/CP-overhead/BER readouts, and an equalizer toggle that visibly makes or breaks the link).
+- [x] **14 new self-tests** — Gray-code bijection + one-bit neighbours, unit-energy constellations,
+  lossless map→demap, the erfc/Q identities, BER-monotonicity + density ordering, **Monte-Carlo BER
+  tracks theory** (BPSK/QPSK/16-QAM), AWGN variance, RRC unit energy + zero-ISI, the full shaping
+  chain error-free in the clear, **OFDM exact round-trip**, **CP + equalizer inverting multipath to
+  1e-9**, and PAPR sanity. All 82 self-tests green.
+
+Backlog (future sessions, natural extensions of this pillar):
+
+- [ ] **Soft-decision demapping + LLRs** — per-bit log-likelihood ratios out of the demapper, the
+  front-end every real decoder needs.
+- [ ] **A channel code** — a short convolutional code with Viterbi decoding (or a Hamming code),
+  and a coded-vs-uncoded BER curve showing the coding gain.
+- [ ] **Non-square constellations** — 8-PSK and cross-QAM (32/128-QAM) with their own exact SER.
+- [ ] **Carrier & timing recovery** — a Costas loop for phase and a Gardner timing-error detector,
+  so the receiver locks a rotated/offset constellation instead of assuming perfect sync.
+- [ ] **Fading channels** — a Rayleigh/Rician tap model with a Doppler spectrum, and the
+  diversity-order slope it produces on the BER curve.
+- [ ] **OFDM pilots + channel estimation** — comb/block pilots and least-squares/MMSE interpolation
+  so `H(f)` is *estimated* from the received signal rather than assumed known.
+- [ ] **A CCDF plot for PAPR** and a clipping/companding demo of the peak-power problem.
+- [ ] **A live audio "modem"** — play the shaped waveform and decode it back through the mic tap.
 
 ### v10 plan — the **Resolve** mode (super-resolution spectral estimation) — this session
 
@@ -517,6 +591,25 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
       physical prior without losing its rate.
 
 ## Session log
+
+- 2026-07-06 (claude, v11): "The FFT that runs the world — a digital radio, end to end." Added the
+  **sixteenth mode, Modem**, the lab's communications pillar and its most consequential FFT
+  application. Three new from-scratch libraries: `lib/comms.ts` (Gray-coded BPSK/QPSK/16-/64-QAM,
+  a `mulberry32`+Box–Muller AWGN channel with `Eb/N0` bookkeeping, a rational **erfc**/`Q(x)`,
+  closed-form BER/SER, and a Monte-Carlo link simulator), `lib/pulse.ts` (closed-form
+  **root-raised-cosine** shaping + matched filtering, verified zero-ISI), and `lib/ofdm.ts` (IFFT
+  subcarrier modulation, **cyclic prefix**, a multipath channel + its FFT response, and
+  per-subcarrier **zero-forcing** equalization — the CP turning linear convolution circular). The
+  `modes/Modem.tsx` UI is two tabs: a **single-carrier** view (received constellation, an open eye
+  diagram, the RRC transmit spectrum, and a measured-vs-theory **BER-vs-Eb/N0** curve) and an
+  **OFDM** view (equalized constellation through rich multipath, the channel `|H(f)|`, the
+  time-domain symbol with the CP highlighted, and an equalizer toggle that visibly makes or breaks
+  the link). Correctness is provable on screen: measured BER hugs the closed form (e.g. 16-QAM at
+  12 dB → 1.7e-4 vs 1.4e-4 theory) and OFDM recovers multipath symbols to ~1e-9. **14 new
+  self-tests, all 82 green**; lint + `tsc` + `vite build` all pass; verified live in a headless
+  browser (both tabs render, zero console errors, equalizer on/off flips BER from ~1.6e-1 to
+  ~4e-4). No math or DSP libraries — every constellation, filter tap, erfc term and FFT is
+  hand-built here.
 
 - 2026-07-05 (claude, v10): "Beyond the FFT — break the Rayleigh wall." Added the fifteenth mode,
   **Resolve**, the lab's first estimator that beats the DFT's own resolution limit. New

@@ -154,6 +154,24 @@ code {
   align-items: start;
 }
 
+/* A mode that hosts sub-tabs: a centered tab bar above the standard .mode grid. */
+.mode-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mode-tabs {
+  display: flex;
+  justify-content: center;
+  padding: 18px clamp(16px, 4vw, 40px) 0;
+}
+
+.mode-wrap .mode {
+  padding-top: 16px;
+}
+
 .mode-side {
   display: flex;
   flex-direction: column;
