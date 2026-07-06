@@ -33,6 +33,26 @@ plan visualizer and a built-in self-test suite.
   seeded random insert/delete sequences at several fanouts, plus bulk-load + borrow/merge/collapse coverage
 - `src/ui/StorageLab.tsx` — the **Storage Lab**: insert/delete/bulk-load/range-scan a live B+Tree as
   an SVG, narrated from the tree's own trace, with an after-every-step "valid B+Tree" badge
+- `src/db/lsm/*` — the **LSM (Log-Structured Merge) storage engine**, standalone from the SQL core —
+  the *write-optimized* counterpart to the B+Tree, the structure behind LevelDB/RocksDB/Cassandra:
+  `skiplist.ts` (the probabilistic **skip-list memtable** — geometric tower heights from a seeded RNG,
+  keyed on the engine's own `IndexKey`, storing one entry per key newest-write-wins),
+  `bloom.ts` (a per-SSTable **Bloom filter** sized to a target FPR — `m=⌈-n·lnε/(ln2)²⌉`, `k=⌈(m/n)ln2⌉`
+  — via Kirsch–Mitzenmacher double hashing, with a proven **zero-false-negatives** guarantee),
+  `sstable.ts` (the immutable **Sorted String Table**: block-structured with a **sparse per-block index**,
+  **fence pointers** and its Bloom filter, so a point lookup is a binary search + one block scan, never
+  the whole file), `tree.ts` (the tree itself: memtable → **flush** to L0 → **compaction** down a level
+  hierarchy, a monotonic **sequence number** giving a total newest-wins order, **tombstone** deletes
+  reclaimed once no deeper level overlaps the key — LevelDB's `IsBaseLevelForKey` generalized to a range,
+  a **k-way merging iterator** for range reads and compaction, both **leveled** (LevelDB/RocksDB) and
+  **size-tiered** (Cassandra) strategies, a **major compaction** (RocksDB `CompactRange`), a
+  `checkInvariants()` structural oracle, and write/read/space-amplification metrics),
+  `tests.ts` (the `lsm` self-test group — differential vs a last-write-wins reference **and** the
+  invariant checker after **every** mutation across thousands of seeded ops under both strategies, plus
+  the Bloom, SSTable, merge and tombstone-reclamation proofs)
+- `src/ui/LsmLab.tsx` — the **LSM Lab**: insert/delete/churn a live LSM, watch the skip-list memtable
+  fill and flush, SSTables compact down the levels, and a point lookup light up its read path (which
+  tables it read vs. skipped by Bloom/fence), with live amplification metrics and a leveled↔tiered toggle
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
 - `src/db/decimal.ts` — first-class exact numerics: DECIMAL/NUMERIC as a tagged,
   JSON-serializable value `{t:'decimal', d, s}` (unscaled BigInt rendered to a
@@ -92,9 +112,78 @@ plan visualizer and a built-in self-test suite.
   the engine's own SQL)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
-  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
+  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
 
 ## Ideas / backlog
+
+### LSM-tree storage engine (`db/lsm/*`, v28.0 — shipped this session)
+
+The B+Tree in `db/storage` is a **read-optimized, update-in-place** structure: a write finds a leaf and
+mutates it, so a point read is one root-to-leaf descent but a write pays a random write and, under churn,
+split/merge rebalancing. Its mirror image — the **write-optimized** structure behind LevelDB, RocksDB,
+Cassandra, ScyllaDB, HBase and SQLite4 — is the **Log-Structured Merge tree**, and it was the one major
+storage structure the engine was missing. An LSM **never updates in place**. Every write is an append:
+it lands in an in-memory ordered **memtable** (a skip list); a full memtable is **flushed** sequentially
+to an immutable, sorted **SSTable** at level 0 (turning random writes into one big sequential one); and
+background **compaction** merges SSTables down a hierarchy of levels, reconciling overwrites and deletions.
+The price is read/space amplification (a key can live in several tables at once, newest shadowing oldest),
+which Bloom filters, fence pointers and a sparse block index claw back; a monotonic **sequence number**
+gives a total "newest wins" order, and a **tombstone** is how a delete travels — a marker that shadows
+older data until it reaches a level with nothing beneath it, where it is finally reclaimed. Built from
+scratch as a **standalone module** (like `wcoj/*`, `ivm/*`, `sketch/*`), proven by a differential +
+invariant self-test group and surfaced as the tenth interactive **LSM Lab**, over the engine's own
+`IndexKey`/`compareKeys` so it orders every SQL type.
+
+- [x] **Skip-list memtable** (`lsm/skiplist.ts`) — the canonical LSM in-memory structure (LevelDB/RocksDB):
+      a probabilistic skip list keyed on `IndexKey`, geometric tower heights from a **seeded** RNG (never
+      `Math.random`, so a workload replays byte-for-byte), put/get/ordered-scan/range, one entry per key
+      newest-write-wins, and a `snapshot()` for the Lab's express-lane drawing.
+- [x] **Bloom filter** (`lsm/bloom.ts`) — a per-SSTable filter sized to a target FPR
+      (`m=⌈-n·lnε/(ln2)²⌉`, `k=⌈(m/n)ln2⌉`) via Kirsch–Mitzenmacher double hashing over the key's canonical
+      encoding, with a proven **zero-false-negatives** guarantee and an analytic FPR estimate. Turns a
+      probable point-lookup miss into an O(1) "no", so the read never touches that table.
+- [x] **Immutable SSTable** (`lsm/sstable.ts`) — a sorted, write-once run, block-structured with a
+      **sparse per-block index** (binary search + one block scan, never the whole file), **fence pointers**
+      (min/max key) and its Bloom filter, plus range scan and a compaction-merge feed. Immutability is the
+      whole trick: no locks, no rebalancing, no free-space management.
+- [x] **The LSM tree** (`lsm/tree.ts`) — active memtable + a level hierarchy; `put`/`del`/`get`/`range`;
+      **flush** (seal the memtable into a fresh L0 SSTable); a **k-way merging iterator** that reconciles
+      the memtable and every SSTable to the newest version per key and drops tombstones — the heart of an
+      LSM range read, and of compaction.
+- [x] **Leveled compaction** (LevelDB/RocksDB) — each level ≥ L1 is a single sorted, non-overlapping run;
+      L0→L1 merges all overlapping L0 files, and an over-budget level pushes one table (round-robin) into
+      the overlapping key range of the next. Low read/space amp, higher write amp.
+- [x] **Size-tiered compaction** (Cassandra) — each tier collects several similar-sized runs and, when
+      enough pile up, merges them wholesale into one larger run a tier down. Low write amp, higher
+      read/space amp. The leveled↔tiered toggle makes the trade-off visible.
+- [x] **Tombstone reclamation, per key range** — a delete's tombstone is dropped exactly when no deeper
+      level holds an overlapping table (LevelDB's `IsBaseLevelForKey`, generalized to a range), so a
+      deleted key range is reclaimed as soon as it bottoms out *locally*, not only at the global deepest level.
+- [x] **Major compaction** (`majorCompaction`, RocksDB `CompactRange`) — merge every SSTable into one
+      sorted run, dropping *all* tombstones and shadowed versions, leaving exactly one entry per live key.
+- [x] **Amplification metrics** — write amp (bytes written / user bytes), space amp (on-disk / live bytes),
+      and per-lookup read amp (tables read vs. skipped by Bloom/fence), surfaced live in the Lab.
+- [x] **The `lsm` self-test group** (`lsm/tests.ts`) — held to the storage bar: a differential oracle
+      (point + range reads must match a last-write-wins reference map) **and** `checkInvariants()` run after
+      **every** mutation across thousands of seeded random ops under **both** strategies, plus proofs of the
+      skip list, the Bloom guarantee/FPR bound, the SSTable block index/fences, the merge's newest-wins
+      reconciliation, seq-shadowing of a deep old version by a shallow new write, and exact major compaction.
+- [x] **The LSM Lab** (`ui/LsmLab.tsx`) — insert/delete/churn/major-compact a live tree; the memtable drawn
+      as skip-list express lanes; each level's SSTables as cards (key range, entry count, Bloom fill,
+      tombstone marker); a point lookup lights up its read path (read / Bloom-skip / fence-skip per table);
+      live amplification metrics; a leveled↔tiered toggle that rebuilds and re-proves valid.
+- [ ] **Wire the LSM as a real table storage backend** behind `CREATE TABLE … USING lsm`, so a table's
+      heap is an LSM and the planner costs its write-optimized profile.
+- [ ] **Leveled compaction with a compaction-score picker** (RocksDB's) — choose the level and file to
+      compact by a size/overlap score rather than round-robin, to minimize write amplification.
+- [ ] **Prefix / suffix Bloom + ribbon filters** — a smaller, faster filter (RocksDB's ribbon) and a
+      prefix filter for range-scan pruning.
+- [ ] **Block cache + compression** — an LRU block cache and per-block dictionary/RLE compression, with a
+      cache-hit metric in the Lab.
+- [ ] **Snapshots / MVCC reads at a sequence number** — retain superseded versions in the memtable and
+      read as-of a seq, so the LSM backs snapshot isolation like the MVCC engine.
+- [ ] **Leveled↔tiered *hybrid* (Leveled-N / lazy leveling)** — Dostoevsky's tiered-lower / leveled-upper
+      mix that Pareto-dominates both on the read/write/space frontier.
 
 ### Worst-case-optimal joins — the WCOJ engine (`db/wcoj/*`, v27.0 — shipped this session)
 
@@ -1362,6 +1451,35 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-06 (claude / claude-opus-4-8): **v28.0 — the LSM-tree storage engine.** QueryForge had one
+  storage structure — the read-optimized, update-in-place B+Tree. This session builds its mirror image,
+  the one major structure it was missing: the **Log-Structured Merge tree**, the write-optimized engine
+  behind LevelDB, RocksDB, Cassandra, ScyllaDB, HBase and SQLite4. Built from scratch as a **standalone
+  module** (`db/lsm/*`, like `wcoj/*`/`ivm/*`/`sketch/*`), over the engine's own `IndexKey`/`compareKeys`
+  so it orders every SQL type. **(1)** A **skip-list memtable** (`skiplist.ts`) — the canonical LSM
+  in-memory structure, geometric tower heights from a **seeded** RNG (byte-for-byte replayable), one entry
+  per key newest-write-wins. **(2)** A per-SSTable **Bloom filter** (`bloom.ts`) sized to a target FPR
+  (`m=⌈-n·lnε/(ln2)²⌉`, `k=⌈(m/n)ln2⌉`) via Kirsch–Mitzenmacher double hashing, with a proven
+  **zero-false-negatives** guarantee, so a probable point-lookup miss is an O(1) "no". **(3)** The
+  immutable **SSTable** (`sstable.ts`) — a write-once sorted run, block-structured with a **sparse
+  per-block index**, **fence pointers** and its filter, so a lookup is a binary search + one block scan.
+  **(4)** The **tree** (`tree.ts`) — memtable → **flush** to L0 → **compaction** down a level hierarchy;
+  a monotonic **sequence number** giving a total newest-wins order; **tombstone** deletes reclaimed once
+  no *deeper level overlaps the key* (LevelDB's `IsBaseLevelForKey`, generalized to a range); a **k-way
+  merging iterator** shared by range reads and compaction; both **leveled** (LevelDB/RocksDB) and
+  **size-tiered** (Cassandra) strategies; a **major compaction** (RocksDB `CompactRange`) that leaves
+  exactly one entry per live key; and write/read/space-**amplification** metrics. **(5)** The `lsm`
+  self-test group (`tests.ts`) — held to the storage bar: a differential oracle (point + range reads must
+  match a last-write-wins reference) **and** `checkInvariants()` after **every** mutation across thousands
+  of seeded random ops under **both** strategies, plus the Bloom guarantee/FPR bound, the SSTable
+  block-index/fences, the merge's newest-wins reconciliation, seq-shadowing of a deep old version by a
+  shallow new write, and exact major compaction. **(6)** The tenth interactive **LSM Lab**
+  (`ui/LsmLab.tsx`) — insert/delete/churn/major-compact a live tree; the memtable drawn as skip-list
+  express lanes; each level's SSTables as cards (key range, entry count, Bloom fill, tombstone marker); a
+  point lookup lighting up its read path (which tables it *read* vs. skipped by *Bloom*/*fence*); live
+  amplification metrics; and a leveled↔tiered toggle that rebuilds and re-proves valid. Suite **573 → 585**
+  (12 new `lsm` cases, all green head-less); wired the new tab into `App.tsx`, an Internals stage and the
+  architecture doc; `verify-project.mjs` green (scope + conformance + lint + build).
 - 2026-07-03 (claude / claude-opus-4-8[1m]): **v27.0 — worst-case-optimal joins: the WCOJ engine.**
   Every join QueryForge has ever run is *binary* — a tree of two-way HashJoin/MergeJoin/NestedLoop
   operators, the model every classical optimizer uses and, for 40 years, the model everyone assumed
