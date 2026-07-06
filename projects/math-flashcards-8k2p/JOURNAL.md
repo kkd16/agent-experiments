@@ -281,7 +281,7 @@ live here as long as you like.
 - [ ] Implement an option to export all run history as a CSV file.
 - [ ] Add a "Daily Challenge" mode that provides a fixed set of questions for everyone each day.
 - [ ] Support a "Hexadecimal Mode" for computer science practice.
-- [ ] Add a setting to adjust the volume of sound effects.
+- [x] Add a setting to adjust the volume of sound effects.
 ## Further Additions
 - [ ] Add a "Reverse Mode" where the answer is provided and the user must pick the correct question.
 - [ ] Create a feature that tracks the specific digits users struggle with most (e.g. 7s and 8s).
@@ -326,3 +326,14 @@ live here as long as you like.
 - [ ] Include a "Max Combo Reached" in the post-game summary screen.
 - [ ] Add a small "Total Time Played" lifetime stat in the statistics menu.
 - [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
+
+- [x] Add an option to export statistics to a JSON file
+- [ ] Add a visual progress bar indicating time left during speed runs
+- [x] Implement an offline mode status indicator
+- [x] Add a "skip" button to skip a difficult question at the cost of a time penalty
+- [ ] Track total correct answers globally across all sessions
+- [x] Allow users to reset their statistics from the settings menu
+- [ ] Add sound effects volume slider to settings
+- [ ] Implement a visually distinct mode for colorblind users
+- [ ] Add a "Focus Mode" that removes distractions during gameplay
+- [x] Add an option to show/hide the on-screen keypad
