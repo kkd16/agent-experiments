@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   perft,
   PERFT_SUITE,
@@ -44,16 +44,21 @@ import {
   gradCheck,
   mulberry32,
   START_FEN,
-  WHITE,
   chess960Selftest,
   reviewSelftest,
   mctsSelftest,
-  Searcher,
-  deserializeNnue,
   defaultNnueBlob,
   nnueLoad,
-  type NnueWeights,
+  ARENA_OPENINGS,
+  losFromH2H,
+  type EngineSpec,
+  type EvalKind,
+  type MatchTally,
+  type SprtParams,
+  type Standing,
+  type NnueBlob,
 } from '../engine'
+import type { SprtProgress, TourProgress } from '../engine/arena.worker'
 import { useEngine } from '../hooks/useEngine'
 import NnueLab from './NnueLab'
 import BitboardLab from './BitboardLab'
@@ -1313,93 +1318,52 @@ function ChecksLab() {
 }
 
 // ---------------- Engine Arena ----------------
+//
+// A real statistical strength-testing lab. Two modes: an **SPRT match** (A vs B,
+// stopped the instant the sequential test decides) and a **round-robin tournament**
+// with Bradley–Terry maximum-likelihood ratings. All game-playing happens in a
+// dedicated Web Worker (`arena.worker.ts`) so the UI never freezes; the stats
+// (SPRT, pentanomial variance, Elo±CI, LOS, MLE ratings) live in `engine/arena.ts`.
 
-// A node budget per move — the engine's binding constraint here, so the ladder is
-// deterministic and the games stay fast. More nodes ⇒ deeper search ⇒ stronger.
-interface ArenaLevel {
-  label: string
-  nodes: number
-}
-const ARENA_LEVELS: ArenaLevel[] = [
-  { label: '2k nodes', nodes: 2000 },
-  { label: '8k nodes', nodes: 8000 },
-  { label: '30k nodes', nodes: 30000 },
-  { label: '100k nodes', nodes: 100000 },
-]
+const AB_BUDGETS = [2000, 8000, 30000, 100000]
+const MCTS_BUDGETS = [800, 2500, 8000]
 
-type ArenaEval = 'classical' | 'nnue'
-
-interface ArenaConfig {
-  level: number
-  eval: ArenaEval
+function makeSpec(search: 'ab' | 'mcts', budget: number, evalKind: EvalKind): EngineSpec {
+  const algo = search === 'ab' ? 'AB' : 'MCTS'
+  const unit = search === 'ab' ? 'n' : 's'
+  const b = budget >= 1000 ? `${budget / 1000}k` : `${budget}`
+  return { search, budget, eval: evalKind, label: `${algo} ${b}${unit}·${evalKind === 'nnue' ? 'NN' : 'HCE'}` }
 }
 
-// Balanced, varied opening positions so the games aren't carbon copies. Each is
-// played from both sides as the match alternates colours.
-const ARENA_OPENINGS: { name: string; fen: string }[] = [
-  { name: 'Ruy Lopez', fen: 'r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4' },
-  { name: 'Italian', fen: 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 3' },
-  { name: 'Sicilian', fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2' },
-  { name: 'French', fen: 'rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2' },
-  { name: 'Caro-Kann', fen: 'rnbqkbnr/pp1ppppp/2p5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2' },
-  { name: 'Queen’s Gambit', fen: 'rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2' },
-  { name: 'King’s Indian', fen: 'rnbqkb1r/pppppp1p/5np1/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 3' },
-  { name: 'English', fen: 'rnbqkbnr/pppp1ppp/8/4p3/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 2' },
-]
-
-interface ArenaGame {
-  opening: string
-  aWhite: boolean
-  result: 'a' | 'b' | 'draw'
-  reason: string
-  plies: number
-}
-
-interface ArenaState {
-  running: boolean
-  done: number
-  total: number
-  games: ArenaGame[]
-}
-
-// numeric erf for the likelihood-of-superiority calculation.
-function erf(x: number): number {
-  const t = 1 / (1 + 0.3275911 * Math.abs(x))
-  const y =
-    1 -
-    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
-      t *
-      Math.exp(-x * x)
-  return x >= 0 ? y : -y
-}
-
-function eloFromScore(score: number): number {
-  const s = Math.max(1e-4, Math.min(1 - 1e-4, score))
-  return -400 * Math.log10(1 / s - 1)
-}
-
-function ArenaConfigPicker({
-  label,
-  cfg,
-  set,
-}: {
-  label: string
-  cfg: ArenaConfig
-  set: (c: ArenaConfig) => void
-}) {
+// A compact spec editor (algorithm · budget · eval).
+function SpecEditor({ spec, set, disabled }: { spec: EngineSpec; set: (s: EngineSpec) => void; disabled?: boolean }) {
+  const budgets = spec.search === 'ab' ? AB_BUDGETS : MCTS_BUDGETS
+  const budget = budgets.includes(spec.budget) ? spec.budget : budgets[1]
   return (
-    <div className="arena-cfg">
-      <div className="arena-cfg-label">{label}</div>
-      <div className="mpv-seg arena-seg">
-        {ARENA_LEVELS.map((lv, i) => (
-          <button key={lv.label} className={cfg.level === i ? 'mpv-btn active' : 'mpv-btn'} onClick={() => set({ ...cfg, level: i })}>
-            {lv.label}
+    <div className="spec-editor">
+      <div className="mpv-seg">
+        {(['ab', 'mcts'] as const).map((s) => (
+          <button
+            key={s}
+            className={spec.search === s ? 'mpv-btn active' : 'mpv-btn'}
+            disabled={disabled}
+            onClick={() => set(makeSpec(s, (s === 'ab' ? AB_BUDGETS : MCTS_BUDGETS)[1], spec.eval))}
+          >
+            {s === 'ab' ? 'Alpha-Beta' : 'MCTS'}
           </button>
         ))}
       </div>
-      <div className="mpv-seg arena-seg">
-        {(['classical', 'nnue'] as ArenaEval[]).map((e) => (
-          <button key={e} className={cfg.eval === e ? 'mpv-btn active' : 'mpv-btn'} onClick={() => set({ ...cfg, eval: e })}>
+      <div className="mpv-seg">
+        {budgets.map((b) => (
+          <button key={b} className={budget === b ? 'mpv-btn active' : 'mpv-btn'} disabled={disabled} onClick={() => set(makeSpec(spec.search, b, spec.eval))}>
+            {b >= 1000 ? `${b / 1000}k` : b}
+            {spec.search === 'ab' ? 'n' : ' sim'}
+          </button>
+        ))}
+      </div>
+      <div className="mpv-seg">
+        {(['classical', 'nnue'] as EvalKind[]).map((e) => (
+          <button key={e} className={spec.eval === e ? 'mpv-btn active' : 'mpv-btn'} disabled={disabled} onClick={() => set(makeSpec(spec.search, spec.budget, e))}>
             {e === 'nnue' ? 'NNUE' : 'classical'}
           </button>
         ))}
@@ -1408,192 +1372,377 @@ function ArenaConfigPicker({
   )
 }
 
-function ArenaLab() {
-  const [a, setA] = useState<ArenaConfig>({ level: 0, eval: 'classical' })
-  const [b, setB] = useState<ArenaConfig>({ level: 2, eval: 'classical' })
-  const [gamesN, setGamesN] = useState(12)
-  const [state, setState] = useState<ArenaState | null>(null)
-  const netRef = useRef<NnueWeights | null>(null)
-  const cancelRef = useRef(false)
+// The walking log-likelihood-ratio track between the two SPRT decision bounds.
+function LlrTrack({ track, lower, upper }: { track: number[]; lower: number; upper: number }) {
+  const W = 520
+  const H = 150
+  const pad = 4
+  const n = Math.max(track.length, 2)
+  const lo = Math.min(lower, ...track) - 0.3
+  const hi = Math.max(upper, ...track) + 0.3
+  const x = (i: number) => pad + (i / (n - 1)) * (W - 2 * pad)
+  const y = (v: number) => pad + (1 - (v - lo) / (hi - lo)) * (H - 2 * pad)
+  const path = track.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
+  const last = track.length ? track[track.length - 1] : 0
+  return (
+    <svg className="llr-track" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="SPRT log-likelihood-ratio track">
+      <line x1={pad} x2={W - pad} y1={y(upper)} y2={y(upper)} className="llr-bound accept" />
+      <line x1={pad} x2={W - pad} y1={y(lower)} y2={y(lower)} className="llr-bound reject" />
+      <line x1={pad} x2={W - pad} y1={y(0)} y2={y(0)} className="llr-zero" />
+      <path d={path} className="llr-line" fill="none" />
+      {track.length > 0 && <circle cx={x(track.length - 1)} cy={y(last)} r={3.2} className="llr-head" />}
+    </svg>
+  )
+}
 
-  // Lazily load a net (a Lab-trained one if present, else the shipped default).
-  const ensureNet = useCallback(async (): Promise<NnueWeights> => {
-    if (netRef.current) return netRef.current
-    const saved = await nnueLoad().catch(() => null)
-    const blob = saved?.blob ?? defaultNnueBlob()
-    netRef.current = deserializeNnue(blob)
-    return netRef.current
-  }, [])
+// The pentanomial distribution: A's game-pair result in {0, ½, 1, 1½, 2} points.
+function PentaBar({ penta }: { penta: MatchTally['penta'] }) {
+  const total = penta.reduce((a, b) => a + b, 0) || 1
+  const labels = ['0', '½', '1', '1½', '2']
+  const cls = ['p0', 'p1', 'p2', 'p3', 'p4']
+  return (
+    <div className="penta">
+      <div className="penta-bar">
+        {penta.map((c, i) => (c > 0 ? <div key={i} className={`penta-seg ${cls[i]}`} style={{ width: `${(c / total) * 100}%` }} title={`${labels[i]} pts: ${c} pairs`} /> : null))}
+      </div>
+      <div className="penta-legend">
+        {penta.map((c, i) => (
+          <span key={i} className="penta-key">
+            <span className={`penta-dot ${cls[i]}`} /> {labels[i]}: <strong>{c}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const SPRT_RANGES: { label: string; elo0: number; elo1: number }[] = [
+  { label: '[0, 5]', elo0: 0, elo1: 5 },
+  { label: '[0, 10]', elo0: 0, elo1: 10 },
+  { label: '[0, 20]', elo0: 0, elo1: 20 },
+  { label: '[−3, 3]', elo0: -3, elo1: 3 },
+]
+
+function SprtMode({ net }: { net: () => Promise<NnueBlob | null> }) {
+  const [a, setA] = useState<EngineSpec>(() => makeSpec('ab', 8000, 'classical'))
+  const [b, setB] = useState<EngineSpec>(() => makeSpec('ab', 30000, 'classical'))
+  const [rangeIdx, setRangeIdx] = useState(1)
+  const [model, setModel] = useState<'pentanomial' | 'trinomial'>('pentanomial')
+  const [maxPairs, setMaxPairs] = useState(200)
+  const [prog, setProg] = useState<SprtProgress | null>(null)
+  const [running, setRunning] = useState(false)
+  const workerRef = useRef<Worker | null>(null)
+
+  useEffect(() => () => workerRef.current?.terminate(), [])
 
   const run = useCallback(async () => {
-    cancelRef.current = false
-    const net = a.eval === 'nnue' || b.eval === 'nnue' ? await ensureNet() : null
-    const sA = new Searcher()
-    sA.setEvaluator(a.eval === 'nnue' ? net : null)
-    const sB = new Searcher()
-    sB.setEvaluator(b.eval === 'nnue' ? net : null)
-    const nodesA = ARENA_LEVELS[a.level].nodes
-    const nodesB = ARENA_LEVELS[b.level].nodes
-
-    const st: ArenaState = { running: true, done: 0, total: gamesN, games: [] }
-    setState({ ...st, games: [] })
-
-    for (let game = 0; game < gamesN && !cancelRef.current; game++) {
-      const opening = ARENA_OPENINGS[game % ARENA_OPENINGS.length]
-      const aWhite = game % 2 === 0
-      const g = new Game(opening.fen)
-      let ply = 0
-      const maxPly = 200
-      for (; ply < maxPly && g.result() === 'playing'; ply++) {
-        const useA = (g.pos.turn === WHITE) === aWhite
-        const s = useA ? sA : sB
-        const r = s.search(g.pos, {
-          maxDepth: 30,
-          maxTime: 0,
-          maxNodes: useA ? nodesA : nodesB,
-          history: g.keyHistory(),
-        })
-        if (!r.pv[0]) break
-        g.apply(r.pv[0])
-        if (ply % 3 === 0) await sleep(0)
-      }
-      const res = g.result()
-      let result: ArenaGame['result'] = 'draw'
-      let reason = res === 'playing' ? 'adjudicated draw (200 plies)' : res
-      if (res === 'checkmate') {
-        const loserWhite = g.pos.turn === WHITE
-        const aLost = loserWhite === aWhite
-        result = aLost ? 'b' : 'a'
-        reason = 'checkmate'
-      }
-      st.games.push({ opening: opening.name, aWhite, result, reason, plies: ply })
-      st.done = game + 1
-      setState({ ...st, games: st.games.slice() })
-      await sleep(0)
+    const blob = a.eval === 'nnue' || b.eval === 'nnue' ? await net() : null
+    let w: Worker
+    try {
+      w = new Worker(new URL('../engine/arena.worker.ts', import.meta.url), { type: 'module' })
+    } catch {
+      return
     }
-    st.running = false
-    setState({ ...st, games: st.games.slice() })
-  }, [a, b, gamesN, ensureNet])
+    workerRef.current?.terminate()
+    workerRef.current = w
+    setProg(null)
+    setRunning(true)
+    w.onmessage = (e: MessageEvent<SprtProgress>) => {
+      setProg(e.data)
+      if (e.data.done) setRunning(false)
+    }
+    const range = SPRT_RANGES[rangeIdx]
+    const params: SprtParams = { elo0: range.elo0, elo1: range.elo1, alpha: 0.05, beta: 0.05, model }
+    w.postMessage({ type: 'sprt', a, b, openings: ARENA_OPENINGS, params, maxPairs, net: blob })
+  }, [a, b, rangeIdx, model, maxPairs, net])
 
   const stop = useCallback(() => {
-    cancelRef.current = true
+    workerRef.current?.postMessage({ type: 'cancel' })
+    setRunning(false)
   }, [])
 
-  // Tallies + Elo.
-  const stats = (() => {
-    if (!state || state.games.length === 0) return null
-    let aw = 0
-    let bw = 0
-    let dr = 0
-    for (const gm of state.games) {
-      if (gm.result === 'a') aw++
-      else if (gm.result === 'b') bw++
-      else dr++
-    }
-    const n = state.games.length
-    const pointsA = aw + dr / 2
-    const score = pointsA / n
-    const elo = eloFromScore(score)
-    // 95% CI on the score → asymmetric Elo bounds.
-    const xs: number[] = state.games.map((gm) => (gm.result === 'a' ? 1 : gm.result === 'draw' ? 0.5 : 0))
-    const mean = score
-    const variance = n > 1 ? xs.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / (n - 1) : 0
-    const se = Math.sqrt(variance / n)
-    const margin = 1.96 * se
-    const eloLow = eloFromScore(mean - margin)
-    const eloHigh = eloFromScore(mean + margin)
-    const decisive = aw + bw
-    const los = decisive > 0 ? 0.5 * (1 + erf((aw - bw) / Math.sqrt(2 * decisive))) : 0.5
-    return { aw, bw, dr, n, pointsA, score, elo, eloLow, eloHigh, los }
+  const verdictBanner = (() => {
+    if (!prog) return null
+    if (prog.verdict === 'accept-h1') return <div className="sprt-verdict accept">H₁ accepted — <strong>{a.label}</strong> is stronger (gain in the tested range)</div>
+    if (prog.verdict === 'accept-h0') return <div className="sprt-verdict reject">H₀ accepted — no gain of the tested size</div>
+    if (prog.done) return <div className="sprt-verdict inconclusive">Inconclusive — pair cap reached before a verdict</div>
+    return <div className="sprt-verdict running">Testing… LLR walking between the bounds</div>
   })()
 
-  const cfgLabel = (c: ArenaConfig) => `${ARENA_LEVELS[c.level].label} · ${c.eval === 'nnue' ? 'NNUE' : 'classical'}`
+  return (
+    <div className="sprt-mode">
+      <div className="arena-matchup">
+        <div className="arena-cfg">
+          <div className="arena-cfg-label">Engine A {prog && <span className="arena-elo-badge">{prog.tally.w}–{prog.tally.d}–{prog.tally.l}</span>}</div>
+          <SpecEditor spec={a} set={setA} disabled={running} />
+        </div>
+        <span className="arena-vs">vs</span>
+        <div className="arena-cfg">
+          <div className="arena-cfg-label">Engine B</div>
+          <SpecEditor spec={b} set={setB} disabled={running} />
+        </div>
+      </div>
 
-  const running = state?.running ?? false
+      <div className="sprt-params">
+        <div className="sprt-param">
+          <span className="movetime-label">H₀…H₁ (Elo)</span>
+          <div className="mpv-seg">
+            {SPRT_RANGES.map((r, i) => (
+              <button key={r.label} className={rangeIdx === i ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setRangeIdx(i)}>{r.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sprt-param">
+          <span className="movetime-label">Variance model</span>
+          <div className="mpv-seg">
+            {(['pentanomial', 'trinomial'] as const).map((m) => (
+              <button key={m} className={model === m ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setModel(m)}>{m}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sprt-param">
+          <span className="movetime-label">Max pairs</span>
+          <div className="mpv-seg">
+            {[100, 200, 400, 1000].map((n) => (
+              <button key={n} className={maxPairs === n ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setMaxPairs(n)}>{n}</button>
+            ))}
+          </div>
+        </div>
+        {running ? <button className="btn" onClick={stop}>Stop</button> : <button className="btn primary" onClick={run}>Run SPRT</button>}
+      </div>
+
+      {verdictBanner}
+
+      {prog && (
+        <div className="sprt-results">
+          <LlrTrack track={prog.llrTrack} lower={prog.lower} upper={prog.upper} />
+          <div className="sprt-readouts">
+            <div className="sprt-stat"><span className="sprt-stat-label">LLR</span><span className="sprt-stat-val">{prog.llr.toFixed(2)}</span><span className="sprt-stat-sub">[{prog.lower.toFixed(2)}, {prog.upper.toFixed(2)}]</span></div>
+            <div className="sprt-stat"><span className="sprt-stat-label">Elo (A − B)</span><span className="sprt-stat-val">{prog.elo >= 0 ? '+' : ''}{prog.elo.toFixed(1)}</span><span className="sprt-stat-sub">[{prog.eloLow.toFixed(0)}, {prog.eloHigh.toFixed(0)}] · 95%</span></div>
+            <div className="sprt-stat"><span className="sprt-stat-label">LOS</span><span className="sprt-stat-val">{(prog.los * 100).toFixed(1)}%</span><span className="sprt-stat-sub">A stronger</span></div>
+            <div className="sprt-stat"><span className="sprt-stat-label">norm. adv.</span><span className="sprt-stat-val">{prog.normAdvantage.toFixed(3)}</span><span className="sprt-stat-sub">σ / pair</span></div>
+            <div className="sprt-stat"><span className="sprt-stat-label">draw rate</span><span className="sprt-stat-val">{(prog.drawRate * 100).toFixed(0)}%</span><span className="sprt-stat-sub">{prog.pairsDone} pairs</span></div>
+          </div>
+          <PentaBar penta={prog.tally.penta} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---- Round-robin tournament ----
+
+const CROSS_GLYPH = (c: { wins: number; draws: number; losses: number }) => `+${c.wins} =${c.draws} −${c.losses}`
+
+function EloBars({ standings }: { standings: Standing[] }) {
+  if (standings.length === 0) return null
+  const elos = standings.map((s) => s.elo)
+  const errs = standings.map((s) => s.eloError)
+  const lo = Math.min(...elos.map((e, i) => e - 1.96 * errs[i]), 0) - 10
+  const hi = Math.max(...elos.map((e, i) => e + 1.96 * errs[i]), 0) + 10
+  const span = hi - lo || 1
+  const pct = (v: number) => ((v - lo) / span) * 100
+  return (
+    <div className="elo-bars">
+      {standings.map((s) => {
+        const c = pct(s.elo)
+        const l = pct(s.elo - 1.96 * s.eloError)
+        const h = pct(s.elo + 1.96 * s.eloError)
+        return (
+          <div key={s.index} className="elo-bar-row">
+            <span className="elo-bar-label">{s.label}</span>
+            <div className="elo-bar-track">
+              <div className="elo-bar-zero" style={{ left: `${pct(0)}%` }} />
+              <div className="elo-bar-ci" style={{ left: `${l}%`, width: `${Math.max(0.5, h - l)}%` }} />
+              <div className="elo-bar-dot" style={{ left: `${c}%` }} />
+            </div>
+            <span className="elo-bar-val">{s.elo >= 0 ? '+' : ''}{s.elo.toFixed(0)}<span className="elo-bar-err"> ±{(1.96 * s.eloError).toFixed(0)}</span></span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function LosMatrix({ cells, labels }: { cells: TourProgress['cells']; labels: string[] }) {
+  const n = labels.length
+  return (
+    <div className="los-matrix" style={{ gridTemplateColumns: `auto repeat(${n}, 1fr)` }}>
+      <div className="los-corner" />
+      {labels.map((_, j) => <div key={j} className="los-head">{j + 1}</div>)}
+      {labels.map((rl, i) => (
+        <Fragment key={i}>
+          <div className="los-rowhead" title={rl}>{i + 1}. {rl}</div>
+          {labels.map((_, j) => {
+            if (i === j) return <div key={j} className="los-cell self" />
+            const los = losFromH2H(cells[i][j])
+            const hue = los > 0.5 ? 140 : 8
+            const strength = Math.abs(los - 0.5) * 2
+            return <div key={j} className="los-cell" style={{ background: `hsla(${hue}, 65%, 45%, ${0.12 + strength * 0.7})` }} title={`P(${labels[i]} > ${labels[j]}) = ${(los * 100).toFixed(1)}%`}>{(los * 100).toFixed(0)}</div>
+          })}
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+const TOUR_PRESETS: EngineSpec[] = [
+  makeSpec('ab', 2000, 'classical'),
+  makeSpec('ab', 8000, 'classical'),
+  makeSpec('ab', 30000, 'classical'),
+  makeSpec('ab', 8000, 'nnue'),
+  makeSpec('mcts', 2500, 'classical'),
+  makeSpec('mcts', 8000, 'classical'),
+]
+
+function TournamentMode({ net }: { net: () => Promise<NnueBlob | null> }) {
+  const [engines, setEngines] = useState<EngineSpec[]>(() => [TOUR_PRESETS[0], TOUR_PRESETS[1], TOUR_PRESETS[2], TOUR_PRESETS[4]])
+  const [gpp, setGpp] = useState(8)
+  const [prog, setProg] = useState<TourProgress | null>(null)
+  const [running, setRunning] = useState(false)
+  const workerRef = useRef<Worker | null>(null)
+  useEffect(() => () => workerRef.current?.terminate(), [])
+
+  const toggle = (s: EngineSpec) => {
+    if (running) return
+    const has = engines.some((e) => e.label === s.label)
+    if (has) setEngines(engines.filter((e) => e.label !== s.label))
+    else if (engines.length < 6) setEngines([...engines, s])
+  }
+
+  const run = useCallback(async () => {
+    if (engines.length < 2) return
+    const blob = engines.some((e) => e.eval === 'nnue') ? await net() : null
+    let w: Worker
+    try {
+      w = new Worker(new URL('../engine/arena.worker.ts', import.meta.url), { type: 'module' })
+    } catch {
+      return
+    }
+    workerRef.current?.terminate()
+    workerRef.current = w
+    setProg(null)
+    setRunning(true)
+    w.onmessage = (e: MessageEvent<TourProgress>) => {
+      setProg(e.data)
+      if (e.data.done) setRunning(false)
+    }
+    w.postMessage({ type: 'tournament', engines, openings: ARENA_OPENINGS, gamesPerPairing: gpp, net: blob })
+  }, [engines, gpp, net])
+
+  const stop = useCallback(() => {
+    workerRef.current?.postMessage({ type: 'cancel' })
+    setRunning(false)
+  }, [])
+
+  const rankOf = (label: string) => {
+    if (!prog) return 0
+    const idx = prog.standings.findIndex((s) => s.label === label)
+    return idx + 1
+  }
+
+  return (
+    <div className="tour-mode">
+      <div className="tour-pool">
+        <div className="movetime-label">Field (pick 2–6)</div>
+        <div className="tour-chips">
+          {TOUR_PRESETS.map((s) => (
+            <button key={s.label} className={engines.some((e) => e.label === s.label) ? 'tour-chip active' : 'tour-chip'} disabled={running} onClick={() => toggle(s)}>{s.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="tour-controls">
+        <div className="sprt-param">
+          <span className="movetime-label">Games / pairing</span>
+          <div className="mpv-seg">
+            {[4, 8, 16, 30].map((n) => (
+              <button key={n} className={gpp === n ? 'mpv-btn active' : 'mpv-btn'} disabled={running} onClick={() => setGpp(n)}>{n}</button>
+            ))}
+          </div>
+        </div>
+        {running ? <button className="btn" onClick={stop}>Stop</button> : <button className="btn primary" onClick={run} disabled={engines.length < 2}>Run tournament</button>}
+        {prog && <span className="tour-progress-text">{prog.gamesDone}/{prog.gamesTotal} games</span>}
+      </div>
+
+      {prog && prog.standings.length > 0 && (
+        <>
+          <table className="tour-standings">
+            <thead><tr><th>#</th><th>Engine</th><th>Elo</th><th>±</th><th>Games</th><th>Score</th></tr></thead>
+            <tbody>
+              {prog.standings.map((s, r) => (
+                <tr key={s.index}>
+                  <td>{r + 1}</td>
+                  <td className="tour-eng">{s.label}</td>
+                  <td className="tour-elo">{s.elo >= 0 ? '+' : ''}{s.elo.toFixed(0)}</td>
+                  <td className="tour-err">{(1.96 * s.eloError).toFixed(0)}</td>
+                  <td>{s.played}</td>
+                  <td>{s.played > 0 ? ((s.points / s.played) * 100).toFixed(1) : '0'}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <EloBars standings={prog.standings} />
+
+          <div className="tour-grids">
+            <div className="tour-grid-block">
+              <div className="tour-grid-title">Crosstable (row vs column)</div>
+              <div className="crosstable" style={{ gridTemplateColumns: `auto repeat(${prog.labels.length}, 1fr)` }}>
+                <div className="cross-corner" />
+                {prog.labels.map((l, j) => <div key={j} className="cross-head" title={l}>{rankOf(l)}</div>)}
+                {prog.labels.map((rl, i) => (
+                  <Fragment key={i}>
+                    <div className="cross-rowhead" title={rl}>{rankOf(rl)}. {rl}</div>
+                    {prog.labels.map((_, j) => (
+                      <div key={j} className={`cross-cell ${i === j ? 'self' : ''}`}>{i === j ? '—' : CROSS_GLYPH(prog.cells[i][j])}</div>
+                    ))}
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+            <div className="tour-grid-block">
+              <div className="tour-grid-title">Likelihood of superiority</div>
+              <LosMatrix cells={prog.cells} labels={prog.labels} />
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ArenaLab() {
+  const [mode, setMode] = useState<'sprt' | 'tournament'>('sprt')
+  const netRef = useRef<NnueBlob | null>(null)
+  const netLoaded = useRef(false)
+  const net = useCallback(async (): Promise<NnueBlob | null> => {
+    if (netLoaded.current) return netRef.current
+    const saved = await nnueLoad().catch(() => null)
+    netRef.current = saved?.blob ?? defaultNnueBlob()
+    netLoaded.current = true
+    return netRef.current
+  }, [])
 
   return (
     <div className="lab arena-lab">
       <div className="lab-intro">
         <p>
-          <strong>Engine Arena.</strong> Pit two configurations of the same engine head-to-head over a set of varied
-          openings (each played from both colours), then read off the result as an <strong>Elo difference</strong> with
-          a 95% confidence interval and the likelihood one side is genuinely stronger (LOS). A real, in-browser way to
-          measure that more search — or the neural eval — actually buys strength.
+          <strong>The Arena.</strong> Strength-test the engine the way it is really done — not by staring at a single
+          score, but with the sequential statistics of computer-chess development. Run an <strong>SPRT</strong> (Sequential
+          Probability Ratio Test) between two configurations and it stops the instant it can tell whether a change is a gain,
+          reading the <em>pentanomial</em> game-pair variance the way Fishtest and OpenBench do. Or run a full
+          <strong> round-robin</strong> and rate every engine by a Bradley–Terry maximum-likelihood fit — the estimator
+          BayesElo approximates — with a crosstable, Elo error bars, and a likelihood-of-superiority matrix. Every game is
+          played in a Web Worker, so nothing blocks.
         </p>
       </div>
 
-      <div className="arena-configs">
-        <ArenaConfigPicker label="Engine A" cfg={a} set={setA} />
-        <span className="arena-vs">vs</span>
-        <ArenaConfigPicker label="Engine B" cfg={b} set={setB} />
+      <div className="mpv-seg arena-modeseg">
+        <button className={mode === 'sprt' ? 'mpv-btn active' : 'mpv-btn'} onClick={() => setMode('sprt')}>SPRT match</button>
+        <button className={mode === 'tournament' ? 'mpv-btn active' : 'mpv-btn'} onClick={() => setMode('tournament')}>Round-robin</button>
       </div>
 
-      <div className="arena-controls">
-        <div className="arena-games">
-          <span className="movetime-label">Games</span>
-          <div className="mpv-seg">
-            {[6, 12, 20, 40].map((n) => (
-              <button key={n} className={gamesN === n ? 'mpv-btn active' : 'mpv-btn'} onClick={() => setGamesN(n)} disabled={running}>
-                {n}
-              </button>
-            ))}
-          </div>
-        </div>
-        {running ? (
-          <button className="btn" onClick={stop}>Stop</button>
-        ) : (
-          <button className="btn primary" onClick={run}>Play match</button>
-        )}
-      </div>
-
-      {state && (
-        <>
-          <div className="arena-score">
-            <div className="arena-side a">
-              <div className="arena-side-name">A · {cfgLabel(a)}</div>
-              <div className="arena-side-pts">{stats ? stats.pointsA.toFixed(1) : '0'}</div>
-            </div>
-            <div className="arena-mid">
-              <div className="arena-progress-text">{state.done}/{state.total}{running ? ' · playing…' : ''}</div>
-              {stats && (
-                <div className="arena-wdl">
-                  +{stats.aw} ={stats.dr} −{stats.bw}
-                </div>
-              )}
-            </div>
-            <div className="arena-side b">
-              <div className="arena-side-name">B · {cfgLabel(b)}</div>
-              <div className="arena-side-pts">{stats ? (stats.n - stats.pointsA).toFixed(1) : '0'}</div>
-            </div>
-          </div>
-
-          {stats && (
-            <div className="arena-elo">
-              <div className="arena-elo-main">
-                A − B: <strong>{stats.elo >= 0 ? '+' : ''}{stats.elo.toFixed(0)}</strong> Elo
-                <span className="arena-elo-ci">
-                  {' '}[{stats.eloLow.toFixed(0)}, {stats.eloHigh.toFixed(0)}] · 95% CI
-                </span>
-              </div>
-              <div className="arena-los">
-                LOS (A stronger): <strong>{(stats.los * 100).toFixed(1)}%</strong>
-              </div>
-            </div>
-          )}
-
-          <div className="arena-games-strip">
-            {state.games.map((gm, i) => (
-              <span
-                key={i}
-                className={`arena-dot ${gm.result}`}
-                title={`Game ${i + 1}: ${gm.opening} — A played ${gm.aWhite ? 'White' : 'Black'} — ${
-                  gm.result === 'a' ? 'A won' : gm.result === 'b' ? 'B won' : 'draw'
-                } (${gm.reason}, ${gm.plies} plies)`}
-              />
-            ))}
-          </div>
-        </>
-      )}
+      {mode === 'sprt' ? <SprtMode net={net} /> : <TournamentMode net={net} />}
     </div>
   )
 }
