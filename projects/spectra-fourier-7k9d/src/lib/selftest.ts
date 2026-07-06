@@ -65,6 +65,33 @@ import {
   mulberry32 as spMulberry,
   type SignalConfig as SpSignalConfig,
 } from './spectral'
+import {
+  SCHEMES,
+  constellation,
+  mapBits,
+  demapSymbols,
+  grayEncode,
+  grayDecode,
+  qfunc,
+  erfc,
+  theoryBER,
+  simulateLink,
+  mulberry32 as commsRng,
+  gaussian as commsGaussian,
+  ebn0ToSigma,
+  randomBits,
+  type Scheme,
+} from './comms'
+import { rrcTaps, rcTaps, convolveReal, upsample, firComplex, sampleSymbols } from './pulse'
+import {
+  activeCarriers,
+  modulate,
+  demodulate,
+  applyChannel,
+  channelResponse,
+  paprDb,
+  CHANNELS,
+} from './ofdm'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1256,6 +1283,279 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       'periodogram & Welch locate two separated tones (20/45 Hz)',
       Math.abs(pp[0] - 20) < 1 && Math.abs(pp[1] - 45) < 1 && Math.abs(wp[0] - 20) < 1.5 && Math.abs(wp[1] - 45) < 1.5,
     )
+  }
+
+  // ===== Digital communications (the Modem lab) =====
+
+  // 37. Gray code is an involution-free bijection whose neighbours differ in one
+  //     bit: grayDecode∘grayEncode = id, and grayEncode(i) vs grayEncode(i+1)
+  //     is a single-bit flip.
+  {
+    let ok = true
+    for (let i = 0; i < 256; i++) if (grayDecode(grayEncode(i)) !== i) ok = false
+    let oneBit = true
+    for (let i = 0; i < 255; i++) {
+      const diff = grayEncode(i) ^ grayEncode(i + 1)
+      if (diff === 0 || (diff & (diff - 1)) !== 0) oneBit = false // not a power of two
+    }
+    check('Gray code round-trips and adjacent labels differ by one bit', ok && oneBit)
+  }
+
+  // 38. Every constellation has unit average symbol energy (the invariant the
+  //     whole Eb/N0 bookkeeping rests on).
+  {
+    let ok = true
+    for (const s of SCHEMES) {
+      const c = constellation(s.id)
+      let e = 0
+      for (const p of c.points) e += p.re * p.re + p.im * p.im
+      if (Math.abs(e / c.M - 1) > 1e-9) ok = false
+    }
+    check('all constellations are normalized to unit average energy', ok)
+  }
+
+  // 39. map→demap is exact with no noise, for every scheme (the modulator and
+  //     the hard-decision demodulator are true inverses over random bits).
+  {
+    let ok = true
+    for (const s of SCHEMES) {
+      const rng = commsRng(7 + s.M)
+      const bits = randomBits(s.bitsPerSymbol * 4000, rng)
+      const sym = mapBits(bits, s.id)
+      const back = demapSymbols(sym.re, sym.im, s.id)
+      for (let i = 0; i < bits.length; i++) if (bits[i] !== back[i]) ok = false
+    }
+    check('map→demap is lossless at zero noise for BPSK/QPSK/16-/64-QAM', ok)
+  }
+
+  // 40. Gray labelling: physically nearest constellation neighbours (distance =
+  //     the minimum spacing) differ in exactly one bit. This is what makes
+  //     BER ≈ SER/k at high SNR.
+  {
+    let ok = true
+    for (const s of SCHEMES) {
+      if (s.id === 'bpsk') continue
+      const c = constellation(s.id)
+      // Minimum nonzero pairwise distance.
+      let dmin = Infinity
+      for (let a = 0; a < c.points.length; a++)
+        for (let b = a + 1; b < c.points.length; b++) {
+          const dr = c.points[a].re - c.points[b].re
+          const di = c.points[a].im - c.points[b].im
+          const d = Math.sqrt(dr * dr + di * di)
+          if (d > 1e-9 && d < dmin) dmin = d
+        }
+      for (let a = 0; a < c.points.length; a++)
+        for (let b = a + 1; b < c.points.length; b++) {
+          const dr = c.points[a].re - c.points[b].re
+          const di = c.points[a].im - c.points[b].im
+          const d = Math.sqrt(dr * dr + di * di)
+          if (Math.abs(d - dmin) < 1e-6) {
+            let flips = 0
+            for (let j = 0; j < s.bitsPerSymbol; j++) if (c.points[a].bits[j] !== c.points[b].bits[j]) flips++
+            if (flips !== 1) ok = false
+          }
+        }
+    }
+    check('Gray map: nearest constellation neighbours differ in one bit', ok)
+  }
+
+  // 41. The rational erfc/Q-function matches known values and its identities:
+  //     Q(0)=½, Q(−x)=1−Q(x), erfc(0)=1, and Q(1)≈0.158655.
+  {
+    const ok =
+      approxEqual(qfunc(0), 0.5, 1e-6) &&
+      approxEqual(erfc(0), 1, 1e-6) &&
+      approxEqual(qfunc(-1.3) + qfunc(1.3), 1, 1e-6) &&
+      Math.abs(qfunc(1) - 0.1586552539) < 1e-4 &&
+      Math.abs(qfunc(2) - 0.0227501319) < 1e-4
+    check('Q-function via erfc matches known values and symmetry', ok)
+  }
+
+  // 42. Theory BER is strictly decreasing in Eb/N0 for every scheme, and at a
+  //     fixed Eb/N0 a denser constellation is worse (BPSK < 16-QAM < 64-QAM BER).
+  {
+    let monotone = true
+    for (const s of SCHEMES) {
+      let prev = 1
+      for (let db = -2; db <= 16; db += 1) {
+        const p = theoryBER(s.id, db)
+        if (p > prev + 1e-12) monotone = false
+        prev = p
+      }
+    }
+    const at10 = (id: Scheme) => theoryBER(id, 10)
+    const ordered = at10('bpsk') < at10('qam16') && at10('qam16') < at10('qam64')
+    check('theory BER decreases with Eb/N0 and worsens with density', monotone && ordered)
+  }
+
+  // 43. Monte-Carlo BER tracks the closed form. BPSK/QPSK are exact theory;
+  //     16-QAM uses the tight nearest-neighbour approximation. Measure at an SNR
+  //     that yields plenty of errors so the sample rate is stable.
+  {
+    const trials: { id: Scheme; db: number; tol: number; nsym: number }[] = [
+      { id: 'bpsk', db: 4, tol: 0.15, nsym: 120000 },
+      { id: 'qpsk', db: 4, tol: 0.15, nsym: 120000 },
+      { id: 'qam16', db: 10, tol: 0.28, nsym: 120000 },
+    ]
+    let ok = true
+    for (const t of trials) {
+      const r = simulateLink(t.id, t.db, t.nsym, 12345)
+      const th = theoryBER(t.id, t.db)
+      if (th <= 0) continue
+      const rel = Math.abs(r.ber - th) / th
+      if (rel > t.tol) ok = false
+    }
+    check('Monte-Carlo BER tracks closed-form theory (BPSK/QPSK/16-QAM)', ok)
+  }
+
+  // 44. The AWGN generator delivers the requested variance: over many samples the
+  //     empirical per-dimension variance equals σ² set from Eb/N0.
+  {
+    const sigma = ebn0ToSigma(6, 2)
+    const rng = commsRng(999)
+    let s = 0
+    let ss = 0
+    const N = 200000
+    for (let i = 0; i < N; i++) {
+      const g = sigma * commsGaussian(rng)
+      s += g
+      ss += g * g
+    }
+    const mean = s / N
+    const varEmp = ss / N - mean * mean
+    check('AWGN variance matches the Eb/N0 setting', Math.abs(varEmp - sigma * sigma) / (sigma * sigma) < 0.05 && Math.abs(mean) < 0.02)
+  }
+
+  // 45. Root-raised-cosine taps have unit energy, and the matched cascade RRC⊛RRC
+  //     is a raised cosine: ~1 at its center and ~0 at every other symbol instant
+  //     (the zero-ISI Nyquist property that opens the eye).
+  {
+    const beta = 0.25
+    const sps = 8
+    const span = 8
+    const rrc = rrcTaps(beta, sps, span)
+    let e = 0
+    for (let i = 0; i < rrc.length; i++) e += rrc[i] * rrc[i]
+    const comb = convolveReal(rrc, rrc)
+    const center = rrc.length - 1 // peak of the symmetric cascade
+    const peak = comb[center]
+    let maxIsi = 0
+    for (let m = 1; m <= span; m++) {
+      if (center - m * sps >= 0) maxIsi = Math.max(maxIsi, Math.abs(comb[center - m * sps]))
+      if (center + m * sps < comb.length) maxIsi = Math.max(maxIsi, Math.abs(comb[center + m * sps]))
+    }
+    check('RRC has unit energy and RRC⊛RRC is zero-ISI (Nyquist)', Math.abs(e - 1) < 1e-9 && maxIsi / peak < 0.02)
+  }
+
+  // 46. Reference raised cosine is itself zero-ISI: zero at every nonzero symbol
+  //     instant, one at the center.
+  {
+    const rc = rcTaps(0.35, 8, 6)
+    const center = (rc.length - 1) / 2
+    let ok = Math.abs(rc[center] - 1) < 1e-9
+    for (let m = 1; m <= 6; m++) {
+      if (Math.abs(rc[center - m * 8]) > 1e-9) ok = false
+      if (Math.abs(rc[center + m * 8]) > 1e-9) ok = false
+    }
+    check('raised-cosine reference is zero-ISI at symbol instants', ok)
+  }
+
+  // 47. The full shaping chain recovers symbols with negligible ISI in the clear:
+  //     upsample → RRC(Tx) → RRC(Rx) → sample lands back on the transmitted
+  //     constellation (matched-filter peak), so a noiseless link is error-free.
+  {
+    const rng = commsRng(3)
+    const scheme: Scheme = 'qpsk'
+    const bits = randomBits(2 * 500, rng)
+    const sym = mapBits(bits, scheme)
+    const sps = 8
+    const span = 8
+    const rrc = rrcTaps(0.25, sps, span)
+    const up = upsample(sym.re, sym.im, sps)
+    const tx = firComplex(up, rrc)
+    const rx = firComplex(tx, rrc)
+    const delay = rrc.length - 1
+    const rr = sampleSymbols(rx, sps, delay, sym.length)
+    // Normalize to unit average power then demap.
+    let p = 0
+    for (let i = 0; i < rr.length; i++) p += rr.re[i] * rr.re[i] + rr.im[i] * rr.im[i]
+    const g = Math.sqrt(rr.length / p)
+    for (let i = 0; i < rr.length; i++) {
+      rr.re[i] *= g
+      rr.im[i] *= g
+    }
+    const back = demapSymbols(rr.re, rr.im, scheme)
+    let errs = 0
+    // Ignore the first/last `span` symbols (filter transients).
+    for (let i = span * 2; i < bits.length - span * 2; i++) if (bits[i] !== back[i]) errs++
+    check('RRC Tx/Rx chain is ISI-free (noiseless link error-free)', errs === 0)
+  }
+
+  // 48. OFDM round-trips perfectly through a flat channel with no noise: the FFT
+  //     of the IFFT (minus the CP) reproduces exactly the transmitted subcarriers.
+  {
+    const nfft = 64
+    const cfg = { nfft, cpLen: 8, active: activeCarriers(nfft, 3) }
+    const scheme: Scheme = 'qam16'
+    const nActive = cfg.active.length
+    const rng = commsRng(11)
+    const bits = randomBits(scheme === 'qam16' ? 4 * nActive * 4 : nActive, rng)
+    const sym = mapBits(bits, scheme)
+    const tx = modulate(sym.re, sym.im, cfg)
+    const dem = demodulate(tx, cfg) // H = 1
+    let maxErr = 0
+    for (let i = 0; i < sym.length && i < dem.symRe.length; i++) {
+      maxErr = Math.max(maxErr, Math.abs(dem.symRe[i] - sym.re[i]), Math.abs(dem.symIm[i] - sym.im[i]))
+    }
+    check('OFDM IFFT→FFT round-trips subcarriers exactly (flat channel)', maxErr < 1e-9)
+  }
+
+  // 49. The OFDM magic: with a cyclic prefix ≥ the channel memory, a frequency-
+  //     selective multipath channel becomes N independent flat gains. A one-tap
+  //     zero-forcing equalizer inverts each subcarrier and recovers the symbols
+  //     exactly, with no noise — even through a rich echo channel.
+  {
+    const nfft = 128
+    const ch = CHANNELS.find((c) => c.id === 'multipath')!
+    const cfg = { nfft, cpLen: 16, active: activeCarriers(nfft, 4) }
+    const scheme: Scheme = 'qpsk'
+    const nActive = cfg.active.length
+    const rng = commsRng(21)
+    const bits = randomBits(2 * nActive * 3, rng)
+    const sym = mapBits(bits, scheme)
+    const tx = modulate(sym.re, sym.im, cfg)
+    const rxSig = applyChannel(tx, ch.hRe, ch.hIm)
+    const H = channelResponse(ch.hRe, ch.hIm, nfft)
+    const dem = demodulate({ re: rxSig.re, im: rxSig.im, length: rxSig.length }, cfg, H)
+    let maxErr = 0
+    for (let i = 0; i < sym.length; i++) {
+      maxErr = Math.max(maxErr, Math.abs(dem.symRe[i] - sym.re[i]), Math.abs(dem.symIm[i] - sym.im[i]))
+    }
+    // And without equalization the multipath badly corrupts the symbols.
+    const demRaw = demodulate({ re: rxSig.re, im: rxSig.im, length: rxSig.length }, cfg)
+    let rawErr = 0
+    for (let i = 0; i < sym.length; i++) {
+      rawErr = Math.max(rawErr, Math.abs(demRaw.symRe[i] - sym.re[i]))
+    }
+    check('OFDM CP + 1-tap equalizer inverts multipath exactly', maxErr < 1e-9 && rawErr > 0.1)
+  }
+
+  // 50. PAPR is well defined and ≥ 0 dB, and a single active subcarrier (a pure
+  //     complex sinusoid) has ~0 dB PAPR (constant envelope), while a full OFDM
+  //     symbol has a substantially higher peak.
+  {
+    const nfft = 64
+    const one = { nfft, cpLen: 0, active: [5] }
+    const tone = modulate([1], [0], one)
+    const single = paprDb({ re: tone.re, im: tone.im, length: tone.length })
+    const cfg = { nfft, cpLen: 8, active: activeCarriers(nfft, 3) }
+    const rng = commsRng(5)
+    const bits = randomBits(2 * cfg.active.length, rng)
+    const sym = mapBits(bits, 'qpsk')
+    const full = modulate(sym.re, sym.im, cfg)
+    const many = paprDb({ re: full.re, im: full.im, length: full.length })
+    check('PAPR: single tone ≈ 0 dB, full OFDM symbol is peakier', single < 0.2 && many > single + 2)
   }
 
   return { passed, failed, messages }
