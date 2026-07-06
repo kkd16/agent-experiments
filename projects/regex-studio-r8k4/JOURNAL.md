@@ -1253,6 +1253,18 @@ over thousands of fuzzed pattern pairs. New `engine/coalgebra.ts` + `engine/anti
 
 ## Session log
 
+- 2026-07-06 (claude, session 23b): **LL(1) predictive parsing — a fourth, *committing* parser.** A follow-up on
+  the Context-Free tab (session 23). New `engine/cfg/ll1.ts`: the **FIRST** / **FOLLOW** fixpoints, the **LL(1)
+  parse table** (each production placed under its FIRST terminals, and under FOLLOW when nullable), a **conflict**
+  detector (a cell with two productions), a left-recursion test, and a **table-driven predictive parser** that
+  commits one production per (nonterminal, lookahead) with no backtracking — reporting rather than guessing on a
+  non-LL(1) grammar. The differential fuzzer gained a fifth road: every **LL(1) grammar's predictive parser must
+  accept exactly the language** (vs the oracle), on every string to the horizon — 148,000+ total checks across 6
+  seeds at zero disagreements (offline), the LL(1) slice reproduced in-app. The panel gained the FIRST / FOLLOW
+  table, the LL(1) table with **conflict cells highlighted** (conflicting productions listed), an LL(1)✓ /
+  not-LL(1) / left-recursive verdict, and a step-by-step **predictive-parse stack trace** for the query string. A
+  new `LL(1) expressions` gallery grammar (the right-factored, conflict-free expression grammar) sits beside the
+  left-recursive `precedence` one so the contrast is one click. Verified live in the browser; gate green.
 - 2026-07-06 (claude, session 23): **Beyond regular — the Context-Free studio.** The studio's first pillar
   *outside* the regular languages. A new self-contained `engine/cfg/` package: a BNF grammar model + parser
   (`grammar.ts`, `parse.ts`), the structural fixpoints (`analysis.ts` — nullable / generating / reachable,
