@@ -8,8 +8,15 @@ complexity, pitfalls, and representative problems.
 
 ## Architecture
 
-- **Stack**: Vite + React + TS, hash routing (`#/pattern/<id>`, `#/review`, `#/roadmap`, `#/quiz`,
-  `#/cheatsheet`), no runtime deps beyond React.
+- **Stack**: Vite + React + TS, hash routing (`#/pattern/<id>`, `#/practice`, `#/interview`,
+  `#/interview/session`, `#/interview/report/<id>`, `#/review`, `#/roadmap`, `#/quiz`,
+  `#/cheatsheet`, `#/stats`, `#/settings`), no runtime deps beyond React.
+- `src/interview/` — **The Interview Room** pillar: `types.ts` (session model + scoring constants),
+  `select.ts` (seeded mulberry32 PRNG + weakness-weighted, diversity-penalised problem selection),
+  `store.ts` (event-synced `useInterview` — one persisted in-progress session + capped history),
+  `score.ts` (readiness scorer: correctness → speed-vs-budget → hint/peek penalties, difficulty-
+  weighted grade + coach's notes + drill recommendations). UI lives in `src/pages/Interview.tsx`
+  (lobby / live room / scorecard / history) and `src/interview/interview.css`.
 - `src/data/patterns.ts` — the content model: 18 patterns, each fully authored.
 - `src/data/quiz.ts` — 25 pattern-recognition questions for the trainer.
 - `src/data/approaches.ts` — guided "hint + approach" walkthroughs for representative problems,
@@ -153,6 +160,65 @@ and tells you the empirical Big-O — then compares it to the problem's optimal.
   the optimal class, not merely passing.
 - [ ] **Shareable profile permalinks** (seed + sizes in the URL) so a run reproduces byte-for-byte.
 
+## The Interview Room — a timed, adaptive mock interview (planned + shipping this session)
+
+You could learn a pattern, drill it, profile it — but the app never made you *perform* under the
+one constraint interviews actually impose: **a ticking clock on an unfamiliar problem, with no
+retries.** The Interview Room closes that last loop. It assembles a short set of Code Dojo problems
+chosen to hunt your weakest patterns, runs a countdown, judges your code in the same sandbox, and
+then grades not just *whether* you solved but *how* — speed against a difficulty budget, and how
+much you leaned on hints or the answer key. It's the difference between "I know this pattern" and
+"I can produce it, cold, in twelve minutes."
+
+- [x] **Session model** (`interview/types.ts`) — a `LiveSession` captures config, the chosen problem
+  ids, the countdown window, the current problem and a per-problem `ProblemAttempt` (draft code,
+  first-view / first-pass timestamps, best pass-ratio, submit/run/hint counts, peeked flag). Enough
+  to fully replay and score a session, and to survive a reload mid-interview.
+- [x] **Deterministic, weakness-weighted selection** (`interview/select.ts`) — a seeded `mulberry32`
+  PRNG + a stable string→seed hash make every session reproducible from its seed. Adaptive mode
+  weights each problem by its pattern's **spaced-repetition mastery** (`new ×4.2 → mastered ×0.9`)
+  and your Dojo solve history (unsolved problems weighted up), then samples *without* replacement
+  with a strong same-pattern diversity penalty so a session spreads across patterns like a real
+  loop. Difficulty *bands* (Warm-up / Mixed / Standard / Onsite) reshape the difficulty mix; a
+  single-pattern focus is also supported.
+- [x] **Persistence + live-session store** (`interview/store.ts`) — event-synced `useInterview` hook
+  (same pattern as the SRS/Dojo stores), one persisted in-progress session (so a refresh never loses
+  your code or the timer) plus an append-only, capped history of finished sessions. All storage is
+  try/catch-guarded so the sandboxed catalog thumbnail still renders.
+- [x] **Readiness scorer** (`interview/score.ts`) — turns a session into a 0–100 report. Per problem:
+  correctness first, then a **speed score** relative to a difficulty-appropriate time budget
+  (full credit ≤40% of budget, zero past 150%), docked for each hint and **capped** if the reference
+  was peeked; unsolved problems earn partial credit from their best pass-ratio. The session score is
+  a **difficulty-weighted** blend (a hard problem counts ~2.4× an easy one), mapped to a letter grade
+  with plain-language **coach's notes** and a de-duplicated, priority-ranked list of patterns to drill.
+- [x] **The live room** (`pages/Interview.tsx` → `Room`) — a sticky command bar with per-problem
+  status dots, a tabular-numeral countdown that pulses red under two minutes and **auto-finishes at
+  zero**, the real zero-dep editor + sandbox judge (Run samples / Submit, ⌘/Ctrl+Enter), a compact
+  results console, an "Interviewer" panel that reveals staged hints on request (each noted on the
+  scorecard) and a peek-guarded reference. A win folds straight back into the rest of the app —
+  it marks the pattern learned in the SRS, records the Dojo solve, and feeds the daily streak.
+- [x] **The lobby** — configure time budget, problem count, difficulty band, focus and whether hints
+  are allowed, with a **live, deterministic preview** of the exact problems (a Shuffle reroll) so
+  what you see is what you get; a resume banner for an in-progress session.
+- [x] **Scorecard + analytics** (`ReportView`, `History`) — a readiness ring + letter grade, headline
+  stats (solved, time used, avg solve, hints), coach's notes, drill-these-next chips linking to the
+  pattern pages, and a problem-by-problem breakdown with a per-problem score meter. The lobby keeps a
+  session history with a **from-scratch SVG readiness sparkline** (trend over time) and links back to
+  every past scorecard.
+- [x] **Wired in** — nav entry with a live-session pulse dot, ⌘K palette, a home hero CTA, and a
+  dedicated `interview.css`. **Playwright-verified end to end**: configure → start → solve against the
+  real worker → Accepted → End & score → a rendered scorecard, with the session landing in history.
+- [ ] **Company/role presets** — "45-min onsite", "phone screen", "FAANG array-heavy", etc., as
+  one-click session templates.
+- [ ] **Fold empirical complexity into the score** — reuse the Complexity Profiler so an accepted but
+  sub-optimal solution scores below an optimal one, not equal to it.
+- [ ] **Shareable session permalinks** (seed + config in the hash) so two people can attempt the exact
+  same interview and compare scorecards.
+- [ ] **Auto-lapse weak patterns** — schedule an SRS review for any pattern left unsolved or heavily
+  hinted, closing the loop the way the trainer already does.
+- [ ] **A "talk-aloud" timer / notes pane** and a post-session self-rating to practise communication,
+  not just code.
+
 ## Session log
 
 - 2026-06-13 (claude): Initial build. Full design system, 18 authored patterns, 4 pages
@@ -226,3 +292,22 @@ and tells you the empirical Big-O — then compares it to the problem's optimal.
   run proves the real browser worker (brute-force two-sum → "Slower than optimal — O(n²)"; the hash
   version → "Optimal — O(n)"; binary search → O(log n)). Full gate (scope + conformance + lint +
   build) green.
+- 2026-07-06 (claude): **Major release — The Interview Room: a timed, adaptive mock interview.**
+  Closed the app's last missing loop — you could learn, drill and profile a pattern, but never
+  *perform* under a clock on an unfamiliar problem with no retries. New `interview/` module: a
+  `LiveSession` model that fully captures and replays a session (`types.ts`); deterministic,
+  weakness-weighted problem selection (`select.ts`) — a seeded mulberry32 PRNG picks problems by
+  spaced-repetition mastery (`new ×4.2 → mastered ×0.9`) and Dojo history, sampled without
+  replacement with a same-pattern diversity penalty, reshaped by difficulty *bands*; an event-synced
+  `useInterview` store (`store.ts`) that persists the in-progress session across reloads plus a capped
+  history; and a readiness scorer (`score.ts`) that grades correctness → speed-vs-budget → hint/peek
+  penalties, difficulty-weighted into a letter grade with personalised coach's notes and ranked drill
+  recommendations. The UI (`pages/Interview.tsx`) is a lobby (configurable, with a live deterministic
+  problem preview), a live room (sticky bar with status dots, an auto-finishing countdown that pulses
+  under 2 min, the real editor + sandbox judge, a staged-hint "interviewer" and a peek-guarded
+  reference), and a scorecard (readiness ring, headline stats, coach's notes, drill chips, per-problem
+  score meters) with a from-scratch SVG readiness sparkline over session history. A solve folds back
+  into the SRS, the Dojo store and the streak. Wired into the nav (with a live-session pulse dot), the
+  ⌘K palette and a home hero CTA. **Playwright-verified end to end** (configure → start → solve against
+  the real worker → Accepted → End & score → rendered scorecard, session recorded in history). Full
+  gate (scope + conformance + lint + build) green.

@@ -9,13 +9,16 @@ import Stats from "./pages/Stats";
 import Settings from "./pages/Settings";
 import Practice from "./pages/Practice";
 import Challenge from "./pages/Challenge";
+import Interview from "./pages/Interview";
 import CommandPalette from "./components/CommandPalette";
 import { useTheme } from "./lib/theme";
 import { useSRS } from "./lib/srs";
+import { useInterview } from "./interview/store";
 
 const NAV = [
   { path: "/", label: "Patterns" },
   { path: "/practice", label: "Code Dojo" },
+  { path: "/interview", label: "Interview" },
   { path: "/review", label: "Review" },
   { path: "/roadmap", label: "Roadmap" },
   { path: "/quiz", label: "Trainer" },
@@ -28,11 +31,13 @@ export default function App() {
   const route = seg[0] ?? "";
   const { theme, toggle } = useTheme();
   const { counts } = useSRS();
+  const { live } = useInterview();
 
   let page;
   if (route === "pattern" && seg[1]) page = <PatternDetail id={seg[1]} />;
   else if (route === "practice" && seg[1]) page = <Challenge key={seg[1]} id={seg[1]} />;
   else if (route === "practice") page = <Practice />;
+  else if (route === "interview") page = <Interview />;
   else if (route === "roadmap") page = <Roadmap />;
   else if (route === "quiz") page = <Quiz />;
   else if (route === "review") page = <Review />;
@@ -60,6 +65,9 @@ export default function App() {
                 {n.label}
                 {n.path === "/review" && counts.due > 0 && (
                   <span className="due-dot" title={`${counts.due} due`}>{counts.due}</span>
+                )}
+                {n.path === "/interview" && live && (
+                  <span className="iv-live-dot" title="Session in progress" aria-label="Session in progress" />
                 )}
               </a>
             ))}
