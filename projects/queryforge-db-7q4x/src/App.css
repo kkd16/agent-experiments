@@ -2720,3 +2720,89 @@ body {
 .wcoj-inter { display: flex; gap: 10px; font: 12px var(--mono); margin-top: 3px; padding-top: 4px; border-top: 1px dashed var(--line-2); }
 .wcoj-inter-tag { flex: 0 0 74px; color: var(--green); font-weight: 600; }
 .wcoj-inter-vals { color: var(--txt); }
+
+/* ============================ LSM Lab ============================ */
+.lsm-lab { display: flex; flex-direction: column; gap: 12px; }
+.lsm-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.lsm-ctl-group { display: flex; align-items: center; gap: 6px; }
+.lsm-ctl-group.grow { flex-wrap: wrap; }
+.lsm-ctl-label { font: 0.62rem var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--txt-faint); }
+.lsm-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; }
+.lsm-seg button { background: var(--bg-1); color: var(--txt-dim); border: none; padding: 4px 11px; font: 0.72rem var(--mono); cursor: pointer; border-right: 1px solid var(--line-2); }
+.lsm-seg button:last-child { border-right: none; }
+.lsm-seg button.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--txt); }
+.lsm-seg button:hover:not(.on) { background: var(--bg-2); }
+.lsm-manual { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; }
+.lsm-input { width: 70px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 5px; color: var(--txt); padding: 4px 7px; font: 0.75rem var(--mono); }
+.lsm-input.sm { width: 48px; }
+.lsm-input:focus { outline: none; border-color: var(--accent); }
+.lsm-sep { width: 1px; align-self: stretch; background: var(--line-2); margin: 0 4px; }
+.lsm-badge { align-self: flex-start; font: 0.68rem var(--mono); font-weight: 700; padding: 3px 10px; border-radius: 6px; }
+.lsm-badge.ok { color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); border: 1px solid color-mix(in srgb, var(--green) 40%, transparent); }
+.lsm-badge.bad { color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
+.lsm-message { font: 0.82rem var(--sans); color: var(--txt-dim); margin: 0; line-height: 1.5; }
+.lsm-dim { color: var(--txt-faint); font-weight: 400; }
+
+.lsm-metrics { display: flex; flex-wrap: wrap; gap: 8px; }
+.lsm-metric { flex: 1 1 110px; min-width: 110px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.lsm-metric-value { font: 1.15rem var(--mono); font-weight: 700; color: var(--accent); }
+.lsm-metric-label { font: 0.6rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--txt-dim); margin-top: 2px; }
+.lsm-metric-hint { font: 0.58rem var(--mono); color: var(--txt-faint); margin-top: 2px; }
+
+.lsm-section-title { display: flex; align-items: center; gap: 10px; font: 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--txt); margin-top: 4px; }
+.lsm-memfill { flex: 1; max-width: 260px; height: 6px; background: var(--bg-2); border-radius: 4px; overflow: hidden; }
+.lsm-memfill-bar { height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
+
+.lsm-skip-wrap { overflow-x: auto; background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+.lsm-skip { display: block; }
+.lsm-lane { stroke: var(--line-2); stroke-width: 1.5; }
+.lsm-node { fill: color-mix(in srgb, var(--accent) 30%, var(--bg-3)); stroke: var(--accent); stroke-width: 1; }
+.lsm-node.tomb { fill: color-mix(in srgb, var(--red) 30%, var(--bg-3)); stroke: var(--red); }
+.lsm-node-key { fill: var(--txt-dim); font: 0.56rem var(--mono); text-anchor: middle; }
+
+.lsm-levels { display: flex; flex-direction: column; gap: 6px; }
+.lsm-level { background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+.lsm-level-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.lsm-level-name { font: 0.75rem var(--mono); font-weight: 700; color: var(--violet); }
+.lsm-level-tables { display: flex; flex-wrap: wrap; gap: 6px; }
+.lsm-level-empty { color: var(--txt-faint); font: 0.75rem var(--mono); }
+.lsm-sst { width: 92px; background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 6px; transition: box-shadow 0.15s, border-color 0.15s; }
+.lsm-sst-top { display: flex; align-items: center; gap: 5px; }
+.lsm-sst-id { font: 0.66rem var(--mono); font-weight: 700; color: var(--txt); }
+.lsm-sst-tomb { color: var(--red); font-size: 0.7rem; }
+.lsm-sst-n { margin-left: auto; font: 0.62rem var(--mono); color: var(--txt-dim); }
+.lsm-sst-range { font: 0.58rem var(--mono); color: var(--txt-faint); margin: 2px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lsm-sst-bloom { height: 4px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.lsm-sst-bloom-fill { height: 100%; background: var(--amber); }
+.lsm-sst.hit { border-color: var(--green); box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 45%, transparent); }
+.lsm-sst.miss { border-color: var(--txt-dim); box-shadow: 0 0 0 2px color-mix(in srgb, var(--txt-dim) 35%, transparent); }
+.lsm-sst.bloom { border-color: var(--amber); box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 40%, transparent); opacity: 0.7; }
+.lsm-sst.fence { border-color: var(--violet); box-shadow: 0 0 0 2px color-mix(in srgb, var(--violet) 35%, transparent); opacity: 0.55; }
+.lsm-empty { color: var(--txt-faint); font: 0.8rem var(--sans); font-style: italic; padding: 10px; }
+
+.lsm-lower { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 860px) { .lsm-lower { grid-template-columns: 1fr; } }
+.lsm-panel { background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+.lsm-panel-title { font: 0.66rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--txt-dim); margin-bottom: 7px; display: flex; gap: 8px; align-items: baseline; }
+.lsm-readpath { display: flex; flex-direction: column; gap: 3px; }
+.lsm-probe { display: flex; justify-content: space-between; align-items: center; font: 0.68rem var(--mono); padding: 3px 8px; border-radius: 5px; border-left: 3px solid var(--line-2); background: var(--bg-2); }
+.lsm-probe.hit { border-left-color: var(--green); color: var(--txt); }
+.lsm-probe.miss { border-left-color: var(--txt-dim); color: var(--txt-dim); }
+.lsm-probe.bloom { border-left-color: var(--amber); color: var(--txt-dim); }
+.lsm-probe.fence { border-left-color: var(--violet); color: var(--txt-dim); }
+.lsm-probe-loc { font-weight: 600; }
+.lsm-probe-out { color: var(--txt-faint); }
+.lsm-readpath-summary { margin-top: 6px; font: 0.72rem var(--mono); color: var(--txt-dim); }
+.lsm-readpath-summary .ok { color: var(--green); font-weight: 600; }
+.lsm-readpath-summary .bad { color: var(--red); font-weight: 600; }
+.lsm-rangerows { display: flex; flex-wrap: wrap; gap: 5px; }
+.lsm-rangecell { font: 0.66rem var(--mono); background: var(--bg-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; color: var(--txt); }
+.lsm-trace { display: flex; flex-direction: column; gap: 2px; max-height: 210px; overflow-y: auto; }
+.lsm-trace-line { font: 0.68rem var(--mono); color: var(--txt-dim); padding: 2px 0; display: flex; gap: 7px; align-items: baseline; line-height: 1.35; }
+.lsm-trace-tag { flex: 0 0 60px; text-align: center; font-size: 0.56rem; font-weight: 700; text-transform: uppercase; padding: 1px 4px; border-radius: 3px; }
+.lsm-trace-tag.put { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.lsm-trace-tag.del { color: var(--red); background: color-mix(in srgb, var(--red) 16%, transparent); }
+.lsm-trace-tag.flush { color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 16%, transparent); }
+.lsm-trace-tag.compact { color: var(--violet); background: color-mix(in srgb, var(--violet) 16%, transparent); }
+.lsm-trace-tag.get { color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); }
+.lsm-trace-tag.reset { color: var(--txt-faint); background: var(--bg-2); }
