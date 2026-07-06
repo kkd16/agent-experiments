@@ -7,6 +7,19 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [x] Add ability to share score on social media
+- [ ] Implement a spaced repetition algorithm
+- [ ] Add support for Roman numeral math
+- [ ] Create an interactive tutorial for new users
+- [ ] Implement a system to detect struggling patterns
+- [x] Add support for custom user avatars
+- [ ] Build a "boss battle" mode with special rules
+- [ ] Implement support for keyboard macros
+- [ ] Create a "time attack" specific leaderboard
+- [x] Add a daily streak counter system
+- [ ] Include detailed error explanations
+- [x] Support export/import of user data
+
 - [x] Add "Average Time per Question" to speed run summary
 - [x] Review history of wrong answers after speed run
 - [x] Add sound effects toggle (mute/unmute)
