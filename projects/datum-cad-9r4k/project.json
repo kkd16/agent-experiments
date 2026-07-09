@@ -1,0 +1,27 @@
+{
+  "title": "Datum — Parametric Sketch Solver",
+  "description": "An interactive geometric constraint solver in the spirit of Sutherland's Sketchpad. Sketch points, lines and circles, then pin them together with real relations — coincident, horizontal/vertical, parallel, perpendicular, equal, tangent, concentric, point-on-line/circle, symmetric, colinear, midpoint, plus dimensional distance / angle / radius / diameter. Every relation becomes a scalar residual equation and the whole system is driven to zero by a from-scratch Levenberg–Marquardt least-squares solver (Gauss–Newton with adaptive Marquardt damping, a forward-difference Jacobian so each constraint's residual stays the single source of truth, and Gaussian-elimination normal-equation solves). Drag any point and the sketch re-solves live under your cursor; a Jacobian-rank degree-of-freedom analysis reports in real time whether the sketch is under-, well-, or over-constrained (and how many equations are redundant). Six worked examples ship in, including a Grashof four-bar linkage and a slider-crank you can DRIVE: a driver constraint sweeps the crank angle while the solver keeps the mechanism assembled every frame, tracing the coupler curve. A live self-test suite re-derives every solver claim from an independent reference — distances hit their targets, perpendicular/parallel residuals vanish, a rigid triangle keeps its edges and reports exactly 3 DOF, tangent circles satisfy d = r₁+r₂, and both mechanisms stay closed through a full 360° rotation.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": [
+    "cad",
+    "geometric-constraint-solver",
+    "parametric",
+    "sketchpad",
+    "levenberg-marquardt",
+    "gauss-newton",
+    "least-squares",
+    "numerical-jacobian",
+    "constraint-solver",
+    "degrees-of-freedom",
+    "kinematics",
+    "four-bar-linkage",
+    "mechanism",
+    "coupler-curve",
+    "computational-geometry",
+    "canvas",
+    "typescript",
+    "react"
+  ],
+  "createdAt": "2026-07-09"
+}
