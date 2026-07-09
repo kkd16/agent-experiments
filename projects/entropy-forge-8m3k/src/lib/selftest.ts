@@ -87,6 +87,7 @@ import {
   sampleMixture,
   QRng,
 } from './quantize.ts'
+import { waterFill, reverseWaterFill, reverseWaterFillTheta, gaussianVectorRD } from './waterfilling.ts'
 import { fdct8x8, idct8x8, ZIGZAG as JZIGZAG, DEZIGZAG as JDEZIGZAG } from './dct.ts'
 import { encodeJPEG, decodeJPEG, psnr as jpsnr, rgbToYCbCr, yCbCrToRgb, type Subsampling } from './jpeg.ts'
 import { SAMPLES as IMG_SAMPLES } from './pngSamples.ts'
@@ -1266,6 +1267,71 @@ function runRateDistortionTests(results: TestCase[]): void {
     results.push({ group: GV, name: 'each codeword is its cluster centroid (stationarity)', pass: centroidOk, detail: 'centroid condition holds for all cells' })
   } catch (e) {
     results.push({ group: GV, name: 'LBG', pass: false, detail: (e as Error).message })
+  }
+
+  // --- Water-filling (parallel Gaussian channels / vector sources) ---
+  const GW = 'Water-filling · Gaussian'
+  try {
+    // Single sub-channel: capacity reduces to ½·log₂(1 + P/N), all power used.
+    const r = waterFill([2], 5)
+    const theo = 0.5 * Math.log2(1 + 5 / 2)
+    results.push({ group: GW, name: 'forward: single channel → ½·log₂(1 + P/N)', pass: Math.abs(r.capacity - theo) < 1e-9 && Math.abs(r.power[0] - 5) < 1e-6, detail: `C ${r.capacity.toFixed(4)}` })
+  } catch (e) {
+    results.push({ group: GW, name: 'forward single channel', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Power is conserved and the noisiest channel is starved.
+    const r = waterFill([1, 2, 10], 4)
+    const sum = r.power.reduce((a, b) => a + b, 0)
+    results.push({ group: GW, name: 'forward: Σpᵢ = P and noisy channel gets 0', pass: Math.abs(sum - 4) < 1e-6 && r.power[2] === 0, detail: `active ${r.active.filter(Boolean).length}/3, level ${r.level.toFixed(2)}` })
+  } catch (e) {
+    results.push({ group: GW, name: 'forward power conservation', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Reverse water-filling hits a target distortion exactly.
+    const v = [4, 1, 0.25]
+    const r = reverseWaterFill(v, 1.0)
+    results.push({ group: GW, name: 'reverse: hits target distortion D exactly', pass: Math.abs(r.totalDist - 1.0) < 1e-4, detail: `D ${r.totalDist.toFixed(4)}, R ${r.totalRate.toFixed(3)} bits` })
+  } catch (e) {
+    results.push({ group: GW, name: 'reverse target D', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Equal-variance vector reduces to n·½·log₂(σ²/(D/n)).
+    const v = [2, 2, 2, 2]
+    const D = 2
+    const r = reverseWaterFill(v, D)
+    const theo = 4 * 0.5 * Math.log2(2 / (D / 4))
+    results.push({ group: GW, name: 'reverse: equal-variance → n·½·log₂(σ²/(D/n))', pass: Math.abs(r.totalRate - theo) < 1e-4, detail: `R ${r.totalRate.toFixed(4)} vs ${theo.toFixed(4)}` })
+  } catch (e) {
+    results.push({ group: GW, name: 'reverse equal-variance', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Above the waterline nothing is coded: R=0, D = Σσ².
+    const v = [1, 2, 3]
+    const r = reverseWaterFillTheta(v, 5)
+    results.push({ group: GW, name: 'reverse: θ ≥ all σ² ⇒ R = 0, D = Σσ²', pass: r.totalRate < 1e-12 && Math.abs(r.totalDist - 6) < 1e-9, detail: `R ${r.totalRate.toFixed(3)}, D ${r.totalDist.toFixed(3)}` })
+  } catch (e) {
+    results.push({ group: GW, name: 'reverse waterline corner', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Optimal allocation never costs more bits than flat splitting at equal D,
+    // and the vector R(D) curve is monotone non-increasing.
+    const v = [5, 3, 2, 1, 0.5]
+    const curve = gaussianVectorRD(v, 60)
+    const s = [...curve].sort((a, b) => a.D - b.D)
+    let mono = true
+    for (let i = 1; i < s.length; i++) if (s[i].R > s[i - 1].R + 1e-6) mono = false
+    // Compare a mid point against a flat allocation at the same distortion.
+    const n = v.length
+    const totVar = v.reduce((a, b) => a + b, 0)
+    const Dt = totVar * 0.3
+    const opt = reverseWaterFill(v, Dt)
+    let flatR = 0
+    const dEach = Dt / n
+    for (const vi of v) if (vi > dEach) flatR += 0.5 * Math.log2(vi / dEach)
+    results.push({ group: GW, name: 'reverse water-filling ≤ flat allocation, R(D) monotone', pass: mono && opt.totalRate <= flatR + 1e-9, detail: `opt ${opt.totalRate.toFixed(3)} ≤ flat ${flatR.toFixed(3)} bits @ D=${Dt.toFixed(2)}` })
+  } catch (e) {
+    results.push({ group: GW, name: 'reverse ≤ flat', pass: false, detail: (e as Error).message })
   }
 }
 
