@@ -27,6 +27,7 @@ import { LiaStudio } from './components/LiaStudio'
 import { InsightStudio } from './components/InsightStudio'
 import { AspStudio } from './components/AspStudio'
 import { CpStudio } from './components/CpStudio'
+import { Gf2Studio } from './components/Gf2Studio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -39,6 +40,7 @@ type Mode =
   | 'phys'
   | 'simplify'
   | 'twosat'
+  | 'gf2'
   | 'lia'
   | 'insight'
   | 'asp'
@@ -131,7 +133,9 @@ export default function App() {
                                   ? 'Beyond yes/no: model enumeration, backbones, MUS/MCS diagnosis, and approximate counting.'
                                   : mode === 'asp'
                                     ? 'Answer Set Programming: stable-model logic programming on the CDCL core, via completion & loop formulas.'
-                                    : mode === 'cp'
+                                    : mode === 'gf2'
+                                      ? 'Parity reasoning as linear algebra: Gaussian elimination over 𝔽₂ decides, counts and solves XOR systems that crush pure clause search.'
+                                      : mode === 'cp'
                                       ? 'Finite-domain constraint programming: propagation to a fixpoint, Régin GAC all-different, dom/wdeg + restarts, branch & bound.'
                                       : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
@@ -177,6 +181,9 @@ export default function App() {
           <button className={mode === 'cp' ? 'active' : ''} onClick={() => setMode('cp')}>
             CP Studio
           </button>
+          <button className={mode === 'gf2' ? 'active' : ''} onClick={() => setMode('gf2')}>
+            XOR Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -195,6 +202,7 @@ export default function App() {
       {mode === 'insight' && <InsightStudio />}
       {mode === 'asp' && <AspStudio />}
       {mode === 'cp' && <CpStudio />}
+      {mode === 'gf2' && <Gf2Studio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
