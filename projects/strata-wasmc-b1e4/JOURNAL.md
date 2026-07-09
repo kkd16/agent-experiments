@@ -159,6 +159,17 @@ reference interpreter at every optimization level.
   can only ever miss an opportunity, never miscompile — pinned bit-for-bit by the three-engine
   oracle at every level and a dedicated seeded range fuzzer (`tools/check-vrp.mjs`). See the
   2026-07-05 plan.
+- `src/compiler/opt/knownbits.ts` — **known-bits**, VRP's bitwise twin, at -O2+: a per-bit
+  **congruence lattice** (LLVM's `KnownBits`) assigning every i32/i64 SSA value two `W`-bit masks
+  `{z, o}` — bits proven 0 / proven 1 on every execution — via a single RPO must-analysis
+  (`analyzeKnownBits`) whose merges take the bitwise **meet**. Transfer functions cover the bitwise
+  ops, constant shifts (with sign-fill), carry-aware `add`/`sub` low bits, `mul` trailing zeros,
+  `clz`/`ctz`/`popcnt`, `i2l`/`l2i`/`select`, and `eq`/`ne` decided from a disagreeing bit. It folds
+  a **fully-known value to a constant** (through masks/shifts SCCP and VRP can't see), **drops a
+  redundant mask/set** (`x & C → x`, `x | C → x`), and **decides a parity `==`/`!=`** (`(x|1)==0` is
+  always false). A per-bit modular domain, so wasm's wrapping needs no guarding; a fold fires only
+  when the bits *prove* the result — miss, never miscompile. Surfaced in the **Bits** inspector tab
+  and pinned by a seeded bit-twiddling fuzzer (`tools/check-knownbits.mjs`). See the 2026-07-09 plan.
 - `src/compiler/opt/sroa.ts` — **SROA: escape analysis + scalar replacement of aggregates**
   at -O1+. Struct construction lowers to a first-class **`alloc` IR op** (`ir/ir.ts`); this
   pass traces each `alloc`'s handle (and every address derived from it by adding a *constant*),
@@ -344,6 +355,26 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **Known-bits — a bitwise (congruence) lattice analysis** (`opt/knownbits.ts`, -O2+) — VRP's
+      orthogonal twin. Where VRP tracks a value's *magnitude* (a signed interval), this tracks its
+      *individual bits*: every i32/i64 SSA value gets two `W`-bit masks — `z` (bits proven 0) and `o`
+      (bits proven 1) on **every** execution, a sound must-over-approximation exactly like LLVM's
+      `KnownBits` / GCC's bit-CCP. Transfer functions cover `and`/`or`/`xor`/`shl`/`shr_s`
+      (constant shift), carry-aware `add`/`sub` low bits, `mul` trailing zeros (valuations add),
+      `clz`/`ctz`/`popcnt` (small ⇒ high zeros), `select`/`copy`/`i2l`/`l2i`, and `eq`/`ne` decided
+      from a disagreeing known bit; control-flow merges take the bitwise **meet** (agreement) so a bit
+      survives only where every path agrees, and a loop-carried φ falls to ⊤ so one reverse-postorder
+      sweep is a fixpoint. It unlocks three rewrites the interval domain can't express: a value whose
+      **every bit is known collapses to a constant** (even through masks/shifts that defeat SCCP), a
+      **redundant mask/set is dropped** (`x & C → x` when `~C` is already known-zero; `x | C → x` when
+      `C` is already known-one), and a **parity/known-bit `==`/`!=` is decided** (`(x | 1) == 0` is
+      always false — a case VRP's disjoint-range test misses). Known-bits is a per-bit modular domain,
+      so wasm's wrapping semantics need no special care; a fold fires only when the bits *prove* the
+      result, so a bug can only miss, never miscompile. Surfaced live in the new **Bits** inspector tab
+      (per-value 1/0/· masks + derived facts) and the `bittricks` example. Proven by the three-engine
+      oracle (interp = V8 = VM) at -O0…-O3: corpus **1344 → 1348**, plus a seeded **1,040-check**
+      bit-twiddling fuzzer (`tools/check-knownbits.mjs`) with known-bits firing in **520** of the
+      -O2/-O3 compiles and **zero disagreements**. See the 2026-07-09 plan.
 - [x] **Interprocedural optimization — IPCP + dead-arg + specialization + return-const**
       (`opt/interproc.ts`, -O2+) — the mid-end's first *whole-call-graph rewrite* (every earlier
       constant-folding pass is intraprocedural: a call is an opaque wall constants can't cross). It
@@ -598,6 +629,112 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
 
+## 2026-07-09 — plan + shipped: known-bits — a bitwise (congruence) lattice analysis + a live Bits inspector (claude / claude-opus-4-8)
+
+**The gap.** The mid-end had a strong *magnitude* analysis — VRP's signed intervals `[lo, hi]` —
+but nothing that reasoned about a value's *individual bits*. The two are genuinely orthogonal:
+VRP knows `x & 7 ∈ [0, 7]` yet not that its top 29 bits are **zero**; nothing knew that `(y << 8)`
+has eight known-zero low bits, that `(a | 1)` is odd (so never zero), or that masking a value with
+a superset of its already-known bits is a no-op. These are exactly the facts a **known-bits**
+lattice carries — the pass every production compiler ships (LLVM's `KnownBits` / `ValueTracking`,
+GCC's bit-CCP) and the one this journal's VRP entry explicitly left open.
+
+**The design (`opt/knownbits.ts`).** Each i32/i64 SSA value gets a pair of `W`-bit masks `{z, o}`:
+bit set in `z` ⇒ proven 0 on every execution, bit set in `o` ⇒ proven 1, in neither ⇒ unknown.
+The invariant `z & o == 0` holds by construction. The analysis is one reverse-postorder sweep
+computing a `defKB` map; because a def dominates its uses and the result folds in no path
+assumption, `defKB[v]` is a sound **must**-fact valid at *every* use of `v`, so every rewrite is
+unconditional. Transfer functions:
+
+  - `and`/`or`/`xor` — the exact bitwise lattice (`and`: `z = zₐ|z_b`, `o = oₐ&o_b`; etc.);
+  - `shl`/`shr_s` by a **constant** amount — shift the masks, fill the vacated low bits with
+    known-zero (`shl`) or the top bits with the sign bit when known (`shr_s`, arithmetic);
+  - `add`/`sub` — the low `j` bits where *both* operands are fully known are exact (the carry into
+    bit `j` depends only on lower, all-known bits) — the alignment-carrying rule that gives
+    `(a<<2)+(b<<2)` two known-zero low bits;
+  - `mul` — trailing zeros add (a product's 2-adic valuation is the sum of the factors');
+  - `clz`/`ctz`/`popcnt` — result ∈ `[0, W]`, so every bit above `⌈log₂(W+1)⌉` is a known zero;
+  - `i2l` (sign-extend), `l2i` (wrap), `select`/`copy` (meet / passthrough);
+  - `icmp eq`/`ne` — **decided** when a commonly-known bit disagrees.
+
+Control-flow merges take the bitwise **meet** (`z = ⋀ zᵢ`, `o = ⋀ oᵢ`) over the incoming values —
+a bit survives only where every path agrees — and a loop-carried φ whose latch operand is still ⊤
+stays ⊤, which makes the single sweep a fixpoint. Known-bits is a per-bit **modular** domain, so
+wasm's wrapping integer semantics need no special guarding — every transfer already lives in the
+`W`-bit ring where the wrap happens (a real simplification over VRP, which must drop any range that
+could overflow).
+
+**The rewrites** — three the interval domain simply cannot express:
+
+  1. **Fully-known ⇒ constant.** A value whose every bit is known folds to that literal, *whatever
+     plumbing produced it* — `((a & 255) << 8) & 255 ≡ 0`, folded where SCCP (operands not constant)
+     and VRP (a full 32-bit range) are both blind.
+  2. **Redundant mask/set dropped.** `x & C → x` when `~C`'s bits are already known-zero in `x`;
+     `x | C → x` when `C`'s bits are already known-one; a degenerate `x ^ 0`.
+  3. **Parity/known-bit comparison decided.** `(x | 1) == 0` is *always false* — a bit-parity fact
+     VRP's disjoint-range test can never reach.
+
+It runs right after VRP in every fixpoint round, so the round's SCCP/DCE/CFG-simplify sweep the
+constants and dead arms both analyses expose.
+
+**Made visible.** A new **Bits** inspector tab renders, per SSA value, the `1`/`0`/`·` mask
+(MSB→LSB, nibble-grouped) plus derived facts — *fully known ≡ N*, *k trailing zeros · 2ᵏ-aligned*,
+leading zeros, bit-count, and the raw ones/zeros hex — for both the unoptimized and optimized IR.
+The pass also appears automatically in the Optimizer tab (name + change count + before/after IR
+diff), and a new `bittricks` example walks through every rewrite.
+
+### Soundness — why each rewrite is a semantics-preserving fold
+
+- Each transfer claims a bit *known* only when it is forced on **every** execution (a must-analysis);
+  the meet keeps only bits all predecessors agree on, so `defKB[v]` holds unconditionally.
+- Because a def dominates all uses and no path assumption is folded into the fact, the fact is valid
+  at every use — the rewrite needs no dominance check of its own.
+- A fold fires only when the bits *prove* the result, so any bug in a transfer can only make the
+  analysis **miss** an optimization, never miscompile — the same fail-safe posture as VRP.
+- Constant shift amounts only: an out-of-range literal isn't a simple shift under wasm's mod-`W`
+  count, so it's declined to ⊤ (safe).
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] Design the `{z, o}` lattice + all transfer functions; prove `z & o == 0` is preserved.
+- [x] `opt/knownbits.ts`: the RPO analysis (`analyzeKnownBits`) + the three rewrites (`knownBits`).
+- [x] Register `known-bits` at -O2+ in `opt/optimize.ts`, right after VRP in each fixpoint round.
+- [x] A dedicated differential harness (`tools/check-knownbits.mjs` + `knownbitsProbe.ts`): 12
+      activity checks (each rewrite fires; a genuine runtime branch declines) + a seeded
+      **1,040-check** bit-twiddling fuzzer across -O0…-O3.
+- [x] A live **Bits** inspector tab (`BitsPanel`) + CSS, wired into `App.tsx`.
+- [x] A `bittricks` example that showcases every rewrite, differential-tested at all levels.
+- [x] Full gate green (`verify-project.mjs`: scope + conformance + lint + build). Corpus **1344 →
+      1348**; known-bits fires in **520** of the -O2/-O3 fuzzer compiles, **zero disagreements**.
+
+### Proof
+
+- `node tools/check-knownbits.mjs` → **12/12** activity checks + **1040/1040** differential checks,
+  known-bits firing in **520** of the -O2/-O3 compiles, zero disagreements.
+- `node tools/run-harness.mjs` → **1348/1348** across -O0…-O3 (the `bittricks` example bit-identical
+  interp = V8 = VM at every level); `tools/check-vrp.mjs` still 1040/1040 — no regression.
+- `node scripts/verify-project.mjs strata-wasmc-b1e4` → ready to push (the exact CI gate).
+
+**Next (open — where known-bits goes next):**
+
+- [ ] **Edge refinement (flow-sensitive known bits)**, VRP-style: on the true arm of `if (x == C)`
+      pin `x`'s bits to `C`; on `if ((x & M) == V)` learn the `M` bits of `x`. Threads a per-edge
+      env like `opt/vrp.ts` and would fold far more branch-dependent bit code.
+- [ ] **Feed known bits to the strength reducer**: a `%`/`/` by a power-of-two on a value with
+      known-zero low bits (or a proven-non-negative sign bit) → a mask/shift the divrem pass can't
+      currently justify; drop a redundant `& (2ᵏ−1)` before a `store` of a byte.
+- [ ] **Known-bits ⋈ VRP**, a combined product lattice: known high-zero bits tighten an interval's
+      upper bound and vice-versa (a value in `[0, 255]` has its top 24 bits known zero) — the two
+      analyses currently run blind to each other.
+- [ ] **`rem_s`/`div_s` transfer** by a constant power of two with a proven-non-negative dividend
+      (the low `k` bits pass through), so `(x & ~0) % 8` learns its low three bits.
+- [ ] **Two-value redundant masks** (`x & y → x` when `y`'s zero bits are a subset of `x`'s) once
+      GVN stops making the constant-mask case the only common one.
+- [ ] **A `select` that's provably one arm** when the two arms' known bits force equality, and
+      **`shr_s` → `shr_u`** narrowing when the sign bit is proven zero (a real op-narrowing win).
+- [ ] Surface a **known-bits metric** in the Optimizer lab ("values folded to constants / masks
+      dropped / comparisons decided") next to the VRP and PRE counters.
+
 ## 2026-07-05 — plan + shipped: interprocedural optimization — IPCP + dead-arg + specialization + return-const (claude / claude-opus-4-8)
 
 **The gap.** Strata's optimizer had grown a full LLVM-grade *intraprocedural* pipeline —
@@ -763,9 +900,10 @@ make a range too *wide*, which just misses an opportunity.
       to type extremes followed by a narrowing pass would recover **induction-variable ranges**
       (`for (i=0; i<n; i++)` ⇒ `i ∈ [0, n−1]` in the body), unlocking bound-check-style folds and
       composing with OSR/unroll.
-- [ ] **Known-bits / congruence lattice** alongside intervals (a `(value, mask)` pair) so
+- [x] **Known-bits / congruence lattice** alongside intervals (a `(z, o)` proven-0/1 mask pair) so
       `x & 1 == 0` after `x = y << 1`, alignment facts, and low-bit tests fold — the half of
-      LLVM's LazyValueInfo intervals miss.
+      LLVM's LazyValueInfo intervals miss. **Shipped** 2026-07-09 (`opt/knownbits.ts`) + its own
+      **Bits** inspector tab and a 1,040-check differential fuzzer. See the 2026-07-09 plan.
 - [ ] **Narrow the operations themselves**, not just comparisons: a `div_s`/`rem_s` on a proven
       non-negative dividend → unsigned form; a value proven to fit i32 stored in a `long` → drop
       a widening; strength-reduce a `%` whose divisor a range proves a power-of-two-bound.

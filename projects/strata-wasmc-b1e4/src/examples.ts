@@ -158,6 +158,54 @@ fn main() {
 `,
   },
   {
+    id: 'bittricks',
+    title: 'Bit tricks & known-bits',
+    blurb: 'Open the Bits tab: the known-bits analysis proves individual 1/0 bits, so masks, shifts and parity tests fold to constants — the bitwise twin of value-range propagation.',
+    source: `// VRP (the Loops/Optimizer passes) reasons about a value's *magnitude* — a
+// signed interval like [0, 255]. Its bitwise twin, the KNOWN-BITS analysis
+// (opt/knownbits.ts), reasons about the *individual bits*: for every integer it
+// proves which bits are 1 and which are 0 on every execution. Open the "Bits"
+// tab to see the per-value 1/0/· masks, then flip to the Optimizer tab at -O2
+// and watch the "known-bits" pass fold what those masks decide.
+//
+//   * a value whose every bit is known collapses to a CONSTANT — even when it was
+//     computed through masks and shifts that constant-propagation can't see;
+//   * a mask (\`& C\`) or set (\`| C\`) that only touches already-known bits is a
+//     no-op and is DROPPED;
+//   * an \`==\`/\`!=\` whose operands disagree on a single known bit is DECIDED.
+//
+// Every rewrite is a sound must-fact, proven bit-identical to the interpreter at
+// every optimization level (tools/check-knownbits.mjs).
+
+fn mix(a: int, b: int) -> int {
+  let lo = a & 15;              // bits 4..31 are provably ZERO  -> Bits tab shows 0000…·???
+  let aligned = (b << 4);       // bits 0..3 are provably ZERO   -> 16-aligned
+  let tagged = aligned | 1;     // bit 0 now provably ONE        -> an odd number
+
+  // The low 4 bits of 'aligned' are known zero, so '& 15' yields the constant 0 —
+  // the whole branch is decided before the program runs.
+  let s = lo;
+  if ((aligned & 15) == 0) { s = s + 100; } else { print(-1); }
+
+  // 'tagged' has bit 0 set, so it can never be even and never be zero: both tests
+  // fold away with no comparison emitted in the wasm.
+  if ((tagged & 1) == 1) { s = s + 20; }
+  if (tagged == 0) { print(-2); } else { s = s + 3; }
+
+  // Masking 'lo' again with a superset of its known bits is redundant — the extra
+  // '& 15' is dropped, leaving one real mask.
+  let red = (lo & 15) & 7;
+  return s + red + (aligned >> 4);
+}
+
+fn main() {
+  for (let i = 0; i < 8; i = i + 1) {
+    print(mix(i * 37, i * 5));
+  }
+}
+`,
+  },
+  {
     id: 'fib',
     title: 'Recursive Fibonacci',
     blurb: 'Tree recursion — watch the call graph in the WASM output.',

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { Compilation } from '../compiler/pipeline';
 import type { Block, Expr, FnDecl, Program, Stmt } from '../compiler/ast';
 import { tyName } from '../compiler/ast';
-import { dumpFunc, effectTag } from '../compiler/irdump';
+import { dumpFunc, effectTag, fmtInst, fmtPhi } from '../compiler/irdump';
+import { analyzeKnownBits, valueWidth } from '../compiler/opt/knownbits';
+import type { KB } from '../compiler/opt/knownbits';
+import type { IRFunc } from '../compiler/ir/ir';
 import { analyzeEffects } from '../compiler/ir/effects';
 import { interpret } from '../compiler/interp';
 import { Debugger } from '../compiler/debug';
@@ -146,6 +149,147 @@ export function IrPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
         <button className={showOpt ? 'on' : ''} onClick={() => setShowOpt(true)}>optimized (O{comp.level})</button>
       </div>
       <pre className="code-pre ir-pre">{fn ? dumpFunc(fn, effectTag(eff.pure(fn.name), eff.pureNoTrap(fn.name))) : '(no function)'}</pre>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Known Bits
+
+interface BitRow {
+  id: number;
+  ty: string;
+  def: string;
+  kb: KB;
+  width: 32 | 64;
+}
+
+/** Collect every value the known-bits analysis proved something about, paired
+ *  with the textual form of its definition. */
+function bitRows(fn: IRFunc): BitRow[] {
+  const kbMap = analyzeKnownBits(fn);
+  const def = new Map<number, { ty: string; text: string }>();
+  for (const b of fn.blocks) {
+    for (const p of b.phis) def.set(p.res, { ty: p.ty, text: fmtPhi(p) });
+    for (const i of b.insts) if (i.res !== null) def.set(i.res, { ty: i.ty as string, text: fmtInst(i) });
+  }
+  const rows: BitRow[] = [];
+  for (const [id, kb] of kbMap) {
+    const w = valueWidth(fn, id);
+    if (w === null) continue;
+    const d = def.get(id);
+    rows.push({ id, ty: d?.ty ?? `i${w}`, def: d?.text ?? `v${id}`, kb, width: w });
+  }
+  rows.sort((a, b) => a.id - b.id);
+  return rows;
+}
+
+/** A row of `width` bit cells, MSB→LSB, grouped in nibbles: 1 / 0 / ? per bit. */
+function BitGrid({ kb, width }: { kb: KB; width: 32 | 64 }) {
+  const cells = [];
+  for (let i = width - 1; i >= 0; i--) {
+    const bit = 1n << BigInt(i);
+    const known1 = (kb.o & bit) !== 0n;
+    const known0 = (kb.z & bit) !== 0n;
+    const cls = known1 ? 'bit bit-1' : known0 ? 'bit bit-0' : 'bit bit-x';
+    cells.push(
+      <span key={i} className={cls} title={`bit ${i}`}>
+        {known1 ? '1' : known0 ? '0' : '·'}
+      </span>,
+    );
+    if (i > 0 && i % 4 === 0) cells.push(<span key={`g${i}`} className="bit-gap" />);
+  }
+  return <span className="bit-grid">{cells}</span>;
+}
+
+const HEX_W = { 32: 8, 64: 16 } as const;
+function bitTags(kb: KB, width: 32 | 64): { label: string; cls: string }[] {
+  const mask = (1n << BigInt(width)) - 1n;
+  const known = kb.z | kb.o;
+  const tags: { label: string; cls: string }[] = [];
+  if (known === mask) {
+    const v = BigInt.asIntN(width, kb.o);
+    tags.push({ label: `≡ ${v}`, cls: 'bittag-const' });
+  } else {
+    let tz = 0;
+    while (tz < width && (kb.z & (1n << BigInt(tz))) !== 0n) tz++;
+    if (tz > 0) tags.push({ label: `${tz} trailing zero${tz === 1 ? '' : 's'} · ${1 << Math.min(tz, 30)}-aligned`, cls: 'bittag-align' });
+    let hz = 0;
+    for (let i = width - 1; i >= 0 && (kb.z & (1n << BigInt(i))) !== 0n; i--) hz++;
+    if (hz > 0) tags.push({ label: `${hz} leading zero${hz === 1 ? '' : 's'}`, cls: 'bittag-lead' });
+    const cnt = countBits(known, width);
+    tags.push({ label: `${cnt}/${width} bits known`, cls: 'bittag-count' });
+  }
+  const kh = ('0'.repeat(HEX_W[width]) + (kb.o & mask).toString(16)).slice(-HEX_W[width]);
+  const zh = ('0'.repeat(HEX_W[width]) + (kb.z & mask).toString(16)).slice(-HEX_W[width]);
+  tags.push({ label: `ones 0x${kh}`, cls: 'bittag-hex' });
+  tags.push({ label: `zeros 0x${zh}`, cls: 'bittag-hex' });
+  return tags;
+}
+function countBits(x: bigint, width: 32 | 64): number {
+  let n = 0;
+  for (let i = 0; i < width; i++) if ((x & (1n << BigInt(i))) !== 0n) n++;
+  return n;
+}
+
+export function BitsPanel({ comp, fnIdx }: { comp: Compilation; fnIdx: number }) {
+  const [showOpt, setShowOpt] = useState(false);
+  const mod = showOpt ? comp.optimized : comp.ssa;
+  if (!mod) return <Empty />;
+  const fn = mod.funcs[Math.min(fnIdx, mod.funcs.length - 1)];
+  if (!fn) return <div className="panel-scroll dim note">no function</div>;
+  const rows = bitRows(fn);
+  const constCount = rows.filter((r) => (r.kb.z | r.kb.o) === (1n << BigInt(r.width)) - 1n).length;
+
+  return (
+    <div className="panel-scroll bits-panel">
+      <div className="seg">
+        <button className={!showOpt ? 'on' : ''} onClick={() => setShowOpt(false)}>unoptimized</button>
+        <button className={showOpt ? 'on' : ''} onClick={() => setShowOpt(true)}>optimized (O{comp.level})</button>
+      </div>
+      <div className="bits-summary">
+        <span className="loops-stat"><b>{rows.length}</b> value{rows.length === 1 ? '' : 's'} with proven bits</span>
+        <span className="loops-arrow">·</span>
+        <span className="loops-stat"><b>{constCount}</b> fully known → foldable to constants</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="dim note">
+          No integer value has a bit proven here — every bit is input-dependent. Try a program with masks,
+          shifts, or bitwise operators (the <b>Bit tricks</b> example), then watch the <b>known-bits</b> pass
+          fire in the Optimizer tab.
+        </div>
+      ) : (
+        <table className="bits-table">
+          <thead>
+            <tr><th>value</th><th>definition</th><th>known bits (MSB→LSB)</th><th>facts</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="mono bits-vid">v{r.id}<span className="dim"> {r.ty}</span></td>
+                <td className="mono bits-def">{r.def}</td>
+                <td><BitGrid kb={r.kb} width={r.width} /></td>
+                <td className="bits-tags">
+                  {bitTags(r.kb, r.width).map((t, i) => (
+                    <span key={i} className={'bittag ' + t.cls}>{t.label}</span>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="bits-legend">
+        <b>What you're seeing.</b> The <b>known-bits</b> analysis (<code>opt/knownbits.ts</code>) assigns
+        every integer value two <code>W</code>-bit masks — bits proven <span className="bit bit-1">1</span> and
+        bits proven <span className="bit bit-0">0</span> on <i>every</i> execution — while a
+        {' '}<span className="bit bit-x">·</span> bit is unknown. It is VRP's bitwise twin: VRP tracks a value's
+        <i> magnitude</i> (a signed interval), this tracks its <i>individual bits</i>. A value whose every bit
+        is known collapses to a <b>constant</b> even when it was computed through masks and shifts that defeat
+        constant propagation; a mask/set that only touches already-known bits is <b>dropped</b>; and an
+        {' '}<code>==</code>/<code>!=</code> whose operands disagree on one known bit is <b>decided</b>. Every
+        fact is a sound must-over-approximation, pinned bit-for-bit by a differential fuzzer
+        (<code>tools/check-knownbits.mjs</code>).
+      </div>
     </div>
   );
 }
