@@ -18,6 +18,8 @@ import {
   snrDb as adaptSnr,
   symbolErrorRate,
   lmsStabilityBound,
+  misadjustment,
+  lmsSteadyStateMse,
   type Application,
   type Algorithm,
   type ProblemConfig,
@@ -48,7 +50,7 @@ interface Curve {
 }
 
 /** Learning curves J[n]=E[e²] in dB, ensemble-averaged, with a dashed MMSE floor. */
-function drawLearningCurves(ctx: CanvasRenderingContext2D, r: Rect, curves: Curve[], floorDb: number | null) {
+function drawLearningCurves(ctx: CanvasRenderingContext2D, r: Rect, curves: Curve[], floorDb: number | null, lmsPredDb: number | null = null) {
   fillPlotBg(ctx, r)
   grid(ctx, r, 8, 5)
   const toDb = (v: number) => 10 * Math.log10(v + 1e-12)
@@ -76,6 +78,19 @@ function drawLearningCurves(ctx: CanvasRenderingContext2D, r: Rect, curves: Curv
     ctx.lineWidth = 1.6
     ctx.setLineDash([5, 4])
     const y = yOf(floorDb)
+    ctx.beginPath()
+    ctx.moveTo(r.x, y)
+    ctx.lineTo(r.x + r.w, y)
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+  // Predicted LMS steady-state MSE = Jmin·(1 + misadjustment), a teal dashed line
+  // the measured LMS curve should settle onto.
+  if (lmsPredDb !== null && isFinite(lmsPredDb) && lmsPredDb <= hi && lmsPredDb >= lo) {
+    ctx.strokeStyle = 'rgba(94,234,212,0.7)'
+    ctx.lineWidth = 1.4
+    ctx.setLineDash([2, 4])
+    const y = yOf(lmsPredDb)
     ctx.beginPath()
     ctx.moveTo(r.x, y)
     ctx.lineTo(r.x + r.w, y)
@@ -428,10 +443,12 @@ export default function Adapt() {
     let headline = ''
     if (app === 'sysid' && prob.hTrue) {
       const mis = misalignmentDb(run.w, prob.hTrue)
+      const trR = wien.eigs.reduce((s, e) => s + e, 0)
+      const mAdj = misadjustment(muLms, trR)
       out.push({ label: 'Misalign.', value: `${mis.toFixed(1)} dB` })
       out.push({ label: 'Eig spread', value: isFinite(wien.spread) ? `${wien.spread.toFixed(1)}×` : '∞' })
       out.push({ label: 'MMSE', value: `${(10 * Math.log10(wien.jmin + 1e-12)).toFixed(0)} dB` })
-      out.push({ label: 'Taps M', value: String(M) })
+      out.push({ label: 'LMS excess', value: isFinite(mAdj) ? `${(mAdj * 100).toFixed(0)}%` : '∞' })
       headline = `plant identified to ${mis.toFixed(0)} dB`
     } else if (app === 'anc' && prob.clean) {
       const inSnr = adaptSnr(prob.d, prob.clean)
@@ -461,7 +478,7 @@ export default function Adapt() {
       headline = `ISI ${isiCh.toFixed(0)} → ${isiEq.toFixed(0)} dB`
     }
     return { out, headline }
-  }, [single, app, M, delay])
+  }, [single, app, M, delay, muLms])
 
   // ---- canvases ----
   const { ref: curveRef, size: curveSize } = useDprCanvas()
@@ -478,8 +495,16 @@ export default function Adapt() {
       { data: curves.jRls, color: VIOLET, width: 2.2, label: 'RLS' },
     ]
     const floorDb = isFinite(single.wien.jmin) ? 10 * Math.log10(single.wien.jmin + 1e-12) : null
-    drawLearningCurves(ctx, rect, list, floorDb)
-  }, [curves, single, curveSize, curveRef])
+    // The LMS steady-state prediction is only meaningful where Jmin is a genuine
+    // noise floor (System ID); elsewhere the "error" is the wanted signal itself.
+    let lmsPredDb: number | null = null
+    if (app === 'sysid') {
+      const trR = single.wien.eigs.reduce((s, e) => s + e, 0)
+      const pred = lmsSteadyStateMse(single.wien.jmin, muLms, trR)
+      lmsPredDb = isFinite(pred) ? 10 * Math.log10(pred + 1e-12) : null
+    }
+    drawLearningCurves(ctx, rect, list, floorDb, lmsPredDb)
+  }, [curves, single, curveSize, curveRef, app, muLms])
 
   useEffect(() => {
     const ctx = prepareContext(aRef.current, aSize)

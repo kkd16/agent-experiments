@@ -594,3 +594,19 @@ export function lmsStabilityBound(eigs: number[]): number {
   const hi = eigs[eigs.length - 1]
   return hi > 1e-14 ? 2 / hi : Infinity
 }
+
+/**
+ * LMS steady-state misadjustment M = J_excess / Jmin. The independence-theory
+ * result is M = μ·tr(R) / (2 − μ·tr(R)); it reduces to the familiar μ·tr(R)/2 for
+ * a small step, and blows up as μ·tr(R) → 2 (the mean-square stability edge).
+ */
+export function misadjustment(mu: number, trR: number): number {
+  const x = mu * trR
+  if (x >= 2) return Infinity
+  return x / (2 - x)
+}
+
+/** Predicted LMS steady-state MSE, J(∞) = Jmin·(1 + misadjustment). */
+export function lmsSteadyStateMse(jmin: number, mu: number, trR: number): number {
+  return jmin * (1 + misadjustment(mu, trR))
+}

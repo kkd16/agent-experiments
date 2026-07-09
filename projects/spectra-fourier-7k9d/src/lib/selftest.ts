@@ -124,6 +124,7 @@ import {
   snrDb as adaptSnr,
   symbolErrorRate,
   plantResponse,
+  misadjustment,
   dot as adaptDot,
   type ProblemConfig,
   type AdaptParams,
@@ -1907,6 +1908,35 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
   // 71. dot() is a plain inner product (sanity guard for the helper the solver uses).
   {
     check('dot([1,2,3],[4,5,6]) == 32', approxEqual(adaptDot([1, 2, 3], [4, 5, 6]), 32))
+  }
+
+  // 72. LMS misadjustment theory: the ensemble steady-state MSE settles above the
+  //     MMSE floor by roughly the predicted excess ratio μ·tr(R)/(2−μ·tr(R)).
+  {
+    const M = 8
+    const cfg: ProblemConfig = { app: 'sysid', N: 3000, M, rho: 0, snrDb: 20, delay: 0, seed: 71 }
+    const mk = (s: number) => {
+      const p = makeProblem(cfg, s)
+      return { x: p.x, d: p.d }
+    }
+    const mu = 0.02
+    const J = learningCurve(mk, 'lms', { M, mu, lambda: 1, delta: 0.01, eps: 1e-6 }, 40, 500)
+    let tail = 0
+    let cnt = 0
+    for (let n = Math.floor(J.length * 0.8); n < J.length; n++) {
+      tail += J[n]
+      cnt++
+    }
+    tail /= cnt
+    const p0 = makeProblem(cfg, 500)
+    const wien = wienerSolution(p0.x, p0.d, M)
+    const trR = wien.eigs.reduce((s, e) => s + e, 0)
+    const predExcess = misadjustment(mu, trR)
+    const measExcess = (tail - wien.jmin) / wien.jmin
+    check(
+      'LMS steady-state excess MSE ≈ μ·tr(R)/(2−μ·tr(R))',
+      measExcess > predExcess * 0.2 && measExcess < predExcess * 4 + 0.1,
+    )
   }
 
   return { passed, failed, messages }
