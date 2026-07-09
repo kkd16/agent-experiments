@@ -20,6 +20,7 @@ const MODULES = [
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
   { route: 'deflate', name: 'DEFLATE & gzip', desc: 'The real RFC 1951/1952 codec — its output round-trips through the browser’s own gunzip.' },
   { route: 'jpeg', name: 'JPEG · Rate–Distortion', desc: 'The lossy pillar — Shannon’s third theorem. DCT + quantisation, and the browser decodes our .jpg.' },
+  { route: 'ratedistortion', name: 'Rate–Distortion · Quantisation', desc: 'The limits themselves — Blahut–Arimoto computes any channel’s capacity and any source’s R(D); Lloyd–Max & LBG build the optimal quantisers.' },
   { route: 'channel', name: 'The Noisy Channel', desc: 'Shannon’s other theorem — capacity, and why redundancy becomes resilience.' },
   { route: 'reedsolomon', name: 'Reed–Solomon', desc: 'The code in QR/CD/DVD/Voyager — corrects byte errors and bursts over GF(256).' },
   { route: 'convolutional', name: 'Convolutional · Viterbi', desc: 'The trellis code + maximum-likelihood decoder that flew on Voyager.' },

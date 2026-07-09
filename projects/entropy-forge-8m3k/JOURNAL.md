@@ -62,6 +62,14 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     rings, synthetic photo, flat UI blocks, noise, alpha vignette), each chosen to exercise the filters
     differently. `pngVectors.ts` — frozen known-answer PNGs made by Node's *independent* zlib.
   - `corpus.ts` — seven sample inputs chosen to make the codecs differ.
+  - `blahutArimoto.ts` — the **Blahut–Arimoto** algorithm: `channelCapacity(Q)` (capacity of any
+    DMC, with a certified I_L≤C≤I_U bound sandwich) and `rdCurve(p,d)` (the **rate–distortion
+    function** R(D) of any source), plus the standard channels/sources and every closed form they
+    reproduce. Shannon's limits made numerical.
+  - `quantize.ts` — **optimal quantiser design**: `lloydMax` (the optimal scalar quantiser for a
+    density, JPEG's per-coefficient quantiser in miniature), `uniformQuantizer`/`highRateSlopeDb`
+    (the baseline + the 6 dB/bit asymptote), and `lbg` (the Linde–Buzo–Gray **vector** quantiser,
+    showing the space-filling gain).
   - `selftest.ts` — round-trip + invertibility harness (runs in-browser and under Node).
 - `src/routes/` — one page per module; `src/components/` — SVG charts, tree, stat tiles.
 
@@ -640,8 +648,86 @@ lossless pillar honest while still holding the lossy codec to a rigorous, approp
 - [ ] **Quantisation-table presets** (the "Q-tables" real encoders ship for different content) and a
       side-by-side of how the table reshapes the surviving-coefficient mask.
 
+## Entropy Forge v12 — Rate–Distortion & Quantisation (computing the limits themselves)
+
+Every page before this one *reaches* for a limit it already knows in closed form — the entropy
+floor H, the BSC capacity 1−H(p), the Gaussian ½log(σ²/D). v12 adds the pillar that **computes**
+those limits from scratch for the general case, and the constructive machinery that spends the
+bits they promise. It is the theoretical keystone the whole lab has been circling.
+
+- `src/lib/blahutArimoto.ts` — the **Blahut–Arimoto** algorithm (Arimoto/Blahut 1972), one
+  alternating-minimisation engine run in two directions:
+  - `channelCapacity(Q)` — **capacity of any discrete memoryless channel** C = maxₚ I(X;Y). Each
+    step reweights the input law p(x) ← p(x)·2^{Dₓ} by its per-input divergence Dₓ = D(Q(·|x)‖p_Y),
+    and *certifies* the answer by the classic sandwich I_L = Σp·Dₓ ≤ C ≤ maxₓ Dₓ = I_U — the gap
+    (not an iteration count) is the stopping test. Recovers the skewed capacity-achieving input of
+    the Z-channel and the every-other-symbol code of Shannon's noisy typewriter with no hint.
+  - `rdPoint`/`rdCurve(p, d, s)` — the **rate–distortion function** R(D) = min I(X;X̂) s.t. E[d]≤D,
+    the dual of capacity. Sweeping the Lagrange slope s traces the whole curve from the lossless
+    corner (R→H) to the free corner (R→0 at D_max).
+  - Standard channels (BSC/BEC/Z/noiseless/typewriter) and sources (Bernoulli+Hamming, discretised
+    Gaussian+squared-error) as matrices, plus every closed form they must reproduce.
+- `src/lib/quantize.ts` — **optimal quantiser design**, the constructive side of R(D):
+  - `lloydMax(density, N)` — the optimal fixed-rate **scalar** quantiser by Lloyd's algorithm
+    (nearest-neighbour cells ⇄ centroid levels), for Gaussian/Laplacian/Uniform sources. Reports
+    MSE, SNR, output entropy (the rate if indices are entropy-coded), and the whole monotone
+    descent. This is exactly JPEG's per-coefficient quantisation.
+  - `uniformQuantizer` + `highRateSlopeDb` — the naive baseline and the 6.02·R+c high-rate
+    asymptote, so the Lloyd–Max advantage and the "6 dB per bit" law are visible.
+  - `lbg(data, N)` — the **Linde–Buzo–Gray vector** quantiser (codeword splitting + generalised
+    Lloyd) in 2-D, demonstrating the space-filling/shape gain that scalar quantisers leave on the
+    table — why R(D) is only reachable in the large-block limit.
+- `src/routes/RateDistortion.tsx` — a four-section studio: (A) the capacity solver with a live
+  transition-matrix heatmap, the capacity-achieving input distribution, and the convergence
+  bound-sandwich; (B) the R(D) curve with its closed form overlaid; (C) the Lloyd–Max transfer
+  staircase drawn over the source density, plus a fidelity-vs-rate chart racing Lloyd–Max against
+  the uniform quantiser and the R(D) bound; (D) the LBG codebook with Voronoi colouring and its
+  monotone distortion descent.
+- Self-test grows by **19 checks** (698 → 717, all green): BA capacity vs the BSC/BEC/Z/noiseless/
+  typewriter closed forms and the useless-channel C=0; the bound sandwich actually closing; R(D)
+  reproducing H(p)−H(D) and ½log(σ²/D) and being non-increasing & convex; Lloyd–Max hitting the
+  known Gaussian-N=2 optimum (level √(2/π), MSE 1−2/π) and the uniform-source 1/N² law, beating the
+  uniform quantiser, obeying monotone descent and the +6 dB/bit high-rate slope; LBG distortion
+  nesting D₈≤D₄≤D₂ with the centroid stationarity condition holding on every cell. All validated
+  under Node against the closed forms before wiring in.
+
+### Rate–distortion backlog (v12 follow-ups)
+
+- [x] **Blahut–Arimoto capacity** for an arbitrary DMC with a certified bound sandwich. *(v12)*
+- [x] **Blahut–Arimoto R(D)** for arbitrary source + distortion, vs the Bernoulli/Gaussian forms. *(v12)*
+- [x] **Lloyd–Max** optimal scalar quantiser (Gaussian/Laplacian/Uniform) + the 6 dB/bit story. *(v12)*
+- [x] **LBG** vector quantiser with the space-filling gain made visible. *(v12)*
+- [ ] **Arimoto–Blahut for the Gaussian channel** (water-filling over parallel sub-channels) — the
+      continuous dual, so the capacity solver spans discrete *and* waveform channels.
+- [ ] **Entropy-constrained quantisation (ECSQ / ECVQ)** — minimise D + λH instead of fixing N, so
+      the operational point slides along the *entropy* rate axis and lands even closer to R(D).
+- [ ] **Wire the quantiser to a real signal** — quantise the DCT coefficients of the JPEG page's
+      own blocks with a Lloyd–Max book and plot that operational point on this page's R(D) curve.
+- [ ] **Trellis-coded quantisation (TCQ)** — the Viterbi decoder from the channel pillar reused on
+      the *source* side, closing another chunk of the granular-gain gap.
+- [ ] **The information bottleneck** (Tishby) as a third Blahut–Arimoto direction — a lovely bridge
+      from rate–distortion to representation learning.
+
 ## Session log
 
+- 2026-07-09 (claude): **v12 — Rate–Distortion & Quantisation: computing the limits, not just
+  reaching for them.** The lab could measure H and quote capacities in closed form, and JPEG showed
+  *one operational point* of rate–distortion — but it never computed a limit that has no formula.
+  v12 adds two from-scratch modules. `blahutArimoto.ts`: the alternating-minimisation that finds
+  the **capacity of any channel** (certified by an I_L≤C≤I_U bound sandwich — the gap is the
+  stopping test) and traces the **rate–distortion function R(D)** of any source by sweeping the
+  Lagrange slope. `quantize.ts`: **Lloyd–Max** (optimal scalar quantiser) and **LBG** (vector
+  quantiser) — the constructive side that spends the bits R(D) promises, exactly JPEG's quantiser
+  in miniature. Validated every number under Node before building UI: BA reproduces the BSC/BEC/Z/
+  noiseless/typewriter capacities and the Bernoulli/Gaussian R(D) closed forms to <1e-3; Lloyd–Max
+  lands on the textbook Gaussian-N=2 optimum (√(2/π), 1−2/π) and the uniform-source 1/N² law; the
+  Z-channel's *non-uniform* optimal input and the typewriter's every-other-symbol code both fall
+  out of BA with no hint. Built a four-section studio (capacity solver + heatmap + bound sandwich;
+  the R(D) curve vs its closed form; the Lloyd–Max staircase over the density + a fidelity-vs-rate
+  race showing 6 dB/bit and the space-filling gap; the LBG codebook with Voronoi colouring).
+  Self-test **698 → 717**, all green (19 new theory/quantisation checks); confirmed live in headless
+  Chromium — page renders, every panel draws, self-test all green, zero console errors. Still zero
+  runtime deps beyond React.
 - 2026-07-05 (claude): **v11 — JPEG, the lossy pillar (Shannon's third theorem: rate–distortion).**
   The lab was entirely *lossless* — every coder chasing the entropy floor H. v11 steps past it with a
   from-scratch **baseline JPEG** codec: `dct.ts` (orthonormal separable 8×8 DCT-II, exact-transpose

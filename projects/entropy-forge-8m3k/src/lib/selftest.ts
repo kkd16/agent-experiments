@@ -63,6 +63,30 @@ import {
   CRC8,
 } from './polar.ts'
 import { RNG as ChannelRNG, awgn as channelAwgn, ebN0dBtoEsN0 } from './channel.ts'
+import {
+  channelCapacity,
+  bscMatrix,
+  becMatrix,
+  zChannelMatrix,
+  zChannelCapacity,
+  noiselessMatrix,
+  typewriterMatrix,
+  rdCurve,
+  bernoulliSource,
+  hammingDistortion,
+  binEntropy,
+  bernoulliRD,
+  gaussianRD,
+  discreteGaussian,
+} from './blahutArimoto.ts'
+import {
+  lloydMax,
+  uniformQuantizer,
+  DENSITIES,
+  lbg,
+  sampleMixture,
+  QRng,
+} from './quantize.ts'
 import { fdct8x8, idct8x8, ZIGZAG as JZIGZAG, DEZIGZAG as JDEZIGZAG } from './dct.ts'
 import { encodeJPEG, decodeJPEG, psnr as jpsnr, rgbToYCbCr, yCbCrToRgb, type Subsampling } from './jpeg.ts'
 import { SAMPLES as IMG_SAMPLES } from './pngSamples.ts'
@@ -360,6 +384,9 @@ export function runSelfTest(): TestCase[] {
 
   // ---- Channel coding (Shannon's other theorem) ----
   runChannelTests(results)
+
+  // ---- Rate–distortion theory + optimal quantisation ----
+  runRateDistortionTests(results)
 
   return results
 }
@@ -1048,6 +1075,198 @@ export async function runJpegInterop(): Promise<InteropResult[]> {
     }
   }
   return out
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Rate–distortion theory (Blahut–Arimoto) + optimal quantisation (Lloyd–Max, LBG)
+//
+// Unlike a codec, there is no encode/decode to invert here — the proof of
+// correctness is that the numerical optimisers reproduce the KNOWN CLOSED-FORM
+// limits (BSC/BEC/Z capacities, the Bernoulli and Gaussian R(D) functions, the
+// Lloyd–Max known optimal points) and obey the structural laws (convexity,
+// monotone descent, the centroid/nearest-neighbour conditions).
+// ────────────────────────────────────────────────────────────────────────────
+function runRateDistortionTests(results: TestCase[]): void {
+  const G = 'Rate–distortion · Blahut–Arimoto'
+  const GQ = 'Quantisation · Lloyd–Max'
+  const GV = 'Vector quantisation · LBG'
+
+  // --- Channel capacity vs closed forms ---
+  try {
+    let maxErr = 0
+    const probes = [0, 0.05, 0.1, 0.25, 0.4, 0.5]
+    for (const p of probes) maxErr = Math.max(maxErr, Math.abs(channelCapacity(bscMatrix(p)).C - (1 - binEntropy(p))))
+    results.push({ group: G, name: 'BSC capacity → 1 − H(p) for p ∈ {0…0.5}', pass: maxErr < 1e-3, detail: `max err ${maxErr.toExponential(1)} bits` })
+  } catch (e) {
+    results.push({ group: G, name: 'BSC capacity', pass: false, detail: (e as Error).message })
+  }
+  try {
+    let maxErr = 0
+    for (const eps of [0, 0.2, 0.5, 0.8]) maxErr = Math.max(maxErr, Math.abs(channelCapacity(becMatrix(eps)).C - (1 - eps)))
+    results.push({ group: G, name: 'BEC capacity → 1 − ε', pass: maxErr < 1e-3, detail: `max err ${maxErr.toExponential(1)} bits` })
+  } catch (e) {
+    results.push({ group: G, name: 'BEC capacity', pass: false, detail: (e as Error).message })
+  }
+  try {
+    let maxErr = 0
+    for (const p of [0.1, 0.3, 0.5, 0.7]) maxErr = Math.max(maxErr, Math.abs(channelCapacity(zChannelMatrix(p)).C - zChannelCapacity(p)))
+    results.push({ group: G, name: 'Z-channel capacity → closed form (asymmetric)', pass: maxErr < 2e-3, detail: `max err ${maxErr.toExponential(1)} bits` })
+  } catch (e) {
+    results.push({ group: G, name: 'Z-channel capacity', pass: false, detail: (e as Error).message })
+  }
+  try {
+    const r = channelCapacity(noiselessMatrix(4))
+    const uniform = r.inputDist.every((v) => Math.abs(v - 0.25) < 1e-3)
+    results.push({ group: G, name: 'noiseless 4-ary → C = log₂4 = 2, uniform input', pass: Math.abs(r.C - 2) < 1e-6 && uniform, detail: `C ${r.C.toFixed(4)}, input ${r.inputDist.map((v) => v.toFixed(2)).join('/')}` })
+  } catch (e) {
+    results.push({ group: G, name: 'noiseless capacity', pass: false, detail: (e as Error).message })
+  }
+  try {
+    const r = channelCapacity(typewriterMatrix(6))
+    results.push({ group: G, name: 'noisy typewriter (6) → C = log₂3', pass: Math.abs(r.C - Math.log2(3)) < 2e-3, detail: `C ${r.C.toFixed(4)} vs ${Math.log2(3).toFixed(4)}` })
+  } catch (e) {
+    results.push({ group: G, name: 'typewriter capacity', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Fully-noisy channel (identical rows) has zero capacity.
+    const C = channelCapacity([[0.5, 0.5], [0.5, 0.5]]).C
+    results.push({ group: G, name: 'useless channel (identical rows) → C = 0', pass: C < 1e-6, detail: `C ${C.toExponential(1)}` })
+  } catch (e) {
+    results.push({ group: G, name: 'useless channel', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // The certified bound gap must actually close.
+    const r = channelCapacity(zChannelMatrix(0.3))
+    results.push({ group: G, name: 'BA bound sandwich I_U − I_L → 0', pass: r.gap < 1e-8, detail: `gap ${r.gap.toExponential(1)} in ${r.iterations} iters` })
+  } catch (e) {
+    results.push({ group: G, name: 'BA bound sandwich', pass: false, detail: (e as Error).message })
+  }
+
+  // --- R(D) vs closed forms ---
+  try {
+    const p = 0.3
+    const curve = rdCurve(bernoulliSource(p), hammingDistortion(2), { points: 60, sMax: 40 })
+    let maxErr = 0
+    for (const pt of curve) maxErr = Math.max(maxErr, Math.abs(pt.R - bernoulliRD(p, pt.D)))
+    const rmax = Math.max(...curve.map((c) => c.R))
+    results.push({ group: G, name: 'Bernoulli(0.3) R(D) → H(p) − H(D)', pass: maxErr < 0.02, detail: `max err ${maxErr.toFixed(4)} bits over the curve` })
+    results.push({ group: G, name: 'Bernoulli R(0) → H(p) (lossless corner)', pass: Math.abs(rmax - binEntropy(p)) < 0.05, detail: `R_max ${rmax.toFixed(3)} vs H ${binEntropy(p).toFixed(3)}` })
+    // convexity + monotone non-increasing
+    const s = [...curve].sort((a, b) => a.D - b.D)
+    let mono = true
+    let convex = true
+    for (let i = 1; i < s.length; i++) if (s[i].R > s[i - 1].R + 1e-4) mono = false
+    for (let i = 1; i < s.length - 1; i++) {
+      const mid = (s[i - 1].R + s[i + 1].R) / 2
+      if (s[i].R > mid + 0.02) convex = false
+    }
+    results.push({ group: G, name: 'R(D) is non-increasing and convex', pass: mono && convex, detail: mono && convex ? 'both hold along the swept curve' : `mono ${mono}, convex ${convex}` })
+  } catch (e) {
+    results.push({ group: G, name: 'Bernoulli R(D)', pass: false, detail: (e as Error).message })
+  }
+  try {
+    const { p: gp, d } = discreteGaussian(1, 71, 4)
+    const curve = rdCurve(gp, d, { points: 70, sMax: 160 })
+    // Compare the mid-range points to ½log₂(σ²/D).
+    let maxErr = 0
+    let n = 0
+    for (const pt of curve) {
+      if (pt.D > 0.08 && pt.D < 0.7) {
+        maxErr = Math.max(maxErr, Math.abs(pt.R - gaussianRD(1, pt.D)))
+        n++
+      }
+    }
+    results.push({ group: G, name: 'Gaussian R(D) → ½·log₂(σ²/D)', pass: maxErr < 0.05 && n > 5, detail: `max err ${maxErr.toFixed(4)} bits over ${n} mid-range points` })
+  } catch (e) {
+    results.push({ group: G, name: 'Gaussian R(D)', pass: false, detail: (e as Error).message })
+  }
+
+  // --- Lloyd–Max scalar quantiser ---
+  try {
+    // Known optimum for the unit Gaussian, N=2: level √(2/π), MSE 1−2/π. Fine grid.
+    const r = lloydMax(DENSITIES.gaussian, 2, { grid: 40000 })
+    const levelOk = Math.abs(Math.abs(r.levels[1]) - Math.sqrt(2 / Math.PI)) < 1e-3
+    const mseOk = Math.abs(r.distortion - (1 - 2 / Math.PI)) < 1e-3
+    results.push({ group: GQ, name: 'Gaussian N=2 → level √(2/π), MSE 1−2/π', pass: levelOk && mseOk, detail: `level ${Math.abs(r.levels[1]).toFixed(5)}, MSE ${r.distortion.toFixed(5)}` })
+  } catch (e) {
+    results.push({ group: GQ, name: 'Gaussian N=2 known optimum', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Uniform source: the optimal N-level MSE is exactly 1/N² at unit variance.
+    let ok = true
+    let worst = 0
+    for (const N of [2, 4, 8, 16]) {
+      const r = lloydMax(DENSITIES.uniform, N, { grid: 20000 })
+      const err = Math.abs(r.distortion - 1 / (N * N))
+      worst = Math.max(worst, err)
+      if (err > 3e-3) ok = false
+    }
+    results.push({ group: GQ, name: 'uniform source N-level MSE → 1/N²', pass: ok, detail: `max err ${worst.toExponential(1)}` })
+  } catch (e) {
+    results.push({ group: GQ, name: 'uniform source optimum', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Lloyd descent is monotone; each level is its cell centroid (stationarity).
+    const r = lloydMax(DENSITIES.laplacian, 6)
+    let mono = true
+    for (let i = 1; i < r.trace.length; i++) if (r.trace[i] > r.trace[i - 1] + 1e-9) mono = false
+    results.push({ group: GQ, name: 'Lloyd distortion is monotone non-increasing', pass: mono, detail: `${r.trace.length} steps, D ${r.distortion.toFixed(4)}` })
+  } catch (e) {
+    results.push({ group: GQ, name: 'Lloyd monotone', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // Optimal ≤ uniform quantiser for a non-uniform source; entropy ≤ log₂N.
+    let ok = true
+    for (const N of [4, 8, 16]) {
+      const r = lloydMax(DENSITIES.gaussian, N)
+      const uq = uniformQuantizer(DENSITIES.gaussian, N, 4)
+      if (r.distortion > uq + 1e-9) ok = false
+      if (r.entropy > Math.log2(N) + 1e-9) ok = false
+    }
+    results.push({ group: GQ, name: 'Lloyd–Max ≤ uniform quantiser, H ≤ log₂N', pass: ok, detail: 'Gaussian N ∈ {4,8,16}' })
+  } catch (e) {
+    results.push({ group: GQ, name: 'Lloyd vs uniform', pass: false, detail: (e as Error).message })
+  }
+  try {
+    // High-rate: each extra bit adds ≈ 6 dB (measured, N=16→32).
+    const a = lloydMax(DENSITIES.gaussian, 16).snrDb
+    const b = lloydMax(DENSITIES.gaussian, 32).snrDb
+    const perBit = b - a
+    results.push({ group: GQ, name: 'high-rate: +1 bit ≈ +6 dB', pass: perBit > 5 && perBit < 6.6, detail: `${perBit.toFixed(2)} dB from N=16→32` })
+  } catch (e) {
+    results.push({ group: GQ, name: 'high-rate 6 dB/bit', pass: false, detail: (e as Error).message })
+  }
+
+  // --- LBG vector quantiser ---
+  try {
+    const data = sampleMixture(600, 4, new QRng(20260709))
+    const r2 = lbg(data, 2)
+    const r4 = lbg(data, 4)
+    const r8 = lbg(data, 8)
+    const nested = r4.distortion <= r2.distortion + 1e-9 && r8.distortion <= r4.distortion + 1e-9
+    results.push({ group: GV, name: 'distortion falls as the codebook grows (D₈ ≤ D₄ ≤ D₂)', pass: nested, detail: `${r2.distortion.toFixed(3)} → ${r4.distortion.toFixed(3)} → ${r8.distortion.toFixed(3)}` })
+    let mono = true
+    for (let i = 1; i < r8.trace.length; i++) if (r8.trace[i] > r8.trace[i - 1] + 1e-9) mono = false
+    results.push({ group: GV, name: 'LBG descent is monotone across splits', pass: mono && r8.codebook.length === 8, detail: `${r8.trace.length} Lloyd steps, ${r8.codebook.length} codewords` })
+    // Centroid condition: each codeword equals the mean of its assigned points.
+    const cx = new Array(r8.codebook.length).fill(0)
+    const cy = new Array(r8.codebook.length).fill(0)
+    const cn = new Array(r8.codebook.length).fill(0)
+    for (let i = 0; i < data.length; i++) {
+      const k = r8.assign[i]
+      cx[k] += data[i][0]
+      cy[k] += data[i][1]
+      cn[k]++
+    }
+    let centroidOk = true
+    for (let k = 0; k < r8.codebook.length; k++) {
+      if (cn[k] === 0) continue
+      if (Math.abs(cx[k] / cn[k] - r8.codebook[k][0]) > 1e-6 || Math.abs(cy[k] / cn[k] - r8.codebook[k][1]) > 1e-6) centroidOk = false
+    }
+    results.push({ group: GV, name: 'each codeword is its cluster centroid (stationarity)', pass: centroidOk, detail: 'centroid condition holds for all cells' })
+  } catch (e) {
+    results.push({ group: GV, name: 'LBG', pass: false, detail: (e as Error).message })
+  }
 }
 
 export interface TestSummary {
