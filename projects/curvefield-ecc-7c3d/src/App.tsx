@@ -38,6 +38,7 @@ import { VdfPage } from './pages/VdfPage'
 import { ClassGroupVdfPage } from './pages/ClassGroupVdfPage'
 import { RingPage } from './pages/RingPage'
 import { SealedPage } from './pages/SealedPage'
+import { AesGcmPage } from './pages/AesGcmPage'
 import { MpcPage } from './pages/MpcPage'
 import { VotingPage } from './pages/VotingPage'
 import { SelfTestPage } from './pages/SelfTestPage'
@@ -81,6 +82,7 @@ const ROUTES = [
   { path: '/cgvdf', label: 'Class-Group VDF' },
   { path: '/ring', label: 'Ring Sigs' },
   { path: '/sealed', label: 'Sealed E2EE' },
+  { path: '/aesgcm', label: 'AES & GCM' },
   { path: '/mpc', label: 'Secure 2PC' },
   { path: '/voting', label: 'E-Voting' },
   { path: '/verify', label: 'Self-Test' },
@@ -147,6 +149,7 @@ export default function App() {
       {base === '/cgvdf' && <ClassGroupVdfPage />}
       {base === '/ring' && <RingPage />}
       {base === '/sealed' && <SealedPage />}
+      {base === '/aesgcm' && <AesGcmPage />}
       {base === '/mpc' && <MpcPage />}
       {base === '/voting' && <VotingPage />}
       {base === '/verify' && <SelfTestPage />}
@@ -168,8 +171,12 @@ export default function App() {
         from-scratch Keccak + NTT with the TLS X25519MLKEM768 hybrid handshake, the lattice signature
         ML-DSA (FIPS 204 / Dilithium) with its Fiat–Shamir-with-aborts loop and hint mechanism and the standardised
         stateless hash-based signature SLH-DSA (FIPS 205 / SPHINCS⁺) pinned byte-for-byte to NIST's ACVP vectors, a Signal-style
-        end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305),
-        and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
+        end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305 — or,
+        interchangeably, a from-scratch AES-256-GCM), the full symmetric-cipher standard AES (FIPS-197,
+        with a computed S-box) and the authenticated modes riding on it — AES-GCM (NIST SP 800-38D),
+        AES-CCM (RFC 3610), the two nonce-misuse-resistant AEADs AES-GCM-SIV (RFC 8452) and AES-SIV (RFC
+        5297), and AES-CMAC (RFC 4493) — pinned to their FIPS /
+        NIST / RFC vectors, and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
         garbled circuits (free-XOR + half-gates) and the GMW secret-sharing protocol, running the
         Millionaires' Problem — zero crypto dependencies.
         <br />

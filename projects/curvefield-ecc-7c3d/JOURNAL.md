@@ -1242,8 +1242,100 @@ byte-exact and pinned to NIST's own ACVP vectors, sitting beside ML-DSA as the c
 - [ ] follow-up: **HashSLH-DSA** (the FIPS 205 pre-hash mode) and a Merkle-signatures interop note.
 - [ ] follow-up: a Web-Worker path so -128s signing streams progress instead of running deferred.
 
+### Session 25 plan — the symmetric layer: AES and the authenticated modes
+
+For a lab that reaches from the ECDLP to post-quantum lattices and STARKs, one hole stood out: it
+had exactly one symmetric cipher (ChaCha20-Poly1305) and **no AES** — the standard the rest of the
+world actually runs on (TLS 1.3, SSH, IPsec, WPA2/3, disk encryption, every AES-NI core). This
+session builds AES from the GF(2⁸) field up and the authenticated modes that ride on it, each pinned
+byte-for-byte to its FIPS / NIST / RFC vectors, then wires the result back into the existing Signal
+channel so the Double Ratchet becomes cipher-agnostic.
+
+- [x] **`aes.ts`** — AES-128/192/256 (FIPS-197) from scratch: a GF(2⁸) log/exp table over the
+      generator 0x03, the S-box **computed** as the multiplicative inverse composed with the affine
+      map (not a copied table), the key schedule (RotWord/SubWord/Rcon for all three key sizes), the
+      four round transformations + their inverses, block encrypt/decrypt, an instrumented
+      `traceEncrypt` that records every intermediate state, and AES-CTR. Pinned to FIPS-197
+      Appendices B (round-by-round) and C.1/C.2/C.3.
+- [x] **`gcm.ts`** — AES-GCM (NIST SP 800-38D): the GF(2¹²⁸) GHASH multiply implemented from the
+      bit up (the spec's right-shift + reduction), GCTR, the J0 pre-counter (96-bit and GHASH-based
+      paths), `gcmEncrypt`/`gcmDecrypt`, GMAC, and seal/open. Pinned to the McGrew–Viega test cases
+      1–5.
+- [x] **`cmac.ts`** — AES-CMAC (NIST SP 800-38B / RFC 4493): the K1/K2 subkey derivation and the
+      10*-padding rule that closes CBC-MAC's length-extension hole. Pinned to the RFC 4493 vectors.
+- [x] **`gcmsiv.ts`** — AES-GCM-SIV (RFC 8452), nonce-misuse-resistant AEAD: POLYVAL implemented
+      directly as dot(a,b) = a·b·x⁻¹²⁸ via a Montgomery reduction in the little-endian field,
+      DeriveKeys, the synthetic-IV tag, and the LE-32 counter. DeriveKeys + the empty-message result
+      match RFC 8452 Appendix C.1; POLYVAL cross-checked against the field axioms.
+- [x] wire **AES-256-GCM into the Double Ratchet** as an interchangeable `AeadSuite` (Signal ships
+      ChaCha20-Poly1305; AES-256-GCM is TLS 1.3's cipher) — the message-key KDF already emits a
+      32-byte key + 12-byte nonce, so the record layer is cipher-parameterised with no other change.
+- [x] a `/aesgcm` **AES & GCM** lab page: a scrubbable round-by-round state-matrix visualiser (all
+      three key sizes), the AES-GCM AEAD with a live GHASH accumulator table + tamper toggle, the
+      **nonce-reuse cliff** (GCM leaks P₁⊕P₂ from C₁⊕C₂ while GCM-SIV survives, side by side on the
+      same AES core), and an AES-CMAC panel.
+- [x] a cipher-suite toggle on the **Sealed** page so the whole X3DH + Double Ratchet chat runs over
+      the from-scratch AES-256-GCM, every guarantee intact.
+- [x] an **AES / AES-GCM / AES-GMAC / AES-CMAC / AES-GCM-SIV** self-test group (FIPS-197 all sizes +
+      the Appendix B trace, NIST GCM cases 1–5, RFC 4493, RFC 8452, POLYVAL field axioms, round-trips,
+      tamper rejection, and the ratchet running over both suites).
+- [x] follow-up: **AES-CCM** (RFC 3610, the WPA2 / Bluetooth-LE AEAD) — CTR + CBC-MAC with the B0/flags
+      formatting — `ccm.ts`, pinned to RFC 3610 vectors #1–#3, with a lab panel. The AEAD shelf now
+      covers both mainstream AES AEADs (GCM, CCM) and both misuse-resistant ones (GCM-SIV, SIV).
+- [x] follow-up: **AES-SIV** (RFC 5297, the CMAC-based deterministic AEAD) to sit beside GCM-SIV and
+      contrast the two misuse-resistant constructions — `aessiv.ts` (S2V + dbl/xorend, the double-length
+      key, V‖C wire format), pinned to the RFC 5297 Appendix A.1 vector, with a lab panel.
+- [ ] follow-up: **AES-KW / AES-KWP** (RFC 3394 key wrap) for wrapping the ratchet/prekey material.
+- [ ] follow-up: a **CBC + PKCS#7 padding-oracle** attack demo — decrypt a ciphertext with only a
+      valid/invalid-padding oracle, the classic teaching attack, next to the authenticated modes that
+      defeat it.
+- [ ] follow-up: a **GHASH forgery under nonce reuse** demo — recover the authentication key H from two
+      messages sharing a nonce and forge a third, the concrete attack behind the GCM-SIV motivation.
+- [ ] follow-up: a **constant-time note / cache-timing caveat** panel — the table-driven S-box is not
+      constant-time; show the bitsliced idea and why AES-NI exists.
+- [ ] follow-up: a **Web-Worker** path so bulk AES-GCM throughput (a large file) streams progress.
+
 ## Session log
 
+- 2026-07-09 (claude): **The symmetric layer — AES and the authenticated modes, from scratch and
+  pinned to the standards' vectors.** The lab reached from the ECDLP to lattices, STARKs and Nova but
+  had exactly one symmetric cipher (ChaCha20-Poly1305) and, conspicuously, **no AES** — the primitive
+  the internet actually runs on. This session fills that hole and builds the real AEAD stack on top.
+  Six new engine modules, zero new dependencies, still zero crypto deps. (1) `aes.ts`: AES-128/192/256
+  (FIPS-197) with the S-box **computed** from the GF(2⁸) multiplicative inverse + affine map (log/exp
+  tables over the generator 0x03 — nothing tabled), the full key schedule, the four round steps and
+  their inverses, block encrypt/decrypt, an instrumented `traceEncrypt` recording every intermediate
+  state, and AES-CTR — matched byte-for-byte to FIPS-197 Appendix B (the round-by-round SubBytes /
+  MixColumns states) and Appendix C.1/C.2/C.3. (2) `gcm.ts`: AES-GCM (NIST SP 800-38D) with the
+  GF(2¹²⁸) GHASH multiply built from the bit up (the spec's right-shift + 0xe1 reduction), GCTR, both
+  J0 paths (96-bit and GHASH-derived), GMAC and seal/open — matched to the McGrew–Viega test cases 1–5
+  including the non-96-bit-IV case. (3) `cmac.ts`: AES-CMAC (RFC 4493) with the K1/K2 subkey shift that
+  closes CBC-MAC — matched to the RFC vectors (empty, one-block, 40-byte). (4) `gcmsiv.ts`: AES-GCM-SIV
+  (RFC 8452), the nonce-misuse-resistant AEAD — POLYVAL implemented directly as dot(a,b)=a·b·x⁻¹²⁸ via a
+  Montgomery reduction in the little-endian field, DeriveKeys, the synthetic-IV tag, LE-32 counter;
+  DeriveKeys' auth key and the empty-message result reproduce RFC 8452 Appendix C.1, and POLYVAL is
+  cross-checked against the field axioms (identity x¹²⁸ mod M, commutativity, distributivity). (5)
+  `aessiv.ts`: AES-SIV (RFC 5297), the *other* misuse-resistant AEAD — CMAC-based rather than
+  polynomial-hash-based — with S2V (dbl + xorend over the CMAC-of-zero seed), the double-length key, and
+  the V‖ciphertext wire format, matched byte-for-byte to the RFC 5297 Appendix A.1 vector; it sits beside
+  GCM-SIV so the two constructions of deterministic AEAD can be contrasted. (6) `ccm.ts`: AES-CCM (RFC
+  3610), Counter with CBC-MAC — the other mainstream AES AEAD (Wi-Fi WPA2/CCMP, Bluetooth LE,
+  Zigbee/Thread, the TLS AES-CCM suites), with the B0/flags formatting, length-prefixed AAD and the
+  CTR-encrypted tag — matched byte-for-byte to RFC 3610 vectors #1–#3, so the shelf now covers both
+  mainstream AES AEADs and both misuse-resistant ones. The
+  Double Ratchet is now cipher-agnostic: `AeadSuite` (`CHACHA20_POLY1305` | `AES_256_GCM`) threads
+  through `signal.ts`, so a full X3DH + ratchet conversation runs over the from-scratch AES-256-GCM with
+  every guarantee intact — exercised by `runSuiteRoundTrip`. One new lab page (**AES & GCM**,
+  `/aesgcm`): a scrubbable round-by-round 4×4 state-matrix visualiser for all three key sizes, the
+  AES-GCM AEAD with a live GHASH accumulator table and tamper toggle, the **nonce-reuse cliff** (two
+  messages under one nonce — GCM's C₁⊕C₂ equals P₁⊕P₂, a total break, while GCM-SIV stays safe, side by
+  side on the same core), and an AES-CMAC panel; plus a cipher-suite toggle on the **Sealed** page to
+  run the live chat over AES-256-GCM. Self-test grew by a large **AES / AES-GCM / AES-GMAC / AES-CMAC /
+  AES-GCM-SIV / AES-SIV / AES-CCM** group (FIPS-197 all sizes + the Appendix B trace, NIST GCM cases 1–5,
+  RFC 4493, RFC 8452, RFC 5297, RFC 3610, POLYVAL axioms, round-trips, tamper rejection, and the ratchet
+  over both suites). Every module
+  verified in Node against its published vectors before any UI, via a type-stripping ESM harness. Lint +
+  build green via verify-project.mjs.
 - 2026-07-05 (claude): **SLH-DSA (FIPS 205) — the *standardised* stateless hash-based signature, from
   scratch and pinned to NIST's own vectors.** The lab already carried a *toy* SPHINCS⁺ (`sphincs.ts`,
   an RFC-8391-flavoured construction on the full 32-byte SHA-256 output, `SPHINCS_TOY`). This session

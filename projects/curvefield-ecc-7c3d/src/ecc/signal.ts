@@ -24,8 +24,10 @@ import {
   ratchetEncrypt,
   ratchetDecrypt,
   cloneState,
+  CHACHA20_POLY1305,
   type RatchetState,
   type RatchetMessage,
+  type AeadSuite,
 } from './doubleratchet'
 
 const enc = new TextEncoder()
@@ -66,10 +68,12 @@ export function publishBundle(p: Participant, oneTimeIndex: number | null = 0): 
   }
 }
 
-/** A live end of a session: the ratchet state plus the bound associated data. */
+/** A live end of a session: the ratchet state, the bound associated data, and the
+ *  AEAD suite the record layer runs over (defaults to Signal's ChaCha20-Poly1305). */
 export interface Session {
   state: RatchetState
   ad: Uint8Array
+  suite?: AeadSuite
 }
 
 /** Initiator side of the handshake (Alice). Returns her session and the initial
@@ -98,11 +102,11 @@ export function beginResponder(
 }
 
 export function encryptText(session: Session, text: string): RatchetMessage {
-  return ratchetEncrypt(session.state, enc.encode(text), session.ad)
+  return ratchetEncrypt(session.state, enc.encode(text), session.ad, session.suite ?? CHACHA20_POLY1305)
 }
 
 export function decryptText(session: Session, msg: RatchetMessage): string | null {
-  const pt = ratchetDecrypt(session.state, msg.header, msg.ciphertext, session.ad)
+  const pt = ratchetDecrypt(session.state, msg.header, msg.ciphertext, session.ad, session.suite ?? CHACHA20_POLY1305)
   return pt === null ? null : dec.decode(pt)
 }
 
@@ -110,15 +114,36 @@ export function decryptText(session: Session, msg: RatchetMessage): string | nul
 
 /** A fresh Alice⇄Bob pair with the handshake completed and the first message
  *  (which bootstraps Bob's ratchet) already delivered. */
-export function establishPair(): { alice: Session; bob: Session; hello: string } {
+export function establishPair(suite: AeadSuite = CHACHA20_POLY1305): {
+  alice: Session
+  bob: Session
+  hello: string
+} {
   const A = createParticipant('Alice')
   const B = createParticipant('Bob')
   const { session: alice, initial } = beginInitiator(A, publishBundle(B, 0))
   const bob = beginResponder(B, 0, initial)
+  alice.suite = suite
+  bob.suite = suite
   const hello = 'handshake complete'
   const m0 = encryptText(alice, hello)
   decryptText(bob, m0) // bootstraps Bob's receiving chain
   return { alice, bob, hello }
+}
+
+/** Run a short two-way conversation end-to-end under a chosen AEAD suite, proving
+ *  the record layer is truly cipher-agnostic. Used by the self-test and the lab. */
+export function runSuiteRoundTrip(suite: AeadSuite): { ok: boolean; suite: string; tamperRejected: boolean } {
+  const { alice, bob } = establishPair(suite)
+  const a1 = encryptText(alice, 'wire me over ' + suite.name)
+  const okA = decryptText(bob, a1) === 'wire me over ' + suite.name
+  const b1 = encryptText(bob, 'received, ratcheting back')
+  const okB = decryptText(alice, b1) === 'received, ratcheting back'
+  // a forged ciphertext bit must fail to authenticate under the new suite too
+  const forged = encryptText(alice, 'tamper me')
+  forged.ciphertext[0] ^= 0x01
+  const tamperRejected = decryptText(bob, forged) === null
+  return { ok: okA && okB, suite: suite.name, tamperRejected }
 }
 
 export interface OutOfOrderResult {

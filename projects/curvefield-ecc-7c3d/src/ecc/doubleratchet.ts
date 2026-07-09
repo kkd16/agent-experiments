@@ -19,8 +19,27 @@
 import { x25519 } from './ed25519'
 import { hmacSha256, bytesToHex } from './sha256'
 import { hkdf } from './hkdf'
-import { seal, open } from './chacha20'
+import { seal as chachaSeal, open as chachaOpen } from './chacha20'
+import { seal as gcmSeal, open as gcmOpen } from './gcm'
 import { generateKeyPair, type KeyPair } from './x3dh'
+
+// ── the AEAD suite the ratchet runs over ──────────────────────────────────────
+// The message-key KDF below hands each suite a 32-byte key and a 12-byte nonce —
+// exactly what both ChaCha20-Poly1305 and AES-256-GCM take — so the record layer
+// is pluggable. Signal ships ChaCha20-Poly1305 (its `AEAD` cipher); AES-256-GCM
+// is what TLS 1.3 would put here. Both bind the ratchet header as associated data.
+export interface AeadSuite {
+  name: string
+  seal(key: Uint8Array, nonce: Uint8Array, plaintext: Uint8Array, ad: Uint8Array): Uint8Array
+  open(key: Uint8Array, nonce: Uint8Array, sealed: Uint8Array, ad: Uint8Array): Uint8Array | null
+}
+
+export const CHACHA20_POLY1305: AeadSuite = { name: 'ChaCha20-Poly1305', seal: chachaSeal, open: chachaOpen }
+export const AES_256_GCM: AeadSuite = {
+  name: 'AES-256-GCM',
+  seal: (k, n, p, ad) => gcmSeal(k, n, p, ad),
+  open: (k, n, s, ad) => gcmOpen(k, n, s, ad),
+}
 
 const MAX_SKIP = 1000
 const RK_INFO = new TextEncoder().encode('Curvefield_DoubleRatchet_Root')
@@ -123,6 +142,7 @@ export function ratchetEncrypt(
   state: RatchetState,
   plaintext: Uint8Array,
   ad: Uint8Array = new Uint8Array(0),
+  aead: AeadSuite = CHACHA20_POLY1305,
 ): RatchetMessage {
   if (!state.cks) throw new Error('ratchet: no sending chain (call initAlice or receive first)')
   const [cks, mk] = kdfCk(state.cks)
@@ -130,7 +150,7 @@ export function ratchetEncrypt(
   const header: Header = { dh: state.dhs.pub, pn: state.pn, n: state.ns }
   state.ns += 1
   const { key, nonce } = messageKeys(mk)
-  const ciphertext = seal(key, nonce, plaintext, concat(ad, encodeHeader(header)))
+  const ciphertext = aead.seal(key, nonce, plaintext, concat(ad, encodeHeader(header)))
   return { header, ciphertext }
 }
 
@@ -143,12 +163,13 @@ function trySkipped(
   header: Header,
   ciphertext: Uint8Array,
   ad: Uint8Array,
+  aead: AeadSuite,
 ): Uint8Array | null {
   const k = skipKey(header.dh, header.n)
   const mk = state.skipped.get(k)
   if (!mk) return null
   const { key, nonce } = messageKeys(mk)
-  const pt = open(key, nonce, ciphertext, concat(ad, encodeHeader(header)))
+  const pt = aead.open(key, nonce, ciphertext, concat(ad, encodeHeader(header)))
   if (pt) state.skipped.delete(k)
   return pt
 }
@@ -184,8 +205,9 @@ export function ratchetDecrypt(
   header: Header,
   ciphertext: Uint8Array,
   ad: Uint8Array = new Uint8Array(0),
+  aead: AeadSuite = CHACHA20_POLY1305,
 ): Uint8Array | null {
-  const skipped = trySkipped(state, header, ciphertext, ad)
+  const skipped = trySkipped(state, header, ciphertext, ad, aead)
   if (skipped) return skipped
 
   if (state.dhr === null || bytesToHex(header.dh) !== bytesToHex(state.dhr)) {
@@ -198,7 +220,7 @@ export function ratchetDecrypt(
   state.ckr = ckr
   state.nr += 1
   const { key, nonce } = messageKeys(mk)
-  return open(key, nonce, ciphertext, concat(ad, encodeHeader(header)))
+  return aead.open(key, nonce, ciphertext, concat(ad, encodeHeader(header)))
 }
 
 /** A deep-ish snapshot of the mutable state, for step-by-step visualization. */
