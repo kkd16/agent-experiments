@@ -129,8 +129,72 @@ vectors / pure frequencies, and lets you manipulate them.
    **union bound** built from the code's own **distance spectrum** (d_free re-derived from the
    trellis), with the whole curve sliding left. Tab 3 is a visceral **message demo** — the same text
    through the same noise, shredded uncoded vs. perfectly repaired coded.
+8. **Adapt** — *a filter that learns its own taps.* An adaptive FIR minimises a running error
+   `e[n] = d[n] − wᵀu[n]` by three from-scratch rules — **LMS**, normalised **NLMS** and
+   exponentially-weighted **RLS** — all converging to the same fixed point, the **Wiener–Hopf**
+   least-squares optimum `wₒ = R⁻¹p` solved live by a from-scratch **Cholesky** on the sample
+   correlation matrix (with the **MMSE floor** drawn as the target). Four canonical jobs share one
+   engine: **system identification** (raise the input coloring ρ → the correlation eigenvalues, from
+   a Jacobi eigensolver, spread apart → LMS crawls while RLS shrugs), Widrow's **adaptive noise
+   canceller**, an **adaptive line enhancer** (predict the part correlated across a decorrelation
+   delay → tones lift out of noise), and an **adaptive equalizer** (train on known symbols → the
+   combined channel⊛equalizer response collapses to a spike → the eye reopens). Ensemble-averaged
+   **learning curves** race all three against the MMSE floor.
 
 ## Ideas / backlog
+
+### v13 plan — the **Adapt** mode (adaptive filtering) — this session
+
+Every filter in the lab so far was *designed*: Filter paints a mask, Design drags poles and zeros,
+Coding builds a fixed trellis. But an entire branch of DSP does the opposite — it lets the **data**
+design the filter, on-line, from a stream it has never seen. That was the missing pillar: the lab
+could analyse and synthesise, but nothing in it *learned*. v13 adds a complete adaptive-filtering
+pillar whose central claim is the same kind that anchors the rest of the lab — that three very
+different update rules all converge to one provable optimum, the Wiener–Hopf solution — and shows it
+on screen with ensemble learning curves racing a dashed MMSE floor.
+
+Shipped this session:
+
+- [x] **From-scratch adaptive engine** (`lib/adaptive.ts`): a single stream driver hosting **LMS**,
+  **NLMS** (power-normalised) and **RLS** (with a recursively maintained inverse correlation matrix
+  P), plus optional leakage — the three rules differ only in how the tap update is formed.
+- [x] **Wiener–Hopf / least-squares ground truth**: assemble the sample correlation matrix R and
+  cross-correlation p, solve `R·wₒ = p` by a from-scratch **Cholesky** factorisation (adaptive ridge
+  for rank-deficient regressors), and report the **minimum MSE** `Jmin = σ_d² − pᵀwₒ` as the floor.
+- [x] **Cyclic-Jacobi symmetric eigensolver** for R's eigenvalues → the **eigenvalue spread**
+  λmax/λmin that governs LMS convergence and the **stability bound** μ < 2/λmax.
+- [x] **Ensemble-averaged learning curves** — average e[n]² over many independent noise realisations
+  so the convergence rate is legible, then overlay LMS/NLMS/RLS vs. the MMSE floor.
+- [x] **Four applications** on the same engine: **system identification** (colored-input eigenvalue
+  spread story), **adaptive noise cancellation** (Widrow), **adaptive line enhancer** (delayed
+  predictor), **adaptive channel equalization** (Proakis channel B → single-spike combined response).
+- [x] **Per-application visualisations**: tap stems (truth vs estimate), correlation-eigenvalue bars,
+  time-domain recovery waveforms, input-vs-enhanced spectra (via the lab's own FFT), and a
+  decision-value **eye histogram** that opens as the equalizer trains.
+- [x] **Thirteen new self-tests** (90 → 104, all green): Cholesky and Jacobi on hand-checked matrices;
+  Wiener recovering a noiseless plant to machine ε; Jmin ≈ noise variance; RLS(λ=1) == batch
+  least-squares; LMS converging to the plant; NLMS's exact power-invariance; the learning curve
+  descending to the floor; ANC/ALE SNR gains; the equalizer cutting ISI to near-zero symbol errors;
+  and the LMS stability edge that diverges above μ = 2/λmax.
+- [x] Registered the mode in `App.tsx`, added a deep-linkable control surface (`shareLink`/URL state),
+  and documented it in the **About** mode with a steepest-descent derivation card.
+
+Backlog (future sessions, natural extensions of this pillar):
+
+- [ ] **Live animated adaptation** — step the filter in an animation frame so the taps, error and eye
+  evolve in real time rather than snapping to the converged state, with a play/scrub control.
+- [ ] **Affine-projection (APA) and RLS variants** — sliding-window and QR-decomposition RLS, and the
+  affine-projection family that bridges NLMS and RLS, on the same eigenvalue-spread benchmark.
+- [ ] **Tracking a time-varying plant** — make the unknown system drift mid-stream and show how the
+  forgetting factor λ (RLS) and step size μ (LMS) trade convergence speed against tracking lag.
+- [ ] **Frequency-domain / block LMS** — the FFT-accelerated adaptive filter (overlap-save), tying the
+  adaptive pillar back to the lab's core transform, with the per-sample cost curve vs. filter length.
+- [ ] **Decision-directed & blind equalization** — switch the equalizer off training onto its own
+  decisions, and a **CMA** (constant-modulus) blind mode that opens the eye with no training symbols.
+- [ ] **A real acoustic echo-cancellation demo** — double-talk detection and a sparse-aware
+  proportionate NLMS (PNLMS) on a long, sparse room impulse response.
+- [ ] **Misadjustment overlay** — draw the theoretical excess-MSE prediction M ≈ μ·tr(R)/2 against the
+  measured steady-state gap, closing the loop between the formula and the curve.
 
 ### v12 plan — the **Coding** mode (forward error correction) — this session
 
@@ -664,6 +728,31 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
 
 ## Session log
 
+- 2026-07-09 (claude, v13): "The filter that learns itself — adaptive filtering." Added the
+  **eighteenth mode, Adapt**, the lab's first pillar where the *data* designs the filter instead of
+  a spec. A new from-scratch `lib/adaptive.ts` carries a single stream driver hosting three learning
+  rules — **LMS**, power-normalised **NLMS**, and exponentially-weighted **RLS** (recursively
+  maintaining the inverse correlation matrix P) — all chasing the one optimum they share, the
+  **Wiener–Hopf** least-squares solution `wₒ = R⁻¹p`, which the same module assembles from the sample
+  correlation matrix and solves live by a from-scratch **Cholesky** factorisation; a cyclic-**Jacobi**
+  symmetric eigensolver reads R's eigenvalues for the **eigenvalue-spread** story and the stability
+  bound μ < 2/λmax. Four canonical jobs run on one engine — **system identification** (raise the input
+  coloring ρ and watch the eigenvalues spread, LMS crawl, RLS shrug), Widrow's **adaptive noise
+  canceller** (learn the leakage path from a reference mic; the error signal *is* the recovered
+  signal), an **adaptive line enhancer** (predict only what's correlated across a decorrelation delay,
+  so buried tones lift out of noise — their spectral peaks emerging in the lab's own FFT), and an
+  **adaptive equalizer** (train on known symbols → the combined channel⊛equalizer response collapses
+  to a single spike, ISI −6 → −38 dB, the decision-value eye histogram reopening to zero symbol
+  errors). Ensemble-averaged **learning curves** race all three rules head-to-head against a dashed
+  MMSE floor, RLS reaching it in ~2M samples regardless of spread while LMS's rate visibly tracks it.
+  Thirteen new self-tests (**90 → 104**, all green): Cholesky and Jacobi on hand-checked matrices,
+  Wiener recovering a noiseless plant to machine ε, Jmin ≈ noise variance, RLS(λ=1) == batch
+  least-squares, LMS convergence, NLMS's exact power-invariance, the learning curve descending to the
+  floor, ANC/ALE SNR gains, the equalizer cutting ISI to near-zero SER, and the LMS stability edge
+  that diverges the instant μ crosses 2/λmax. Ran the CI gate (scope + conformance + lint + build ✓)
+  and drove it in headless Chromium: 104/104 self-tests pass and all four applications render — the
+  learning curves, tap stems, eigenvalue bars, recovery waveforms, enhanced spectra and the eye
+  histogram — with zero console/runtime errors. Eighteen modes, still zero math libraries.
 - 2026-07-06 (claude, v12): "How the bits survive — convolutional codes, Viterbi, and the coding
   gain." Added the **seventeenth mode, Coding**, a complete forward-error-correction pillar on top of
   the Modem's channel. New `lib/fec.ts` (~560 lines): a general rate-1/n **convolutional encoder**

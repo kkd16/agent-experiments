@@ -111,6 +111,23 @@ import {
   bitsToText,
   mulberry32 as fecRng,
 } from './fec'
+import {
+  choleskySolve,
+  symmetricEigenvalues,
+  wienerSolution,
+  adaptRun,
+  learningCurve,
+  makeProblem,
+  combinedResponse,
+  misalignmentDb,
+  isiDb,
+  snrDb as adaptSnr,
+  symbolErrorRate,
+  plantResponse,
+  dot as adaptDot,
+  type ProblemConfig,
+  type AdaptParams,
+} from './adaptive'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1697,6 +1714,199 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const tr = buildTrellis(CONV_CODES[3])
     const r = simulateCoded(tr, { msgBits: 4000, ebn0Db: 3, punc: PUNCTURES[0], seed: 2024 })
     check('text↔bits round-trips; coded message far outlives uncoded at 3 dB', rt && r.softBer < r.uncodedBer)
+  }
+
+  // === Adaptive filtering (LMS / NLMS / RLS + Wiener–Hopf) ===
+
+  // 59. Cholesky solves a known SPD system: A x = b for A = [[4,1],[1,3]].
+  {
+    const A = [
+      [4, 1],
+      [1, 3],
+    ]
+    const b = [1, 2]
+    const x = choleskySolve(A, b)
+    // Check A·x == b directly.
+    const r0 = A[0][0] * x[0] + A[0][1] * x[1]
+    const r1 = A[1][0] * x[0] + A[1][1] * x[1]
+    check('Cholesky solve: A·x reproduces b', approxEqual(r0, b[0], 1e-9) && approxEqual(r1, b[1], 1e-9))
+  }
+
+  // 60. Jacobi eigenvalues match a hand-diagonalisable matrix. For [[2,1],[1,2]]
+  //     the eigenvalues are exactly 1 and 3.
+  {
+    const eigs = symmetricEigenvalues([
+      [2, 1],
+      [1, 2],
+    ])
+    check('symmetric eigenvalues: [[2,1],[1,2]] → {1,3}', approxEqual(eigs[0], 1, 1e-9) && approxEqual(eigs[1], 3, 1e-9))
+    // Diagonal matrix: eigenvalues are the diagonal, sorted.
+    const diag = symmetricEigenvalues([
+      [5, 0, 0],
+      [0, 2, 0],
+      [0, 0, 9],
+    ])
+    check('symmetric eigenvalues of a diagonal are its entries', approxEqual(diag[0], 2) && approxEqual(diag[1], 5) && approxEqual(diag[2], 9))
+  }
+
+  // 61. Wiener–Hopf on a *noiseless* system-identification problem recovers the
+  //     unknown plant taps exactly: d = h∗x ⇒ least-squares wₒ = h to machine ε.
+  {
+    const M = 10
+    const cfg: ProblemConfig = { app: 'sysid', N: 1500, M, rho: 0.3, snrDb: 200, delay: 0, seed: 11 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const wien = wienerSolution(prob.x, prob.d, M)
+    const h = plantResponse(M)
+    let maxErr = 0
+    for (let i = 0; i < M; i++) maxErr = Math.max(maxErr, Math.abs(wien.w[i] - h[i]))
+    check('Wiener–Hopf recovers a noiseless plant exactly', maxErr < 1e-5)
+  }
+
+  // 62. With measurement noise, the Wiener minimum MSE tracks the noise floor: Jmin
+  //     lands close to the injected noise variance (and never below zero).
+  {
+    const M = 12
+    const cfg: ProblemConfig = { app: 'sysid', N: 4000, M, rho: 0, snrDb: 20, delay: 0, seed: 7 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const wien = wienerSolution(prob.x, prob.d, M)
+    const noiseVar = prob.noiseVar ?? 0
+    // Jmin should be within a factor of ~2 of the true noise variance and ≥ 0.
+    check('Wiener Jmin ≈ measurement-noise variance', wien.jmin >= 0 && wien.jmin < noiseVar * 3 + 1e-9 && wien.jmin > noiseVar * 0.3)
+  }
+
+  // 63. RLS is a recursive least-squares solver: with λ=1 its final taps converge to
+  //     the batch Wiener/LS solution on the very same data.
+  {
+    const M = 10
+    const cfg: ProblemConfig = { app: 'sysid', N: 3000, M, rho: 0.5, snrDb: 25, delay: 0, seed: 3 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const wien = wienerSolution(prob.x, prob.d, M)
+    const params: AdaptParams = { M, mu: 0, lambda: 1, delta: 0.001, eps: 1e-6 }
+    const run = adaptRun(prob.x, prob.d, 'rls', params)
+    let num = 0
+    let den = 0
+    for (let i = 0; i < M; i++) {
+      num += (run.w[i] - wien.w[i]) * (run.w[i] - wien.w[i])
+      den += wien.w[i] * wien.w[i]
+    }
+    check('RLS(λ=1) final taps == batch least-squares solution', Math.sqrt(num / den) < 1e-3)
+  }
+
+  // 64. LMS converges: on white input with (near-)no noise it drives the taps onto
+  //     the true plant, so the misalignment ‖w−h‖²/‖h‖² is deep in the negatives.
+  {
+    const M = 10
+    const cfg: ProblemConfig = { app: 'sysid', N: 6000, M, rho: 0, snrDb: 60, delay: 0, seed: 21 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const params: AdaptParams = { M, mu: 0.05, lambda: 1, delta: 0.01, eps: 1e-6 }
+    const run = adaptRun(prob.x, prob.d, 'lms', params)
+    const mis = misalignmentDb(run.w, plantResponse(M))
+    check('LMS converges to the plant (misalignment < −20 dB)', mis < -20)
+  }
+
+  // 65. NLMS is power-invariant: scaling the input (and hence the desired) by a
+  //     constant leaves the identified plant unchanged — a defining NLMS property.
+  {
+    const M = 8
+    const cfg: ProblemConfig = { app: 'sysid', N: 4000, M, rho: 0, snrDb: 50, delay: 0, seed: 5 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const scale = 7.5
+    const xS = Float64Array.from(prob.x, (v) => v * scale)
+    const dS = Float64Array.from(prob.d, (v) => v * scale)
+    const params: AdaptParams = { M, mu: 0.5, lambda: 1, delta: 0.01, eps: 1e-9 }
+    const a = adaptRun(prob.x, prob.d, 'nlms', params)
+    const b = adaptRun(xS, dS, 'nlms', params)
+    let maxErr = 0
+    for (let i = 0; i < M; i++) maxErr = Math.max(maxErr, Math.abs(a.w[i] - b.w[i]))
+    check('NLMS is invariant to input power scaling', maxErr < 1e-6)
+  }
+
+  // 66. The ensemble learning curve descends and settles near the MMSE floor: the
+  //     averaged final MSE is far below the initial MSE and close to Jmin.
+  {
+    const M = 10
+    const cfg: ProblemConfig = { app: 'sysid', N: 2000, M, rho: 0, snrDb: 20, delay: 0, seed: 31 }
+    const mk = (s: number) => {
+      const p = makeProblem(cfg, s)
+      return { x: p.x, d: p.d }
+    }
+    const params: AdaptParams = { M, mu: 0.03, lambda: 1, delta: 0.01, eps: 1e-6 }
+    const J = learningCurve(mk, 'lms', params, 20, 100)
+    const wien = wienerSolution(makeProblem(cfg, 100).x, makeProblem(cfg, 100).d, M)
+    const jStart = J[0]
+    const jEnd = J[J.length - 1]
+    // Descends by a large factor and settles within ~4× of the MMSE floor.
+    check('LMS learning curve descends toward the MMSE floor', jEnd < jStart * 0.2 && jEnd < wien.jmin * 4 + 1e-6)
+  }
+
+  // 67. Adaptive noise cancellation: the recovered error signal is far cleaner than
+  //     the primary sensor — output SNR beats input SNR by a wide margin.
+  {
+    const M = 8
+    const cfg: ProblemConfig = { app: 'anc', N: 4000, M, rho: 0, snrDb: 0, delay: 0, seed: 9 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const params: AdaptParams = { M, mu: 0, lambda: 0.999, delta: 0.01, eps: 1e-6 }
+    const run = adaptRun(prob.x, prob.d, 'rls', params)
+    const start = Math.floor(cfg.N * 0.6)
+    const inSnr = adaptSnr(prob.d, prob.clean!)
+    const outSnr = adaptSnr(run.e, prob.clean!, start)
+    check('ANC lifts SNR by ≥ 15 dB', outSnr - inSnr > 15)
+  }
+
+  // 68. Adaptive line enhancer: the enhanced output tracks the buried sinusoids far
+  //     better than the noisy input — a solid positive SNR gain against the truth.
+  {
+    const M = 24
+    const cfg: ProblemConfig = { app: 'ale', N: 4000, M, rho: 0, snrDb: 0, delay: 1, seed: 13 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const params: AdaptParams = { M, mu: 0, lambda: 0.999, delta: 0.01, eps: 1e-6 }
+    const run = adaptRun(prob.x, prob.d, 'rls', params)
+    const start = Math.floor(cfg.N * 0.6)
+    const inSnr = adaptSnr(prob.d, prob.clean!)
+    const outSnr = adaptSnr(run.y, prob.clean!, start)
+    check('ALE enhances the lines (SNR gain > 6 dB)', outSnr - inSnr > 6)
+  }
+
+  // 69. Channel equalization: after training, the combined channel⊛equalizer response
+  //     is dominated by one spike (ISI slashed) and the eye is open (near-zero errors).
+  {
+    const M = 15
+    const delay = Math.floor((M - 1) / 2) + 1
+    const cfg: ProblemConfig = { app: 'equalizer', N: 5000, M, rho: 0, snrDb: 25, delay, seed: 17 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const params: AdaptParams = { M, mu: 0, lambda: 0.999, delta: 0.01, eps: 1e-6 }
+    const run = adaptRun(prob.x, prob.d, 'rls', params)
+    const comb = combinedResponse(prob.channel!, run.w)
+    const isiCh = isiDb(prob.channel!)
+    const isiEq = isiDb(comb)
+    const start = Math.floor(cfg.N * 0.6)
+    const ser = symbolErrorRate(run.y, prob.symbols!, delay, start)
+    check('Equalizer cuts ISI and opens the eye (SER ≈ 0)', isiEq < isiCh - 8 && ser < 0.01)
+  }
+
+  // 70. LMS mean-square stability bound μ < 2/λmax bites: a step above the ceiling
+  //     diverges (error energy blows up) where a step below it stays finite.
+  {
+    const M = 8
+    const cfg: ProblemConfig = { app: 'sysid', N: 1500, M, rho: 0, snrDb: 30, delay: 0, seed: 2 }
+    const prob = makeProblem(cfg, cfg.seed)
+    const wien = wienerSolution(prob.x, prob.d, M)
+    const lamMax = wien.eigs[wien.eigs.length - 1]
+    const trR = wien.eigs.reduce((s, e) => s + e, 0)
+    // Stable: well under the mean-square bound μ < 2/tr(R). Wild: above the mean
+    // bound μ < 2/λmax (which upper-bounds the mean-square one).
+    const stable = adaptRun(prob.x, prob.d, 'lms', { M, mu: 0.2 * (2 / trR), lambda: 1, delta: 0.01, eps: 1e-6 })
+    const wild = adaptRun(prob.x, prob.d, 'lms', { M, mu: 1.5 * (2 / lamMax), lambda: 1, delta: 0.01, eps: 1e-6 })
+    const stableEnd = stable.se[stable.se.length - 1]
+    const wildEnd = wild.se[wild.se.length - 1]
+    // Divergence shows up as blow-up to a huge value or overflow to a non-finite one.
+    const diverged = !Number.isFinite(wildEnd) || wildEnd > stableEnd * 100
+    check('LMS diverges above μ=2/λmax and converges below it', Number.isFinite(stableEnd) && stableEnd < 1 && diverged)
+  }
+
+  // 71. dot() is a plain inner product (sanity guard for the helper the solver uses).
+  {
+    check('dot([1,2,3],[4,5,6]) == 32', approxEqual(adaptDot([1, 2, 3], [4, 5, 6]), 32))
   }
 
   return { passed, failed, messages }

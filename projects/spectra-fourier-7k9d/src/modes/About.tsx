@@ -142,7 +142,35 @@ export default function About() {
             <strong>union bound</strong> built from the code's own distance spectrum, and drop the
             Eb/N0 in the message demo until even the code gives up.
           </li>
+          <li>
+            <strong>Adapt</strong> — <em>a filter that learns its own taps.</em> An adaptive FIR drives
+            the error <code>e[n] = d[n] − wᵀu[n]</code> to zero by three rules —{' '}
+            <strong>LMS</strong>, <strong>NLMS</strong> and <strong>RLS</strong> — all chasing the same
+            fixed point, the <strong>Wiener–Hopf</strong> optimum <code>wₒ = R⁻¹p</code> solved live by
+            Cholesky. Four classics run on it: <strong>system identification</strong> (raise the input
+            coloring and watch the eigenvalue spread throttle LMS while RLS shrugs), Widrow's{' '}
+            <strong>noise canceller</strong>, an <strong>adaptive line enhancer</strong> that lifts
+            tones out of noise, and an <strong>equalizer</strong> that reopens an ISI-slammed eye.
+          </li>
         </ul>
+      </div>
+
+      <div className="card">
+        <h3>Learning the filter — steepest descent, and its shortcut</h3>
+        <div className="formula">w(n+1) = w(n) + μ·e(n)·u(n)&nbsp;&nbsp;&nbsp;→&nbsp;&nbsp;&nbsp;R·wₒ = p</div>
+        <p>
+          The other modes <em>design</em> a filter from a specification; the{' '}
+          <strong>Adapt</strong> mode lets the data design it. Every rule is a way down the same
+          error bowl <code>J(w) = σ_d² − 2pᵀw + wᵀRw</code>, whose unique minimum is the{' '}
+          <strong>Wiener–Hopf</strong> solution <code>wₒ = R⁻¹p</code>. <strong>LMS</strong> takes a
+          noisy gradient step from a single sample; its convergence time scales with the{' '}
+          <strong>eigenvalue spread</strong> λmax/λmin of the input correlation matrix R, and it only
+          stays stable for <code>μ &lt; 2/λmax</code>. <strong>NLMS</strong> normalises that step by
+          the input power, making it power-invariant. <strong>RLS</strong> abandons the gradient
+          entirely and recursively maintains <code>R⁻¹</code> outright — so it reaches wₒ in about{' '}
+          <code>2M</code> samples no matter how coloured the input, the eigenvalue spread be damned.
+          Race all three against the dashed <strong>MMSE floor</strong> and the story is on the screen.
+        </p>
       </div>
 
       <div className="card">
