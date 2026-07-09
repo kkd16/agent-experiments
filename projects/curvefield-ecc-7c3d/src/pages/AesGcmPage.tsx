@@ -5,6 +5,7 @@ import { gcmEncrypt, gcmDecrypt, ghash } from '../ecc/gcm'
 import { gcmSivEncrypt } from '../ecc/gcmsiv'
 import { cmac, cmacSubkeys } from '../ecc/cmac'
 import { sivEncrypt, sivDecrypt } from '../ecc/aessiv'
+import { ccmEncrypt, ccmDecrypt } from '../ecc/ccm'
 
 // ── small byte helpers ────────────────────────────────────────────────────────
 
@@ -382,6 +383,49 @@ function NonceReusePanel() {
   )
 }
 
+// ── AES-CCM (RFC 3610) ────────────────────────────────────────────────────────
+
+const CCM_KEY = parseHex('c0c1c2c3c4c5c6c7c8c9cacbcccdcecf', 16)
+const CCM_NONCE = parseHex('00000003020100a0a1a2a3a4a5', 13)
+
+function CcmPanel() {
+  const [msg, setMsg] = useState('the WPA2 / Bluetooth-LE cipher')
+  const [adText, setAdText] = useState('frame-header')
+  const data = useMemo(() => {
+    const pt = utf8(msg)
+    const ad = utf8(adText)
+    const r = ccmEncrypt(CCM_KEY, CCM_NONCE, pt, ad, 8)
+    const dec = ccmDecrypt(CCM_KEY, CCM_NONCE, r.ciphertext, r.tag, ad)
+    return { r, dec }
+  }, [msg, adText])
+  return (
+    <Panel
+      title="AES-CCM — Counter with CBC-MAC (RFC 3610)"
+      sub="The other major AES AEAD: the mandatory cipher of Wi-Fi WPA2 (CCMP), Bluetooth LE, Zigbee/Thread, and the TLS AES-CCM suites. It authenticates with a plain CBC-MAC and encrypts with CTR — no field multiply, so it runs on the smallest radios. Here with an 8-byte tag."
+    >
+      <div className="grid cols-2">
+        <div>
+          <label className="sub">plaintext</label>
+          <input style={{ width: '100%', marginBottom: '0.5rem' }} value={msg} onChange={(e) => setMsg(e.target.value)} />
+          <label className="sub">associated data</label>
+          <input style={{ width: '100%' }} value={adText} onChange={(e) => setAdText(e.target.value)} />
+        </div>
+        <div>
+          <dl className="kv">
+            <dt>ciphertext</dt>
+            <dd className="hexbox" style={{ gridColumn: '1 / -1', wordBreak: 'break-all' }}>{hx(data.r.ciphertext)}</dd>
+            <dt>tag (8 B)</dt>
+            <dd className="hexbox violet" style={{ gridColumn: '1 / -1' }}>{hx(data.r.tag)}</dd>
+          </dl>
+          <div style={{ marginTop: '0.5rem' }}>
+            <Verdict ok={data.dec !== null}>{data.dec !== null ? 'CBC-MAC verifies + decrypts' : 'rejected'}</Verdict>
+          </div>
+        </div>
+      </div>
+    </Panel>
+  )
+}
+
 // ── AES-CMAC ──────────────────────────────────────────────────────────────────
 
 function CmacPanel() {
@@ -472,9 +516,10 @@ export function AesGcmPage() {
         The lab had one symmetric cipher — ChaCha20 — and none of the standard the rest of the world
         actually runs on. This is <strong>AES</strong> (FIPS-197), built from the GF(2⁸) field up: the
         S-box computed from a multiplicative inverse, the key schedule, the round transformations — then
-        the authenticated modes that ride on it. <strong>AES-GCM</strong> is the default AEAD in TLS 1.3;{' '}
-        <strong>AES-GCM-SIV</strong> and <strong>AES-SIV</strong> are its nonce-misuse-resistant successors (one
-        polynomial-hash, one CMAC-based); <strong>AES-CMAC</strong> is the block-cipher MAC underneath.
+        the authenticated modes that ride on it. <strong>AES-GCM</strong> is the default AEAD in TLS 1.3; <strong>AES-CCM</strong> is the one on every
+        Wi-Fi and Bluetooth radio; <strong>AES-GCM-SIV</strong> and <strong>AES-SIV</strong> are the
+        nonce-misuse-resistant successors (one polynomial-hash, one CMAC-based); <strong>AES-CMAC</strong>{' '}
+        is the block-cipher MAC underneath.
         Every byte here is computed in your browser and pinned to the FIPS / NIST / RFC test vectors on
         the Self-Test page.
       </PageHead>
@@ -483,6 +528,7 @@ export function AesGcmPage() {
       <GcmPanel />
       <NonceReusePanel />
       <SivPanel />
+      <CcmPanel />
       <CmacPanel />
 
       <Panel title="Why this matters">

@@ -265,6 +265,7 @@ import { gcmEncrypt, gcmDecrypt, gmac, computeJ0 } from './gcm'
 import { cmac, cmacSubkeys } from './cmac'
 import { gcmSivEncrypt, gcmSivDecrypt, deriveKeysPublic, polyvalDot } from './gcmsiv'
 import { sivEncrypt, sivDecrypt, seal as aesSivSeal } from './aessiv'
+import { ccmEncrypt, ccmDecrypt } from './ccm'
 import { runSuiteRoundTrip } from './signal'
 import { CHACHA20_POLY1305, AES_256_GCM } from './doubleratchet'
 import { hkdf, hkdfExtract } from './hkdf'
@@ -1950,6 +1951,17 @@ export function runSelfTest(): TestCase[] {
     check('AES-SIV', 'rejects a tampered ciphertext', (() => { const c = sr.ciphertext.slice(); c[0] ^= 1; return sivDecrypt(sivKey, sr.v, c, [sivAd]) === null })(), 'the synthetic IV no longer matches')
     check('AES-SIV', 'rejects altered associated data', sivDecrypt(sivKey, sr.v, sr.ciphertext, [hb('00')]) === null, 'S2V binds the AD vector')
     check('AES-SIV', 'deterministic (misuse-resistant)', bhex(sivEncrypt(sivKey, sivPt, [sivAd]).v) === bhex(sr.v), 'same inputs → same output, no nonce at all')
+
+    // AES-CCM — Counter with CBC-MAC (RFC 3610, the WPA2 / BLE AEAD).
+    const ccmKey = hb('c0c1c2c3c4c5c6c7c8c9cacbcccdcecf')
+    const ccmNonce = hb('00000003020100a0a1a2a3a4a5')
+    const ccmAad = hb('0001020304050607')
+    const ccmPt = hb('08090a0b0c0d0e0f101112131415161718191a1b1c1d1e')
+    const cc = ccmEncrypt(ccmKey, ccmNonce, ccmPt, ccmAad, 8)
+    check('AES-CCM', 'ciphertext matches RFC 3610 vector #1', bhex(cc.ciphertext) === '588c979a61c663d2f066d0c2c0f989806d5f6b61dac384', 'CTR keystream over the 23-byte payload')
+    check('AES-CCM', 'tag matches RFC 3610 vector #1', bhex(cc.tag) === '17e8d12cfdf926e0', 'CBC-MAC over B0 ‖ AAD ‖ payload, encrypted by S0')
+    check('AES-CCM', 'decrypt round-trips', bhex(ccmDecrypt(ccmKey, ccmNonce, cc.ciphertext, cc.tag, ccmAad) ?? new Uint8Array(1)) === bhex(ccmPt), 'recompute the CBC-MAC and compare')
+    check('AES-CCM', 'rejects a tampered ciphertext', (() => { const c = cc.ciphertext.slice(); c[0] ^= 1; return ccmDecrypt(ccmKey, ccmNonce, c, cc.tag, ccmAad) === null })(), 'the CBC-MAC no longer matches')
 
     // The Double Ratchet is cipher-agnostic — it runs over the new AES-256-GCM too.
     const rtChacha = runSuiteRoundTrip(CHACHA20_POLY1305)

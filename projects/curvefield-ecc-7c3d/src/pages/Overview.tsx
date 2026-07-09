@@ -216,7 +216,7 @@ const LABS = [
     path: '/aesgcm',
     ix: '35',
     title: 'AES & the Authenticated Modes',
-    desc: "The symmetric standard the internet actually runs on, from the GF(2⁸) field up. AES (FIPS-197) with a computed S-box and a scrubbable round-by-round trace, then the modes that ride it: AES-GCM (TLS 1.3's default AEAD, with the GHASH accumulator drawn), AES-GCM-SIV (RFC 8452, nonce-misuse-resistant — shown breaking GCM and surviving on the same screen), AES-SIV (RFC 5297, the CMAC-based deterministic AEAD), and AES-CMAC (RFC 4493). Pinned byte-for-byte to the FIPS/NIST/RFC vectors and wired into the Sealed channel as a second cipher suite.",
+    desc: "The symmetric standard the internet actually runs on, from the GF(2⁸) field up. AES (FIPS-197) with a computed S-box and a scrubbable round-by-round trace, then the modes that ride it: AES-GCM (TLS 1.3's default AEAD, with the GHASH accumulator drawn), AES-GCM-SIV (RFC 8452, nonce-misuse-resistant — shown breaking GCM and surviving on the same screen), AES-SIV (RFC 5297, the CMAC-based deterministic AEAD), AES-CCM (RFC 3610, the WPA2/Bluetooth AEAD), and AES-CMAC (RFC 4493). Pinned byte-for-byte to the FIPS/NIST/RFC vectors and wired into the Sealed channel as a second cipher suite.",
   },
   {
     path: '/mpc',
@@ -228,7 +228,7 @@ const LABS = [
     path: '/verify',
     ix: '31',
     title: 'Self-Test & Vectors',
-    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, ML-DSA (FIPS 204) sign/verify round-trips at the standard byte-sizes with the rounding/hint identities pinned, RFC 8439 ChaCha20-Poly1305, AES (FIPS-197, all three key sizes + the Appendix B round trace), AES-GCM (NIST SP 800-38D test cases), AES-GCM-SIV (RFC 8452), AES-SIV (RFC 5297), AES-CMAC (RFC 4493), RFC 5869 HKDF, X3DH / Double Ratchet (over both ChaCha20-Poly1305 and AES-256-GCM), secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs, plus GMW secret-sharing cross-checked to agree), and Wycheproof vectors.',
+    desc: 'The whole engine checked live against published SHA-256/512, SHA-3 / SHAKE (FIPS 202), HMAC, RIPEMD-160, secp256k1, BIP-340, RFC 7748/8032, MuSig2, BLS12-381, RFC 9380 hash-to-curve, EIP-2333 KeyGen, Groth16, PLONK, Bulletproofs, STARK/FRI, Shamir, FROST, Σ-protocols, KZG, RFC 9381 ECVRF, linkable ring signatures, RFC 8391 XMSS / SPHINCS⁺, ML-KEM (FIPS 203) round-trips at the standard byte-sizes, ML-DSA (FIPS 204) sign/verify round-trips at the standard byte-sizes with the rounding/hint identities pinned, RFC 8439 ChaCha20-Poly1305, AES (FIPS-197, all three key sizes + the Appendix B round trace), AES-GCM (NIST SP 800-38D test cases), AES-GCM-SIV (RFC 8452), AES-SIV (RFC 5297), AES-CCM (RFC 3610), AES-CMAC (RFC 4493), RFC 5869 HKDF, X3DH / Double Ratchet (over both ChaCha20-Poly1305 and AES-256-GCM), secure two-party computation (oblivious transfer + garbled circuits, exhaustive over all 4-bit input pairs, plus GMW secret-sharing cross-checked to agree), and Wycheproof vectors.',
   },
 ]
 
