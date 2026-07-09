@@ -94,10 +94,18 @@ vectors / pure frequencies, and lets you manipulate them.
   modulation with a **cyclic prefix**, a complex multipath channel + its FFT frequency response,
   per-subcarrier **zero-forcing** demodulation/equalization (CP turns linear convolution circular →
   `Y[k]=H[k]X[k]`, inverted by one complex divide), PAPR, and a small library of channel presets.
+- `src/lib/adaptive.ts` — **the adaptive-filtering & Kalman engine (v13).** One allocation-light
+  transversal-filter runner with four update rules — **LMS**, **NLMS**, **APA** (affine projection,
+  order K, through a tiny pivoting `solveSmall`), and **RLS** (inverse-correlation matrix P by the
+  matrix-inversion lemma) — plus `makeScenario` wiring four applications from that one runner (system
+  identification, adaptive noise cancellation, ISI channel equalization, AR(2) linear prediction), an
+  ensemble `learningCurves` MSE averager, a direct `wienerSolution` least-squares oracle, and a
+  genuine 2-state constant-velocity **Kalman** tracker (`runKalman`: predict/update on a 2×2
+  covariance, ±2σ band, innovation, RMSE). No linear-algebra library.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
-- `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Spectrogram`, `Reassign`,
-  `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`, `Cepstrum`, `Modem`,
-  `About` (sixteen interactive modes).
+- `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Adaptive`, `Spectrogram`,
+  `Reassign`, `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`,
+  `Cepstrum`, `Modem`, `Coding`, `About` (seventeen interactive modes).
 
 ## Modes
 
@@ -129,8 +137,90 @@ vectors / pure frequencies, and lets you manipulate them.
    **union bound** built from the code's own **distance spectrum** (d_free re-derived from the
    trellis), with the whole curve sliding left. Tab 3 is a visceral **message demo** — the same text
    through the same noise, shredded uncoded vs. perfectly repaired coded.
+8. **Adaptive** — *the filters that learn.* Every other filter here is fixed (Design/Filter); an
+   **adaptive** filter starts blind and tunes its own taps from the data to minimise `e = d − y`.
+   The same transversal mechanism, with four update rules (**LMS / NLMS / APA / RLS**), solves four
+   classic problems just by rewiring what plays the input u and the desired d: **system
+   identification**, **adaptive noise cancellation**, **channel equalization**, and **linear
+   prediction**. An ensemble **learning-curve race** shows RLS converging in ~2L steps to the exact
+   least-squares (Wiener) solution while colour in the input cripples plain LMS. A fifth scenario is
+   a genuine 2-state **Kalman** tracker — the same predict/update recursion as RLS, applied to a
+   physical state, with its own shrinking ±2σ uncertainty band and a white innovation sequence.
 
 ## Ideas / backlog
+
+### v13 plan — the **Adaptive** mode (adaptive filters & the Kalman filter) — this session
+
+The whole lab, until now, built **fixed** filters: state a spec (Design) or pick coefficients
+(Filter) and the response is frozen. But the filters that run the modern world — echo cancellers,
+noise-cancelling headphones, channel equalizers, GPS/radar trackers, speech coders — all *learn*
+their coefficients from the data, live. That was the last great missing pillar. v13 adds a complete
+adaptive-filtering + Kalman mode whose every claim is provable in front of the user, like the rest
+of the lab: RLS must land on the exact least-squares (Wiener) solution; a coloured input must cripple
+LMS while leaving RLS untouched (the eigenvalue-spread story); the noise canceller must lift SNR; the
+equalizer must open the eye; the predictor must whiten; and the Kalman estimate must beat the raw
+measurements with a white innovation sequence. All hold — see self-tests 59–73 (all 105 green in the
+browser).
+
+Shipped this session:
+
+- [x] **The adaptive engine** (`adaptive.ts`) — one allocation-light transversal-filter runner with
+  four update rules: **LMS** (Widrow–Hoff stochastic gradient), **NLMS** (power-normalised),
+  **APA** (affine projection of order K — reuses the last K regressors, solved through a tiny
+  Gaussian-elimination `solveSmall`), and **RLS** (recursive least-squares carrying the inverse
+  correlation matrix P by the matrix-inversion lemma). All library-free.
+- [x] **Four scenarios from one runner** — `makeScenario` wires the input/desired pair for **system
+  identification** (probe an unknown decaying-exponential FIR plant), **adaptive noise cancellation**
+  (a tone under noise that reaches the mic through an unknown room path; a reference mic hears the raw
+  noise; the error output *is* the recovered signal), **channel equalization** (±1 BPSK through a
+  Proakis ISI channel, trained against a delayed clean copy), and **linear prediction** (a one-step
+  predictor whitening a sharp AR(2) resonance).
+- [x] **The ensemble learning curve** — `learningCurves` averages e²(n) over 14 independent
+  realisations per algorithm to draw the textbook MSE-vs-iteration curve, all four racing at once.
+- [x] **The Wiener oracle** — `wienerSolution` solves the normal equations R·w = p directly, so the
+  self-tests confirm RLS converges to the *right* answer (misalignment < −40 dB), not merely a stable one.
+- [x] **A real Kalman filter** (`runKalman`) — a 2-state constant-velocity tracker carrying the 2×2
+  covariance, predict/update, ±2σ band, innovation whiteness, and RMSE vs the raw measurements. The
+  pedagogical tie-in: RLS *is* a Kalman filter for a random-walk weight vector.
+- [x] **The Adaptive mode UI** (`Adaptive.tsx`) — scenario + algorithm selectors, scenario-specific
+  controls (input colour ρ, ISI channel, AR poles, measurement/process σ), a four-panel canvas grid
+  that adapts per scenario (signal comparison, the learning-curve race, tap-weights vs ground truth /
+  the equalized `channel ⊛ equalizer ≈ δ`, and a scenario extra — a BPSK strip that snaps from a
+  closed to an open eye, the whitened residual, or the Kalman uncertainty band), plus a live metrics
+  readout and deep-linkable URL state.
+- [x] **15 new self-tests** (59–73) — `solveSmall`/`convolve` correctness, LMS/NLMS/APA/RLS plant
+  identification, RLS == Wiener, RLS beats LMS, coloured input degrades LMS more than RLS, the learning
+  curve descends, ANC SNR gain > 15 dB, equalizer tail SER < 1% + combined-response ≈ δ, predictor
+  learns the AR taps and whitens, Kalman RMSE < measurement RMSE, and the covariance settles.
+- [x] Wired the mode into `App.tsx` (route + nav), ran the CI gate (scope + conformance + lint + build ✓)
+  and drove it headless in Chromium: 105/105 self-tests pass, all five scenarios render across all four
+  panels with zero console/runtime errors.
+
+Backlog — where the Adaptive pillar goes next:
+
+- [ ] **A lattice / gradient-adaptive-lattice (GAL) predictor** — the order-recursive form whose
+  reflection coefficients are the same PARCOR the Burg spectrum (Resolve) and LPC speech coder use;
+  show the whitening happen stage by stage.
+- [ ] **Recursive Least-Squares Lattice (RLSL)** — the O(L) exact-LS algorithm, and an A/B of its
+  convergence against full RLS to show you can have RLS speed at LMS cost.
+- [ ] **Frequency-domain / block LMS (FDAF)** — run the adaptation through the lab's own FFT with the
+  overlap-save partitioned convolution, the algorithm real echo cancellers actually ship.
+- [ ] **Sign-error / sign-data / sign-sign LMS** and the **leaky LMS** — the cheap fixed-point variants
+  and the stability/bias trade-offs they buy.
+- [ ] **Variable step-size LMS** and the **normalised-step derivation** drawn as a live misadjustment
+  curve, so the µ ↔ speed ↔ excess-MSE triangle is visible.
+- [ ] **A non-stationary tracking scenario** — a plant that drifts mid-run, to show forgetting-factor λ
+  and step size µ as *tracking* knobs, not just convergence knobs (the RLS/LMS tracking-vs-convergence
+  duality).
+- [ ] **Decision-directed equalization** — drop the training reference after acquisition and adapt on the
+  filter's own decisions; and a **blind CMA (constant-modulus)** equalizer that never needs a reference.
+- [ ] **Fractionally-spaced equalizer (T/2)** — the practical form that is insensitive to timing phase.
+- [ ] **An Extended / Unscented Kalman filter** on a non-linear track (bearings-only or a pendulum), plus
+  a **Kalman smoother** (RTS backward pass) A/B'd against the forward filter.
+- [ ] **A steady-state Wiener/Kalman gain** panel — solve the discrete algebraic Riccati equation and show
+  the covariance converge to it.
+- [ ] **Wire the mode to live audio** — cancel a hum from the mic tap in real time, or identify the room
+  impulse response between the speaker and mic.
 
 ### v12 plan — the **Coding** mode (forward error correction) — this session
 
@@ -664,6 +754,34 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
 
 ## Session log
 
+- 2026-07-09 (claude, v13): "The filters that learn — adaptive filtering & the Kalman filter." Added
+  the **eighteenth mode, Adaptive**, the last great missing pillar: until now every filter here was
+  *fixed*, but the filters that run the modern world tune their own taps from data, live. A new
+  from-scratch `lib/adaptive.ts` carries one allocation-light transversal-filter runner with four
+  update rules — **LMS** (Widrow–Hoff), **NLMS**, **APA** (affine projection order-K, solved through a
+  tiny pivoting Gaussian elimination), and **RLS** (inverse-correlation matrix P by the
+  matrix-inversion lemma) — and `makeScenario` wires four textbook applications from that *single*
+  runner just by rewiring the input u and desired d: **system identification** (learn an unknown FIR
+  plant), **adaptive noise cancellation** (recover a tone buried under noise reaching the mic through
+  an unknown room path, its *error* output being the cleaned signal), **channel equalization** (open a
+  closed BPSK eye through a Proakis ISI channel so `channel ⊛ equalizer ≈ δ`), and **linear
+  prediction** (whiten a sharp AR(2) resonance, learning its coefficients). Every claim is provable in
+  front of the user: an ensemble `learningCurves` averager draws the four algorithms racing, a direct
+  `wienerSolution` oracle confirms **RLS lands on the exact least-squares solution** (misalignment
+  < −40 dB), and turning up the input colour ρ visibly cripples LMS while RLS is untouched — the
+  eigenvalue-spread story. A fifth scenario is a genuine 2-state constant-velocity **Kalman** tracker
+  (`runKalman`) — the same predict/update recursion as RLS applied to physics — with a shrinking ±2σ
+  uncertainty band, a white innovation sequence, and RMSE that beats the raw measurements by ~3×.
+  `modes/Adaptive.tsx` renders it in a four-panel grid that adapts per scenario (signal comparison,
+  the learning-curve race, tap-weights vs ground truth / the equalized combined response, and a
+  scenario extra — the BPSK strip snapping from a closed to an open eye, the whitened residual, or the
+  Kalman band). Fifteen new self-tests (**90 → 105**): `solveSmall`/`convolve`, LMS/NLMS/APA/RLS plant
+  ID, RLS == Wiener, RLS beats LMS, coloured input hurts LMS more than RLS, the learning curve
+  descends, ANC SNR gain > 15 dB, equalizer SER < 1% + combined-response ≈ δ, predictor learns the AR
+  taps + whitens, and Kalman RMSE < measurement RMSE with a settled covariance. Ran the CI gate (scope
+  + conformance + lint + build ✓) and drove it headless in Chromium: 105/105 self-tests pass, all five
+  scenarios render across all four panels with zero console/runtime errors. Eighteen modes, still zero
+  math libraries.
 - 2026-07-06 (claude, v12): "How the bits survive — convolutional codes, Viterbi, and the coding
   gain." Added the **seventeenth mode, Coding**, a complete forward-error-correction pillar on top of
   the Modem's channel. New `lib/fec.ts` (~560 lines): a general rate-1/n **convolutional encoder**

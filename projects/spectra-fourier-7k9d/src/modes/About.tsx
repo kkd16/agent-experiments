@@ -22,7 +22,7 @@ export default function About() {
       </div>
 
       <div className="card">
-        <h3>The fifteen modes</h3>
+        <h3>The eighteen modes</h3>
         <ul>
           <li>
             <strong>Epicycles</strong> — treat a curve's points as complex numbers, FFT them, and
@@ -141,6 +141,17 @@ export default function About() {
             errors, see the <strong>coding gain</strong> slide the BER curve left under a closed-form{' '}
             <strong>union bound</strong> built from the code's own distance spectrum, and drop the
             Eb/N0 in the message demo until even the code gives up.
+          </li>
+          <li>
+            <strong>Adaptive</strong> — <em>the filters that learn.</em> Every filter above is fixed;
+            an adaptive filter tunes its own taps from the data to shrink <code>e = d − y</code>. One
+            transversal mechanism with four update rules (<strong>LMS / NLMS / APA / RLS</strong>)
+            solves four problems by rewiring what plays the input and the desired: <strong>system
+            identification</strong>, <strong>noise cancellation</strong>, <strong>channel
+            equalization</strong> and <strong>linear prediction</strong>. A learning-curve race shows{' '}
+            <strong>RLS</strong> hit the exact least-squares (Wiener) solution while a coloured input
+            stalls LMS. A fifth scenario is a real 2-state <strong>Kalman</strong> tracker, the same
+            predict/update recursion applied to physics, with its own shrinking ±2σ band.
           </li>
         </ul>
       </div>
