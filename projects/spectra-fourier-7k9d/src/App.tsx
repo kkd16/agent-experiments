@@ -4,6 +4,7 @@ import Spectrum from './modes/Spectrum'
 import Resolve from './modes/Resolve'
 import FilterMode from './modes/Filter'
 import DesignMode from './modes/Design'
+import Adaptive from './modes/Adaptive'
 import Live from './modes/Live'
 import Spectrogram from './modes/Spectrogram'
 import Reassign from './modes/Reassign'
@@ -24,6 +25,7 @@ const ROUTES = [
   { id: 'resolve', label: 'Resolve' },
   { id: 'filter', label: 'Filter' },
   { id: 'design', label: 'Design' },
+  { id: 'adaptive', label: 'Adaptive' },
   { id: 'spectrogram', label: 'Spectrogram' },
   { id: 'reassign', label: 'Reassign' },
   { id: 'live', label: 'Live' },
@@ -91,6 +93,7 @@ export default function App() {
       {active === 'resolve' && <Resolve />}
       {active === 'filter' && <FilterMode />}
       {active === 'design' && <DesignMode />}
+      {active === 'adaptive' && <Adaptive />}
       {active === 'spectrogram' && <Spectrogram />}
       {active === 'reassign' && <Reassign />}
       {active === 'live' && <Live />}

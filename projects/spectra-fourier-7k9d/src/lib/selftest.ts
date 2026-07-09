@@ -111,6 +111,19 @@ import {
   bitsToText,
   mulberry32 as fecRng,
 } from './fec'
+import {
+  runAdaptive,
+  makeScenario,
+  learningCurves,
+  wienerSolution,
+  misalignmentDb,
+  snrDbTail,
+  runKalman,
+  convolve as adConvolve,
+  solveSmall,
+  type AlgoConfig,
+  type ScenarioConfig,
+} from './adaptive'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1697,6 +1710,197 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const tr = buildTrellis(CONV_CODES[3])
     const r = simulateCoded(tr, { msgBits: 4000, ebn0Db: 3, punc: PUNCTURES[0], seed: 2024 })
     check('text↔bits round-trips; coded message far outlives uncoded at 3 dB', rt && r.softBer < r.uncodedBer)
+  }
+
+  // ---- Adaptive filters & Kalman (mode: Adaptive) ------------------------
+
+  // Shared helpers: a small dense solve and the convolution the scenarios use.
+  // 59. solveSmall recovers the solution of a known linear system.
+  {
+    // [[2,1],[1,3]]·z = [5,10] → z = [1,3].
+    const A = new Float64Array([2, 1, 1, 3])
+    const b = new Float64Array([5, 10])
+    const z = solveSmall(A, b, 2)
+    check('solveSmall: 2×2 Gaussian elimination is exact', approxEqual(z[0], 1, 1e-9) && approxEqual(z[1], 3, 1e-9))
+  }
+
+  // 60. convolve matches a hand-computed short convolution.
+  {
+    const c = adConvolve(new Float64Array([1, 2, 3]), new Float64Array([1, 1]))
+    // [1, 3, 5, 3]
+    check('convolve: full linear convolution is correct', c.length === 4 && c[0] === 1 && c[1] === 3 && c[2] === 5 && c[3] === 3)
+  }
+
+  const sysid: ScenarioConfig = {
+    scenario: 'sysid',
+    N: 3000,
+    plantLen: 8,
+    color: 0,
+    snrDb: 45,
+    freq: 0.02,
+    channel: 0,
+    arA1: 0.6,
+    arA2: -0.8,
+    delay: 8,
+  }
+  const baseAlgo: AlgoConfig = { algo: 'lms', L: 16, mu: 0.05, lambda: 1.0, delta: 0.01, apaOrder: 4, eps: 1e-3 }
+
+  // 61. LMS identifies an unknown FIR plant (white input) to good misalignment.
+  {
+    const sc = makeScenario(sysid, 12345)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'lms', mu: 0.05 })
+    const mis = misalignmentDb(run.w, sc.truth!)
+    check('LMS identifies the plant (misalignment < −20 dB)', mis < -20)
+  }
+
+  // 62. NLMS identifies the same plant, more robustly to step size.
+  {
+    const sc = makeScenario(sysid, 12345)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'nlms', mu: 0.5 })
+    check('NLMS identifies the plant (misalignment < −25 dB)', misalignmentDb(run.w, sc.truth!) < -25)
+  }
+
+  // 63. APA (affine projection, order 4) converges too.
+  {
+    const sc = makeScenario(sysid, 12345)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'apa', mu: 0.3, apaOrder: 4 })
+    check('APA identifies the plant (misalignment < −20 dB)', misalignmentDb(run.w, sc.truth!) < -20)
+  }
+
+  // 64. RLS converges to the exact least-squares (Wiener) solution: the adaptive
+  //     recursion and the batch normal-equation solve agree to high precision.
+  {
+    const sc = makeScenario(sysid, 12345)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', lambda: 1.0, delta: 0.01 })
+    const wStar = wienerSolution(sc.u, sc.d, 16)
+    check('RLS == Wiener/least-squares solution (misalignment < −40 dB)', misalignmentDb(run.w, wStar) < -40)
+  }
+
+  // 65. RLS is strictly more accurate than LMS on the same data (its exactness).
+  {
+    const sc = makeScenario(sysid, 777)
+    const lms = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'lms', mu: 0.05 })
+    const rls = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', lambda: 1.0 })
+    check('RLS beats LMS misalignment on identical data', misalignmentDb(rls.w, sc.truth!) < misalignmentDb(lms.w, sc.truth!))
+  }
+
+  // 66. Coloured input (eigenvalue spread) hurts LMS's steady-state MSE far more
+  //     than RLS — the classic reason to pay for RLS.
+  {
+    const white: ScenarioConfig = { ...sysid, color: 0 }
+    const colored: ScenarioConfig = { ...sysid, color: 0.85 }
+    const tailMse = (cfg: ScenarioConfig, a: AlgoConfig) => {
+      const sc = makeScenario(cfg, 2024)
+      const r = runAdaptive(sc.u, sc.d, a)
+      let s = 0
+      for (let n = 2500; n < 3000; n++) s += r.e[n] * r.e[n]
+      return s / 500
+    }
+    const lmsWhite = tailMse(white, { ...baseAlgo, algo: 'lms', mu: 0.05 })
+    const lmsColor = tailMse(colored, { ...baseAlgo, algo: 'lms', mu: 0.05 })
+    const rlsColor = tailMse(colored, { ...baseAlgo, algo: 'rls', lambda: 1.0 })
+    check('coloured input degrades LMS more than RLS (eigenvalue spread)', lmsColor > lmsWhite && lmsColor > rlsColor * 2)
+  }
+
+  // 67. The ensemble learning curve descends: the averaged MSE over the final
+  //     stretch is far below the initial transient (weights start at zero).
+  {
+    const { curvesDb } = learningCurves(sysid, [{ ...baseAlgo, algo: 'rls', lambda: 1.0 }], 12, 500)
+    const c = curvesDb[0]
+    const mean = (a: number, b: number) => {
+      let s = 0
+      for (let i = a; i < b; i++) s += c[i]
+      return s / (b - a)
+    }
+    check('RLS learning curve descends (end ≪ start)', mean(c.length - 200, c.length) < mean(0, 6) - 20)
+  }
+
+  // 68. Adaptive noise cancellation: a tone buried under correlated noise is
+  //     recovered — the RLS canceller lifts SNR by >15 dB.
+  {
+    const anc: ScenarioConfig = { ...sysid, scenario: 'anc', N: 4000, snrDb: 40, freq: 0.02 }
+    const sc = makeScenario(anc, 7)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', L: 12, lambda: 1.0 })
+    const snrIn = snrDbTail(sc.clean!, sc.d)
+    const snrOut = snrDbTail(sc.clean!, run.e) // recovered signal = error output
+    check('ANC lifts SNR by > 15 dB (RLS canceller)', snrOut - snrIn > 15)
+  }
+
+  // 69. Channel equalization: after training, tail symbol decisions are (nearly)
+  //     error-free on the mild Proakis-B channel at a good SNR.
+  {
+    const eq: ScenarioConfig = { ...sysid, scenario: 'equalize', N: 6000, channel: 0, snrDb: 25, delay: 8 }
+    const sc = makeScenario(eq, 99)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', L: 21, lambda: 0.999 })
+    let err = 0
+    let cnt = 0
+    for (let n = 5000; n < 6000; n++) {
+      const dec = run.y[n] >= 0 ? 1 : -1
+      if (n - 8 >= 0) {
+        if (dec !== sc.symbols![n - 8]) err++
+        cnt++
+      }
+    }
+    check('equalizer drives tail SER below 1% (Proakis-B, 25 dB)', err / cnt < 0.01)
+  }
+
+  // 70. …and the equalized combined response channel⊛equalizer approximates a
+  //     unit delay: one dominant tap near Δ, the rest suppressed (opened eye).
+  {
+    const eq: ScenarioConfig = { ...sysid, scenario: 'equalize', N: 6000, channel: 0, snrDb: 30, delay: 8 }
+    const sc = makeScenario(eq, 99)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', L: 21, lambda: 0.999 })
+    const comb = adConvolve(sc.channelTaps!, run.w)
+    let peak = 0
+    let peakIdx = 0
+    let energy = 0
+    for (let i = 0; i < comb.length; i++) {
+      energy += comb[i] * comb[i]
+      if (Math.abs(comb[i]) > peak) {
+        peak = Math.abs(comb[i])
+        peakIdx = i
+      }
+    }
+    // Dominant tap carries most of the energy → residual ISI is small.
+    check('equalized response ≈ a clean delay (dominant tap)', peak * peak > 0.8 * energy && Math.abs(peakIdx - 8) <= 2)
+  }
+
+  // 71. Linear prediction: a one-step predictor of a sharp AR(2) resonance learns
+  //     the AR coefficients and yields a large prediction (whitening) gain.
+  {
+    const pr: ScenarioConfig = { ...sysid, scenario: 'predict', N: 4000, arA1: 1.5, arA2: -0.95 }
+    const sc = makeScenario(pr, 3)
+    const run = runAdaptive(sc.u, sc.d, { ...baseAlgo, algo: 'rls', L: 8, lambda: 1.0 })
+    let varU = 0
+    let varE = 0
+    for (let n = 2000; n < 4000; n++) {
+      varU += sc.clean![n] * sc.clean![n]
+      varE += run.e[n] * run.e[n]
+    }
+    const gainDb = 10 * Math.log10(varU / varE)
+    const tapsOk = approxEqual(run.w[0], 1.5, 0.1) && approxEqual(run.w[1], -0.95, 0.1)
+    check('predictor learns AR(2) taps and whitens (gain > 8 dB)', gainDb > 8 && tapsOk)
+  }
+
+  // 72. Kalman filter: on a random-acceleration target the state estimate beats
+  //     the raw noisy measurements in position RMSE.
+  {
+    const run = runKalman(
+      { N: 500, dt: 0.1, sigmaA: 1.0, sigmaMeas: 1.5, trueSigmaA: 0.8, motion: 'randomwalk' },
+      42,
+    )
+    check('Kalman RMSE < measurement RMSE (random-walk target)', run.rmseKalman < run.rmseMeas)
+  }
+
+  // 73. Kalman covariance converges to a bounded steady state below the raw
+  //     measurement variance (the filter genuinely fuses past + present).
+  {
+    const run = runKalman(
+      { N: 400, dt: 0.1, sigmaA: 0.5, sigmaMeas: 1.5, trueSigmaA: 0.5, motion: 'sine' },
+      7,
+    )
+    const ss = run.posStd[run.posStd.length - 1]
+    check('Kalman position uncertainty settles below the measurement σ', ss > 0 && ss < 1.5)
   }
 
   return { passed, failed, messages }
