@@ -1336,7 +1336,121 @@ function bondLab(): WorkbookSnapshot {
   return wb.serialize()
 }
 
+function ratesDesk(): WorkbookSnapshot {
+  const wb = new Workbook()
+  const id = wb.activeSheetId
+  wb.renameSheet(id, 'Rates Desk')
+  const set = (a1: string, raw: string) => {
+    const ref = parseRef(a1)
+    if (ref) wb.setCell({ row: ref.row, col: ref.col }, raw, id)
+  }
+  const fmt = (a1: string, a2: string, patch: CellFormat) => {
+    const f = parseRef(a1)!
+    const t = parseRef(a2)!
+    wb.applyFormat({ top: f.row, left: f.col, bottom: t.row, right: t.col }, patch, id)
+  }
+  const muted = '#97a0b8'
+  const label = '#cdd3e6'
+
+  set('A1', 'Rates Desk — a yield curve bootstrapped from par rates, and a bond risked against it')
+  fmt('A1', 'A1', { bold: true })
+  set('A2', 'ZEROCURVE turns the par grid into discount factors & zero rates; CONVEXITY/DV01 measure the bond off its own yield; KEYRATEDUR spreads the curve risk across the tenors — and the ladder sums back to CURVEDURATION.')
+  fmt('A2', 'A2', { color: muted })
+
+  // ---- Par-rate inputs ----
+  set('A4', 'Par curve (input)'); fmt('A4', 'A4', { bold: true })
+  set('A5', 'Tenor (yr)'); set('B5', 'Par rate'); fmt('A5', 'B5', { bold: true, align: 'center' })
+  const tenors = ['1', '2', '3', '4', '5', '6']
+  const pars = ['0.030', '0.032', '0.034', '0.035', '0.036', '0.037']
+  for (let i = 0; i < tenors.length; i++) {
+    set(`A${6 + i}`, tenors[i])
+    set(`B${6 + i}`, pars[i])
+  }
+  fmt('A6', 'A11', { align: 'center' })
+  fmt('B6', 'B11', { nf: 'percent', decimals: 2 })
+
+  // ---- Bootstrapped curve (ZEROCURVE spill) ----
+  set('D4', 'Bootstrapped curve'); fmt('D4', 'D4', { bold: true })
+  set('D5', 'Tenor'); set('E5', 'Zero rate'); set('F5', 'Discount'); fmt('D5', 'F5', { bold: true, align: 'center' })
+  set('D6', '=ZEROCURVE(A6:A11,B6:B11)')
+  fmt('D6', 'D11', { align: 'center' })
+  fmt('E6', 'E11', { nf: 'percent', decimals: 3 })
+  fmt('F6', 'F11', { nf: 'plain', decimals: 6 })
+  set('D12', 'Every par bond reprices to exactly 100 off these factors — that is what "bootstrapped" means.')
+  fmt('D12', 'D12', { color: muted })
+
+  wb.addChart(
+    { type: 'line', range: { top: 4, left: 3, bottom: 10, right: 4 }, title: 'Zero (spot) curve', x: 470, y: 40, w: 420, h: 220, headers: true, labels: true },
+    id,
+  )
+
+  // ---- Bond risk (flat-yield analytics) ----
+  set('A14', 'Bond risk (6y 4% annual)'); fmt('A14', 'A14', { bold: true })
+  set('A15', 'Settlement'); set('B15', '=DATE(2025,1,15)')
+  set('A16', 'Maturity'); set('B16', '=DATE(2031,1,15)')
+  set('A17', 'Coupon'); set('B17', '0.04')
+  set('A18', 'Market yield'); set('B18', '0.045')
+  set('A19', 'Payments / year'); set('B19', '1')
+  set('A20', 'Day-count basis'); set('B20', '0')
+  fmt('A15', 'A20', { color: label })
+  fmt('B15', 'B16', { nf: 'date' })
+  fmt('B17', 'B18', { nf: 'percent', decimals: 2 })
+
+  set('D14', 'Analytics'); fmt('D14', 'D14', { bold: true })
+  set('D15', 'Modified duration'); set('E15', '=MDURATION(B15,B16,B17,B18,B19,B20)')
+  set('D16', 'Convexity'); set('E16', '=CONVEXITY(B15,B16,B17,B18,100,B19,B20)')
+  set('D17', 'DV01 (per +1bp)'); set('E17', '=DV01(B15,B16,B17,B18,100,B19,B20)')
+  set('D18', 'Eff. duration (bump)'); set('E18', '=EFFDURATION(B15,B16,B17,B18,100,B19,B20)')
+  set('D19', 'Eff. convexity (bump)'); set('E19', '=EFFCONVEXITY(B15,B16,B17,B18,100,B19,B20)')
+  fmt('D15', 'D19', { color: label })
+  fmt('E15', 'E15', { nf: 'plain', decimals: 4 })
+  fmt('E16', 'E16', { nf: 'plain', decimals: 2 })
+  fmt('E17', 'E17', { nf: 'plain', decimals: 6 })
+  fmt('E18', 'E19', { nf: 'plain', decimals: 4 })
+  set('D20', 'The analytic and bump-and-reprice measures agree — one differentiates the price the other perturbs.')
+  fmt('D20', 'D20', { color: muted })
+
+  // ---- Key-rate duration ladder against the curve ----
+  set('A22', 'Key-rate duration ladder (same bond, on the curve)'); fmt('A22', 'A22', { bold: true })
+  set('A23', 'Tenor'); set('B23', 'KRD'); fmt('A23', 'B23', { bold: true, align: 'center' })
+  set('A24', '=KEYRATEDUR(B15,B16,B17,100,B19,B20,A6:A11,B6:B11)')
+  fmt('A24', 'A29', { align: 'center' })
+  fmt('B24', 'B29', { nf: 'plain', decimals: 4 })
+
+  set('D22', 'Curve risk'); fmt('D22', 'D22', { bold: true })
+  set('D23', 'Price on curve'); set('E23', '=PRICECURVE(B15,B16,B17,100,B19,B20,A6:A11,B6:B11)')
+  set('D24', 'Curve duration'); set('E24', '=CURVEDURATION(B15,B16,B17,100,B19,B20,A6:A11,B6:B11)')
+  set('D25', 'Σ ladder'); set('E25', '=SUM(B24:B29)')
+  set('D26', 'Ladder = curve duration?'); set('E26', '=IF(ABS(E24-E25)<0.000001,"✓ yes","no")')
+  set('D27', '2y→5y forward rate'); set('E27', '=FWDRATE(A6:A11,B6:B11,2,5)')
+  fmt('D23', 'D27', { color: label })
+  fmt('E23', 'E23', { nf: 'currency', decimals: 4 })
+  fmt('E24', 'E25', { nf: 'plain', decimals: 4 })
+  fmt('E27', 'E27', { nf: 'percent', decimals: 3 })
+  set('D28', 'The ladder decomposes the parallel-shift risk into a per-tenor profile; summed, it returns the whole-curve duration.')
+  fmt('D28', 'D28', { color: muted })
+
+  // ---- Z-spread: a market quote below the curve implies a spread over it ----
+  set('D30', 'Z-spread (a quote 1½ pts cheap)'); fmt('D30', 'D30', { bold: true })
+  set('D31', 'Market quote'); set('E31', '=E23-1.5')
+  set('D32', 'Z-spread (bp)'); set('E32', '=ZSPREAD(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,E31)*10000')
+  set('D33', 'Reprice at that spread'); set('E33', '=PRICEZ(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,ZSPREAD(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,E31))')
+  set('D34', 'Round-trips to the quote?'); set('E34', '=IF(ABS(E33-E31)<0.00000001,"✓ yes","no")')
+  fmt('D31', 'D34', { color: label })
+  fmt('E31', 'E31', { nf: 'currency', decimals: 4 })
+  fmt('E32', 'E32', { nf: 'plain', decimals: 1 })
+  fmt('E33', 'E33', { nf: 'currency', decimals: 4 })
+
+  wb.addChart(
+    { type: 'column', range: { top: 22, left: 0, bottom: 28, right: 1 }, title: 'Where the rate risk lives (key-rate durations)', x: 470, y: 300, w: 420, h: 230, headers: true, labels: true },
+    id,
+  )
+
+  return wb.serialize()
+}
+
 export const DEMOS: Demo[] = [
+  { id: 'rates', name: 'Rates Desk', blurb: 'Bootstrap a zero curve from par rates (ZEROCURVE), risk a bond with CONVEXITY/DV01 and their bump-and-reprice twins, then spread the curve risk across tenors with a KEYRATEDUR ladder that sums back to CURVEDURATION', snapshot: ratesDesk },
   { id: 'bond', name: 'Bond Lab', blurb: 'A coupon bond priced from its yield (PRICE/YIELD/DURATION with COUP* day counts), a spilled cash-flow schedule that closes to the dirty price, and a T-bill/discount-note money-market sheet', snapshot: bondLab },
   { id: 'finance', name: 'Finance Lab', blurb: 'A loan amortized to the penny (PMT/IPMT/PPMT/CUMPRINC), a DCF project valued by NPV/IRR/XIRR/MIRR, and one asset depreciated four ways — with charts', snapshot: financeLab },
   { id: 'inference', name: 'Inference Lab', blurb: 'Two-sample/paired T.TEST, F.TEST & a χ² test; a symmetric eigen/SVD spectral block with MPINV least squares; and a 95% prediction interval + OLS trendline', snapshot: inferenceLab },

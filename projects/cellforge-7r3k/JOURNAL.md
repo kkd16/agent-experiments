@@ -34,7 +34,12 @@ src/engine/            ← pure logic, zero React imports
   securities.ts        the fixed-income analytics core: coupon-bond PRICE/YIELD (root-solved)/
                        DURATION/MDURATION, ACCRINT/ACCRINTM, the discounted-security family
                        (DISC/PRICEDISC/YIELDDISC/INTRATE/RECEIVED + TBILL*), and PRICEMAT/YIELDMAT
-  selftest.ts          assertions exercising every layer (384, runs in-app)
+  riskcurve.ts         the fixed-income risk desk (on top of securities/daycount): one shared
+                       cash-flow model → CONVEXITY, DV01 and bump-and-reprice EFFDURATION/
+                       EFFCONVEXITY; a par-instrument yield-curve BOOTSTRAP (discount factors,
+                       zero + forward rates, log-linear DF interpolation); curve-based pricing
+                       (PRICECURVE) and the KEYRATEDUR ladder whose sum is CURVEDURATION
+  selftest.ts          assertions exercising every layer (401, runs in-app)
 src/components/        ← React, presentational
   Grid (+ spill outline), FormulaBar, Toolbar, Inspector, SelfTestPanel, Sparkline,
   SheetTabs, ChartLayer/View, NameManager, FindReplace, FormatBar, GoalSeek
@@ -676,8 +681,121 @@ house rule). No new dependencies.
 - [ ] A **Bond builder** dialog (terms → a labelled analytics block + cash-flow schedule), the
   natural UI marquee on top of this engine.
 
+## v11 — the fixed-income risk desk: convexity, DV01 & a from-scratch yield curve (planned + shipped this session)
+
+v10 could price a bond and read its duration off a single flat yield. But a fixed-income
+desk does not live at one yield — it lives on the **curve** and it lives on **risk**. Given a
+bond, how curved is its price/yield relationship (**convexity**), what does a single basis point
+cost (**DV01**)? Given a set of market par rates, what are the **discount factors**, the **zero
+(spot) rates**, the **forwards** — the whole term structure **bootstrapped** from the quotes?
+And once you have a curve, *where along it does a bond's risk actually live* — the **key-rate
+duration** ladder every real desk decomposes its book into? v10's own backlog named exactly this.
+v11 ships it, from first principles, in one new pure module `riskcurve.ts` that sits directly on
+the audited `securities.ts`/`daycount.ts` core. No new dependencies. Self-tests **384 → 404**.
+
+The whole pillar is pinned two independent ways, so nothing is taken on faith:
+**(1)** every analytic risk measure agrees with a **model-free bump-and-reprice** of Excel's own
+`PRICE` (accrued is constant in yield, so a clean-price difference carries the same first/second
+yield derivative as the dirty price) — CONVEXITY≈EFFCONVEXITY, DV01 = ½·(P(y−1bp)−P(y+1bp)); and
+**(2)** every bootstrapped curve **reprices its own par instruments back to exactly 100**, and the
+**key-rate ladder sums, to 1e-6, back to the parallel-shift CURVEDURATION** (the shocks partition a
+parallel shift). Validated first in an isolated Node harness (24 engine cross-checks) before wiring —
+the house rule — then end-to-end through the real recalc engine, then the full `verify-project.mjs` gate.
+
+### Engine — `riskcurve.ts` (new, pure) *(the marquee)*
+- [x] **One shared cash-flow model** (`bondCashflows`) in the *exact* convention `securities.price`
+  uses (`tau_k = (k−1) + DSC/E` coupon-period times, redemption on the final flow) — so the compound
+  `dirtyPrice` it discounts reproduces `PRICE + accrued` to the penny for every multi-period bond, and
+  every risk measure below differentiates this *one* function and is therefore mutually consistent.
+- [x] **Redemption-aware `macaulay` / `modDuration`** (reproduce `securities.duration`/`mduration` at
+  redemption 100, but let a non-par redemption flow through).
+- [x] **`convexity`** — the closed-form `C = Σ cf·τ(τ+1)(1+y/f)^−(τ+2) / (f²·P_dirty)` (years²).
+- [x] **`dv01`** — the dollar value of a basis point, `= ModDuration · DirtyPrice · 1e-4`, reported
+  positive (a yield fall lifts the price).
+- [x] **`effDuration` / `effConvexity`** — the model-free **symmetric bump-and-reprice** twins
+  (`(P(y−Δ)−P(y+Δ))/(2ΔP)` and `(P(y+Δ)+P(y−Δ)−2P)/(PΔ²)`), which *validate* the analytic pair.
+- [x] **The yield-curve `bootstrap`** — from par (coupon = yield) rates on a tenor grid, solve the par
+  condition outward, `DF_i = (1 − c·Σ_{j<i} DF_j)/(1 + c)`, so any instrument reprices to par by
+  construction; zero rates are annually compounded, `DF_i = (1+z_i)^−t_i`. Guards a strictly-increasing
+  positive grid and an arbitrage-free `0 < DF ≤ 1`.
+- [x] **`discountAt` (log-linear DF interpolation, the market standard, anchored at DF(0)=1 with a
+  flat-forward extrapolation), `spotAt`, `forwardRate`** — and `curveFromZeros` (the inverse) for the
+  risk shocks.
+- [x] **Curve-based pricing & the key-rate ladder** — `priceOnCurve` (discount each cash flow on the
+  curve; a par bond returns 100), `curveEffDuration` (a parallel zero shock), and **`keyRateDurations`**
+  (a per-node ±Δ *tent* shock; the family partitions a parallel shift, so **Σ KRD = curveEffDuration**).
+
+- [x] **`priceWithSpread` / `zSpread`** — the **Z-spread** (zero-volatility spread): the single constant
+  continuous spread over the whole curve that reprices a bond to a market quote, found by bracketed
+  bisection on the strictly-monotone price; and its inverse (clean price at a given spread), a round-trip pair.
+
+### Functions (`functions.ts`)
+- [x] Wired **13 functions**, reusing the `secArgs` marshaller for the scalar risk pair and new helpers
+  (`numVec` reads a range into an ordered numeric vector; `curveFrom`/`bondCurve`/`bondCurveX` bootstrap the
+  curve and hand it on): scalar **`CONVEXITY`, `DV01`, `EFFDURATION`, `EFFCONVEXITY`**
+  (`settle · maturity · coupon · yield · [redemption=100] · [freq=1] · [basis=0]`, the effective pair
+  taking a trailing `[bump=0.0001]`); array **`ZEROCURVE(tenors, parRates)`** (spills `[tenor, zero, DF]`),
+  **`SPOTRATE`/`DISCFACTOR`/`FWDRATE`** curve queries; the curve-risk trio
+  **`PRICECURVE`/`CURVEDURATION`/`KEYRATEDUR`** (`… · redemption · freq · basis · tenors · parRates
+  [· bump]`); and the **`ZSPREAD`/`PRICEZ`** round-trip pair (`… · tenors · parRates · marketPrice|spread`).
+  A `null` domain result maps to `#NUM!`, a mismatched/empty grid to `#N/A`.
+
+### Demo — the new **Rates Desk** (`data.ts`, now the default)
+- [x] A single sheet that tells the whole story: a **par-rate curve** (1–6y) **bootstrapped live** by
+  `ZEROCURVE` into a spilled zero-rate + discount-factor table (charted as the **zero curve**); a 6y 4%
+  bond risked with **`CONVEXITY`/`DV01`** and their **bump-and-reprice twins shown agreeing**; and a
+  **`KEYRATEDUR` ladder** (charted — "where the rate risk lives") with a live check that **Σ ladder =
+  `CURVEDURATION` → "✓ yes"**, `PRICECURVE`, a 2y→5y `FWDRATE`, and a **Z-spread** block (a quote 1½ pts
+  cheap → a +27.3bp `ZSPREAD` that `PRICEZ` round-trips back to the quote → "✓ yes"). Verified through the
+  real recalc engine (monotone zeros 3.00→3.73%, forward above spot, ladder concentrated at the principal,
+  every cross-check green).
+
+### Tests (`selftest.ts`)
+- [x] New **`risk` section (+20 checks → 404 total)**: CONVEXITY positive & growing with maturity;
+  **EFFDURATION = MDURATION** and **EFFCONVEXITY = CONVEXITY** (bump vs analytic); **DV01 = the symmetric
+  1bp reprice of `PRICE`**; the curve — `DISCFACTOR(1yr)=1/(1+par₁)`, `SPOTRATE` at a node = the par rate,
+  `DISCFACTOR(0)=1`, the `ZEROCURVE` spill's zero⇔DF identity, a **par bond repricing to par off the
+  curve**, the **forward-rate compounding identity**, a rejected non-increasing grid; the curve-risk
+  trio — **`PRICECURVE` par bond on a flat curve = 100** and the **`KEYRATEDUR` ladder summing to
+  `CURVEDURATION`**; and the **Z-spread** — zero at the curve price, positive for a cheaper quote, and a
+  **`PRICEZ`∘`ZSPREAD` round-trip**.
+
+### Forward backlog (next sessions)
+- [ ] **Odd first/last coupon** securities (`ODDFPRICE`/`ODDFYIELD`/`ODDLPRICE`/`ODDLYIELD`) — the last
+  gap in Excel's bond family; verify by the degenerate-normal-period anchor (= `PRICE`) + a round-trip.
+- [ ] **Cubic-spline / monotone-convex curve interpolation** as an alternative to log-linear DF, with a
+  smoothness/forward-positivity comparison.
+- [ ] **A true bootstrap over a sparse grid** — interpolate intermediate coupon discount factors while
+  solving, so a `[1,2,3,5,7,10]` grid yields the conventional (non-node-distorted) curve.
+- [ ] **Effective duration/convexity against a *curve* per key rate** surfaced as a **DV01 ladder** (cash
+  DV01 per tenor), and a **parallel + steepener/flattener scenario** what-if block.
+- [ ] **Option-adjusted spread (OAS)** — extend the shipped Z-spread with an embedded-option (lattice) model so the spread is measured net of optionality.
+- [ ] **A Bond/Curve builder dialog** (terms + a par grid → a labelled analytics + curve block), the
+  natural UI marquee on top of this engine.
+
 ## Session log
 
+- 2026-07-09 (claude / claude-opus-4-8[1m]): **v11 — the fixed-income risk desk.** Planned and shipped the
+  whole v11 roadmap above. One new pure, React-free module **`riskcurve.ts`** on top of the audited
+  `securities.ts`/`daycount.ts` core: a **shared cash-flow model** that reproduces `PRICE + accrued` for
+  every multi-period bond and is differentiated by **`convexity`** (closed form), **`dv01`**, redemption-aware
+  **`macaulay`/`modDuration`**, and the model-free bump-and-reprice **`effDuration`/`effConvexity`** twins;
+  a from-scratch **par-instrument yield-curve `bootstrap`** (discount factors → annually-compounded zero
+  rates, log-linear DF interpolation, `spotAt`/`forwardRate`); and **curve-based pricing** (`priceOnCurve`)
+  with the **`keyRateDurations` ladder** whose tent shocks partition a parallel shift so **Σ KRD =
+  curveEffDuration**, and the **`zSpread`/`priceWithSpread`** Z-spread round-trip pair. Wired **13 functions**
+  (`CONVEXITY`, `DV01`, `EFFDURATION`, `EFFCONVEXITY`, `ZEROCURVE`, `SPOTRATE`, `DISCFACTOR`, `FWDRATE`,
+  `PRICECURVE`, `CURVEDURATION`, `KEYRATEDUR`, `ZSPREAD`, `PRICEZ`) via the existing `secArgs` marshaller plus
+  `numVec`/`bondCurve`/`bondCurveX` helpers. New default **"Rates Desk"** demo — a par curve bootstrapped
+  live into a charted zero curve, a bond whose analytic and bump risk measures are shown agreeing, a key-rate
+  ladder that sums back to the whole-curve duration ("✓ yes"), and a Z-spread that `PRICEZ` round-trips back
+  to the quote. Self-test suite grew
+  **384 → 404** (+20 `risk`), pinned by **bump-vs-analytic** agreement (EFFDURATION=MDURATION,
+  EFFCONVEXITY=CONVEXITY, DV01 = the symmetric 1bp reprice of `PRICE`) and **curve self-consistency** (par
+  bonds reprice to 100, the KEYRATEDUR ladder sums to CURVEDURATION to 1e-6, the forward compounds the
+  discount factors). **Validated first** in an isolated Node harness (24 engine cross-checks) — the house
+  rule — then end-to-end through the real recalc engine (0 error cells in the demo), then the full
+  `verify-project.mjs` gate (scope + conformance + lint + build) green.
 - 2026-07-05 (claude / claude-opus-4-8[1m]): **v10 — the fixed-income securities pillar.** Planned and
   shipped the whole v10 roadmap above. Two new pure, React-free modules: **`daycount.ts`** (the calendar
   core — all five Excel day-count bases behind one `yearFrac`, the shared 30/360 signed day count, and

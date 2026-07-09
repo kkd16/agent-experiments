@@ -493,6 +493,54 @@ export function runSelfTests(): TestResult[] {
   nearS('PRICEMAT (Excel 99.98449)', 'PRICEMAT(DATE(2008,2,15),DATE(2008,4,13),DATE(2007,11,11),0.061,0.061,0)', 99.98449, 1e-4)
   eq('securities', 'PRICEMAT∘YIELDMAT round-trips', ev('ABS(YIELDMAT(DATE(2020,1,1),DATE(2021,1,1),DATE(2019,7,1),0.05,PRICEMAT(DATE(2020,1,1),DATE(2021,1,1),DATE(2019,7,1),0.05,0.06,0),0)-0.06)<0.0000001'), 'TRUE')
 
+  // --- risk & yield curve (v11): the fixed-income risk desk ---
+  // Two proof strategies: the analytic risk measures agree with a model-free
+  // bump-and-reprice of Excel's own PRICE (accrued is constant in yield, so a
+  // clean-price difference has the same first/second yield derivative as the dirty
+  // price), and every bootstrapped curve reprices its par instruments back to par.
+  const bnd = 'DATE(2010,1,1),DATE(2030,1,1),0.05,0.06' // settle,maturity,coupon,yield
+  eq('risk', 'CONVEXITY is positive', ev(`CONVEXITY(${bnd},100,2,0)>0`), 'TRUE')
+  eq('risk', 'EFFDURATION = MDURATION (bump vs analytic)', ev(`ABS(EFFDURATION(${bnd},100,2,0)-MDURATION(DATE(2010,1,1),DATE(2030,1,1),0.05,0.06,2,0))<0.001`), 'TRUE')
+  eq('risk', 'EFFCONVEXITY = CONVEXITY (bump vs analytic)', ev(`ABS(EFFCONVEXITY(${bnd},100,2,0)-CONVEXITY(${bnd},100,2,0))<0.01`), 'TRUE')
+  // DV01 = the price gained per 1bp yield fall = ½·(P(y−1bp) − P(y+1bp)) off Excel PRICE.
+  eq(
+    'risk',
+    'DV01 = symmetric 1bp reprice of PRICE',
+    ev(
+      `ABS(DV01(${bnd},100,2,0)-(PRICE(DATE(2010,1,1),DATE(2030,1,1),0.05,0.0599,100,2,0)-` +
+        `PRICE(DATE(2010,1,1),DATE(2030,1,1),0.05,0.0601,100,2,0))/2)<0.0000001`,
+    ),
+    'TRUE',
+  )
+  eq('risk', 'CONVEXITY grows with maturity', ev(`CONVEXITY(DATE(2010,1,1),DATE(2040,1,1),0.05,0.06,100,2,0)>CONVEXITY(${bnd},100,2,0)`), 'TRUE')
+  // Yield curve — seed a par grid in A1:A4 (tenors) and B1:B4 (par rates).
+  const curve = { A1: '1', A2: '2', A3: '3', A4: '5', B1: '0.02', B2: '0.025', B3: '0.028', B4: '0.032' }
+  eq('risk', 'DISCFACTOR(1yr) = 1/(1+par₁)', ev('ABS(DISCFACTOR(A1:A4,B1:B4,1)-1/1.02)<1e-9', curve), 'TRUE')
+  eq('risk', 'SPOTRATE at a node returns the par rate', ev('ABS(SPOTRATE(A1:A4,B1:B4,1)-0.02)<1e-9', curve), 'TRUE')
+  eq('risk', 'DISCFACTOR(0) = 1', ev('DISCFACTOR(A1:A4,B1:B4,0)', curve), '1')
+  eq('risk', 'ZEROCURVE spills the tenor grid', ev('INDEX(ZEROCURVE(A1:A4,B1:B4),4,1)', curve), '5')
+  eq('risk', 'ZEROCURVE zero rate ⇔ its discount factor', ev('ABS(INDEX(ZEROCURVE(A1:A4,B1:B4),4,3)-1/(1+INDEX(ZEROCURVE(A1:A4,B1:B4),4,2))^5)<1e-12', curve), 'TRUE')
+  // The 2yr par bond (coupon = par₂ at t=1,2 + principal at t=2) reprices to exactly par.
+  eq('risk', 'par bond reprices to par off the curve', ev('ABS(B2*(INDEX(ZEROCURVE(A1:A4,B1:B4),1,3)+INDEX(ZEROCURVE(A1:A4,B1:B4),2,3))+INDEX(ZEROCURVE(A1:A4,B1:B4),2,3)-1)<1e-12', curve), 'TRUE')
+  // Forward-rate identity: DF(2)·(1+f₂,₅)^−3 = DF(5).
+  eq('risk', 'forward rate compounds the discount factors', ev('ABS(DISCFACTOR(A1:A4,B1:B4,2)/(1+FWDRATE(A1:A4,B1:B4,2,5))^3-DISCFACTOR(A1:A4,B1:B4,5))<1e-12', curve), 'TRUE')
+  eq('risk', 'non-increasing tenors are rejected', ev('SPOTRATE(A1:A2,B1:B2,1)', { A1: '2', A2: '1', B1: '0.02', B2: '0.03' }), '#NUM!')
+  // Curve-based pricing & the key-rate risk ladder. A par bond priced on a flat par
+  // curve returns exactly 100; the key-rate durations decompose the parallel-shift
+  // duration, so their sum equals CURVEDURATION.
+  const flat = { A1: '1', A2: '2', A3: '3', A4: '4', A5: '5', B1: '0.03', B2: '0.03', B3: '0.03', B4: '0.03', B5: '0.03' }
+  eq('risk', 'PRICECURVE: par bond on a flat curve = 100', ev('ABS(PRICECURVE(DATE(2010,1,1),DATE(2015,1,1),0.03,100,1,0,A1:A5,B1:B5)-100)<1e-9', flat), 'TRUE')
+  const krdGrid = { A1: '1', A2: '2', A3: '3', A4: '4', A5: '5', B1: '0.02', B2: '0.025', B3: '0.028', B4: '0.03', B5: '0.032', D1: '=KEYRATEDUR(DATE(2010,1,1),DATE(2015,1,1),0.04,100,1,0,A1:A5,B1:B5)' }
+  eq('risk', 'KEYRATEDUR ladder sums to CURVEDURATION', ev('ABS(SUM(E1:E5)-CURVEDURATION(DATE(2010,1,1),DATE(2015,1,1),0.04,100,1,0,A1:A5,B1:B5))<0.000001', krdGrid), 'TRUE')
+  eq('risk', 'KEYRATEDUR ladder is all positive', ev('MIN(E1:E5)>0', krdGrid), 'TRUE')
+  eq('risk', 'KEYRATEDUR spills the tenor grid', ev('D5', krdGrid), '5')
+  // Z-spread: zero at the curve price, and PRICEZ inverts it (round-trip to a discounted quote).
+  const zc = { A1: '1', A2: '2', A3: '3', A4: '4', A5: '5', A6: '6', B1: '0.03', B2: '0.032', B3: '0.034', B4: '0.035', B5: '0.036', B6: '0.037' }
+  const zbond = 'DATE(2025,1,15),DATE(2031,1,15),0.04,100,1,0'
+  eq('risk', 'ZSPREAD at the curve price is ~0', ev(`ABS(ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)))<0.00000001`, zc), 'TRUE')
+  eq('risk', 'PRICEZ∘ZSPREAD round-trips a discounted quote', ev(`ABS(PRICEZ(${zbond},A1:A6,B1:B6,ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)-2))-(PRICECURVE(${zbond},A1:A6,B1:B6)-2))<0.00000001`, zc), 'TRUE')
+  eq('risk', 'a cheaper quote implies a positive Z-spread', ev(`ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)-2)>0`, zc), 'TRUE')
+
   // --- the Solver (v5: constrained multi-cell optimization) ---
   r.push(solverTests())
   // --- structured table references (v5) ---
