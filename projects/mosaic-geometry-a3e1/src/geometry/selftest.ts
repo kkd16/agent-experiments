@@ -127,6 +127,10 @@ import {
   type SILine,
   type HalfPlane,
 } from './arrangement'
+import { triangulatePolygon } from './triangulate'
+import { threeColorTriangulation } from './artgallery'
+import { geodesicPath } from './funnel'
+import { visibilityPolygon, pointInRegion, segmentVisible } from './visibility'
 import type { Vec3 } from './vector3'
 import { v3, dist3sq } from './vector3'
 import { orient3d, inSphere, circumsphere } from './predicates3'
@@ -1883,6 +1887,211 @@ function canonicalHull(hull: number[]): number[] {
     check(`delaunay3: no site inside any tetra's circumsphere (${cases} cases)`, worstInside <= 1e-9, `(worst ${worstInside.toExponential(2)})`)
     check('delaunay3: tetrahedra fill the convex hull (volume)', worstVol < 5e-3, `(worst ${worstVol.toExponential(2)})`)
     check('delaunay3: every cloud tetrahedralized', emptyTet === 0)
+  }
+}
+
+// ── Visibility axis: triangulation, art gallery, visibility, geodesics ──────
+console.log('\n— Visibility: monotone triangulation, guards, visibility polygon, funnel —')
+{
+  type P = Point
+  // Guaranteed-simple polygon: evenly spaced angles (max gap < π) + random radii.
+  function simplePoly(rng: () => number): P[] {
+    const n = 5 + Math.floor(rng() * 14)
+    const pts: P[] = []
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + (rng() - 0.5) * (Math.PI / n)
+      const r = 0.16 + rng() * 0.3
+      pts.push({ x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r })
+    }
+    return pts
+  }
+  const centroidOf = (V: P[]): P => {
+    let x = 0
+    let y = 0
+    for (const p of V) {
+      x += p.x
+      y += p.y
+    }
+    return { x: x / V.length, y: y / V.length }
+  }
+  const distToBoundary = (p: P, V: P[]): number => {
+    let m = Infinity
+    for (let i = 0; i < V.length; i++) {
+      const a = V[i]
+      const b = V[(i + 1) % V.length]
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const L = dx * dx + dy * dy || 1
+      let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L
+      t = Math.max(0, Math.min(1, t))
+      m = Math.min(m, Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t)))
+    }
+    return m
+  }
+
+  let cases = 0
+  // Triangulation invariants.
+  let triCountBad = 0
+  let worstTileErr = 0
+  let triCcwBad = 0
+  let triOutside = 0
+  // Art gallery.
+  let colorBad = 0
+  let guardOverBound = 0
+  let coverageBad = 0
+  // Visibility.
+  let visContainBad = 0
+  let visStarBad = 0
+  let visDisagree = 0
+  let visSamples = 0
+  // Geodesic.
+  let geoFail = 0
+  let geoLowerBound = 0
+  let geoOutside = 0
+  let convexCases = 0
+  let convexNotStraight = 0
+
+  for (let seed = 1; seed <= 400; seed++) {
+    const rng = mulberry32(seed * 2654435761 + 7)
+    const poly = simplePoly(rng)
+    if (area(poly) < 0.01) continue
+    cases++
+    const tri = triangulatePolygon(poly)
+    const V = tri.vertices
+    const n = V.length
+
+    // — triangulation —
+    if (tri.triangles.length !== n - 2) triCountBad++
+    let tileA = 0
+    for (const t of tri.triangles) {
+      const o = orient(V[t.a], V[t.b], V[t.c])
+      tileA += Math.abs(o) / 2
+      if (o <= 0) triCcwBad++
+      const c = { x: (V[t.a].x + V[t.b].x + V[t.c].x) / 3, y: (V[t.a].y + V[t.b].y + V[t.c].y) / 3 }
+      if (!pointInRegion(c, [V])) triOutside++
+    }
+    const tileErr = Math.abs(tileA - area(poly)) / area(poly)
+    if (tileErr > worstTileErr) worstTileErr = tileErr
+
+    // — art gallery —
+    const col = threeColorTriangulation(tri.triangles, n)
+    if (!col.valid) colorBad++
+    if (col.guards.length > Math.floor(n / 3)) guardOverBound++
+    const guardSet = new Set(col.guards)
+    for (const t of tri.triangles) {
+      if (!guardSet.has(t.a) && !guardSet.has(t.b) && !guardSet.has(t.c)) {
+        coverageBad++
+        break
+      }
+    }
+
+    // — visibility polygon from the centroid —
+    const q = centroidOf(poly)
+    if (pointInRegion(q, [poly])) {
+      const vp = visibilityPolygon(q, [poly])
+      if (vp.length >= 3) {
+        if (!pointInRegion(q, [vp])) visContainBad++
+        for (let i = 0; i < vp.length; i++) {
+          if (orient(q, vp[i], vp[(i + 1) % vp.length]) < -1e-6) {
+            visStarBad++
+            break
+          }
+        }
+        // Brute agreement: away from the boundary, "visible from q" ⟺ "inside vis".
+        for (let k = 0; k < 30; k++) {
+          const p = { x: rng(), y: rng() }
+          if (!pointInRegion(p, [poly])) continue
+          if (distToBoundary(p, poly) < 2e-3) continue
+          visSamples++
+          if (segmentVisible(q, p, [poly]) !== pointInRegion(p, [vp])) visDisagree++
+        }
+      }
+    }
+
+    // — geodesic —
+    const c = centroidOf(poly)
+    const s = { x: c.x * 0.5 + poly[0].x * 0.5, y: c.y * 0.5 + poly[0].y * 0.5 }
+    const t = {
+      x: c.x * 0.5 + poly[Math.floor(n / 2)].x * 0.5,
+      y: c.y * 0.5 + poly[Math.floor(n / 2)].y * 0.5,
+    }
+    if (pointInRegion(s, [poly]) && pointInRegion(t, [poly])) {
+      const g = geodesicPath(s, t, poly)
+      if (!g.ok) geoFail++
+      else {
+        const straight = Math.hypot(t.x - s.x, t.y - s.y)
+        if (g.length < straight - 1e-6) geoLowerBound++
+        for (let i = 1; i < g.path.length; i++) {
+          for (let u = 1; u < 6; u++) {
+            const tt = u / 6
+            const m = {
+              x: g.path[i - 1].x + (g.path[i].x - g.path[i - 1].x) * tt,
+              y: g.path[i - 1].y + (g.path[i].y - g.path[i - 1].y) * tt,
+            }
+            // Only count a strictly-interior violation (bends ride the boundary).
+            if (!pointInRegion(m, [poly]) && distToBoundary(m, poly) > 1e-6) geoOutside++
+          }
+        }
+        const isConvex = poly.every(
+          (_, i) => orient(poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]) >= -1e-9,
+        )
+        if (isConvex) {
+          convexCases++
+          if (g.path.length !== 2) convexNotStraight++
+        }
+      }
+    }
+  }
+
+  check(`triangulation: exactly n−2 triangles (${cases} polygons)`, triCountBad === 0, `(${triCountBad} off)`)
+  check('triangulation: triangles tile the polygon exactly', worstTileErr < 1e-6, `(worst ${worstTileErr.toExponential(2)})`)
+  check('triangulation: every triangle is CCW', triCcwBad === 0, `(${triCcwBad})`)
+  check('triangulation: every triangle lies inside the polygon', triOutside === 0, `(${triOutside})`)
+  check('art gallery: 3-colouring is proper (all triangles trichromatic)', colorBad === 0, `(${colorBad})`)
+  check('art gallery: guard count ≤ ⌊n/3⌋', guardOverBound === 0, `(${guardOverBound})`)
+  check('art gallery: guards cover every triangle', coverageBad === 0, `(${coverageBad})`)
+  check('visibility: viewpoint lies inside its visibility polygon', visContainBad === 0, `(${visContainBad})`)
+  check('visibility: the visibility polygon is star-shaped from the viewpoint', visStarBad === 0, `(${visStarBad})`)
+  check(
+    `visibility: agrees with the brute-force see-test (${visSamples} samples)`,
+    visDisagree === 0,
+    `(${visDisagree} disagree)`,
+  )
+  check('geodesic: a path is always found between interior points', geoFail === 0, `(${geoFail} failed)`)
+  check('geodesic: never shorter than the straight-line bound', geoLowerBound === 0, `(${geoLowerBound})`)
+  check('geodesic: the taut path stays strictly inside the polygon', geoOutside === 0, `(${geoOutside})`)
+  check(
+    `geodesic: collapses to the straight segment on convex polygons (${convexCases} cases)`,
+    convexNotStraight === 0,
+    `(${convexNotStraight})`,
+  )
+  // The comb is the tight ⌊n/3⌋ art-gallery case; confirm the machinery survives it.
+  {
+    const teeth = 6
+    const x0 = 0.08
+    const x1 = 0.92
+    const wgap = (x1 - x0) / (teeth * 2 - 1)
+    const combPts: P[] = [{ x: x0, y: 0.82 }]
+    for (let i = 0; i < teeth; i++) {
+      const bx = x0 + i * 2 * wgap
+      combPts.push({ x: bx, y: 0.28 }, { x: bx + wgap, y: 0.28 }, { x: bx + wgap, y: 0.66 })
+      if (i < teeth - 1) combPts.push({ x: bx + 2 * wgap, y: 0.66 })
+    }
+    combPts.push({ x: x1, y: 0.66 }, { x: x1, y: 0.82 })
+    const ct = triangulatePolygon(combPts)
+    const cc = threeColorTriangulation(ct.triangles, ct.vertices.length)
+    const guardSet = new Set(cc.guards)
+    let combCover = true
+    for (const t of ct.triangles)
+      if (!guardSet.has(t.a) && !guardSet.has(t.b) && !guardSet.has(t.c)) combCover = false
+    check(
+      `art gallery: comb (${ct.vertices.length} verts) triangulates + covers with ≤ ⌊n/3⌋ guards`,
+      ct.triangles.length === ct.vertices.length - 2 &&
+        cc.valid &&
+        combCover &&
+        cc.guards.length <= Math.floor(ct.vertices.length / 3),
+      `(${cc.guards.length} guards, ⌊n/3⌋=${Math.floor(ct.vertices.length / 3)})`,
+    )
   }
 }
 
