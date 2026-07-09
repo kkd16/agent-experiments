@@ -39,6 +39,10 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
     ],
   },
   {
+    label: 'The limits',
+    items: [{ route: 'ratedistortion', name: 'Rate–Distortion · Quantisation' }],
+  },
+  {
     label: 'Channel coding',
     items: [
       { route: 'channel', name: 'The Noisy Channel' },

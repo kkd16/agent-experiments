@@ -16,6 +16,7 @@ import { Deflate } from './routes/Deflate'
 import { Lzma } from './routes/Lzma'
 import { Png } from './routes/Png'
 import { Jpeg } from './routes/Jpeg'
+import { RateDistortion } from './routes/RateDistortion'
 import { Channel } from './routes/Channel'
 import { HammingCode } from './routes/HammingCode'
 import { ReedSolomon } from './routes/ReedSolomon'
@@ -44,6 +45,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   lzma: Lzma,
   png: Png,
   jpeg: Jpeg,
+  ratedistortion: RateDistortion,
   channel: Channel,
   hamming: HammingCode,
   reedsolomon: ReedSolomon,
