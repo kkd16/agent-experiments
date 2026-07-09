@@ -404,6 +404,86 @@ export function curveEffDuration(
 }
 
 /**
+ * Clean price per 100 face of a bond discounted on a curve with a constant continuously-
+ * compounded **spread** `s` added to every point: `dirty = Σ cf_k · DF(t_k)·e^(−s·t_k)`, clean
+ * = dirty − accrued. At `s = 0` this is `priceOnCurve`; it is strictly decreasing in `s`.
+ */
+export function priceWithSpread(
+  settle: number,
+  maturity: number,
+  rate: number,
+  redemption: number,
+  frequency: number,
+  basis: number,
+  curve: Curve,
+  spread: number,
+): number | null {
+  const cf = bondCashflows(settle, maturity, rate, redemption, frequency, basis)
+  if (!cf) return null
+  let dirty = 0
+  for (const f of cf.flows) {
+    const t = f.tau / frequency
+    dirty += f.cf * discountAt(curve, t) * Math.exp(-spread * t)
+  }
+  return dirty - cf.accrued
+}
+
+/**
+ * The **Z-spread** (zero-volatility spread): the single constant spread over the whole curve
+ * that makes the bond's curve-discounted price equal a given market clean price. Because the
+ * price is strictly monotone in the spread, it is found by a bracketed bisection. A bond
+ * trading exactly at its curve price has a zero Z-spread, and `priceWithSpread(…, zSpread) `
+ * round-trips back to the market price.
+ */
+export function zSpread(
+  settle: number,
+  maturity: number,
+  rate: number,
+  redemption: number,
+  frequency: number,
+  basis: number,
+  curve: Curve,
+  marketClean: number,
+): Risk {
+  const cf = bondCashflows(settle, maturity, rate, redemption, frequency, basis)
+  if (!cf) return null
+  const target = marketClean + cf.accrued // work in dirty price
+  const dirtyAt = (s: number): number => {
+    let p = 0
+    for (const f of cf.flows) {
+      const t = f.tau / frequency
+      p += f.cf * discountAt(curve, t) * Math.exp(-s * t)
+    }
+    return p
+  }
+  let lo = -0.5
+  let hi = 0.5
+  let flo = dirtyAt(lo) - target
+  let fhi = dirtyAt(hi) - target
+  let guard = 0
+  while (flo * fhi > 0 && guard < 200) {
+    lo -= 0.5
+    hi += 0.5
+    flo = dirtyAt(lo) - target
+    fhi = dirtyAt(hi) - target
+    guard++
+  }
+  if (flo * fhi > 0) return null
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2
+    const fm = dirtyAt(mid) - target
+    if (Math.abs(fm) < 1e-12) return mid
+    if (flo * fm <= 0) {
+      hi = mid
+    } else {
+      lo = mid
+      flo = fm
+    }
+  }
+  return (lo + hi) / 2
+}
+
+/**
  * Key-rate (partial) durations: the bond's sensitivity to a ±`bump` shock of *one* zero-rate
  * node at a time (the shock tents linearly to the neighbouring nodes, so the family
  * partitions a parallel shift). Returns one number per curve node; their sum equals the

@@ -534,6 +534,12 @@ export function runSelfTests(): TestResult[] {
   eq('risk', 'KEYRATEDUR ladder sums to CURVEDURATION', ev('ABS(SUM(E1:E5)-CURVEDURATION(DATE(2010,1,1),DATE(2015,1,1),0.04,100,1,0,A1:A5,B1:B5))<0.000001', krdGrid), 'TRUE')
   eq('risk', 'KEYRATEDUR ladder is all positive', ev('MIN(E1:E5)>0', krdGrid), 'TRUE')
   eq('risk', 'KEYRATEDUR spills the tenor grid', ev('D5', krdGrid), '5')
+  // Z-spread: zero at the curve price, and PRICEZ inverts it (round-trip to a discounted quote).
+  const zc = { A1: '1', A2: '2', A3: '3', A4: '4', A5: '5', A6: '6', B1: '0.03', B2: '0.032', B3: '0.034', B4: '0.035', B5: '0.036', B6: '0.037' }
+  const zbond = 'DATE(2025,1,15),DATE(2031,1,15),0.04,100,1,0'
+  eq('risk', 'ZSPREAD at the curve price is ~0', ev(`ABS(ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)))<0.00000001`, zc), 'TRUE')
+  eq('risk', 'PRICEZ∘ZSPREAD round-trips a discounted quote', ev(`ABS(PRICEZ(${zbond},A1:A6,B1:B6,ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)-2))-(PRICECURVE(${zbond},A1:A6,B1:B6)-2))<0.00000001`, zc), 'TRUE')
+  eq('risk', 'a cheaper quote implies a positive Z-spread', ev(`ZSPREAD(${zbond},A1:A6,B1:B6,PRICECURVE(${zbond},A1:A6,B1:B6)-2)>0`, zc), 'TRUE')
 
   // --- the Solver (v5: constrained multi-cell optimization) ---
   r.push(solverTests())

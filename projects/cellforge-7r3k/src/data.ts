@@ -1430,6 +1430,17 @@ function ratesDesk(): WorkbookSnapshot {
   set('D28', 'The ladder decomposes the parallel-shift risk into a per-tenor profile; summed, it returns the whole-curve duration.')
   fmt('D28', 'D28', { color: muted })
 
+  // ---- Z-spread: a market quote below the curve implies a spread over it ----
+  set('D30', 'Z-spread (a quote 1½ pts cheap)'); fmt('D30', 'D30', { bold: true })
+  set('D31', 'Market quote'); set('E31', '=E23-1.5')
+  set('D32', 'Z-spread (bp)'); set('E32', '=ZSPREAD(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,E31)*10000')
+  set('D33', 'Reprice at that spread'); set('E33', '=PRICEZ(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,ZSPREAD(B15,B16,B17,100,B19,B20,A6:A11,B6:B11,E31))')
+  set('D34', 'Round-trips to the quote?'); set('E34', '=IF(ABS(E33-E31)<0.00000001,"✓ yes","no")')
+  fmt('D31', 'D34', { color: label })
+  fmt('E31', 'E31', { nf: 'currency', decimals: 4 })
+  fmt('E32', 'E32', { nf: 'plain', decimals: 1 })
+  fmt('E33', 'E33', { nf: 'currency', decimals: 4 })
+
   wb.addChart(
     { type: 'column', range: { top: 22, left: 0, bottom: 28, right: 1 }, title: 'Where the rate risk lives (key-rate durations)', x: 470, y: 300, w: 420, h: 230, headers: true, labels: true },
     id,

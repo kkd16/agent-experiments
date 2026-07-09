@@ -1492,6 +1492,18 @@ export const FUNCTIONS: Record<string, FnImpl> = {
     if (krd === null) return err('#NUM!')
     return matrix(cv.tenors.map((t, i) => [t, krd[i]]))
   }),
+
+  // The Z-spread over the curve (from a market clean price) and its inverse, the clean price
+  // at a given continuous spread — a round-trip pair. Shape: settlement · maturity · coupon ·
+  // redemption · frequency · basis · tenors · parRates · marketPrice|spread.
+  ZSPREAD: (args, h) => bondCurveX(args, h, (bond, cv, x) => {
+    const z = rc.zSpread(bond[0], bond[1], bond[2], bond[3], bond[4], bond[5], cv, x)
+    return z === null ? err('#NUM!') : z
+  }),
+  PRICEZ: (args, h) => bondCurveX(args, h, (bond, cv, x) => {
+    const p = rc.priceWithSpread(bond[0], bond[1], bond[2], bond[3], bond[4], bond[5], cv, x)
+    return p === null ? err('#NUM!') : p
+  }),
 }
 
 /** Read a range/array node into a numeric vector in row-major order: numbers pass
@@ -1558,6 +1570,24 @@ function bondCurve(args: Node[], h: FnHelpers, f: (bond: number[], cv: rc.Curve,
   const bump = numAt(args, 8, h, 0.0001)
   if (isError(bump)) return bump
   return f(bond, cv, bump)
+}
+
+/** Like `bondCurve`, but arg 8 is a *required* scalar `x` (a market price or a spread)
+ *  rather than an optional bump — used by ZSPREAD / PRICEZ. */
+function bondCurveX(args: Node[], h: FnHelpers, f: (bond: number[], cv: rc.Curve, x: number) => RuntimeValue): RuntimeValue {
+  const bond: number[] = []
+  const defs = [0, 0, 0, 100, 1, 0]
+  for (let i = 0; i < defs.length; i++) {
+    const v = numAt(args, i, h, defs[i])
+    if (isError(v)) return v
+    bond.push(i < 2 ? Math.trunc(v) : v)
+  }
+  const cv = curveFromRangesAt(args, h, 6)
+  if (isError(cv)) return cv
+  if (args.length <= 8) return err('#N/A', 'a market price (ZSPREAD) or spread (PRICEZ) is required')
+  const x = numAt(args, 8, h)
+  if (isError(x)) return x
+  return f(bond, cv, x)
 }
 
 /** Bootstrap a curve from the tenor/par-rate ranges at `args[at]` / `args[at+1]`. */
