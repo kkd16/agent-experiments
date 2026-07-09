@@ -30,6 +30,7 @@ import {
   type LloydResult,
   type Vec2,
 } from '../lib/quantize'
+import { waterFill, reverseWaterFillTheta, gaussianVectorRD } from '../lib/waterfilling'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Section A — Blahut–Arimoto channel capacity
@@ -520,6 +521,152 @@ function VectorQuantizerSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Section E — Water-filling (parallel Gaussian channels / vector sources)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// An illustrative "spectrum": a handful of parallel sub-channels / source
+// components whose noise (or variance) decays geometrically — the shape a
+// transform like the DCT produces from natural signals.
+const SPECTRUM = [0.25, 0.5, 0.9, 1.5, 2.4, 3.6, 5.0, 6.5]
+
+function WaterBars({
+  floor,
+  level,
+  capColor,
+  waterColor,
+  floorLabel,
+  waterLabel,
+  active,
+}: {
+  floor: number[]
+  level: number
+  capColor: string
+  waterColor: string
+  floorLabel: string
+  waterLabel: string
+  active: boolean[]
+}) {
+  const n = floor.length
+  const W = 420
+  const H = 220
+  const padL = 30
+  const padB = 22
+  const padT = 12
+  const innerH = H - padB - padT
+  const top = Math.max(level, ...floor) * 1.08
+  const sy = (v: number) => padT + (1 - v / top) * innerH
+  const bw = (W - padL - 8) / n
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ minWidth: 360 }} role="img" aria-label="water-filling diagram">
+        {/* water level line */}
+        <line x1={padL} y1={sy(level)} x2={W - 4} y2={sy(level)} stroke="var(--blue)" strokeDasharray="4 3" strokeWidth={1.4} opacity={0.85} />
+        <text x={W - 6} y={sy(level) - 4} textAnchor="end" fontSize={10} fill="var(--blue)">level {level.toFixed(2)}</text>
+        {floor.map((f, i) => {
+          const x = padL + i * bw + 2
+          const w = bw - 4
+          const isActive = active[i]
+          return (
+            <g key={i}>
+              {/* the poured water / spent budget, from floor up to level */}
+              {isActive && f < level && (
+                <rect x={x} y={sy(level)} width={w} height={sy(f) - sy(level)} fill={waterColor} opacity={0.75} />
+              )}
+              {/* the fixed floor block */}
+              <rect x={x} y={sy(f)} width={w} height={H - padB - sy(f)} fill={capColor} opacity={0.85} />
+              <text x={x + w / 2} y={H - padB + 14} textAnchor="middle" fontSize={9} fill="var(--text-dim)" fontFamily="var(--mono)">{i + 1}</text>
+            </g>
+          )
+        })}
+      </svg>
+      <div className="chip-row" style={{ marginTop: 4 }}>
+        <span className="chip" style={{ cursor: 'default', borderColor: capColor, color: capColor }}><span style={{ display: 'inline-block', width: 10, height: 10, background: capColor, marginRight: 6, verticalAlign: 'middle', borderRadius: 2 }} />{floorLabel}</span>
+        <span className="chip" style={{ cursor: 'default', borderColor: waterColor, color: waterColor }}><span style={{ display: 'inline-block', width: 10, height: 10, background: waterColor, marginRight: 6, verticalAlign: 'middle', borderRadius: 2 }} />{waterLabel}</span>
+      </div>
+    </div>
+  )
+}
+
+function WaterFillingSection() {
+  const [power, setPower] = useState(8)
+  const [theta, setTheta] = useState(1.0)
+
+  const fwd = useMemo(() => waterFill(SPECTRUM, power), [power])
+  const rev = useMemo(() => reverseWaterFillTheta(SPECTRUM, theta), [theta])
+  const vecCurve = useMemo(() => gaussianVectorRD(SPECTRUM, 90), [])
+  // The "flat" allocation: spread the same total distortion evenly across all
+  // components (no bit allocation) — always worse than reverse water-filling.
+  const flatCurve = useMemo(() => {
+    const n = SPECTRUM.length
+    const out: [number, number][] = []
+    for (let i = 1; i <= 90; i++) {
+      const D = (SPECTRUM.reduce((a, b) => a + b, 0) * i) / 90
+      const dEach = D / n
+      let R = 0
+      for (const v of SPECTRUM) if (v > dEach) R += 0.5 * Math.log2(v / dEach)
+      out.push([D, R])
+    }
+    return out
+  }, [])
+
+  const rdSeries: Series[] = [
+    { label: 'reverse water-filling R(D) (optimal)', color: 'var(--teal)', points: vecCurve.map((p) => [p.D, p.R]) },
+    { label: 'flat allocation (no bit budgeting)', color: 'var(--red)', points: flatCurve, dashed: true },
+  ]
+  const totVar = SPECTRUM.reduce((a, b) => a + b, 0)
+
+  return (
+    <Panel
+      title="E · Water-filling — the Gaussian twin, and why transform coding works"
+      note="The Gaussian case of both theorems has a closed form with one vivid picture: pour a fixed budget over a terrain and it settles to a flat level, filling the low bins more. Forwards it allocates POWER to maximise capacity; in reverse it allocates DISTORTION to minimise rate — the exact theory behind JPEG’s bit budget."
+    >
+      <div className="grid grid-2">
+        <div>
+          <SectionTitle>Forward — power over parallel Gaussian channels</SectionTitle>
+          <label className="field" style={{ maxWidth: 300, marginBottom: 8 }}>
+            total power budget P = <b style={{ color: 'var(--text)' }}>{power.toFixed(1)}</b>
+            <input type="range" min={0.5} max={20} step={0.5} value={power} onChange={(e) => setPower(+e.target.value)} />
+          </label>
+          <WaterBars floor={SPECTRUM} level={fwd.level} capColor="var(--amber)" waterColor="var(--blue)" floorLabel="noise floor Nᵢ" waterLabel="allocated power pᵢ" active={fwd.active} />
+          <div className="grid grid-2" style={{ marginTop: 10 }}>
+            <Stat label="Capacity" value={fwd.capacity.toFixed(3)} unit="bits/use" accent />
+            <Stat label="Sub-channels used" value={`${fwd.active.filter(Boolean).length} / ${SPECTRUM.length}`} sub="noisier ones starved" />
+          </div>
+          <div className="panel-note" style={{ marginTop: 6 }}>Water rises to one level μ; each channel gets pᵢ = max(0, μ − Nᵢ). The noisiest channels sit above the waterline and get <b>no power at all</b> — capacity is maximised by pouring bits where the channel is clean.</div>
+        </div>
+        <div>
+          <SectionTitle>Reverse — distortion over a Gaussian vector source</SectionTitle>
+          <label className="field" style={{ maxWidth: 300, marginBottom: 8 }}>
+            distortion level θ = <b style={{ color: 'var(--text)' }}>{theta.toFixed(2)}</b>
+            <input type="range" min={0.02} max={6.5} step={0.02} value={theta} onChange={(e) => setTheta(+e.target.value)} />
+          </label>
+          <WaterBars floor={SPECTRUM.map((v) => Math.min(theta, v))} level={theta} capColor="var(--violet)" waterColor="var(--teal)" floorLabel="kept distortion dᵢ" waterLabel="coded variance (bits)" active={SPECTRUM.map((v) => v > theta)} />
+          <div className="grid grid-2" style={{ marginTop: 10 }}>
+            <Stat label="Rate R" value={rev.totalRate.toFixed(3)} unit="bits" accent />
+            <Stat label="Distortion D" value={rev.totalDist.toFixed(3)} sub={`of Σσ² = ${totVar.toFixed(1)}`} />
+          </div>
+          <div className="panel-note" style={{ marginTop: 6 }}>Below the waterline θ a component is <b>not coded at all</b> — you keep its whole variance as distortion. Above it, bits are spent proportional to log(σ²/θ). This is precisely a transform coder discarding the high-frequency DCT coefficients and spending its budget on the low ones.</div>
+        </div>
+      </div>
+
+      <SectionTitle>Bit allocation beats blind splitting</SectionTitle>
+      <LineChart
+        series={rdSeries}
+        xDomain={[0, totVar]}
+        yDomain={[0, Math.max(...vecCurve.map((p) => p.R)) * 1.05]}
+        xLabel="total distortion D"
+        yLabel="rate R (bits)"
+        height={230}
+        xFmt={(v) => v.toFixed(1)}
+      />
+      <div className="panel-note" style={{ marginTop: 6 }}>
+        The optimal reverse-water-filling curve is the true R(D) of this Gaussian vector. Splitting the same distortion <i>evenly</i> across components — ignoring that they carry different amounts of energy — always costs more bits. That gap is the entire reason a codec first decorrelates with a transform and then allocates bits by variance: JPEG’s quantisation table is a hand-tuned reverse water-filling.
+      </div>
+    </Panel>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function RateDistortion() {
   return (
@@ -545,6 +692,7 @@ export function RateDistortion() {
       <RateDistortionSection />
       <ScalarQuantizerSection />
       <VectorQuantizerSection />
+      <WaterFillingSection />
 
       <Panel title="Why this is the keystone">
         <p className="lede" style={{ marginTop: 0 }}>

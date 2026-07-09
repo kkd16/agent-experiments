@@ -70,6 +70,10 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     density, JPEG's per-coefficient quantiser in miniature), `uniformQuantizer`/`highRateSlopeDb`
     (the baseline + the 6 dB/bit asymptote), and `lbg` (the Linde–Buzo–Gray **vector** quantiser,
     showing the space-filling gain).
+  - `waterfilling.ts` — the **Gaussian twin** of Blahut–Arimoto in closed form: `waterFill` (forward
+    — allocate power across parallel Gaussian sub-channels to maximise capacity) and
+    `reverseWaterFill`/`gaussianVectorRD` (reverse — allocate distortion across a Gaussian *vector*
+    source to minimise rate, i.e. the exact theory of transform-coding bit allocation).
   - `selftest.ts` — round-trip + invertibility harness (runs in-browser and under Node).
 - `src/routes/` — one page per module; `src/components/` — SVG charts, tree, stat tiles.
 
@@ -677,19 +681,28 @@ bits they promise. It is the theoretical keystone the whole lab has been circlin
   - `lbg(data, N)` — the **Linde–Buzo–Gray vector** quantiser (codeword splitting + generalised
     Lloyd) in 2-D, demonstrating the space-filling/shape gain that scalar quantisers leave on the
     table — why R(D) is only reachable in the large-block limit.
-- `src/routes/RateDistortion.tsx` — a four-section studio: (A) the capacity solver with a live
+- `src/lib/waterfilling.ts` — the **Gaussian, closed-form twin** of both theorems: `waterFill`
+  (forward — pour a power budget over a noise-floor terrain to a flat level μ to maximise capacity)
+  and `reverseWaterFill`/`gaussianVectorRD` (reverse — pour a distortion budget over source
+  variances to minimise rate). Reverse water-filling *is* the theory of transform-coding bit
+  allocation — the reason JPEG spends its bits on the low-frequency DCT coefficients.
+- `src/routes/RateDistortion.tsx` — a five-section studio: (A) the capacity solver with a live
   transition-matrix heatmap, the capacity-achieving input distribution, and the convergence
   bound-sandwich; (B) the R(D) curve with its closed form overlaid; (C) the Lloyd–Max transfer
   staircase drawn over the source density, plus a fidelity-vs-rate chart racing Lloyd–Max against
   the uniform quantiser and the R(D) bound; (D) the LBG codebook with Voronoi colouring and its
-  monotone distortion descent.
-- Self-test grows by **19 checks** (698 → 717, all green): BA capacity vs the BSC/BEC/Z/noiseless/
+  monotone distortion descent; (E) the forward/reverse water-filling pictures and the vector R(D)
+  curve showing optimal bit allocation beat a flat split.
+- Self-test grows by **25 checks** (698 → 723, all green): BA capacity vs the BSC/BEC/Z/noiseless/
   typewriter closed forms and the useless-channel C=0; the bound sandwich actually closing; R(D)
   reproducing H(p)−H(D) and ½log(σ²/D) and being non-increasing & convex; Lloyd–Max hitting the
   known Gaussian-N=2 optimum (level √(2/π), MSE 1−2/π) and the uniform-source 1/N² law, beating the
   uniform quantiser, obeying monotone descent and the +6 dB/bit high-rate slope; LBG distortion
-  nesting D₈≤D₄≤D₂ with the centroid stationarity condition holding on every cell. All validated
-  under Node against the closed forms before wiring in.
+  nesting D₈≤D₄≤D₂ with the centroid stationarity condition holding on every cell; and the
+  water-filling group (forward capacity = ½log₂(1+P/N) with power conserved and noisy channels
+  starved; reverse water-filling hitting a target D exactly, reducing to n·½log₂(σ²/(D/n)) for equal
+  variances, and never costing more bits than a flat allocation). All validated under Node against
+  the closed forms before wiring in.
 
 ### Rate–distortion backlog (v12 follow-ups)
 
@@ -697,8 +710,10 @@ bits they promise. It is the theoretical keystone the whole lab has been circlin
 - [x] **Blahut–Arimoto R(D)** for arbitrary source + distortion, vs the Bernoulli/Gaussian forms. *(v12)*
 - [x] **Lloyd–Max** optimal scalar quantiser (Gaussian/Laplacian/Uniform) + the 6 dB/bit story. *(v12)*
 - [x] **LBG** vector quantiser with the space-filling gain made visible. *(v12)*
-- [ ] **Arimoto–Blahut for the Gaussian channel** (water-filling over parallel sub-channels) — the
-      continuous dual, so the capacity solver spans discrete *and* waveform channels.
+- [x] **Water-filling for the parallel Gaussian channel** (`waterfilling.ts`) — the continuous dual of
+      the capacity solver, with the classic pour-to-a-level picture. *(v12)*
+- [x] **Reverse water-filling** — R(D) of a Gaussian *vector* source, i.e. the exact theory of
+      transform-coding bit allocation (why JPEG spends bits on low-frequency DCT coefficients). *(v12)*
 - [ ] **Entropy-constrained quantisation (ECSQ / ECVQ)** — minimise D + λH instead of fixing N, so
       the operational point slides along the *entropy* rate axis and lands even closer to R(D).
 - [ ] **Wire the quantiser to a real signal** — quantise the DCT coefficients of the JPEG page's
@@ -724,8 +739,12 @@ bits they promise. It is the theoretical keystone the whole lab has been circlin
   Z-channel's *non-uniform* optimal input and the typewriter's every-other-symbol code both fall
   out of BA with no hint. Built a four-section studio (capacity solver + heatmap + bound sandwich;
   the R(D) curve vs its closed form; the Lloyd–Max staircase over the density + a fidelity-vs-rate
-  race showing 6 dB/bit and the space-filling gap; the LBG codebook with Voronoi colouring).
-  Self-test **698 → 717**, all green (19 new theory/quantisation checks); confirmed live in headless
+  race showing 6 dB/bit and the space-filling gap; the LBG codebook with Voronoi colouring). Then a
+  fifth section, `waterfilling.ts` — the closed-form Gaussian twin: forward water-filling (power over
+  parallel channels → capacity) and reverse water-filling (distortion over a Gaussian vector source →
+  rate), the exact theory behind JPEG's transform-coding bit budget, with the classic pour-to-a-level
+  pictures and a curve showing optimal allocation beating a flat split.
+  Self-test **698 → 723**, all green (25 new theory/quantisation checks); confirmed live in headless
   Chromium — page renders, every panel draws, self-test all green, zero console errors. Still zero
   runtime deps beyond React.
 - 2026-07-05 (claude): **v11 — JPEG, the lossy pillar (Shannon's third theorem: rate–distortion).**
