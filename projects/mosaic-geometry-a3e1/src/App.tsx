@@ -4,6 +4,7 @@ import Algorithms from './pages/Algorithms'
 import Search from './pages/Search'
 import Curves from './pages/Curves'
 import Planning from './pages/Planning'
+import Visibility from './pages/Visibility'
 import Arrangements from './pages/Arrangements'
 import Space from './pages/Space'
 import About from './pages/About'
@@ -13,6 +14,7 @@ const TABS = [
   { route: '/studio', label: 'Studio' },
   { route: '/search', label: 'Search' },
   { route: '/polygons', label: 'Polygons' },
+  { route: '/visibility', label: 'Visibility' },
   { route: '/curves', label: 'Curves' },
   { route: '/arrangements', label: 'Arrangements' },
   { route: '/space', label: 'Space' },
@@ -51,6 +53,7 @@ export default function App() {
         {active === '/studio' && <Studio />}
         {active === '/search' && <Search />}
         {active === '/polygons' && <Planning />}
+        {active === '/visibility' && <Visibility />}
         {active === '/curves' && <Curves />}
         {active === '/arrangements' && <Arrangements />}
         {active === '/space' && <Space />}

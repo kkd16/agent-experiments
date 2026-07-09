@@ -14,6 +14,16 @@ libraries.
   - `delaunay.ts` — Bowyer-Watson incremental triangulation (+ step trace), edge extraction.
   - `voronoi.ts` — Voronoi cells by half-plane (bisector) intersection, clipped to the frame.
   - `polygon.ts` — signed area, centroid, convex half-plane clipping (Sutherland-Hodgman).
+  - `triangulate.ts` — **O(n log n) simple-polygon triangulation** by monotone decomposition: a
+    plane sweep types every vertex (start/end/split/merge/regular) and adds diagonals to a stored
+    helper to cut the polygon into y-monotone pieces, extracted by rotation-system face traversal and
+    triangulated by the linear stack walk. Exposes the diagonals, pieces, vertex types and a trace.
+  - `visibility.ts` — the **visibility polygon** of a point (angular ray-sweep, ± ε past each corner)
+    plus point-to-point `segmentVisible`; the geometric heart of the Visibility axis.
+  - `artgallery.ts` — the **Art Gallery theorem** (Fisk): 3-colour the triangulation over its dual
+    tree, station guards on the smallest colour class → ≤ ⌊n/3⌋ cameras that cover the polygon.
+  - `funnel.ts` — **geodesic shortest paths** inside a simple polygon by the Lee–Preparata funnel:
+    triangle-dual corridor + string-pulling over the diagonal portals (exact Euclidean geodesic).
   - `graphs.ts` — proximity graphs over Delaunay edges: Euclidean MST (Kruskal + union-find),
     Gabriel, relative-neighborhood (RNG), nearest-neighbor (NNG), Urquhart, the β-skeleton family
     (lune-based, Gabriel↔RNG), the k-nearest-neighbor graph, and closest pair.
@@ -132,6 +142,71 @@ libraries.
   (step-through, incl. the Bentley–Ottmann sweep), `About`.
 
 ## Ideas / backlog
+
+### 2026-07-09 — the Visibility axis: polygon triangulation, the Art Gallery theorem, visibility polygons & geodesics (shipped this session)
+
+Every axis so far has treated a polygon as something to *overlay or grow* (booleans, Minkowski,
+motion planning). This session adds the axis that treats a polygon as a **room you stand inside**:
+what can be *seen* from a point, how few cameras *cover* it, and the *shortest way to walk across* it.
+The whole axis rests on one primitive the studio was conspicuously missing — a real **simple-polygon
+triangulation** — and it is built the proper way, not by O(n²) ear-clipping (which already lived in
+`minkowski.ts`) but by the textbook **O(n log n) monotone decomposition**: a plane sweep that types
+every vertex and drops diagonals to kill split/merge vertices, then a linear stack walk per monotone
+piece. That one routine then feeds three classic results that read beautifully as live, verified toys.
+
+A subtlety worth recording: while building the Monte-Carlo harness I first generated "random" polygons
+by sorting vertices by angle about the centre — which silently produces **self-intersecting** polygons
+whenever the largest angular gap exceeds π (the wrap-around edge crosses the far side). The
+triangulation was correct all along; the *generator* was out of contract. The fix — evenly-spaced
+angles + jittered radii (max gap `2π/n < π`) — guarantees simplicity, and the suite now runs on
+thousands of genuinely simple polygons with exact area tiling to 1e-14. A good reminder that a failing
+Monte-Carlo check indicts the oracle as often as the algorithm.
+
+Shipped this session:
+
+- [x] **Monotone-decomposition triangulation** (`triangulate.ts`): the O(n log n) sweep —
+  start/end/split/merge/regular vertex typing, an x-ordered edge status with per-edge helpers,
+  diagonals added at split/merge vertices, rotation-system face extraction into y-monotone pieces
+  (the same "turn maximally clockwise" rule `boolean.ts` uses), and the linear stack-walk
+  triangulation of each piece. Returns the triangles, the monotone diagonals, the pieces, per-vertex
+  types and a per-event trace.
+- [x] **The Art Gallery theorem, made constructive** (`artgallery.ts`): Fisk's proof as an algorithm
+  — 3-colour the triangulation by a DFS over the triangle-dual tree (each new triangle's apex takes
+  the one colour its shared base lacks), then post guards on the **smallest colour class** → ≤ ⌊n/3⌋
+  cameras that provably see the whole gallery (every triangle owns one guard).
+- [x] **Visibility polygon** (`visibility.ts`): the star-shaped region a viewpoint can see, by an
+  angular sweep that shoots a ray toward every vertex (± a hair, to slip past corners), keeps the
+  nearest wall, and reads the hits off in angular order. Plus point-to-point `segmentVisible`.
+- [x] **Geodesic shortest path** (`funnel.ts`): the Lee–Preparata **funnel** — locate S and T in the
+  triangulation, BFS the triangle-dual tree for the corridor, orient its shared diagonals into
+  left/right **portals**, and pull the string taut (Mononen's formulation) — the exact Euclidean
+  geodesic, bending only at reflex vertices, collapsing to a straight segment on convex polygons.
+- [x] **Visibility page** (`pages/Visibility.tsx`, new **Visibility** tab): four modes over draggable
+  polygons (Comb / Spiral / Star / Random presets) — **Triangulate** (typed vertices, gold monotone
+  diagonals, tinted pieces), **Guards** (3-coloured vertices, ringed ◉ cameras, green coverage tint),
+  **Visibility** (a draggable viewpoint casting a lit region with sight-lines), **Geodesic** (draggable
+  S/T, the triangle corridor, portals, and the taut path vs. the straight reference). Every mode
+  carries live ✓/✗ badges: `triangles = n − 2`, exact area tiling, proper 3-colouring, ≤ ⌊n/3⌋
+  guards, star-shape, the straight-line lower bound, and "bends only at reflex".
+- [x] **Algorithms visualizer**: a **Monotone triangulate** stepper — the sweep line descends, the
+  current vertex is ringed and coloured by type, gold diagonals appear as split/merge vertices are
+  handled, and the final frame reveals the triangulation.
+- [x] **Self-tests** (`selftest.ts`, **212 → 265 checks**): over hundreds of random simple polygons —
+  triangulation gives exactly n−2 CCW triangles that tile the polygon (1e-14) and lie inside it; the
+  3-colouring is proper with ≤ ⌊n/3⌋ guards covering every triangle; the visibility polygon contains
+  and is star-shaped from the viewpoint and agrees with a brute-force see-test over thousands of
+  samples; the geodesic is always found, never beats the straight-line bound, stays inside, and is
+  straight on convex polygons — plus the **comb** worst case (tight ⌊n/3⌋) as a named check. All
+  green; verified headless in Chromium (every tab mounts, all four Visibility modes and the new
+  stepper render with zero console errors); passed `verify-project.mjs` (scope + conformance + lint +
+  build) before pushing.
+
+Follow-ups (open):
+
+- [ ] Visibility polygons **with holes** in the UI (the core already accepts multiple rings).
+- [ ] **Weak visibility** from an edge, and a guard-placement mode that lets you drop cameras by hand
+  and shades the still-dark region.
+- [ ] A **geodesic Voronoi**-flavoured heat map: shortest-path distance from S to every interior cell.
 
 ### 2026-07-05 — the third dimension: 3-D hulls, the lifting map, Delaunay & Voronoi in space (planned this session)
 

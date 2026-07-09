@@ -14,17 +14,33 @@ import {
   type WeightedSite,
 } from '../geometry/power'
 import { bentleyOttmann, type Segment, type SweepStep } from '../geometry/segments'
+import { triangulatePolygon, type Triangulation, type VertexKind } from '../geometry/triangulate'
 import { mulberry32, poissonDisk, uniformPoints } from '../geometry/random'
 import { useCanvas } from '../hooks/useCanvas'
 import { Button, Panel, Segmented, Slider } from '../components/Controls'
 
-type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power' | 'kdtree' | 'quadtree' | 'bentley'
+type Algo = 'hull' | 'quickhull' | 'delaunay' | 'mec' | 'fortune' | 'power' | 'kdtree' | 'quadtree' | 'bentley' | 'monotone'
 const PAD = 28
 const CLIP: Rect = { minX: 0, minY: 0, maxX: 1, maxY: 1 }
 const GEN_RECT: Rect = { minX: 0.08, minY: 0.1, maxX: 0.92, maxY: 0.92 }
 
+// A simple polygon (as an ordered ring) for the monotone-triangulation sweep:
+// evenly spaced angles (max gap < π ⇒ always simple) with jittered radii.
+function makeSimpleRing(seed: number): Point[] {
+  const rng = mulberry32(seed * 2246822519 + 5)
+  const n = 9 + Math.floor(rng() * 7)
+  const ring: Point[] = []
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + (rng() - 0.5) * (Math.PI / n)
+    const r = 0.16 + rng() * 0.28
+    ring.push({ x: 0.5 + Math.cos(a) * r, y: 0.12 + (0.5 + Math.sin(a) * r) * 0.78 })
+  }
+  return ring
+}
+
 function makePoints(algo: Algo, seed: number): Point[] {
   const rng = mulberry32(seed)
+  if (algo === 'monotone') return makeSimpleRing(seed)
   // The enclosing-circle trace reads best on a loose scatter; the others on blue noise.
   if (algo === 'mec') return uniformPoints(12, GEN_RECT, rng)
   if (algo === 'fortune') return uniformPoints(11, GEN_RECT, rng)
@@ -117,13 +133,21 @@ export default function Algorithms() {
     () => (algo === 'quadtree' ? quadBuildSteps(points, CLIP) : []),
     [algo, points],
   )
+  const monoTri = useMemo<Triangulation | null>(
+    () => (algo === 'monotone' ? triangulatePolygon(points) : null),
+    [algo, points],
+  )
+  // Steps: one per swept vertex, plus a final "triangulated" frame.
+  const monoTotal = monoTri ? monoTri.trace.events.length + 1 : 0
   const boSegs = useMemo<Segment[]>(() => (algo === 'bentley' ? makeSegments(seed) : []), [algo, seed])
   const bo = useMemo(
     () => (algo === 'bentley' ? bentleyOttmann(boSegs, true) : { intersections: [], steps: [] as SweepStep[] }),
     [algo, boSegs],
   )
   const total =
-    algo === 'hull'
+    algo === 'monotone'
+      ? monoTotal
+      : algo === 'hull'
       ? hullSteps.length
       : algo === 'quickhull'
         ? quickSteps.length
@@ -175,7 +199,8 @@ export default function Algorithms() {
     const h = height - PAD * 2
     const toPx = (p: Point) => ({ x: PAD + p.x * w, y: PAD + p.y * h })
 
-    if (algo === 'hull') drawHullStep(ctx, hullSteps[clamped], points, toPx)
+    if (algo === 'monotone') drawMonotoneStep(ctx, monoTri, clamped, toPx)
+    else if (algo === 'hull') drawHullStep(ctx, hullSteps[clamped], points, toPx)
     else if (algo === 'quickhull') drawQuickHullStep(ctx, quickSteps[clamped], points, toPx)
     else if (algo === 'delaunay') drawDelaunayStep(ctx, delSteps[clamped], toPx)
     else if (algo === 'mec') drawMecStep(ctx, mecStepList[clamped], toPx, w)
@@ -184,10 +209,12 @@ export default function Algorithms() {
     else if (algo === 'quadtree') drawQuadBuildStep(ctx, quadSteps[clamped], points, toPx)
     else if (algo === 'bentley') drawBentleyStep(ctx, bo.steps, clamped, boSegs, toPx, PAD, w, h)
     else drawFortuneStep(ctx, fortuneSteps[clamped], points, PAD, w, h)
-  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, kdSteps, quadSteps, fortuneSteps, bo, boSegs, clamped, points])
+  }, [ref, size, algo, hullSteps, quickSteps, delSteps, mecStepList, powerSteps, weighted, kdSteps, quadSteps, fortuneSteps, bo, boSegs, monoTri, clamped, points])
 
   const note =
-    algo === 'hull'
+    algo === 'monotone'
+      ? monotoneNote(monoTri, clamped)
+      : algo === 'hull'
       ? hullSteps[clamped]?.note
       : algo === 'quickhull'
         ? quickSteps[clamped]?.note
@@ -245,12 +272,15 @@ export default function Algorithms() {
               { id: 'kdtree', label: 'k-d tree' },
               { id: 'quadtree', label: 'Quadtree' },
               { id: 'bentley', label: 'Bentley–Ottmann' },
+              { id: 'monotone', label: 'Monotone triangulate' },
             ]}
             value={algo}
             onChange={changeAlgo}
           />
           <p className="muted">
-            {algo === 'hull'
+            {algo === 'monotone'
+              ? 'Polygon triangulation in O(n log n): a downward plane sweep classifies each vertex (start / end / split / merge / regular) and drops a gold diagonal to a stored “helper” whenever a split or merge would break monotonicity — cutting the polygon into y-monotone pieces. The last frame triangulates them.'
+              : algo === 'hull'
               ? "Andrew's monotone chain: sort by x, then sweep building lower and upper hulls, popping any point that would make a right turn."
               : algo === 'quickhull'
                 ? 'Quickhull: anchor on the two extreme-x points, then on each side recurse on the point farthest from the edge — it must be a hull vertex — discarding everything inside the triangle it forms.'
@@ -297,7 +327,13 @@ export default function Algorithms() {
 
         <Panel title="Legend">
           <ul className="legend">
-            {algo === 'hull' ? (
+            {algo === 'monotone' ? (
+              <>
+                <li><i className="dot dot--active" /> vertex being swept</li>
+                <li><i className="dot dot--hull" /> gold monotone diagonals</li>
+                <li><i className="dot dot--mesh" /> final triangulation</li>
+              </>
+            ) : algo === 'hull' ? (
               <>
                 <li><i className="dot dot--hull" /> current hull chain</li>
                 <li><i className="dot dot--active" /> point being considered</li>
@@ -355,6 +391,124 @@ export default function Algorithms() {
 }
 
 // ── Step painters ────────────────────────────────────────────────────────────
+
+const MONO_KIND_COLOR: Record<VertexKind, string> = {
+  start: '#7cf6c0',
+  end: '#60cdff',
+  split: '#f472b6',
+  merge: '#ffd166',
+  regular: '#9fb2d4',
+}
+
+function monotoneNote(tri: Triangulation | null, step: number): string {
+  if (!tri) return ''
+  const ev = tri.trace.events
+  if (step >= ev.length) {
+    return `Triangulated: ${tri.monotonePieces.length} monotone piece(s) → ${tri.triangles.length} triangles (n − 2).`
+  }
+  const e = ev[step]
+  const d = e.diagonals.length
+  return `Sweeping the ${e.kind} vertex${d ? ` — added ${d} diagonal${d > 1 ? 's' : ''}` : ' — no diagonal'}.`
+}
+
+function drawMonotoneStep(
+  ctx: CanvasRenderingContext2D,
+  tri: Triangulation | null,
+  step: number,
+  toPx: (p: Point) => Point,
+) {
+  if (!tri || tri.vertices.length < 3) return
+  const V = tri.vertices
+  const ev = tri.trace.events
+  const done = step >= ev.length
+  const upto = Math.min(step, ev.length - 1)
+
+  // Polygon interior + outline.
+  ctx.beginPath()
+  V.forEach((p, i) => {
+    const q = toPx(p)
+    if (i === 0) ctx.moveTo(q.x, q.y)
+    else ctx.lineTo(q.x, q.y)
+  })
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(120,160,230,0.06)'
+  ctx.fill()
+
+  // Final triangulation, revealed on the last frame.
+  if (done) {
+    ctx.strokeStyle = 'rgba(124,246,192,0.55)'
+    ctx.lineWidth = 1
+    for (const t of tri.triangles) {
+      const a = toPx(V[t.a])
+      const b = toPx(V[t.b])
+      const c = toPx(V[t.c])
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.lineTo(c.x, c.y)
+      ctx.closePath()
+      ctx.stroke()
+    }
+  }
+
+  // Diagonals discovered up to this event.
+  ctx.strokeStyle = 'rgba(255,209,102,0.9)'
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([4, 3])
+  for (let k = 0; k <= (done ? ev.length - 1 : upto); k++) {
+    for (const [a, b] of ev[k].diagonals) {
+      const p = toPx(V[a])
+      const q = toPx(V[b])
+      ctx.beginPath()
+      ctx.moveTo(p.x, p.y)
+      ctx.lineTo(q.x, q.y)
+      ctx.stroke()
+    }
+  }
+  ctx.setLineDash([])
+
+  // Polygon boundary on top.
+  ctx.strokeStyle = 'rgba(150,190,255,0.9)'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  V.forEach((p, i) => {
+    const q = toPx(p)
+    if (i === 0) ctx.moveTo(q.x, q.y)
+    else ctx.lineTo(q.x, q.y)
+  })
+  ctx.closePath()
+  ctx.stroke()
+
+  // Sweep line at the current event's height.
+  if (!done) {
+    const yv = toPx(V[ev[upto].vertex]).y
+    const x0 = toPx({ x: 0, y: 0 }).x
+    const x1 = toPx({ x: 1, y: 0 }).x
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'
+    ctx.lineWidth = 1
+    ctx.setLineDash([6, 5])
+    ctx.beginPath()
+    ctx.moveTo(x0 - 10, yv)
+    ctx.lineTo(x1 + 10, yv)
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  // Vertices coloured by type; the current one ringed.
+  V.forEach((p, i) => {
+    const q = toPx(p)
+    const isCurrent = !done && ev[upto].vertex === i
+    ctx.beginPath()
+    ctx.arc(q.x, q.y, isCurrent ? 7 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = MONO_KIND_COLOR[tri.kinds[i]]
+    ctx.fill()
+    if (isCurrent) {
+      ctx.lineWidth = 2.5
+      ctx.strokeStyle = '#fff'
+      ctx.stroke()
+    }
+  })
+}
 
 function drawHullStep(
   ctx: CanvasRenderingContext2D,
