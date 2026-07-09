@@ -2271,3 +2271,105 @@ implication-chain example its bars tower 4× over a favoured few while UniGen's 
       coverage, UniGen TV **0.062** vs naive **0.256**, χ² verdict UniGen **✓ p=0.45** vs naive
       **✗ p=3.5e-43**; **two clusters** → *hashed 2³*, 70/70 coverage; in-app self-tests **21/21**;
       **zero console errors**.
+
+### Session 26 — from *clauses* to *linear algebra*: an XOR / GF(2) studio (a fourteenth studio)
+
+**The gap.** SatForge could reason about parity only the hard way — an XOR is `2^(k−1)`
+clauses, and clause search (CDCL, resolution) is *provably exponential* on parity structure
+(the Tseitin formulas over an expander are the textbook lower-bound instances). Yet a system of
+XOR constraints is nothing but a linear system over the two-element field 𝔽₂, and **Gaussian
+elimination decides, counts and solves it in one reduction**. That is the engine inside real
+solvers like CryptoMiniSat, and it was the one classical technique missing here. Session 26 adds
+it as a first-class subsystem with its own studio.
+
+**What linear algebra buys, read straight off the reduced matrix:** consistency (a `0 = 1` row is
+an *algebraic* UNSAT proof — no search), the **exact** model count in closed form `2^(n−rank)`, a
+particular solution, a **basis of the null space** (so the whole affine solution set is
+`particular ⊕ span`), and the **linear backbone** (variables the parity alone pins to a constant).
+
+**Architecture (all under `src/gf2/`, all cross-checked — nothing shares code with its oracle):**
+
+- **`gf2.ts`** — the 𝔽₂ core. Rows are packed into a `bigint` bitset, so the engine is
+  arbitrary-width. `rref` is Gauss–Jordan to reduced row echelon form (the invariant "rows below
+  the pivot count are zero in every processed column" is what makes the past-rank rows provably
+  zero, so a nonzero rhs there is the contradiction). On top: `solutionCount` (closed form),
+  `particularSolution`, `nullSpaceBasis`, a Gray-code `enumerateSolutions`, `satisfies`, and
+  `linearBackbone`.
+- **`xor.ts`** — the XOR-CNF model and the bridges that make everything cross-checkable.
+  `xorToClauses` expands one parity constraint into its `2^(k−1)` equivalent clauses (so any XOR
+  problem is answerable a second way by the clausal CDCL / #SAT), and `recoverXors` runs the
+  expansion **backwards** — it sniffs a plain CNF for the tell-tale parity gadgets and rebuilds the
+  XOR that produced them (exactly what CryptoMiniSat does to resurrect parity a Tseitin encoding
+  buried). Expand-then-recover is the identity.
+- **`solver.ts`** — the **hybrid DPLL(⊕)**. Unit propagation over the clauses and Gaussian
+  propagation over the parity part (substitute the assignment, reduce the residual, force every
+  single-variable equation, fail on a `0=1`) cooperate to a joint fixpoint; then branch. It is
+  deliberately *plain* chronological DPLL — its job is to be transparently **correct** (it agrees
+  move-for-move with the project's clausal CDCL), while the Gaussian propagator is what makes it
+  *fast*. The head-to-head is the honest contrast: the same engine on the clausal expansion needs
+  63 → 255 → 1023 conflicts on growing Tseitin formulas that Gauss settles in **0 decisions / 1
+  reduction**.
+- **`examples.ts`** — Tseitin parity formulas over a random connected graph (satisfiable **iff the
+  total charge is even** — a free, independent oracle), random k-XOR-SAT, and scalable parity
+  chains.
+- **`lightsout.ts`** — Lights Out *is* a linear system `A·p = b`. The engine rediscovers from
+  scratch that the classic 5×5 board has a **2-dimensional quiet space** (every solvable position
+  has exactly four solutions), returns the **minimum-press** solution by a Gray-code walk of the
+  coset, and the self-test proves each one by *actually clearing the board*.
+- **`crypto.ts`** — an LFSR and its downfall: every keystream bit is a linear function of the
+  secret seed, so observing ~L bits and reducing recovers the whole key (the Berlekamp–Massey
+  lesson in raw form). Recovery is confirmed by regenerating the observed keystream.
+- **`trace.ts`** — a recorded Gauss–Jordan (augmented-matrix snapshot after each pivot) for the
+  animation.
+- **`parse.ts`** — two front-ends: extended DIMACS (CryptoMiniSat `x`-clauses) and a friendly DSL
+  (`x1 ^ x2 ^ x3 = 1`), plus a round-tripping serializer.
+- **`selfcheck.ts`** — a nine-part **differential** harness: the 𝔽₂ core vs brute force (count,
+  particular, null space, enumeration, backbone); `xorToClauses` vs its exact truth table;
+  expand↔recover as the identity; the hybrid DPLL(⊕) vs the clausal CDCL (verdict + valid models);
+  **#SAT agreement** (closed form = the project's exact counter = the hybrid verdict); Tseitin's
+  charge oracle; Lights Out by clearing the board; LFSR by keystream regeneration; and parser
+  round-trips.
+- **`components/Gf2Studio.tsx`** — a five-panel studio: **Solve** (the hybrid engine + the
+  head-to-head with a "×less search" readout, the closed-form count, the model, the backbone),
+  **Reduce** (step through Gauss–Jordan on the matrix, pivots highlighted, rank/free/solutions),
+  **Lights Out** (an interactive board that marks the minimum presses and proves them),
+  **Break an LFSR** (drag the observed-bits slider and watch the rank climb to L, then the seed
+  fall out), and **Self-tests**.
+
+**Shipped:**
+- [x] `src/gf2/gf2.ts` — Gauss–Jordan RREF over 𝔽₂ (bigint rows), rank, closed-form count,
+      particular solution, null-space basis, Gray-code enumeration, linear backbone.
+- [x] `src/gf2/xor.ts` — XOR-CNF model; `xorToClauses` expansion; `recoverXors` gadget detection;
+      CNF/𝔽₂-system bridges; XOR model verifier.
+- [x] `src/gf2/solver.ts` — hybrid DPLL(⊕): unit + Gaussian propagation to a joint fixpoint.
+- [x] `src/gf2/examples.ts` — Tseitin (even/odd-charge oracle), random k-XOR-SAT, parity chains,
+      a connected-graph generator.
+- [x] `src/gf2/lightsout.ts` — Lights Out as `A·p=b`; quiet space; minimum-press coset search.
+- [x] `src/gf2/crypto.ts` — LFSR simulation + symbolic observation system + Gaussian seed recovery.
+- [x] `src/gf2/trace.ts` — recorded RREF for the reduction animation.
+- [x] `src/gf2/parse.ts` — extended-DIMACS + DSL parsers and a serializer.
+- [x] `src/gf2/selfcheck.ts` — nine-part differential harness (all green, ~185 ms).
+- [x] `src/components/Gf2Studio.tsx` + `.css` — the five-panel XOR Studio, wired into `App.tsx`.
+- [x] Verified: `pnpm lint` + `tsc -b` + `vite build` all green; standalone harness passes every
+      randomized cross-check (𝔽₂ core 3000/3000 vs brute; hybrid 2500/2500 vs CDCL; expand↔recover,
+      Tseitin, Lights Out, LFSR all exact).
+
+**Backlog / next steps (planned):**
+- [ ] **Gauss-aware conflict clauses** — have the parity propagator emit a *reason* (the XOR of the
+      equations that forced a literal or a conflict) so a real CDCL could learn from it, turning the
+      hybrid engine from DPLL into true CDCL(⊕).
+- [ ] **Incremental Gaussian elimination** — maintain the reduced matrix across the search with
+      watched-variable "column" updates instead of re-reducing the residual each propagation, the
+      way production solvers keep Gauss cheap.
+- [ ] **XOR extraction wired into the SAT Studio front-end** — auto-recover parity from a pasted
+      DIMACS and offer to solve it hybrid, showing the speedup on real benchmarks.
+- [ ] **Model counting *through* the linear part** — project a CNF's XOR-defined variables out and
+      count the residual, combining `2^(n−rank)` with the clausal #SAT counter.
+- [ ] **Affine sampling** — draw uniform solutions of an XOR system directly (particular ⊕ a random
+      null-space combination) and feed it to the Insight sampler as an exact baseline.
+- [ ] **Min-weight codeword / syndrome decoding** panel — linear-code decoding as a GF(2) problem,
+      with a min-weight objective over the coset (the Lights Out coset search generalized).
+- [ ] **A Gauss trace in the head-to-head** — overlay the CDCL conflict curve against the single
+      reduction, as a live "why linear reasoning wins" chart across a scalable Tseitin family.
+- [ ] **Nonlinear filter generators** — combine several LFSRs through a nonlinear function to show
+      *where* the linear attack stops working (the correlation-attack boundary).

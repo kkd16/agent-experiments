@@ -1,0 +1,475 @@
+/* XOR / GF(2) Studio — parity reasoning by Gaussian elimination. */
+
+.gf2-side .gf2-intro,
+.gf2-side .gf2-legend p {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0.2rem 0 0;
+}
+.gf2-side .gf2-legend {
+  margin-top: 1.1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+}
+.gf2-side .gf2-legend h3 {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+.gf2-navcol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+.gf2-navcol button {
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.gf2-navcol button:hover {
+  border-color: var(--accent);
+}
+.gf2-navcol button.active {
+  background: linear-gradient(135deg, rgba(110, 168, 254, 0.28), rgba(155, 140, 255, 0.28));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.4) inset;
+  color: #fff;
+}
+
+/* example chips */
+.gf2-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.9rem;
+}
+.gf2-examples button {
+  padding: 0.35rem 0.7rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.gf2-examples button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* editor */
+.gf2-editor {
+  margin-bottom: 1rem;
+}
+.gf2-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+.gf2-editor label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.gf2-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  margin-bottom: 0 !important;
+}
+.gf2-editor textarea,
+.gf2 textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+/* cards */
+.gf2-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 0.9rem;
+}
+.gf2-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+}
+.gf2-card.sat {
+  border-color: rgba(34, 197, 94, 0.5);
+}
+.gf2-card.unsat {
+  border-color: rgba(239, 71, 111, 0.5);
+}
+.gf2-card-k {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.gf2-hero {
+  background: linear-gradient(160deg, var(--panel), var(--panel-2));
+}
+.gf2-verdict {
+  font-size: 1.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.gf2-verdict.small {
+  font-size: 1.2rem;
+}
+.gf2-verdict.sat,
+.gf2-count {
+  color: var(--sat);
+}
+.gf2-verdict.unsat {
+  color: var(--unsat);
+}
+.gf2-verdict.unknown {
+  color: var(--unknown);
+}
+.gf2-count {
+  font-size: 1.7rem;
+  font-weight: 800;
+}
+.gf2-statgrid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.25rem 0.8rem;
+  margin-top: 0.6rem;
+  font-size: 0.82rem;
+}
+.gf2-statgrid span {
+  color: var(--muted);
+}
+.gf2-statgrid b {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.gf2-note {
+  font-size: 0.76rem;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0.5rem 0 0;
+}
+.gf2-speedup {
+  margin-top: 0.7rem;
+  padding: 0.4rem 0.6rem;
+  background: rgba(110, 168, 254, 0.12);
+  border: 1px solid rgba(110, 168, 254, 0.3);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.gf2-speedup strong {
+  color: var(--accent);
+}
+
+/* literal / bit chips */
+.gf2-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.gf2-lit {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.gf2-lit.on {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #b6f4cf;
+}
+.gf2-lit.off {
+  color: var(--muted);
+}
+.gf2-lit.forced {
+  box-shadow: 0 0 0 1px rgba(155, 140, 255, 0.4) inset;
+}
+
+/* matrix */
+.gf2-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.gf2-stepper button {
+  padding: 0.35rem 0.6rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.gf2-stepper button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.gf2-stepper button:disabled {
+  opacity: 0.4;
+}
+.gf2-stepper input[type='range'] {
+  flex: 1;
+  min-width: 120px;
+}
+.gf2-stepcount {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.gf2-stepnote {
+  margin-bottom: 0.6rem;
+}
+.gf2-matrix-wrap {
+  overflow-x: auto;
+  margin-bottom: 0.9rem;
+}
+.gf2-matrix {
+  border-collapse: collapse;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.9rem;
+}
+.gf2-matrix th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.45rem;
+}
+.gf2-matrix th.pivotcol {
+  color: var(--accent);
+}
+.gf2-matrix td {
+  width: 1.9rem;
+  height: 1.9rem;
+  text-align: center;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.gf2-matrix td.one {
+  color: var(--text);
+  background: rgba(110, 168, 254, 0.14);
+  font-weight: 700;
+}
+.gf2-matrix td.rhs {
+  border-left: 2px solid var(--accent-2);
+}
+.gf2-matrix td.rhs.one {
+  background: rgba(155, 140, 255, 0.2);
+}
+.gf2-matrix tr.pivotrow td {
+  border-color: rgba(110, 168, 254, 0.5);
+}
+.gf2-matrix td.pivot {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: rgba(110, 168, 254, 0.35) !important;
+  color: #fff;
+}
+.gf2-matrix th.rhs {
+  color: var(--accent-2);
+}
+
+/* Lights Out */
+.gf2-lights-controls,
+.gf2-lfsr-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.gf2-lights-controls button,
+.gf2-sizes button {
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.gf2-lights-controls button:hover,
+.gf2-sizes button:hover {
+  border-color: var(--accent);
+}
+.gf2-sizes {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.gf2-sizes button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.gf2-lights-board {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 1rem;
+}
+.gf2-cell {
+  aspect-ratio: 1;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--accent);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: 0.12s;
+}
+.gf2-cell:hover {
+  border-color: var(--accent);
+}
+.gf2-cell.lit {
+  background: radial-gradient(circle at 50% 40%, #ffe89a, #f6b93b);
+  border-color: #f6b93b;
+  box-shadow: 0 0 12px rgba(246, 185, 59, 0.5);
+  color: #7a4a00;
+}
+.gf2-cell.press {
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.gf2-cell.lit.press {
+  box-shadow: 0 0 12px rgba(246, 185, 59, 0.5), 0 0 0 2px var(--accent) inset;
+}
+
+/* LFSR */
+.gf2-lfsr-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.gf2-lfsr-controls input[type='range'] {
+  width: 150px;
+}
+.gf2-lfsr-controls b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.gf2-bits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0.3rem;
+}
+.gf2-bit {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.8rem;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.gf2-bit.on {
+  background: rgba(110, 168, 254, 0.22);
+  color: var(--text);
+  font-weight: 700;
+}
+.gf2-bit.secret.on {
+  background: rgba(155, 140, 255, 0.28);
+}
+.gf2-bit.rec.on {
+  background: rgba(34, 197, 94, 0.25);
+}
+.gf2-bit.wrong {
+  outline: 2px solid var(--unsat);
+}
+.gf2-bit.stream {
+  opacity: 0.95;
+}
+.gf2-bitlabel {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* self-check */
+.gf2-runbtn {
+  margin-top: 0.7rem;
+  padding: 0.5rem 0.9rem;
+  background: linear-gradient(135deg, rgba(110, 168, 254, 0.3), rgba(155, 140, 255, 0.3));
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.gf2-runbtn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.gf2-check {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.6rem 1rem;
+  background: var(--panel);
+}
+.gf2-check.ok {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+.gf2-check.bad {
+  border-color: rgba(239, 71, 111, 0.5);
+}
+.gf2-check ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  list-style: none;
+}
+.gf2-check li {
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+.gf2-check li.ok {
+  color: #b6f4cf;
+}
+.gf2-check li.bad {
+  color: #ffb3c6;
+}
+.gf2-model .gf2-card-k {
+  margin-bottom: 0.6rem;
+}
+
+@media (max-width: 900px) {
+  .layout.gf2 {
+    grid-template-columns: 1fr;
+  }
+}
