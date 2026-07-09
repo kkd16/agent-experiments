@@ -14,7 +14,7 @@ import {
   type Participant,
 } from '../ecc/signal'
 import { generateKeyPair, dh, x3dhInitiate, type KeyPair, type InitialMessage } from '../ecc/x3dh'
-import { initAlice, cloneState, type RatchetMessage } from '../ecc/doubleratchet'
+import { initAlice, cloneState, CHACHA20_POLY1305, AES_256_GCM, type RatchetMessage, type AeadSuite } from '../ecc/doubleratchet'
 import { beginResponder } from '../ecc/signal'
 import { xeddsaVerify } from '../ecc/xeddsa'
 
@@ -51,7 +51,7 @@ interface ChatState {
   convo: ChatMsg[]
 }
 
-function build(): ChatState {
+function build(suite: AeadSuite = CHACHA20_POLY1305): ChatState {
   const alice = createParticipant('Alice')
   const bob = createParticipant('Bob')
   const bundle = publishBundle(bob, 0)
@@ -75,13 +75,16 @@ function build(): ChatState {
   const aliceSession: Session = {
     state: initAlice(result.sharedSecret, bundle.signedPreKey),
     ad: result.associatedData,
+    suite,
   }
   const bobSession = beginResponder(bob, 0, message)
+  bobSession.suite = suite
   return { info, alice: aliceSession, bob: bobSession, convo: [] }
 }
 
 export function SealedPage() {
-  const [state, setState] = useState<ChatState>(build)
+  const [suite, setSuite] = useState<AeadSuite>(CHACHA20_POLY1305)
+  const [state, setState] = useState<ChatState>(() => build(CHACHA20_POLY1305))
   const [draft, setDraft] = useState('the eagle lands at dawn')
   const [tamper, setTamper] = useState(false)
   const [ooo, setOoo] = useState<ReturnType<typeof runOutOfOrderDemo> | null>(null)
@@ -111,8 +114,9 @@ export function SealedPage() {
     setTamper(false)
   }
 
-  const reset = () => {
-    setState(build())
+  const reset = (nextSuite: AeadSuite = suite) => {
+    setSuite(nextSuite)
+    setState(build(nextSuite))
     setOoo(null)
     setFs(null)
     setPcs(null)
@@ -139,7 +143,7 @@ export function SealedPage() {
         title="Handshake · X3DH (Extended Triple Diffie–Hellman)"
         sub="Bob publishes a prekey bundle to an untrusted server. Alice fetches it, checks the signed prekey, and mixes 3–4 Diffie–Hellman outputs into one root secret — the identity DHs authenticate, the ephemeral DHs give forward secrecy."
         right={
-          <button className="btn" onClick={reset}>
+          <button className="btn" onClick={() => reset()}>
             ↻ new identities
           </button>
         }
@@ -212,7 +216,29 @@ export function SealedPage() {
       <Panel
         title="Conversation"
         sub="Each message advances the symmetric ratchet by one click (a fresh, single-use key). Switching who speaks turns the Diffie–Hellman ratchet — a brand-new ephemeral reseeds the root. The header (ratchet public key, chain lengths) is sent in the clear but authenticated as associated data."
+        right={
+          <span className="seg" style={{ gap: '0.35rem', alignItems: 'center' }}>
+            <span className="note" style={{ fontSize: '0.72rem' }}>record cipher</span>
+            {[CHACHA20_POLY1305, AES_256_GCM].map((s) => (
+              <button
+                key={s.name}
+                className={'btn' + (suite.name === s.name ? '' : ' ghost')}
+                style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem' }}
+                onClick={() => reset(s)}
+              >
+                {s.name}
+              </button>
+            ))}
+          </span>
+        }
       >
+        <div className="note" style={{ marginBottom: '0.6rem' }}>
+          The record layer is cipher-agnostic. Signal ships{' '}
+          <strong>ChaCha20-Poly1305</strong>; switch to <strong>AES-256-GCM</strong> (TLS 1.3's cipher)
+          and the exact same X3DH + Double Ratchet runs over this lab's{' '}
+          <a href="#/aesgcm">from-scratch AES-GCM</a> — every guarantee below still holds. Switching
+          starts a fresh session.
+        </div>
         <div className="seg" style={{ marginBottom: '0.7rem', flexWrap: 'wrap' }}>
           <input
             style={{ flex: '1 1 260px' }}

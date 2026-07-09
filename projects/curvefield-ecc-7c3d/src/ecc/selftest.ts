@@ -260,6 +260,12 @@ import {
 } from './ring'
 import { edEqual2, L25519 as RING_L } from './ed25519'
 import { chacha20Block, chacha20, poly1305Mac, aeadEncrypt, aeadDecrypt } from './chacha20'
+import { SBOX, INV_SBOX, encryptBlock, decryptBlock, ctr as aesCtr, traceEncrypt } from './aes'
+import { gcmEncrypt, gcmDecrypt, gmac, computeJ0 } from './gcm'
+import { cmac, cmacSubkeys } from './cmac'
+import { gcmSivEncrypt, gcmSivDecrypt, deriveKeysPublic, polyvalDot } from './gcmsiv'
+import { runSuiteRoundTrip } from './signal'
+import { CHACHA20_POLY1305, AES_256_GCM } from './doubleratchet'
 import { hkdf, hkdfExtract } from './hkdf'
 import { xeddsaSign, xeddsaVerify } from './xeddsa'
 import {
@@ -1846,6 +1852,96 @@ export function runSelfTest(): TestCase[] {
     check('Ratchet', 'out-of-order delivery still decrypts (3,1,2)', runOutOfOrderDemo().ok, 'skipped message keys are stashed until they arrive')
     check('Ratchet', 'forward secrecy: a used key is deleted', runForwardSecrecyDemo().ok, 'replaying a delivered message fails')
     check('Ratchet', 'post-compromise security: a stolen state heals out', runPostCompromiseDemo().ok, 'one round trip locks the thief back out')
+  }
+
+  // ── AES + the authenticated modes (FIPS-197, NIST SP 800-38D, RFC 4493/8452) ──
+  {
+    const bhex = (b: Uint8Array) => bytesToHex(b)
+    const hb = (s: string) => (s.length ? hexToBytes(s) : new Uint8Array(0))
+
+    // The S-box is computed from the GF(2⁸) inverse + affine map, not tabled.
+    check('AES', 'S-box S(0x00) = 0x63 (FIPS-197 fixed point)', SBOX[0x00] === 0x63 && SBOX[0x53] === 0xed, 'inversion in GF(2⁸) then the affine transform')
+    check('AES', 'inverse S-box undoes the S-box on all 256 bytes', Array.from({ length: 256 }, (_, i) => i).every((i) => INV_SBOX[SBOX[i]] === i), 'a genuine permutation of the byte space')
+
+    // FIPS-197 worked examples — all three key sizes, same 128-bit plaintext.
+    const pt = hb('00112233445566778899aabbccddeeff')
+    check('AES', 'AES-128 matches FIPS-197 Appendix C.1', bhex(encryptBlock(hb('000102030405060708090a0b0c0d0e0f'), pt)) === '69c4e0d86a7b0430d8cdb78070b4c55a', 'key 000102…0f → 69c4e0d8…')
+    check('AES', 'AES-192 matches FIPS-197 Appendix C.2', bhex(encryptBlock(hb('000102030405060708090a0b0c0d0e0f1011121314151617'), pt)) === 'dda97ca4864cdfe06eaf70a0ec0d7191', '12-round schedule')
+    check('AES', 'AES-256 matches FIPS-197 Appendix C.3', bhex(encryptBlock(hb('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'), pt)) === '8ea2b7ca516745bfeafc49904b496089', '14-round schedule')
+    check('AES', 'decryption inverts the cipher', bhex(decryptBlock(hb('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'), hb('8ea2b7ca516745bfeafc49904b496089'))) === bhex(pt), 'the equivalent inverse cipher recovers the block')
+
+    // The round-by-round trace, pinned to the FIPS-197 Appendix B example.
+    const steps = traceEncrypt(hb('2b7e151628aed2a6abf7158809cf4f3c'), hb('3243f6a8885a308d313198a2e0370734'))
+    const r1sb = steps.find((s) => s.round === 1 && s.op === 'subbytes')!
+    const r1mc = steps.find((s) => s.round === 1 && s.op === 'mixcolumns')!
+    check('AES', 'Appendix B round-1 SubBytes state', bhex(r1sb.state) === 'd42711aee0bf98f1b8b45de51e415230', 'the instrumented trace the lab animates')
+    check('AES', 'Appendix B round-1 MixColumns state', bhex(r1mc.state) === '046681e5e0cb199a48f8d37a2806264c', 'diffusion across each column via GF(2⁸)')
+    check('AES', 'final ciphertext matches FIPS-197 Appendix B', bhex(steps[steps.length - 1].state) === '3925841d02dc09fbdc118597196a0b32', 'end-to-end worked example')
+
+    // AES-CTR turns the block cipher into a stream cipher (self-inverse).
+    const ctrKey = hb('2b7e151628aed2a6abf7158809cf4f3c'), ctrIv = hb('f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff')
+    const ctrMsg = utf8('AES-CTR is a stream cipher built from a block cipher.')
+    check('AES-CTR', 'encryption round-trips (self-inverse XOR)', bhex(aesCtr(ctrKey, ctrIv, aesCtr(ctrKey, ctrIv, ctrMsg))) === bhex(ctrMsg), 'E∘E = identity in counter mode')
+
+    // AES-GCM — the NIST / McGrew–Viega test vectors (SP 800-38D).
+    const zk = hb('00000000000000000000000000000000'), ziv = hb('000000000000000000000000')
+    check('AES-GCM', 'GHASH key H = E_K(0) (test case 1)', bhex(encryptBlock(zk, new Uint8Array(16))) === '66e94bd4ef8a2c3b884cfa59ca342b2e', 'the universal-hash key is one AES call')
+    const tc1 = gcmEncrypt(zk, ziv, hb(''), hb(''))
+    check('AES-GCM', 'empty message, tag matches test case 1', bhex(tc1.tag) === '58e2fccefa7e3061367f1d57a4e7455a', 'GHASH of the length block only')
+    const tc2 = gcmEncrypt(zk, ziv, hb('00000000000000000000000000000000'), hb(''))
+    check('AES-GCM', 'test case 2 ciphertext + tag', bhex(tc2.ciphertext) === '0388dace60b6a392f328c2b971b2fe78' && bhex(tc2.tag) === 'ab6e47d42cec13bdf53a67b21257bddf', 'one zero block encrypted + authenticated')
+    const K3 = hb('feffe9928665731c6d6a8f9467308308'), IV3 = hb('cafebabefacedbaddecaf888')
+    const P3 = hb('d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255')
+    const tc3 = gcmEncrypt(K3, IV3, P3, hb(''))
+    check('AES-GCM', 'test case 3: 4 blocks, 96-bit IV', bhex(tc3.ciphertext) === '42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985' && bhex(tc3.tag) === '4d5c2af327cd64a62cf35abd2ba6fab4', 'CTR keystream + GHASH over the ciphertext')
+    const A4 = hb('feedfacedeadbeeffeedfacedeadbeefabaddad2')
+    const P4 = hb('d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39')
+    const tc4 = gcmEncrypt(K3, IV3, P4, A4)
+    check('AES-GCM', 'test case 4: with associated data', bhex(tc4.ciphertext) === '42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091' && bhex(tc4.tag) === '5bc94fbc3221a5db94fae95ae7121a47', 'the AAD is folded into GHASH but not encrypted')
+    const tc5 = gcmEncrypt(K3, hb('cafebabefacedbad'), P4, A4)
+    check('AES-GCM', 'test case 5: 64-bit IV exercises GHASH-based J0', bhex(tc5.tag) === '3612d2e79e3b0785561be14aaca2fccb', 'a non-96-bit nonce is itself hashed to form J0')
+    check('AES-GCM', 'decrypt round-trips', bhex(gcmDecrypt(K3, IV3, tc4.ciphertext, tc4.tag, A4) ?? new Uint8Array(1)) === bhex(P4), 'verify-then-decrypt recovers the plaintext')
+    check('AES-GCM', 'rejects a tampered ciphertext', (() => { const c = tc4.ciphertext.slice(); c[0] ^= 1; return gcmDecrypt(K3, IV3, c, tc4.tag, A4) === null })(), 'one flipped bit → the tag fails')
+    check('AES-GCM', 'rejects tampered associated data', gcmDecrypt(K3, IV3, tc4.ciphertext, tc4.tag, hb('00')) === null, 'GHASH binds the AAD')
+    check('AES-GMAC', 'GMAC = GCM tag over empty plaintext', bhex(gmac(K3, IV3, A4)) === bhex(gcmEncrypt(K3, IV3, hb(''), A4).tag), 'authentication-only mode')
+    check('AES-GCM', 'J0 for a 96-bit IV is IV‖0³¹‖1', bhex(computeJ0(encryptBlock(zk, new Uint8Array(16)), ziv)) === '00000000000000000000000000000001', 'the counter pre-block')
+
+    // AES-CMAC — RFC 4493 test vectors.
+    const cmK = hb('2b7e151628aed2a6abf7158809cf4f3c')
+    const sk = cmacSubkeys(cmK)
+    check('AES-CMAC', 'subkeys K1,K2 match RFC 4493', bhex(sk.K1) === 'fbeed618357133667c85e08f7236a8de' && bhex(sk.K2) === 'f7ddac306ae266ccf90bc11ee46d513b', 'the GF(2¹²⁸) shift-and-XOR that closes CBC-MAC')
+    check('AES-CMAC', 'MAC of the empty message', bhex(cmac(cmK, hb(''))) === 'bb1d6929e95937287fa37d129b756746', '10* padding, ⊕K2')
+    check('AES-CMAC', 'MAC of one full block', bhex(cmac(cmK, hb('6bc1bee22e409f96e93d7e117393172a'))) === '070a16b46b4d4144f79bdd9dd04a287c', 'exact multiple, ⊕K1')
+    check('AES-CMAC', 'MAC of a 40-byte message', bhex(cmac(cmK, hb('6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411'))) === 'dfa66747de9ae63030ca32611497c827', 'a partial final block, ⊕K2')
+
+    // AES-GCM-SIV — nonce-misuse-resistant AEAD (RFC 8452).
+    const sivK = hb('01000000000000000000000000000000'), sivN = hb('030000000000000000000000')
+    const dk = deriveKeysPublic(sivK, sivN)
+    check('AES-GCM-SIV', 'DeriveKeys auth key matches RFC 8452 C.1', bhex(dk.mak) === 'd9b360279694941ac5dbc6987ada7377', 'the nonce is hashed through AES to split the key')
+    const sivEmpty = gcmSivEncrypt(sivK, sivN, hb(''), hb(''))
+    check('AES-GCM-SIV', 'empty-message result matches RFC 8452 C.1', bhex(sivEmpty.tag) === 'dc20e2d83f25705bb49e439eca56de25', 'tag = AES_MEK(nonce), SIV counter unused')
+    // The POLYVAL field: identity x¹²⁸ mod M, commutativity, distributivity.
+    const e = (1n << 127n) | (1n << 126n) | (1n << 121n) | 1n
+    const rnd = (s: number) => { let x = BigInt(s), v = 0n; for (let i = 0; i < 128; i++) { x = (x * 6364136223846793005n + 1n) & ((1n << 64n) - 1n); v |= ((x >> 33n) & 1n) << BigInt(i) } return v }
+    const polyvalOk = Array.from({ length: 16 }, (_, i) => i + 1).every((i) => { const a = rnd(i), b = rnd(i + 99), c = rnd(i + 199); return polyvalDot(a, e) === a && polyvalDot(a, b) === polyvalDot(b, a) && polyvalDot(a ^ c, b) === (polyvalDot(a, b) ^ polyvalDot(c, b)) })
+    check('AES-GCM-SIV', 'POLYVAL is a valid field multiply (dot·x⁻¹²⁸)', polyvalOk, 'identity, commutativity, distributivity over 𝔽₂¹²⁸')
+    const sivMsg = utf8('nonce reuse should not be catastrophic here')
+    const sivAad = hb('01020304')
+    const siv1 = gcmSivEncrypt(sivK, sivN, sivMsg, sivAad)
+    check('AES-GCM-SIV', 'AES-128 encrypt→decrypt round-trips', bhex(gcmSivDecrypt(sivK, sivN, siv1.ciphertext, siv1.tag, sivAad) ?? new Uint8Array(1)) === bhex(sivMsg), 'the synthetic-IV tag reseeds CTR')
+    const siv2 = gcmSivEncrypt(sivK, sivN, sivMsg, sivAad)
+    check('AES-GCM-SIV', 'deterministic under nonce reuse', bhex(siv1.tag) === bhex(siv2.tag) && bhex(siv1.ciphertext) === bhex(siv2.ciphertext), 'same inputs → same output (the minimum leakage)')
+    check('AES-GCM-SIV', 'a different plaintext gives a different tag', bhex(gcmSivEncrypt(sivK, sivN, utf8('a different plaintext under the same nonce!!'), sivAad).tag) !== bhex(siv1.tag), 'no cross-plaintext keystream reuse')
+    check('AES-GCM-SIV', 'rejects a tampered ciphertext', (() => { const c = siv1.ciphertext.slice(); c[0] ^= 1; return gcmSivDecrypt(sivK, sivN, c, siv1.tag, sivAad) === null })(), 'the SIV tag authenticates')
+    const sivK256 = hb('0100000000000000000000000000000000000000000000000000000000000000')
+    const siv256 = gcmSivEncrypt(sivK256, sivN, sivMsg, sivAad)
+    check('AES-GCM-SIV', 'AES-256 variant round-trips', bhex(gcmSivDecrypt(sivK256, sivN, siv256.ciphertext, siv256.tag, sivAad) ?? new Uint8Array(1)) === bhex(sivMsg), 'DeriveKeys extends to a 32-byte encryption key')
+
+    // The Double Ratchet is cipher-agnostic — it runs over the new AES-256-GCM too.
+    const rtChacha = runSuiteRoundTrip(CHACHA20_POLY1305)
+    check('Ratchet', 'runs over ChaCha20-Poly1305 (Signal default)', rtChacha.ok && rtChacha.tamperRejected, 'the record layer, cipher-parameterised')
+    const rtGcm = runSuiteRoundTrip(AES_256_GCM)
+    check('Ratchet', 'runs over AES-256-GCM (TLS 1.3 cipher)', rtGcm.ok && rtGcm.tamperRejected, 'a full X3DH + ratchet conversation on the from-scratch AES-GCM')
   }
 
   // ── SHA-3 / SHAKE known-answer tests (FIPS 202) ──
