@@ -41,6 +41,7 @@ import {
 } from './linalg'
 import * as fin from './finance'
 import * as sec from './securities'
+import * as rc from './riskcurve'
 import {
   couponPCD,
   couponNCD,
@@ -1447,6 +1448,128 @@ export const FUNCTIONS: Record<string, FnImpl> = {
   TBILLEQ: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillEq(a[0], a[1], a[2])),
   TBILLPRICE: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillPrice(a[0], a[1], a[2])),
   TBILLYIELD: (args, h) => secArgs(args, h, 2, [0, 0, 0], (a) => sec.tbillYield(a[0], a[1], a[2])),
+
+  // ---- Risk & yield curve (v11): the fixed-income risk desk -------------------
+  // Second-order bond risk (convexity, DV01) and their model-free bump-and-reprice
+  // twins, plus a from-scratch par-instrument yield-curve bootstrap (discount
+  // factors, zero/spot rates and forward rates). The risk measures differentiate one
+  // shared cash-flow model that reproduces `PRICE` for every multi-period bond, and
+  // the curve reprices its own par instruments back to par by construction.
+  //
+  // Bond risk — CONVEXITY / DV01 / EFFDURATION / EFFCONVEXITY.
+  // Shape: settlement · maturity · coupon · yield · [redemption=100] · [freq=1] · [basis=0]
+  // (the effective pair take a trailing · [bump=0.0001] yield shock).
+  CONVEXITY: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0], (a) => rc.convexity(a[0], a[1], a[2], a[3], a[4], a[5], a[6])),
+  DV01: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0], (a) => rc.dv01(a[0], a[1], a[2], a[3], a[4], a[5], a[6])),
+  EFFDURATION: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0, 0.0001], (a) => rc.effDuration(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])),
+  EFFCONVEXITY: (args, h) => secArgs(args, h, 2, [0, 0, 0, 0, 100, 1, 0, 0.0001], (a) => rc.effConvexity(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])),
+
+  // Yield curve — bootstrap a discount/zero curve from par rates on a tenor grid, then
+  // query it. Tenors (years) and par rates (fractions) are equal-length ranges; tenors
+  // must be strictly increasing and positive. Each instrument is modelled as paying a
+  // coupon at every tenor *node* up to its maturity, so a conventional (annual) curve
+  // comes from a consecutive-year grid (1,2,3,…); a sparse grid still reprices its own
+  // par bonds to par but describes instruments that only pay on the given nodes.
+  ZEROCURVE: (args, h) => curveSpill(args, h),
+  SPOTRATE: (args, h) => curveQuery(args, h, 1, (cv, t) => rc.spotAt(cv, t[0])),
+  DISCFACTOR: (args, h) => curveQuery(args, h, 1, (cv, t) => (t[0] < 0 ? null : rc.discountAt(cv, t[0]))),
+  FWDRATE: (args, h) => curveQuery(args, h, 2, (cv, t) => rc.forwardRate(cv, t[0], t[1])),
+
+  // Curve-based bond pricing & risk. Shape: settlement · maturity · coupon · redemption ·
+  // frequency · basis · tenors · parRates [· bump=0.0001]. The bond's cash flows are
+  // discounted on the bootstrapped curve; CURVEDURATION parallel-shocks the zeros and
+  // KEYRATEDUR decomposes that into a per-node ladder whose sum is CURVEDURATION.
+  PRICECURVE: (args, h) => bondCurve(args, h, (bond, cv) => {
+    const p = rc.priceOnCurve(bond[0], bond[1], bond[2], bond[3], bond[4], bond[5], cv)
+    return p === null ? err('#NUM!') : p.clean
+  }),
+  CURVEDURATION: (args, h) => bondCurve(args, h, (bond, cv, bump) => {
+    const d = rc.curveEffDuration(bond[0], bond[1], bond[2], bond[3], bond[4], bond[5], cv.tenors, cv.zeros, bump)
+    return d === null ? err('#NUM!') : d
+  }),
+  KEYRATEDUR: (args, h) => bondCurve(args, h, (bond, cv, bump) => {
+    const krd = rc.keyRateDurations(bond[0], bond[1], bond[2], bond[3], bond[4], bond[5], cv.tenors, cv.zeros, bump)
+    if (krd === null) return err('#NUM!')
+    return matrix(cv.tenors.map((t, i) => [t, krd[i]]))
+  }),
+}
+
+/** Read a range/array node into a numeric vector in row-major order: numbers pass
+ *  through, booleans map to 1/0, blanks are skipped, an error short-circuits and any
+ *  other value (text) is a `#VALUE!`. Used to marshal the yield-curve inputs. */
+function numVec(node: Node, h: FnHelpers): number[] | ErrorValue {
+  const m = h.asMatrix(node)
+  if (isError(m)) return m
+  const out: number[] = []
+  for (const row of m.data) {
+    for (const c of row) {
+      if (isError(c)) return c
+      if (typeof c === 'number') out.push(c)
+      else if (typeof c === 'boolean') out.push(c ? 1 : 0)
+      else if (isBlank(c)) continue
+      else return err('#VALUE!', 'the yield curve takes numeric tenors and rates')
+    }
+  }
+  return out
+}
+
+/** Bootstrap the curve from the first two args (tenors, par rates), or an error value. */
+function curveFrom(args: Node[], h: FnHelpers): rc.Curve | ErrorValue {
+  return curveFromRangesAt(args, h, 0)
+}
+
+/** `ZEROCURVE(tenors, parRates)` → an N×3 array of `[tenor, zeroRate, discountFactor]`. */
+function curveSpill(args: Node[], h: FnHelpers): RuntimeValue {
+  const cv = curveFrom(args, h)
+  if (isError(cv)) return cv
+  const data: Scalar[][] = cv.tenors.map((t, i) => [t, cv.zeros[i], cv.dfs[i]])
+  return matrix(data)
+}
+
+/** A scalar curve query: bootstrap, then evaluate `f(curve, [t…])` for the trailing
+ *  `nT` numeric time arguments. A `null` result becomes `#NUM!`. */
+function curveQuery(args: Node[], h: FnHelpers, nT: number, f: (cv: rc.Curve, t: number[]) => number | null): RuntimeValue {
+  const cv = curveFrom(args, h)
+  if (isError(cv)) return cv
+  const t: number[] = []
+  for (let i = 0; i < nT; i++) {
+    const v = numAt(args, 2 + i, h)
+    if (isError(v)) return v
+    t.push(v)
+  }
+  const r = f(cv, t)
+  return r === null || !Number.isFinite(r) ? err('#NUM!') : r
+}
+
+/** Marshal a curve-based bond function: six leading scalar bond args
+ *  (settlement · maturity · coupon · redemption · frequency · basis; the first two
+ *  truncated to serials), then the two curve ranges at args 6/7, then an optional yield
+ *  `bump` (default 1bp) at arg 8. Bootstraps the curve and hands `(bond, curve, bump)` on. */
+function bondCurve(args: Node[], h: FnHelpers, f: (bond: number[], cv: rc.Curve, bump: number) => RuntimeValue): RuntimeValue {
+  const bond: number[] = []
+  const defs = [0, 0, 0, 100, 1, 0]
+  for (let i = 0; i < defs.length; i++) {
+    const v = numAt(args, i, h, defs[i])
+    if (isError(v)) return v
+    bond.push(i < 2 ? Math.trunc(v) : v)
+  }
+  const cv = curveFromRangesAt(args, h, 6)
+  if (isError(cv)) return cv
+  const bump = numAt(args, 8, h, 0.0001)
+  if (isError(bump)) return bump
+  return f(bond, cv, bump)
+}
+
+/** Bootstrap a curve from the tenor/par-rate ranges at `args[at]` / `args[at+1]`. */
+function curveFromRangesAt(args: Node[], h: FnHelpers, at: number): rc.Curve | ErrorValue {
+  const tenors = numVec(args[at], h)
+  if (isError(tenors)) return tenors
+  const rates = numVec(args[at + 1], h)
+  if (isError(rates)) return rates
+  if (tenors.length === 0 || tenors.length !== rates.length) return err('#N/A', 'tenors and par rates must be equal-length, non-empty')
+  const cv = rc.bootstrap(tenors, rates)
+  if (!cv) return err('#NUM!', 'tenors must be strictly increasing & positive and the curve arbitrage-free')
+  return cv
 }
 
 /** Map a finance-core result (a number or `null` domain error) to a runtime value. */
