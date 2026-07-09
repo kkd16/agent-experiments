@@ -174,7 +174,8 @@ export default function App() {
         end-to-end encrypted channel (X3DH + Double Ratchet over a from-scratch ChaCha20-Poly1305 — or,
         interchangeably, a from-scratch AES-256-GCM), the full symmetric-cipher standard AES (FIPS-197,
         with a computed S-box) and the authenticated modes riding on it — AES-GCM (NIST SP 800-38D),
-        nonce-misuse-resistant AES-GCM-SIV (RFC 8452), and AES-CMAC (RFC 4493) — pinned to their FIPS /
+        the two nonce-misuse-resistant AEADs AES-GCM-SIV (RFC 8452) and AES-SIV (RFC 5297), and AES-CMAC
+        (RFC 4493) — pinned to their FIPS /
         NIST / RFC vectors, and secure two-party computation in both paradigms — Chou–Orlandi oblivious transfer + Yao's
         garbled circuits (free-XOR + half-gates) and the GMW secret-sharing protocol, running the
         Millionaires' Problem — zero crypto dependencies.

@@ -4,6 +4,7 @@ import { SBOX, encryptBlock, traceEncrypt, type AesStep } from '../ecc/aes'
 import { gcmEncrypt, gcmDecrypt, ghash } from '../ecc/gcm'
 import { gcmSivEncrypt } from '../ecc/gcmsiv'
 import { cmac, cmacSubkeys } from '../ecc/cmac'
+import { sivEncrypt, sivDecrypt } from '../ecc/aessiv'
 
 // ── small byte helpers ────────────────────────────────────────────────────────
 
@@ -416,6 +417,52 @@ function CmacPanel() {
   )
 }
 
+// ── AES-SIV (RFC 5297) ────────────────────────────────────────────────────────
+
+const SIV_KEY = parseHex('fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff', 32)
+
+function SivPanel() {
+  const [msg, setMsg] = useState('deterministic AEAD — same input, same output')
+  const [adText, setAdText] = useState('header')
+  const data = useMemo(() => {
+    const pt = utf8(msg)
+    const ad = [utf8(adText)]
+    const r = sivEncrypt(SIV_KEY, pt, ad)
+    const dec = sivDecrypt(SIV_KEY, r.v, r.ciphertext, ad)
+    const again = sivEncrypt(SIV_KEY, pt, ad)
+    const deterministic = hx(again.v) === hx(r.v) && hx(again.ciphertext) === hx(r.ciphertext)
+    return { r, dec, deterministic }
+  }, [msg, adText])
+
+  return (
+    <Panel
+      title="AES-SIV — the CMAC-based deterministic AEAD (RFC 5297)"
+      sub="GCM-SIV's sibling: nonce-misuse resistance built on the block-cipher MAC instead of a polynomial hash. S2V folds the associated data and plaintext into a synthetic IV that is also the tag; there is no nonce at all, so identical inputs encrypt identically — the property that makes it useful for deterministic / searchable encryption and key wrapping (RFC 8291 Web Push)."
+    >
+      <div className="grid cols-2">
+        <div>
+          <label className="sub">plaintext</label>
+          <input style={{ width: '100%', marginBottom: '0.5rem' }} value={msg} onChange={(e) => setMsg(e.target.value)} />
+          <label className="sub">associated data</label>
+          <input style={{ width: '100%' }} value={adText} onChange={(e) => setAdText(e.target.value)} />
+        </div>
+        <div>
+          <dl className="kv">
+            <dt>synthetic IV = tag V</dt>
+            <dd className="hexbox violet" style={{ gridColumn: '1 / -1' }}>{hx(data.r.v)}</dd>
+            <dt>ciphertext</dt>
+            <dd className="hexbox" style={{ gridColumn: '1 / -1', wordBreak: 'break-all' }}>{hx(data.r.ciphertext)}</dd>
+          </dl>
+          <div style={{ marginTop: '0.5rem' }}>
+            <Verdict ok={data.dec !== null}>{data.dec !== null ? 'verifies + decrypts' : 'rejected'}</Verdict>{' '}
+            <Verdict ok={data.deterministic}>{data.deterministic ? 'deterministic' : 'non-deterministic'}</Verdict>
+          </div>
+        </div>
+      </div>
+    </Panel>
+  )
+}
+
 // ── the page ──────────────────────────────────────────────────────────────────
 
 export function AesGcmPage() {
@@ -426,14 +473,16 @@ export function AesGcmPage() {
         actually runs on. This is <strong>AES</strong> (FIPS-197), built from the GF(2⁸) field up: the
         S-box computed from a multiplicative inverse, the key schedule, the round transformations — then
         the authenticated modes that ride on it. <strong>AES-GCM</strong> is the default AEAD in TLS 1.3;{' '}
-        <strong>AES-GCM-SIV</strong> is its nonce-misuse-resistant successor; <strong>AES-CMAC</strong> is
-        the block-cipher MAC. Every byte here is computed in your browser and pinned to the FIPS / NIST /
-        RFC test vectors on the Self-Test page.
+        <strong>AES-GCM-SIV</strong> and <strong>AES-SIV</strong> are its nonce-misuse-resistant successors (one
+        polynomial-hash, one CMAC-based); <strong>AES-CMAC</strong> is the block-cipher MAC underneath.
+        Every byte here is computed in your browser and pinned to the FIPS / NIST / RFC test vectors on
+        the Self-Test page.
       </PageHead>
 
       <AesEngine />
       <GcmPanel />
       <NonceReusePanel />
+      <SivPanel />
       <CmacPanel />
 
       <Panel title="Why this matters">

@@ -264,6 +264,7 @@ import { SBOX, INV_SBOX, encryptBlock, decryptBlock, ctr as aesCtr, traceEncrypt
 import { gcmEncrypt, gcmDecrypt, gmac, computeJ0 } from './gcm'
 import { cmac, cmacSubkeys } from './cmac'
 import { gcmSivEncrypt, gcmSivDecrypt, deriveKeysPublic, polyvalDot } from './gcmsiv'
+import { sivEncrypt, sivDecrypt, seal as aesSivSeal } from './aessiv'
 import { runSuiteRoundTrip } from './signal'
 import { CHACHA20_POLY1305, AES_256_GCM } from './doubleratchet'
 import { hkdf, hkdfExtract } from './hkdf'
@@ -1936,6 +1937,19 @@ export function runSelfTest(): TestCase[] {
     const sivK256 = hb('0100000000000000000000000000000000000000000000000000000000000000')
     const siv256 = gcmSivEncrypt(sivK256, sivN, sivMsg, sivAad)
     check('AES-GCM-SIV', 'AES-256 variant round-trips', bhex(gcmSivDecrypt(sivK256, sivN, siv256.ciphertext, siv256.tag, sivAad) ?? new Uint8Array(1)) === bhex(sivMsg), 'DeriveKeys extends to a 32-byte encryption key')
+
+    // AES-SIV — the CMAC-based deterministic AEAD (RFC 5297).
+    const sivKey = hb('fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff')
+    const sivAd = hb('101112131415161718191a1b1c1d1e1f2021222324252627')
+    const sivPt = hb('112233445566778899aabbccddee')
+    const sr = sivEncrypt(sivKey, sivPt, [sivAd])
+    check('AES-SIV', 'S2V synthetic IV matches RFC 5297 A.1', bhex(sr.v) === '85632d07c6e8f37f950acd320a2ecc93', 'the CMAC-based PRF over (AD, plaintext)')
+    check('AES-SIV', 'CTR ciphertext matches RFC 5297 A.1', bhex(sr.ciphertext) === '40c02b9690c4dc04daef7f6afe5c', 'V (two bits masked) seeds the counter')
+    check('AES-SIV', 'V ‖ C wire format matches RFC 5297 A.1', bhex(aesSivSeal(sivKey, sivPt, [sivAd])) === '85632d07c6e8f37f950acd320a2ecc9340c02b9690c4dc04daef7f6afe5c', 'the synthetic IV is prepended as the tag')
+    check('AES-SIV', 'decrypt round-trips', bhex(sivDecrypt(sivKey, sr.v, sr.ciphertext, [sivAd]) ?? new Uint8Array(1)) === bhex(sivPt), 'recompute S2V and compare')
+    check('AES-SIV', 'rejects a tampered ciphertext', (() => { const c = sr.ciphertext.slice(); c[0] ^= 1; return sivDecrypt(sivKey, sr.v, c, [sivAd]) === null })(), 'the synthetic IV no longer matches')
+    check('AES-SIV', 'rejects altered associated data', sivDecrypt(sivKey, sr.v, sr.ciphertext, [hb('00')]) === null, 'S2V binds the AD vector')
+    check('AES-SIV', 'deterministic (misuse-resistant)', bhex(sivEncrypt(sivKey, sivPt, [sivAd]).v) === bhex(sr.v), 'same inputs → same output, no nonce at all')
 
     // The Double Ratchet is cipher-agnostic — it runs over the new AES-256-GCM too.
     const rtChacha = runSuiteRoundTrip(CHACHA20_POLY1305)

@@ -1281,8 +1281,9 @@ channel so the Double Ratchet becomes cipher-agnostic.
       tamper rejection, and the ratchet running over both suites).
 - [ ] follow-up: **AES-CCM** (RFC 3610, the WPA2 / Bluetooth-LE AEAD) — CTR + CBC-MAC with the B0/flags
       formatting — as a second block-cipher AEAD beside GCM.
-- [ ] follow-up: **AES-SIV** (RFC 5297, the CMAC-based deterministic AEAD) to sit beside GCM-SIV and
-      contrast the two misuse-resistant constructions.
+- [x] follow-up: **AES-SIV** (RFC 5297, the CMAC-based deterministic AEAD) to sit beside GCM-SIV and
+      contrast the two misuse-resistant constructions — `aessiv.ts` (S2V + dbl/xorend, the double-length
+      key, V‖C wire format), pinned to the RFC 5297 Appendix A.1 vector, with a lab panel.
 - [ ] follow-up: **AES-KW / AES-KWP** (RFC 3394 key wrap) for wrapping the ratchet/prekey material.
 - [ ] follow-up: a **CBC + PKCS#7 padding-oracle** attack demo — decrypt a ciphertext with only a
       valid/invalid-padding oracle, the classic teaching attack, next to the authenticated modes that
@@ -1299,7 +1300,7 @@ channel so the Double Ratchet becomes cipher-agnostic.
   pinned to the standards' vectors.** The lab reached from the ECDLP to lattices, STARKs and Nova but
   had exactly one symmetric cipher (ChaCha20-Poly1305) and, conspicuously, **no AES** — the primitive
   the internet actually runs on. This session fills that hole and builds the real AEAD stack on top.
-  Four new engine modules, zero new dependencies, still zero crypto deps. (1) `aes.ts`: AES-128/192/256
+  Five new engine modules, zero new dependencies, still zero crypto deps. (1) `aes.ts`: AES-128/192/256
   (FIPS-197) with the S-box **computed** from the GF(2⁸) multiplicative inverse + affine map (log/exp
   tables over the generator 0x03 — nothing tabled), the full key schedule, the four round steps and
   their inverses, block encrypt/decrypt, an instrumented `traceEncrypt` recording every intermediate
@@ -1312,7 +1313,11 @@ channel so the Double Ratchet becomes cipher-agnostic.
   (RFC 8452), the nonce-misuse-resistant AEAD — POLYVAL implemented directly as dot(a,b)=a·b·x⁻¹²⁸ via a
   Montgomery reduction in the little-endian field, DeriveKeys, the synthetic-IV tag, LE-32 counter;
   DeriveKeys' auth key and the empty-message result reproduce RFC 8452 Appendix C.1, and POLYVAL is
-  cross-checked against the field axioms (identity x¹²⁸ mod M, commutativity, distributivity). The
+  cross-checked against the field axioms (identity x¹²⁸ mod M, commutativity, distributivity). (5)
+  `aessiv.ts`: AES-SIV (RFC 5297), the *other* misuse-resistant AEAD — CMAC-based rather than
+  polynomial-hash-based — with S2V (dbl + xorend over the CMAC-of-zero seed), the double-length key, and
+  the V‖ciphertext wire format, matched byte-for-byte to the RFC 5297 Appendix A.1 vector; it sits beside
+  GCM-SIV so the two constructions of deterministic AEAD can be contrasted. The
   Double Ratchet is now cipher-agnostic: `AeadSuite` (`CHACHA20_POLY1305` | `AES_256_GCM`) threads
   through `signal.ts`, so a full X3DH + ratchet conversation runs over the from-scratch AES-256-GCM with
   every guarantee intact — exercised by `runSuiteRoundTrip`. One new lab page (**AES & GCM**,
@@ -1321,8 +1326,8 @@ channel so the Double Ratchet becomes cipher-agnostic.
   messages under one nonce — GCM's C₁⊕C₂ equals P₁⊕P₂, a total break, while GCM-SIV stays safe, side by
   side on the same core), and an AES-CMAC panel; plus a cipher-suite toggle on the **Sealed** page to
   run the live chat over AES-256-GCM. Self-test grew by a large **AES / AES-GCM / AES-GMAC / AES-CMAC /
-  AES-GCM-SIV** group (FIPS-197 all sizes + the Appendix B trace, NIST GCM cases 1–5, RFC 4493, RFC
-  8452, POLYVAL axioms, round-trips, tamper rejection, and the ratchet over both suites). Every module
+  AES-GCM-SIV / AES-SIV** group (FIPS-197 all sizes + the Appendix B trace, NIST GCM cases 1–5, RFC 4493,
+  RFC 8452, RFC 5297, POLYVAL axioms, round-trips, tamper rejection, and the ratchet over both suites). Every module
   verified in Node against its published vectors before any UI, via a type-stripping ESM harness. Lint +
   build green via verify-project.mjs.
 - 2026-07-05 (claude): **SLH-DSA (FIPS 205) — the *standardised* stateless hash-based signature, from
