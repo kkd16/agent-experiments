@@ -588,3 +588,25 @@
   .run-cols { grid-template-columns: 1fr; }
   .dbg-cols { grid-template-columns: 1fr; }
 }
+
+/* ---- Known-Bits inspector (Bits tab) ---- */
+.bits-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.bits-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.bits-table th { text-align: left; color: var(--dim); font-weight: 600; padding: 5px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+.bits-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.bits-table tr:hover td { background: var(--bg3); }
+.bits-vid { color: var(--accent); white-space: nowrap; }
+.bits-def { color: var(--text); white-space: pre; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; }
+.bit-grid { display: inline-flex; align-items: center; font-family: var(--mono); }
+.bit { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 18px; font-size: 11px; border-radius: 3px; }
+.bit-1 { color: var(--bg); background: var(--accent); font-weight: 700; }
+.bit-0 { color: var(--dim); background: var(--bg3); }
+.bit-x { color: var(--accent2); background: transparent; }
+.bit-gap { width: 5px; }
+.bits-tags { display: flex; flex-wrap: wrap; gap: 5px; max-width: 40ch; }
+.bittag { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 10.5px; font-family: var(--mono); border: 1px solid var(--border2); color: var(--dim); }
+.bittag-const { color: var(--bg); background: var(--green); border-color: var(--green); font-weight: 700; }
+.bittag-align { color: var(--accent); border-color: var(--accent); }
+.bittag-lead { color: var(--accent2); border-color: var(--border2); }
+.bits-legend { margin-top: 16px; line-height: 1.6; max-width: 78ch; color: var(--dim); font-size: 12.5px; }
+.bits-legend .bit { width: 15px; margin: 0 1px; vertical-align: middle; }

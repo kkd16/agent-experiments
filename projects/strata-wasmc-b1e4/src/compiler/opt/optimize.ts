@@ -12,6 +12,7 @@ import { hoistCode } from './hoist';
 import { crossJump } from './crossjump';
 import { correlatedFold } from './correlate';
 import { vrp } from './vrp';
+import { knownBits } from './knownbits';
 import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
@@ -982,6 +983,13 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // GVN has unified equal subexpressions and the round's DCE/CFG-simplify sweep the
     // dead arms and now-constant comparisons it leaves behind.
     if (level >= 2) record('value-range-prop' + suffix, vrp);
+    // Known-bits is VRP's bitwise twin: a per-bit must-analysis (proven-0 / proven-1
+    // masks) that folds bit plumbing an interval can't — a value whose every bit is
+    // known collapses to a constant, a mask/set/toggle over already-known bits is
+    // dropped, and an `==`/`!=` whose operands disagree on a known bit is decided.
+    // Runs right after VRP (its magnitude counterpart) so the round's DCE / SCCP /
+    // CFG-simplify sweep the constants and dead arms both analyses expose.
+    if (level >= 2) record('known-bits' + suffix, knownBits);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, (fn) => licm(fn, eff.pureNoTrap));
