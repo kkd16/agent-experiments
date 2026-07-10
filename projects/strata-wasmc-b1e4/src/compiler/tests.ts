@@ -3608,4 +3608,135 @@ fn main() {
   print(scale(10, 3) + scale(-4, 3));
 }`,
   },
+
+  // ---- generics (parametric polymorphism by monomorphization) --------------
+  // Each generic is instantiated at several concrete types; the monomorphizer
+  // stamps out one clone per instantiation *before* the checker/optimizer/backend,
+  // so the three-engine oracle proves each clone equals its hand-written form.
+  {
+    // A generic used at int, float and long — three clones of one template, each
+    // duck-typed (the `>`/`<` in the body is only ever checked on the concrete
+    // clone, exactly like a C++ template).
+    name: 'generic-max-min',
+    source: `fn maxT<T>(a: T, b: T) -> T { if (a > b) { return a; } return b; }
+fn minT<T>(a: T, b: T) -> T { if (a < b) { return a; } return b; }
+fn main() {
+  print(maxT(3, 9)); print(maxT(9, 3)); print(minT(3, 9));
+  print(maxT(-5, -20)); print(minT(-5, -20));
+  print(maxT(2.5, 1.5)); print(minT(2.5, 1.5));
+  print(maxT(1000000000000L, 5L));
+}`,
+  },
+  {
+    // A generic (`reverse`) calling another generic (`swapAt`) at the same type
+    // parameter — transitive instantiation — at both int and float. `swapAt`'s
+    // `let t: T = …` declaration type is substituted per clone.
+    name: 'generic-reverse-inplace',
+    source: `fn swapAt<T>(xs: T[], i: int, j: int) { let t: T = xs[i]; xs[i] = xs[j]; xs[j] = t; }
+fn reverse<T>(xs: T[]) {
+  let i = 0; let j = len(xs) - 1;
+  while (i < j) { swapAt(xs, i, j); i = i + 1; j = j - 1; }
+}
+fn main() {
+  let a = int_array(5);
+  for (let i = 0; i < 5; i = i + 1) { a[i] = i * i; }
+  reverse(a);
+  for (let i = 0; i < 5; i = i + 1) { print(a[i]); }
+  let f = float_array(3);
+  f[0] = 1.0; f[1] = 2.0; f[2] = 3.0;
+  reverse(f);
+  for (let i = 0; i < 3; i = i + 1) { print(f[i]); }
+}`,
+  },
+  {
+    // A generic over TWO type parameters where one is a function-pointer type
+    // (`fn(A, T) -> A`): a classic left fold. The accumulator local is typed by
+    // the inferred type argument.
+    name: 'generic-fold',
+    source: `fn addI(a: int, b: int) -> int { return a + b; }
+fn mulI(a: int, b: int) -> int { return a * b; }
+fn fold<T, A>(xs: T[], init: A, g: fn(A, T) -> A) -> A {
+  let acc = init;
+  for (let i = 0; i < len(xs); i = i + 1) { acc = g(acc, xs[i]); }
+  return acc;
+}
+fn main() {
+  let a = int_array(5);
+  for (let i = 0; i < 5; i = i + 1) { a[i] = i + 1; }
+  print(fold(a, 0, addI));
+  print(fold(a, 1, mulI));
+}`,
+  },
+  {
+    // Instantiation at a struct type: `T` binds to a struct handle, mangled into
+    // the clone name, and the returned handle's field reads back correctly.
+    name: 'generic-struct-arg',
+    source: `struct Box { v: int; }
+fn firstOf<T>(a: T, b: T) -> T { return a; }
+fn secondOf<T>(a: T, b: T) -> T { return b; }
+fn main() {
+  print(firstOf(7, 9));
+  print(secondOf(7, 9));
+  let p = Box(11); let q = Box(22);
+  let r = firstOf(p, q);
+  print(r.v);
+  let s = secondOf(p, q);
+  print(s.v);
+  print(firstOf(1.5, 2.5));
+}`,
+  },
+  {
+    // Three generics deep: `clamp<T>` calls `minT<T>` and `maxT<T>`, each
+    // instantiated at int and float through the call chain.
+    name: 'generic-nested-clamp',
+    source: `fn maxT<T>(a: T, b: T) -> T { if (a > b) { return a; } return b; }
+fn minT<T>(a: T, b: T) -> T { if (a < b) { return a; } return b; }
+fn clamp<T>(x: T, lo: T, hi: T) -> T { return minT(maxT(x, lo), hi); }
+fn main() {
+  print(clamp(5, 0, 10));
+  print(clamp(-3, 0, 10));
+  print(clamp(99, 0, 10));
+  print(clamp(2, 3, 8));
+  print(clamp(2.5, 0.0, 1.0));
+}`,
+  },
+  {
+    // A higher-order generic (`twice`) whose type parameter appears inside a
+    // function-pointer parameter, called by another generic (`thrice`) that
+    // forwards the same pointer — so `twice<int>` is reached transitively.
+    name: 'generic-hof-twice',
+    source: `fn inc(x: int) -> int { return x + 1; }
+fn dbl(x: int) -> int { return x * 2; }
+fn twice<T>(x: T, f: fn(T) -> T) -> T { return f(f(x)); }
+fn thrice<T>(x: T, f: fn(T) -> T) -> T { return f(twice(x, f)); }
+fn main() {
+  print(twice(10, inc));
+  print(twice(3, dbl));
+  print(thrice(1, inc));
+  print(thrice(2, dbl));
+}`,
+  },
+  {
+    // Generic linear search over int and float arrays (equality on the element
+    // type), plus a generic min-of-array that only *reads* the array (no generic
+    // allocation needed).
+    name: 'generic-search-and-reduce',
+    source: `fn indexOf<T>(xs: T[], key: T) -> int {
+  for (let i = 0; i < len(xs); i = i + 1) { if (xs[i] == key) { return i; } }
+  return -1;
+}
+fn minOf<T>(xs: T[]) -> T {
+  let m = xs[0];
+  for (let i = 1; i < len(xs); i = i + 1) { if (xs[i] < m) { m = xs[i]; } }
+  return m;
+}
+fn main() {
+  let a = int_array(4); a[0]=10; a[1]=20; a[2]=30; a[3]=40;
+  print(indexOf(a, 30)); print(indexOf(a, 99));
+  print(minOf(a));
+  let f = float_array(3); f[0]=2.5; f[1]=0.5; f[2]=9.0;
+  print(indexOf(f, 0.5));
+  print(minOf(f));
+}`,
+  },
 ];

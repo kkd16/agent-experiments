@@ -272,6 +272,15 @@ export interface Param {
 export interface FnDecl {
   kind: 'fn';
   name: string;
+  // Type parameters of a *generic* function (`fn max<T, U>(…)`). Absent or empty
+  // for an ordinary monomorphic function. A generic function is a template: the
+  // monomorphizer (`generics.ts`) stamps out a concrete clone — with these names
+  // substituted by concrete types — per instantiation, *before* the type checker,
+  // IR builder, optimizer and backend run, so none of them ever sees a type
+  // parameter. Inside the signature/body a type-parameter name parses as an
+  // ordinary `{kind:'struct', name}` reference; the monomorphizer knows which of
+  // those names are this template's parameters.
+  typeParams?: string[];
   params: Param[];
   retTy: Ty;
   body: Block;

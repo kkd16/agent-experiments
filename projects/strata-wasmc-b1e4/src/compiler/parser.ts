@@ -225,6 +225,24 @@ class Parser {
   private parseFn(): FnDecl {
     const start = this.expect('fn').span;
     const nameTok = this.expect('ident');
+    // Optional generic type-parameter list: `fn max<T, U>(…)`. A comma-separated
+    // list of unique identifiers between `<` and `>`. The list is unambiguous
+    // here — the `>` is always immediately followed by the parameter list's `(`,
+    // so it never collides with a `<`/`>` comparison or a `>>` shift. Inside the
+    // signature and body each parameter name is an ordinary type reference; the
+    // monomorphizer resolves which references are these parameters.
+    let typeParams: string[] | undefined;
+    if (this.accept('<')) {
+      const tps: string[] = [];
+      if (this.check('>')) throw new CompileError(`'${nameTok.text}<>' needs at least one type parameter`, nameTok.span, 'parse');
+      do {
+        const tp = this.expect('ident');
+        if (tps.includes(tp.text)) throw new CompileError(`duplicate type parameter '${tp.text}'`, tp.span, 'parse');
+        tps.push(tp.text);
+      } while (this.accept(','));
+      this.expect('>');
+      typeParams = tps;
+    }
     this.expect('(');
     const params: Param[] = [];
     if (!this.check(')')) {
@@ -239,7 +257,7 @@ class Parser {
     let retTy: Ty = T_VOID;
     if (this.accept('->')) retTy = this.parseType();
     const body = this.parseBlock();
-    return { kind: 'fn', name: nameTok.text, params, retTy, body, span: this.spanFrom(start) };
+    return { kind: 'fn', name: nameTok.text, typeParams, params, retTy, body, span: this.spanFrom(start) };
   }
 
   private parseGlobal(): GlobalDecl {

@@ -1707,6 +1707,63 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'generics',
+    title: 'Generics (monomorphization)',
+    blurb: "Parametric polymorphism: write a function once with type parameters — fn max<T>(a: T, b: T) -> T — and the compiler stamps out a specialised copy per concrete type it is called at. Instantiation is fully inferred from the argument types (no turbofish). It is a pure front-end elaboration: by the time the type checker, optimizer and backend run, every type parameter is gone and only ordinary monomorphic functions remain — so the differential oracle proves each clone equals its hand-written form at -O0…-O3.",
+    source: `// A generic function is a template. Its type parameters go in <angle brackets>
+// after the name; inside the signature and body they read like any other type.
+// The body is duck-typed per instantiation (like a C++ template): 'a > b' is only
+// ever checked on the concrete clone, so 'maxT' works for every ordered type.
+fn maxT<T>(a: T, b: T) -> T { if (a > b) { return a; } return b; }
+fn minT<T>(a: T, b: T) -> T { if (a < b) { return a; } return b; }
+
+// One generic may call another at the same type parameter — 'clamp<int>' pulls
+// in 'minT<int>' and 'maxT<int>' transitively.
+fn clamp<T>(x: T, lo: T, hi: T) -> T { return minT(maxT(x, lo), hi); }
+
+// A type parameter can appear inside an array type ('T[]') or a function-pointer
+// type ('fn(A, T) -> A'). 'reverse' reverses any array in place; 'fold' collapses
+// one with a caller-supplied combiner (two type parameters — element and result).
+fn swapAt<T>(xs: T[], i: int, j: int) { let t: T = xs[i]; xs[i] = xs[j]; xs[j] = t; }
+fn reverse<T>(xs: T[]) {
+  let i = 0; let j = len(xs) - 1;
+  while (i < j) { swapAt(xs, i, j); i = i + 1; j = j - 1; }
+}
+fn fold<T, A>(xs: T[], init: A, g: fn(A, T) -> A) -> A {
+  let acc = init;
+  for (let i = 0; i < len(xs); i = i + 1) { acc = g(acc, xs[i]); }
+  return acc;
+}
+fn add(a: int, b: int) -> int { return a + b; }
+
+// Generics work over struct handles too — 'T' binds to the struct type itself.
+struct Pair { a: int; b: int; }
+fn firstOf<T>(x: T, y: T) -> T { return x; }
+
+fn main() {
+  // The same 'maxT' template, instantiated at int, float and long.
+  print(maxT(3, 9));                 // 9
+  print(maxT(2.5, 1.5));             // 2.5
+  print(maxT(1000000000000L, 5L));   // 1000000000000
+
+  print(clamp(99, 0, 10));           // 10   (clamp<int> -> minT<int>, maxT<int>)
+  print(clamp(-4, 0, 10));           // 0
+
+  let a = int_array(6);
+  for (let i = 0; i < 6; i = i + 1) { a[i] = i * i; }
+  reverse(a);                        // reverse<int> -> swapAt<int>
+  let line = "";
+  for (let i = 0; i < 6; i = i + 1) { line = line + str(a[i]) + " "; }
+  print(line);                       // 25 16 9 4 1 0
+
+  print(fold(a, 0, add));            // 55   (sum, unchanged by the reversal)
+
+  let p = firstOf(Pair(11, 22), Pair(33, 44));   // firstOf<Pair>
+  print(p.a);                        // 11
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));
