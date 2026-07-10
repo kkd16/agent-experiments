@@ -28,6 +28,7 @@ export type ToggleParamKey =
   | 'ergosphere'
   | 'iscoTrack'
   | 'volumetric'
+  | 'ringHighlight'
   | 'bloom'
   | 'adaptiveQuality'
 
@@ -90,6 +91,11 @@ export const CONTROL_GROUPS: ControlGroup[] = [
     toggles: [
       { key: 'ergosphere', label: 'Ergosphere', help: 'Draw the static-limit shell — inside it, frame dragging is so strong that nothing can remain at rest.' },
       { key: 'iscoTrack', label: 'Inner edge → ISCO', help: 'Snap the disk’s inner radius to the prograde innermost stable orbit for the current spin.' },
+      {
+        key: 'ringHighlight',
+        label: 'Light-echo highlight',
+        help: 'Tint the higher-order lensing images — light that looped the hole one or more extra half-turns, piling up as the thin photon ring on the shadow’s edge (P). Cyan = first echo, gold = second, magenta = higher.',
+      },
     ],
   },
   {

@@ -182,6 +182,43 @@ export default function AboutView() {
           into the photon ring.
         </p>
 
+        <h2>Click a photon: the probe</h2>
+        <p>
+          The render is 200 000 photons a frame — so make one of them talk. <strong>Click anywhere</strong>
+          {' '}on the main view and Event Horizon rebuilds the <em>exact</em> ray that pixel casts, then
+          integrates that single photon’s geodesic with the same Runge–Kutta scheme the shader uses and
+          draws its path back over the image. The curve is frozen in space, so you can keep orbiting and
+          watch it bend around the hole in three dimensions; a warm-to-cool gradient tracks how deep into
+          the gravitational well it dived. Markers flag the camera, the point of closest approach, any
+          disk crossing, and where it ends — an ✕ on the horizon if it was captured, a cool dot toward the
+          sky if it escaped.
+        </p>
+        <p>
+          The read-out panel is the real payoff: it reports the photon’s conserved{' '}
+          <strong>energy <code>E</code></strong>, <strong>axial angular momentum <code>L</code></strong>,
+          and <strong>Carter’s constant <code>Q</code></strong> — the three integrals of motion that make
+          the Kerr geodesic solvable — along with its impact parameter <code>b = |L/E|</code> measured
+          against <code>b_crit</code>, its closest approach, its lensing image order, and its total
+          deflection. Aim near the shadow’s edge and you can watch <code>b</code> creep toward{' '}
+          <code>b_crit</code> as the deflection climbs past a full turn. In the free-fall frame the ray is
+          reconstructed <em>through the same aberration boost</em> the shader applies, so you are always
+          tracing the photon you are actually seeing.
+        </p>
+
+        <h2>Light echoes: the photon ring</h2>
+        <p>
+          A photon that grazes close enough to the hole doesn’t just bend — it can loop the shadow one or
+          more times before flying to your eye, so the sky (and the disk) is imaged not once but{' '}
+          <em>infinitely many times</em>, each higher-order image squeezed into an ever-thinner ring
+          hugging the shadow’s edge. That stack is the <strong>photon ring</strong> the Event Horizon
+          Telescope is racing to resolve. Turn on <strong>Light-echo highlight</strong> (or press{' '}
+          <code>P</code>) and the renderer counts how many times each traced photon crosses the equatorial
+          plane — its <em>image order</em> — and tints the higher orders: cyan for the first echo, gold for
+          the second, magenta beyond. The direct image is left untouched, so the successive echoes light up
+          exactly where the deflection curve on the Observatory tab races through <code>π</code>,{' '}
+          <code>2π</code>, and beyond.
+        </p>
+
         <h2>Making it look photographic</h2>
         <ul>
           <li>
@@ -206,8 +243,11 @@ export default function AboutView() {
           phenomenological emission–absorption slab, not a solved radiative-transfer / MHD flow (and
           the thin-plane mode is, deliberately, a zero-thickness sheet); we integrate coordinate
           paths without a full parallel-transport of the observed spectrum; the free-fall Doppler
-          colour shift is a perceptual RGB tint rather than a per-wavelength remap; and the
-          starfield is procedural. The Kerr
+          shift now moves each star’s black-body <em>temperature</em> along the Planckian locus (a
+          genuine per-wavelength shift), though the already-integrated disk light still gets a
+          perceptual tint since its source temperature is no longer separable; and the starfield is
+          procedural. The Kerr rain frame adds the ZAMO azimuthal drift as a leading-order swirl rather
+          than the full local infalling tetrad. The Kerr
           integration is done in Boyer–Lindquist coordinates, which are elegant but have a coordinate
           seam along the rotation axis — you may spot a faint speckle there on near-edge-on,
           high-spin views (production codes switch to Kerr–Schild coordinates to remove it). The

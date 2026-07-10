@@ -127,7 +127,7 @@ function kerrInv(r: number, th: number, a: number): KerrInv {
   }
 }
 
-function kerrCov(r: number, th: number, a: number): KerrInv {
+export function kerrCov(r: number, th: number, a: number): KerrInv {
   const a2 = a * a
   const ct = Math.cos(th)
   const st = Math.max(Math.sin(th), 2e-2)
@@ -164,7 +164,7 @@ interface KerrDeriv {
   dpth: number
 }
 
-function kerrDeriv(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number): KerrDeriv {
+export function kerrDeriv(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number): KerrDeriv {
   const g = kerrInv(r, th, a)
   const dr = g.grr * pr
   const dth = g.gthth * pth
@@ -177,7 +177,7 @@ function kerrDeriv(r: number, th: number, pr: number, pth: number, E: number, L:
 
 type Vec3 = [number, number, number]
 
-function worldToBL(p: Vec3, a: number): { r: number; th: number; ph: number } {
+export function worldToBL(p: Vec3, a: number): { r: number; th: number; ph: number } {
   const a2 = a * a
   const R2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2]
   const r2 = 0.5 * (R2 - a2 + Math.sqrt(Math.max((R2 - a2) * (R2 - a2) + 4 * a2 * p[1] * p[1], 0)))

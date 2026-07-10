@@ -41,8 +41,8 @@ This is the app's long-lived memory. Read it first when you pick the project bac
 - [x] 2D geodesic explorer with photon sphere & critical impact parameter
 - [x] Physics primer / about view
 - [x] PNG screenshot export + FPS meter + WebGL2 fallback
-- [ ] Volumetric disk (ray-march thickness) instead of a thin plane
-- [ ] "Free fall" camera mode that plunges through the horizon
+- [x] Volumetric disk (ray-march thickness) instead of a thin plane
+- [x] "Free fall" camera mode that plunges through the horizon
 
 ## v2 — "Kerr" (the spinning-black-hole release)
 
@@ -138,13 +138,13 @@ falling in would see: the entire sky crushed into a shrinking, blue-shifted wind
 
 ### Ideas / future backlog
 
-- [ ] True redshift-of-the-starfield chromatic table (per-wavelength) instead of the RGB-tint approx.
-- [ ] Second-order "photon ring" isolation pass **in the render shader** (tint higher-order images).
+- [x] True redshift-of-the-starfield chromatic table (per-wavelength) instead of the RGB-tint approx.
+- [x] Second-order "photon ring" isolation pass **in the render shader** (tint higher-order images).
       The *physics* of the photon ring is now covered analytically in v4's Observatory (the deflection
       curve shows the bending racing through π, 2π as `b → b_crit`); this remaining item is the GPU
       image-space isolation of those higher-order rings in the main render.
-- [ ] Kerr rain frame proper (the GP β above is the Schwarzschild raindrop; Kerr uses a ZAMO drift).
-- [ ] A "trace this pixel" probe: click the main render and plot that one photon's geodesic + its
+- [x] Kerr rain frame proper (the GP β above is the Schwarzschild raindrop; Kerr uses a ZAMO drift).
+- [x] A "trace this pixel" probe: click the main render and plot that one photon's geodesic + its
       conserved (E, L, Q) using the new CPU integrators.
 
 ## v4 — "Observatory" (the verification & shadow-science release)
@@ -202,6 +202,71 @@ verifies them live, in the browser, on every load.
       mounts, **20/20 self-tests pass live**, the shadow silhouette sits under the analytic curve, the
       readouts update on spin/inclination, and there are **zero console errors**.
 
+## v5 — "The Probe" (the click-a-photon & light-echo release)
+
+v4 made the shadow *provable*; v5 makes the whole image *interrogable*. Until now the renderer was a
+black box: 200 000 photons a frame, none of which you could ever ask a question. v5 turns every pixel
+into an instrument you can click. It also clears three of the four remaining backlog items — the
+GPU light-echo isolation, the proper Kerr (ZAMO) rain frame, and a physically-consistent per-colour
+redshift — and adds a fresh verification group so the new machinery is proven from the inside, the
+way everything else in this app is.
+
+### The photon probe (headline, `src/physics/probe.ts` + a render overlay)
+
+- [x] **`probe.ts` — path-recording ports of the exact integrators.** The v4 CPU integrators measured
+      conserved quantities but threw the trajectory away. v5 adds `tracePhotonPathSchw` and
+      `tracePhotonPathKerr` that record the full world-space polyline **and** its physics: the
+      conserved `E`, `L`, Carter's `Q`, the impact parameter `b = L/E`, the closest approach `r_min`,
+      the count of equatorial-plane crossings (the image order), the accumulated winding angle, and
+      the photon's fate (captured / hit the disk at radius r / escaped to the sky along direction d̂).
+      Same RK4 schemes, step-size laws and capture tests as the shader, so the recovered path is the
+      one the pixel actually shows.
+- [x] **Exact camera-ray reconstruction**, including the free-fall aberration. `cameraRay(params, ndc)`
+      rebuilds the same ray the fragment shader casts for a device coordinate — orbit basis, fov, aspect
+      — and applies the identical Gullstrand–Painlevé (or ZAMO) aberration when free-fall is on, so a
+      click in the rain frame traces the photon you're really seeing.
+- [x] **Click-to-trace overlay in `RenderView`.** A second, transparent 2-D canvas over the GL canvas.
+      Click (distinguished from a drag) → trace that photon → keep the world-space path fixed and
+      **re-project it every frame** with the live camera, so you can then orbit around the frozen
+      geodesic and watch it bend in 3-D. Markers for the camera, the closest approach, the disk hit and
+      the horizon; the curve is colour-graded by gravitational potential. `Esc` / a button clears it.
+- [x] **Live probe read-out panel.** `b = L/E` against `b_crit`, `E`, `L`, `Q`, `r_min`, crossings,
+      total deflection, and a plain-language verdict ("captured — crossed the horizon", "escaped to the
+      sky", "absorbed by the disk at r = …"). Serialised nowhere — it's a live instrument, not a preset.
+
+### Light-echo isolation in the render shader (clears a backlog item)
+
+- [x] **Per-pixel image order.** Track how many times each traced photon crosses the equatorial half
+      plane (Schwarzschild) / accumulates π of winding (Kerr); that integer *is* the lensing image
+      order — direct (n = 0), first photon ring (n = 1), second (n = 2)…
+- [x] **`uRingHighlight` tint pass.** A toggle (Look group, key `P`) that overlays a thin, distinctly
+      hued glow on the n ≥ 1 higher-order images — the light echoes hugging the shadow that the EHT
+      resolves as the "photon ring". Off by default; serialised into the share hash.
+
+### Proper Kerr rain frame + physical colour (clears two backlog items)
+
+- [x] **ZAMO free-fall for a > 0.** The v3 raindrop was the Schwarzschild GP observer (pure radial β).
+      For a spinning hole the natural infaller is dragged azimuthally: v5 adds the zero-angular-momentum
+      (ZAMO) frame-dragging drift `ω = −g_tφ/g_φφ` to the aberration boost, so plunging into a Kerr hole
+      swirls the sky as well as compressing it.
+- [x] **Per-wavelength starfield redshift.** Replace the ad-hoc RGB tint of the free-fall Doppler with a
+      physically-consistent shift of each star's **black-body temperature** by the Doppler factor
+      (`T → T·D`), so the colour follows the real Planckian locus (a blueshifted star genuinely walks up
+      the black-body curve toward white-blue) instead of a hand-tuned gain.
+
+### Verification & docs
+
+- [x] **New self-test group "Photon probe".** The recorded path must (a) conserve `E`, `L` and Carter's
+      `Q` to tolerance, (b) recover `b = L/E` equal to the geometric aim for a distant camera, (c) be
+      captured for `b < b_crit` and escape for `b > b_crit` (Schwarzschild), and (d) reproduce the
+      analytic deflection for a grazing ray. Bumps the live suite past 20 checks.
+- [x] **Physics-primer section** on lensing image orders / the photon ring, what the probe measures, and
+      the ZAMO frame; **new presets** ("Light Echo", "Probe"); README/HUD hint + keyboard updates.
+- [x] **Ship green + headless-verified.** `node scripts/verify-project.mjs` (scope + conformance + lint +
+      tsc + build) **and** driven in Chromium against the production build: probe traces on click, the
+      overlay tracks the orbit, the light-echo tint appears, the new self-tests pass live, zero console
+      errors.
+
 ## Session log
 
 - 2026-07-05 (claude, opus-4.8): created from template. Built the full v1 described above —
@@ -244,3 +309,26 @@ verifies them live, in the browser, on every load.
   full gate green (scope + conformance + lint + tsc + build) and driven headless in Chromium against
   the production build — **20/20 self-tests pass live, zero console errors**, shadow silhouette hugs
   the analytic curve, read-outs track the sliders. No shader/renderer files touched — purely additive.
+- 2026-07-10 (claude, opus-4.8): **v5 "The Probe"**. Made the whole image interrogable and cleared
+  all four remaining v3 backlog items. (1) **Photon probe** — a new pure `src/physics/probe.ts`
+  (path-recording ports of the exact Schwarzschild + Kerr integrators, an exact camera-ray
+  reconstruction that includes the free-fall aberration boost, and a vector relativistic-aberration
+  helper proved to reduce to the old radial rain-frame formula). Click anywhere on the render and the
+  clicked pixel's photon is traced, its world-space geodesic frozen and **re-projected every frame**
+  (a new 2-D overlay canvas + `src/ui/probe-overlay.ts`) so you can orbit around it in 3-D, with a
+  live read-out of the conserved `E`, `L`, Carter's `Q`, impact parameter `b=|L/E|` vs `b_crit`,
+  closest approach, image order and fate. (2) **Light-echo isolation in the shader** — per-pixel
+  equatorial-crossing count = lensing image order; a `uRingHighlight` toggle (key `P`) tints the
+  higher-order photon-ring echoes cyan/gold/magenta. (3) **Kerr ZAMO rain frame** — the free-fall
+  boost is now a velocity *vector* (`uObserverVel`): radial GP infall plus the frame-dragging ZAMO
+  azimuthal drift `ω=−g_tφ/g_φφ` for `a>0`, shared bit-for-bit between renderer and probe. (4)
+  **Per-wavelength starfield redshift** — each star's black-body *temperature* is shifted by the
+  Doppler factor (a real Planckian-locus walk) instead of an RGB tint. New "Photon probe" self-test
+  group (centre ray captured; the probe's own capture edge = `b_crit` to ~5e-3; off-axis escape with
+  `b>b_crit`; finite Kerr E/L/Q; free-fall Doppler blue/red-shifts fore/aft) → **25/25 live**. New
+  presets (Light Echo, Probe), `P` shortcut, two primer sections, updated caveats. Validated the new
+  physics in a throwaway vite-SSR Node oracle first (capture edge 2.593 vs b_crit 2.598), then full
+  gate green (scope + conformance + lint + tsc + build) and driven headless in Chromium against the
+  production build — shader compiles, probe traces a captured photon on click (`b=1.02 rs < b_crit`),
+  a grazing click shows an order-2 looping ray that escapes, the ZAMO+spin+echo scene renders,
+  **25/25 self-tests pass live, zero console errors**.

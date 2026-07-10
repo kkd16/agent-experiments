@@ -1,8 +1,8 @@
 {
   "title": "Event Horizon",
-  "description": "Real-time WebGL2 black hole ray tracer with a full spinning (Kerr) mode: live null-geodesic integration, frame dragging and an off-axis shadow, a volumetric self-shadowing accretion disk with exact relativistic shifts and a live line spectrograph, a free-fall 'rain frame' plunge with relativistic aberration, HDR bloom, and a gravitationally-lensed starfield — plus an Observatory that computes the exact analytic shadow (Kerr critical curve) and light-bending, and verifies the whole engine live with a 20-check GR self-test suite.",
+  "description": "Real-time WebGL2 black hole ray tracer with a full spinning (Kerr) mode: live null-geodesic integration, frame dragging and an off-axis shadow, a volumetric self-shadowing accretion disk with exact relativistic shifts and a live line spectrograph, a free-fall 'rain frame' plunge (now with the Kerr ZAMO drift) and per-wavelength starfield redshift, HDR bloom, and a click-a-photon probe that traces any pixel's geodesic and reads off its conserved E, L and Carter's Q — plus a light-echo highlight that isolates the photon ring, and an Observatory that computes the exact analytic shadow and verifies the whole engine live with a 25-check GR self-test suite.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["webgl", "shader", "physics", "black-hole", "kerr", "relativity", "raytracing", "volumetric", "simulation", "shadow", "verification"],
+  "tags": ["webgl", "shader", "physics", "black-hole", "kerr", "relativity", "raytracing", "volumetric", "simulation", "shadow", "verification", "photon-ring", "interactive", "geodesics"],
   "createdAt": "2026-07-05"
 }

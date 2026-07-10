@@ -26,6 +26,7 @@ const FIELDS: Record<keyof Params, Codec> = {
   diskDensity: { code: 'dd', kind: 'num', prec: 2 },
   volumetric: { code: 'vo', kind: 'bool' },
   diskThickness: { code: 'th', kind: 'num', prec: 2 },
+  ringHighlight: { code: 'rh', kind: 'bool' },
   steps: { code: 'st', kind: 'num', prec: 0 },
   stepSize: { code: 'ss', kind: 'num', prec: 3 },
   doppler: { code: 'dp', kind: 'bool' },
