@@ -4,6 +4,7 @@ import type { IRModule, IRFunc } from './ir/ir';
 import type { PassStat, OptLevel } from './opt/optimize';
 import { tokenize } from './lexer';
 import { parse } from './parser';
+import { monomorphize } from './generics';
 import { typecheck } from './types';
 import { buildPreIR } from './ir/builder';
 import { toSSA } from './ir/ssa';
@@ -63,7 +64,11 @@ export function compile(source: string, level: OptLevel, collectSnapshots = fals
   let tokens: Token[] = [];
   try {
     tokens = tokenize(source);
-    const program = parse(source);
+    // Elaborate generics first: a generic function is monomorphized into concrete
+    // clones (one per instantiation) *before* type checking and IR building, so
+    // every downstream stage sees ordinary monomorphic Strata. No-op (returns the
+    // same program) when the source declares no generic function.
+    const program = monomorphize(parse(source));
     typecheck(program);
     const pre = buildPreIR(program);
     // Pre-SSA transforms (at -O2+): turn self-tail-recursion into loops, then run

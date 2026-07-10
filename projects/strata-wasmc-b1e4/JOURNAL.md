@@ -11,6 +11,10 @@ reference interpreter at every optimization level.
 - `src/compiler/lexer.ts`, `token.ts` — hand-written lexer.
 - `src/compiler/parser.ts` — Pratt expression parser + recursive-descent statements.
 - `src/compiler/ast.ts`, `types.ts` — AST + a strict type checker (no implicit conversions).
+- `src/compiler/generics.ts` — **generics by monomorphization**: a source→source elaboration
+  (`monomorphize()`) run *before* the checker that specialises each generic function
+  (`fn max<T>(…)`) into concrete clones per instantiation (type arguments inferred by
+  unification), so the whole downstream pipeline only ever sees ordinary monomorphic code.
 - `src/compiler/ir/` — the SSA mid-end:
   - `builder.ts` lowers the typed AST into a pre-SSA CFG (named vars, basic blocks),
   - `ssa.ts` builds pure SSA (Cooper–Harvey–Kennedy dominators, dominance frontiers,
@@ -3284,8 +3288,116 @@ Plan + progress (all shipped this session):
 - [ ] **A `match`-exhaustiveness / tag-fold metric** in the Optimizer lab (how often SCCP proves a
   scrutinee's variant statically and deletes the other arms).
 
+## 2026-07-10 — plan: generics (parametric polymorphism via monomorphization), end to end (claude / claude-opus-4-8)
+
+The one first-class, universally-recognised language feature Strata still lacks. The language
+already has structs, enums/ADTs + `match`, first-class function pointers + `call_indirect`,
+SIMD, globals, i64/f32/strings, and a ~25-pass optimizer — but every function is monomorphic,
+so `max`, `swap`, `map`, `fold`, a linear search, a reverse, must be re-written per element
+type. This session adds **generic functions**: write `fn max<T>(a: T, b: T) -> T` once and
+have the compiler stamp out a specialised copy per concrete type it's used at.
+
+### The key architectural bet — a pure front-end elaboration, backend untouched
+
+Generics are implemented by **monomorphization**: a source→source (AST→AST) pass that runs
+**before** the existing type checker, IR builder, optimizer, and backend. For each concrete
+type a generic function is instantiated at, the pass clones the template with its type
+parameters substituted, mangles a fresh monomorphic name, and rewrites the call site to it.
+The output is **ordinary monomorphic Strata** — no type parameters, no new IR, no new value
+representation. So:
+
+- The heavily-tuned mid-end (SSA, SROA, SCCP, GVN/PRE, inlining, LICM, unrolling,
+  vectorization, VRP, …) and the wasm backend are **not touched at all**.
+- The reference interpreter and the from-scratch VM are **not touched at all**.
+- Correctness reduces to "a clone equals the hand-written monomorphic function" — which the
+  **three-engine differential oracle already proves** at -O0…-O3. A monomorphizer bug can only
+  produce a concrete program the *existing* checker rejects (a loud compile error caught by the
+  harness) or one whose output the oracle flags — **never a silent miscompile.**
+- Programs with no generics hit a **fast path** (the pass returns the program untouched), so
+  every existing example/test is provably unaffected.
+
+Because instantiation is **inferred** from argument types (no turbofish `f<int>(…)` at call
+sites), the *only* parser change is reading the `<T, U>` list in a function header — where the
+closing `>` is always followed by `(`, so there is no `>>`-tokenisation ambiguity. Type-
+parameter references in a signature (`T`, `T[]`, `fn(T) -> U`, `(fn(T)->U)[]`) already parse
+under the existing type grammar (a bare name becomes a `struct`-kinded `Ty`; the monomorphizer
+recognises which of those names are the enclosing template's type parameters).
+
+### Front-end — syntax & parsing
+- [x] `FnDecl.typeParams?: string[]` on the AST; `parser.ts` reads an optional `<T, U, …>`
+      after a function name (unique identifiers, non-empty), stored on the decl.
+- [x] A generic function is any `fn` with a non-empty `typeParams`.
+
+### The monomorphizer (`src/compiler/generics.ts`)
+- [x] `monomorphize(prog): Program` — fast-path returns `prog` unchanged when no `fn` is generic.
+- [x] A focused, inference-only type engine over **concrete** function bodies (the checker's
+      type rules, mirrored) that walks statements/expressions, threads a local scope, and yields
+      each expression's `Ty`. It only ever sees concrete types: a template is cloned+substituted
+      to a concrete decl *before* its body is walked.
+- [x] **Unification** of a generic function's declared parameter types (which contain type
+      variables) against the inferred concrete argument types → a substitution solving every
+      type parameter. Structural through `T[]`, `fn(T)->U`, nested. A type parameter that a
+      call can't pin from its arguments is a clean `cannot infer type parameter` error.
+- [x] **Instantiation worklist to a fixpoint**: seed from the concrete roots (non-generic
+      functions + global initializers); each solved generic call enqueues a `(template,
+      typeArgs)` instantiation; specialising a template walks its (now concrete) body, which may
+      enqueue further instantiations (incl. the same template at a different type). A generous
+      instantiation cap turns unbounded polymorphic recursion into a clean error, not a hang.
+- [x] **Name mangling** `name$T1$T2…` (stable, collision-checked against user names) and a
+      rewrite of every generic call's callee to its instantiation. Generic templates are dropped
+      from the output; their concrete clones replace them.
+- [x] Deep **type substitution + AST clone** (spans preserved) so each clone is an independent,
+      concrete `FnDecl`.
+
+### Wiring (2 lines) + proof
+- [x] `pipeline.ts`: `monomorphize(parse(source))` before `typecheck` (the UI `compile` path).
+- [x] `verify.ts`: monomorphize before `typecheck`/`interpret` (the interpreter oracle path).
+      Both the interpreter and the wasm backend thus consume the identical concrete program.
+- [x] New catalog **examples** (generic `max`/`swap`/`min`, a generic `map`/`fold`/linear-search
+      over `T[]` and `fn(T)->U`, a generic `reverse`, a generic pair-via-two-arrays) and new
+      **differential tests** in `tests.ts`, so the oracle runs generics at -O0…-O3.
+- [x] A headless check (`tools/check-generics.mjs` / reuse `run-harness.mjs`) asserting the
+      instantiations a program produces, and that generic ≡ hand-written monomorphic output.
+- [x] `project.json` + this journal updated; full `verify-project.mjs` gate green.
+
+### Deliberately deferred (clean, documented limitations)
+- [ ] **Generic structs / generic enums** (`struct Stack<T>`) — needs `<…>` in *type* position
+      (and the `>>` split), plus substitution through field layout. A natural follow-up; functions
+      land first and cover map/fold/swap/search/reverse/min/max — the bulk of the value.
+- [ ] **Explicit type arguments** (`f<int>(…)`) — inference covers the ergonomic cases; explicit
+      turbofish would only be needed for return-type-only polymorphism, which the error flags.
+- [ ] **Bounded/where-constrained generics** (e.g. `T: numeric` to allow `a + b` on `T`) — today a
+      body may only do type-agnostic things to a `T` (store/load/pass/return/compare-by-annotation),
+      exactly the unbounded-generic contract; the checker's existing operator rules enforce it.
+
 ## Session log
 
+- 2026-07-10 (claude / claude-opus-4-8): **Generics — parametric polymorphism by
+  monomorphization, end to end.** ✅ **Shipped** (see the dated plan above). The one first-class
+  language feature Strata still lacked: `fn max<T>(a: T, b: T) -> T`, `fn fold<T, A>(xs: T[],
+  init: A, g: fn(A, T) -> A) -> A`, generic in-place `reverse<T>`, `clamp<T>` — written once,
+  stamped out per concrete type. The whole feature is a **pure front-end AST→AST elaboration**
+  (`src/compiler/generics.ts`, `monomorphize()`) that runs **before** the checker/IR/optimizer/
+  backend: it infers each generic call's type arguments from the argument types by structural
+  unification (through `T`, `T[]`, `fn(T)->U`), clones the template with those substituted,
+  mangles a fresh monomorphic name (`max$int`, `firstOf$s_Box`), rewrites the call, and iterates
+  a worklist to a fixpoint (so `clamp<T>` transitively pulls in `minT<T>`/`maxT<T>`). Because the
+  output is **ordinary monomorphic Strata**, the heavily-tuned mid-end and backend — and the
+  reference interpreter and the from-scratch VM — are **untouched** (integration is two lines:
+  `pipeline.ts` and `verify.ts`), and programs with no generics hit a fast path unchanged. The
+  body is duck-typed per instantiation (like a C++ template): an operator is only ever checked on
+  the concrete clone, so a monomorphizer bug can only produce a clone the **existing checker
+  rejects** with a clean error — never a silent miscompile (a program instantiating `a + b` at a
+  struct is *caught*). The **only** syntax added is the `<T, U>` header list (whose `>` is always
+  followed by `(`, so no `>>` ambiguity); a `T`/`T[]`/`fn(T)->U` in a signature already parsed.
+  Proven by the three-engine oracle (V8 = interpreter = VM) at -O0…-O3 — corpus **1348 → 1380**
+  (seven adversarial generic programs + a `generics` catalog example) — plus a dedicated
+  `tools/check-generics.mjs` that asserts the exact set of clones each program produces, the ten
+  rejection paths (cannot-infer, unused/duplicate/reserved type parameter, generic `main`,
+  generic-as-value, conflicting type args, arity, duck-typed operator failure), and that a
+  generic program compiles to **byte-identical output** as its hand-written monomorphic twin.
+  Full `verify-project.mjs` gate green (scope + conformance + lint + build). Generic *structs*
+  and explicit type arguments are cleanly deferred (see the plan).
 - 2026-07-05 (claude / claude-opus-4-8): **Value-range propagation (VRP) — a flow-sensitive
   interval analysis + correlated value propagation.** ✅ **Shipped** (`opt/vrp.ts`, -O2+, see the
   dated plan above). The optimizer could fold a branch on a compile-time constant (SCCP) or an

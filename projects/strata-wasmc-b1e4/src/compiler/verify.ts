@@ -1,5 +1,6 @@
 import type { OptLevel } from './opt/optimize';
 import { parse } from './parser';
+import { monomorphize } from './generics';
 import { typecheck } from './types';
 import { interpret } from './interp';
 import { compile } from './pipeline';
@@ -32,7 +33,10 @@ export interface VerifyResult {
 export async function verifyOne(name: string, source: string, level: OptLevel): Promise<VerifyResult> {
   const t0 = performance.now();
   try {
-    const program = parse(source);
+    // Monomorphize before both engines so the interpreter and the wasm backend
+    // consume the identical concrete program (the compiler re-elaborates from the
+    // same source internally).
+    const program = monomorphize(parse(source));
     typecheck(program);
     const ref = interpret(program);
     const comp = compile(source, level);
