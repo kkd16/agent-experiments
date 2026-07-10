@@ -1,5 +1,6 @@
 import type { Sketch } from '../model/sketch'
 import { residualVector } from './residuals'
+import { residualsAndJacobian } from './jacobian'
 import { matrixRank } from './linalg'
 
 export type DofStatus = 'well' | 'under' | 'over' | 'empty'
@@ -53,19 +54,8 @@ export function analyzeDof(sketch: Sketch): DofReport {
     x[j] += 0.05 * (1 + Math.abs(x[j])) * noise
   }
   sketch.writeParams(refs, x)
-  const baseP = residualVector(sketch, constraints)
-
-  const J = new Array<number>(m * n)
-  for (let j = 0; j < n; j++) {
-    const orig = x[j]
-    const h = 1e-6 * (1 + Math.abs(orig))
-    x[j] = orig + h
-    sketch.writeParams(refs, x)
-    const rp = residualVector(sketch, constraints)
-    x[j] = orig
-    const invh = 1 / h
-    for (let i = 0; i < m; i++) J[i * n + j] = (rp[i] - baseP[i]) * invh
-  }
+  // Exact Jacobian at the perturbed configuration, by automatic differentiation.
+  const { J } = residualsAndJacobian(sketch, constraints, refs)
   sketch.writeParams(refs, x0) // restore the real geometry
 
   const rank = matrixRank(J, m, n)

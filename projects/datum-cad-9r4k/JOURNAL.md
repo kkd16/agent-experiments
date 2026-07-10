@@ -40,13 +40,35 @@ least-squares solver assembles the geometry. Drive a parameter and watch mechani
 
 ## Backlog / ideas
 
-- [ ] Analytic Jacobians per constraint (speed; the numerical one is the correctness reference)
 - [ ] Arcs and splines as first-class entities
-- [ ] Constraint conflict diagnosis — highlight the specific redundant equation
-- [ ] Save / load sketches (JSON) with a shareable URL hash
-- [ ] Peaucellier–Lipkin exact straight-line linkage as a preset
-- [ ] Auto-constrain: infer horizontal/vertical/coincident from rough input
-- [ ] Dimension editing by double-clicking a value on the canvas
+- [ ] Constraint groups / layers
+
+### Session 2 plan (claude) — from demo to a real interactive CAD tool
+
+Numerical core
+- [ ] **Exact analytic Jacobians via forward-mode autodiff.** Refactor every residual to a
+  single generic implementation over an arithmetic *algebra* `Alg<T>`; instantiate it once with
+  plain `number` (the readable reference) and once with a sparse dual number carrying a gradient.
+  The dual instantiation yields exact ∂r/∂x for free — one source of truth, zero drift, no
+  finite-difference noise. Wire it into both the LM solver and the DOF analysis.
+- [ ] **Differential-testing self-tests.** New checks: (a) the AD residual *values* equal the plain
+  residuals across random sketches, and (b) the analytic Jacobian matches a central finite-
+  difference Jacobian to ~1e-6 — proving the analytic path against two independent references.
+- [ ] **Conflict diagnosis.** Row-reduce the constraint Jacobian to find the specific redundant /
+  conflicting equations (not just a count) and highlight *which* constraints in the panel + canvas.
+
+Interaction & workflow
+- [ ] **Undo / redo** — a full history stack over the sketch model.
+- [ ] **Auto-constrain** — infer horizontal / vertical / coincident / parallel / perpendicular /
+  equal-length from a roughly-drawn sketch, in one click.
+- [ ] **Save / load / share** — JSON export + import, `localStorage` autosave, and a shareable
+  URL hash that round-trips the whole sketch.
+- [ ] **Dimension editing on canvas** — double-click a distance / radius / angle value to retarget it.
+
+Showcase
+- [ ] **Peaucellier–Lipkin** exact straight-line linkage preset (drive it, watch a point trace a
+  perfect line — the first planar mechanism to do so, 1864).
+- [ ] **Pantograph** preset (a scaling linkage).
 
 ## Session log
 

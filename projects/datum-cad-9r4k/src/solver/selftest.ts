@@ -1,7 +1,10 @@
 import { Sketch } from '../model/sketch'
+import type { ParamRef } from '../model/sketch'
 import { solve } from './solver'
 import { analyzeDof } from './dof'
 import { fourBarProbe, sliderProbe } from './probes'
+import { residualVector } from './residuals'
+import { residualsAndJacobian } from './jacobian'
 import { EXAMPLES } from '../model/examples'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
@@ -128,5 +131,67 @@ export function runSelfTests(): TestResult[] {
     check('hexagon → equal edges', r.converged && equal, `edges ${lens.map((v) => v.toFixed(1)).join('/')}`)
   }
 
+  // 11. Differential test: the exact (automatic-differentiation) Jacobian agrees
+  //     with an independent central finite-difference Jacobian across every
+  //     example, at a perturbed (generic, non-degenerate) configuration. This is
+  //     the load-bearing check for the analytic solver — it proves the derivative
+  //     code and the residual code describe the same geometry.
+  {
+    let worst = 0
+    for (const ex of EXAMPLES) {
+      const s = ex.build().sketch
+      const refs = s.freeParams()
+      if (refs.length === 0) continue
+      // Perturb to a generic configuration so no gradient is accidentally zero.
+      const x = s.readParams(refs)
+      for (let j = 0; j < x.length; j++) x[j] += 0.31 * (1 + Math.abs(x[j])) * Math.sin((j + 1) * 7.13)
+      s.writeParams(refs, x)
+      worst = Math.max(worst, jacobianDiff(s, refs))
+    }
+    check('analytic Jacobian = finite-diff', worst < 1e-5, `worst |ΔJ| = ${worst.toExponential(1)} over all examples`)
+  }
+
+  // 12. The AD residual values reproduce the plain reference residuals exactly —
+  //     the value and the derivative come from one and the same residual code.
+  {
+    let worst = 0
+    for (const ex of EXAMPLES) {
+      const s = ex.build().sketch
+      const refs = s.freeParams()
+      const plain = residualVector(s, s.constraints)
+      const ad = residualsAndJacobian(s, s.constraints, refs).r
+      for (let i = 0; i < plain.length; i++) worst = Math.max(worst, Math.abs(plain[i] - ad[i]))
+    }
+    check('AD residuals = reference values', worst === 0, `worst |Δr| = ${worst.toExponential(1)}`)
+  }
+
   return out
+}
+
+// Max absolute difference between the analytic Jacobian and a central finite-
+// difference Jacobian at the sketch's current configuration.
+function jacobianDiff(s: Sketch, refs: ParamRef[]): number {
+  const cs = s.constraints
+  const an = residualsAndJacobian(s, cs, refs)
+  const x = s.readParams(refs)
+  const n = refs.length
+  const m = an.m
+  let worst = 0
+  for (let j = 0; j < n; j++) {
+    const orig = x[j]
+    const h = 1e-6 * (1 + Math.abs(orig))
+    x[j] = orig + h
+    s.writeParams(refs, x)
+    const rp = residualVector(s, cs)
+    x[j] = orig - h
+    s.writeParams(refs, x)
+    const rm = residualVector(s, cs)
+    x[j] = orig
+    s.writeParams(refs, x)
+    for (let i = 0; i < m; i++) {
+      const fd = (rp[i] - rm[i]) / (2 * h)
+      worst = Math.max(worst, Math.abs(an.J[i * n + j] - fd))
+    }
+  }
+  return worst
 }
