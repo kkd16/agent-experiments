@@ -21,6 +21,18 @@ src/
     dfa.ts        subset construction (ε-NFA -> DFA) + Hopcroft minimization
     simulate.ts   step traces for NFA (active-set) and DFA (single-state) execution
     sample.ts     BFS enumeration of shortest accepted strings; membership test
+    timed/        TIMED AUTOMATA (v15): clocks, guards, invariants, resets
+      types.ts      TimedAutomaton model + max-constants + concrete satisfaction
+      dbm.ts        Difference Bound Matrices: canonical (Floyd-Warshall), delay/reset/
+                    guard/inclusion/extrapolation(Extra_M) — the zone algebra
+      regions.ts    Alur-Dill region automaton: regionOf, time-successor, reset, BFS quotient
+      reach.ts      symbolic forward reachability over zones (the UPPAAL-style engine)
+      simulate.ts   the concrete operational semantics (delay + action) — ground truth
+      regionmap.ts  the two-clock region partition of the plane (drawable primitives)
+      parser.ts     textual syntax <-> TimedAutomaton (shareable-link source)
+      examples.ts   gallery (light switch, deadline, train/gate, watchdog, ...)
+      diagram.ts    TA / region / zone graphs -> shared GraphModel
+      selftest.ts   the 11-check differential proof (region ≡ zone, DBM algebra, ...)
   layout/
     layout.ts     layered (BFS-rank) graph layout + barycenter crossing reduction
   components/
@@ -29,6 +41,99 @@ src/
     ...
   App.tsx         multi-panel UI wiring it all together
 ```
+
+## Timed — timed automata: regions & zones (2026-07-10)
+
+For fourteen versions the lab has been about **discrete** steps — a word, a move, a tick. This session
+adds the one axis it was missing: **real, continuous time**. A **timed automaton** (Alur & Dill, 1990)
+is a finite automaton with real-valued **clocks** that all advance at rate 1; edges test a clock against
+an integer (a **guard**) and **reset** clocks, and a location may carry an **invariant** that forbids
+lingering. It is the model behind **UPPAAL** and essentially all real-time verification.
+
+The whole drama is this: the state — a location *plus* a valuation in ℝⁿ≥0 — is an **uncountable** set,
+yet reachability is decidable. This mode shows *both* classical reasons why, and — in the lab's house
+style — grades them against each other live.
+
+### The two engines (and why grading them against each other is the point)
+
+- **Regions (Alur–Dill).** Two valuations that agree on the integer part of every clock (up to the
+  largest constant it is compared to) and on the **order of their fractional parts** can never be told
+  apart by any guard, ever, and stay equivalent as time passes. That equivalence has *finitely many*
+  classes, so the quotient is an ordinary finite automaton. Built here from scratch — the region
+  time-successor (the fiddly heart), reset, and the delay chain under invariants — and, for two clocks,
+  drawn as the iconic **partition of the plane** with the regions reachable at a chosen location lit up.
+- **Zones (DBMs).** Real tools don't enumerate regions; they explore convex **zones** carried as
+  **Difference Bound Matrices**, where delay/reset/guard/inclusion are matrix surgery, the canonical
+  form is Floyd–Warshall, and **maximal-bound extrapolation** keeps the fixpoint finite.
+
+Because the two were written with **no shared code**, the Verify tab's headline is a genuine
+*differential proof*: they compute the **identical** reachable-location set on every gallery machine and
+400 random ones. All **11/11** checks pass.
+
+### Engine (`src/engine/timed/`, ~1.3k lines, zero deps)
+
+- [x] `types.ts` — the `TimedAutomaton` model (locations, invariants, guarded/resetting edges),
+  per-clock max constants, and the concrete satisfaction relation.
+- [x] `dbm.ts` — Difference Bound Matrices: the bound algebra (order, add, min), canonicalisation by
+  Floyd–Warshall, emptiness (negative cycle), **delay/up**, **reset**, **guard intersection**,
+  **inclusion**, **Extra_M extrapolation**, point containment, and a zone→constraints describer.
+- [x] `regions.ts` — the region descriptor (integer parts, above-max flags, fractional order), `regionOf`,
+  the **time-successor**, reset, the representative valuation, and the BFS that builds the region
+  automaton (delay + discrete edges, honouring invariants).
+- [x] `reach.ts` — symbolic forward reachability over zones with inclusion-pruned frontiers — the
+  UPPAAL-style engine, terminating by extrapolation.
+- [x] `simulate.ts` — the concrete operational semantics (delay legal under the invariant; action enabled
+  by guard + arrival invariant), enabled-edge and max-delay helpers — the ground truth for Verify.
+- [x] `regionmap.ts` — the two-clock region partition as drawable primitives (triangles, segments,
+  points), each tagged with an interior representative so the view colours it via the real `regionOf`.
+- [x] `parser.ts` — a forgiving textual syntax `↔` `TimedAutomaton`, so every machine is a shareable link.
+- [x] `examples.ts` — a gallery: the light switch (Alur–Dill's own), a deadline where an invariant beats a
+  guard, bounded response as a timed language, train/gate (two clocks), a periodic task, a two-clock
+  interleaving (region-rich), and a watchdog.
+- [x] `diagram.ts` — adapts the timed automaton and its region/zone quotients to the shared `GraphModel`.
+- [x] `selftest.ts` — the 11-check suite (see below).
+
+### UI (`src/views/TimedView.tsx` + `TimedView.css`)
+
+- [x] **Automaton** tab — the machine drawn (invariants as sub-labels, edges captioned `[guard] act {resets}`).
+- [x] **Regions** tab — the finite region automaton *and* (two clocks) the plane partition, reachable
+  regions at a selected location lit, with an off-grid (past-max) count.
+- [x] **Zones** tab — the symbolic zone graph plus a **DBM inspector** reading each zone back as constraints,
+  and a regions-vs-zones collapse counter.
+- [x] **Run** tab — a concrete timed run: wait by δ (bounded by the invariant's slack), take an enabled
+  edge, watch the clocks and the trace.
+- [x] **Verify** tab — the live proof harness. **About** tab — the theory.
+- [x] Wired into `App.tsx` / `hash.ts` as the `timed` mode with a `#/timed` permalink; validated with a
+  headless-browser smoke test (all six tabs render, zero console errors).
+
+### Verify — the 11-check differential proof (all green)
+
+- [x] **region ≡ zone reachable locations** — the headline: 7 gallery + 400 random machines, identical sets.
+- [x] DBM **canonical form idempotent** (non-empty), **emptiness = negative cycle**, and monotone ops
+  (`Z ⊆ up(Z)`, `Z ⊆ Extra(Z)`, `Z∧g ⊆ Z`).
+- [x] region **↔ representative round-trip**, and the **time-successor covers concrete delay**
+  (`regionOf(v+δ)` lies on the successor chain from `regionOf(v)`).
+- [x] **concrete ⊆ region ∩ zone** soundness over 1200 sampled configs; **zone fixpoint terminates** on
+  every example; **reset pins the clock to 0**.
+- [x] **known-answer battery**: a tight invariant makes a deadline location UNREACHABLE, relaxing it opens
+  it; the bounded-response accept and reject sinks are both reachable; the light reaches *bright*; the
+  watchdog can *timeout*. Plus parser round-trips preserving reachability.
+
+### Ideas parked for a future session
+
+- [ ] **Diagonal constraints** (`x − y ≤ c`) and the coarser region equivalence they force (or the
+  known DBM subtlety that plain Extra_M is unsound with diagonals — surface it as a lesson).
+- [ ] **LU / lower-upper-bound extrapolation** (Behrmann et al.) side by side with Extra_M, counting the
+  zone-graph shrink.
+- [ ] **Büchi timed automata & the region-based emptiness** (a progressive, non-Zeno accepting run) —
+  tying this mode to the Logic/Games ω-machinery.
+- [ ] **Backward reachability** (the `down`/past operator is already in `dbm.ts`) and a safety-property
+  checker with a **timed counterexample trace** replayed on the Run tab.
+- [ ] **Product of two timed automata** (parallel composition with shared actions) so Fischer's mutual
+  exclusion can be built compositionally rather than as a monolith.
+- [ ] **UPPAAL `.xml` import/export** of the gallery machines.
+- [ ] **Animate the run on the region partition** — a dot sliding along the delay ray, crossing region
+  boundaries in order.
 
 ## Quant — quantitative games: mean-payoff & energy (2026-07-05)
 

@@ -1,0 +1,381 @@
+/* Timed-automata mode. Reuses the shared workspace/panel/tab/graph scaffolding
+   from LogicView.css + PresburgerView.css; only the timed-specific widgets live
+   here (the source editor, the region partition, the DBM inspector, the runner). */
+
+.timed-src {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.timed-legend,
+.rp-count {
+  margin-top: 10px;
+}
+.timed-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+.legend-title {
+  color: var(--ink);
+  font-weight: 600;
+}
+.track-key {
+  font-family: var(--mono);
+}
+.track-var {
+  color: var(--accent);
+  font-weight: 600;
+}
+.track-pos {
+  color: var(--muted);
+}
+.legend-note {
+  color: var(--muted);
+}
+
+/* ── region partition ─────────────────────────────────────────────────────── */
+
+.regions-wrap,
+.zones-wrap,
+.run-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.region-map-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+}
+.rm-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rm-head .sec-h {
+  margin: 0;
+}
+.rm-loc {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.rm-loc select,
+.zones-head select {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.region-partition {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.rp-svg {
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  margin-top: 8px;
+}
+.rp-tri {
+  fill: color-mix(in srgb, var(--node) 40%, transparent);
+  stroke: var(--line);
+  stroke-width: 0.5;
+  transition: fill 0.15s;
+}
+.rp-tri.reach {
+  fill: color-mix(in srgb, var(--accent) 42%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.rp-seg {
+  stroke: color-mix(in srgb, var(--muted) 45%, transparent);
+  stroke-width: 1.4;
+}
+.rp-seg.reach {
+  stroke: var(--good);
+  stroke-width: 2.4;
+}
+.rp-pt {
+  fill: var(--muted);
+}
+.rp-pt.reach {
+  fill: var(--good);
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+.rp-axis {
+  stroke: var(--ink);
+  stroke-width: 1.2;
+}
+.rp-axis-label {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── zone inspector ───────────────────────────────────────────────────────── */
+
+.zones-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.zone-inspect {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) 1fr;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.zone-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+.zone-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
+}
+.zone-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.zone-row.active {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.zone-id {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-weight: 600;
+}
+.zone-loc {
+  color: var(--muted);
+}
+.zone-detail {
+  padding: 12px 14px;
+}
+.zone-detail-h {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.zone-cons {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.zone-cons li {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  padding: 4px 8px;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  border-radius: 0 5px 5px 0;
+}
+
+/* ── runner ───────────────────────────────────────────────────────────────── */
+
+.run-state {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+.run-loc {
+  display: flex;
+  flex-direction: column;
+}
+.run-loc-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.run-loc-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: var(--mono);
+}
+.run-clocks {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.clock-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 46px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.clock-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.clock-val {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--good);
+}
+.run-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.delay-row,
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ctrl-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  min-width: 58px;
+}
+.delay-num {
+  width: 68px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-family: var(--mono);
+}
+.run-btn {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 11px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+.run-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.run-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.delay-btn {
+  background: color-mix(in srgb, var(--warn) 20%, var(--panel));
+}
+.act-btn {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+}
+.act-guard {
+  color: var(--warn);
+}
+.act-reset {
+  color: var(--good);
+}
+.reset-btn {
+  align-self: flex-start;
+  color: var(--muted);
+}
+.run-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.trace-step {
+  display: grid;
+  grid-template-columns: 28px 90px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 45%, transparent);
+}
+.trace-n {
+  color: var(--muted);
+  text-align: right;
+}
+.trace-loc {
+  color: var(--accent);
+  font-weight: 600;
+}
+.trace-vals {
+  color: var(--ink);
+}
+.trace-move {
+  color: var(--warn);
+}
+
+/* verify tab: a global rule elsewhere makes each <li> a 2-column grid, which
+   starves the detail into an 18px column. Pin our own layout so the detail wraps
+   full-width on its own row. */
+.timed-verify .verify-list li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: baseline;
+}
+.timed-verify .verify-name {
+  grid-column: 2;
+  color: var(--ink);
+  font-weight: 600;
+}
+.timed-verify .verify-detail {
+  grid-column: 2;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
