@@ -36,6 +36,82 @@ Full quantum circuit simulator built from scratch in TypeScript. No external mat
 - [x] Entanglement distillation (BBPSSW) as a cobweb, cross-checked against an exact 16-D protocol simulation
 - [x] Monogamy of entanglement (Coffman–Kundu–Wootters) & the 3-tangle (GHZ vs W)
 - [x] Optimal entanglement witness W=|η⟩⟨η|^{T_B} — the hyperplane dual to PPT, separating ρ from the separable set
+- [x] **The Stabilizer Code Zoo** — a general GF(2) engine that derives any code's [[n,k,d]], logical operators, Knill–Laflamme conditions, syndrome decoder & pseudo-threshold from its Pauli checks alone; the [[5,1,3]] perfect code, [[4,2,2]], Steane, Shor & repetition codes, all cross-checked against the CHP tableau
+
+## Quantum Lab 22.0 — The Stabilizer Code Zoo: any QEC code, derived from its generators (this session)
+
+The lab had a Steane-specific module (`steane.ts`) and a geometry-specific surface code (`surface/`), but no
+*general* theory of quantum error-correcting codes — no way to hand it an arbitrary list of Pauli checks and ask
+"what code is this? how far apart are its codewords? what are its logical operators? does encoding actually help?".
+This session builds that engine, and it closes the single most-requested open item in this journal — the famous
+**[[5,1,3]] perfect code** — by making it one entry in a zoo rather than a bespoke build.
+
+### The idea — a code is its check matrix, and everything else is GF(2) linear algebra
+
+A stabilizer code on n qubits encoding k logical qubits is an abelian group S of r = n−k commuting Paulis; the code
+space is their joint +1 eigenspace. In the **symplectic representation** a Pauli is a pair of bit vectors (x|z), two
+Paulis commute iff their symplectic inner product ⟨P,Q⟩ = Σ(xᵢz′ᵢ ⊕ zᵢx′ᵢ) vanishes, and *the entire theory of the
+code falls out of that single bilinear form over GF(2)* — no state vectors, no floating point, so every number is
+exact by construction:
+
+- **Validity** — the generators must pairwise commute (a symplectic-product check) and be independent (a GF(2) rank).
+- **Logical operators** — the normaliser N(S) (Paulis commuting with all of S) is the null space of the swapped
+  check matrix; it has dimension n+k, and quotienting out S leaves a 2k-dimensional symplectic space whose canonical
+  basis is the k logical pairs (X̄ᵢ, Z̄ᵢ), pulled out by **symplectic Gram–Schmidt**.
+- **Distance** — d = min weight of a logical operator = min weight over N(S) \ S, computed *exactly* by a Gray-code
+  enumeration of the normaliser. This is what stamps the [[n,k,d]] label the engine prints.
+- **Syndromes & decoding** — an error's syndrome is the vector of symplectic products with the generators; the
+  minimum-weight **lookup decoder** is built by enumerating errors in increasing weight until every syndrome has a
+  coset leader.
+- **Knill–Laflamme** — verified directly: no two errors of weight ≤ t may share a syndrome unless their product is a
+  stabilizer (harmless), which is exactly the correctability condition.
+
+### What shipped
+
+- [x] `codes/pauli.ts` — the symplectic Pauli algebra (parse/print signed Pauli strings, weight, symplectic product,
+      multiplication, the (x|z) ↔ 2n-bit vector maps).
+- [x] `codes/gf2.ts` — GF(2) linear algebra from scratch: RREF, rank, null space, row-space membership.
+- [x] `codes/stabilizerCode.ts` — the general `StabilizerCode`: independence reduction, commutation validation,
+      logical-operator extraction by symplectic Gram–Schmidt, exact distance, syndromes, the Knill–Laflamme test,
+      CSS detection, and `zeroLGenerators()` for tableau preparation.
+- [x] `codes/codeZoo.ts` — the catalogue as pure data: bit-flip & phase-flip repetition [[3,1,1]], the [[4,2,2]]
+      detecting code, the **[[5,1,3]] perfect code**, Steane [[7,1,3]] and Shor [[9,1,3]] — each entry only the physics.
+- [x] `codes/decoder.ts` — the minimum-weight lookup decoder, depolarizing code-capacity Monte-Carlo (a pure
+      Pauli-frame simulation), a p_L(p) sweep, and the log–log pseudo-threshold finder.
+- [x] `codes/tableauCheck.ts` — the honesty check: prepare the codeword on the real CHP tableau by projecting onto
+      each stabilizer's +1 eigenspace (a new general **`measurePauli`** on `Stabilizer.ts`), inject a real Pauli
+      error, and confirm the simulator's syndrome and the post-correction logical state match the GF(2) prediction.
+- [x] `components/CodeZooLab.tsx` — the 🦎 **Code Zoo** tab: pick a code, see its generators and derived logical
+      operators, the validity/CSS/perfect badges, an interactive click-to-inject decoder with a live RECOVERED /
+      LOGICAL-FAILURE verdict, and a Monte-Carlo threshold plot comparing all codes against the break-even line.
+- [x] ~40 new self-tests in the Tests tab: every zoo code's recomputed [[n,k,d]] matches its known label, logical
+      ops form a symplectic basis, Knill–Laflamme holds, the decoder covers every syndrome, the GF(2) engine agrees
+      qubit-for-qubit with the CHP tableau on all weight-1 errors, the [[5,1,3]] Hamming bound is saturated, and the
+      distance-3 codes show p_L ∝ p² suppression.
+
+### Verified
+
+- Every code's **recomputed** [[n,k,d]] equals its textbook label — the distance is genuinely enumerated, not quoted.
+- **[[5,1,3]] is perfect**: 2⁴ = 16 syndromes in exact bijection with the 1 + 3·5 = 16 weight-≤1 errors (the quantum
+  Hamming bound with equality), and the engine even surfaces the *distance-achieving* weight-3 logical for Steane.
+- The GF(2) analysis and the from-scratch CHP tableau agree on preparation, syndrome and correction for all weight-1
+  errors, on all six codes.
+- Monte-Carlo pseudo-thresholds land where they should (Steane ≈ 7.4%, Shor ≈ 10%, [[5,1,3]] ≈ 13%), with the
+  distance-3 curves showing the quadratic p_L ∝ p² suppression below threshold.
+
+### Next (open)
+
+- [ ] **The [[15,1,3]] Reed–Muller code**, generated programmatically from the punctured RM(1,4) parity checks — the
+      transversal-T code that ties the zoo back to the lab's magic-state-distillation pillar.
+- [ ] **Standard-form (Gottesman) encoding circuits** — synthesise the actual Clifford encoder from the check matrix,
+      not just the projective preparation, and draw it.
+- [ ] **A code *builder*** — type your own generators and have the engine validate/derive live (great for teaching why
+      an anticommuting pair is rejected).
+- [ ] **CSS-code duality view** — show a CSS code as its two classical codes C_X ⊇ C_Z⊥ and the transversal gates that
+      follow, linking to the Steane transversality already claimed elsewhere.
+- [ ] **Concatenation** — compose two codes (e.g. Steane∘Steane) and watch the distance multiply and the threshold sharpen.
+- [ ] **Maximum-likelihood (degeneracy-aware) decoding** vs the minimum-weight leader, to show where they diverge for
+      the highly degenerate Shor code.
 
 ## Quantum Lab 21.0 — Mixed-state entanglement as a resource (this session)
 
