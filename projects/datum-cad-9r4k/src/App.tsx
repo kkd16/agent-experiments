@@ -41,6 +41,7 @@ export default function App() {
   const cursorWorldRef = useRef<[number, number]>([0, 0])
   const driverRef = useRef<{ spec: DriverSpec; constraint: Constraint } | null>(null)
   const driverValueRef = useRef(0)
+  const driverDirRef = useRef(1) // sweep direction for ping-pong (non-wrapping) drivers
   const tracesRef = useRef<Map<EntityId, [number, number][]>>(new Map())
   const traceTargetsRef = useRef<EntityId[]>([])
   const redundantRef = useRef<Set<EntityId>>(new Set())
@@ -96,6 +97,7 @@ export default function App() {
       pendingToolRef.current = null
       tracesRef.current = new Map()
       traceTargetsRef.current = built.tracePoints ?? []
+      driverDirRef.current = 1
       if (built.driver) {
         const c = built.sketch.constraints.find((k) => k.id === built.driver!.constraintId)!
         driverRef.current = { spec: built.driver, constraint: c }
@@ -194,13 +196,21 @@ export default function App() {
       const driver = driverRef.current
       if (playingRef.current && driver) {
         const { spec } = driver
-        let val = driverValueRef.current + ((spec.max - spec.min) / spec.period) * dt
+        const speed = ((spec.max - spec.min) / spec.period) * dt
+        let val = driverValueRef.current + driverDirRef.current * speed
         if (spec.wrap) {
           while (val > spec.max) val -= spec.max - spec.min
-        } else if (val > spec.max) {
-          val = spec.max
-          setPlaying(false)
-          playingRef.current = false
+          while (val < spec.min) val += spec.max - spec.min
+        } else {
+          // Non-wrapping drivers ping-pong between the endpoints — the natural
+          // motion for a linkage with a limited range (e.g. Peaucellier's crank).
+          if (val > spec.max) {
+            val = spec.max
+            driverDirRef.current = -1
+          } else if (val < spec.min) {
+            val = spec.min
+            driverDirRef.current = 1
+          }
         }
         driverValueRef.current = val
         driver.constraint.value = val

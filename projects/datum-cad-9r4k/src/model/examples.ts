@@ -176,8 +176,88 @@ function regularHexagon(): BuiltExample {
   return { sketch: s }
 }
 
+// The Peaucellier–Lipkin linkage (1864): the first planar mechanism proven to
+// draw an EXACT straight line from rotary input. O and F are fixed. The bars
+// O–M and O–N (long, equal) plus the rhombus M–P–N–Q (four equal short bars)
+// form an inversor: O, P, Q stay collinear with OP·OQ = OM² − MP² held constant
+// by the bar lengths. Constraining P to a circle through O (bar F–P with |OF| =
+// |FP|) inverts that circle to a line — so Q traces a perfect straight segment.
+// The driver sweeps the F–P crank; Q's trace is dead straight to machine
+// precision (see the self-test). The 40°→72° range keeps the rhombus on its
+// convex assembly branch (past ~77° it would flip to the crossed one).
+function peaucellier(): BuiltExample {
+  const s = new Sketch()
+  const O = s.addPoint(0, 0, { fixed: true })
+  const F = s.addPoint(-60, 0, { fixed: true })
+  // Initial coordinates are the exact 40° assembly, so the solve starts on-branch.
+  const P = s.addPoint(-14, 38.6)
+  const M = s.addPoint(-44.5, 78.2)
+  const N = s.addPoint(-16.2, 88.6)
+  const Q = s.addPoint(-46.7, 128.2)
+
+  const ref = s.addLine(F.id, O.id, true) // fixed reference for the driver angle
+  const fp = s.addLine(F.id, P.id) // driving crank: P rides a circle through O
+  s.addLine(O.id, M.id)
+  s.addLine(O.id, N.id)
+  s.addLine(M.id, P.id)
+  s.addLine(P.id, N.id)
+  s.addLine(N.id, Q.id)
+  s.addLine(Q.id, M.id)
+
+  s.addConstraint('distance', [F.id, P.id], 60) // |FP| = |OF| ⇒ circle through O
+  s.addConstraint('distance', [O.id, M.id], 90) // long links
+  s.addConstraint('distance', [O.id, N.id], 90)
+  s.addConstraint('distance', [M.id, P.id], 50) // rhombus sides
+  s.addConstraint('distance', [P.id, N.id], 50)
+  s.addConstraint('distance', [N.id, Q.id], 50)
+  s.addConstraint('distance', [Q.id, M.id], 50)
+
+  const drv = s.addConstraint('angle', [ref.id, fp.id], 40, true)
+  return {
+    sketch: s,
+    driver: { constraintId: drv.id, min: 40, max: 72, period: 5, wrap: false, label: 'Crank angle', unit: '°' },
+    tracePoints: [Q.id],
+  }
+}
+
+// Hoeken's linkage: a single crank-rocker four-bar whose coupler point traces an
+// APPROXIMATE straight line over half its rotation — the practical workhorse
+// (exact straight-line linkages need many bars). Classic 2 : 1 : 2.5 : 2.5
+// proportions with the tracer at twice the coupler length. Drive it a full turn
+// and watch the coupler point run nearly dead flat along the bottom, then loop
+// back over the top — the contrast with Peaucellier's exactness is the point.
+function hoeken(): BuiltExample {
+  const s = new Sketch()
+  const O1 = s.addPoint(-40, 0, { fixed: true })
+  const O2 = s.addPoint(40, 0, { fixed: true })
+  const A = s.addPoint(-60, 35)
+  const B = s.addPoint(50, 90)
+  const C = s.addPoint(160, 145) // coupler tracer, collinear with A–B
+
+  const ground = s.addLine(O1.id, O2.id, true)
+  const crank = s.addLine(O1.id, A.id)
+  const coupler = s.addLine(A.id, B.id)
+  s.addLine(O2.id, B.id) // rocker
+  s.addLine(B.id, C.id, true) // coupler extension to the tracer
+
+  s.addConstraint('distance', [O1.id, A.id], 40) // crank
+  s.addConstraint('distance', [A.id, B.id], 100) // coupler
+  s.addConstraint('distance', [O2.id, B.id], 100) // rocker
+  s.addConstraint('pointOnLine', [C.id, coupler.id]) // tracer on the coupler line
+  s.addConstraint('distance', [A.id, C.id], 200) // …at twice the coupler length
+
+  const drv = s.addConstraint('angle', [ground.id, crank.id], 120, true)
+  return {
+    sketch: s,
+    driver: { constraintId: drv.id, min: 0, max: 360, period: 6, wrap: true, label: 'Crank angle', unit: '°' },
+    tracePoints: [C.id],
+  }
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'four-bar', name: 'Four-Bar Linkage', blurb: 'Grashof crank-rocker tracing a coupler curve.', build: fourBar },
+  { id: 'peaucellier', name: 'Peaucellier (exact line)', blurb: 'An inversor that draws a perfect straight line.', build: peaucellier },
+  { id: 'hoeken', name: 'Hoeken (approx. line)', blurb: 'A four-bar whose coupler runs nearly straight.', build: hoeken },
   { id: 'slider-crank', name: 'Slider-Crank', blurb: 'Rotary motion into linear — the piston engine.', build: sliderCrank },
   { id: 'square', name: 'Parametric Square', blurb: 'Right angles + equal sides. Drag to resize.', build: parametricSquare },
   { id: 'triangle', name: 'Rigid Triangle', blurb: 'Three bars make a rigid body. Drag it around.', build: rigidTriangle },

@@ -190,6 +190,54 @@ export function runSelfTests(): TestResult[] {
     check('conflict analysis pinpoints culprit', ok, `flagged {${[...conf.redundant].join(',')}}, want {${last.id}}`)
   }
 
+  // 14. Peaucellier–Lipkin draws an *exact* straight line: sweeping the crank
+  //     across its range, the traced point's x-coordinate stays constant to
+  //     within solver tolerance (the linkage is a true inversor).
+  {
+    const built = EXAMPLES.find((e) => e.id === 'peaucellier')!.build()
+    const s = built.sketch
+    const drv = built.driver!
+    const c = s.constraints.find((k) => k.id === drv.constraintId)!
+    const traced = built.tracePoints![0]
+    const xs: number[] = []
+    let converged = true
+    for (let a = drv.min; a <= drv.max; a += 1) {
+      c.value = a
+      const r = solve(s, { maxIterations: 80 })
+      converged = converged && r.converged
+      xs.push(s.point(traced).x)
+    }
+    const mean = xs.reduce((p, v) => p + v, 0) / xs.length
+    const dev = Math.max(...xs.map((v) => Math.abs(v - mean)))
+    check('Peaucellier → exact straight line', converged && dev < 1e-4, `x held to ${dev.toExponential(1)} across the sweep`)
+  }
+
+  // 15. Hoeken's four-bar stays assembled through a full crank rotation and its
+  //     coupler point runs approximately straight (a few percent) along the
+  //     bottom of its travel — the practical straight-line linkage.
+  {
+    const built = EXAMPLES.find((e) => e.id === 'hoeken')!.build()
+    const s = built.sketch
+    const drv = built.driver!
+    const c = s.constraints.find((k) => k.id === drv.constraintId)!
+    const traced = built.tracePoints![0]
+    const pts: [number, number][] = []
+    let converged = true
+    for (let a = 0; a <= 360; a += 5) {
+      c.value = a
+      const r = solve(s, { maxIterations: 100 })
+      converged = converged && r.converged
+      pts.push([s.point(traced).x, s.point(traced).y])
+    }
+    const ys = pts.map((p) => p[1])
+    const ymin = Math.min(...ys)
+    const span = Math.max(...ys) - ymin
+    const bottom = pts.filter((p) => p[1] <= ymin + span * 0.15)
+    const by = bottom.map((p) => p[1])
+    const flat = (Math.max(...by) - Math.min(...by)) / span // relative flatness of the straight run
+    check('Hoeken → approximate straight line', converged && flat < 0.15, `bottom run flat to ${(flat * 100).toFixed(1)}% of travel`)
+  }
+
   return out
 }
 
