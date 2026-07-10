@@ -2,6 +2,7 @@ import type { EntityId } from '../model/types'
 import type { ParamRef } from '../model/sketch'
 import type { Sketch } from '../model/sketch'
 import { residualVector } from './residuals'
+import { residualsAndJacobian } from './jacobian'
 import { solveLinear } from './linalg'
 
 export type SolveOptions = {
@@ -28,9 +29,11 @@ export type SolveResult = {
 // ½‖r(x)‖² where r stacks every constraint's residual equations. LM interpolates
 // between Gauss–Newton (fast near a solution) and gradient descent (robust far
 // away) via a damping parameter λ that adapts to whether each step improves the
-// cost. The Jacobian ∂r/∂x is estimated by forward finite differences, which
-// keeps every constraint's residual as the single source of truth — there is no
-// separate hand-derived derivative to fall out of sync.
+// cost. The Jacobian ∂r/∂x is computed *exactly* by forward-mode automatic
+// differentiation of the residual equations (see jacobian.ts / ad.ts): the same
+// residual code that defines the geometry also defines its derivative, so every
+// constraint's residual stays the single source of truth — with no finite-
+// difference noise and no separate hand-derived derivative to fall out of sync.
 export function solve(sketch: Sketch, opts: SolveOptions = {}): SolveResult {
   const maxIterations = opts.maxIterations ?? 60
   const tolerance = opts.tolerance ?? 1e-9
@@ -64,29 +67,15 @@ export function solve(sketch: Sketch, opts: SolveOptions = {}): SolveResult {
   let lambda = 1e-3
   let iterations = 0
 
-  // Forward-difference Jacobian, stored row-major (m rows × n cols).
-  const jacobian = (): number[] => {
-    const J = new Array<number>(m * n)
-    for (let j = 0; j < n; j++) {
-      const orig = x[j]
-      const h = 1e-6 * (1 + Math.abs(orig))
-      x[j] = orig + h
-      sketch.writeParams(refs, x)
-      const rp = evalResiduals()
-      x[j] = orig
-      const invh = 1 / h
-      for (let i = 0; i < m; i++) J[i * n + j] = (rp[i] - r[i]) * invh
-      // Column j reset below via writeParams before use.
-    }
-    sketch.writeParams(refs, x) // restore
-    return J
-  }
-
   for (let iter = 0; iter < maxIterations; iter++) {
     iterations = iter + 1
     if (maxAbs(r) <= tolerance) break
 
-    const J = jacobian()
+    // Exact Jacobian at the current iterate, by automatic differentiation of the
+    // residual equations. `x` already equals the sketch's parameters here
+    // (accepted steps leave them written; rejected ones revert), so the returned
+    // residual matches the tracked `r` — we only need the Jacobian.
+    const J = residualsAndJacobian(sketch, constraints, refs).J
 
     // Normal equations: H = JᵀJ, g = Jᵀr.
     const H = new Float64Array(n * n)

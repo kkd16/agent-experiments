@@ -1,6 +1,6 @@
 {
   "title": "Datum — Parametric Sketch Solver",
-  "description": "An interactive geometric constraint solver in the spirit of Sutherland's Sketchpad. Sketch points, lines and circles, then pin them together with real relations — coincident, horizontal/vertical, parallel, perpendicular, equal, tangent, concentric, point-on-line/circle, symmetric, colinear, midpoint, plus dimensional distance / angle / radius / diameter. Every relation becomes a scalar residual equation and the whole system is driven to zero by a from-scratch Levenberg–Marquardt least-squares solver (Gauss–Newton with adaptive Marquardt damping, a forward-difference Jacobian so each constraint's residual stays the single source of truth, and Gaussian-elimination normal-equation solves). Drag any point and the sketch re-solves live under your cursor; a Jacobian-rank degree-of-freedom analysis reports in real time whether the sketch is under-, well-, or over-constrained (and how many equations are redundant). Six worked examples ship in, including a Grashof four-bar linkage and a slider-crank you can DRIVE: a driver constraint sweeps the crank angle while the solver keeps the mechanism assembled every frame, tracing the coupler curve. A live self-test suite re-derives every solver claim from an independent reference — distances hit their targets, perpendicular/parallel residuals vanish, a rigid triangle keeps its edges and reports exactly 3 DOF, tangent circles satisfy d = r₁+r₂, and both mechanisms stay closed through a full 360° rotation.",
+  "description": "An interactive geometric constraint solver in the spirit of Sutherland's Sketchpad. Sketch points, lines and circles, then pin them together with real relations — coincident, horizontal/vertical, parallel, perpendicular, equal, tangent, concentric, point-on-line/circle, symmetric, colinear, midpoint, plus dimensional distance / angle / radius / diameter. Every relation becomes a scalar residual equation and the whole system is driven to zero by a from-scratch Levenberg–Marquardt least-squares solver. The Jacobian is EXACT: each residual is written once over an abstract arithmetic and re-run through a sparse forward-mode dual number, so the derivative is the residual code differentiated by the compiler — one source of truth, no finite-difference noise (a live differential test confirms it matches central differences to ~1e-9 across all 19 constraint kinds). Drag any point and the sketch re-solves live under your cursor; a Jacobian-rank degree-of-freedom analysis reports in real time whether the sketch is under-, well-, or over-constrained, and conflict diagnosis row-reduces the Jacobian to flag the SPECIFIC redundant constraints in red. One-click auto-constrain infers horizontal/vertical/parallel/perpendicular/equal/coincident from a rough drawing — admitting each only if it raises the rank, so it never over-constrains. Full undo/redo, save/open as JSON, and a shareable URL that reconstructs the whole sketch; double-click any dimension to retarget it. Eight worked examples DRIVE live, including the Peaucellier–Lipkin inversor (1864) that traces a mathematically EXACT straight line (held to ~1e-12 across its sweep) and Hoeken's approximate four-bar for contrast. A 17-check live self-test suite re-derives every claim from an independent reference.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
@@ -11,11 +11,13 @@
     "levenberg-marquardt",
     "gauss-newton",
     "least-squares",
-    "numerical-jacobian",
+    "automatic-differentiation",
     "constraint-solver",
     "degrees-of-freedom",
     "kinematics",
     "four-bar-linkage",
+    "straight-line-linkage",
+    "peaucellier",
     "mechanism",
     "coupler-curve",
     "computational-geometry",

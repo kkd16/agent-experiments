@@ -11,14 +11,23 @@ least-squares solver assembles the geometry. Drive a parameter and watch mechani
   - `types.ts` — entities + the 19 constraint kinds.
   - `sketch.ts` — mutable model, free-parameter vector assembly, geometry helpers.
   - `constraintRules.ts` — which constraints apply to a given selection.
-  - `examples.ts` — six worked sketches + animatable driver specs.
+  - `examples.ts` — eight worked sketches (incl. Peaucellier + Hoeken) + animatable driver specs.
+  - `autoConstrain.ts` — infer relations from rough geometry, gated by Jacobian rank.
+  - `persist.ts` — JSON + base64-URL serialisation with validation of untrusted input.
 - `solver/` — the numerical core.
-  - `residuals.ts` — each constraint → scalar residual equation(s), the single source of truth.
+  - `residualsCore.ts` — **the single source of truth**: each constraint → residual equation(s),
+    written once over an abstract arithmetic `Alg<T>` so it runs with plain numbers *or* dual numbers.
+  - `residuals.ts` — the plain-number instantiation (readable reference values).
+  - `ad.ts` — a sparse forward-mode dual number; instantiating the residuals with it gives exact
+    derivatives.
+  - `jacobian.ts` — assembles the exact residual + Jacobian (and the symmetry-broken generic one).
   - `linalg.ts` — Gaussian elimination (normal equations) + rank (for DOF).
-  - `solver.ts` — **Levenberg–Marquardt**: Gauss–Newton + adaptive Marquardt damping, a
-    forward-difference Jacobian, and step accept/reject on the least-squares cost.
+  - `solver.ts` — **Levenberg–Marquardt**: Gauss–Newton + adaptive Marquardt damping, an **exact
+    (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
-  - `probes.ts` / `selftest.ts` — a live correctness suite that re-derives every claim.
+  - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
+  - `probes.ts` / `selftest.ts` — a live correctness suite (17 checks) that re-derives every claim,
+    including analytic-vs-finite-difference differential tests.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
   coupler-curve traces, DOF-aware highlighting, plus `view.ts` (camera) and `picking.ts` (hit-test).
 - `ui/components.tsx` — toolbar, contextual constraint palette, DOF/solver/constraint panel,
@@ -33,23 +42,59 @@ least-squares solver assembles the geometry. Drive a parameter and watch mechani
 - [x] Degree-of-freedom analysis (Jacobian rank → under/well/over-constrained)
 - [x] CAD renderer: constraint glyphs, dimension annotations, grid, traces
 - [x] Contextual constraint palette driven by the current selection
-- [x] Six examples: four-bar linkage, slider-crank, square, triangle, tangent circles, hexagon
-- [x] Driver constraints: animate a crank angle and trace the coupler curve
-- [x] Live self-test suite (10 checks re-deriving solver claims)
+- [x] Eight examples: four-bar, Peaucellier, Hoeken, slider-crank, square, triangle, tangent
+      circles, hexagon
+- [x] Driver constraints: animate a crank angle and trace the coupler curve (with ping-pong
+      sweeping for limited-range mechanisms)
+- [x] Live self-test suite (17 checks re-deriving solver claims)
 - [x] Pan / zoom / fit, keyboard shortcuts, polished dark UI
+
+### Session 2 (claude) — from demo to a real interactive CAD tool
+
+Numerical core
+- [x] **Exact analytic Jacobians via forward-mode autodiff.** Every residual is written once over
+  an arithmetic *algebra* `Alg<T>` (`residualsCore.ts`), instantiated with plain `number` (the
+  readable reference) and with a sparse dual number carrying a gradient (`ad.ts`). The dual
+  instantiation yields exact ∂r/∂x for free — one source of truth, zero drift, no finite-difference
+  noise. Wired into the LM solver (`solver.ts`) and the DOF analysis (`dof.ts`).
+- [x] **Differential-testing self-tests.** The AD residual *values* equal the plain residuals
+  exactly, and the analytic Jacobian matches a central finite-difference Jacobian to ~1e-9 across
+  every example and all 19 constraint kinds — the analytic path proven against two references.
+- [x] **Conflict diagnosis** (`conflicts.ts`). Row-reduces the constraint Jacobian to find the
+  *specific* redundant equations (not just a count) and flags exactly those constraints in red, in
+  the panel and on the canvas.
+
+Interaction & workflow
+- [x] **Undo / redo** — a full history stack over the sketch model (Ctrl/Cmd+Z, Shift for redo).
+- [x] **Auto-constrain** (`autoConstrain.ts`) — infers horizontal / vertical / coincident /
+  parallel / perpendicular / equal-length in one click; every inferred relation is admitted only if
+  it raises the Jacobian rank, so it never introduces redundancy.
+- [x] **Save / load / share** (`persist.ts`) — JSON file export + import, and a base64 URL fragment
+  that fully reconstructs a sketch (loaded on startup), with structural validation of untrusted input.
+- [x] **Dimension editing on canvas** — double-click a distance / radius / diameter / angle value.
+
+Showcase
+- [x] **Peaucellier–Lipkin** exact straight-line linkage (1864) — self-test confirms the traced
+  point holds its coordinate to ~1e-12 across the sweep.
+- [x] **Hoeken** four-bar approximate straight-line linkage — the practical contrast.
 
 ## Backlog / ideas
 
-- [ ] Analytic Jacobians per constraint (speed; the numerical one is the correctness reference)
 - [ ] Arcs and splines as first-class entities
-- [ ] Constraint conflict diagnosis — highlight the specific redundant equation
-- [ ] Save / load sketches (JSON) with a shareable URL hash
-- [ ] Peaucellier–Lipkin exact straight-line linkage as a preset
-- [ ] Auto-constrain: infer horizontal/vertical/coincident from rough input
-- [ ] Dimension editing by double-clicking a value on the canvas
+- [ ] Constraint groups / layers
+- [ ] Pantograph / other coupler-curve mechanisms
+- [ ] `localStorage` autosave with an explicit "restore last session"
 
 ## Session log
 
 - 2026-07-09 (claude): initial build. Full constraint solver, LM engine, DOF analysis, CAD
   renderer, six examples (incl. animated four-bar + slider-crank with coupler-curve tracing),
   and a 10-check live self-test suite. Verified with `pnpm lint` + `pnpm build` + Playwright.
+- 2026-07-10 (claude): major upgrade — from demo to interactive CAD tool. Replaced the
+  finite-difference Jacobian with an **exact** one via forward-mode autodiff over a single generic
+  residual algebra (differential-tested against finite differences to ~1e-9). Added conflict
+  diagnosis that pinpoints the specific redundant constraint; undo/redo; one-click auto-constrain
+  gated by Jacobian rank; save / open / shareable-URL persistence; on-canvas dimension editing; and
+  two straight-line-linkage showcases (Peaucellier exact + Hoeken approximate) with ping-pong
+  driving. Self-test suite 10 → 17. Verified end-to-end in Chromium (0 console errors) plus
+  `node scripts/verify-project.mjs` (scope + conformance + lint + build).

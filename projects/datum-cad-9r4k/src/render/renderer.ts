@@ -13,6 +13,8 @@ export type RenderState = {
   pending: Set<EntityId> // entities chosen toward a not-yet-applied constraint
   traces: TracePath[]
   dofStatus: DofStatus
+  redundant: Set<EntityId> // constraint ids flagged as linearly dependent / conflicting
+  highlight: Set<EntityId> // entities to accent (e.g. the geometry of a hovered constraint)
   showConstraints: boolean
   showGrid: boolean
   preview: { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] } | null
@@ -35,6 +37,8 @@ const COL = {
   glyphBg: 'rgba(12,18,26,0.92)',
   glyphBorder: '#33475a',
   glyphText: '#a9c0d6',
+  conflict: '#ff5c72',
+  highlight: '#8ad4ff',
 }
 
 export function statusColor(s: DofStatus): string {
@@ -135,6 +139,7 @@ function strokeFor(id: EntityId, st: RenderState, base: string): string {
   if (st.selection.has(id)) return COL.select
   if (st.pending.has(id)) return COL.pending
   if (st.hover === id) return COL.hover
+  if (st.highlight.has(id)) return COL.highlight
   return base
 }
 
@@ -148,7 +153,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       const [bx, by] = worldToScreen(v, b.x, b.y)
       const isConstr = e.construction
       ctx.strokeStyle = strokeFor(e.id, st, isConstr ? COL.geoConstruction : COL.geo)
-      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id ? 3 : isConstr ? 1 : 2
+      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id) ? 3 : isConstr ? 1 : 2
       ctx.setLineDash(isConstr ? [5, 5] : [])
       ctx.beginPath()
       ctx.moveTo(ax, ay)
@@ -159,7 +164,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       const c = sketch.point(e.c)
       const [cx, cy] = worldToScreen(v, c.x, c.y)
       ctx.strokeStyle = strokeFor(e.id, st, e.construction ? COL.geoConstruction : COL.geo)
-      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id ? 3 : 2
+      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id) ? 3 : 2
       ctx.setLineDash(e.construction ? [5, 5] : [])
       ctx.beginPath()
       ctx.arc(cx, cy, e.r * v.scale, 0, Math.PI * 2)
@@ -177,12 +182,13 @@ function drawPoints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderSta
     const selected = st.selection.has(e.id)
     const pending = st.pending.has(e.id)
     const hovered = st.hover === e.id
+    const highlighted = st.highlight.has(e.id)
     const r = selected || hovered ? 6 : 4.5
 
-    if (selected || pending || hovered) {
+    if (selected || pending || hovered || highlighted) {
       ctx.beginPath()
       ctx.arc(sx, sy, r + 4, 0, Math.PI * 2)
-      ctx.fillStyle = (selected ? COL.select : pending ? COL.pending : COL.hover) + '33'
+      ctx.fillStyle = (selected ? COL.select : pending ? COL.pending : hovered ? COL.hover : COL.highlight) + '33'
       ctx.fill()
     }
 
@@ -259,12 +265,13 @@ function drawConstraints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: Rend
   // the same entity don't stack exactly.
   const anchorCount = new Map<string, number>()
   for (const c of sketch.constraints) {
+    const conflict = st.redundant.has(c.id)
     if (c.kind === 'distance') {
-      drawDistanceDim(ctx, sketch, c, st)
+      drawDistanceDim(ctx, sketch, c, st, conflict)
     } else if (c.kind === 'radius' || c.kind === 'diameter') {
-      drawRadiusDim(ctx, sketch, c, st)
+      drawRadiusDim(ctx, sketch, c, st, conflict)
     } else if (c.kind === 'angle') {
-      drawAngleDim(ctx, sketch, c, st)
+      drawAngleDim(ctx, sketch, c, st, conflict)
     } else {
       const sym = GLYPH[c.kind]
       if (!sym) continue
@@ -272,7 +279,7 @@ function drawConstraints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: Rend
       const key = `${Math.round(wx)},${Math.round(wy)}`
       const idx = anchorCount.get(key) ?? 0
       anchorCount.set(key, idx + 1)
-      drawBadge(ctx, st.view, wx, wy, sym, idx, c.driver === true)
+      drawBadge(ctx, st.view, wx, wy, sym, idx, c.driver === true, conflict)
     }
   }
 }
@@ -292,7 +299,16 @@ function constraintAnchor(sketch: Sketch, c: Constraint): [number, number] {
   return [0, 0]
 }
 
-function drawBadge(ctx: CanvasRenderingContext2D, v: View, wx: number, wy: number, text: string, idx: number, driver: boolean) {
+function drawBadge(
+  ctx: CanvasRenderingContext2D,
+  v: View,
+  wx: number,
+  wy: number,
+  text: string,
+  idx: number,
+  driver: boolean,
+  conflict: boolean,
+) {
   const [sx, sy] = worldToScreen(v, wx, wy)
   const ox = 14 + (idx % 3) * 20
   const oy = -14 - Math.floor(idx / 3) * 20
@@ -303,17 +319,17 @@ function drawBadge(ctx: CanvasRenderingContext2D, v: View, wx: number, wy: numbe
   ctx.arc(bx, by, rr, 0, Math.PI * 2)
   ctx.fillStyle = COL.glyphBg
   ctx.fill()
-  ctx.strokeStyle = driver ? COL.dim : COL.glyphBorder
-  ctx.lineWidth = 1
+  ctx.strokeStyle = conflict ? COL.conflict : driver ? COL.dim : COL.glyphBorder
+  ctx.lineWidth = conflict ? 1.5 : 1
   ctx.stroke()
-  ctx.fillStyle = driver ? COL.dim : COL.glyphText
+  ctx.fillStyle = conflict ? COL.conflict : driver ? COL.dim : COL.glyphText
   ctx.font = '11px ui-monospace, monospace'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(text, bx, by + 0.5)
 }
 
-function drawDistanceDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState) {
+function drawDistanceDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState, conflict: boolean) {
   const v = st.view
   const a = sketch.point(c.entities[0])
   const b = sketch.point(c.entities[1])
@@ -329,7 +345,7 @@ function drawDistanceDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Const
   const p1y = ay + ny * off
   const p2x = bx + nx * off
   const p2y = by + ny * off
-  ctx.strokeStyle = COL.dim
+  ctx.strokeStyle = conflict ? COL.conflict : COL.dim
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(ax, ay)
@@ -339,10 +355,10 @@ function drawDistanceDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Const
   ctx.moveTo(p1x, p1y)
   ctx.lineTo(p2x, p2y)
   ctx.stroke()
-  drawDimLabel(ctx, (p1x + p2x) / 2, (p1y + p2y) / 2, `${(c.value ?? 0).toFixed(0)}`, c.driver === true)
+  drawDimLabel(ctx, (p1x + p2x) / 2, (p1y + p2y) / 2, `${(c.value ?? 0).toFixed(0)}`, c.driver === true, conflict)
 }
 
-function drawRadiusDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState) {
+function drawRadiusDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState, conflict: boolean) {
   const v = st.view
   const circ = sketch.circle(c.entities[0])
   const ctr = sketch.point(circ.c)
@@ -350,17 +366,17 @@ function drawRadiusDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constra
   const ang = -Math.PI / 4
   const ex = cx + Math.cos(ang) * circ.r * v.scale
   const ey = cy + Math.sin(ang) * circ.r * v.scale
-  ctx.strokeStyle = COL.dim
+  ctx.strokeStyle = conflict ? COL.conflict : COL.dim
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(cx, cy)
   ctx.lineTo(ex, ey)
   ctx.stroke()
   const label = (c.kind === 'diameter' ? '⌀' : 'R') + (c.value ?? 0).toFixed(0)
-  drawDimLabel(ctx, ex, ey, label, false)
+  drawDimLabel(ctx, ex, ey, label, false, conflict)
 }
 
-function drawAngleDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState) {
+function drawAngleDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState, conflict: boolean) {
   const v = st.view
   const l0 = sketch.line(c.entities[0])
   const l1 = sketch.line(c.entities[1])
@@ -372,22 +388,22 @@ function drawAngleDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constrai
   const a0 = Math.atan2(-d0.dy, d0.dx)
   const a1 = Math.atan2(-d1.dy, d1.dx)
   const rad = 30
-  ctx.strokeStyle = COL.dim
+  ctx.strokeStyle = conflict ? COL.conflict : COL.dim
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.arc(px, py, rad, Math.min(a0, a1), Math.max(a0, a1))
   ctx.stroke()
   const mid = (a0 + a1) / 2
-  drawDimLabel(ctx, px + Math.cos(mid) * (rad + 12), py + Math.sin(mid) * (rad + 12), `${(c.value ?? 0).toFixed(0)}°`, c.driver === true)
+  drawDimLabel(ctx, px + Math.cos(mid) * (rad + 12), py + Math.sin(mid) * (rad + 12), `${(c.value ?? 0).toFixed(0)}°`, c.driver === true, conflict)
 }
 
-function drawDimLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, driver: boolean) {
+function drawDimLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, driver: boolean, conflict = false) {
   ctx.font = '11px ui-monospace, monospace'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   const w = ctx.measureText(text).width + 8
   ctx.fillStyle = COL.glyphBg
   ctx.fillRect(x - w / 2, y - 8, w, 16)
-  ctx.fillStyle = driver ? '#ffd166' : COL.dim
+  ctx.fillStyle = conflict ? COL.conflict : driver ? '#ffd166' : COL.dim
   ctx.fillText(text, x, y + 0.5)
 }

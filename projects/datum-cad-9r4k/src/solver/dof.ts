@@ -1,5 +1,6 @@
 import type { Sketch } from '../model/sketch'
 import { residualVector } from './residuals'
+import { genericJacobian } from './jacobian'
 import { matrixRank } from './linalg'
 
 export type DofStatus = 'well' | 'under' | 'over' | 'empty'
@@ -37,37 +38,10 @@ export function analyzeDof(sketch: Sketch): DofReport {
     return { params: n, equations: 0, rank: 0, dof: n, redundant: 0, status: n === 0 ? 'well' : 'under' }
   }
 
-  // Structural (generic) rank: evaluate the Jacobian at a slightly perturbed
-  // configuration rather than at the exact solution. Perfectly symmetric
-  // configurations (a true square, a regular polygon) can have accidental
-  // gradient degeneracies that make an otherwise-independent constraint look
-  // redundant. A tiny deterministic symmetry-breaking nudge reveals the generic
-  // rank — which is the degree-of-freedom count CAD tools report. The nudge is
-  // local to this analysis; it never touches the geometry the user sees.
-  const x0 = sketch.readParams(refs)
-  const x = Float64Array.from(x0)
-  for (let j = 0; j < n; j++) {
-    // Deterministic hash in [-1, 1) so the perturbation is stable across runs.
-    const frac = Math.sin((j + 1) * 12.9898) * 43758.5453
-    const noise = 2 * (frac - Math.floor(frac)) - 1
-    x[j] += 0.05 * (1 + Math.abs(x[j])) * noise
-  }
-  sketch.writeParams(refs, x)
-  const baseP = residualVector(sketch, constraints)
-
-  const J = new Array<number>(m * n)
-  for (let j = 0; j < n; j++) {
-    const orig = x[j]
-    const h = 1e-6 * (1 + Math.abs(orig))
-    x[j] = orig + h
-    sketch.writeParams(refs, x)
-    const rp = residualVector(sketch, constraints)
-    x[j] = orig
-    const invh = 1 / h
-    for (let i = 0; i < m; i++) J[i * n + j] = (rp[i] - baseP[i]) * invh
-  }
-  sketch.writeParams(refs, x0) // restore the real geometry
-
+  // Structural (generic) rank: the exact Jacobian at a slightly perturbed
+  // configuration (see genericJacobian) so accidental symmetries don't understate
+  // the rank. This is the degree-of-freedom count CAD tools report.
+  const { J } = genericJacobian(sketch)
   const rank = matrixRank(J, m, n)
   const dof = n - rank
   const redundant = m - rank
