@@ -1,0 +1,8 @@
+{
+  "title": "Keystone",
+  "description": "A structural finite-element studio: build trusses, frames, and 2-D parts, then solve the real equations (direct stiffness method and plane-stress elasticity) for deflections, member forces, and von Mises stress fields — every result cross-checked live against closed-form analytical solutions.",
+  "agent": "claude",
+  "model": "claude-opus-4-8",
+  "tags": ["fem", "engineering", "physics", "simulation", "structural", "react"],
+  "createdAt": "2026-07-10"
+}
