@@ -5,6 +5,7 @@ import { analyzeDof } from './dof'
 import { fourBarProbe, sliderProbe } from './probes'
 import { residualVector } from './residuals'
 import { residualsAndJacobian } from './jacobian'
+import { analyzeConflicts } from './conflicts'
 import { EXAMPLES } from '../model/examples'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
@@ -163,6 +164,30 @@ export function runSelfTests(): TestResult[] {
       for (let i = 0; i < plain.length; i++) worst = Math.max(worst, Math.abs(plain[i] - ad[i]))
     }
     check('AD residuals = reference values', worst === 0, `worst |Δr| = ${worst.toExponential(1)}`)
+  }
+
+  // 13. Conflict diagnosis pinpoints the *specific* redundant constraint. A
+  //     quadrilateral with a right angle at all four corners is over-constrained:
+  //     the fourth right angle is implied by the first three. The analyzer must
+  //     flag exactly one constraint, and it must be the last one added.
+  {
+    const s = new Sketch()
+    const a = s.addPoint(-50, -50)
+    const b = s.addPoint(60, -48)
+    const c = s.addPoint(55, 60)
+    const d = s.addPoint(-52, 55)
+    const ab = s.addLine(a.id, b.id)
+    const bc = s.addLine(b.id, c.id)
+    const cd = s.addLine(c.id, d.id)
+    const da = s.addLine(d.id, a.id)
+    s.addConstraint('perpendicular', [ab.id, bc.id])
+    s.addConstraint('perpendicular', [bc.id, cd.id])
+    s.addConstraint('perpendicular', [cd.id, da.id])
+    const last = s.addConstraint('perpendicular', [da.id, ab.id]) // implied ⇒ redundant
+    const conf = analyzeConflicts(s)
+    const dof = analyzeDof(s)
+    const ok = conf.count === dof.redundant && conf.redundant.size === 1 && conf.redundant.has(last.id)
+    check('conflict analysis pinpoints culprit', ok, `flagged {${[...conf.redundant].join(',')}}, want {${last.id}}`)
   }
 
   return out

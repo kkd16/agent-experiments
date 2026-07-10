@@ -9,6 +9,7 @@ import type { ConstraintOption } from './model/constraintRules'
 import { solve } from './solver/solver'
 import type { SolveResult } from './solver/solver'
 import { analyzeDof } from './solver/dof'
+import { analyzeConflicts } from './solver/conflicts'
 import { runSelfTests } from './solver/selftest'
 import type { TestResult } from './solver/selftest'
 import { render } from './render/renderer'
@@ -42,6 +43,7 @@ export default function App() {
   const driverValueRef = useRef(0)
   const tracesRef = useRef<Map<EntityId, [number, number][]>>(new Map())
   const traceTargetsRef = useRef<EntityId[]>([])
+  const redundantRef = useRef<Set<EntityId>>(new Set())
   const lastTsRef = useRef(0)
   const dragRef = useRef<{ mode: 'none' | 'point' | 'pan'; id?: EntityId; lastX: number; lastY: number }>({
     mode: 'none',
@@ -159,6 +161,7 @@ export default function App() {
       ci++
     }
     const status = analyzeDof(sketchRef.current).status
+    const redundant = redundantRef.current
     const pend = pendingToolRef.current
     const t = toolRef.current
     let preview: RenderState['preview'] = null
@@ -173,6 +176,7 @@ export default function App() {
       pending: new Set(pendingToolRef.current ? [pendingToolRef.current.startPoint] : []),
       traces,
       dofStatus: status,
+      redundant,
       showConstraints: showConstraintsRef.current,
       showGrid: showGridRef.current,
       preview,
@@ -356,6 +360,8 @@ export default function App() {
   /* eslint-disable react-hooks/exhaustive-deps */
   const options = useMemo(() => applicableConstraints(sketchRef.current, selection), [selection, rev])
   const dof = useMemo(() => analyzeDof(sketchRef.current), [rev])
+  const conflicts = useMemo(() => analyzeConflicts(sketchRef.current), [rev])
+  useEffect(() => void (redundantRef.current = conflicts.redundant), [conflicts])
   const constraintList = useMemo(() => sketchRef.current.constraints.slice(), [rev])
   const selectedEntities = useMemo(
     () => selection.map((id) => sketchRef.current.get(id)).filter((e): e is NonNullable<typeof e> => !!e),
@@ -515,6 +521,7 @@ export default function App() {
           solveInfo={solveInfo}
           selected={selectedEntities}
           constraints={constraintList}
+          redundant={conflicts.redundant}
           onRemoveConstraint={removeConstraint}
         />
       </div>

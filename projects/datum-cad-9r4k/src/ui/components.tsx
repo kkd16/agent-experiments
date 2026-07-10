@@ -158,6 +158,7 @@ export function InfoPanel(props: {
   solveInfo: SolveResult | null
   selected: Entity[]
   constraints: Constraint[]
+  redundant: Set<number>
   onRemoveConstraint: (id: number) => void
 }) {
   const { dof } = props
@@ -185,8 +186,9 @@ export function InfoPanel(props: {
         </div>
         {dof.redundant > 0 && (
           <p className="hint warn">
-            {dof.redundant} constraint equation{dof.redundant > 1 ? 's are' : ' is'} redundant — remove one if the sketch
-            fights back.
+            {dof.redundant} constraint equation{dof.redundant > 1 ? 's are' : ' is'} redundant — the specific culprit
+            {props.redundant.size > 1 ? 's are' : ' is'} flagged <span className="conflictWord">in red</span> below and on
+            the canvas. Remove one if the sketch fights back.
           </p>
         )}
       </section>
@@ -211,16 +213,20 @@ export function InfoPanel(props: {
         </h3>
         <ul className="cList">
           {props.constraints.length === 0 && <li className="empty">No constraints yet.</li>}
-          {props.constraints.map((c) => (
-            <li key={c.id} className={c.driver ? 'driver' : ''}>
-              <span className="cName">
-                {c.driver && <span className="drvDot" title="Driver" />} {describeConstraint(c)}
-              </span>
-              <button className="xBtn" onClick={() => props.onRemoveConstraint(c.id)} title="Remove">
-                ×
-              </button>
-            </li>
-          ))}
+          {props.constraints.map((c) => {
+            const isRedundant = props.redundant.has(c.id)
+            return (
+              <li key={c.id} className={`${c.driver ? 'driver' : ''} ${isRedundant ? 'redundant' : ''}`}>
+                <span className="cName">
+                  {c.driver && <span className="drvDot" title="Driver" />}
+                  {isRedundant && <span className="redDot" title="Redundant / conflicting" />} {describeConstraint(c)}
+                </span>
+                <button className="xBtn" onClick={() => props.onRemoveConstraint(c.id)} title="Remove">
+                  ×
+                </button>
+              </li>
+            )
+          })}
         </ul>
       </section>
 

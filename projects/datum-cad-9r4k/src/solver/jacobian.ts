@@ -55,3 +55,27 @@ export function residualsAndJacobian(sketch: Sketch, constraints: Constraint[], 
   }
   return { r, J, m, n }
 }
+
+// The Jacobian at a slightly *perturbed* ("generic") configuration, evaluated
+// then rolled back so the geometry the user sees is untouched. Perfectly
+// symmetric configurations — a true square, a regular polygon — can have
+// accidental gradient degeneracies that make an otherwise-independent constraint
+// look redundant. A tiny deterministic symmetry-breaking nudge reveals the
+// *generic* rank, which is the degree-of-freedom count CAD tools report. Both the
+// DOF analysis and the conflict analysis need exactly this matrix.
+export function genericJacobian(sketch: Sketch): LinearSystem {
+  const refs = sketch.freeParams()
+  const n = refs.length
+  const x0 = sketch.readParams(refs)
+  const x = Float64Array.from(x0)
+  for (let j = 0; j < n; j++) {
+    // Deterministic hash in [-1, 1) so the perturbation is stable across runs.
+    const frac = Math.sin((j + 1) * 12.9898) * 43758.5453
+    const noise = 2 * (frac - Math.floor(frac)) - 1
+    x[j] += 0.05 * (1 + Math.abs(x[j])) * noise
+  }
+  sketch.writeParams(refs, x)
+  const sys = residualsAndJacobian(sketch, sketch.constraints, refs)
+  sketch.writeParams(refs, x0) // restore the real geometry
+  return sys
+}
