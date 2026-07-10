@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { Params } from '../types'
 import { BlackHoleRenderer, RendererError } from '../gl/renderer'
 import { effectiveDiskInner, kerrISCO } from '../state'
+import { lookBasis, orbitPosition } from '../math/vec'
+import { cameraRay, tracePhoton, fateLabel, subCritical, observerVelocity } from '../physics/probe'
+import type { ProbeResult } from '../physics/probe'
+import { drawProbe } from '../ui/probe-overlay'
+import type { ProbeCamera } from '../ui/probe-overlay'
 import Spectrograph from './Spectrograph'
 
 /** Target camera radius (rs) at the bottom of a plunge — just outside the photon sphere. */
@@ -17,9 +22,17 @@ interface Props {
 
 export default function RenderView({ params, onOrbit, onDolly }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const probeCanvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<BlackHoleRenderer | null>(null)
   const paramsRef = useRef(params)
+
+  // The *effective* params the render loop is actually drawing with (auto-orbit + dive folded in),
+  // so a probe click reconstructs the exact camera on screen at that instant.
+  const renderParamsRef = useRef<Params>(params)
+  // The frozen world-space photon path, re-projected every frame; and its read-out for the panel.
+  const probeRef = useRef<ProbeResult | null>(null)
+  const [probeInfo, setProbeInfo] = useState<ProbeResult | null>(null)
 
   const [error, setError] = useState<string | null>(null)
   const [fps, setFps] = useState(0)
@@ -95,12 +108,43 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       const w = Math.max(1, Math.round(container.clientWidth * dpr * scale))
       const h = Math.max(1, Math.round(container.clientHeight * dpr * scale))
 
-      rendererRef.current?.render(
-        { ...p, azimuth: p.azimuth + autoPhase, cameraDistance: eDist, freeFall },
-        (now - start) / 1000,
-        w,
-        h,
-      )
+      const eff: Params = { ...p, azimuth: p.azimuth + autoPhase, cameraDistance: eDist, freeFall }
+      renderParamsRef.current = eff
+      rendererRef.current?.render(eff, (now - start) / 1000, w, h)
+
+      // Photon-probe overlay: re-project the frozen world-space path with the live camera so it
+      // tracks the orbit. Drawn at display resolution (independent of the render scale).
+      const pc = probeCanvasRef.current
+      if (pc) {
+        const cw = container.clientWidth
+        const ch = container.clientHeight
+        const ow = Math.max(1, Math.round(cw * dpr))
+        const oh = Math.max(1, Math.round(ch * dpr))
+        if (pc.width !== ow || pc.height !== oh) {
+          pc.width = ow
+          pc.height = oh
+        }
+        const ctx = pc.getContext('2d')
+        if (ctx) {
+          if (probeRef.current) {
+            const eye = orbitPosition(eff.cameraDistance, eff.inclination, eff.azimuth)
+            const { right, up, forward } = lookBasis(eye, [0, 0, 0])
+            const cam: ProbeCamera = {
+              eye,
+              right,
+              up,
+              forward,
+              tanHalf: Math.tan((eff.fov * Math.PI) / 180 / 2),
+              aspect: cw / Math.max(ch, 1),
+              w: ow,
+              h: oh,
+            }
+            drawProbe(ctx, probeRef.current, cam, dpr)
+          } else {
+            ctx.clearRect(0, 0, pc.width, pc.height)
+          }
+        }
+      }
 
       frames += 1
       acc += dt
@@ -119,7 +163,9 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
         // Observer HUD readout (rain frame): β = √(rs/r), γ = 1/√(1−β²).
         const { ff, r } = obsFrameRef.current
         if (ff) {
-          const b = Math.min(Math.sqrt(1 / Math.max(r, 1.0001)), 0.9985)
+          // True speed of the infalling frame, including the Kerr ZAMO azimuthal drift for a > 0.
+          const vv = observerVelocity(renderParamsRef.current)
+          const b = Math.min(Math.hypot(vv[0], vv[1], vv[2]), 0.9985)
           setObs({ active: true, r, beta: b, gamma: 1 / Math.sqrt(1 - b * b) })
         } else {
           setObs((o) => (o.active ? { ...o, active: false } : o))
@@ -143,8 +189,16 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
     const container = containerRef.current
     if (!container) return
 
+    // Distinguish an orbit-drag from a click: a click (little movement) fires the photon probe.
+    let downX = 0
+    let downY = 0
+    let moved = false
+
     const down = (e: PointerEvent) => {
       drag.current = { active: true, x: e.clientX, y: e.clientY }
+      downX = e.clientX
+      downY = e.clientY
+      moved = false
       container.setPointerCapture(e.pointerId)
     }
     const move = (e: PointerEvent) => {
@@ -153,6 +207,7 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       const dy = e.clientY - drag.current.y
       drag.current.x = e.clientX
       drag.current.y = e.clientY
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) moved = true
       onOrbitRef.current(dx * 0.35, dy * 0.35)
     }
     const up = (e: PointerEvent) => {
@@ -162,6 +217,23 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       } catch {
         /* pointer already released */
       }
+      if (!moved && Math.hypot(e.clientX - downX, e.clientY - downY) < 5) probeAt(e.clientX, e.clientY)
+    }
+
+    // Reconstruct the clicked pixel's ray with the exact on-screen camera and trace its geodesic.
+    const probeAt = (clientX: number, clientY: number) => {
+      const rp = renderParamsRef.current
+      const rect = container.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return
+      const fx = (clientX - rect.left) / rect.width
+      const fy = (clientY - rect.top) / rect.height
+      const aspect = rect.width / rect.height
+      const ndcX = (fx * 2 - 1) * aspect
+      const ndcY = 1 - fy * 2
+      const { pos, dir } = cameraRay(rp, ndcX, ndcY)
+      const res = tracePhoton(pos, dir, rp)
+      probeRef.current = res
+      setProbeInfo(res)
     }
     const wheel = (e: WheelEvent) => {
       e.preventDefault()
@@ -181,6 +253,11 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       container.removeEventListener('wheel', wheel)
     }
   }, [])
+
+  const clearProbe = () => {
+    probeRef.current = null
+    setProbeInfo(null)
+  }
 
   const savePng = () => {
     const canvas = canvasRef.current
@@ -205,6 +282,7 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       const k = e.key.toLowerCase()
       if (k === 's') savePng()
       else if (k === 'f') setDiving((d) => !d)
+      else if (e.key === 'Escape') clearProbe()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -231,6 +309,8 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
   return (
     <div className="stage" ref={containerRef}>
       <canvas ref={canvasRef} className="stage__canvas" />
+      <canvas ref={probeCanvasRef} className="stage__probe" aria-hidden="true" />
+      {probeInfo && <ProbePanel res={probeInfo} onClear={clearProbe} />}
       <div className="hud" aria-hidden="true">
         <span className="hud__fps">{fps} fps</span>
         <span className="hud__fps">{Math.round(effScale * 100)}%</span>
@@ -260,8 +340,62 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       </div>
       {showSpectro && <Spectrograph params={{ ...params, diskInner: inner }} />}
       <div className="hud hud--hint" aria-hidden="true">
-        drag orbit · scroll zoom · V volume · F plunge · space auto-orbit · B bloom
+        click a photon · drag orbit · scroll zoom · V volume · F plunge · P light-echo · B bloom
       </div>
+    </div>
+  )
+}
+
+/** Live read-out for a traced photon: its conserved quantities, geometry and fate. */
+function ProbePanel({ res, onClear }: { res: ProbeResult; onClear: () => void }) {
+  const sub = subCritical(res)
+  const fateClass =
+    res.fate === 'captured' ? 'probe__fate probe__fate--cap' : res.fate === 'disk' ? 'probe__fate probe__fate--disk' : 'probe__fate probe__fate--sky'
+  return (
+    <div className="probe">
+      <div className="probe__head">
+        <span className="probe__title">Photon probe</span>
+        <button className="probe__close" onClick={onClear} title="Clear the traced photon (Esc)" aria-label="Clear probe">
+          ✕
+        </button>
+      </div>
+      <div className={fateClass}>{fateLabel(res)}</div>
+      <dl className="probe__grid">
+        <div>
+          <dt>Impact b</dt>
+          <dd>
+            {res.b.toFixed(3)} rs <span className={sub ? 'probe__flag probe__flag--sub' : 'probe__flag'}>{sub ? '< b_crit' : '> b_crit'}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Energy E</dt>
+          <dd>{res.E.toFixed(3)}</dd>
+        </div>
+        <div>
+          <dt>Ang. mom. L</dt>
+          <dd>{res.L.toFixed(3)}</dd>
+        </div>
+        <div>
+          <dt>Carter Q</dt>
+          <dd>{res.Q.toFixed(3)}</dd>
+        </div>
+        <div>
+          <dt>Closest r</dt>
+          <dd>{res.rMin.toFixed(3)} rs</dd>
+        </div>
+        <div>
+          <dt>Image order</dt>
+          <dd>{res.crossings}</dd>
+        </div>
+        <div>
+          <dt>Deflection</dt>
+          <dd>{((res.deflection * 180) / Math.PI).toFixed(1)}°</dd>
+        </div>
+        <div>
+          <dt>Model</dt>
+          <dd>{res.kind === 'kerr' ? `Kerr a/M ${res.spin.toFixed(2)}` : 'Schwarzschild'}</dd>
+        </div>
+      </dl>
     </div>
   )
 }

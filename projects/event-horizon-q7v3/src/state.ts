@@ -28,6 +28,8 @@ export const DEFAULT_PARAMS: Params = {
   starBrightness: 1.0,
   exposure: 1.0,
 
+  ringHighlight: false,
+
   bloom: true,
   bloomStrength: 0.55,
   bloomThreshold: 1.1,
@@ -147,5 +149,15 @@ export const PRESETS: Preset[] = [
     name: 'Plunge',
     blurb: 'Ride an infalling raindrop toward the horizon — hit F (or the Plunge button) to dive and watch the sky compress ahead of you.',
     params: { freeFall: true, spin: 0, cameraDistance: 8, inclination: 14, fov: 68, diskInner: 3, diskOuter: 11, diskBrightness: 2.0, exposure: 1.15 },
+  },
+  {
+    name: 'Light Echo',
+    blurb: 'The photon ring lit up: higher-order lensing images — light that looped the hole — tinted cyan/gold/magenta by order, hugging the shadow’s edge.',
+    params: { ringHighlight: true, spin: 0.6, iscoTrack: true, cameraDistance: 9, inclination: 10, fov: 60, diskInner: 3, diskOuter: 10, diskBrightness: 2.0, exposure: 1.2 },
+  },
+  {
+    name: 'Probe',
+    blurb: 'A clean three-quarter view for the photon probe — click anywhere on the render to trace that pixel’s geodesic and read off its conserved E, L, Q.',
+    params: { spin: 0.7, iscoTrack: true, cameraDistance: 13, inclination: 16, fov: 55, diskInner: 3, diskOuter: 12, diskBrightness: 1.6, exposure: 1.1 },
   },
 ]

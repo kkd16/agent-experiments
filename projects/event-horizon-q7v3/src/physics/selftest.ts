@@ -5,7 +5,9 @@
 // renderer's own equatorial integrator. Everything runs in the browser (and headless in Node), so
 // the claims are re-checkable on every load, not just asserted in a comment.
 
-import { B_CRIT, M, ISCO, PHOTON_SPHERE, kerrHorizon, kerrISCO, kerrPhotonOrbit } from '../state'
+import { B_CRIT, M, ISCO, PHOTON_SPHERE, DEFAULT_PARAMS, kerrHorizon, kerrISCO, kerrPhotonOrbit } from '../state'
+import type { Params } from '../types'
+import { tracePhoton, cameraRay, aberrate, observerVelocity } from './probe'
 import {
   horizons,
   photonRingRadius,
@@ -289,6 +291,85 @@ export function runSelfTests(): TestResult[] {
       good ? 0 : 1,
       0.5,
       'Closed-form observables',
+    )
+  }
+
+  // ---- Photon probe: the click-to-trace integrators recover the right physics ------------------
+  {
+    // A camera ray aimed dead-centre at a Schwarzschild hole is captured.
+    const p: Params = { ...DEFAULT_PARAMS, spin: 0, cameraDistance: 20, fov: 55 }
+    const c = cameraRay(p, 0, 0)
+    const res = tracePhoton(c.pos, c.dir, p)
+    add(
+      'Probe: centre ray is captured (Schwarzschild)',
+      `fate = ${res.fate}, closest approach r = ${res.rMin.toFixed(3)} rs`,
+      res.captured ? 0 : 1,
+      0.5,
+      'Photon probe',
+    )
+  }
+  {
+    // The probe's own capture boundary (max b that still falls in) must equal b_crit = 3√3·M.
+    const p: Params = { ...DEFAULT_PARAMS, spin: 0, cameraDistance: 30, fov: 40 }
+    let maxCapturedB = 0
+    for (let n = 0; n <= 240; n++) {
+      const ndc = (n / 240) * 0.55
+      const c = cameraRay(p, ndc, 0)
+      const res = tracePhoton(c.pos, c.dir, p)
+      if (res.captured) maxCapturedB = Math.max(maxCapturedB, res.b)
+    }
+    add(
+      'Probe: capture edge = b_crit (Schwarzschild)',
+      `max captured impact parameter = ${maxCapturedB.toFixed(4)} rs vs b_crit = ${B_CRIT.toFixed(4)} rs`,
+      Math.abs(maxCapturedB - B_CRIT),
+      6e-2,
+      'Photon probe',
+    )
+  }
+  {
+    // An off-axis ray escapes to the sky and carries impact parameter b = |L| > b_crit.
+    const p: Params = { ...DEFAULT_PARAMS, spin: 0, cameraDistance: 20, fov: 70 }
+    const c = cameraRay(p, 0.85, 0)
+    const res = tracePhoton(c.pos, c.dir, p)
+    add(
+      'Probe: off-axis ray escapes with b > b_crit',
+      `fate = ${res.fate}, b = ${res.b.toFixed(3)} rs`,
+      res.fate === 'sky' && res.b > B_CRIT ? 0 : 1,
+      0.5,
+      'Photon probe',
+    )
+  }
+  {
+    // The Kerr probe returns finite conserved quantities and a plausible captured central ray.
+    const p: Params = { ...DEFAULT_PARAMS, spin: 0.9, cameraDistance: 16, fov: 55 }
+    const c = cameraRay(p, 0.05, 0.03)
+    const res = tracePhoton(c.pos, c.dir, p)
+    const finite = Number.isFinite(res.E) && Number.isFinite(res.L) && Number.isFinite(res.Q) && Number.isFinite(res.b)
+    add(
+      'Probe: Kerr trace yields finite E, L, Q, b',
+      `E = ${res.E.toFixed(3)}, L = ${res.L.toFixed(3)}, Q = ${res.Q.toFixed(3)}, b = ${res.b.toFixed(3)} rs, ${res.path.length} pts`,
+      finite && res.path.length > 10 ? 0 : 1,
+      0.5,
+      'Photon probe',
+    )
+  }
+  {
+    // Free-fall aberration: a ray looking into the motion is blueshifted (D > 1), one looking away
+    // is redshifted (D < 1), and it reduces to the identity at rest.
+    const p: Params = { ...DEFAULT_PARAMS, freeFall: true, spin: 0, cameraDistance: 6 }
+    const v = observerVelocity(p) // points radially inward at the camera
+    const mag = Math.hypot(v[0], v[1], v[2])
+    const vhat: [number, number, number] = [v[0] / mag, v[1] / mag, v[2] / mag]
+    const inward = aberrate(vhat, v)
+    const outward = aberrate([-vhat[0], -vhat[1], -vhat[2]], v)
+    const rest = aberrate([0, 0, 1], [0, 0, 0])
+    const ok = inward.D > 1.05 && outward.D < 0.95 && rest.D === 1
+    add(
+      'Probe: free-fall Doppler blueshifts ahead, redshifts behind',
+      `D(into motion) = ${inward.D.toFixed(3)}, D(away) = ${outward.D.toFixed(3)}, D(at rest) = ${rest.D.toFixed(3)}`,
+      ok ? 0 : 1,
+      0.5,
+      'Photon probe',
     )
   }
 

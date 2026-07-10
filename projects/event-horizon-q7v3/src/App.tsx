@@ -116,6 +116,9 @@ export default function App() {
         case 'v':
           change({ volumetric: !paramsRef.current.volumetric })
           break
+        case 'p':
+          change({ ringHighlight: !paramsRef.current.ringHighlight })
+          break
         case 'e':
           change({ ergosphere: !paramsRef.current.ergosphere })
           break

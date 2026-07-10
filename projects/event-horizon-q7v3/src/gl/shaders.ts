@@ -57,7 +57,9 @@ uniform float uStepSize;
 uniform bool  uDoppler;
 uniform bool  uRedshift;
 
-uniform float uObserverBeta; // free-fall rain-observer speed β = √(rs/r); 0 = static camera
+uniform vec3  uObserverVel;  // free-fall observer velocity vector (world coords); 0 = static camera
+
+uniform bool  uRingHighlight;// tint the higher-order lensing images (the photon ring / light echoes)
 
 uniform float uStarBrightness;
 uniform float uExposure;
@@ -132,7 +134,12 @@ vec3 blackbody(float kelvin) {
 }
 
 // ---------------------------------------------------------------- lensed starfield
-vec3 starLayer(vec3 dir, float scale, float threshold) {
+// A star is a black body, so a Doppler factor D = ν_obs/ν_emit shifts it *along the Planckian
+// locus* — its temperature simply scales as T → T·D (a blueshifted star genuinely walks up the
+// black-body curve toward white-blue; a redshifted one slides toward red). This is the physically
+// honest per-wavelength redshift, not an RGB tint: pass D = 1 for the static camera and the layer
+// is unchanged.
+vec3 starLayer(vec3 dir, float scale, float threshold, float dop) {
   vec3 p = dir * scale;
   vec3 id = floor(p);
   vec3 f = fract(p);
@@ -141,17 +148,17 @@ vec3 starLayer(vec3 dir, float scale, float threshold) {
   vec3 center = rnd * 0.7 + 0.15;
   float d = length(f - center);
   float glow = present * smoothstep(0.16, 0.0, d);
-  float temp = mix(2800.0, 13000.0, hash13(id + 5.0));
+  float temp = mix(2800.0, 13000.0, hash13(id + 5.0)) * clamp(dop, 0.2, 6.0);
   float bright = 0.5 + 1.4 * hash13(id + 11.0);
   return glow * bright * blackbody(temp);
 }
 
-vec3 starField(vec3 dir) {
+vec3 starField(vec3 dir, float dop) {
   dir = normalize(dir);
   vec3 col = vec3(0.0);
-  col += starLayer(dir, 70.0, 0.955);
-  col += starLayer(dir, 150.0, 0.978) * 0.7;
-  col += starLayer(dir, 300.0, 0.988) * 0.45;
+  col += starLayer(dir, 70.0, 0.955, dop);
+  col += starLayer(dir, 150.0, 0.978, dop) * 0.7;
+  col += starLayer(dir, 300.0, 0.988, dop) * 0.45;
   // faint interstellar nebula so the void isn't dead black
   float neb = fbm(dir * 3.0 + 4.0);
   neb = pow(max(neb - 0.52, 0.0), 2.0) * 1.6;
@@ -159,6 +166,8 @@ vec3 starField(vec3 dir) {
   col += neb * vec3(0.10, 0.05, 0.20);
   col += pow(max(neb2 - 0.6, 0.0), 2.0) * vec3(0.04, 0.10, 0.14);
   col += vec3(0.004, 0.006, 0.012); // deep-sky glow
+  // Relativistic beaming of the whole field for the moving observer (∝ D³, matching the disk).
+  col *= clamp(pow(dop, 3.0), 0.05, 24.0);
   return col * uStarBrightness;
 }
 
@@ -296,12 +305,23 @@ void diskVolKerr(vec3 pos, float E, float L, out vec3 emission, out float dens) 
   emission = blackbody(kelvin) * emit;
 }
 
-// Doppler chromatic tint for the free-fall observer: D>1 (blueshift) pushes toward blue and
-// dims red; D<1 does the reverse. A cheap perceptual stand-in for a full per-wavelength shift.
+// Doppler chromatic tint for the free-fall observer's disk light: D>1 (blueshift) pushes toward
+// blue and dims red; D<1 does the reverse. (The starfield uses the exact black-body temperature
+// shift instead; this perceptual gain is only for the already-integrated disk colour, whose source
+// temperature is no longer separable at this point.)
 vec3 dopplerTint(vec3 c, float D) {
   float s = clamp(log(max(D, 1e-3)), -1.2, 1.2);
   vec3 gain = vec3(1.0 - 0.28 * s, 1.0 - 0.04 * s, 1.0 + 0.24 * s);
   return c * max(gain, vec3(0.0));
+}
+
+// Distinct hue per lensing image order for the light-echo highlight. The direct image (n = 0) is
+// untinted; the first photon ring (n = 1) glows cyan, the second (n = 2) gold, higher orders
+// magenta — so the successive echoes that pile up on the shadow's edge are visually separable.
+vec3 ringPalette(float n) {
+  if (n >= 3.5) return vec3(0.85, 0.20, 0.95);
+  if (n >= 2.5) return vec3(0.95, 0.55, 0.15);
+  return vec3(0.15, 0.75, 1.0);
 }
 
 // ---------------------------------------------------------------- Schwarzschild geodesic
@@ -393,12 +413,13 @@ vec3 aces(vec3 x) {
 }
 
 // =================================================================== Schwarzschild path
-void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out float transmit, out bool captured, out vec3 outDir) {
+void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out float transmit, out bool captured, out vec3 outDir, out float order) {
   vec3 L = cross(pos, vel);
   float h2 = dot(L, L);
   color = vec3(0.0);
   transmit = 1.0;
   captured = false;
+  order = 0.0;
 
   for (int i = 0; i < 2000; i++) {
     if (i >= uSteps) break;
@@ -443,6 +464,9 @@ void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out f
       }
     }
 
+    // Equatorial-plane crossings count the gravitational-lensing image order (0 = direct image).
+    if (pos.y * newPos.y < 0.0) order += 1.0;
+
     pos = newPos;
     vel = newVel;
   }
@@ -450,9 +474,10 @@ void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out f
 }
 
 // =================================================================== Kerr path
-void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float transmit, out bool captured, out vec3 outDir) {
+void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float transmit, out bool captured, out vec3 outDir, out float order) {
   float a = uSpin * MASS;
   float rplus = MASS + sqrt(max(MASS * MASS - a * a, 0.0));
+  order = 0.0;
 
   // --- initial position + covariant momenta from the camera ray ---------------
   float r, th, ph;
@@ -561,6 +586,9 @@ void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float t
       }
     }
 
+    // Equatorial-plane crossings count the lensing image order (0 = direct image).
+    if (prevY * world.y < 0.0) order += 1.0;
+
     prevWorld = world;
     prevY = world.y;
     r = nr; th = nth; ph = nph; pr = npr; pth = npth;
@@ -577,18 +605,21 @@ void main() {
   vec3 dir = normalize(uCamForward + uv.x * uTanHalfFov * uCamRight + uv.y * uTanHalfFov * uCamUp);
   vec3 pos = uCamPos;
 
-  // Free-fall (Gullstrand–Painlevé rain) observer: aberrate the camera ray into the static frame
-  // before integrating, and remember the Doppler factor so the whole sky beams and shifts as it
-  // would for someone plunging in. β = 0 collapses this to the ordinary static camera.
+  // Free-fall observer: aberrate the camera ray into the static frame with the full velocity vector
+  // (radial rain-frame infall + the Kerr ZAMO azimuthal drift for a > 0), and remember the Doppler
+  // factor so the sky beams and shifts as it would for someone plunging in. |v| = 0 collapses this
+  // to the ordinary static camera. The vector form reduces exactly to the old radial boost when the
+  // velocity is purely radial. See physics/probe.ts::aberrate — the same formula runs there so a
+  // click traces the photon actually shown.
   float dopplerD = 1.0;
-  float beta = clamp(uObserverBeta, 0.0, 0.9985);
+  float beta = length(uObserverVel);
   if (beta > 0.0002) {
-    vec3 eHat = -normalize(uCamPos);        // the raindrop moves radially inward
-    float mu = dot(dir, eHat);              // look-direction cosine along the motion
-    float g = 1.0 / sqrt(1.0 - beta * beta);
-    vec3 perp = dir - mu * eHat;
-    dir = normalize(perp / (g * (1.0 + beta * mu)) + eHat * ((mu + beta) / (1.0 + beta * mu)));
+    vec3 vhat = uObserverVel / beta;
+    float mu = dot(dir, vhat);
+    float g = 1.0 / sqrt(1.0 - min(beta * beta, 0.99999));
+    float s = (g - 1.0) * mu + g * beta;
     dopplerD = g * (1.0 + beta * mu);       // ν_observed / ν_static for light from this direction
+    dir = normalize((dir + s * vhat) / dopplerD);
   }
 
   float camR = length(uCamPos);
@@ -598,19 +629,28 @@ void main() {
   float transmit;
   bool captured;
   vec3 outDir;
+  float order;
 
   if (uSpin < 0.0015) {
-    traceSchwarzschild(pos, dir, escapeR, color, transmit, captured, outDir);
+    traceSchwarzschild(pos, dir, escapeR, color, transmit, captured, outDir, order);
   } else {
-    traceKerr(pos, dir, escapeR, color, transmit, captured, outDir);
+    traceKerr(pos, dir, escapeR, color, transmit, captured, outDir, order);
   }
 
-  vec3 bg = captured ? vec3(0.0) : starField(outDir);
-  color += transmit * bg;
-
-  // Apply the observer Doppler shift + relativistic beaming to the assembled (linear) image.
+  // Starfield: black-body temperature shifted by the observer Doppler factor (exact per-wavelength
+  // redshift), beamed by D³ inside starField. The disk light, whose source temperature is no longer
+  // separable, gets the perceptual dopplerTint + beaming below.
+  vec3 bg = captured ? vec3(0.0) : starField(outDir, dopplerD);
   if (beta > 0.0002) {
     color = dopplerTint(color, dopplerD) * clamp(pow(dopplerD, 3.0), 0.05, 24.0);
+  }
+  color += transmit * bg;
+
+  // Light-echo isolation: tint the higher-order lensing images (n ≥ 1 equatorial crossings). These
+  // are the photon-ring echoes hugging the shadow — light that looped the hole before reaching us.
+  if (uRingHighlight && order >= 1.0) {
+    float glow = 0.10 + 0.10 * min(order - 1.0, 3.0);
+    color += ringPalette(order) * glow * (captured ? 0.6 : 1.0);
   }
 
   if (uToneMap) {

@@ -61,6 +61,13 @@ export interface Params {
   /** HDR exposure applied before the ACES tonemap. */
   exposure: number
 
+  /**
+   * Tint the higher-order lensing images (the photon-ring "light echoes") in the render — light
+   * that looped the hole one or more extra half-turns before reaching the camera, hugging the
+   * shadow's edge. A diagnostic overlay, off by default.
+   */
+  ringHighlight: boolean
+
   /** Multi-pass HDR bloom on the disk highlights. */
   bloom: boolean
   /** Bloom intensity (how much of the blurred bright-pass is added back). */

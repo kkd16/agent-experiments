@@ -2,6 +2,7 @@ import { FRAG_SRC, VERT_SRC, BRIGHT_SRC, BLUR_SRC, DOWNSAMPLE_SRC, COMPOSITE_SRC
 import type { Params } from '../types'
 import { lookBasis, orbitPosition } from '../math/vec'
 import { effectiveDiskInner } from '../state'
+import { observerVelocity } from '../physics/probe'
 
 /** Thrown when WebGL2 or shader compilation is unavailable — the UI shows a friendly fallback. */
 export class RendererError extends Error {}
@@ -13,7 +14,7 @@ const SCENE_UNIFORMS = [
   'uDiskInner', 'uDiskOuter', 'uDiskBrightness', 'uDiskTemp', 'uDiskDensity',
   'uVolumetric', 'uDiskThickness',
   'uSteps', 'uStepSize', 'uDoppler', 'uRedshift', 'uStarBrightness', 'uExposure', 'uToneMap',
-  'uObserverBeta',
+  'uObserverVel', 'uRingHighlight',
 ] as const
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -183,9 +184,9 @@ export class BlackHoleRenderer {
     const aspect = width / Math.max(height, 1)
     const diskInner = effectiveDiskInner(params)
 
-    // Free-fall rain observer: β = √(rs/r) with rs = 1, capped just short of light speed.
-    const camR = Math.hypot(eye[0], eye[1], eye[2])
-    const observerBeta = params.freeFall ? Math.min(Math.sqrt(1 / Math.max(camR, 1.0001)), 0.9985) : 0
+    // Free-fall observer velocity vector (world coords): radial GP rain-frame infall plus the Kerr
+    // ZAMO azimuthal drift for a > 0. Zero vector for the static camera. Shared with the probe.
+    const vObs = observerVelocity(params)
 
     gl.uniform2f(u.uResolution, width, height)
     gl.uniform1f(u.uTime, timeSeconds)
@@ -211,7 +212,8 @@ export class BlackHoleRenderer {
     gl.uniform1f(u.uStarBrightness, params.starBrightness)
     gl.uniform1f(u.uExposure, params.exposure)
     gl.uniform1i(u.uToneMap, toneMap ? 1 : 0)
-    gl.uniform1f(u.uObserverBeta, observerBeta)
+    gl.uniform3f(u.uObserverVel, vObs[0], vObs[1], vObs[2])
+    gl.uniform1i(u.uRingHighlight, params.ringHighlight ? 1 : 0)
   }
 
   /** Render one frame. `width`/`height` are the drawing-buffer size in device pixels. */
