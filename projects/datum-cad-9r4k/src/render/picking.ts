@@ -50,6 +50,25 @@ export function pickEntity(sketch: Sketch, v: View, sx: number, sy: number, tol 
         bestD = d
         best = e.id
       }
+    } else if (e.kind === 'arc') {
+      // Sample the arc into screen points (matching the renderer) and take the
+      // minimum distance to that polyline — correct for any sweep and the y-flip.
+      const g = sketch.arcGeom(e)
+      const rpx = g.r * v.scale
+      const segs = Math.max(6, Math.min(160, Math.ceil((rpx * g.sweep) / 6)))
+      let prev: [number, number] | null = null
+      for (let i = 0; i <= segs; i++) {
+        const a = g.a0 + (g.sweep * i) / segs
+        const pt = worldToScreen(v, g.cx + Math.cos(a) * g.r, g.cy + Math.sin(a) * g.r)
+        if (prev) {
+          const d = distToSegment(sx, sy, prev[0], prev[1], pt[0], pt[1])
+          if (d < bestD) {
+            bestD = d
+            best = e.id
+          }
+        }
+        prev = pt
+      }
     }
   }
   return best

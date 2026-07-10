@@ -204,7 +204,8 @@
 }
 .sketch.tool-point,
 .sketch.tool-line,
-.sketch.tool-circle {
+.sketch.tool-circle,
+.sketch.tool-arc {
   cursor: crosshair;
 }
 

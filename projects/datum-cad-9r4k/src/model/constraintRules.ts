@@ -13,22 +13,27 @@ export type ConstraintOption = {
   defaultValue?: number
 }
 
-function kinds(sketch: Sketch, sel: EntityId[]): { points: EntityId[]; lines: EntityId[]; circles: EntityId[]; all: Entity[] } {
+function kinds(
+  sketch: Sketch,
+  sel: EntityId[],
+): { points: EntityId[]; lines: EntityId[]; circular: EntityId[]; all: Entity[] } {
   const all = sel.map((id) => sketch.get(id)).filter((e): e is Entity => !!e)
   return {
     points: all.filter((e) => e.kind === 'point').map((e) => e.id),
     lines: all.filter((e) => e.kind === 'line').map((e) => e.id),
-    circles: all.filter((e) => e.kind === 'circle').map((e) => e.id),
+    // Circles and arcs are interchangeable for every radius/tangent/concentric
+    // relation — both carry a (center, radius) pair — so they are pooled here.
+    circular: all.filter((e) => e.kind === 'circle' || e.kind === 'arc').map((e) => e.id),
     all,
   }
 }
 
 // Every constraint currently applicable to the selection, in menu order.
 export function applicableConstraints(sketch: Sketch, sel: EntityId[]): ConstraintOption[] {
-  const { points, lines, circles, all } = kinds(sketch, sel)
+  const { points, lines, circular, all } = kinds(sketch, sel)
   const out: ConstraintOption[] = []
   const only = (np: number, nl: number, nc: number) =>
-    points.length === np && lines.length === nl && circles.length === nc && all.length === np + nl + nc
+    points.length === np && lines.length === nl && circular.length === nc && all.length === np + nl + nc
 
   if (only(2, 0, 0)) {
     const a = sketch.point(points[0])
@@ -56,23 +61,24 @@ export function applicableConstraints(sketch: Sketch, sel: EntityId[]): Constrai
     out.push({ kind: 'midpoint', label: 'Midpoint', symbol: 'M', value: null, entities: [points[0], lines[0]] })
   }
   if (only(1, 0, 1)) {
-    out.push({ kind: 'pointOnCircle', label: 'Point on Circle', symbol: '○', value: null, entities: [points[0], circles[0]] })
+    const label = sketch.get(circular[0])?.kind === 'arc' ? 'Point on Arc' : 'Point on Circle'
+    out.push({ kind: 'pointOnCircle', label, symbol: '○', value: null, entities: [points[0], circular[0]] })
   }
   if (only(2, 1, 0)) {
     out.push({ kind: 'symmetric', label: 'Symmetric', symbol: '⇄', value: null, entities: [points[0], points[1], lines[0]] })
   }
   if (only(0, 1, 1)) {
-    out.push({ kind: 'tangentLineCircle', label: 'Tangent', symbol: 'T', value: null, entities: [lines[0], circles[0]] })
+    out.push({ kind: 'tangentLineCircle', label: 'Tangent', symbol: 'T', value: null, entities: [lines[0], circular[0]] })
   }
   if (only(0, 0, 1)) {
-    const r = sketch.circle(circles[0]).r
-    out.push({ kind: 'radius', label: 'Radius', symbol: 'R', value: 'radius', entities: [...circles], defaultValue: r })
-    out.push({ kind: 'diameter', label: 'Diameter', symbol: '⌀', value: 'diameter', entities: [...circles], defaultValue: r * 2 })
+    const r = sketch.radiusOf(circular[0])
+    out.push({ kind: 'radius', label: 'Radius', symbol: 'R', value: 'radius', entities: [...circular], defaultValue: r })
+    out.push({ kind: 'diameter', label: 'Diameter', symbol: '⌀', value: 'diameter', entities: [...circular], defaultValue: r * 2 })
   }
   if (only(0, 0, 2)) {
-    out.push({ kind: 'equalRadius', label: 'Equal Radius', symbol: '=', value: null, entities: [...circles] })
-    out.push({ kind: 'tangentCircles', label: 'Tangent', symbol: 'T', value: null, entities: [...circles] })
-    out.push({ kind: 'concentric', label: 'Concentric', symbol: '◎', value: null, entities: [...circles] })
+    out.push({ kind: 'equalRadius', label: 'Equal Radius', symbol: '=', value: null, entities: [...circular] })
+    out.push({ kind: 'tangentCircles', label: 'Tangent', symbol: 'T', value: null, entities: [...circular] })
+    out.push({ kind: 'concentric', label: 'Concentric', symbol: '◎', value: null, entities: [...circular] })
   }
   return out
 }

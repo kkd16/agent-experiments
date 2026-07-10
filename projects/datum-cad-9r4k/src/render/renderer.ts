@@ -17,7 +17,10 @@ export type RenderState = {
   highlight: Set<EntityId> // entities to accent (e.g. the geometry of a hovered constraint)
   showConstraints: boolean
   showGrid: boolean
-  preview: { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] } | null
+  preview:
+    | { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] }
+    | { kind: 'arc'; center: [number, number]; from: [number, number]; to: [number, number] }
+    | null
 }
 
 const COL = {
@@ -170,8 +173,39 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       ctx.arc(cx, cy, e.r * v.scale, 0, Math.PI * 2)
       ctx.stroke()
       ctx.setLineDash([])
+    } else if (e.kind === 'arc') {
+      const g = sketch.arcGeom(e)
+      ctx.strokeStyle = strokeFor(e.id, st, e.construction ? COL.geoConstruction : COL.geo)
+      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id) ? 3 : e.construction ? 1 : 2
+      ctx.setLineDash(e.construction ? [5, 5] : [])
+      strokeArcWorld(ctx, v, g.cx, g.cy, g.r, g.a0, g.sweep)
+      ctx.setLineDash([])
     }
   }
+}
+
+// Stroke a circular arc by sampling it in world space and projecting each sample —
+// robust against the screen's y-flip (a world CCW sweep would otherwise need a
+// reversed canvas-arc direction). Sampled densely enough to read as smooth.
+function strokeArcWorld(
+  ctx: CanvasRenderingContext2D,
+  v: View,
+  cx: number,
+  cy: number,
+  r: number,
+  a0: number,
+  sweep: number,
+) {
+  const rpx = r * v.scale
+  const segs = Math.max(8, Math.min(240, Math.ceil((rpx * sweep) / 4)))
+  ctx.beginPath()
+  for (let i = 0; i <= segs; i++) {
+    const a = a0 + (sweep * i) / segs
+    const [sx, sy] = worldToScreen(v, cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+    if (i === 0) ctx.moveTo(sx, sy)
+    else ctx.lineTo(sx, sy)
+  }
+  ctx.stroke()
 }
 
 function drawPoints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderState) {
@@ -211,16 +245,26 @@ function drawPoints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderSta
   }
 }
 
-function drawPreview(
-  ctx: CanvasRenderingContext2D,
-  v: View,
-  p: { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] },
-) {
-  const [ax, ay] = worldToScreen(v, p.from[0], p.from[1])
-  const [bx, by] = worldToScreen(v, p.to[0], p.to[1])
+function drawPreview(ctx: CanvasRenderingContext2D, v: View, p: NonNullable<RenderState['preview']>) {
   ctx.strokeStyle = COL.pending
   ctx.lineWidth = 1.5
   ctx.setLineDash([4, 4])
+  if (p.kind === 'arc') {
+    // Preview the arc under construction: center fixed, radius set by the start
+    // point, sweeping CCW from the start to the cursor's angle.
+    const [cx, cy] = p.center
+    const r = Math.hypot(p.from[0] - cx, p.from[1] - cy)
+    const a0 = Math.atan2(p.from[1] - cy, p.from[0] - cx)
+    const a1 = Math.atan2(p.to[1] - cy, p.to[0] - cx)
+    let sweep = a1 - a0
+    while (sweep <= 0) sweep += Math.PI * 2
+    while (sweep > Math.PI * 2) sweep -= Math.PI * 2
+    strokeArcWorld(ctx, v, cx, cy, r, a0, sweep)
+    ctx.setLineDash([])
+    return
+  }
+  const [ax, ay] = worldToScreen(v, p.from[0], p.from[1])
+  const [bx, by] = worldToScreen(v, p.to[0], p.to[1])
   ctx.beginPath()
   if (p.kind === 'line') {
     ctx.moveTo(ax, ay)
@@ -291,6 +335,12 @@ function constraintAnchor(sketch: Sketch, c: Constraint): [number, number] {
     const ctr = sketch.point(first.c)
     return [ctr.x + first.r, ctr.y]
   }
+  if (first?.kind === 'arc') {
+    // Anchor a badge at the arc's midpoint, on the curve.
+    const g = sketch.arcGeom(first)
+    const a = g.a0 + g.sweep / 2
+    return [g.cx + Math.cos(a) * g.r, g.cy + Math.sin(a) * g.r]
+  }
   if (first?.kind === 'point') {
     const second = sketch.get(c.entities[1])
     if (second?.kind === 'point') return [(first.x + second.x) / 2, (first.y + second.y) / 2]
@@ -360,10 +410,17 @@ function drawDistanceDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Const
 
 function drawRadiusDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState, conflict: boolean) {
   const v = st.view
-  const circ = sketch.circle(c.entities[0])
+  const circ = sketch.circleLike(c.entities[0])
   const ctr = sketch.point(circ.c)
   const [cx, cy] = worldToScreen(v, ctr.x, ctr.y)
-  const ang = -Math.PI / 4
+  // For an arc, run the leader out to the arc's midpoint so it lands on the curve;
+  // for a full circle a fixed −45° reads cleanly.
+  let ang = -Math.PI / 4
+  if (circ.kind === 'arc') {
+    const g = sketch.arcGeom(circ)
+    // Screen angle of the arc midpoint (y is flipped on screen).
+    ang = -(g.a0 + g.sweep / 2)
+  }
   const ex = cx + Math.cos(ang) * circ.r * v.scale
   const ey = cy + Math.sin(ang) * circ.r * v.scale
   ctx.strokeStyle = conflict ? COL.conflict : COL.dim

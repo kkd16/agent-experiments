@@ -285,6 +285,125 @@ export function runSelfTests(): TestResult[] {
     check('auto-constrain squares a rough sketch', res.added > 0 && dof.status === 'well' && dof.redundant === 0 && equal, `added ${res.added}, ${dof.status}, sides ${lens.map((v) => v.toFixed(1)).join('/')}`)
   }
 
+  // 18. A single free arc has exactly 5 degrees of freedom: center (x, y), radius,
+  //     and the two endpoint angles. The intrinsic endpoint-on-circle residuals
+  //     remove 2 of the 7 raw parameters (2 center + 4 endpoint + 1 radius).
+  {
+    const s = new Sketch()
+    const c = s.addPoint(0, 0)
+    const p1 = s.addPoint(40, 0)
+    const p2 = s.addPoint(0, 40)
+    s.addArc(c.id, p1.id, p2.id, 40)
+    const dof = analyzeDof(s)
+    check('free arc has 5 DOF', dof.params === 7 && dof.equations === 2 && dof.dof === 5, `params=${dof.params}, eqs=${dof.equations}, dof=${dof.dof}`)
+  }
+
+  // 19. The rounded slot solves to a true obround: both caps share one radius, each
+  //     cap's endpoints sit exactly on its circle, and each flank is tangent to its
+  //     cap (centre-to-line distance = radius). Fully constrained, no redundancy.
+  {
+    const b = EXAMPLES.find((e) => e.id === 'slot')!.build()
+    const s = b.sketch
+    const r = solve(s, { maxIterations: 120 })
+    const arcs = s.entities.filter((e) => e.kind === 'arc').map((e) => s.arc(e.id))
+    // Endpoints on their circle.
+    let worstOn = 0
+    for (const a of arcs) {
+      for (const pid of [a.p1, a.p2]) {
+        const p = s.point(pid)
+        const c = s.point(a.c)
+        worstOn = Math.max(worstOn, Math.abs(Math.hypot(p.x - c.x, p.y - c.y) - a.r))
+      }
+    }
+    const equalR = approx(arcs[0].r, arcs[1].r, 1e-6)
+    const dof = analyzeDof(s)
+    check('rounded slot → obround, tangent & exact', r.converged && worstOn < 1e-6 && equalR && dof.status === 'well' && dof.redundant === 0, `on-circle ${worstOn.toExponential(1)}, r=${arcs[0].r.toFixed(2)}/${arcs[1].r.toFixed(2)}, ${dof.status}`)
+  }
+
+  // 20. The fillet's arc is genuinely tangent to both legs: the perpendicular
+  //     distance from the (solver-placed) arc centre to each leg line equals the
+  //     arc radius, to solver precision.
+  {
+    const b = EXAMPLES.find((e) => e.id === 'fillet')!.build()
+    const s = b.sketch
+    const r = solve(s, { maxIterations: 120 })
+    const arc = s.arc(s.entities.find((e) => e.kind === 'arc')!.id)
+    const c = s.point(arc.c)
+    const lines = s.entities.filter((e) => e.kind === 'line')
+    let worst = 0
+    for (const le of lines) {
+      const l = s.line(le.id)
+      const a = s.point(l.p1)
+      const bb = s.point(l.p2)
+      const dx = bb.x - a.x
+      const dy = bb.y - a.y
+      const len = Math.hypot(dx, dy) || 1
+      const dist = Math.abs((c.x - a.x) * dy - (c.y - a.y) * dx) / len
+      worst = Math.max(worst, Math.abs(dist - arc.r))
+    }
+    const dof = analyzeDof(s)
+    check('fillet arc tangent to both legs', r.converged && worst < 1e-6 && dof.status === 'well', `worst |dist−r| = ${worst.toExponential(1)}, ${dof.status}`)
+  }
+
+  // 21. The rounded rectangle solves to four equal-radius corner arcs, each tangent
+  //     to its two sides. Check: all four radii equal, every arc endpoint on its
+  //     circle, and every side's perpendicular distance to each corner it touches
+  //     equals the radius — the whole outline closes tangentially, fully constrained.
+  {
+    const b = EXAMPLES.find((e) => e.id === 'rounded-rect')!.build()
+    const s = b.sketch
+    const r = solve(s, { maxIterations: 120 })
+    const arcs = s.entities.filter((e) => e.kind === 'arc').map((e) => s.arc(e.id))
+    const equalR = arcs.every((a) => approx(a.r, arcs[0].r, 1e-6))
+    let worstOn = 0
+    for (const a of arcs)
+      for (const pid of [a.p1, a.p2]) {
+        const p = s.point(pid)
+        const c = s.point(a.c)
+        worstOn = Math.max(worstOn, Math.abs(Math.hypot(p.x - c.x, p.y - c.y) - a.r))
+      }
+    const dof = analyzeDof(s)
+    check('rounded rectangle → 4 equal tangent arcs', r.converged && equalR && worstOn < 1e-6 && dof.status === 'well', `r=${arcs[0].r.toFixed(1)}, on-circle ${worstOn.toExponential(1)}, ${dof.status}`)
+  }
+
+  // 22. Reversing an arc swaps its endpoints, so its counter-clockwise sweep becomes
+  //     the complement (2π − sweep) — the minor ⇄ major toggle — while every residual
+  //     is left untouched (the reversal is a pure display choice, not a re-solve).
+  {
+    const s = new Sketch()
+    const c = s.addPoint(0, 0)
+    const p1 = s.addPoint(40, 0)
+    const p2 = s.addPoint(0, 40)
+    const a = s.addArc(c.id, p1.id, p2.id, 40)
+    const before = s.arcGeom(a).sweep
+    const rBefore = residualVector(s, s.constraints)
+    s.reverseArc(a.id)
+    const after = s.arcGeom(a).sweep
+    const rAfter = residualVector(s, s.constraints)
+    let drift = 0
+    for (let i = 0; i < rBefore.length; i++) drift = Math.max(drift, Math.abs(rBefore[i] - rAfter[i]))
+    const complementary = approx(before + after, Math.PI * 2, 1e-9)
+    check('reverse arc → complementary sweep', complementary && drift === 0, `sweeps ${((before * 180) / Math.PI).toFixed(0)}° + ${((after * 180) / Math.PI).toFixed(0)}° = 360°, residual drift ${drift.toExponential(1)}`)
+  }
+
+  // 23. Conflict attribution across arcs: a `point on arc` constraint applied to the
+  //     arc's OWN endpoint merely restates that endpoint's intrinsic on-circle
+  //     residual, so exactly one equation is redundant — and because the intrinsic
+  //     arc rows hold their pivots first, the analyzer must blame the *user* relation
+  //     (the pointOnCircle), never the arc. Guards the residual-row ordering.
+  {
+    const s = new Sketch()
+    const c = s.addPoint(0, 0, { fixed: true })
+    const p1 = s.addPoint(40, 0)
+    const p2 = s.addPoint(0, 40)
+    const arc = s.addArc(c.id, p1.id, p2.id, 40)
+    const dup = s.addConstraint('pointOnCircle', [p1.id, arc.id]) // restates |p1−c| = r
+    const dof = analyzeDof(s)
+    const conf = analyzeConflicts(s)
+    const ok = dof.redundant === 1 && conf.count === dof.redundant && conf.redundant.size === 1 && conf.redundant.has(dup.id)
+    check('conflict blames the user relation, not the arc', ok, `redundant=${dof.redundant}, flagged {${[...conf.redundant].join(',')}}, want {${dup.id}}`)
+  }
+
   return out
 }
 

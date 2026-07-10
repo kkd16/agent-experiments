@@ -1,4 +1,4 @@
-import type { Constraint, EntityId, LineEntity } from '../model/types'
+import type { ArcEntity, Constraint, EntityId, LineEntity } from '../model/types'
 import type { Sketch } from '../model/sketch'
 
 // The residual math, written *once* against an abstract arithmetic `Alg<T>`.
@@ -85,7 +85,9 @@ export function pushResidualsG<T>(
 
   const P = (i: number): EntityId => c.entities[i]
   const lineOf = (i: number): LineEntity => sketch.line(c.entities[i])
-  const circleOf = (i: number) => sketch.circle(c.entities[i])
+  // A circle *or* an arc — both expose the (center point `c`, radius `id→cr`) pair
+  // the circular residuals below read, so every one of them applies to arcs too.
+  const circleOf = (i: number) => sketch.circleLike(c.entities[i])
 
   // Direction vector p1→p2 of a line, plus its length, in the algebra.
   const dir = (l: LineEntity) => {
@@ -239,3 +241,27 @@ export function pushResidualsG<T>(
     }
   }
 }
+
+// The *intrinsic* residuals every arc always carries: both endpoints lie on the
+// arc's circle, |p1 − c| = r and |p2 − c| = r. These are not user constraints —
+// they are what makes an arc a rigid circular arc rather than three loose points,
+// and are appended (in entity order, after all user constraints) wherever the
+// residual vector or its Jacobian is assembled. Written over the same abstract
+// algebra `A`, so the plain and automatic-differentiation backends share the code
+// and the differential self-test proves the two agree for arcs as well.
+export function pushArcResidualsG<T>(A: Alg<T>, vars: Vars<T>, arc: ArcEntity, out: T[]): void {
+  const { sub, hypot } = A
+  const { px, py, cr } = vars
+  const r = cr(arc.id)
+  const cx = px(arc.c)
+  const cy = py(arc.c)
+  for (const pid of [arc.p1, arc.p2]) {
+    const dx = sub(px(pid), cx)
+    const dy = sub(py(pid), cy)
+    out.push(sub(hypot(dx, dy), r))
+  }
+}
+
+// How many intrinsic residuals a single arc contributes (both endpoints on the
+// circle). Used for degree-of-freedom / residual-count bookkeeping.
+export const ARC_RESIDUALS = 2

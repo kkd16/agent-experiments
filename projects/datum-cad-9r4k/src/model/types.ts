@@ -38,7 +38,30 @@ export type CircleEntity = {
   construction?: boolean
 }
 
-export type Entity = PointEntity | LineEntity | CircleEntity
+// A circular arc, in the same "everything reduces to points" spirit: it references
+// a center point `c` and two endpoint points `p1` (start) and `p2` (end), and — like
+// a circle — carries a solvable radius `r`. The arc is the counter-clockwise sweep
+// from p1 to p2. Two *intrinsic* residuals (|p1−c| = r and |p2−c| = r) bind both
+// endpoints to the circle of radius r, so the endpoints are ordinary draggable
+// points that always land on a common circle. Because an arc exposes the same
+// (center, radius) pair as a circle, every circle relation — radius, diameter,
+// equal-radius, concentric, point-on, tangent-to-line, tangent-to-circle — applies
+// to arcs unchanged (see `Sketch.circleLike`).
+export type ArcEntity = {
+  kind: 'arc'
+  id: EntityId
+  c: EntityId // center point
+  p1: EntityId // start point (arc sweeps CCW from here)
+  p2: EntityId // end point
+  r: number
+  construction?: boolean
+}
+
+export type Entity = PointEntity | LineEntity | CircleEntity | ArcEntity
+
+// The union of entities that expose a (center point, radius) pair — a circle or an
+// arc. Every "circular" constraint is defined once over this shape.
+export type CircularEntity = CircleEntity | ArcEntity
 
 // The kinds of geometric relations the solver understands. Each maps to one or
 // more scalar residual equations that the solver drives to zero.

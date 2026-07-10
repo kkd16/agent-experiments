@@ -1,4 +1,6 @@
 import type {
+  ArcEntity,
+  CircularEntity,
   Constraint,
   ConstraintKind,
   CircleEntity,
@@ -11,7 +13,7 @@ import type {
 
 // A single solvable scalar parameter, addressed by the entity it lives on and
 // the field name to read/write. The solver assembles a flat vector of these.
-export type ParamRef = { owner: PointEntity | CircleEntity; key: 'x' | 'y' | 'r' }
+export type ParamRef = { owner: PointEntity | CircleEntity | ArcEntity; key: 'x' | 'y' | 'r' }
 
 // The Sketch is the mutable model: a bag of entities and constraints plus the
 // bookkeeping to turn them into (and back from) a flat parameter vector.
@@ -76,6 +78,26 @@ export class Sketch {
     return e
   }
 
+  arc(id: EntityId): ArcEntity {
+    const e = this.byId.get(id)
+    if (!e || e.kind !== 'arc') throw new Error(`entity ${id} is not an arc`)
+    return e
+  }
+
+  // A circle *or* an arc, viewed through their common (center, radius) interface.
+  // This is what lets a single body of "circular" residual code and UI cover both.
+  circleLike(id: EntityId): CircularEntity {
+    const e = this.byId.get(id)
+    if (!e || (e.kind !== 'circle' && e.kind !== 'arc')) throw new Error(`entity ${id} is not a circle or arc`)
+    return e
+  }
+
+  // The current radius scalar of any circle or arc — the value the solver reads and
+  // writes for the `r` parameter, and the accessor the residual `cr(id)` resolves to.
+  radiusOf(id: EntityId): number {
+    return this.circleLike(id).r
+  }
+
   // --- construction -------------------------------------------------------
 
   addPoint(x: number, y: number, opts: Partial<PointEntity> = {}): PointEntity {
@@ -99,6 +121,13 @@ export class Sketch {
     return circ
   }
 
+  addArc(c: EntityId, p1: EntityId, p2: EntityId, r: number, construction = false): ArcEntity {
+    const arc: ArcEntity = { kind: 'arc', id: this.fresh(), c, p1, p2, r, construction }
+    this.entities.push(arc)
+    this.byId.set(arc.id, arc)
+    return arc
+  }
+
   addConstraint(kind: ConstraintKind, entities: EntityId[], value?: number, driver = false): Constraint {
     const c: Constraint = { kind, id: this.fresh(), entities, value, driver }
     this.constraints.push(c)
@@ -107,6 +136,16 @@ export class Sketch {
 
   removeConstraint(id: EntityId) {
     this.constraints = this.constraints.filter((c) => c.id !== id)
+  }
+
+  // Swap an arc's start and end points, flipping which side of the circle the arc
+  // sweeps — the standard major-arc / minor-arc toggle. Purely a display choice:
+  // the geometry (center, radius, endpoints) and every residual are unchanged.
+  reverseArc(id: EntityId) {
+    const a = this.arc(id)
+    const t = a.p1
+    a.p1 = a.p2
+    a.p2 = t
   }
 
   // Delete an entity and everything that depends on it (lines/circles that
@@ -123,6 +162,9 @@ export class Sketch {
           removed.add(e.id)
           changed = true
         } else if (e.kind === 'circle' && removed.has(e.c)) {
+          removed.add(e.id)
+          changed = true
+        } else if (e.kind === 'arc' && (removed.has(e.c) || removed.has(e.p1) || removed.has(e.p2))) {
           removed.add(e.id)
           changed = true
         }
@@ -143,7 +185,7 @@ export class Sketch {
         if (e.fixed || extraFixed?.has(e.id)) continue
         params.push({ owner: e, key: 'x' })
         params.push({ owner: e, key: 'y' })
-      } else if (e.kind === 'circle') {
+      } else if (e.kind === 'circle' || e.kind === 'arc') {
         params.push({ owner: e, key: 'r' })
       }
     }
@@ -170,6 +212,23 @@ export class Sketch {
     return { dx, dy, len: Math.hypot(dx, dy) }
   }
 
+  // World-space description of an arc for rendering / hit-testing: its center, the
+  // stored radius, and the counter-clockwise sweep from the start endpoint (a0) to
+  // the end endpoint (a1). `sweep` is the CCW angular span in (0, 2π]; the endpoints'
+  // angles are taken from their *actual* positions (which the solver keeps on the
+  // circle) so the drawn arc always passes through the two endpoint handles.
+  arcGeom(a: ArcEntity): { cx: number; cy: number; r: number; a0: number; a1: number; sweep: number } {
+    const c = this.point(a.c)
+    const p1 = this.point(a.p1)
+    const p2 = this.point(a.p2)
+    const a0 = Math.atan2(p1.y - c.y, p1.x - c.x)
+    const a1 = Math.atan2(p2.y - c.y, p2.x - c.x)
+    let sweep = a1 - a0
+    while (sweep <= 0) sweep += Math.PI * 2
+    while (sweep > Math.PI * 2) sweep -= Math.PI * 2
+    return { cx: c.x, cy: c.y, r: a.r, a0, a1, sweep }
+  }
+
   boundingBox(): { minX: number; minY: number; maxX: number; maxY: number } {
     let minX = Infinity
     let minY = Infinity
@@ -187,6 +246,20 @@ export class Sketch {
         const c = this.point(e.c)
         grow(c.x - e.r, c.y - e.r)
         grow(c.x + e.r, c.y + e.r)
+      } else if (e.kind === 'arc') {
+        // The true swept box: the two endpoints, plus any of the four axis extreme
+        // points (angles 0, π/2, π, 3π/2) that fall within the CCW sweep — those are
+        // where the arc bulges furthest out.
+        const g = this.arcGeom(e)
+        grow(this.point(e.p1).x, this.point(e.p1).y)
+        grow(this.point(e.p2).x, this.point(e.p2).y)
+        for (let k = 0; k < 4; k++) {
+          const ang = (k * Math.PI) / 2
+          let delta = ang - g.a0
+          while (delta < 0) delta += Math.PI * 2
+          while (delta > Math.PI * 2) delta -= Math.PI * 2
+          if (delta <= g.sweep) grow(g.cx + Math.cos(ang) * g.r, g.cy + Math.sin(ang) * g.r)
+        }
       }
     }
     if (!isFinite(minX)) return { minX: -100, minY: -100, maxX: 100, maxY: 100 }

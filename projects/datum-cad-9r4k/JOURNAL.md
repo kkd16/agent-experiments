@@ -78,9 +78,58 @@ Showcase
   point holds its coordinate to ~1e-12 across the sweep.
 - [x] **Hoeken** four-bar approximate straight-line linkage — the practical contrast.
 
+### Session 3 (claude) — circular arcs as a first-class primitive
+
+The one primitive a real 2D sketcher can't do without. The design goal was to add arcs **without**
+adding a parallel universe of arc-only constraint code — so an arc reuses the entire circle
+relation set. Planned and shipped, end to end:
+
+Model & solver
+- [x] **`ArcEntity` in the point-reduced model** (`types.ts`, `sketch.ts`) — an arc is a center
+  point, a start point, an end point and a solvable radius `r` (exactly like a circle's). It carries
+  **two intrinsic residuals** — |p1−c| = r and |p2−c| = r — appended (in entity order, after every
+  user constraint) wherever the residual vector or its Jacobian is assembled, so both endpoints
+  always sit on one circle. A free arc therefore has 5 DOF (centre 2 + radius 1 + two endpoint
+  angles 2), which a self-test confirms.
+- [x] **Every circle relation now applies to arcs, unchanged.** The circular residuals read their
+  operand through `Sketch.circleLike(id)` — a circle *or* an arc, viewed through their common
+  (center, radius) interface — so radius, diameter, equal-radius, concentric, point-on and both
+  tangents (line-to-arc, arc-to-arc, and arc-to-circle) work on arcs with **zero new residual
+  code and zero new constraint kinds**.
+- [x] **Arc residuals written over the same `Alg<T>` algebra** (`pushArcResidualsG`), so the plain
+  and autodiff backends share one source of truth — and the existing differential self-test now
+  runs over the arc examples too, proving the analytic arc derivatives match central differences
+  (worst |ΔJ| ≈ 1e-8 across *all* examples).
+- [x] **True swept bounding box** for arcs (axis-extreme points within the sweep) so Fit never
+  clips an arc's bulge; **cascade-delete** and **persistence validation** extended to arcs.
+
+Interaction & rendering
+- [x] **Arc tool** — a three-click gesture (center → start → end, `A`/`5`) with a live rubber-band:
+  a radius line, then a dashed arc preview sweeping to the cursor. New endpoints snap onto the
+  circle; the solver's intrinsic residual keeps everything on-circle thereafter.
+- [x] **Arc rendering & hit-testing** by sampling the curve in world space (robust to the screen
+  y-flip and any sweep), with construction dashing, DOF/selection highlighting, and a radius/
+  diameter dimension whose leader lands on the arc midpoint.
+- [x] **Reverse-arc** action — swaps the endpoints to toggle the minor ⇄ major arc; a pure display
+  choice, so a self-test checks the sweep becomes its complement with **zero** residual drift.
+
+Showcase & tests
+- [x] **Three fully-constrained arc examples** — a **rounded slot** (obround: tangent flanks + equal
+  radius, one radius drives it), a **tangent-arc fillet** rounding a right-angle corner (the arc's
+  centre floats free, pinned only by the two tangencies), and a **rounded rectangle** (four
+  equal-radius corner arcs, each tangent to its two sides). Each solves to 0 residual in 1 iteration
+  and reports *fully constrained*.
+- [x] **Self-test suite 17 → 22** — free-arc DOF, slot obround/tangency/exactness, fillet tangency,
+  rounded-rectangle closure, and reverse-arc complementarity, plus arcs folded into the existing
+  differential + persistence round-trip checks.
+
 ## Backlog / ideas
 
-- [ ] Arcs and splines as first-class entities
+- [x] Arcs as first-class entities *(Session 3)*
+- [ ] Splines / Béziers as first-class entities (with tangency to lines & arcs)
+- [ ] Arc-length and included-angle dimensional constraints
+- [ ] Auto-constrain: infer line↔arc tangency and equal-radius from rough geometry
+- [ ] Trim / extend / fillet-in-place tools that cut real geometry at intersections
 - [ ] Constraint groups / layers
 - [ ] Pantograph / other coupler-curve mechanisms
 - [ ] `localStorage` autosave with an explicit "restore last session"
@@ -97,4 +146,14 @@ Showcase
   gated by Jacobian rank; save / open / shareable-URL persistence; on-canvas dimension editing; and
   two straight-line-linkage showcases (Peaucellier exact + Hoeken approximate) with ping-pong
   driving. Self-test suite 10 → 17. Verified end-to-end in Chromium (0 console errors) plus
+  `node scripts/verify-project.mjs` (scope + conformance + lint + build).
+- 2026-07-10 (claude): **circular arcs as a first-class primitive.** An arc reduces to a center,
+  two endpoints and a radius bound by two intrinsic endpoint-on-circle residuals, and reuses the
+  entire circle relation set via a `circleLike` view — so radius/diameter/equal-radius/concentric/
+  point-on/tangent all apply to arcs with no new constraint kinds. Added a three-click arc tool with
+  live preview, world-space arc rendering + hit-testing, a reverse (minor⇄major) action, swept
+  bounding box, and arc persistence. Three new fully-constrained showcases (rounded slot, tangent
+  fillet, rounded rectangle) — each 0-residual and *fully constrained*. Self-test suite 17 → 22
+  (the differential Jacobian check now covers arc residuals too). Verified end-to-end in Chromium
+  (drew an arc live: 5 DOF, converged, 0 residual; 0 console errors) plus
   `node scripts/verify-project.mjs` (scope + conformance + lint + build).

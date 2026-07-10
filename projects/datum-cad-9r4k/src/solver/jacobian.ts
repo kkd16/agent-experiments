@@ -1,6 +1,6 @@
 import type { Constraint, EntityId } from '../model/types'
 import type { ParamRef, Sketch } from '../model/sketch'
-import { pushResidualsG } from './residualsCore'
+import { pushArcResidualsG, pushResidualsG } from './residualsCore'
 import { AD, konst, variable } from './ad'
 import type { Dual } from './ad'
 
@@ -37,12 +37,16 @@ export function residualsAndJacobian(sketch: Sketch, constraints: Constraint[], 
     },
     cr: (id: EntityId): Dual => {
       const c = col.get(id + ':r')
-      const circ = sketch.circle(id)
-      return c === undefined ? konst(circ.r) : variable(circ.r, c)
+      const r = sketch.radiusOf(id)
+      return c === undefined ? konst(r) : variable(r, c)
     },
   }
 
   const duals: Dual[] = []
+  // Arc intrinsic residuals FIRST (in entity order), then user constraints —
+  // matching residualVector's row layout exactly (residuals.ts explains why the
+  // intrinsic rows lead).
+  for (const e of sketch.entities) if (e.kind === 'arc') pushArcResidualsG(AD, vars, e, duals)
   for (const c of constraints) pushResidualsG(sketch, AD, vars, c, duals)
 
   const m = duals.length

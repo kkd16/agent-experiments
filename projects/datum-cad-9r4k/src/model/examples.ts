@@ -254,6 +254,124 @@ function hoeken(): BuiltExample {
   }
 }
 
+// A rounded slot (obround): two parallel straight flanks capped by two semicircular
+// arcs of equal radius. The flanks are held tangent to both end-caps and level, and
+// the two centers are pinned — so the whole thing is fully determined by one radius
+// dimension. It exercises arcs end-to-end: the intrinsic endpoint-on-circle residual
+// keeps each cap's endpoints on its circle, and tangent-line-to-arc + equal-radius
+// (the very same relations circles use) do the rest. Drag nothing — change the
+// radius dimension and the slot rebuilds.
+function roundedSlot(): BuiltExample {
+  const s = new Sketch()
+  const R = 32
+  const CL = s.addPoint(-55, 0, { fixed: true, construction: true }) // left cap center
+  const CR = s.addPoint(55, 0, { fixed: true, construction: true }) // right cap center
+
+  // Endpoints, started roughly at the tangent points so the solve begins on-branch.
+  const TL = s.addPoint(-55, R)
+  const TR = s.addPoint(55, R)
+  const BR = s.addPoint(55, -R)
+  const BL = s.addPoint(-55, -R)
+
+  const top = s.addLine(TL.id, TR.id)
+  const bot = s.addLine(BR.id, BL.id)
+  const leftCap = s.addArc(CL.id, TL.id, BL.id, R) // CCW TL(90°)→BL(270°), bulging left
+  const rightCap = s.addArc(CR.id, BR.id, TR.id, R) // CCW BR(270°)→TR(90°), bulging right
+
+  s.addConstraint('horizontal', [top.id])
+  s.addConstraint('horizontal', [bot.id])
+  s.addConstraint('tangentLineCircle', [top.id, leftCap.id])
+  s.addConstraint('tangentLineCircle', [bot.id, rightCap.id])
+  s.addConstraint('equalRadius', [leftCap.id, rightCap.id])
+  s.addConstraint('radius', [leftCap.id], R)
+  return { sketch: s }
+}
+
+// A tangent-arc fillet rounding a right-angle corner: a horizontal leg and a
+// vertical leg, with an arc held tangent to both and joined to their inner ends.
+// The arc's center floats free — tangency to the two legs plus the radius pins it,
+// and the intrinsic endpoint residuals keep the tangent points on the arc. This is
+// the bread-and-butter fillet of real CAD sketching, fully solved from relations.
+function tangentFillet(): BuiltExample {
+  const s = new Sketch()
+  const R = 34
+  const A = s.addPoint(-95, -40, { fixed: true }) // horizontal leg's outer end
+  const B = s.addPoint(60, 60, { fixed: true }) // vertical leg's outer end
+  const T1 = s.addPoint(26, -40) // tangent point on the horizontal leg
+  const T2 = s.addPoint(60, -6) // tangent point on the vertical leg
+  const C = s.addPoint(26, -6, { construction: true }) // fillet center (floats free)
+
+  const legH = s.addLine(A.id, T1.id)
+  const legV = s.addLine(B.id, T2.id)
+  const arc = s.addArc(C.id, T1.id, T2.id, R) // CCW T1→T2, rounding the corner
+
+  s.addConstraint('horizontal', [legH.id])
+  s.addConstraint('vertical', [legV.id])
+  s.addConstraint('tangentLineCircle', [legH.id, arc.id])
+  s.addConstraint('tangentLineCircle', [legV.id, arc.id])
+  s.addConstraint('radius', [arc.id], R)
+  return { sketch: s }
+}
+
+// A rounded rectangle (stadium of four corner fillets): four straight sides — two
+// horizontal, two vertical — and four quarter-arcs, every arc tangent to the two
+// sides it joins and all four sharing one radius. The four corner centers are
+// pinned to a clean rectangle; a single radius dimension rounds every corner at
+// once. It is the four-fold version of the rounded slot, and a torture test for the
+// arc machinery: eight tangent points, each held on its arc by the intrinsic
+// endpoint residual, with tangent-line-to-arc and equal-radius doing the rest.
+function roundedRect(): BuiltExample {
+  const s = new Sketch()
+  const hw = 100
+  const hh = 66
+  const R = 30
+  const cx = hw - R
+  const cy = hh - R
+  // Corner centers, pinned to the rectangle.
+  const CTL = s.addPoint(-cx, cy, { fixed: true, construction: true })
+  const CTR = s.addPoint(cx, cy, { fixed: true, construction: true })
+  const CBR = s.addPoint(cx, -cy, { fixed: true, construction: true })
+  const CBL = s.addPoint(-cx, -cy, { fixed: true, construction: true })
+
+  // Tangent points (top/bottom on the horizontal sides, L/R on the vertical sides),
+  // started exactly at the tangent locations so the solve opens on-branch.
+  const TLt = s.addPoint(-cx, hh)
+  const TRt = s.addPoint(cx, hh)
+  const BRt = s.addPoint(cx, -hh)
+  const BLt = s.addPoint(-cx, -hh)
+  const LTt = s.addPoint(-hw, cy)
+  const LBt = s.addPoint(-hw, -cy)
+  const RTt = s.addPoint(hw, cy)
+  const RBt = s.addPoint(hw, -cy)
+
+  const top = s.addLine(TLt.id, TRt.id)
+  const bottom = s.addLine(BRt.id, BLt.id)
+  const left = s.addLine(LBt.id, LTt.id)
+  const right = s.addLine(RTt.id, RBt.id)
+
+  // Each quarter-arc sweeps CCW through its outward corner.
+  const aTL = s.addArc(CTL.id, TLt.id, LTt.id, R) // quadrant II: 90°→180°
+  const aBL = s.addArc(CBL.id, LBt.id, BLt.id, R) // quadrant III: 180°→270°
+  const aBR = s.addArc(CBR.id, BRt.id, RBt.id, R) // quadrant IV: 270°→360°
+  const aTR = s.addArc(CTR.id, RTt.id, TRt.id, R) // quadrant I: 0°→90°
+
+  s.addConstraint('horizontal', [top.id])
+  s.addConstraint('horizontal', [bottom.id])
+  s.addConstraint('vertical', [left.id])
+  s.addConstraint('vertical', [right.id])
+  // One tangency per side is enough: the far endpoint, held on its own arc's circle
+  // by the intrinsic residual, makes that corner tangent for free (as in the slot).
+  s.addConstraint('tangentLineCircle', [top.id, aTL.id])
+  s.addConstraint('tangentLineCircle', [bottom.id, aBR.id])
+  s.addConstraint('tangentLineCircle', [left.id, aBL.id])
+  s.addConstraint('tangentLineCircle', [right.id, aTR.id])
+  s.addConstraint('equalRadius', [aTL.id, aTR.id])
+  s.addConstraint('equalRadius', [aTR.id, aBR.id])
+  s.addConstraint('equalRadius', [aBR.id, aBL.id])
+  s.addConstraint('radius', [aTL.id], R)
+  return { sketch: s }
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'four-bar', name: 'Four-Bar Linkage', blurb: 'Grashof crank-rocker tracing a coupler curve.', build: fourBar },
   { id: 'peaucellier', name: 'Peaucellier (exact line)', blurb: 'An inversor that draws a perfect straight line.', build: peaucellier },
@@ -262,6 +380,9 @@ export const EXAMPLES: Example[] = [
   { id: 'square', name: 'Parametric Square', blurb: 'Right angles + equal sides. Drag to resize.', build: parametricSquare },
   { id: 'triangle', name: 'Rigid Triangle', blurb: 'Three bars make a rigid body. Drag it around.', build: rigidTriangle },
   { id: 'tangent', name: 'Tangent Circles', blurb: 'Two circles kept kissing as you drag.', build: tangentCircles },
+  { id: 'slot', name: 'Rounded Slot', blurb: 'Arcs + tangent flanks — one radius drives it all.', build: roundedSlot },
+  { id: 'fillet', name: 'Tangent Fillet', blurb: 'An arc rounding a corner, tangent to both legs.', build: tangentFillet },
+  { id: 'rounded-rect', name: 'Rounded Rectangle', blurb: 'Four tangent corner arcs; one radius rounds them all.', build: roundedRect },
   { id: 'hexagon', name: 'Regular Hexagon', blurb: 'Equal edges on a circle snap to regular.', build: regularHexagon },
   { id: 'blank', name: 'Blank Sketch', blurb: 'An empty canvas to draw your own.', build: blank },
 ]
