@@ -69,6 +69,34 @@ export function pickEntity(sketch: Sketch, v: View, sx: number, sy: number, tol 
         }
         prev = pt
       }
+    } else if (e.kind === 'spline') {
+      // Sample the cubic into a screen polyline (control points are affine-projected
+      // once, then evaluated with the Bernstein basis) and take the min segment
+      // distance — matching the rendered curve.
+      const p0 = worldToScreen(v, sketch.point(e.p0).x, sketch.point(e.p0).y)
+      const c0 = worldToScreen(v, sketch.point(e.c0).x, sketch.point(e.c0).y)
+      const c1 = worldToScreen(v, sketch.point(e.c1).x, sketch.point(e.c1).y)
+      const p1 = worldToScreen(v, sketch.point(e.p1).x, sketch.point(e.p1).y)
+      const segs = 24
+      let prev: [number, number] | null = null
+      for (let i = 0; i <= segs; i++) {
+        const t = i / segs
+        const u = 1 - t
+        const b0 = u * u * u
+        const b1 = 3 * u * u * t
+        const b2 = 3 * u * t * t
+        const b3 = t * t * t
+        const x = b0 * p0[0] + b1 * c0[0] + b2 * c1[0] + b3 * p1[0]
+        const y = b0 * p0[1] + b1 * c0[1] + b2 * c1[1] + b3 * p1[1]
+        if (prev) {
+          const d = distToSegment(sx, sy, prev[0], prev[1], x, y)
+          if (d < bestD) {
+            bestD = d
+            best = e.id
+          }
+        }
+        prev = [x, y]
+      }
     }
   }
   return best

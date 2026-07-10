@@ -9,6 +9,7 @@ import type {
   LineEntity,
   PointEntity,
   SketchData,
+  SplineEntity,
 } from './types'
 
 // A single solvable scalar parameter, addressed by the entity it lives on and
@@ -84,6 +85,24 @@ export class Sketch {
     return e
   }
 
+  spline(id: EntityId): SplineEntity {
+    const e = this.byId.get(id)
+    if (!e || e.kind !== 'spline') throw new Error(`entity ${id} is not a spline`)
+    return e
+  }
+
+  // The tangent handle at one of a spline's endpoints, as an ordered pair of point
+  // ids [from, to] whose vector (to − from) is the curve's tangent direction there:
+  // at the start B′(0) ∝ (c0 − p0); at the end B′(1) ∝ (c1 − p1) (defined pointing
+  // from the endpoint toward its control, so a shared-endpoint G1 join is "both
+  // handles collinear"). The choice is purely structural (id equality), so it never
+  // flips mid-solve — which is what keeps the tangency residuals cleanly
+  // differentiable. `pointId` must be the spline's p0 or p1; p1 is the default.
+  splineHandleAt(id: EntityId, pointId: EntityId): { from: EntityId; to: EntityId } {
+    const s = this.spline(id)
+    return pointId === s.p0 ? { from: s.p0, to: s.c0 } : { from: s.p1, to: s.c1 }
+  }
+
   // A circle *or* an arc, viewed through their common (center, radius) interface.
   // This is what lets a single body of "circular" residual code and UI cover both.
   circleLike(id: EntityId): CircularEntity {
@@ -128,6 +147,13 @@ export class Sketch {
     return arc
   }
 
+  addSpline(p0: EntityId, c0: EntityId, c1: EntityId, p1: EntityId, construction = false): SplineEntity {
+    const sp: SplineEntity = { kind: 'spline', id: this.fresh(), p0, c0, c1, p1, construction }
+    this.entities.push(sp)
+    this.byId.set(sp.id, sp)
+    return sp
+  }
+
   addConstraint(kind: ConstraintKind, entities: EntityId[], value?: number, driver = false): Constraint {
     const c: Constraint = { kind, id: this.fresh(), entities, value, driver }
     this.constraints.push(c)
@@ -165,6 +191,12 @@ export class Sketch {
           removed.add(e.id)
           changed = true
         } else if (e.kind === 'arc' && (removed.has(e.c) || removed.has(e.p1) || removed.has(e.p2))) {
+          removed.add(e.id)
+          changed = true
+        } else if (
+          e.kind === 'spline' &&
+          (removed.has(e.p0) || removed.has(e.c0) || removed.has(e.c1) || removed.has(e.p1))
+        ) {
           removed.add(e.id)
           changed = true
         }
@@ -259,6 +291,13 @@ export class Sketch {
           while (delta < 0) delta += Math.PI * 2
           while (delta > Math.PI * 2) delta -= Math.PI * 2
           if (delta <= g.sweep) grow(g.cx + Math.cos(ang) * g.r, g.cy + Math.sin(ang) * g.r)
+        }
+      } else if (e.kind === 'spline') {
+        // A cubic Bézier lies within the convex hull of its four control points, so
+        // growing by all four is a valid (slightly loose) bound that never clips it.
+        for (const pid of [e.p0, e.c0, e.c1, e.p1]) {
+          const p = this.point(pid)
+          grow(p.x, p.y)
         }
       }
     }

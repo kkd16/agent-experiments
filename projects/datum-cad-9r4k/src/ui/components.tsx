@@ -7,7 +7,7 @@ import type { SolveResult } from '../solver/solver'
 import type { TestResult } from '../solver/selftest'
 import { statusColor } from '../render/renderer'
 
-type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc'
+type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc' | 'spline'
 
 const TOOLS: { id: ToolId; label: string; icon: string; key: string }[] = [
   { id: 'select', label: 'Select / Drag', icon: '⭤', key: 'V' },
@@ -15,6 +15,7 @@ const TOOLS: { id: ToolId; label: string; icon: string; key: string }[] = [
   { id: 'line', label: 'Line', icon: '╱', key: 'L' },
   { id: 'circle', label: 'Circle', icon: '◯', key: 'C' },
   { id: 'arc', label: 'Arc', icon: '◜', key: 'A' },
+  { id: 'spline', label: 'Spline', icon: '∿', key: 'S' },
 ]
 
 export function Toolbar(props: {
@@ -195,6 +196,9 @@ function describeConstraint(c: Constraint): string {
     midpoint: 'Midpoint',
     symmetric: 'Symmetric',
     colinear: 'Colinear',
+    splineTangentLine: 'Spline tangent',
+    splineTangentSpline: 'Smooth join',
+    splineTangentArc: 'Spline tangent',
   }
   let s = label[c.kind] ?? c.kind
   if (c.value !== undefined && (c.kind === 'distance' || c.kind === 'radius' || c.kind === 'diameter'))

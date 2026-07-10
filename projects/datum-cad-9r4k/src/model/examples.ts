@@ -372,6 +372,91 @@ function roundedRect(): BuiltExample {
   return { sketch: s }
 }
 
+// A tangent S-curve: two cubic Bézier segments meeting at a shared middle point
+// with a smooth (G1) join, both far ends held tangent to the horizontal ground.
+// This is the spline showcase — the smooth-join and spline-to-line tangencies keep
+// the curve fair as you drag any control handle. Splines carry no parameter of
+// their own (they reduce to their four control points), so the whole thing is just
+// points and three direction constraints.
+function splineSCurve(): BuiltExample {
+  const s = new Sketch()
+  const G0 = s.addPoint(-110, -70, { fixed: true, construction: true })
+  const G1p = s.addPoint(110, -70, { fixed: true, construction: true })
+  const ground = s.addLine(G0.id, G1p.id, true)
+
+  const P0 = s.addPoint(-90, 0, { fixed: true }) // start (on the left)
+  const H0 = s.addPoint(-50, 40) // start handle
+  const H1 = s.addPoint(-20, -40) // handle into the join
+  const M = s.addPoint(0, 0) // the smooth join
+  const H2 = s.addPoint(20, 40) // handle out of the join
+  const H3 = s.addPoint(50, -40) // end handle
+  const P1 = s.addPoint(90, 0, { fixed: true }) // end (on the right)
+
+  const A = s.addSpline(P0.id, H0.id, H1.id, M.id)
+  const B = s.addSpline(M.id, H2.id, H3.id, P1.id)
+
+  s.addConstraint('splineTangentSpline', [M.id, A.id, B.id]) // smooth G1 join
+  s.addConstraint('splineTangentLine', [P0.id, A.id, ground.id]) // start tangent horizontal
+  s.addConstraint('splineTangentLine', [P1.id, B.id, ground.id]) // end tangent horizontal
+  return { sketch: s }
+}
+
+// A tangent blend: a single cubic spline fairs a straight line into a circle,
+// held tangent to the line at one end (a horizontal leg) and tangent to the circle
+// at the other, with that end riding on the circle. The classic "blend" fillet of
+// industrial design, expressed purely as relations — spline-to-line and spline-to-
+// arc tangency, the direct analogues of the line/arc tangent constraints.
+function splineBlend(): BuiltExample {
+  const s = new Sketch()
+  const A = s.addPoint(-110, -25, { fixed: true }) // leg's outer end
+  const J0 = s.addPoint(-30, -25) // blend start, on the leg
+  const legH = s.addLine(A.id, J0.id)
+
+  const Cc = s.addPoint(70, 25, { fixed: true, construction: true }) // circle center
+  const circle = s.addCircle(Cc.id, 32)
+  // Blend end on the lower-left of the circle, started with its handle already
+  // roughly perpendicular to the radius there (the well-conditioned side of the
+  // tangency residual — a handle started *parallel* to the radius sits on the
+  // zero-gradient ridge of cos θ and the solver cannot rotate it off).
+  const J1 = s.addPoint(55, 0)
+
+  const H0 = s.addPoint(30, -25) // start handle (drawn out along the leg)
+  const H1 = s.addPoint(35, 12) // end handle (≈ perpendicular to the start radius)
+  const sp = s.addSpline(J0.id, H0.id, H1.id, J1.id)
+
+  s.addConstraint('horizontal', [legH.id])
+  s.addConstraint('radius', [circle.id], 32)
+  s.addConstraint('pointOnCircle', [J1.id, circle.id]) // blend end rides the circle
+  s.addConstraint('splineTangentLine', [J0.id, sp.id, legH.id]) // tangent to the leg
+  s.addConstraint('splineTangentArc', [J1.id, sp.id, circle.id]) // tangent to the circle
+  return { sketch: s }
+}
+
+// A symmetric petal: two cubic splines sharing a base and a tip point, their control
+// handles mirrored across the vertical axis by symmetry constraints — so it stays a
+// perfect leaf as you drag one side and the other follows. Shows splines composing
+// with the existing `symmetric` relation, no spline-specific machinery required.
+function splinePetal(): BuiltExample {
+  const s = new Sketch()
+  const AX0 = s.addPoint(0, -75, { fixed: true, construction: true })
+  const AX1 = s.addPoint(0, 75, { fixed: true, construction: true })
+  const axis = s.addLine(AX0.id, AX1.id, true) // vertical mirror axis
+
+  const B = s.addPoint(0, -55, { fixed: true }) // base tip
+  const T = s.addPoint(0, 55, { fixed: true }) // top tip
+  const L0 = s.addPoint(-48, -28)
+  const L1 = s.addPoint(-48, 28)
+  const R0 = s.addPoint(48, -28)
+  const R1 = s.addPoint(48, 28)
+
+  s.addSpline(B.id, L0.id, L1.id, T.id) // left flank
+  s.addSpline(B.id, R0.id, R1.id, T.id) // right flank
+
+  s.addConstraint('symmetric', [L0.id, R0.id, axis.id])
+  s.addConstraint('symmetric', [L1.id, R1.id, axis.id])
+  return { sketch: s }
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'four-bar', name: 'Four-Bar Linkage', blurb: 'Grashof crank-rocker tracing a coupler curve.', build: fourBar },
   { id: 'peaucellier', name: 'Peaucellier (exact line)', blurb: 'An inversor that draws a perfect straight line.', build: peaucellier },
@@ -383,6 +468,9 @@ export const EXAMPLES: Example[] = [
   { id: 'slot', name: 'Rounded Slot', blurb: 'Arcs + tangent flanks — one radius drives it all.', build: roundedSlot },
   { id: 'fillet', name: 'Tangent Fillet', blurb: 'An arc rounding a corner, tangent to both legs.', build: tangentFillet },
   { id: 'rounded-rect', name: 'Rounded Rectangle', blurb: 'Four tangent corner arcs; one radius rounds them all.', build: roundedRect },
+  { id: 'spline-s', name: 'Tangent S-Curve', blurb: 'Two cubic Béziers with a smooth join; ends tangent to level.', build: splineSCurve },
+  { id: 'spline-blend', name: 'Spline Blend', blurb: 'A cubic fairing a line into a circle, tangent to both.', build: splineBlend },
+  { id: 'spline-petal', name: 'Symmetric Petal', blurb: 'Two mirrored splines make a leaf. Drag one side.', build: splinePetal },
   { id: 'hexagon', name: 'Regular Hexagon', blurb: 'Equal edges on a circle snap to regular.', build: regularHexagon },
   { id: 'blank', name: 'Blank Sketch', blurb: 'An empty canvas to draw your own.', build: blank },
 ]

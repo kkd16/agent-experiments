@@ -57,7 +57,27 @@ export type ArcEntity = {
   construction?: boolean
 }
 
-export type Entity = PointEntity | LineEntity | CircleEntity | ArcEntity
+// A cubic Bézier spline, in the same "everything reduces to points" spirit as the
+// arc: it references four points — the two endpoints `p0` (start) and `p1` (end)
+// and the two control handles `c0` (off the start) and `c1` (off the end). The
+// curve is B(t) = (1−t)³P0 + 3(1−t)²t·C0 + 3(1−t)t²·C1 + t³·P1, so it is fully
+// determined by those four points and carries **no free parameter of its own**
+// (exactly like a line, which reduces to its two endpoints). A free spline
+// therefore has 8 degrees of freedom (four draggable points) and needs no
+// intrinsic residual. Its endpoint tangent directions are the handle vectors
+// B′(0) ∝ (C0−P0) and B′(1) ∝ (P1−C1) — the basis of the three tangency
+// constraints below (see `Sketch.splineHandleAt`).
+export type SplineEntity = {
+  kind: 'spline'
+  id: EntityId
+  p0: EntityId // start point
+  c0: EntityId // control handle off the start
+  c1: EntityId // control handle off the end
+  p1: EntityId // end point
+  construction?: boolean
+}
+
+export type Entity = PointEntity | LineEntity | CircleEntity | ArcEntity | SplineEntity
 
 // The union of entities that expose a (center point, radius) pair — a circle or an
 // arc. Every "circular" constraint is defined once over this shape.
@@ -85,6 +105,9 @@ export type ConstraintKind =
   | 'midpoint' // a point is the midpoint of a line        (2)
   | 'symmetric' // two points are mirror images across a line (2)
   | 'colinear' // two lines are colinear                    (2)
+  | 'splineTangentLine' // a spline endpoint is tangent to a line   (1)
+  | 'splineTangentSpline' // two splines meet with a smooth G1 join (1)
+  | 'splineTangentArc' // a spline endpoint is tangent to a circle/arc (1)
 
 export type Constraint = {
   kind: ConstraintKind

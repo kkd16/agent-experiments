@@ -18,7 +18,7 @@ const CONSTRAINT_KINDS = new Set([
   'coincident', 'horizontal', 'vertical', 'parallel', 'perpendicular', 'equalLength',
   'equalRadius', 'distance', 'pointOnLine', 'pointOnCircle', 'radius', 'diameter',
   'tangentLineCircle', 'tangentCircles', 'concentric', 'angle', 'midpoint', 'symmetric',
-  'colinear',
+  'colinear', 'splineTangentLine', 'splineTangentSpline', 'splineTangentArc',
 ])
 
 // Structural validation — enough to reject a malformed or hostile blob before it
@@ -32,6 +32,10 @@ function isEntity(e: unknown): e is Entity {
   if (o.kind === 'circle') return typeof o.c === 'number' && typeof o.r === 'number'
   if (o.kind === 'arc')
     return typeof o.c === 'number' && typeof o.p1 === 'number' && typeof o.p2 === 'number' && typeof o.r === 'number'
+  if (o.kind === 'spline')
+    return (
+      typeof o.p0 === 'number' && typeof o.c0 === 'number' && typeof o.c1 === 'number' && typeof o.p1 === 'number'
+    )
   return false
 }
 

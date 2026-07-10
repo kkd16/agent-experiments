@@ -96,6 +96,17 @@ export function pushResidualsG<T>(
     return { dx, dy, len: hypot(dx, dy) }
   }
 
+  // The tangent handle of the spline at entity slot `i`, evaluated at endpoint
+  // `pointId`: the direction (control − endpoint) and its length, in the algebra.
+  const spline = {
+    handle: (i: number, pointId: EntityId) => {
+      const h = sketch.splineHandleAt(c.entities[i], pointId)
+      const dx = sub(px(h.to), px(h.from))
+      const dy = sub(py(h.to), py(h.from))
+      return { dx, dy, len: hypot(dx, dy) }
+    },
+  }
+
   switch (c.kind) {
     case 'coincident': {
       out.push(sub(px(P(0)), px(P(1))), sub(py(P(0)), py(P(1))))
@@ -237,6 +248,41 @@ export function pushResidualsG<T>(
       const q = l1.p1
       const num = sub(mul(sub(px(q), px(a)), d0.dy), mul(sub(py(q), py(a)), d0.dx))
       out.push(div(num, guardDenom(d0.len)))
+      return
+    }
+    // --- spline tangency ---------------------------------------------------
+    // All three read a spline endpoint's tangent handle as an ordered point pair
+    // [from, to] (see Sketch.splineHandleAt) and constrain that direction, exactly
+    // reusing the line-direction algebra above. The chosen endpoint is entities[0]
+    // (a point), which also anchors the on-canvas glyph.
+    case 'splineTangentLine': {
+      // The spline's endpoint tangent is parallel to a line — cross product = 0,
+      // scaled by the two lengths like the plain `parallel` residual.
+      const h = spline.handle(1, P(0))
+      const l = dir(lineOf(2))
+      const denom = guardDenom(mul(h.len, l.len))
+      out.push(div(sub(mul(h.dx, l.dy), mul(h.dy, l.dx)), denom))
+      return
+    }
+    case 'splineTangentSpline': {
+      // Two splines share the endpoint P(0); their handles there are collinear —
+      // a smooth (G1) join. Collinearity (cross = 0) admits either sense, so the
+      // curve continues smoothly whether the handles point the same or opposite way.
+      const a = spline.handle(1, P(0))
+      const b = spline.handle(2, P(0))
+      const denom = guardDenom(mul(a.len, b.len))
+      out.push(div(sub(mul(a.dx, b.dy), mul(a.dy, b.dx)), denom))
+      return
+    }
+    case 'splineTangentArc': {
+      // The spline's endpoint tangent is perpendicular to the circle/arc radius at
+      // that endpoint (the tangent line of a circle is ⟂ its radius) — dot = 0.
+      const h = spline.handle(1, P(0))
+      const circ = circleOf(2)
+      const rx = sub(px(P(0)), px(circ.c))
+      const ry = sub(py(P(0)), py(circ.c))
+      const rlen = hypot(rx, ry)
+      out.push(div(add(mul(h.dx, rx), mul(h.dy, ry)), guardDenom(mul(h.len, rlen))))
       return
     }
   }

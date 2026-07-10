@@ -404,6 +404,88 @@ export function runSelfTests(): TestResult[] {
     check('conflict blames the user relation, not the arc', ok, `redundant=${dof.redundant}, flagged {${[...conf.redundant].join(',')}}, want {${dup.id}}`)
   }
 
+  // 24. A free cubic spline has exactly 8 degrees of freedom — its four control
+  //     points (start, two handles, end) and nothing else. A spline carries no
+  //     parameter of its own and no intrinsic residual, so it adds 8 params and 0
+  //     equations (unlike an arc, which binds its endpoints to a circle).
+  {
+    const s = new Sketch()
+    const p0 = s.addPoint(-40, 0)
+    const c0 = s.addPoint(-15, 30)
+    const c1 = s.addPoint(15, -30)
+    const p1 = s.addPoint(40, 0)
+    s.addSpline(p0.id, c0.id, c1.id, p1.id)
+    const dof = analyzeDof(s)
+    check('free spline has 8 DOF', dof.params === 8 && dof.equations === 0 && dof.dof === 8, `params=${dof.params}, eqs=${dof.equations}, dof=${dof.dof}`)
+  }
+
+  // 25. The tangent S-curve solves smooth: from a deliberately broken start (a
+  //     handle knocked off level, the join kinked) the solver restores a horizontal
+  //     start tangent and a collinear (G1) join between the two segments — the two
+  //     handles at the shared middle point line up to zero cross product.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'spline-s')!.build().sketch
+    const spls = s.entities.filter((e) => e.kind === 'spline').map((e) => s.spline(e.id))
+    const A = spls[0]
+    const B = spls[1]
+    // Break it: lift the start handle off level and kink the join handles.
+    ;(s.point(A.c0) as { y: number }).y += 45
+    ;(s.point(A.c1) as { x: number }).x += 30
+    ;(s.point(B.c0) as { x: number }).x -= 30
+    const r = solve(s, { maxIterations: 120 })
+    // Start tangent (c0 − p0) must be horizontal (dy ≈ 0).
+    const startDy = s.point(A.c0).y - s.point(A.p0).y
+    // Join G1: handles (c1_A − M) and (c0_B − M) collinear ⇒ cross ≈ 0.
+    const M = s.point(A.p1) // == B.p0
+    const ax = s.point(A.c1).x - M.x
+    const ay = s.point(A.c1).y - M.y
+    const bx = s.point(B.c0).x - M.x
+    const by = s.point(B.c0).y - M.y
+    const cross = (ax * by - ay * bx) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1)
+    check('spline S-curve → level ends & smooth join', r.converged && approx(startDy, 0, 1e-3) && approx(cross, 0, 1e-3), `start dy=${startDy.toExponential(1)}, join cross=${cross.toExponential(1)}`)
+  }
+
+  // 26. The spline blend fairs a line into a circle: after solving, the spline's
+  //     start tangent is parallel to the (horizontal) leg, its end point sits on the
+  //     circle, and its end tangent is perpendicular to the radius there (dot ≈ 0) —
+  //     the exact tangency conditions of a real blend.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'spline-blend')!.build().sketch
+    const sp = s.spline(s.entities.find((e) => e.kind === 'spline')!.id)
+    const circ = s.circle(s.entities.find((e) => e.kind === 'circle')!.id)
+    const r = solve(s, { maxIterations: 160 })
+    // Start tangent parallel to the horizontal leg ⇒ dy ≈ 0.
+    const startDy = s.point(sp.c0).y - s.point(sp.p0).y
+    // End on the circle.
+    const end = s.point(sp.p1)
+    const ctr = s.point(circ.c)
+    const onCircle = Math.hypot(end.x - ctr.x, end.y - ctr.y) - circ.r
+    // End tangent (c1 − p1) perpendicular to the radius (p1 − center) ⇒ dot ≈ 0.
+    const hx = s.point(sp.c1).x - end.x
+    const hy = s.point(sp.c1).y - end.y
+    const rx = end.x - ctr.x
+    const ry = end.y - ctr.y
+    const dot = (hx * rx + hy * ry) / (Math.hypot(hx, hy) * Math.hypot(rx, ry) || 1)
+    const ok = r.converged && approx(startDy, 0, 1e-3) && approx(onCircle, 0, 1e-4) && approx(dot, 0, 1e-3)
+    check('spline blend → tangent to line & circle', ok, `start dy=${startDy.toExponential(1)}, on-circle=${onCircle.toExponential(1)}, end dot=${dot.toExponential(1)}`)
+  }
+
+  // 27. The symmetric petal stays a mirror image: nudging one flank's control point
+  //     and re-solving, the symmetry constraints place the opposite control at the
+  //     exact reflection across the vertical axis (x ↦ −x).
+  {
+    const s = EXAMPLES.find((e) => e.id === 'spline-petal')!.build().sketch
+    const spls = s.entities.filter((e) => e.kind === 'spline').map((e) => s.spline(e.id))
+    const L0 = spls[0].c0
+    const R0 = spls[1].c0
+    ;(s.point(L0) as { x: number; y: number }).x += 14
+    ;(s.point(L0) as { y: number }).y += 18
+    const r = solve(s, { maxIterations: 120 })
+    const l = s.point(L0)
+    const rr = s.point(R0)
+    check('spline petal stays mirror-symmetric', r.converged && approx(rr.x, -l.x, 1e-3) && approx(rr.y, l.y, 1e-3), `L0=(${l.x.toFixed(2)},${l.y.toFixed(2)}) R0=(${rr.x.toFixed(2)},${rr.y.toFixed(2)})`)
+  }
+
   return out
 }
 
