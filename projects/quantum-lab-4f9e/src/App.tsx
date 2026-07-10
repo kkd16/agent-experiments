@@ -13,6 +13,7 @@ import BlochSphere from './components/BlochSphere';
 import DensityLab from './components/DensityLab';
 import VariationalLab from './components/VariationalLab';
 import StabilizerLab from './components/StabilizerLab';
+import CodeZooLab from './components/CodeZooLab';
 import SurfaceLab from './components/SurfaceLab';
 import TensorLab from './components/TensorLab';
 import FreeFermionLab from './components/FreeFermionLab';
@@ -34,10 +35,10 @@ import TestsPanel from './components/TestsPanel';
 import ExportPanel from './components/ExportPanel';
 import { schmidtDecompose } from './quantum/Schmidt';
 
-type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'entangle' | 'metrology' | 'shadows' | 'walks' | 'mbqc' | 'chem' | 'variational' | 'stabilizer' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
+type Tab = 'builder' | 'algorithms' | 'shor' | 'solovay' | 'synth' | 'shannon' | 'distill' | 'bell' | 'deviceindep' | 'entangle' | 'metrology' | 'shadows' | 'walks' | 'mbqc' | 'chem' | 'variational' | 'stabilizer' | 'codezoo' | 'surface' | 'tensor' | 'freefermion' | 'dynamics' | 'tests' | 'about';
 type VizTab = 'state' | 'probabilities' | 'bloch' | 'density' | 'measure';
 
-const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
+const PAGE_TABS: Tab[] = ['about', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'codezoo', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests'];
 
 // Parse a shared circuit from the URL hash (#c=…) once, before mount — sandbox-safe.
 function loadSharedCircuit(): { numQubits: number; ops: GateOp[] } | null {
@@ -149,7 +150,7 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
+          {(['builder', 'algorithms', 'shor', 'solovay', 'synth', 'shannon', 'distill', 'bell', 'deviceindep', 'entangle', 'metrology', 'shadows', 'walks', 'mbqc', 'chem', 'variational', 'stabilizer', 'codezoo', 'surface', 'tensor', 'freefermion', 'dynamics', 'tests', 'about'] as Tab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -181,6 +182,7 @@ export default function App() {
                 : tab === 'mbqc' ? '🕹️ One-Way'
                 : tab === 'chem' ? '⚗️ Chemistry'
                 : tab === 'variational' ? '🧬 Variational' : tab === 'stabilizer' ? '🧱 Stabilizer'
+                : tab === 'codezoo' ? '🦎 Code Zoo'
                 : tab === 'surface' ? '🔲 Surface' : tab === 'tensor' ? '🕸️ Tensor'
                 : tab === 'freefermion' ? '🪢 Free Fermion'
                 : tab === 'dynamics' ? '🌀 Dynamics'
@@ -254,6 +256,7 @@ export default function App() {
               {activeTab === 'chem' && <ChemLab />}
               {activeTab === 'variational' && <VariationalLab />}
               {activeTab === 'stabilizer' && <StabilizerLab />}
+              {activeTab === 'codezoo' && <CodeZooLab />}
               {activeTab === 'surface' && <SurfaceLab />}
               {activeTab === 'tensor' && <TensorLab />}
               {activeTab === 'freefermion' && <FreeFermionLab />}
@@ -633,6 +636,10 @@ function AboutPage() {
         {
           title: 'DMRG — Variational Ground States (MPO + Lanczos)',
           content: 'The Density Matrix Renormalization Group, the workhorse of 1-D many-body physics, built from scratch on the same tensor-network engine. The Hamiltonian is encoded as a Matrix Product Operator (the operator analogue of an MPS — bond dimension 3 for the Ising chain, 5 for Heisenberg/XXZ, independent of length). DMRG sweeps the chain fusing two sites into a wavefunction, builds the effective Hamiltonian from the contracted environments and finds its lowest eigenpair with a matrix-free Lanczos iteration, then re-splits with a truncated SVD. The energy descends to the variational minimum — matching exact diagonalisation of the same operator to machine precision on small chains — while the energy variance ⟨H²⟩−⟨H⟩², from a double-layer MPO contraction, goes to zero: the basis-independent certificate that the state really is an eigenstate, at chain lengths a 2ⁿ vector could never diagonalise. Scanning a model parameter then traces a quantum phase transition: the ground-state entanglement entropy peaks exactly where the gap closes (the Ising critical field h=1; the gapless XXZ critical line −1<Δ<1).',
+        },
+        {
+          title: 'The Stabilizer Code Zoo (any QEC code, derived from its generators)',
+          content: 'One general engine that ingests ANY quantum error-correcting code as nothing but its list of Pauli checks and derives its entire theory by GF(2) symplectic linear algebra — no state vectors, no floating point, so every number is exact. A Pauli is a pair of bit vectors (x|z); two Paulis commute iff their symplectic inner product vanishes, and the whole code falls out of that one bilinear form: the generators are validated (commuting + independent), the normaliser N(S) is a null space whose quotient by S gives the k logical-operator pairs (X̄ᵢ,Z̄ᵢ) via symplectic Gram–Schmidt, and the code distance is the EXACT minimum weight of a logical operator, enumerated over N(S) — that is what stamps the [[n,k,d]] label. The catalogue holds the bit- and phase-flip repetition codes, the [[4,2,2]] detecting code, the celebrated [[5,1,3]] PERFECT code (four cyclic shifts of XZZXI, whose 16 syndromes are in exact bijection with the 16 weight-≤1 errors — the quantum Hamming bound met with equality), the transversal-Clifford Steane [[7,1,3]] and the nine-qubit Shor code, each entry only the physics. Click a qubit to inject an X/Y/Z error and watch the syndrome fire, the minimum-weight lookup decoder return a fix, and the residual be classified as a harmless stabilizer or a logical failure; a Monte-Carlo code-capacity sweep plots the logical error rate vs the physical rate in log–log for every code at once, the distance-3 codes falling as p_L ∝ p² and crossing the break-even line at their pseudo-thresholds. Every algebraic claim is cross-checked qubit-for-qubit against the from-scratch CHP tableau simulator: the codeword is genuinely prepared by projecting onto each stabilizer\'s +1 eigenspace, and the syndromes and corrections the GF(2) engine predicts are confirmed on the real Clifford state.',
         },
         {
           title: 'Surface Code & MWPM Decoding (Topological QEC)',

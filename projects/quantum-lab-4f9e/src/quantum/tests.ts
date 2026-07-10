@@ -27,6 +27,11 @@ import { getMolecule } from './chem/molecules';
 import { solvePoint, runVQEChem, dissociationCurve, equilibrium, hartreeFockState } from './chem/vqe';
 import { circuitMetrics } from './metrics';
 import { Stabilizer } from './Stabilizer';
+import { CODE_ZOO } from './codes/codeZoo';
+import { StabilizerCode, enumeratePaulis } from './codes/stabilizerCode';
+import { buildDecoder, sweepLER } from './codes/decoder';
+import { crossCheck } from './codes/tableauCheck';
+import { symplectic } from './codes/pauli';
 import { schmidtDecompose } from './Schmidt';
 import { parameterShiftGradient, finiteDiffGradient, runGradientVQE } from './gradient';
 import { runSteane, type ErrorType } from './steane';
@@ -2177,6 +2182,59 @@ export function runTests(): TestResult[] {
       const eq = equilibrium(curve);
       add('Chemistry', 'H₂ equilibrium bond length ≈ 1.35–1.42 a₀',
         eq != null && eq.param > 1.30 && eq.param < 1.45, `${eq?.param.toFixed(3)} a₀`);
+    }
+  }
+
+  // --- QEC code zoo: the general stabilizer-code engine, derived from generators alone ---
+  {
+    for (const e of CODE_ZOO) {
+      const code = new StabilizerCode(e.stabilizers);
+      const v = code.validate(e.stabilizers);
+      add('QEC Codes', `${e.name}: generators commute & independent`, v.ok, v.issues.join('; ') || 'valid');
+      // The engine recomputes [[n,k,d]] purely from the generators; it must match the known label.
+      add('QEC Codes', `${e.name}: recomputed ${code.label()} = ${e.claim}`,
+        code.label().replace(/\s/g, '') === e.claim.replace(/\s/g, ''), code.label());
+
+      // Logical operators must be a symplectic basis (X̄ᵢ,Z̄ᵢ anticommute; all else commutes) in N(S).
+      let lgOK = code.logicalX.length === code.k && code.logicalZ.length === code.k;
+      for (let i = 0; i < code.k; i++) {
+        if (symplectic(code.logicalX[i], code.logicalZ[i]) !== 1) lgOK = false;
+        for (const g of code.gens) if (symplectic(g, code.logicalX[i]) || symplectic(g, code.logicalZ[i])) lgOK = false;
+        for (let j = 0; j < code.k; j++) if (i !== j &&
+          (symplectic(code.logicalX[i], code.logicalX[j]) || symplectic(code.logicalZ[i], code.logicalZ[j]) || symplectic(code.logicalX[i], code.logicalZ[j]))) lgOK = false;
+      }
+      add('QEC Codes', `${e.name}: ${code.k} logical pair(s) form a symplectic basis`, lgOK, '');
+
+      // Knill–Laflamme: every error up to the correctable weight is distinguishable/harmless.
+      const t = code.correctableWeight();
+      if (Number.isFinite(t)) {
+        const kl = code.verifyKnillLaflamme(t as number);
+        add('QEC Codes', `${e.name}: Knill–Laflamme holds for weight ≤ ${t}`, kl.ok, '');
+      }
+
+      // The minimum-weight decoder must cover every syndrome, and the GF(2) analysis must agree,
+      // qubit-for-qubit, with the actual CHP tableau simulator (preparation, syndrome, correction).
+      const dec = buildDecoder(code);
+      add('QEC Codes', `${e.name}: decoder covers all 2^${code.r} syndromes`, dec.complete, `${dec.syndromes}`);
+      const cc = crossCheck(code, dec, enumeratePaulis(code.n, 1));
+      add('QEC Codes', `${e.name}: GF(2) engine matches CHP tableau on all weight-1 errors`, cc.ok, cc.detail);
+    }
+
+    // The [[5,1,3]] code is *perfect*: its 16 syndromes are in exact bijection with the 16 errors
+    // of weight ≤ 1 — the quantum Hamming bound 2^(n−k) = Σ_{j≤t} C(n,j)·3^j met with equality.
+    {
+      const five = new StabilizerCode(['XZZXI', 'IXZZX', 'XIXZZ', 'ZXIXZ']);
+      add('QEC Codes', '[[5,1,3]] saturates the quantum Hamming bound (16 = 1 + 15)',
+        (1 << (five.n - five.k)) === 1 + 3 * five.n && (1 << (five.n - five.k)) === 16, '2⁴ = 16');
+    }
+
+    // A distance-3 code suppresses errors quadratically: at small p, p_L ≪ p (encoding helps).
+    {
+      const five = new StabilizerCode(['XZZXI', 'IXZZX', 'XIXZZ', 'ZXIXZ']);
+      const dec = buildDecoder(five);
+      const s = sweepLER(five, dec, [0.02], 8000, mulberry32(2024));
+      add('QEC Codes', '[[5,1,3]] Monte-Carlo p_L(2%) < p (quadratic suppression)', s[0].pL < 0.02,
+        `p_L = ${s[0].pL.toFixed(4)}`);
     }
   }
 

@@ -247,6 +247,32 @@ export class Stabilizer {
     return this.prob1(q) as 0 | 1;
   }
 
+  /**
+   * Measure an arbitrary multi-qubit Pauli observable P (given by its symplectic bit vectors
+   * px, pz), collapsing the state onto the matching ±1 eigenspace. Returns 0 for the +1
+   * outcome, 1 for −1. `forced` post-selects a branch — used to *prepare* code states by
+   * projecting onto each stabilizer's +1 eigenspace. Generalises the Z_q measurement
+   * (Aaronson–Gottesman) to any Pauli: the symplectic product replaces the "has an X on q"
+   * anticommutation test, and the phase-exact `rowsum` installs P as the new generator.
+   */
+  measurePauli(px: number[], pz: number[], forced?: 0 | 1): 0 | 1 {
+    // A stabilizer generator that anticommutes with P ⇒ the outcome is random.
+    let p = -1;
+    for (let i = this.n; i < 2 * this.n; i++) if (this.symp(px, pz, i)) { p = i; break; }
+    if (p >= 0) {
+      // Eliminate P from every *other* anticommuting row, then install ±P as generator p.
+      for (let i = 0; i < 2 * this.n; i++) if (i !== p && this.symp(px, pz, i)) this.rowsum(i, p);
+      this.copyRow(p - this.n, p); // destabilizer ← old stabilizer
+      this.zeroRow(p);
+      for (let j = 0; j < this.n; j++) { this.x[this.idx(p, j)] = px[j] & 1; this.z[this.idx(p, j)] = pz[j] & 1; }
+      const outcome: 0 | 1 = forced !== undefined ? forced : (this.rng() < 0.5 ? 0 : 1);
+      this.r[p] = outcome;
+      return outcome;
+    }
+    // Deterministic — P is (± a member of) the stabilizer group; read its eigenvalue.
+    return this.pauliEigenvalue(px, pz) < 0 ? 1 : 0;
+  }
+
   /** Sample a full computational-basis measurement of every qubit (little-endian). */
   sample(): number {
     const s = this.clone();
