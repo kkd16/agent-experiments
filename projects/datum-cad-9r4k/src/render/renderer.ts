@@ -14,6 +14,7 @@ export type RenderState = {
   traces: TracePath[]
   dofStatus: DofStatus
   redundant: Set<EntityId> // constraint ids flagged as linearly dependent / conflicting
+  highlight: Set<EntityId> // entities to accent (e.g. the geometry of a hovered constraint)
   showConstraints: boolean
   showGrid: boolean
   preview: { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] } | null
@@ -37,6 +38,7 @@ const COL = {
   glyphBorder: '#33475a',
   glyphText: '#a9c0d6',
   conflict: '#ff5c72',
+  highlight: '#8ad4ff',
 }
 
 export function statusColor(s: DofStatus): string {
@@ -137,6 +139,7 @@ function strokeFor(id: EntityId, st: RenderState, base: string): string {
   if (st.selection.has(id)) return COL.select
   if (st.pending.has(id)) return COL.pending
   if (st.hover === id) return COL.hover
+  if (st.highlight.has(id)) return COL.highlight
   return base
 }
 
@@ -150,7 +153,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       const [bx, by] = worldToScreen(v, b.x, b.y)
       const isConstr = e.construction
       ctx.strokeStyle = strokeFor(e.id, st, isConstr ? COL.geoConstruction : COL.geo)
-      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id ? 3 : isConstr ? 1 : 2
+      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id) ? 3 : isConstr ? 1 : 2
       ctx.setLineDash(isConstr ? [5, 5] : [])
       ctx.beginPath()
       ctx.moveTo(ax, ay)
@@ -161,7 +164,7 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       const c = sketch.point(e.c)
       const [cx, cy] = worldToScreen(v, c.x, c.y)
       ctx.strokeStyle = strokeFor(e.id, st, e.construction ? COL.geoConstruction : COL.geo)
-      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id ? 3 : 2
+      ctx.lineWidth = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id) ? 3 : 2
       ctx.setLineDash(e.construction ? [5, 5] : [])
       ctx.beginPath()
       ctx.arc(cx, cy, e.r * v.scale, 0, Math.PI * 2)
@@ -179,12 +182,13 @@ function drawPoints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderSta
     const selected = st.selection.has(e.id)
     const pending = st.pending.has(e.id)
     const hovered = st.hover === e.id
+    const highlighted = st.highlight.has(e.id)
     const r = selected || hovered ? 6 : 4.5
 
-    if (selected || pending || hovered) {
+    if (selected || pending || hovered || highlighted) {
       ctx.beginPath()
       ctx.arc(sx, sy, r + 4, 0, Math.PI * 2)
-      ctx.fillStyle = (selected ? COL.select : pending ? COL.pending : COL.hover) + '33'
+      ctx.fillStyle = (selected ? COL.select : pending ? COL.pending : hovered ? COL.hover : COL.highlight) + '33'
       ctx.fill()
     }
 

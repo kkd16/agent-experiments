@@ -47,6 +47,7 @@ export default function App() {
   const tracesRef = useRef<Map<EntityId, [number, number][]>>(new Map())
   const traceTargetsRef = useRef<EntityId[]>([])
   const redundantRef = useRef<Set<EntityId>>(new Set())
+  const highlightRef = useRef<Set<EntityId>>(new Set())
   const lastTsRef = useRef(0)
   const dragRef = useRef<{ mode: 'none' | 'point' | 'pan'; id?: EntityId; lastX: number; lastY: number; pushed?: boolean }>({
     mode: 'none',
@@ -342,6 +343,7 @@ export default function App() {
       traces,
       dofStatus: status,
       redundant,
+      highlight: highlightRef.current,
       showConstraints: showConstraintsRef.current,
       showGrid: showGridRef.current,
       preview,
@@ -717,6 +719,25 @@ export default function App() {
 
   const clearTraces = useCallback(() => void (tracesRef.current = new Map()), [])
 
+  // Hovering a constraint in the panel accents the geometry it governs (its
+  // entities, plus the endpoints/centre of any line/circle it references).
+  const setHoverConstraint = useCallback((id: EntityId | null) => {
+    const set = new Set<EntityId>()
+    if (id != null) {
+      const c = sketchRef.current.constraints.find((k) => k.id === id)
+      if (c)
+        for (const eid of c.entities) {
+          set.add(eid)
+          const e = sketchRef.current.get(eid)
+          if (e?.kind === 'line') {
+            set.add(e.p1)
+            set.add(e.p2)
+          } else if (e?.kind === 'circle') set.add(e.c)
+        }
+    }
+    highlightRef.current = set
+  }, [])
+
   const scrubDriver = useCallback((val: number) => {
     const d = driverRef.current
     if (!d) return
@@ -816,6 +837,7 @@ export default function App() {
           constraints={constraintList}
           redundant={conflicts.redundant}
           onRemoveConstraint={removeConstraint}
+          onHoverConstraint={setHoverConstraint}
         />
       </div>
       {driver && (

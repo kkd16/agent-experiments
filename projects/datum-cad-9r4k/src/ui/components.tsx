@@ -201,6 +201,7 @@ export function InfoPanel(props: {
   constraints: Constraint[]
   redundant: Set<number>
   onRemoveConstraint: (id: number) => void
+  onHoverConstraint: (id: number | null) => void
 }) {
   const { dof } = props
   const statusText =
@@ -257,7 +258,12 @@ export function InfoPanel(props: {
           {props.constraints.map((c) => {
             const isRedundant = props.redundant.has(c.id)
             return (
-              <li key={c.id} className={`${c.driver ? 'driver' : ''} ${isRedundant ? 'redundant' : ''}`}>
+              <li
+                key={c.id}
+                className={`${c.driver ? 'driver' : ''} ${isRedundant ? 'redundant' : ''}`}
+                onMouseEnter={() => props.onHoverConstraint(c.id)}
+                onMouseLeave={() => props.onHoverConstraint(null)}
+              >
                 <span className="cName">
                   {c.driver && <span className="drvDot" title="Driver" />}
                   {isRedundant && <span className="redDot" title="Redundant / conflicting" />} {describeConstraint(c)}
