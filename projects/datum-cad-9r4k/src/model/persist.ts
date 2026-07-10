@@ -30,6 +30,8 @@ function isEntity(e: unknown): e is Entity {
   if (o.kind === 'point') return typeof o.x === 'number' && typeof o.y === 'number' && typeof o.fixed === 'boolean'
   if (o.kind === 'line') return typeof o.p1 === 'number' && typeof o.p2 === 'number'
   if (o.kind === 'circle') return typeof o.c === 'number' && typeof o.r === 'number'
+  if (o.kind === 'arc')
+    return typeof o.c === 'number' && typeof o.p1 === 'number' && typeof o.p2 === 'number' && typeof o.r === 'number'
   return false
 }
 

@@ -21,7 +21,7 @@ import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
 import { Toolbar, ConstraintPalette, InfoPanel, DriverBar, ValuePrompt, Diagnostics } from './ui/components'
 
-type ToolId = 'select' | 'point' | 'line' | 'circle'
+type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc'
 
 const TRACE_COLORS = ['#57e6c9', '#ffd166', '#c792ea']
 
@@ -55,6 +55,8 @@ export default function App() {
     lastY: 0,
   })
   const pendingToolRef = useRef<{ startPoint: EntityId } | null>(null)
+  // Arc construction is a three-click gesture: center → start (sets radius) → end.
+  const pendingArcRef = useRef<{ center: EntityId; start?: EntityId } | null>(null)
   const historyRef = useRef<{ past: SketchData[]; future: SketchData[] }>({ past: [], future: [] })
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -135,6 +137,7 @@ export default function App() {
       selectionRef.current = []
       setSelection([])
       pendingToolRef.current = null
+      pendingArcRef.current = null
       solveNow()
       bump()
     },
@@ -167,6 +170,7 @@ export default function App() {
       selectionRef.current = []
       setSelection([])
       pendingToolRef.current = null
+      pendingArcRef.current = null
       tracesRef.current = new Map()
       traceTargetsRef.current = built.tracePoints ?? []
       driverDirRef.current = 1
@@ -204,6 +208,7 @@ export default function App() {
       selectionRef.current = []
       setSelection([])
       pendingToolRef.current = null
+      pendingArcRef.current = null
       tracesRef.current = new Map()
       traceTargetsRef.current = []
       driverDirRef.current = 1
@@ -334,12 +339,28 @@ export default function App() {
     if (pend && (t === 'line' || t === 'circle')) {
       const start = sketchRef.current.point(pend.startPoint)
       preview = { kind: t, from: [start.x, start.y], to: cursorWorldRef.current }
+    } else if (t === 'arc' && pendingArcRef.current) {
+      const pa = pendingArcRef.current
+      const c = sketchRef.current.point(pa.center)
+      if (pa.start === undefined) {
+        // Radius rubber-band before the start point is placed.
+        preview = { kind: 'line', from: [c.x, c.y], to: cursorWorldRef.current }
+      } else {
+        const s = sketchRef.current.point(pa.start)
+        preview = { kind: 'arc', center: [c.x, c.y], from: [s.x, s.y], to: cursorWorldRef.current }
+      }
     }
     const st: RenderState = {
       view: viewRef.current,
       selection: new Set(selectionRef.current),
       hover: hoverRef.current,
-      pending: new Set(pendingToolRef.current ? [pendingToolRef.current.startPoint] : []),
+      pending: new Set(
+        pendingToolRef.current
+          ? [pendingToolRef.current.startPoint]
+          : pendingArcRef.current
+            ? [pendingArcRef.current.center, ...(pendingArcRef.current.start !== undefined ? [pendingArcRef.current.start] : [])]
+            : [],
+      ),
       traces,
       dofStatus: status,
       redundant,
@@ -483,6 +504,42 @@ export default function App() {
       }
       return
     }
+
+    if (active === 'arc') {
+      if (!pendingArcRef.current) pushHistory() // snapshot before the gesture creates anything
+      const pa = pendingArcRef.current
+      if (!pa) {
+        // Click 1 — the center.
+        pendingArcRef.current = { center: pointAt(sx, sy, wx, wy) }
+      } else if (pa.start === undefined) {
+        // Click 2 — the start point, which sets the radius. Ignore a click back on
+        // the center (zero radius) and wait for a distinct point.
+        const pid = pointAt(sx, sy, wx, wy)
+        if (pid !== pa.center) pendingArcRef.current = { center: pa.center, start: pid }
+      } else {
+        // Click 3 — the end point. Snap a freshly-created endpoint onto the circle
+        // so the arc starts already valid; an existing point is used as-is and the
+        // solver's intrinsic radius residual pulls it onto the circle.
+        const center = sketchRef.current.point(pa.center)
+        const start = sketchRef.current.point(pa.start)
+        const r = Math.max(2, Math.hypot(start.x - center.x, start.y - center.y))
+        const hit = pickEntity(sketchRef.current, viewRef.current, sx, sy)
+        let endId: EntityId
+        if (hit !== null && sketchRef.current.get(hit)?.kind === 'point' && hit !== pa.center) {
+          endId = hit
+        } else {
+          const ang = Math.atan2(wy - center.y, wx - center.x)
+          endId = sketchRef.current.addPoint(center.x + Math.cos(ang) * r, center.y + Math.sin(ang) * r).id
+        }
+        if (endId !== pa.start && endId !== pa.center) {
+          sketchRef.current.addArc(pa.center, pa.start, endId, r)
+          solveNow()
+        }
+        pendingArcRef.current = null
+        bump()
+      }
+      return
+    }
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -535,10 +592,15 @@ export default function App() {
       return worldToScreen(v, (a.x + b.x) / 2, (a.y + b.y) / 2)
     }
     if (c.kind === 'radius' || c.kind === 'diameter') {
-      const circ = s.circle(c.entities[0])
+      const circ = s.circleLike(c.entities[0])
       const ctr = s.point(circ.c)
       const [cx, cy] = worldToScreen(v, ctr.x, ctr.y)
-      return [cx + Math.cos(-Math.PI / 4) * circ.r * v.scale, cy + Math.sin(-Math.PI / 4) * circ.r * v.scale]
+      let ang = -Math.PI / 4
+      if (circ.kind === 'arc') {
+        const g = s.arcGeom(circ)
+        ang = -(g.a0 + g.sweep / 2)
+      }
+      return [cx + Math.cos(ang) * circ.r * v.scale, cy + Math.sin(ang) * circ.r * v.scale]
     }
     if (c.kind === 'angle') {
       const pivot = s.point(s.line(c.entities[1]).p1)
@@ -695,6 +757,15 @@ export default function App() {
     bump()
   }, [bump, solveNow, pushHistory])
 
+  const reverseArc = useCallback(() => {
+    const arcs = selectionRef.current.filter((id) => sketchRef.current.get(id)?.kind === 'arc')
+    if (arcs.length === 0) return
+    pushHistory()
+    for (const id of arcs) sketchRef.current.reverseArc(id)
+    setMessage('Reversed arc (minor ⇄ major).')
+    bump()
+  }, [bump, pushHistory])
+
   const runAutoConstrain = useCallback(() => {
     pushHistory()
     const res = autoConstrain(sketchRef.current)
@@ -733,6 +804,11 @@ export default function App() {
             set.add(e.p1)
             set.add(e.p2)
           } else if (e?.kind === 'circle') set.add(e.c)
+          else if (e?.kind === 'arc') {
+            set.add(e.c)
+            set.add(e.p1)
+            set.add(e.p2)
+          }
         }
     }
     highlightRef.current = set
@@ -766,12 +842,14 @@ export default function App() {
       if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
       else if (e.key === 'Escape') {
         pendingToolRef.current = null
+        pendingArcRef.current = null
         selectionRef.current = []
         setSelection([])
       } else if (e.key === 'v' || e.key === '1') setTool('select')
       else if (e.key === 'p' || e.key === '2') setTool('point')
       else if (e.key === 'l' || e.key === '3') setTool('line')
       else if (e.key === 'c' || e.key === '4') setTool('circle')
+      else if (e.key === 'a' || e.key === '5') setTool('arc')
       else if (e.key === 'f') fitView()
       else if (e.key === ' ' && driverRef.current) {
         e.preventDefault()
@@ -789,6 +867,7 @@ export default function App() {
         onTool={(t) => {
           setTool(t)
           pendingToolRef.current = null
+          pendingArcRef.current = null
         }}
         exampleId={exampleId}
         examples={EXAMPLES}
@@ -826,6 +905,8 @@ export default function App() {
             onApply={applyOption}
             onDelete={deleteSelected}
             onAnchor={toggleAnchor}
+            onReverseArc={reverseArc}
+            canReverseArc={selectedEntities.some((e) => e.kind === 'arc')}
             selectionCount={selection.length}
           />
           {message && <div className="statusToast">{message}</div>}

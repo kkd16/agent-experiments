@@ -7,13 +7,14 @@ import type { SolveResult } from '../solver/solver'
 import type { TestResult } from '../solver/selftest'
 import { statusColor } from '../render/renderer'
 
-type ToolId = 'select' | 'point' | 'line' | 'circle'
+type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc'
 
 const TOOLS: { id: ToolId; label: string; icon: string; key: string }[] = [
   { id: 'select', label: 'Select / Drag', icon: '⭤', key: 'V' },
   { id: 'point', label: 'Point', icon: '•', key: 'P' },
   { id: 'line', label: 'Line', icon: '╱', key: 'L' },
   { id: 'circle', label: 'Circle', icon: '◯', key: 'C' },
+  { id: 'arc', label: 'Arc', icon: '◜', key: 'A' },
 ]
 
 export function Toolbar(props: {
@@ -134,6 +135,8 @@ export function ConstraintPalette(props: {
   onApply: (opt: ConstraintOption) => void
   onDelete: () => void
   onAnchor: () => void
+  onReverseArc: () => void
+  canReverseArc: boolean
   selectionCount: number
 }) {
   return (
@@ -148,6 +151,12 @@ export function ConstraintPalette(props: {
             <span className="cLbl">{o.label}</span>
           </button>
         ))}
+        {props.canReverseArc && (
+          <button className="cBtn" onClick={props.onReverseArc} title="Swap the arc's endpoints — toggle the minor / major arc">
+            <span className="cSym">↺</span>
+            <span className="cLbl">Reverse</span>
+          </button>
+        )}
         {props.selectionCount > 0 && (
           <>
             <button className="cBtn warn" onClick={props.onAnchor} title="Anchor / free a point (fix its position)">

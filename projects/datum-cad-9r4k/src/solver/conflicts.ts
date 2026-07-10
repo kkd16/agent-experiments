@@ -1,7 +1,7 @@
 import type { Sketch } from '../model/sketch'
 import type { EntityId } from '../model/types'
 import { genericJacobian } from './jacobian'
-import { residualCount } from './residuals'
+import { arcResidualCount, residualCount } from './residuals'
 
 export type ConflictReport = {
   // Constraint ids that contribute at least one linearly-dependent equation —
@@ -62,10 +62,13 @@ export function analyzeConflicts(sketch: Sketch): ConflictReport {
     }
   }
 
-  // Map dependent rows back to the constraints that produced them.
+  // Map dependent rows back to the constraints that produced them. The residual
+  // vector leads with the arcs' intrinsic rows (see residuals.ts), so skip past
+  // them: they are structural, never user constraints, and by holding pivots first
+  // they push any restated-geometry redundancy onto the offending user constraint.
   const redundant = new Set<EntityId>()
   let count = 0
-  let row = 0
+  let row = arcResidualCount(sketch)
   for (const c of constraints) {
     const rows = residualCount(c)
     for (let k = 0; k < rows; k++) {
