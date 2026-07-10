@@ -1,17 +1,20 @@
 # Datum — Parametric Sketch Solver — journal
 
 A from-scratch 2D geometric constraint solver, in the spirit of Ivan Sutherland's *Sketchpad*
-(1963). Draw points, lines and circles; declare relations between them; a Levenberg–Marquardt
-least-squares solver assembles the geometry. Drive a parameter and watch mechanisms move.
+(1963). Draw points, lines, circles, arcs and cubic Bézier splines; declare relations between them;
+a Levenberg–Marquardt least-squares solver assembles the geometry. Drive a parameter and watch
+mechanisms move.
 
 ## Architecture
 
-- `model/` — the sketch model. Everything reduces to **points** (SolveSpace-style): lines and
-  circles reference points, so only point coords and circle radii carry free parameters.
-  - `types.ts` — entities + the 19 constraint kinds.
+- `model/` — the sketch model. Everything reduces to **points** (SolveSpace-style): lines,
+  circles, arcs and splines reference points, so only point coords and circle/arc radii carry
+  free parameters.
+  - `types.ts` — entities (point, line, circle, arc, cubic Bézier spline) + the 22 constraint kinds.
   - `sketch.ts` — mutable model, free-parameter vector assembly, geometry helpers.
   - `constraintRules.ts` — which constraints apply to a given selection.
-  - `examples.ts` — eight worked sketches (incl. Peaucellier + Hoeken) + animatable driver specs.
+  - `examples.ts` — fourteen worked sketches (incl. Peaucellier + Hoeken + arc & spline showcases)
+    plus animatable driver specs.
   - `autoConstrain.ts` — infer relations from rough geometry, gated by Jacobian rank.
   - `persist.ts` — JSON + base64-URL serialisation with validation of untrusted input.
 - `solver/` — the numerical core.
@@ -26,7 +29,7 @@ least-squares solver assembles the geometry. Drive a parameter and watch mechani
     (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
   - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
-  - `probes.ts` / `selftest.ts` — a live correctness suite (17 checks) that re-derives every claim,
+  - `probes.ts` / `selftest.ts` — a live correctness suite (27 checks) that re-derives every claim,
     including analytic-vs-finite-difference differential tests.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
   coupler-curve traces, DOF-aware highlighting, plus `view.ts` (camera) and `picking.ts` (hit-test).
@@ -36,7 +39,7 @@ least-squares solver assembles the geometry. Drive a parameter and watch mechani
 
 ## Shipped
 
-- [x] Point-reduced sketch model with 19 constraint kinds
+- [x] Point-reduced sketch model with 22 constraint kinds (incl. arcs & cubic Bézier splines)
 - [x] Levenberg–Marquardt solver with forward-difference Jacobian
 - [x] Live drag-to-solve (pin the grabbed point, solve the rest)
 - [x] Degree-of-freedom analysis (Jacobian rank → under/well/over-constrained)
@@ -123,16 +126,84 @@ Showcase & tests
   rounded-rectangle closure, and reverse-arc complementarity, plus arcs folded into the existing
   differential + persistence round-trip checks.
 
+### Session 4 (claude) — cubic Bézier splines as a first-class primitive
+
+The one free-form curve a real sketcher reaches for, added in the same spirit as the
+arc: **a spline reduces to points, and its tangency reuses the existing residual
+algebra** — so it lands with no new solver, no new autodiff, and no parallel universe
+of spline-only code. Planned and shipped, end to end:
+
+Model & solver
+- [x] **`SplineEntity` in the point-reduced model** (`types.ts`, `sketch.ts`) — a cubic
+  Bézier is four point references (start `p0`, two handles `c0`/`c1`, end `p1`) and
+  **carries no parameter of its own** (exactly like a line, which reduces to two
+  points). So it needs **zero intrinsic residuals** — a free spline is simply its four
+  draggable points, i.e. 8 DOF, which a self-test confirms. Its endpoint tangents are
+  the handle vectors B′(0) ∝ (c0−p0) and B′(1) ∝ (c1−p1), read through the structural
+  helper `Sketch.splineHandleAt` (the endpoint choice is by id equality, so it can
+  never flip mid-solve — which is what keeps the tangency residuals differentiable).
+- [x] **Three tangency constraints, all reusing the line/arc residual algebra**
+  (`residualsCore.ts`): `splineTangentLine` (endpoint handle ∥ a line — the plain
+  parallel cross-product), `splineTangentSpline` (two handles at a shared endpoint are
+  collinear — a smooth **G1** join, cross-product = 0, admitting either sense), and
+  `splineTangentArc` (endpoint handle ⟂ the circle/arc radius — the perpendicular
+  dot-product). Written once over the abstract `Alg<T>`, so the plain and
+  automatic-differentiation backends share one source of truth — zero new derivative code.
+- [x] **The differential self-test now covers spline residuals for free.** Because the
+  three spline showcases below join the example set, the existing analytic-vs-central-
+  difference Jacobian check (and the AD-equals-plain-values check, and the persistence
+  round-trip) automatically extend to every spline tangency — worst |ΔJ| ≈ 9.2e-9
+  across *all* examples, splines included.
+
+Interaction & rendering
+- [x] **Spline tool** — a four-click gesture (start → handle → handle → end, `S`/`6`)
+  with a live preview: the control polygon plus a dashed cubic that pads not-yet-placed
+  control points with the cursor, so a plausible curve reads at every click. Endpoints
+  snap onto existing points, so chaining two splines shares the join point id (which is
+  exactly what the smooth-join constraint keys on).
+- [x] **Spline rendering & hit-testing** — the curve is drawn with `bezierCurveTo` on the
+  *affine-projected* control points (a Bézier is affine-invariant, so this is exact, not
+  sampled), with faint dashed handle tethers so the draggable control points read as
+  handles rather than strays; hit-testing samples the cubic into a screen polyline.
+  Swept bounding box (the control-point convex hull) and cascade-delete extended to
+  splines, and spline persistence (JSON + shareable URL) validated for untrusted input.
+
+Showcase & tests
+- [x] **Three fully-worked spline examples** — a **tangent S-curve** (two cubics with a
+  smooth G1 join, both ends held tangent to the horizontal ground), a **line-into-circle
+  blend** (one cubic tangent to a leg at one end and to a circle at the other, its end
+  riding the circle — the classic blend fillet), and a **symmetric petal** (two mirrored
+  splines whose handles are tied by the existing `symmetric` relation). Each solves and
+  re-fairs live.
+- [x] **Self-test suite 22 → 27** — free-spline DOF, S-curve level-ends-&-smooth-join,
+  blend tangent-to-line-&-circle (with the well-conditioned start that avoids the
+  zero-gradient parallel ridge of the perpendicularity residual), and petal
+  mirror-symmetry, plus splines folded into the differential + persistence checks.
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
-- [ ] Splines / Béziers as first-class entities (with tangency to lines & arcs)
-- [ ] Arc-length and included-angle dimensional constraints
-- [ ] Auto-constrain: infer line↔arc tangency and equal-radius from rough geometry
+- [x] Splines / Béziers as first-class entities (with tangency to lines & arcs) *(Session 4)*
+- [ ] **Point-on-spline** and **spline-length** constraints — these need a per-constraint
+      curve parameter `t`, the first thing in Datum that isn't a point coord or a radius;
+      design a clean way to carry auxiliary solver parameters without polluting the model.
+- [ ] **Spline endpoint tangent to a specific direction**, and **equal / symmetric handle
+      length** for C1 (not just G1) continuity between segments.
+- [ ] **Auto-constrain infers spline tangency** — detect a spline endpoint whose handle is
+      already nearly aligned with an adjacent line/arc/spline and offer the G1 join, gated
+      by the same rank test that guards every inferred relation.
+- [ ] **Poly-Bézier / smooth-through-points tool** — click a sequence of points and fit a
+      chain of cubics with automatic G1 joins (Catmull-Rom-seeded handles), then expose the
+      joins as editable smooth-join constraints.
+- [ ] Arc-length and included-angle dimensional constraints (for arcs *and* splines).
+- [ ] Auto-constrain: infer line↔arc tangency and equal-radius from rough geometry.
 - [ ] Trim / extend / fillet-in-place tools that cut real geometry at intersections
-- [ ] Constraint groups / layers
-- [ ] Pantograph / other coupler-curve mechanisms
-- [ ] `localStorage` autosave with an explicit "restore last session"
+      (including splitting a spline at a parameter via de Casteljau).
+- [ ] **Offset curves** — a construction offset of a line/arc/spline at a driven distance.
+- [ ] Constraint groups / layers, and a per-entity construction toggle in the UI.
+- [ ] Pantograph / other coupler-curve mechanisms.
+- [ ] `localStorage` autosave with an explicit "restore last session".
+- [ ] **Export** the solved sketch to SVG / DXF (splines → cubic path segments).
 
 ## Session log
 
@@ -146,6 +217,19 @@ Showcase & tests
   gated by Jacobian rank; save / open / shareable-URL persistence; on-canvas dimension editing; and
   two straight-line-linkage showcases (Peaucellier exact + Hoeken approximate) with ping-pong
   driving. Self-test suite 10 → 17. Verified end-to-end in Chromium (0 console errors) plus
+  `node scripts/verify-project.mjs` (scope + conformance + lint + build).
+- 2026-07-10 (claude): **cubic Bézier splines as a first-class primitive.** A spline reduces to
+  four control points and carries no parameter of its own, so a free spline is 8 draggable DOF with
+  no intrinsic residual (a self-test confirms). Its endpoint tangents are the handle vectors, which
+  three new constraints — spline↔line (parallel), spline↔spline smooth G1 join (collinear handles),
+  and spline↔arc (perpendicular to radius) — pin by reusing the *exact same* parallel/perpendicular
+  residual algebra the line and arc relations use, so no new derivative code. Added a four-click
+  spline tool with live preview, exact `bezierCurveTo` rendering on affine-projected control points
+  with handle tethers, spline hit-testing, bounding box, cascade-delete and persistence. Three new
+  showcases (tangent S-curve with a smooth join, line-into-circle blend tangent to both, symmetric
+  mirrored petal). Self-test suite 22 → 27 (the differential Jacobian + persistence checks now cover
+  spline residuals too — worst |ΔJ| ≈ 9.2e-9 across all examples). Verified end-to-end in Chromium
+  (drew a spline live; loaded all three examples; 0 console errors) plus
   `node scripts/verify-project.mjs` (scope + conformance + lint + build).
 - 2026-07-10 (claude): **circular arcs as a first-class primitive.** An arc reduces to a center,
   two endpoints and a radius bound by two intrinsic endpoint-on-circle residuals, and reuses the

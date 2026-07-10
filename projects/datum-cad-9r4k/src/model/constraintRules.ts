@@ -16,7 +16,7 @@ export type ConstraintOption = {
 function kinds(
   sketch: Sketch,
   sel: EntityId[],
-): { points: EntityId[]; lines: EntityId[]; circular: EntityId[]; all: Entity[] } {
+): { points: EntityId[]; lines: EntityId[]; circular: EntityId[]; splines: EntityId[]; all: Entity[] } {
   const all = sel.map((id) => sketch.get(id)).filter((e): e is Entity => !!e)
   return {
     points: all.filter((e) => e.kind === 'point').map((e) => e.id),
@@ -24,16 +24,52 @@ function kinds(
     // Circles and arcs are interchangeable for every radius/tangent/concentric
     // relation — both carry a (center, radius) pair — so they are pooled here.
     circular: all.filter((e) => e.kind === 'circle' || e.kind === 'arc').map((e) => e.id),
+    splines: all.filter((e) => e.kind === 'spline').map((e) => e.id),
     all,
   }
 }
 
+// The spline endpoint (p0 or p1) whose position is closest to any of the given
+// world points — used to decide which end a tangency acts on when the user selects
+// a spline together with a line or circle. Returns a stable point id, stored in the
+// constraint so the choice never changes afterwards.
+function nearestSplineEnd(sketch: Sketch, splineId: EntityId, targets: [number, number][]): EntityId {
+  const s = sketch.spline(splineId)
+  let best = s.p0
+  let bestD = Infinity
+  for (const end of [s.p0, s.p1]) {
+    const p = sketch.point(end)
+    for (const t of targets) {
+      const d = Math.hypot(p.x - t[0], p.y - t[1])
+      if (d < bestD) {
+        bestD = d
+        best = end
+      }
+    }
+  }
+  return best
+}
+
+// The point id shared as an endpoint of both splines, if any — the join at which a
+// G1 (smooth-tangent) continuity constraint is meaningful.
+function sharedSplineEndpoint(sketch: Sketch, a: EntityId, b: EntityId): EntityId | null {
+  const sa = sketch.spline(a)
+  const sb = sketch.spline(b)
+  const ends = new Set([sb.p0, sb.p1])
+  for (const e of [sa.p0, sa.p1]) if (ends.has(e)) return e
+  return null
+}
+
 // Every constraint currently applicable to the selection, in menu order.
 export function applicableConstraints(sketch: Sketch, sel: EntityId[]): ConstraintOption[] {
-  const { points, lines, circular, all } = kinds(sketch, sel)
+  const { points, lines, circular, splines, all } = kinds(sketch, sel)
   const out: ConstraintOption[] = []
-  const only = (np: number, nl: number, nc: number) =>
-    points.length === np && lines.length === nl && circular.length === nc && all.length === np + nl + nc
+  const only = (np: number, nl: number, nc: number, ns = 0) =>
+    points.length === np &&
+    lines.length === nl &&
+    circular.length === nc &&
+    splines.length === ns &&
+    all.length === np + nl + nc + ns
 
   if (only(2, 0, 0)) {
     const a = sketch.point(points[0])
@@ -79,6 +115,29 @@ export function applicableConstraints(sketch: Sketch, sel: EntityId[]): Constrai
     out.push({ kind: 'equalRadius', label: 'Equal Radius', symbol: '=', value: null, entities: [...circular] })
     out.push({ kind: 'tangentCircles', label: 'Tangent', symbol: 'T', value: null, entities: [...circular] })
     out.push({ kind: 'concentric', label: 'Concentric', symbol: '◎', value: null, entities: [...circular] })
+  }
+  // Spline tangency: the endpoint the constraint acts on is stored first (a point),
+  // so the choice is fixed and the on-canvas glyph anchors at the join.
+  if (only(0, 1, 0, 1)) {
+    const l = sketch.line(lines[0])
+    const a = sketch.point(l.p1)
+    const b = sketch.point(l.p2)
+    const end = nearestSplineEnd(sketch, splines[0], [
+      [a.x, a.y],
+      [b.x, b.y],
+    ])
+    out.push({ kind: 'splineTangentLine', label: 'Tangent to Line', symbol: '⌒', value: null, entities: [end, splines[0], lines[0]] })
+  }
+  if (only(0, 0, 1, 1)) {
+    const circ = sketch.circleLike(circular[0])
+    const ctr = sketch.point(circ.c)
+    const end = nearestSplineEnd(sketch, splines[0], [[ctr.x, ctr.y]])
+    out.push({ kind: 'splineTangentArc', label: 'Tangent to Arc', symbol: '⌒', value: null, entities: [end, splines[0], circular[0]] })
+  }
+  if (only(0, 0, 0, 2)) {
+    const shared = sharedSplineEndpoint(sketch, splines[0], splines[1])
+    if (shared !== null)
+      out.push({ kind: 'splineTangentSpline', label: 'Smooth Join', symbol: '⌒', value: null, entities: [shared, splines[0], splines[1]] })
   }
   return out
 }

@@ -20,6 +20,7 @@ export type RenderState = {
   preview:
     | { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] }
     | { kind: 'arc'; center: [number, number]; from: [number, number]; to: [number, number] }
+    | { kind: 'spline'; ctrl: [number, number][]; to: [number, number] }
     | null
 }
 
@@ -42,6 +43,7 @@ const COL = {
   glyphText: '#a9c0d6',
   conflict: '#ff5c72',
   highlight: '#8ad4ff',
+  splineHandle: '#5a6b7d',
 }
 
 export function statusColor(s: DofStatus): string {
@@ -180,6 +182,38 @@ function drawGeometry(ctx: CanvasRenderingContext2D, sketch: Sketch, st: RenderS
       ctx.setLineDash(e.construction ? [5, 5] : [])
       strokeArcWorld(ctx, v, g.cx, g.cy, g.r, g.a0, g.sweep)
       ctx.setLineDash([])
+    } else if (e.kind === 'spline') {
+      const p0 = sketch.point(e.p0)
+      const c0 = sketch.point(e.c0)
+      const c1 = sketch.point(e.c1)
+      const p1 = sketch.point(e.p1)
+      const accent = st.selection.has(e.id) || st.hover === e.id || st.highlight.has(e.id)
+      // The control handles: thin faint tethers from each endpoint to its control
+      // point, so the (draggable) control points read as handles rather than strays.
+      const [h0x, h0y] = worldToScreen(v, p0.x, p0.y)
+      const [k0x, k0y] = worldToScreen(v, c0.x, c0.y)
+      const [k1x, k1y] = worldToScreen(v, c1.x, c1.y)
+      const [h1x, h1y] = worldToScreen(v, p1.x, p1.y)
+      ctx.strokeStyle = COL.splineHandle
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 3])
+      ctx.beginPath()
+      ctx.moveTo(h0x, h0y)
+      ctx.lineTo(k0x, k0y)
+      ctx.moveTo(h1x, h1y)
+      ctx.lineTo(k1x, k1y)
+      ctx.stroke()
+      ctx.setLineDash([])
+      // The curve itself. A cubic Bézier is affine-invariant, so projecting the four
+      // control points and calling bezierCurveTo draws the exact projected curve.
+      ctx.strokeStyle = strokeFor(e.id, st, e.construction ? COL.geoConstruction : COL.geo)
+      ctx.lineWidth = accent ? 3 : e.construction ? 1 : 2
+      ctx.setLineDash(e.construction ? [5, 5] : [])
+      ctx.beginPath()
+      ctx.moveTo(h0x, h0y)
+      ctx.bezierCurveTo(k0x, k0y, k1x, k1y, h1x, h1y)
+      ctx.stroke()
+      ctx.setLineDash([])
     }
   }
 }
@@ -263,6 +297,32 @@ function drawPreview(ctx: CanvasRenderingContext2D, v: View, p: NonNullable<Rend
     ctx.setLineDash([])
     return
   }
+  if (p.kind === 'spline') {
+    // The control points placed so far, plus the cursor, in world space.
+    const pts = [...p.ctrl, p.to]
+    // The control polygon.
+    ctx.beginPath()
+    for (let i = 0; i < pts.length; i++) {
+      const [sx, sy] = worldToScreen(v, pts[i][0], pts[i][1])
+      if (i === 0) ctx.moveTo(sx, sy)
+      else ctx.lineTo(sx, sy)
+    }
+    ctx.stroke()
+    // A live cubic, padding any not-yet-placed control points with the cursor so
+    // the curve reads plausibly at every click of the four-point gesture.
+    const cp = [p.ctrl[0] ?? p.to, p.ctrl[1] ?? p.to, p.ctrl[2] ?? p.to, p.to]
+    const s0 = worldToScreen(v, cp[0][0], cp[0][1])
+    const s1 = worldToScreen(v, cp[1][0], cp[1][1])
+    const s2 = worldToScreen(v, cp[2][0], cp[2][1])
+    const s3 = worldToScreen(v, cp[3][0], cp[3][1])
+    ctx.strokeStyle = COL.geo
+    ctx.beginPath()
+    ctx.moveTo(s0[0], s0[1])
+    ctx.bezierCurveTo(s1[0], s1[1], s2[0], s2[1], s3[0], s3[1])
+    ctx.stroke()
+    ctx.setLineDash([])
+    return
+  }
   const [ax, ay] = worldToScreen(v, p.from[0], p.from[1])
   const [bx, by] = worldToScreen(v, p.to[0], p.to[1])
   ctx.beginPath()
@@ -295,6 +355,9 @@ const GLYPH: Partial<Record<Constraint['kind'], string>> = {
   symmetric: '⇄',
   colinear: '≡',
   coincident: '•',
+  splineTangentLine: '⌒',
+  splineTangentSpline: '⌒',
+  splineTangentArc: '⌒',
 }
 
 function midOfLine(sketch: Sketch, id: EntityId): [number, number] {

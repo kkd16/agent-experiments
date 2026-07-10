@@ -21,7 +21,7 @@ import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
 import { Toolbar, ConstraintPalette, InfoPanel, DriverBar, ValuePrompt, Diagnostics } from './ui/components'
 
-type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc'
+type ToolId = 'select' | 'point' | 'line' | 'circle' | 'arc' | 'spline'
 
 const TRACE_COLORS = ['#57e6c9', '#ffd166', '#c792ea']
 
@@ -57,6 +57,9 @@ export default function App() {
   const pendingToolRef = useRef<{ startPoint: EntityId } | null>(null)
   // Arc construction is a three-click gesture: center → start (sets radius) → end.
   const pendingArcRef = useRef<{ center: EntityId; start?: EntityId } | null>(null)
+  // Spline construction is a four-click gesture, one per control point:
+  // start → control-1 → control-2 → end.
+  const pendingSplineRef = useRef<{ pts: EntityId[] } | null>(null)
   const historyRef = useRef<{ past: SketchData[]; future: SketchData[] }>({ past: [], future: [] })
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -138,6 +141,7 @@ export default function App() {
       setSelection([])
       pendingToolRef.current = null
       pendingArcRef.current = null
+      pendingSplineRef.current = null
       solveNow()
       bump()
     },
@@ -171,6 +175,7 @@ export default function App() {
       setSelection([])
       pendingToolRef.current = null
       pendingArcRef.current = null
+      pendingSplineRef.current = null
       tracesRef.current = new Map()
       traceTargetsRef.current = built.tracePoints ?? []
       driverDirRef.current = 1
@@ -209,6 +214,7 @@ export default function App() {
       setSelection([])
       pendingToolRef.current = null
       pendingArcRef.current = null
+      pendingSplineRef.current = null
       tracesRef.current = new Map()
       traceTargetsRef.current = []
       driverDirRef.current = 1
@@ -349,6 +355,12 @@ export default function App() {
         const s = sketchRef.current.point(pa.start)
         preview = { kind: 'arc', center: [c.x, c.y], from: [s.x, s.y], to: cursorWorldRef.current }
       }
+    } else if (t === 'spline' && pendingSplineRef.current) {
+      const ctrl = pendingSplineRef.current.pts.map((id) => {
+        const p = sketchRef.current.point(id)
+        return [p.x, p.y] as [number, number]
+      })
+      preview = { kind: 'spline', ctrl, to: cursorWorldRef.current }
     }
     const st: RenderState = {
       view: viewRef.current,
@@ -359,7 +371,9 @@ export default function App() {
           ? [pendingToolRef.current.startPoint]
           : pendingArcRef.current
             ? [pendingArcRef.current.center, ...(pendingArcRef.current.start !== undefined ? [pendingArcRef.current.start] : [])]
-            : [],
+            : pendingSplineRef.current
+              ? pendingSplineRef.current.pts
+              : [],
       ),
       traces,
       dofStatus: status,
@@ -538,6 +552,23 @@ export default function App() {
         pendingArcRef.current = null
         bump()
       }
+      return
+    }
+
+    if (active === 'spline') {
+      if (!pendingSplineRef.current) pushHistory() // snapshot before the gesture creates anything
+      const pid = pointAt(sx, sy, wx, wy)
+      const cur = pendingSplineRef.current ?? { pts: [] }
+      // Ignore an immediate repeat click on the same point (e.g. a double-tap).
+      if (cur.pts[cur.pts.length - 1] !== pid) cur.pts.push(pid)
+      pendingSplineRef.current = cur
+      if (cur.pts.length === 4) {
+        const [p0, c0, c1, p1] = cur.pts
+        sketchRef.current.addSpline(p0, c0, c1, p1)
+        solveNow()
+        pendingSplineRef.current = null
+      }
+      bump()
       return
     }
   }
@@ -808,6 +839,11 @@ export default function App() {
             set.add(e.c)
             set.add(e.p1)
             set.add(e.p2)
+          } else if (e?.kind === 'spline') {
+            set.add(e.p0)
+            set.add(e.c0)
+            set.add(e.c1)
+            set.add(e.p1)
           }
         }
     }
@@ -843,6 +879,7 @@ export default function App() {
       else if (e.key === 'Escape') {
         pendingToolRef.current = null
         pendingArcRef.current = null
+        pendingSplineRef.current = null
         selectionRef.current = []
         setSelection([])
       } else if (e.key === 'v' || e.key === '1') setTool('select')
@@ -850,6 +887,7 @@ export default function App() {
       else if (e.key === 'l' || e.key === '3') setTool('line')
       else if (e.key === 'c' || e.key === '4') setTool('circle')
       else if (e.key === 'a' || e.key === '5') setTool('arc')
+      else if (e.key === 's' || e.key === '6') setTool('spline')
       else if (e.key === 'f') fitView()
       else if (e.key === ' ' && driverRef.current) {
         e.preventDefault()
@@ -868,6 +906,7 @@ export default function App() {
           setTool(t)
           pendingToolRef.current = null
           pendingArcRef.current = null
+          pendingSplineRef.current = null
         }}
         exampleId={exampleId}
         examples={EXAMPLES}
