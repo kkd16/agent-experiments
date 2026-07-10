@@ -33,6 +33,9 @@ import { DEFAULT_QUANT } from './engine/games/quant/examples'
 import AlgebraView from './views/AlgebraView'
 import type { AlgebraTab } from './views/AlgebraView'
 import { DEFAULT_REGEX as ALGEBRA_DEFAULT_REGEX } from './engine/algebra/examples'
+import TimedView from './views/TimedView'
+import type { TimedTab } from './views/TimedView'
+import { DEFAULT_TIMED } from './engine/timed/examples'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -67,6 +70,7 @@ const VALID_PRESBURGER_TABS: PresburgerTab[] = ['construct', 'automaton', 'solut
 const VALID_GAMES_TABS: GamesTab[] = ['arena', 'solve', 'play', 'synth', 'verify', 'about']
 const VALID_QUANT_TABS: QuantTab[] = ['arena', 'value', 'reduce', 'verify', 'about']
 const VALID_ALGEBRA_TABS: AlgebraTab[] = ['monoid', 'green', 'structure', 'starfree', 'verify', 'about']
+const VALID_TIMED_TABS: TimedTab[] = ['automaton', 'regions', 'zones', 'run', 'verify', 'about']
 const VALID_CONDITIONS: Condition[] = ['reachability', 'safety', 'buchi', 'parity']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
@@ -93,6 +97,7 @@ const DEFAULT_STATE: AppState = {
   games: { preset: DEFAULT_EXAMPLE.id, condition: DEFAULT_EXAMPLE.condition, tab: 'solve' },
   quant: { preset: DEFAULT_QUANT.id, tab: 'value' },
   algebra: { regex: ALGEBRA_DEFAULT_REGEX, tab: 'monoid' },
+  timed: { source: DEFAULT_TIMED.source, tab: 'automaton', input: '' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -113,6 +118,7 @@ function clean(s: AppState): AppState {
   const gcond = VALID_CONDITIONS.includes(s.games.condition as Condition) ? s.games.condition : 'parity'
   const qtab = VALID_QUANT_TABS.includes(s.quant.tab as QuantTab) ? s.quant.tab : 'value'
   const algtab = VALID_ALGEBRA_TABS.includes(s.algebra.tab as AlgebraTab) ? s.algebra.tab : 'monoid'
+  const timedtab = VALID_TIMED_TABS.includes(s.timed.tab as TimedTab) ? s.timed.tab : 'automaton'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -133,6 +139,7 @@ function clean(s: AppState): AppState {
     games: { ...s.games, tab: gtabx, condition: gcond },
     quant: { ...s.quant, tab: qtab },
     algebra: { ...s.algebra, tab: algtab },
+    timed: { ...s.timed, tab: timedtab },
   }
 }
 
@@ -200,6 +207,8 @@ export default function App() {
                                         ? 'quantitative games: mean-payoff & energy — exact rational values by Zwick–Paterson, the energy fixpoint & the parity→mean-payoff reduction'
                                       : state.mode === 'algebra'
                                         ? 'algebraic automata theory: the syntactic monoid, Green’s relations & Schützenberger’s star-free theorem — is your language first-order definable?'
+                                        : state.mode === 'timed'
+                                        ? 'timed automata: real-valued clocks, guards & invariants — the infinite state space collapsed to Alur–Dill’s finite region automaton and DBM zones, graded against each other'
                                         : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
@@ -326,6 +335,14 @@ export default function App() {
             >
               Algebra
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'timed'}
+              className={`mode-btn${state.mode === 'timed' ? ' active' : ''}`}
+              onClick={() => setMode('timed')}
+            >
+              Timed
+            </button>
           </div>
           <button
             className="share-btn"
@@ -344,7 +361,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'algebra' ? (
+      {state.mode === 'timed' ? (
+        <TimedView
+          source={state.timed.source}
+          onSource={(source) => setState((s) => ({ ...s, timed: { ...s.timed, source } }))}
+          input={state.timed.input}
+          onInput={(input) => setState((s) => ({ ...s, timed: { ...s.timed, input } }))}
+          tab={state.timed.tab as TimedTab}
+          onTab={(tab) => setState((s) => ({ ...s, timed: { ...s.timed, tab } }))}
+        />
+      ) : state.mode === 'algebra' ? (
         <AlgebraView
           regex={state.algebra.regex}
           onRegex={(regex) => setState((s) => ({ ...s, algebra: { ...s.algebra, regex } }))}

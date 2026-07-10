@@ -21,6 +21,7 @@ export type Mode =
   | 'games'
   | 'quant'
   | 'algebra'
+  | 'timed'
 
 export interface AppState {
   mode: Mode
@@ -39,6 +40,7 @@ export interface AppState {
   games: { preset: string; condition: string; tab: string }
   quant: { preset: string; tab: string }
   algebra: { regex: string; tab: string }
+  timed: { source: string; tab: string; input: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -126,6 +128,12 @@ export function encodeHash(s: AppState): string {
     q.set('r', s.algebra.regex)
     q.set('t', s.algebra.tab)
     return `#/algebra?${q.toString()}`
+  }
+  if (s.mode === 'timed') {
+    q.set('s', s.timed.source)
+    q.set('t', s.timed.tab)
+    if (s.timed.input) q.set('i', s.timed.input)
+    return `#/timed?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -293,6 +301,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
         algebra: {
           regex: q.get('r') ?? fallback.algebra.regex,
           tab: q.get('t') ?? fallback.algebra.tab,
+        },
+      }
+    }
+    if (path === 'timed') {
+      return {
+        ...fallback,
+        mode: 'timed',
+        timed: {
+          source: q.get('s') ?? fallback.timed.source,
+          tab: q.get('t') ?? fallback.timed.tab,
+          input: q.get('i') ?? '',
         },
       }
     }
