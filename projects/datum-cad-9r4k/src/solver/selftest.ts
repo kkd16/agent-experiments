@@ -6,6 +6,8 @@ import { fourBarProbe, sliderProbe } from './probes'
 import { residualVector } from './residuals'
 import { residualsAndJacobian } from './jacobian'
 import { analyzeConflicts } from './conflicts'
+import { autoConstrain } from '../model/autoConstrain'
+import { toJSONString, fromJSONString, encodeHash, decodeHash } from '../model/persist'
 import { EXAMPLES } from '../model/examples'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
@@ -236,6 +238,51 @@ export function runSelfTests(): TestResult[] {
     const by = bottom.map((p) => p[1])
     const flat = (Math.max(...by) - Math.min(...by)) / span // relative flatness of the straight run
     check('Hoeken → approximate straight line', converged && flat < 0.15, `bottom run flat to ${(flat * 100).toFixed(1)}% of travel`)
+  }
+
+  // 16. Persistence round-trips a sketch losslessly through both the JSON file
+  //     format and the base64 URL-hash format: same entities, same constraints,
+  //     same residuals after reloading.
+  {
+    let worst = 0
+    let structureOk = true
+    for (const ex of EXAMPLES) {
+      const s = ex.build().sketch
+      const before = residualVector(s, s.constraints)
+      const viaJSON = fromJSONString(toJSONString(s.toData()))
+      const viaHash = decodeHash('#s=' + encodeHash(s.toData()))
+      for (const data of [viaJSON, viaHash]) {
+        if (!data) {
+          structureOk = false
+          continue
+        }
+        const s2 = new Sketch(data)
+        if (s2.entities.length !== s.entities.length || s2.constraints.length !== s.constraints.length) structureOk = false
+        const after = residualVector(s2, s2.constraints)
+        for (let i = 0; i < before.length; i++) worst = Math.max(worst, Math.abs(before[i] - after[i]))
+      }
+    }
+    check('save/load/share round-trips exactly', structureOk && worst === 0, `worst residual drift ${worst.toExponential(1)}`)
+  }
+
+  // 17. Auto-constrain turns a roughly-drawn square into a fully-constrained one
+  //     with no redundant equations, and the solve snaps the sides equal.
+  {
+    const s = new Sketch()
+    const a = s.addPoint(0, 1, { fixed: true })
+    const b = s.addPoint(101, -1)
+    const c = s.addPoint(99, 100)
+    const d = s.addPoint(-2, 102)
+    s.addLine(a.id, b.id)
+    s.addLine(b.id, c.id)
+    s.addLine(c.id, d.id)
+    s.addLine(d.id, a.id)
+    const res = autoConstrain(s)
+    solve(s, { maxIterations: 100 })
+    const dof = analyzeDof(s)
+    const lens = s.entities.filter((e) => e.kind === 'line').map((l) => s.lineDir(s.line(l.id)).len)
+    const equal = lens.every((v) => approx(v, lens[0], 1e-2))
+    check('auto-constrain squares a rough sketch', res.added > 0 && dof.status === 'well' && dof.redundant === 0 && equal, `added ${res.added}, ${dof.status}, sides ${lens.map((v) => v.toFixed(1)).join('/')}`)
   }
 
   return out

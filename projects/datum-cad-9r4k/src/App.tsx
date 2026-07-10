@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Sketch } from './model/sketch'
-import type { Constraint, EntityId } from './model/types'
+import type { Constraint, EntityId, SketchData } from './model/types'
 import { EXAMPLES, exampleById } from './model/examples'
 import type { DriverSpec } from './model/examples'
 import { applicableConstraints, findDuplicate } from './model/constraintRules'
-import type { ConstraintOption } from './model/constraintRules'
+import type { ConstraintOption, ValueKind } from './model/constraintRules'
+import { autoConstrain } from './model/autoConstrain'
+import { toJSONString, fromJSONString, encodeHash, decodeHash } from './model/persist'
 import { solve } from './solver/solver'
 import type { SolveResult } from './solver/solver'
 import { analyzeDof } from './solver/dof'
@@ -15,7 +17,7 @@ import type { TestResult } from './solver/selftest'
 import { render } from './render/renderer'
 import type { RenderState, TracePath } from './render/renderer'
 import { pickEntity } from './render/picking'
-import { frameBounds, screenToWorld, clamp } from './render/view'
+import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
 import { Toolbar, ConstraintPalette, InfoPanel, DriverBar, ValuePrompt, Diagnostics } from './ui/components'
 
@@ -46,12 +48,14 @@ export default function App() {
   const traceTargetsRef = useRef<EntityId[]>([])
   const redundantRef = useRef<Set<EntityId>>(new Set())
   const lastTsRef = useRef(0)
-  const dragRef = useRef<{ mode: 'none' | 'point' | 'pan'; id?: EntityId; lastX: number; lastY: number }>({
+  const dragRef = useRef<{ mode: 'none' | 'point' | 'pan'; id?: EntityId; lastX: number; lastY: number; pushed?: boolean }>({
     mode: 'none',
     lastX: 0,
     lastY: 0,
   })
   const pendingToolRef = useRef<{ startPoint: EntityId } | null>(null)
+  const historyRef = useRef<{ past: SketchData[]; future: SketchData[] }>({ past: [], future: [] })
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   // --- React UI state ------------------------------------------------------
   const [tool, setTool] = useState<ToolId>('select')
@@ -65,10 +69,12 @@ export default function App() {
   const [driverValue, setDriverValue] = useState(0)
   const [driver, setDriver] = useState<DriverSpec | null>(null)
   const [valuePrompt, setValuePrompt] = useState<ConstraintOption | null>(null)
+  const [editDim, setEditDim] = useState<{ constraintId: EntityId; option: ConstraintOption } | null>(null)
   const [solveInfo, setSolveInfo] = useState<SolveResult | null>(null)
   const [tests, setTests] = useState<TestResult[]>(() => runSelfTests())
   const [showTests, setShowTests] = useState(false)
   const [message, setMessage] = useState('')
+  const [history, setHistory] = useState({ canUndo: false, canRedo: false })
 
   const bump = useCallback(() => setRev((r) => r + 1), [])
 
@@ -86,6 +92,71 @@ export default function App() {
     setSolveInfo(res)
     return res
   }, [])
+
+  // --- undo / redo ---------------------------------------------------------
+  const MAX_HISTORY = 120
+  const syncHistory = useCallback(() => {
+    const h = historyRef.current
+    setHistory({ canUndo: h.past.length > 0, canRedo: h.future.length > 0 })
+  }, [])
+
+  // Snapshot the current model *before* a mutation. Call at the top of every
+  // structural edit; live drags and driver animation are intentionally excluded.
+  const pushHistory = useCallback(() => {
+    const h = historyRef.current
+    h.past.push(sketchRef.current.toData())
+    if (h.past.length > MAX_HISTORY) h.past.shift()
+    h.future = []
+    syncHistory()
+  }, [syncHistory])
+
+  const resetHistory = useCallback(() => {
+    historyRef.current = { past: [], future: [] }
+    syncHistory()
+  }, [syncHistory])
+
+  // Replace the live model with a saved snapshot, re-resolving the driver's
+  // constraint reference (ids are stable across serialisation) so a driven
+  // mechanism keeps working after an undo.
+  const restoreData = useCallback(
+    (data: SketchData) => {
+      sketchRef.current = new Sketch(data)
+      const d = driverRef.current
+      if (d) {
+        const c = sketchRef.current.constraints.find((k) => k.id === d.spec.constraintId)
+        if (c) driverRef.current = { spec: d.spec, constraint: c }
+        else {
+          driverRef.current = null
+          setDriver(null)
+        }
+      }
+      tracesRef.current = new Map()
+      selectionRef.current = []
+      setSelection([])
+      pendingToolRef.current = null
+      solveNow()
+      bump()
+    },
+    [bump, solveNow],
+  )
+
+  const undo = useCallback(() => {
+    const h = historyRef.current
+    if (!h.past.length) return
+    h.future.push(sketchRef.current.toData())
+    restoreData(h.past.pop()!)
+    syncHistory()
+    setMessage('Undo.')
+  }, [restoreData, syncHistory])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    if (!h.future.length) return
+    h.past.push(sketchRef.current.toData())
+    restoreData(h.future.pop()!)
+    syncHistory()
+    setMessage('Redo.')
+  }, [restoreData, syncHistory])
 
   // --- example loading -----------------------------------------------------
   const loadExample = useCallback(
@@ -116,15 +187,107 @@ export default function App() {
       viewRef.current = frameBounds(built.sketch.boundingBox(), w, h)
       setExampleId(id)
       setMessage(`Loaded “${exampleById(id).name}”.`)
+      resetHistory()
       bump()
     },
-    [bump],
+    [bump, resetHistory],
   )
 
+  // --- persistence: new / open / save / share -----------------------------
+  // Adopt a raw sketch (from a file, a shared URL, or "New"). Any constraint
+  // flagged as a driver is turned back into a scrubbable driver with a default
+  // full-rotation range, so shared mechanisms stay animatable.
+  const adoptSketch = useCallback(
+    (sketch: Sketch, label: string) => {
+      sketchRef.current = sketch
+      selectionRef.current = []
+      setSelection([])
+      pendingToolRef.current = null
+      tracesRef.current = new Map()
+      traceTargetsRef.current = []
+      driverDirRef.current = 1
+      const drvConstraint = sketch.constraints.find((c) => c.driver)
+      if (drvConstraint) {
+        const spec: DriverSpec = { constraintId: drvConstraint.id, min: 0, max: 360, period: 6, wrap: true, label: 'Driver', unit: '°' }
+        driverRef.current = { spec, constraint: drvConstraint }
+        driverValueRef.current = drvConstraint.value ?? 0
+        setDriver(spec)
+        setDriverValue(drvConstraint.value ?? 0)
+      } else {
+        driverRef.current = null
+        setDriver(null)
+      }
+      setPlaying(false)
+      playingRef.current = false
+      solveNow()
+      const { w, h } = sizeRef.current
+      viewRef.current = frameBounds(sketch.boundingBox(), w, h)
+      setExampleId('')
+      setMessage(label)
+      resetHistory()
+      bump()
+    },
+    [bump, resetHistory, solveNow],
+  )
+
+  const newSketch = useCallback(() => adoptSketch(new Sketch(), 'New blank sketch.'), [adoptSketch])
+
+  const saveSketch = useCallback(() => {
+    const json = toJSONString(sketchRef.current.toData())
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'datum-sketch.json'
+    a.click()
+    URL.revokeObjectURL(url)
+    setMessage('Saved sketch to a .json file.')
+  }, [])
+
+  const openSketchText = useCallback(
+    (text: string) => {
+      const data = fromJSONString(text)
+      if (!data) {
+        setMessage('That file isn’t a valid Datum sketch.')
+        return
+      }
+      adoptSketch(new Sketch(data), 'Opened sketch from file.')
+    },
+    [adoptSketch],
+  )
+
+  const onOpenFile = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      e.target.value = '' // allow re-opening the same file
+      if (!file) return
+      file.text().then(openSketchText)
+    },
+    [openSketchText],
+  )
+
+  const shareSketch = useCallback(() => {
+    const hash = `#s=${encodeHash(sketchRef.current.toData())}`
+    const url = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`
+    try {
+      window.history.replaceState(null, '', hash)
+    } catch {
+      /* ignore — sandboxed thumbnail frames may block history */
+    }
+    const done = () => setMessage('Shareable link copied to clipboard.')
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(done, () => setMessage('Link is in the address bar — copy it to share.'))
+    else setMessage('Link is in the address bar — copy it to share.')
+  }, [])
+
   // initial load — deferred a frame so the canvas has laid out (and so we don't
-  // fire a cascade of setState synchronously inside the mount effect).
+  // fire a cascade of setState synchronously inside the mount effect). A shared
+  // sketch in the URL fragment (#s=…) wins over the default demo.
   useEffect(() => {
-    const id = requestAnimationFrame(() => loadExample('four-bar'))
+    const shared = typeof window !== 'undefined' ? decodeHash(window.location.hash) : null
+    const id = requestAnimationFrame(() => {
+      if (shared) adoptSketch(new Sketch(shared), 'Loaded a shared sketch from the link.')
+      else loadExample('four-bar')
+    })
     return () => cancelAnimationFrame(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -278,7 +441,7 @@ export default function App() {
           selectionRef.current = [hit]
           setSelection([hit])
         }
-        if (ent.kind === 'point') dragRef.current = { mode: 'point', id: hit, lastX: e.clientX, lastY: e.clientY }
+        if (ent.kind === 'point') dragRef.current = { mode: 'point', id: hit, lastX: e.clientX, lastY: e.clientY, pushed: false }
       } else {
         if (!e.shiftKey) {
           selectionRef.current = []
@@ -290,12 +453,14 @@ export default function App() {
     }
 
     if (active === 'point') {
+      pushHistory()
       sketchRef.current.addPoint(snap(wx), snap(wy))
       bump()
       return
     }
 
     if (active === 'line' || active === 'circle') {
+      if (!pendingToolRef.current) pushHistory() // snapshot before the gesture creates anything
       const pid = pointAt(sx, sy, wx, wy)
       if (!pendingToolRef.current) {
         pendingToolRef.current = { startPoint: pid }
@@ -332,6 +497,10 @@ export default function App() {
       return
     }
     if (drag.mode === 'point' && drag.id !== undefined) {
+      if (!drag.pushed) {
+        pushHistory() // snapshot the pre-drag position on the first move only
+        drag.pushed = true
+      }
       const p = sketchRef.current.point(drag.id)
       p.x = wx
       p.y = wy
@@ -351,6 +520,80 @@ export default function App() {
     dragRef.current = { mode: 'none', lastX: 0, lastY: 0 }
     ;(e.target as HTMLElement).releasePointerCapture?.(e.pointerId)
   }
+
+  // Screen-space anchor near where a dimensional constraint's label is drawn, for
+  // double-click hit-testing. Mirrors the renderer's dimension placement closely
+  // enough to feel precise without duplicating its exact geometry.
+  const dimensionAnchor = (c: Constraint): [number, number] | null => {
+    const s = sketchRef.current
+    const v = viewRef.current
+    if (c.kind === 'distance') {
+      const a = s.point(c.entities[0])
+      const b = s.point(c.entities[1])
+      return worldToScreen(v, (a.x + b.x) / 2, (a.y + b.y) / 2)
+    }
+    if (c.kind === 'radius' || c.kind === 'diameter') {
+      const circ = s.circle(c.entities[0])
+      const ctr = s.point(circ.c)
+      const [cx, cy] = worldToScreen(v, ctr.x, ctr.y)
+      return [cx + Math.cos(-Math.PI / 4) * circ.r * v.scale, cy + Math.sin(-Math.PI / 4) * circ.r * v.scale]
+    }
+    if (c.kind === 'angle') {
+      const pivot = s.point(s.line(c.entities[1]).p1)
+      return worldToScreen(v, pivot.x, pivot.y)
+    }
+    return null
+  }
+
+  const editDimensionAt = (sx: number, sy: number) => {
+    let best: Constraint | null = null
+    let bestD = 46
+    for (const c of sketchRef.current.constraints) {
+      const anchor = dimensionAnchor(c)
+      if (!anchor) continue
+      const d = Math.hypot(sx - anchor[0], sy - anchor[1])
+      if (d < bestD) {
+        bestD = d
+        best = c
+      }
+    }
+    if (!best) return
+    const labels: Record<string, string> = { distance: 'Distance', radius: 'Radius', diameter: 'Diameter', angle: 'Angle' }
+    setEditDim({
+      constraintId: best.id,
+      option: {
+        kind: best.kind,
+        label: `Edit ${labels[best.kind] ?? best.kind}`,
+        symbol: '',
+        value: best.kind as ValueKind,
+        entities: [...best.entities],
+        defaultValue: best.value ?? 0,
+      },
+    })
+  }
+
+  const onDoubleClick = (e: React.MouseEvent) => {
+    const canvas = canvasRef.current!
+    const rect = canvas.getBoundingClientRect()
+    editDimensionAt(e.clientX - rect.left, e.clientY - rect.top)
+  }
+
+  const confirmEditDim = useCallback(
+    (val: number) => {
+      const edit = editDim
+      if (!edit) return
+      const c = sketchRef.current.constraints.find((k) => k.id === edit.constraintId)
+      if (c) {
+        pushHistory()
+        c.value = val
+        const res = solveNow()
+        setMessage(res.converged ? `Updated ${edit.option.label.replace('Edit ', '').toLowerCase()} = ${val}.` : `Set value ${val} — could not be satisfied.`)
+      }
+      setEditDim(null)
+      bump()
+    },
+    [editDim, bump, solveNow, pushHistory],
+  )
 
   const onWheel = (e: React.WheelEvent) => {
     const canvas = canvasRef.current!
@@ -390,6 +633,7 @@ export default function App() {
         setMessage('That constraint already exists.')
         return
       }
+      pushHistory()
       sketchRef.current.addConstraint(opt.kind, opt.entities)
       const res = solveNow()
       setMessage(res.converged ? `Added ${opt.label}. Solved in ${res.iterations} iters.` : `Added ${opt.label} — system now over-constrained.`)
@@ -397,13 +641,14 @@ export default function App() {
       setSelection([])
       bump()
     },
-    [bump, solveNow],
+    [bump, solveNow, pushHistory],
   )
 
   const confirmValue = useCallback(
     (val: number) => {
       const opt = valuePrompt
       if (!opt) return
+      pushHistory()
       sketchRef.current.addConstraint(opt.kind, opt.entities, val)
       const res = solveNow()
       setMessage(res.converged ? `Added ${opt.label} = ${val}. Solved in ${res.iterations} iters.` : `Added ${opt.label} — could not be satisfied.`)
@@ -412,41 +657,58 @@ export default function App() {
       setSelection([])
       bump()
     },
-    [valuePrompt, bump, solveNow],
+    [valuePrompt, bump, solveNow, pushHistory],
   )
 
   const deleteSelected = useCallback(() => {
+    if (!selectionRef.current.some((id) => sketchRef.current.get(id))) return
+    pushHistory()
     for (const id of selectionRef.current) if (sketchRef.current.get(id)) sketchRef.current.removeEntity(id)
     selectionRef.current = []
     setSelection([])
     setMessage('Deleted selection.')
     bump()
-  }, [bump])
+  }, [bump, pushHistory])
 
   const removeConstraint = useCallback(
     (id: EntityId) => {
+      pushHistory()
       sketchRef.current.removeConstraint(id)
       solveNow()
       bump()
     },
-    [bump, solveNow],
+    [bump, solveNow, pushHistory],
   )
 
   const toggleAnchor = useCallback(() => {
-    let changed = false
+    const hasPoint = selectionRef.current.some((id) => sketchRef.current.get(id)?.kind === 'point')
+    if (!hasPoint) return
+    pushHistory()
     for (const id of selectionRef.current) {
       const e = sketchRef.current.get(id)
-      if (e?.kind === 'point') {
-        e.fixed = !e.fixed
-        changed = true
-      }
+      if (e?.kind === 'point') e.fixed = !e.fixed
     }
-    if (changed) {
-      solveNow()
-      setMessage('Toggled anchor on selected point(s).')
-      bump()
+    solveNow()
+    setMessage('Toggled anchor on selected point(s).')
+    bump()
+  }, [bump, solveNow, pushHistory])
+
+  const runAutoConstrain = useCallback(() => {
+    pushHistory()
+    const res = autoConstrain(sketchRef.current)
+    if (res.added === 0) {
+      historyRef.current.past.pop() // nothing changed — don't leave an empty undo step
+      syncHistory()
+      setMessage('Auto-constrain found nothing new to infer.')
+      return
     }
-  }, [bump, solveNow])
+    const solveRes = solveNow()
+    const parts = Object.entries(res.byKind).map(([k, n]) => `${n} ${k}`)
+    setMessage(`Auto-constrained: added ${res.added} (${parts.join(', ')}). ${solveRes.converged ? 'Solved.' : 'Check conflicts.'}`)
+    selectionRef.current = []
+    setSelection([])
+    bump()
+  }, [bump, solveNow, pushHistory, syncHistory])
 
   const fitView = useCallback(() => {
     const { w, h } = sizeRef.current
@@ -469,6 +731,17 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault()
+        redo()
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
       else if (e.key === 'Escape') {
         pendingToolRef.current = null
@@ -486,7 +759,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [deleteSelected, fitView])
+  }, [deleteSelected, fitView, undo, redo])
 
   return (
     <div className="app">
@@ -505,6 +778,15 @@ export default function App() {
         onToggleConstraints={() => setShowConstraints((v) => !v)}
         onFit={fitView}
         onDiagnostics={() => setShowTests(true)}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
+        onUndo={undo}
+        onRedo={redo}
+        onAutoConstrain={runAutoConstrain}
+        onNew={newSketch}
+        onSave={saveSketch}
+        onOpen={() => fileInputRef.current?.click()}
+        onShare={shareSketch}
       />
       <div className="body">
         <div className="canvasWrap" ref={wrapRef}>
@@ -514,6 +796,7 @@ export default function App() {
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onDoubleClick={onDoubleClick}
             onWheel={onWheel}
             onContextMenu={(e) => e.preventDefault()}
           />
@@ -548,7 +831,9 @@ export default function App() {
         />
       )}
       {valuePrompt && <ValuePrompt option={valuePrompt} onConfirm={confirmValue} onCancel={() => setValuePrompt(null)} />}
+      {editDim && <ValuePrompt option={editDim.option} onConfirm={confirmEditDim} onCancel={() => setEditDim(null)} />}
       {showTests && <Diagnostics tests={tests} onClose={() => setShowTests(false)} onRerun={() => setTests(runSelfTests())} />}
+      <input ref={fileInputRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onOpenFile} />
     </div>
   )
 }

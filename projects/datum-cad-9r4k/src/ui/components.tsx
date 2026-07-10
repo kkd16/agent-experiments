@@ -28,6 +28,15 @@ export function Toolbar(props: {
   onToggleConstraints: () => void
   onFit: () => void
   onDiagnostics: () => void
+  canUndo: boolean
+  canRedo: boolean
+  onUndo: () => void
+  onRedo: () => void
+  onAutoConstrain: () => void
+  onNew: () => void
+  onSave: () => void
+  onOpen: () => void
+  onShare: () => void
 }) {
   return (
     <header className="toolbar">
@@ -53,11 +62,28 @@ export function Toolbar(props: {
         ))}
       </div>
 
+      <div className="toolGroup subtle">
+        <button className="chip" onClick={props.onUndo} disabled={!props.canUndo} title="Undo (Ctrl/⌘+Z)">
+          ↶ Undo
+        </button>
+        <button className="chip" onClick={props.onRedo} disabled={!props.canRedo} title="Redo (Ctrl/⌘+Shift+Z)">
+          ↷ Redo
+        </button>
+        <button className="chip accent" onClick={props.onAutoConstrain} title="Infer horizontal / vertical / parallel / equal relations from the rough sketch">
+          ✨ Auto
+        </button>
+      </div>
+
       <div className="spacer" />
 
       <label className="exampleSelect">
         <span>Example</span>
         <select value={props.exampleId} onChange={(e) => props.onExample(e.target.value)}>
+          {!props.exampleId && (
+            <option value="" disabled hidden>
+              Custom sketch
+            </option>
+          )}
           {props.examples.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name}
@@ -82,6 +108,21 @@ export function Toolbar(props: {
         </button>
         <button className="chip" onClick={props.onDiagnostics} title="Run solver self-tests">
           ✓ Tests
+        </button>
+      </div>
+
+      <div className="toolGroup subtle">
+        <button className="chip" onClick={props.onNew} title="Start a new blank sketch">
+          New
+        </button>
+        <button className="chip" onClick={props.onOpen} title="Open a .json sketch file">
+          Open
+        </button>
+        <button className="chip" onClick={props.onSave} title="Save this sketch to a .json file">
+          Save
+        </button>
+        <button className="chip accent" onClick={props.onShare} title="Copy a shareable link that reconstructs this sketch">
+          ⇪ Share
         </button>
       </div>
     </header>
