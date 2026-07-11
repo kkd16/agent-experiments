@@ -471,3 +471,124 @@ export function solveBuckling(model: FrameModel, maxModes = 6): BucklingResult {
     note: modes.length === 0 ? 'No positive buckling factor (structure stiffens under this load).' : undefined,
   }
 }
+
+// ------------------------------------------------------------- transient (modal superposition)
+
+export interface TransientMode {
+  omega: number
+  /** Mass-normalised mode shape over the full DOF layout (φᵀ M φ = 1). */
+  phi: Float64Array
+  /** Initial modal coordinate q(0) = φᵀ M u₀ for the seed displacement. */
+  q0: number
+}
+
+export interface TransientResult {
+  kind: 'transient'
+  dofPerNode: number
+  nNodes: number
+  modes: TransientMode[]
+  /** Natural frequency of the dominant (largest |q0|) mode, Hz. */
+  dominantHz: number
+  ok: boolean
+  note?: string
+}
+
+/**
+ * Prepare a **modal-superposition transient**: the free-vibration response of
+ * the structure released from a static-load deflection. Each natural mode
+ * becomes a decaying oscillator, and the physical motion is their sum
+ *     u(t) = Σᵢ φᵢ · qᵢ(t),   qᵢ(t) = e^{−ζωᵢt}( qᵢ(0)cos ω_dᵢt + … sin ω_dᵢt ).
+ * The seed is normalised so the initial peak translation is 1, matching the
+ * mode-shape renderer; damping ζ and time are applied later by `evalTransient`.
+ */
+export function solveTransient(model: FrameModel, maxModes = 10): TransientResult {
+  const dpn = model.type === 'truss' ? 2 : 3
+  const empty: TransientResult = {
+    kind: 'transient',
+    dofPerNode: dpn,
+    nNodes: model.nodes.length,
+    modes: [],
+    dominantHz: 0,
+    ok: false,
+  }
+  if (model.members.length === 0) return { ...empty, note: 'Add members to analyse response.' }
+
+  const asm = assemble(model, { withMass: true })
+  if (asm.free.length === 0) return { ...empty, note: 'No free DOFs — fully constrained.' }
+  if (asm.free.length > MAX_FREE_DOF)
+    return { ...empty, note: `Model too large for dense transient (${asm.free.length} DOF).` }
+
+  const eig = generalizedSymEig(asm.Kr, asm.Mr)
+  if (!eig) return { ...empty, note: 'Mass matrix not positive-definite.' }
+
+  // Seed: static deflection under the applied load (zero initial velocity).
+  const stat = solveFrame(model)
+  const u0R = asm.free.map((g) => stat.displacements[g])
+  const Mv = matVecDense(asm.Mr, u0R) // M·u₀ (reduced)
+
+  const maxEv = Math.max(...eig.values.map((v) => Math.abs(v)), 1)
+  const raw: TransientMode[] = []
+  for (let k = 0; k < eig.values.length && raw.length < maxModes; k++) {
+    const lam = eig.values[k]
+    if (lam <= 1e-8 * maxEv) continue // rigid body
+    const xr = eig.vectors.map((row) => row[k])
+    const mNorm = Math.sqrt(Math.max(quadForm(asm.Mr, xr), 1e-300))
+    const phiR = xr.map((v) => v / mNorm)
+    let q0 = 0
+    for (let i = 0; i < phiR.length; i++) q0 += phiR[i] * Mv[i]
+    const phi = expand(asm.free, asm.nDof, phiR)
+    raw.push({ omega: Math.sqrt(lam), phi, q0 })
+  }
+  if (raw.length === 0) return { ...empty, note: 'No elastic modes found.' }
+
+  // Find the peak nodal translation at t=0 (u₀ reconstructed from Σ φ q0) and
+  // rescale q0 so it is 1 — the renderer then shares the mode-shape scale.
+  const nNodes = model.nodes.length
+  const u0 = new Float64Array(asm.nDof)
+  for (const m of raw) for (let i = 0; i < asm.nDof; i++) u0[i] += m.phi[i] * m.q0
+  let peak = 0
+  for (let i = 0; i < nNodes; i++) peak = Math.max(peak, Math.hypot(u0[i * dpn], u0[i * dpn + 1]))
+  if (peak < 1e-30) {
+    // No static deflection (unloaded): seed the fundamental mode directly.
+    const p0 = modePeakTranslation(raw[0].phi, dpn, nNodes)
+    raw.forEach((m, i) => (m.q0 = i === 0 && p0 > 0 ? 1 / p0 : 0))
+  } else {
+    for (const m of raw) m.q0 /= peak
+  }
+
+  let dom = raw[0]
+  for (const m of raw) if (Math.abs(m.q0) > Math.abs(dom.q0)) dom = m
+  return {
+    kind: 'transient',
+    dofPerNode: dpn,
+    nNodes,
+    modes: raw,
+    dominantHz: dom.omega / (2 * Math.PI),
+    ok: true,
+  }
+}
+
+function modePeakTranslation(phi: Float64Array, dpn: number, nNodes: number): number {
+  let p = 0
+  for (let i = 0; i < nNodes; i++) p = Math.max(p, Math.hypot(phi[i * dpn], phi[i * dpn + 1]))
+  return p
+}
+
+/**
+ * Evaluate the transient displacement u(t) for a damping ratio ζ, returning the
+ * per-node shape (already normalised to an initial unit peak by solveTransient).
+ */
+export function evalTransient(res: TransientResult, zeta: number, t: number): NodeDisp[] {
+  const dpn = res.dofPerNode
+  const u = new Float64Array(res.nNodes * dpn)
+  const z = Math.max(0, Math.min(0.999, zeta))
+  for (const m of res.modes) {
+    const w = m.omega
+    const wd = w * Math.sqrt(1 - z * z)
+    const e = Math.exp(-z * w * t)
+    // q(t) with q(0)=q0, q̇(0)=0.
+    const q = e * (m.q0 * Math.cos(wd * t) + ((z * w * m.q0) / wd) * Math.sin(wd * t))
+    for (let i = 0; i < u.length; i++) u[i] += m.phi[i] * q
+  }
+  return toNodeDisp(u, dpn, res.nNodes)
+}

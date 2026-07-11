@@ -4,7 +4,7 @@
 // screen are produced by code that provably reproduces the analytical answers.
 
 import { solveFrame, type FrameModel } from './frame'
-import { solveModal, solveBuckling } from './dynamics'
+import { solveModal, solveBuckling, solveTransient, evalTransient } from './dynamics'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
 
@@ -222,6 +222,24 @@ export function runDynamicsBenchmarks(): Check[] {
     const r = solveFrame(m)
     const expected = (5 * Math.abs(w) * L ** 4) / (384 * STEEL_E * I)
     checks.push(check('UDL beam mid deflection', 'δ = 5wL⁴/384EI', expected, -r.nodeDisp[4].uy, 'm', 0.01))
+  }
+
+  // 6. Damped free vibration — modal-superposition transient. Released from a
+  //    tip-loaded shape, a cantilever rings mainly in its first mode; the ratio
+  //    of successive same-phase peaks is the log-decrement e^(−2πζ/√(1−ζ²)).
+  {
+    const L = 4
+    const m = beamLine(0, 0, L, 0, 10, STEEL_E, A, I, 'fixed', 'free')
+    m.loads = [{ node: 10, fx: 0, fy: -1000, mz: 0 }]
+    const r = solveTransient(m, 10)
+    const zeta = 0.05
+    const wd = r.modes[0].omega * Math.sqrt(1 - zeta * zeta)
+    const Td = (2 * Math.PI) / wd
+    const a1 = evalTransient(r, zeta, Td)[10].uy
+    const a2 = evalTransient(r, zeta, 2 * Td)[10].uy
+    const decay = a2 / a1
+    const analytic = Math.exp((-2 * Math.PI * zeta) / Math.sqrt(1 - zeta * zeta))
+    checks.push(check('Damped decay (log-decrement)', 'aₙ₊₁/aₙ = e^(−2πζ/√(1−ζ²))', analytic, decay, '', 0.01))
   }
 
   return checks
