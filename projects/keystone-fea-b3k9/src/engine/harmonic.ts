@@ -22,17 +22,32 @@
 // globals — so the same model always yields the same resonance curve.
 
 import { type FrameModel, type NodeDisp } from './frame'
-import { generalizedSymEig, quadForm } from './eigen'
+import { generalizedSymEig, quadForm, matVecDense } from './eigen'
 import { assemble, expand, reduceLoadVector, toNodeDisp } from './dynamics'
 
 /** Cap on reduced size — the dense Jacobi eigensolver is O(n³) per sweep. */
 const MAX_FREE_DOF = 360
+
+/**
+ * How the structure is shaken:
+ *  - `force`     — a constant-amplitude harmonic force F·cos ωt (the FRF).
+ *  - `unbalance` — a rotating-mass unbalance whose force grows as ω² (spin the
+ *                  machine faster and the shaking force climbs). Response rises
+ *                  from zero, peaks past resonance, and levels off — the classic
+ *                  rotor signature.
+ *  - `base`      — harmonic motion of the supports (an earthquake / shaker
+ *                  table). The output is the *transmissibility* X/Y: how much of
+ *                  the ground motion reaches the structure. Every damping curve
+ *                  crosses TR = 1 at ω = √2·ωₙ — the isolation crossover.
+ */
+export type DriveType = 'force' | 'unbalance' | 'base'
 
 export interface HarmonicMode {
   omega: number // natural frequency, rad/s
   hz: number
   phi: number[] // mass-normalised reduced eigenvector
   modalForce: number // fᵢ = φᵢᵀ F  (generalised force in this mode)
+  participation: number // Γᵢ = φᵢᵀ M ι  (modal participation for base motion)
 }
 
 export interface HarmonicPrep {
@@ -50,6 +65,8 @@ export interface HarmonicPrep {
   fundamentalHz: number
   /** True when no nodal load was placed and a unit probe force is driven instead. */
   syntheticDrive: boolean
+  /** Reduced influence vector ι (1 on free x-DOFs) — the base-motion direction. */
+  iota: number[]
 }
 
 /** A complex number as a plain pair. */
@@ -78,6 +95,7 @@ export function prepareHarmonic(model: FrameModel, maxModes = 12): HarmonicPrep 
     outDir: 'y',
     fundamentalHz: 0,
     syntheticDrive: false,
+    iota: [],
   }
   if (model.members.length === 0) return { ...empty, note: 'Add members to drive a harmonic response.' }
 
@@ -115,11 +133,17 @@ export function prepareHarmonic(model: FrameModel, maxModes = 12): HarmonicPrep 
     Fr = asm.free.map((_, i) => (i === best ? 1 : 0))
   }
 
+  // Base-motion influence vector ι: unit ground translation along +x. The modal
+  // participation Γᵢ = φᵢᵀ M ι drives the seismic (support-excitation) response.
+  const iota = asm.free.map((g) => (g % dpn === 0 ? 1 : 0))
+  const Miota = matVecDense(asm.Mr, iota)
+
   const modes: HarmonicMode[] = modesRaw.map((m) => ({
     omega: m.omega,
     hz: m.omega / (2 * Math.PI),
     phi: m.phi,
     modalForce: dot(m.phi, Fr),
+    participation: dot(m.phi, Miota),
   }))
 
   // Scalar output DOF: the free translational DOF with the largest static
@@ -156,6 +180,7 @@ export function prepareHarmonic(model: FrameModel, maxModes = 12): HarmonicPrep 
     outDir: outLocal === 0 ? 'x' : outLocal === 1 ? 'y' : 'θ',
     fundamentalHz: modes[0].hz,
     syntheticDrive,
+    iota,
   }
 }
 
@@ -166,10 +191,33 @@ function dot(a: number[], b: number[]): number {
 }
 
 /**
- * Complex steady-state response (reduced free-DOF vector) at drive frequency ω
- * and modal damping ratio ζ:  Uⱼ = Σᵢ φᵢ[j] · fᵢ / (ωᵢ² − ω² + 2 i ζ ωᵢ ω).
+ * Effective *real* modal force amplitude for mode i at drive frequency ω under a
+ * given drive type. The complex modal coordinate is then Feff / (denominator).
+ *   - force:     Feff = fᵢ                      (constant amplitude)
+ *   - unbalance: Feff = (ω/ω₁)² · fᵢ            (rotor force ∝ speed², scaled so
+ *                                                it equals fᵢ at the fundamental)
+ *   - base:      Feff = ω² · Γᵢ · Y (Y = 1)     (seismic effective force)
  */
-export function harmonicResponse(prep: HarmonicPrep, zeta: number, omega: number): { re: number[]; im: number[] } {
+function effForce(prep: HarmonicPrep, m: HarmonicMode, omega: number, drive: DriveType): number {
+  if (drive === 'unbalance') {
+    const r = omega / prep.modes[0].omega
+    return r * r * m.modalForce
+  }
+  if (drive === 'base') return omega * omega * m.participation
+  return m.modalForce
+}
+
+/**
+ * Complex steady-state response (reduced free-DOF vector) at drive frequency ω
+ * and modal damping ζ. For base excitation the returned vector is the *absolute*
+ * response u_abs = u_rel + ι·Y (Y = 1), so the output reads as transmissibility.
+ */
+export function harmonicResponse(
+  prep: HarmonicPrep,
+  zeta: number,
+  omega: number,
+  drive: DriveType = 'force',
+): { re: number[]; im: number[] } {
   const n = prep.free.length
   const re = new Array(n).fill(0)
   const im = new Array(n).fill(0)
@@ -177,20 +225,21 @@ export function harmonicResponse(prep: HarmonicPrep, zeta: number, omega: number
   for (const m of prep.modes) {
     const denRe = m.omega * m.omega - omega * omega
     const denIm = 2 * z * m.omega * omega
-    // qᵢ = fᵢ / (denRe + i·denIm)
     const d2 = denRe * denRe + denIm * denIm || 1e-300
-    const qRe = (m.modalForce * denRe) / d2
-    const qIm = (-m.modalForce * denIm) / d2
+    const F = effForce(prep, m, omega, drive)
+    const qRe = (F * denRe) / d2
+    const qIm = (-F * denIm) / d2
     for (let j = 0; j < n; j++) {
       re[j] += qRe * m.phi[j]
       im[j] += qIm * m.phi[j]
     }
   }
+  if (drive === 'base') for (let j = 0; j < n; j++) re[j] += prep.iota[j] // + ι·Y, Y = 1
   return { re, im }
 }
 
 /** Complex response of the scalar output DOF only (cheap, for the FRF sweep). */
-function outputResponse(prep: HarmonicPrep, zeta: number, omega: number): Cx {
+function outputResponse(prep: HarmonicPrep, zeta: number, omega: number, drive: DriveType): Cx {
   let re = 0
   let im = 0
   const z = Math.max(0, zeta)
@@ -199,11 +248,11 @@ function outputResponse(prep: HarmonicPrep, zeta: number, omega: number): Cx {
     const denRe = m.omega * m.omega - omega * omega
     const denIm = 2 * z * m.omega * omega
     const d2 = denRe * denRe + denIm * denIm || 1e-300
-    const qRe = (m.modalForce * denRe) / d2
-    const qIm = (-m.modalForce * denIm) / d2
-    re += qRe * m.phi[j]
-    im += qIm * m.phi[j]
+    const F = effForce(prep, m, omega, drive)
+    re += (F * denRe * m.phi[j]) / d2
+    im += (-F * denIm * m.phi[j]) / d2
   }
+  if (drive === 'base') re += prep.iota[j]
   return { re, im }
 }
 
@@ -225,12 +274,14 @@ export interface ResonancePeak {
 export interface FrfCurve {
   samples: FrfSample[]
   peaks: ResonancePeak[]
-  staticMag: number // |U_out(ω→0)|
+  refMag: number // reference amplitude the peaks are compared against (see below)
   omegaMin: number
   omegaMax: number
   magMax: number
   outNode: number
   outDir: 'x' | 'y' | 'θ'
+  drive: DriveType
+  unit: string // 'm' for force/unbalance amplitude, '' for base transmissibility
 }
 
 /**
@@ -239,17 +290,20 @@ export interface FrfCurve {
  * seeded with a point exactly at every natural frequency and at each single-DOF
  * peak ωᵢ√(1−2ζ²), so no sharp spike is stepped over.
  */
-export function frfSweep(prep: HarmonicPrep, zeta: number, n = 480): FrfCurve {
+export function frfSweep(prep: HarmonicPrep, zeta: number, drive: DriveType = 'force', n = 480): FrfCurve {
+  const unit = drive === 'base' ? '' : 'm'
   if (!prep.ok || prep.modes.length === 0) {
     return {
       samples: [],
       peaks: [],
-      staticMag: 0,
+      refMag: 0,
       omegaMin: 0,
       omegaMax: 1,
       magMax: 1,
       outNode: prep.outNode,
       outDir: prep.outDir,
+      drive,
+      unit,
     }
   }
   const wTop = prep.modes[prep.modes.length - 1].omega
@@ -272,33 +326,52 @@ export function frfSweep(prep: HarmonicPrep, zeta: number, n = 480): FrfCurve {
   const list = Array.from(omegas).sort((a, b) => a - b)
 
   const samples: FrfSample[] = list.map((w) => {
-    const c = outputResponse(prep, z, w)
+    const c = outputResponse(prep, z, w, drive)
     return { omega: w, hz: w / (2 * Math.PI), mag: Math.hypot(c.re, c.im), phase: Math.atan2(c.im, c.re) }
   })
 
-  // Static compliance (ω → 0) and per-mode resonance peaks.
-  const c0 = outputResponse(prep, z, omegaMin * 0.01)
-  const staticMag = Math.hypot(c0.re, c0.im) || 1e-300
+  // Reference amplitude the peaks are measured against:
+  //  - force: the static compliance |U(ω→0)|;
+  //  - unbalance: the high-speed asymptote |U(ω→∞)| (force → ω², response levels);
+  //  - base: unit input (transmissibility is already the ratio X/Y).
+  const refMag = drive === 'base' ? 1 : drive === 'unbalance'
+    ? Math.hypot(...vec(outputResponse(prep, z, wTop * 50, drive))) || 1e-300
+    : Math.hypot(...vec(outputResponse(prep, z, omegaMin * 0.01, drive))) || 1e-300
   const peaks: ResonancePeak[] = prep.modes.map((m, i) => {
     const wr = m.omega * Math.sqrt(Math.max(1e-6, 1 - 2 * z * z))
-    const c = outputResponse(prep, z, wr)
+    const c = outputResponse(prep, z, wr, drive)
     const mag = Math.hypot(c.re, c.im)
-    return { modeIndex: i, hz: m.hz, omega: m.omega, mag, amplification: mag / staticMag }
+    return { modeIndex: i, hz: m.hz, omega: m.omega, mag, amplification: mag / refMag }
   })
 
-  let magMax = staticMag
+  let magMax = refMag
   for (const s of samples) magMax = Math.max(magMax, s.mag)
-  return { samples, peaks, staticMag, omegaMin, omegaMax, magMax, outNode: prep.outNode, outDir: prep.outDir }
+  return { samples, peaks, refMag, omegaMin, omegaMax, magMax, outNode: prep.outNode, outDir: prep.outDir, drive, unit }
+}
+
+function vec(c: Cx): [number, number] {
+  return [c.re, c.im]
 }
 
 /** Magnitude, phase and dynamic amplification of the output DOF at a single ω. */
-export function frfAt(prep: HarmonicPrep, zeta: number, omega: number): { mag: number; phase: number; amplification: number } {
+export function frfAt(
+  prep: HarmonicPrep,
+  zeta: number,
+  omega: number,
+  drive: DriveType = 'force',
+): { mag: number; phase: number; amplification: number } {
   if (!prep.ok || prep.modes.length === 0) return { mag: 0, phase: 0, amplification: 1 }
   const z = Math.max(1e-4, zeta)
-  const c = outputResponse(prep, z, omega)
+  const c = outputResponse(prep, z, omega, drive)
   const mag = Math.hypot(c.re, c.im)
-  const c0 = outputResponse(prep, z, prep.modes[0].omega * 1e-4)
-  const staticMag = Math.hypot(c0.re, c0.im) || 1e-300
+  const wTop = prep.modes[prep.modes.length - 1].omega
+  const cRef =
+    drive === 'base'
+      ? null
+      : drive === 'unbalance'
+        ? outputResponse(prep, z, wTop * 50, drive)
+        : outputResponse(prep, z, prep.modes[0].omega * 1e-4, drive)
+  const staticMag = drive === 'base' ? 1 : Math.hypot(cRef!.re, cRef!.im) || 1e-300
   return { mag, phase: Math.atan2(c.im, c.re), amplification: mag / staticMag }
 }
 
@@ -315,8 +388,9 @@ export function harmonicShape(
   zeta: number,
   omega: number,
   theta: number,
+  drive: DriveType = 'force',
 ): { shape: NodeDisp[]; peak: number } {
-  const { re, im } = harmonicResponse(prep, zeta, omega)
+  const { re, im } = harmonicResponse(prep, zeta, omega, drive)
   const cos = Math.cos(theta)
   const sin = Math.sin(theta)
   const ur = re.map((v, i) => v * cos - im[i] * sin)

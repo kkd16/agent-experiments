@@ -5,7 +5,7 @@
 
 import { solveFrame, type FrameModel } from './frame'
 import { solveModal, solveBuckling, solveTransient, evalTransient } from './dynamics'
-import { prepareHarmonic, frfSweep } from './harmonic'
+import { prepareHarmonic, frfSweep, frfAt } from './harmonic'
 import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
@@ -275,12 +275,31 @@ export function runHarmonicBenchmarks(): Check[] {
     const curve = frfSweep(prep, zeta)
     // Static compliance: |U(ω→0)| = P·L / (E·A).
     const expectStatic = (P * L) / (STEEL_E * Abar)
-    checks.push(check('Harmonic static compliance', '|U(0)| = PL/EA', expectStatic, curve.staticMag, 'm', 0.01))
+    checks.push(check('Harmonic static compliance', '|U(0)| = PL/EA', expectStatic, curve.refMag, 'm', 0.01))
     // Resonance peak amplification for a damped SDOF: max = 1/(2ζ√(1−ζ²)).
     const expectAmp = 1 / (2 * zeta * Math.sqrt(1 - zeta * zeta))
     checks.push(
       check('Resonance amplification', 'max = 1/(2ζ√(1−ζ²))', expectAmp, curve.peaks[0]?.amplification ?? 0, '', 0.01),
     )
+
+    // Rotating-unbalance drive: the response peak (measured against the
+    // high-speed asymptote me/M) is the mirror of the force peak — same
+    // 1/(2ζ√(1−ζ²)) — because the unbalance curve is the r ↔ 1/r reflection.
+    const unb = frfSweep(prep, zeta, 'unbalance')
+    checks.push(
+      check('Unbalance peak (rotor)', 'peak = 1/(2ζ√(1−ζ²))', expectAmp, unb.peaks[0]?.amplification ?? 0, '', 0.01),
+    )
+
+    // Base excitation: the transmissibility crossover. Every damping ratio gives
+    // TR = 1 at ω = √2·ωₙ — the famous isolation-frequency invariant. Check two
+    // very different ζ land on exactly 1 there, and that TR → 1 as ω → 0.
+    const w1 = prep.modes[0].omega
+    for (const zb of [0.02, 0.12]) {
+      const tr = frfAt(prep, zb, Math.SQRT2 * w1, 'base').mag
+      checks.push(check(`Base TR at √2·ωₙ (ζ=${(zb * 100).toFixed(0)}%)`, 'TR(√2ωₙ) = 1 ∀ζ', 1, tr, '', 5e-3))
+    }
+    const trLow = frfAt(prep, 0.05, w1 * 1e-3, 'base').mag
+    checks.push(check('Base TR at ω→0', 'TR(0) = 1 (rigid follow)', 1, trLow, '', 1e-3))
   }
 
   // 2. Modal completeness — the ω→0 harmonic response reconstructs the direct
@@ -294,7 +313,7 @@ export function runHarmonicBenchmarks(): Check[] {
     const prep = prepareHarmonic(m)
     const curve = frfSweep(prep, 0.03)
     const expected = (P * L ** 3) / (3 * STEEL_E * I)
-    checks.push(check('FRF static limit = beam theory', '|U(0)| → PL³/3EI', expected, curve.staticMag, 'm', 0.02))
+    checks.push(check('FRF static limit = beam theory', '|U(0)| → PL³/3EI', expected, curve.refMag, 'm', 0.02))
   }
 
   // 3. Section library — the extreme-fibre distance and second moment of the
