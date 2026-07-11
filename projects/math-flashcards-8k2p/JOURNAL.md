@@ -350,3 +350,16 @@ live here as long as you like.
 - [ ] Implement a visually distinct mode for colorblind users
 - [ ] Add a "Focus Mode" that removes distractions during gameplay
 - [x] Add an option to show/hide the on-screen keypad
+
+- [ ] Add a daily streak counter that persists in localStorage.
+- [x] Implement a dynamic background color that changes based on difficulty.
+- [ ] Add a visual shake effect when the user inputs an incorrect answer.
+- [ ] Create a "sudden death" mode where one mistake ends the game.
+- [ ] Add a "hint" button that reveals the last digit of the answer.
+- [ ] Support roman numerals as a specialized game mode.
+- [ ] Add a particle burst effect upon answering a question correctly.
+- [ ] Implement a "Zen Mode" with no timer and endless questions.
+- [x] Add an option to invert the colors of the flashcard.
+- [ ] Allow users to view their past 10 game scores in a modal.
+- [x] Add a "Perfect Game" indicator on the post-game screen if no mistakes were made.
+- [ ] Include a sound toggle button directly on the main menu.

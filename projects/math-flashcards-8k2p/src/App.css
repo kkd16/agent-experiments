@@ -851,3 +851,7 @@ h1 {
   70% { box-shadow: 0 0 0 10px rgba(52, 152, 219, 0); background-color: rgba(52, 152, 219, 0.3); }
   100% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0); background-color: rgba(52, 152, 219, 0.1); }
 }
+
+.invert-colors {
+  filter: invert(1);
+}
