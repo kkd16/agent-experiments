@@ -10,9 +10,13 @@ import { solveContinuum, type ContinuumInput, type ContinuumResult } from './eng
 import {
   solveModal,
   solveBuckling,
+  solveTransient,
+  evalTransient,
   type ModalResult,
   type BucklingResult,
+  type TransientResult,
 } from './engine/dynamics'
+import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
@@ -69,6 +73,7 @@ const DEFAULT_DISPLAY: Display = {
   showLabels: false,
   showMesh: true,
   analysis: 'static',
+  respZeta: 0.03,
 }
 
 function frameBounds(m: FrameModel): Bounds {
@@ -112,6 +117,13 @@ function safeSolveBuckling(m: FrameModel): BucklingResult | null {
     return null
   }
 }
+function safeSolveTransient(m: FrameModel): TransientResult | null {
+  try {
+    return solveTransient(m)
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -126,6 +138,11 @@ export default function App() {
   const analysis: FrameAnalysis = display.analysis ?? 'static'
   const [modeIndex, setModeIndex] = useState(0)
   const [modeT, setModeT] = useState(0)
+  const [respPlaying, setRespPlaying] = useState(true)
+  const [respShape, setRespShape] = useState<NodeDisp[] | null>(null)
+  const [respElapsed, setRespElapsed] = useState(0)
+  const respTimeRef = useRef(0)
+  const respZeta = display.respZeta ?? 0.03
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -162,17 +179,27 @@ export default function App() {
     () => (tab === 'frame' && analysis === 'buckling' ? safeSolveBuckling(frame) : null),
     [tab, analysis, frame],
   )
+  const transientResult = useMemo(
+    () => (tab === 'frame' && analysis === 'response' ? safeSolveTransient(frame) : null),
+    [tab, analysis, frame],
+  )
   const activeEigen = analysis === 'modal' ? modalResult : analysis === 'buckling' ? bucklingResult : null
   const modeCount = activeEigen?.modes.length ?? 0
   const effModeIndex = modeCount > 0 ? Math.min(modeIndex, modeCount - 1) : 0
   const selMode = activeEigen?.modes[effModeIndex] ?? null
-  const isMode = tab === 'frame' && analysis !== 'static' && !!selMode
   const modeScale = useMemo(() => 0.16 * boundsDiag(frameBounds(frame)), [frame])
 
-  // Continuously oscillate the shown mode shape while in modal/buckling view.
+  // The shape drawn on the canvas: a swinging eigenmode (modal/buckling) or the
+  // live transient response.
+  const isSwing = tab === 'frame' && (analysis === 'modal' || analysis === 'buckling') && !!selMode
+  const drawShape: NodeDisp[] | null =
+    analysis === 'response' ? respShape : isSwing ? selMode!.shape : null
+  const drawFactor = analysis === 'response' ? 1 : modeT
+  const isMode = tab === 'frame' && analysis !== 'static' && !!drawShape
+
+  // Sinusoidally swing a mode shape (modal/buckling views).
   useEffect(() => {
-    if (!isMode) {
-      // Reset the animation phase when leaving mode view — a one-shot sync.
+    if (!isSwing) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setModeT(0)
       return
@@ -181,13 +208,48 @@ export default function App() {
     let t0 = 0
     const loop = (t: number) => {
       if (!t0) t0 = t
-      // 0.5 Hz visual swing so a mode reads clearly in both directions.
       setModeT(Math.sin(((t - t0) / 1000) * 2 * Math.PI * 0.5))
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [isMode, analysis, effModeIndex])
+  }, [isSwing, analysis, effModeIndex])
+
+  // Seed the transient shape at t=0 whenever the model / result changes.
+  useEffect(() => {
+    respTimeRef.current = 0
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRespElapsed(0)
+    setRespShape(transientResult?.ok ? evalTransient(transientResult, respZeta, 0) : null)
+    // respZeta intentionally excluded — at t=0 the shape is damping-independent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transientResult])
+
+  // Advance the modal-superposition response in real (scaled) time.
+  useEffect(() => {
+    if (!(tab === 'frame' && analysis === 'response' && transientResult?.ok && respPlaying)) return
+    const timeScale = Math.max(0.05, Math.min(2, 1.5 / Math.max(transientResult.dominantHz, 0.5)))
+    let raf = 0
+    let last = 0
+    const loop = (ts: number) => {
+      if (!last) last = ts
+      const dt = Math.min(0.05, (ts - last) / 1000)
+      last = ts
+      respTimeRef.current += dt * timeScale
+      const t = respTimeRef.current
+      setRespShape(evalTransient(transientResult, respZeta, t))
+      setRespElapsed(t)
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, analysis, transientResult, respPlaying, respZeta])
+
+  const restartResponse = useCallback(() => {
+    respTimeRef.current = 0
+    setRespElapsed(0)
+    if (transientResult?.ok) setRespShape(evalTransient(transientResult, respZeta, 0))
+  }, [transientResult, respZeta])
 
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
@@ -265,7 +327,7 @@ export default function App() {
       drawFrame(ctx, size.w, size.h, frame, isMode ? null : frameResult, {
         view,
         deformScale: isMode ? modeScale : effectiveDeform,
-        loadFactor: isMode ? modeT : loadFactor,
+        loadFactor: isMode ? drawFactor : loadFactor,
         showUndeformed: display.showUndeformed,
         colorBy: display.colorBy,
         colormap: display.colormap,
@@ -276,7 +338,7 @@ export default function App() {
         selected: sel,
         editing: tool !== 'select',
         pendingNode,
-        modeShape: isMode ? selMode!.shape : null,
+        modeShape: isMode ? drawShape : null,
       })
     } else if (contInput) {
       drawContinuum(ctx, size.w, size.h, contInput.mesh, contResult, {
@@ -294,7 +356,7 @@ export default function App() {
     }
   }, [
     view, size, tab, frame, frameResult, contInput, contResult, display, hover, sel, tool,
-    pendingNode, loadFactor, effectiveDeform, isMode, modeScale, modeT, selMode,
+    pendingNode, loadFactor, effectiveDeform, isMode, modeScale, drawShape, drawFactor,
   ])
 
   // --- pointer interaction --------------------------------------------------
@@ -546,7 +608,9 @@ export default function App() {
                   <span className="chip" style={{ color: '#cfe0ff' }}>
                     {analysis === 'modal'
                       ? `mode ${effModeIndex + 1} · ${fmtEng(selMode!.hz, 'Hz')}`
-                      : `buckling mode ${effModeIndex + 1} · λ = ${selMode!.loadFactor.toFixed(2)}`}
+                      : analysis === 'buckling'
+                        ? `buckling mode ${effModeIndex + 1} · λ = ${selMode!.loadFactor.toFixed(2)}`
+                        : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
               ) : tab === 'frame' ? (
@@ -602,6 +666,7 @@ export default function App() {
                   { value: 'static', label: 'Static' },
                   { value: 'modal', label: 'Modal' },
                   { value: 'buckling', label: 'Buckling' },
+                  { value: 'response', label: 'Response' },
                 ]}
                 value={analysis}
                 onChange={(v) => {
@@ -609,6 +674,7 @@ export default function App() {
                   setModeIndex(0)
                   setSel(null)
                   setTool('select')
+                  setRespPlaying(true)
                 }}
               />
               <p className="hint-text">
@@ -616,7 +682,9 @@ export default function App() {
                   ? 'Deflections, member forces and reactions under the applied load.'
                   : analysis === 'modal'
                     ? 'Free-vibration natural frequencies and mode shapes: K φ = ω² M φ.'
-                    : 'Linearized (Euler) buckling load factors and modes: (K + λ K_g) φ = 0.'}
+                    : analysis === 'buckling'
+                      ? 'Linearized (Euler) buckling load factors and modes: (K + λ K_g) φ = 0.'
+                      : 'Transient response: the structure released from its static deflection, rung down by modal superposition Σ φᵢ qᵢ(t).'}
               </p>
             </div>
           )}
@@ -705,11 +773,21 @@ export default function App() {
                 selected={effModeIndex}
                 onSelect={setModeIndex}
               />
-            ) : (
+            ) : analysis === 'buckling' ? (
               <BucklingPanel
                 result={bucklingResult}
                 selected={effModeIndex}
                 onSelect={setModeIndex}
+              />
+            ) : (
+              <ResponsePanel
+                result={transientResult}
+                zeta={respZeta}
+                onZeta={(v) => patchDisplay({ respZeta: v })}
+                playing={respPlaying}
+                onPlay={setRespPlaying}
+                onRestart={restartResponse}
+                elapsed={respElapsed}
               />
             )
           ) : (
@@ -1013,6 +1091,70 @@ function BucklingPanel({
       <p className="hint-text">
         Load factor λ multiplies the applied load to reach instability, from (K + λ K_g) φ = 0
         with K_g built from the static axial-force field.
+      </p>
+    </div>
+  )
+}
+
+function ResponsePanel({
+  result,
+  zeta,
+  onZeta,
+  playing,
+  onPlay,
+  onRestart,
+  elapsed,
+}: {
+  result: TransientResult | null
+  zeta: number
+  onZeta: (v: number) => void
+  playing: boolean
+  onPlay: (v: boolean) => void
+  onRestart: () => void
+  elapsed: number
+}) {
+  if (!result) return null
+  if (!result.ok) {
+    return (
+      <div className="panel">
+        <div className="panel-title">Dynamic response</div>
+        <p className="hint-text">{result.note ?? 'No response available.'}</p>
+      </div>
+    )
+  }
+  const wd = result.modes[0].omega * Math.sqrt(1 - zeta * zeta)
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Dynamic response
+        <span className="badge good">{result.modes.length} modes</span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Dominant freq" value={fmtEng(result.dominantHz, 'Hz')} />
+        <StatTile label="Damped period" value={fmtEng((2 * Math.PI) / wd, 's')} />
+        <StatTile label="Elapsed" value={fmtEng(elapsed, 's')} />
+        <StatTile label="Damping ζ" value={`${(zeta * 100).toFixed(1)}%`} />
+      </div>
+      <div className="btn-row">
+        <button className="ghost-btn" onClick={() => onPlay(!playing)}>
+          {playing ? '⏸ Pause' : '▶ Play'}
+        </button>
+        <button className="ghost-btn" onClick={onRestart}>
+          ↺ Restart
+        </button>
+      </div>
+      <Slider
+        label="Damping ratio ζ"
+        min={0}
+        max={0.2}
+        step={0.005}
+        value={zeta}
+        onChange={onZeta}
+        format={(v) => `${(v * 100).toFixed(1)}%`}
+      />
+      <p className="hint-text">
+        Released from the static deflection with zero velocity; each mode decays as e^(−ζωt).
+        The motion is the superposition Σ φᵢ qᵢ(t) of all vibration modes.
       </p>
     </div>
   )

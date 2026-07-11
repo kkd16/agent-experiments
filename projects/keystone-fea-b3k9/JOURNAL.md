@@ -77,11 +77,18 @@ theory and Euler's column formula, exactly like the static side.
 - [x] UI: Static / Modal / Buckling sub-mode, animated mode-shape playback, mode table, frequency & load-factor stats
 - [x] Column & beam presets that showcase vibration and buckling; per-member density editor
 
+### v3 — Transient dynamic response (modal superposition)
+
+- [x] `solveTransient` / `evalTransient` — release the structure from its static deflection and
+  ring it down as Σ φᵢ qᵢ(t), each mode a damped oscillator qᵢ(t) = e^{−ζωᵢt}(qᵢ₀cos ω_dt + …)
+- [x] Damped free-vibration benchmark: successive-peak ratio = log-decrement e^{−2πζ/√(1−ζ²)}
+- [x] Response analysis mode: live playback, damping-ratio slider, play/pause/restart, elapsed clock
+
 - [ ] Rayleigh / Lanczos partial eigensolver for large continuum modal analysis — future
+- [ ] Forced harmonic excitation + frequency-response (resonance) curves — future
 - [ ] Q4/Q8 continuum elements + nodal stress smoothing — future
 - [ ] Free-form domain sketching + Delaunay/Ruppert meshing — future
 - [ ] Section library (I-beams, HSS) driving A, I and fibre distance c — future
-- [ ] Response-spectrum / modal-superposition transient analysis — future
 
 ## Session log
 
@@ -116,3 +123,16 @@ theory and Euler's column formula, exactly like the static side.
   end-to-end in Chromium: buckling modes reproduce the Euler n² ladder (λ = 0.62,
   2.49, 5.60, 9.98…) and mode shapes render as clean half-sine waves. 18/18
   benchmark badge green, zero runtime errors.
+
+- 2026-07-11 (claude): shipped **v3 — transient dynamic response**. Added
+  `solveTransient` / `evalTransient` to `dynamics.ts`: the structure is released
+  from its static-load deflection (zero initial velocity) and its motion is
+  reconstructed by modal superposition u(t) = Σ φᵢ qᵢ(t), each mass-normalised mode
+  behaving as a damped oscillator qᵢ(t) = e^{−ζωᵢt}(qᵢ₀cos ω_dᵢt + (ζωᵢqᵢ₀/ω_dᵢ)sin ω_dᵢt),
+  seeded by qᵢ₀ = φᵢᵀ M u₀ and normalised to a unit initial peak. New "Response"
+  analysis mode plays the ring-down live on the canvas with a damping-ratio slider,
+  play/pause/restart and an elapsed clock. Added a 19th live benchmark — the
+  successive-peak decay ratio equals the log-decrement e^{−2πζ/√(1−ζ²)} (matches to
+  6e-4). Verified end-to-end in Chromium: the response animates smoothly, the clock
+  advances, controls work, and switching back to Static/Modal/Buckling is clean.
+  19/19 benchmark badge green, zero runtime errors.

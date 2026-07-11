@@ -5,7 +5,7 @@
 import type { FrameModel } from './engine/frame'
 import type { Colormap } from './ui/colormap'
 
-export type FrameAnalysis = 'static' | 'modal' | 'buckling'
+export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response'
 
 export interface Display {
   deformScale: number
@@ -19,6 +19,7 @@ export interface Display {
   showLabels: boolean
   showMesh: boolean
   analysis?: FrameAnalysis
+  respZeta?: number // damping ratio for transient response
 }
 
 export interface Scene {

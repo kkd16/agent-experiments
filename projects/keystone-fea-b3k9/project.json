@@ -1,8 +1,8 @@
 {
   "title": "Keystone",
-  "description": "A structural finite-element studio. Build trusses, frames, and 2-D parts, then solve the real equations for deflections, member forces, and von Mises stress — now with MODAL DYNAMICS and EULER BUCKLING: a from-scratch dense generalized eigensolver (Cholesky + cyclic Jacobi) finds natural frequencies & mode shapes (K φ = ω² M φ) and critical buckling loads & modes ((K + λ K_g) φ = 0), animated live and cross-checked against beam-vibration theory and Euler's column formula.",
+  "description": "A structural finite-element studio. Build trusses, frames, and 2-D parts, then solve the real equations for deflections, member forces, and von Mises stress — plus MODAL DYNAMICS, EULER BUCKLING and TRANSIENT RESPONSE. A from-scratch dense generalized eigensolver (Cholesky + cyclic Jacobi) finds natural frequencies & mode shapes (K φ = ω² M φ) and critical buckling loads ((K + λ K_g) φ = 0), and a modal-superposition integrator rings the structure down from its static deflection (u(t) = Σ φᵢqᵢ(t)) — every result animated live and cross-checked against beam-vibration theory, Euler's column formula and the damped log-decrement.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["fem", "engineering", "physics", "simulation", "structural", "modal", "buckling", "eigenvalue", "dynamics", "react"],
+  "tags": ["fem", "engineering", "physics", "simulation", "structural", "modal", "buckling", "eigenvalue", "dynamics", "transient", "react"],
   "createdAt": "2026-07-10"
 }
