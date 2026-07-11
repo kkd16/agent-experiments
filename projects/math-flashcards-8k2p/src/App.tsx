@@ -700,6 +700,10 @@ function App() {
   const [colorBlindMode, setColorBlindMode] = useState<boolean>(getInitialColorBlindMode());
   const [grayscaleMode, setGrayscaleMode] = useState<boolean>(getInitialGrayscaleMode());
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsGrayscaleMode', grayscaleMode.toString()); } catch (e) { console.error(e); } }, [grayscaleMode]);
+  const getInitialCrtMode = () => { try { return window.localStorage.getItem('mathFlashcardsCrtMode') === 'true'; } catch { return false; } };
+  const [crtMode, setCrtMode] = useState<boolean>(getInitialCrtMode());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCrtMode', crtMode.toString()); } catch (e) { console.error(e); } }, [crtMode]);
+
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
 
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
@@ -1711,7 +1715,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1766,6 +1770,7 @@ function App() {
         <label htmlFor="inputMethod">Input: <select id="inputMethod" value={inputMethod} onChange={(e) => setInputMethod(e.target.value as 'numpad' | 'row')}><option value="numpad">Numpad</option><option value="row">Row</option></select></label>
         <label htmlFor="disableKeyboardShortcuts"><input id="disableKeyboardShortcuts" type="checkbox" checked={disableKeyboardShortcuts} onChange={(e) => setDisableKeyboardShortcuts(e.target.checked)} /> Disable Shortcuts</label>
         <label htmlFor="grayscaleMode"><input id="grayscaleMode" type="checkbox" checked={grayscaleMode} onChange={(e) => setGrayscaleMode(e.target.checked)} /> Grayscale Mode</label>
+        <label htmlFor="crtMode"><input id="crtMode" type="checkbox" checked={crtMode} onChange={(e) => setCrtMode(e.target.checked)} /> CRT Monitor Effect</label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
@@ -1824,6 +1829,7 @@ function App() {
         {!statsCollapsed && (
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
+          <div className="stat">Session Acc: {history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : '100.0'}%</div>
           {!hideStreak && (
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div>

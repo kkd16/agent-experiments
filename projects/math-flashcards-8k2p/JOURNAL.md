@@ -363,3 +363,16 @@ live here as long as you like.
 - [ ] Allow users to view their past 10 game scores in a modal.
 - [x] Add a "Perfect Game" indicator on the post-game screen if no mistakes were made.
 - [ ] Include a sound toggle button directly on the main menu.
+
+
+## Continuous Jules Improvements (Latest)
+- [ ] Add a "Flashcard Flipping" animation when moving to the next question.
+- [ ] Add an option to display the answer in a different base (e.g., Binary or Hexadecimal) for computer science practice.
+- [ ] Implement a "Combo Break" sound effect specifically when a large streak is lost.
+- [ ] Add a small interactive mini-calculator in the settings menu for user reference.
+- [ ] Add an option to show a mini history of the last 5 incorrect answers on the main menu.
+- [ ] Create a "Target Score" mode where the run ends exactly when a specific score is reached.
+- [ ] Add a "Time Rewind" toggle in settings to allow users to undo their last mistake in a run (once per run).
+- [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
+- [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
+- [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
