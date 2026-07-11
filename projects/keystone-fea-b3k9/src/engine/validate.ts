@@ -4,8 +4,11 @@
 // screen are produced by code that provably reproduces the analytical answers.
 
 import { solveFrame, type FrameModel } from './frame'
+import { solveModal, solveBuckling } from './dynamics'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
+
+const STEEL_RHO = 7850 // kg/m³
 
 export interface Check {
   name: string
@@ -136,6 +139,94 @@ export function runFrameBenchmarks(): Check[] {
   return checks
 }
 
+/** Build a straight line of `n` frame elements between (x0,y0) and (x1,y1). */
+function beamLine(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  n: number,
+  E: number,
+  A: number,
+  I: number,
+  supA: FrameModel['nodes'][number]['support'],
+  supB: FrameModel['nodes'][number]['support'],
+): FrameModel {
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++)
+    nodes.push({ x: x0 + ((x1 - x0) * i) / n, y: y0 + ((y1 - y0) * i) / n, support: 'free' })
+  nodes[0].support = supA
+  nodes[n].support = supB
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++) members.push({ a: i, b: i + 1, E, A, I, rho: STEEL_RHO })
+  return { type: 'frame', nodes, members, loads: [] }
+}
+
+export function runDynamicsBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const I = 8e-6
+  const A = 4e-3
+
+  // 1. Simply-supported beam — fundamental natural frequency.
+  //    ωₙ = (nπ)² · √(EI / ρA L⁴). One line of beam elements must reproduce it.
+  {
+    const L = 6
+    const m = beamLine(0, 0, L, 0, 12, STEEL_E, A, I, 'pin', 'roller-x')
+    const r = solveModal(m, 4)
+    const base = Math.sqrt((STEEL_E * I) / (STEEL_RHO * A * L ** 4))
+    const w1 = Math.PI ** 2 * base
+    checks.push(check('SS beam 1st frequency', 'ω₁ = π²√(EI/ρAL⁴)', w1, r.modes[0]?.omega ?? 0, 'rad/s', 0.01))
+    const w2 = (2 * Math.PI) ** 2 * base
+    checks.push(check('SS beam 2nd frequency', 'ω₂ = (2π)²√(EI/ρAL⁴)', w2, r.modes[1]?.omega ?? 0, 'rad/s', 0.02))
+  }
+
+  // 2. Cantilever beam — fundamental natural frequency, β₁L = 1.8751.
+  {
+    const L = 4
+    const m = beamLine(0, 0, L, 0, 12, STEEL_E, A, I, 'fixed', 'free')
+    const r = solveModal(m, 3)
+    const base = Math.sqrt((STEEL_E * I) / (STEEL_RHO * A * L ** 4))
+    const w1 = 1.8751 ** 2 * base
+    checks.push(check('Cantilever 1st frequency', 'ω₁ = (1.8751)²√(EI/ρAL⁴)', w1, r.modes[0]?.omega ?? 0, 'rad/s', 0.01))
+  }
+
+  // 3. Euler buckling of a pin-ended column: P_cr = π²EI / L².
+  {
+    const L = 4
+    const P = 1000
+    const m = beamLine(0, 0, 0, L, 12, STEEL_E, A, I, 'pin', 'roller-y')
+    m.loads = [{ node: 12, fx: 0, fy: -P, mz: 0 }]
+    const r = solveBuckling(m, 3)
+    const Pcr = (Math.PI ** 2 * STEEL_E * I) / (L * L)
+    checks.push(check('Euler column P_cr (pinned)', 'P_cr = π²EI/L²', Pcr, (r.modes[0]?.loadFactor ?? 0) * P, 'N', 0.02))
+  }
+
+  // 4. Euler buckling of a fixed-free column (flagpole): P_cr = π²EI / (4L²).
+  {
+    const L = 4
+    const P = 1000
+    const m = beamLine(0, 0, 0, L, 14, STEEL_E, A, I, 'fixed', 'free')
+    m.loads = [{ node: 14, fx: 0, fy: -P, mz: 0 }]
+    const r = solveBuckling(m, 3)
+    const Pcr = (Math.PI ** 2 * STEEL_E * I) / (4 * L * L)
+    checks.push(check('Euler column P_cr (cantilever)', 'P_cr = π²EI/4L²', Pcr, (r.modes[0]?.loadFactor ?? 0) * P, 'N', 0.03))
+  }
+
+  // 5. Uniformly-loaded simply-supported beam: δ = 5wL⁴ / (384EI). Exercises the
+  //    consistent distributed-load path all the way through to displacements.
+  {
+    const L = 4
+    const w = -5000 // N/m downward
+    const m = beamLine(0, 0, L, 0, 8, STEEL_E, A, I, 'pin', 'roller-x')
+    for (const mem of m.members) mem.w = w
+    const r = solveFrame(m)
+    const expected = (5 * Math.abs(w) * L ** 4) / (384 * STEEL_E * I)
+    checks.push(check('UDL beam mid deflection', 'δ = 5wL⁴/384EI', expected, -r.nodeDisp[4].uy, 'm', 0.01))
+  }
+
+  return checks
+}
+
 export function runContinuumBenchmarks(): Check[] {
   const checks: Check[] = []
 
@@ -217,9 +308,15 @@ export function runContinuumBenchmarks(): Check[] {
   return checks
 }
 
-export function runAllBenchmarks(): { frame: Check[]; continuum: Check[]; allPass: boolean } {
+export function runAllBenchmarks(): {
+  frame: Check[]
+  dynamics: Check[]
+  continuum: Check[]
+  allPass: boolean
+} {
   const frame = runFrameBenchmarks()
+  const dynamics = runDynamicsBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...continuum].every((c) => c.pass)
-  return { frame, continuum, allPass }
+  const allPass = [...frame, ...dynamics, ...continuum].every((c) => c.pass)
+  return { frame, dynamics, continuum, allPass }
 }

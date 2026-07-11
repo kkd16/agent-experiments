@@ -5,6 +5,8 @@
 import type { FrameModel } from './engine/frame'
 import type { Colormap } from './ui/colormap'
 
+export type FrameAnalysis = 'static' | 'modal' | 'buckling'
+
 export interface Display {
   deformScale: number
   autoDeform: boolean
@@ -16,6 +18,7 @@ export interface Display {
   showReactions: boolean
   showLabels: boolean
   showMesh: boolean
+  analysis?: FrameAnalysis
 }
 
 export interface Scene {

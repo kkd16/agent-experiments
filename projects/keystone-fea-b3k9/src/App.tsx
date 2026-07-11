@@ -7,6 +7,12 @@ import {
   type SupportKind,
 } from './engine/frame'
 import { solveContinuum, type ContinuumInput, type ContinuumResult } from './engine/continuum'
+import {
+  solveModal,
+  solveBuckling,
+  type ModalResult,
+  type BucklingResult,
+} from './engine/dynamics'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
@@ -33,6 +39,7 @@ import {
   saveLocal,
   writeHash,
   type Display,
+  type FrameAnalysis,
   type Scene,
 } from './state'
 
@@ -61,6 +68,7 @@ const DEFAULT_DISPLAY: Display = {
   showReactions: true,
   showLabels: false,
   showMesh: true,
+  analysis: 'static',
 }
 
 function frameBounds(m: FrameModel): Bounds {
@@ -90,6 +98,20 @@ function safeSolveContinuum(inp: ContinuumInput): ContinuumResult | null {
     return null
   }
 }
+function safeSolveModal(m: FrameModel): ModalResult | null {
+  try {
+    return solveModal(m)
+  } catch {
+    return null
+  }
+}
+function safeSolveBuckling(m: FrameModel): BucklingResult | null {
+  try {
+    return solveBuckling(m)
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -100,6 +122,10 @@ export default function App() {
   const [contId, setContId] = useState(initial?.continuum.presetId ?? 'c-hole')
   const [density, setDensity] = useState(initial?.continuum.density ?? 1)
   const [display, setDisplay] = useState<Display>(initial?.display ?? DEFAULT_DISPLAY)
+
+  const analysis: FrameAnalysis = display.analysis ?? 'static'
+  const [modeIndex, setModeIndex] = useState(0)
+  const [modeT, setModeT] = useState(0)
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -126,6 +152,42 @@ export default function App() {
     () => (contInput ? safeSolveContinuum(contInput) : null),
     [contInput],
   )
+
+  // --- eigen-analysis results (modal / buckling) ---------------------------
+  const modalResult = useMemo(
+    () => (tab === 'frame' && analysis === 'modal' ? safeSolveModal(frame) : null),
+    [tab, analysis, frame],
+  )
+  const bucklingResult = useMemo(
+    () => (tab === 'frame' && analysis === 'buckling' ? safeSolveBuckling(frame) : null),
+    [tab, analysis, frame],
+  )
+  const activeEigen = analysis === 'modal' ? modalResult : analysis === 'buckling' ? bucklingResult : null
+  const modeCount = activeEigen?.modes.length ?? 0
+  const effModeIndex = modeCount > 0 ? Math.min(modeIndex, modeCount - 1) : 0
+  const selMode = activeEigen?.modes[effModeIndex] ?? null
+  const isMode = tab === 'frame' && analysis !== 'static' && !!selMode
+  const modeScale = useMemo(() => 0.16 * boundsDiag(frameBounds(frame)), [frame])
+
+  // Continuously oscillate the shown mode shape while in modal/buckling view.
+  useEffect(() => {
+    if (!isMode) {
+      // Reset the animation phase when leaving mode view — a one-shot sync.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setModeT(0)
+      return
+    }
+    let raf = 0
+    let t0 = 0
+    const loop = (t: number) => {
+      if (!t0) t0 = t
+      // 0.5 Hz visual swing so a mode reads clearly in both directions.
+      setModeT(Math.sin(((t - t0) / 1000) * 2 * Math.PI * 0.5))
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [isMode, analysis, effModeIndex])
 
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
@@ -200,10 +262,10 @@ export default function App() {
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     if (tab === 'frame') {
-      drawFrame(ctx, size.w, size.h, frame, frameResult, {
+      drawFrame(ctx, size.w, size.h, frame, isMode ? null : frameResult, {
         view,
-        deformScale: effectiveDeform,
-        loadFactor,
+        deformScale: isMode ? modeScale : effectiveDeform,
+        loadFactor: isMode ? modeT : loadFactor,
         showUndeformed: display.showUndeformed,
         colorBy: display.colorBy,
         colormap: display.colormap,
@@ -214,6 +276,7 @@ export default function App() {
         selected: sel,
         editing: tool !== 'select',
         pendingNode,
+        modeShape: isMode ? selMode!.shape : null,
       })
     } else if (contInput) {
       drawContinuum(ctx, size.w, size.h, contInput.mesh, contResult, {
@@ -231,7 +294,7 @@ export default function App() {
     }
   }, [
     view, size, tab, frame, frameResult, contInput, contResult, display, hover, sel, tool,
-    pendingNode, loadFactor, effectiveDeform,
+    pendingNode, loadFactor, effectiveDeform, isMode, modeScale, modeT, selMode,
   ])
 
   // --- pointer interaction --------------------------------------------------
@@ -259,6 +322,13 @@ export default function App() {
     const [wx, wy] = screenToWorld(view, sx, sy)
     const nHit = pickNode(frame, toScreen, sx, sy)
     const mHit = nHit === null ? pickMember(frame, toScreen, sx, sy) : null
+
+    // In modal/buckling view the model is read-only — select for inspection, pan.
+    if (analysis !== 'static') {
+      setSel(nHit !== null ? { type: 'node', index: nHit } : mHit !== null ? { type: 'member', index: mHit } : null)
+      drag.current = { mode: 'pan', lastX: sx, lastY: sy }
+      return
+    }
 
     switch (tool) {
       case 'select':
@@ -442,7 +512,7 @@ export default function App() {
 
         {/* ---------------- center: canvas ---------------- */}
         <main className="stage">
-          {tab === 'frame' && (
+          {tab === 'frame' && analysis === 'static' && (
             <div className="toolbar">
               {TOOLS.map((t) => (
                 <button
@@ -471,7 +541,15 @@ export default function App() {
               onWheel={onWheel}
             />
             <div className="overlay-legend">
-              {tab === 'frame' ? (
+              {tab === 'frame' && isMode ? (
+                <div className="legend force-legend">
+                  <span className="chip" style={{ color: '#cfe0ff' }}>
+                    {analysis === 'modal'
+                      ? `mode ${effModeIndex + 1} · ${fmtEng(selMode!.hz, 'Hz')}`
+                      : `buckling mode ${effModeIndex + 1} · λ = ${selMode!.loadFactor.toFixed(2)}`}
+                  </span>
+                </div>
+              ) : tab === 'frame' ? (
                 display.colorBy === 'force' ? (
                   <div className="legend force-legend">
                     <span className="chip comp">■ compression</span>
@@ -498,9 +576,11 @@ export default function App() {
               <button className="ghost-btn" onClick={fitToModel} title="Fit model to view">
                 ⤢ Fit
               </button>
-              <button className="ghost-btn" onClick={animate} title="Ramp the load from zero">
-                ▶ Animate
-              </button>
+              {!isMode && (
+                <button className="ghost-btn" onClick={animate} title="Ramp the load from zero">
+                  ▶ Animate
+                </button>
+              )}
             </div>
             <HoverTip
               tab={tab}
@@ -514,6 +594,32 @@ export default function App() {
 
         {/* ---------------- right rail: controls + results ---------------- */}
         <aside className="rail right">
+          {tab === 'frame' && (
+            <div className="panel">
+              <div className="panel-title">Analysis</div>
+              <Segmented<FrameAnalysis>
+                options={[
+                  { value: 'static', label: 'Static' },
+                  { value: 'modal', label: 'Modal' },
+                  { value: 'buckling', label: 'Buckling' },
+                ]}
+                value={analysis}
+                onChange={(v) => {
+                  patchDisplay({ analysis: v })
+                  setModeIndex(0)
+                  setSel(null)
+                  setTool('select')
+                }}
+              />
+              <p className="hint-text">
+                {analysis === 'static'
+                  ? 'Deflections, member forces and reactions under the applied load.'
+                  : analysis === 'modal'
+                    ? 'Free-vibration natural frequencies and mode shapes: K φ = ω² M φ.'
+                    : 'Linearized (Euler) buckling load factors and modes: (K + λ K_g) φ = 0.'}
+              </p>
+            </div>
+          )}
           <div className="panel">
             <div className="panel-title">Display</div>
             <Slider
@@ -590,7 +696,22 @@ export default function App() {
           </div>
 
           {tab === 'frame' ? (
-            <FrameResults result={frameResult} model={frame} />
+            analysis === 'static' ? (
+              <FrameResults result={frameResult} model={frame} />
+            ) : analysis === 'modal' ? (
+              <ModalPanel
+                result={modalResult}
+                model={frame}
+                selected={effModeIndex}
+                onSelect={setModeIndex}
+              />
+            ) : (
+              <BucklingPanel
+                result={bucklingResult}
+                selected={effModeIndex}
+                onSelect={setModeIndex}
+              />
+            )
           ) : (
             <ContinuumResults result={contResult} input={contInput} />
           )}
@@ -784,6 +905,119 @@ function ContinuumResults({
   )
 }
 
+function ModalPanel({
+  result,
+  model,
+  selected,
+  onSelect,
+}: {
+  result: ModalResult | null
+  model: FrameModel
+  selected: number
+  onSelect: (i: number) => void
+}) {
+  if (!result) return null
+  if (!result.ok || result.modes.length === 0) {
+    return (
+      <div className="panel">
+        <div className="panel-title">Vibration modes</div>
+        <p className="hint-text">{result.note ?? 'No modes available.'}</p>
+      </div>
+    )
+  }
+  const m0 = result.modes[0]
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Vibration modes
+        <span className="badge good">{result.modes.length} found</span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Fundamental" value={fmtEng(m0.hz, 'Hz')} sub={`ω = ${fmtEng(m0.omega, 'rad/s')}`} />
+        <StatTile label="Period" value={fmtEng(1 / m0.hz, 's')} />
+        <StatTile label="DOF" value={`${model.nodes.length * result.dofPerNode}`} />
+        <StatTile label="Modal mass" value={fmtEng(result.totalMassX, 'kg')} sub="total" />
+      </div>
+      <div className="table-title">Modes — click to animate</div>
+      <div className="mode-list">
+        {result.modes.map((md, i) => (
+          <button
+            key={i}
+            className={`mode-row ${i === selected ? 'active' : ''}`}
+            onClick={() => onSelect(i)}
+          >
+            <span className="mode-idx">#{i + 1}</span>
+            <span className="mode-freq">{fmtEng(md.hz, 'Hz')}</span>
+            <span className="mode-part">{Math.round(100 * Math.max(md.massX, md.massY))}% mass</span>
+          </button>
+        ))}
+      </div>
+      <p className="hint-text">
+        Frequencies from the consistent-mass eigenproblem K φ = ω² M φ. The selected mode
+        oscillates live on the canvas.
+      </p>
+    </div>
+  )
+}
+
+function BucklingPanel({
+  result,
+  selected,
+  onSelect,
+}: {
+  result: BucklingResult | null
+  selected: number
+  onSelect: (i: number) => void
+}) {
+  if (!result) return null
+  if (!result.ok || result.modes.length === 0) {
+    return (
+      <div className="panel">
+        <div className="panel-title">Buckling modes</div>
+        <p className="hint-text">{result.note ?? 'No buckling modes available.'}</p>
+      </div>
+    )
+  }
+  const m0 = result.modes[0]
+  const safe = m0.loadFactor > 1
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Buckling modes
+        <span className={safe ? 'badge good' : 'badge warn'}>λ₁ = {m0.loadFactor.toFixed(2)}</span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Critical factor λ₁" value={m0.loadFactor.toFixed(3)} sub="× applied load" />
+        <StatTile label="P_cr (peak member)" value={fmtEng(result.referenceMaxAxial * m0.loadFactor, 'N')} sub="|N|ᵣₑ𝒻·λ₁" />
+        <StatTile label="Modes" value={`${result.modes.length}`} />
+        <StatTile
+          label="Stability"
+          value={safe ? 'stable' : 'buckles'}
+          sub={safe ? 'λ₁ > 1 under load' : 'λ₁ < 1 — unstable'}
+        />
+      </div>
+      <div className="table-title">Load factors — click to animate</div>
+      <div className="mode-list">
+        {result.modes.map((md, i) => (
+          <button
+            key={i}
+            className={`mode-row ${i === selected ? 'active' : ''}`}
+            onClick={() => onSelect(i)}
+          >
+            <span className="mode-idx">#{i + 1}</span>
+            <span className="mode-freq">λ = {md.loadFactor.toFixed(3)}</span>
+            <span className="mode-part">{fmtEng(result.referenceMaxAxial * md.loadFactor, 'N')}</span>
+          </button>
+        ))}
+      </div>
+      <p className="hint-text">
+        Load factor λ multiplies the applied load to reach instability, from (K + λ K_g) φ = 0
+        with K_g built from the static axial-force field.
+      </p>
+    </div>
+  )
+}
+
 function NumberField({
   label,
   value,
@@ -883,8 +1117,24 @@ function SelectionEditor({
       <NumberField label="E" value={m.E / 1e9} step={1} suffix="GPa" onChange={(v) => onMember(i, { E: v * 1e9 })} />
       <NumberField label="A" value={m.A * 1e4} step={1} suffix="cm²" onChange={(v) => onMember(i, { A: v / 1e4 })} />
       {model.type === 'frame' && (
-        <NumberField label="I" value={m.I * 1e8} step={1} suffix="cm⁴" onChange={(v) => onMember(i, { I: v / 1e8 })} />
+        <>
+          <NumberField label="I" value={m.I * 1e8} step={1} suffix="cm⁴" onChange={(v) => onMember(i, { I: v / 1e8 })} />
+          <NumberField
+            label="w"
+            value={(m.w ?? 0) / 1000}
+            step={1}
+            suffix="kN/m"
+            onChange={(v) => onMember(i, { w: v * 1000 })}
+          />
+        </>
       )}
+      <NumberField
+        label="ρ"
+        value={m.rho ?? 7850}
+        step={100}
+        suffix="kg/m³"
+        onChange={(v) => onMember(i, { rho: v })}
+      />
       <button className="danger-btn" onClick={() => onDeleteMember(i)}>
         Delete member
       </button>

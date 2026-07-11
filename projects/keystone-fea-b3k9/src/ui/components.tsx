@@ -140,9 +140,9 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
+  const { frame, dynamics, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...continuum]
+  const all = [...frame, ...dynamics, ...continuum]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -162,6 +162,10 @@ export function VerifyBadge() {
           <div className="check-group">Frames &amp; trusses</div>
           {frame.map((c, i) => (
             <CheckRow key={`f${i}`} c={c} />
+          ))}
+          <div className="check-group">Dynamics &amp; stability</div>
+          {dynamics.map((c, i) => (
+            <CheckRow key={`d${i}`} c={c} />
           ))}
           <div className="check-group">Continuum (plane stress)</div>
           {continuum.map((c, i) => (

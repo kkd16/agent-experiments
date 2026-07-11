@@ -403,6 +403,47 @@ body {
   color: var(--muted);
 }
 
+/* -------------------------------------------------------------- mode list */
+.mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mode-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 1fr;
+  gap: 6px;
+  padding: 6px 8px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+.mode-row:hover {
+  background: rgba(110, 168, 255, 0.1);
+}
+.mode-row.active {
+  border-color: var(--accent);
+  background: rgba(110, 168, 255, 0.16);
+}
+.mode-row .mode-idx {
+  color: var(--muted);
+}
+.mode-row .mode-freq {
+  text-align: right;
+  font-weight: 600;
+}
+.mode-row .mode-part {
+  text-align: right;
+  color: var(--faint);
+}
+
 /* ---------------------------------------------------------------- controls */
 .segmented {
   display: flex;

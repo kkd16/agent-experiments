@@ -138,6 +138,32 @@ function cantileverFrame(L: number, load: number): FrameModel {
   return { type: 'frame', nodes, members, loads: [{ node: n, fx: 0, fy: -load, mz: 0 }] }
 }
 
+function slenderColumn(height: number, load: number): FrameModel {
+  // A pin-based vertical column, laterally guided at the top (roller-y), under
+  // an axial compressive tip load — the textbook Euler buckling case.
+  const n = 10
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++)
+    nodes.push({ x: 0, y: (i / n) * height, support: i === 0 ? 'pin' : 'free' })
+  nodes[n].support = 'roller-y' // top slides vertically, held horizontally
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++) members.push({ a: i, b: i + 1, E: STEEL, A: 3e-3, I: 6e-7 })
+  return { type: 'frame', nodes, members, loads: [{ node: n, fx: 0, fy: -load, mz: 0 }] }
+}
+
+function floorBeam(L: number, w: number): FrameModel {
+  // A simply-supported floor beam under a uniform distributed load — bending
+  // plus a rich set of vertical vibration modes.
+  const n = 10
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++) nodes.push({ x: (i / n) * L, y: 0, support: 'free' })
+  nodes[0].support = 'pin'
+  nodes[n].support = 'roller-x'
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++) members.push({ a: i, b: i + 1, E: STEEL, A: 6e-3, I: 1.2e-4, w })
+  return { type: 'frame', nodes, members, loads: [] }
+}
+
 function portalFrame(width: number, height: number, load: number): FrameModel {
   const nodes: FrameModel['nodes'] = [
     { x: 0, y: 0, support: 'fixed' }, // 0 base left
@@ -257,6 +283,20 @@ export const PRESETS: Preset[] = [
     name: 'Portal frame',
     blurb: 'Rigid-jointed portal with fixed bases resisting a lateral load by frame action.',
     model: portalFrame(6, 4, 50e3),
+  },
+  {
+    kind: 'frame',
+    id: 'column',
+    name: 'Slender column',
+    blurb: 'Pin-based column under axial load — switch to Buckling to find the Euler load & mode.',
+    model: slenderColumn(5, 80e3),
+  },
+  {
+    kind: 'frame',
+    id: 'floor-beam',
+    name: 'Loaded floor beam',
+    blurb: 'Simply-supported beam with a uniform load — try Modal to see its vibration modes.',
+    model: floorBeam(6, -12e3),
   },
   {
     kind: 'continuum',
