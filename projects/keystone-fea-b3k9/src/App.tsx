@@ -16,11 +16,20 @@ import {
   type BucklingResult,
   type TransientResult,
 } from './engine/dynamics'
+import {
+  prepareHarmonic,
+  frfSweep,
+  harmonicShape,
+  frfAt,
+  type HarmonicPrep,
+  type FrfCurve,
+} from './engine/harmonic'
+import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
-import { Legend, Segmented, Slider, StatTile, Toggle, VerifyBadge } from './ui/components'
+import { FrfPlot, Legend, Segmented, Slider, StatTile, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
 import {
   addMember,
@@ -74,6 +83,7 @@ const DEFAULT_DISPLAY: Display = {
   showMesh: true,
   analysis: 'static',
   respZeta: 0.03,
+  harmZeta: 0.03,
 }
 
 function frameBounds(m: FrameModel): Bounds {
@@ -124,6 +134,13 @@ function safeSolveTransient(m: FrameModel): TransientResult | null {
     return null
   }
 }
+function safeSolveHarmonic(m: FrameModel): HarmonicPrep | null {
+  try {
+    return prepareHarmonic(m)
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -143,6 +160,12 @@ export default function App() {
   const [respElapsed, setRespElapsed] = useState(0)
   const respTimeRef = useRef(0)
   const respZeta = display.respZeta ?? 0.03
+
+  // Forced-harmonic (FRF) state.
+  const harmZeta = display.harmZeta ?? 0.03
+  const [driveHz, setDriveHz] = useState(1)
+  const [harmPlaying, setHarmPlaying] = useState(true)
+  const [harmShape, setHarmShape] = useState<NodeDisp[] | null>(null)
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -183,6 +206,18 @@ export default function App() {
     () => (tab === 'frame' && analysis === 'response' ? safeSolveTransient(frame) : null),
     [tab, analysis, frame],
   )
+  const harmPrep = useMemo(
+    () => (tab === 'frame' && analysis === 'harmonic' ? safeSolveHarmonic(frame) : null),
+    [tab, analysis, frame],
+  )
+  const frf = useMemo<FrfCurve | null>(
+    () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta) : null),
+    [harmPrep, harmZeta],
+  )
+  const harmInfo = useMemo(
+    () => (harmPrep?.ok ? frfAt(harmPrep, harmZeta, driveHz * 2 * Math.PI) : null),
+    [harmPrep, harmZeta, driveHz],
+  )
   const activeEigen = analysis === 'modal' ? modalResult : analysis === 'buckling' ? bucklingResult : null
   const modeCount = activeEigen?.modes.length ?? 0
   const effModeIndex = modeCount > 0 ? Math.min(modeIndex, modeCount - 1) : 0
@@ -193,8 +228,14 @@ export default function App() {
   // live transient response.
   const isSwing = tab === 'frame' && (analysis === 'modal' || analysis === 'buckling') && !!selMode
   const drawShape: NodeDisp[] | null =
-    analysis === 'response' ? respShape : isSwing ? selMode!.shape : null
-  const drawFactor = analysis === 'response' ? 1 : modeT
+    analysis === 'response'
+      ? respShape
+      : analysis === 'harmonic'
+        ? harmShape
+        : isSwing
+          ? selMode!.shape
+          : null
+  const drawFactor = analysis === 'response' || analysis === 'harmonic' ? 1 : modeT
   const isMode = tab === 'frame' && analysis !== 'static' && !!drawShape
 
   // Sinusoidally swing a mode shape (modal/buckling views).
@@ -250,6 +291,41 @@ export default function App() {
     setRespElapsed(0)
     if (transientResult?.ok) setRespShape(evalTransient(transientResult, respZeta, 0))
   }, [transientResult, respZeta])
+
+  // Reset the drive frequency to the fundamental resonance whenever the model /
+  // analysis changes, so switching to Harmonic lands on a dramatic peak.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (harmPrep?.ok) setDriveHz(harmPrep.fundamentalHz)
+  }, [harmPrep])
+
+  // Seed a static harmonic shape at phase 0 when the model / drive / damping
+  // changes, so a shape is drawn even while paused.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHarmShape(harmPrep?.ok ? harmonicShape(harmPrep, harmZeta, driveHz * 2 * Math.PI, 0).shape : null)
+  }, [harmPrep, driveHz, harmZeta])
+
+  // Animate the steady-state oscillation by sweeping the phase θ at a fixed,
+  // watchable visual rate (the true drive frequency is arbitrary here — the
+  // complex amplitude U at ω is fixed; θ just cycles it through a period).
+  useEffect(() => {
+    if (!(tab === 'frame' && analysis === 'harmonic' && harmPrep?.ok && harmPlaying)) return
+    const driveOmega = driveHz * 2 * Math.PI
+    let raf = 0
+    let last = 0
+    let theta = 0
+    const loop = (ts: number) => {
+      if (!last) last = ts
+      const dt = Math.min(0.05, (ts - last) / 1000)
+      last = ts
+      theta += dt * 2 * Math.PI * 0.4 // ~0.4 Hz visual cycle
+      setHarmShape(harmonicShape(harmPrep, harmZeta, driveOmega, theta).shape)
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, analysis, harmPrep, harmPlaying, harmZeta, driveHz])
 
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
@@ -610,7 +686,9 @@ export default function App() {
                       ? `mode ${effModeIndex + 1} · ${fmtEng(selMode!.hz, 'Hz')}`
                       : analysis === 'buckling'
                         ? `buckling mode ${effModeIndex + 1} · λ = ${selMode!.loadFactor.toFixed(2)}`
-                        : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
+                        : analysis === 'harmonic'
+                          ? `harmonic · f = ${fmtEng(driveHz, 'Hz')} · ${(harmInfo?.amplification ?? 1).toFixed(1)}× static`
+                          : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
               ) : tab === 'frame' ? (
@@ -667,6 +745,7 @@ export default function App() {
                   { value: 'modal', label: 'Modal' },
                   { value: 'buckling', label: 'Buckling' },
                   { value: 'response', label: 'Response' },
+                  { value: 'harmonic', label: 'Harmonic' },
                 ]}
                 value={analysis}
                 onChange={(v) => {
@@ -675,6 +754,7 @@ export default function App() {
                   setSel(null)
                   setTool('select')
                   setRespPlaying(true)
+                  setHarmPlaying(true)
                 }}
               />
               <p className="hint-text">
@@ -684,7 +764,9 @@ export default function App() {
                     ? 'Free-vibration natural frequencies and mode shapes: K φ = ω² M φ.'
                     : analysis === 'buckling'
                       ? 'Linearized (Euler) buckling load factors and modes: (K + λ K_g) φ = 0.'
-                      : 'Transient response: the structure released from its static deflection, rung down by modal superposition Σ φᵢ qᵢ(t).'}
+                      : analysis === 'response'
+                        ? 'Transient response: the structure released from its static deflection, rung down by modal superposition Σ φᵢ qᵢ(t).'
+                        : 'Forced harmonic response: drive with F·cos ωt and sweep ω to trace the frequency-response function u(ω) = Σ φᵢ(φᵢᵀF)/(ωᵢ²−ω²+2iζωᵢω).'}
               </p>
             </div>
           )}
@@ -779,7 +861,7 @@ export default function App() {
                 selected={effModeIndex}
                 onSelect={setModeIndex}
               />
-            ) : (
+            ) : analysis === 'response' ? (
               <ResponsePanel
                 result={transientResult}
                 zeta={respZeta}
@@ -788,6 +870,18 @@ export default function App() {
                 onPlay={setRespPlaying}
                 onRestart={restartResponse}
                 elapsed={respElapsed}
+              />
+            ) : (
+              <HarmonicPanel
+                prep={harmPrep}
+                curve={frf}
+                driveHz={driveHz}
+                onDriveHz={setDriveHz}
+                zeta={harmZeta}
+                onZeta={(v) => patchDisplay({ harmZeta: v })}
+                playing={harmPlaying}
+                onPlay={setHarmPlaying}
+                info={harmInfo}
               />
             )
           ) : (
@@ -912,9 +1006,13 @@ function FrameResults({ result, model }: { result: FrameResult | null; model: Fr
         <StatTile label="Max deflection" value={fmtEng(result.maxDisp, 'm')} />
         <StatTile label="Max axial" value={fmtEng(result.maxAxial, 'N')} />
         <StatTile label="Max fibre stress" value={fmtEng(result.maxStress, 'Pa')} />
+        <StatTile
+          label="Max utilisation"
+          value={`${(result.maxUtilization * 100).toFixed(0)}%`}
+          sub={result.maxUtilization > 1 ? 'over-stressed' : 'σ/σ_yield'}
+        />
         <StatTile label="Equilibrium" value={result.equilibriumResidual.toExponential(1)} sub="‖Ku−f‖/‖f‖" />
         <StatTile label="DOF" value={`${model.nodes.length * result.dofPerNode}`} sub={`${result.iterations} CG iters`} />
-        <StatTile label="Members" value={`${model.members.length}`} />
       </div>
       <div className="table-title">Reactions</div>
       <div className="mini-table">
@@ -1160,6 +1258,110 @@ function ResponsePanel({
   )
 }
 
+function HarmonicPanel({
+  prep,
+  curve,
+  driveHz,
+  onDriveHz,
+  zeta,
+  onZeta,
+  playing,
+  onPlay,
+  info,
+}: {
+  prep: HarmonicPrep | null
+  curve: FrfCurve | null
+  driveHz: number
+  onDriveHz: (hz: number) => void
+  zeta: number
+  onZeta: (v: number) => void
+  playing: boolean
+  onPlay: (v: boolean) => void
+  info: { mag: number; phase: number; amplification: number } | null
+}) {
+  if (!prep) return null
+  if (!prep.ok || !curve) {
+    return (
+      <div className="panel">
+        <div className="panel-title">Forced harmonic response</div>
+        <p className="hint-text">{prep.note ?? 'No harmonic response available.'}</p>
+      </div>
+    )
+  }
+  const driveMax = curve.omegaMax / (2 * Math.PI)
+  const amp = info?.amplification ?? 1
+  const near = amp > 3
+  const outLabel = `joint ${prep.outNode} ${prep.outDir}`
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Forced harmonic response
+        <span className={near ? 'badge warn' : 'badge good'}>{amp.toFixed(1)}× static</span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Drive frequency" value={fmtEng(driveHz, 'Hz')} sub={`ω = ${fmtEng(driveHz * 2 * Math.PI, 'rad/s')}`} />
+        <StatTile label="Output amplitude" value={fmtEng(info?.mag ?? 0, 'm')} sub={outLabel} />
+        <StatTile label="Amplification" value={`${amp.toFixed(2)}×`} sub="vs. static" />
+        <StatTile label="Fundamental" value={fmtEng(prep.fundamentalHz, 'Hz')} sub="1st resonance" />
+        <StatTile label="Phase lag" value={`${Math.round((-(info?.phase ?? 0) * 180) / Math.PI)}°`} />
+        <StatTile label="Damping ζ" value={`${(zeta * 100).toFixed(1)}%`} />
+      </div>
+      <div className="frf-wrap">
+        <FrfPlot curve={curve} driveHz={driveHz} onPick={onDriveHz} />
+        <div className="frf-caption">
+          |U| at {outLabel} vs drive frequency · <span className="frf-key res">— resonance</span>{' '}
+          <span className="frf-key drive">— drive</span> · click to set drive
+        </div>
+      </div>
+      <div className="btn-row">
+        <button className="ghost-btn" onClick={() => onPlay(!playing)}>
+          {playing ? '⏸ Pause' : '▶ Play'}
+        </button>
+        <button className="ghost-btn" onClick={() => onDriveHz(prep.fundamentalHz)}>
+          ⇈ Resonance
+        </button>
+      </div>
+      <Slider
+        label="Drive frequency"
+        min={0}
+        max={driveMax}
+        step={Math.max(driveMax / 500, 1e-4)}
+        value={Math.min(driveHz, driveMax)}
+        onChange={onDriveHz}
+        format={(v) => `${fmtEng(v, 'Hz')}`}
+      />
+      <Slider
+        label="Damping ratio ζ"
+        min={0.005}
+        max={0.15}
+        step={0.005}
+        value={zeta}
+        onChange={onZeta}
+        format={(v) => `${(v * 100).toFixed(1)}%`}
+      />
+      <div className="table-title">Resonances — click to drive at peak</div>
+      <div className="mode-list">
+        {curve.peaks.map((p) => (
+          <button
+            key={p.modeIndex}
+            className={`mode-row ${Math.abs(p.hz - driveHz) / p.hz < 0.02 ? 'active' : ''}`}
+            onClick={() => onDriveHz(p.hz)}
+          >
+            <span className="mode-idx">#{p.modeIndex + 1}</span>
+            <span className="mode-freq">{fmtEng(p.hz, 'Hz')}</span>
+            <span className="mode-part">{p.amplification.toFixed(0)}× static</span>
+          </button>
+        ))}
+      </div>
+      <p className="hint-text">
+        {prep.syntheticDrive
+          ? 'No nodal load placed — a unit probe force drives the most responsive joint. Add a load to shape the forcing.'
+          : 'Steady-state amplitude of the placed load oscillating as F·cos ωt. Each resonance peak is a mode driven at its natural frequency; its height is capped by damping (≈ 1/2ζ).'}
+      </p>
+    </div>
+  )
+}
+
 function NumberField({
   label,
   value,
@@ -1244,6 +1446,15 @@ function SelectionEditor({
   const m = model.members[i]
   if (!m) return null
   const r = result?.members[i]
+  const curSection = m.section && findSection(m.section) ? m.section : 'custom'
+  const applySection = (id: string) => {
+    if (id === 'custom') {
+      onMember(i, { section: undefined, c: undefined })
+      return
+    }
+    const s = findSection(id)
+    if (s) onMember(i, { section: s.id, A: s.A, I: s.I, c: s.c })
+  }
   return (
     <div className="panel">
       <div className="panel-title">Member {i}</div>
@@ -1252,15 +1463,40 @@ function SelectionEditor({
           <StatTile label="Axial" value={`${r.axial >= 0 ? '+' : ''}${fmtEng(r.axial, 'N')}`} sub={r.axial >= 0 ? 'tension' : 'compression'} />
           <StatTile label="Fibre stress" value={fmtEng(r.maxFiberStress, 'Pa')} />
           {model.type === 'frame' && <StatTile label="Moment" value={fmtEng(Math.max(Math.abs(r.momentA), Math.abs(r.momentB)), 'N·m')} />}
-          <StatTile label="Length" value={fmtEng(r.length, 'm')} />
+          <StatTile
+            label="Utilisation"
+            value={`${(r.utilization * 100).toFixed(0)}%`}
+            sub={r.utilization > 1 ? 'over-stressed' : 'σ/σ_yield'}
+          />
         </div>
       )}
-      <div className="field-label">Section</div>
+      <div className="field-label">Standard section</div>
+      <select className="select" value={curSection} onChange={(e) => applySection(e.target.value)}>
+        <option value="custom">Custom (enter A, I below)</option>
+        {SECTIONS.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.label} — {s.blurb}
+          </option>
+        ))}
+      </select>
+      <div className="field-label">Section properties</div>
       <NumberField label="E" value={m.E / 1e9} step={1} suffix="GPa" onChange={(v) => onMember(i, { E: v * 1e9 })} />
-      <NumberField label="A" value={m.A * 1e4} step={1} suffix="cm²" onChange={(v) => onMember(i, { A: v / 1e4 })} />
+      <NumberField
+        label="A"
+        value={m.A * 1e4}
+        step={1}
+        suffix="cm²"
+        onChange={(v) => onMember(i, { A: v / 1e4, section: undefined, c: undefined })}
+      />
       {model.type === 'frame' && (
         <>
-          <NumberField label="I" value={m.I * 1e8} step={1} suffix="cm⁴" onChange={(v) => onMember(i, { I: v / 1e8 })} />
+          <NumberField
+            label="I"
+            value={m.I * 1e8}
+            step={1}
+            suffix="cm⁴"
+            onChange={(v) => onMember(i, { I: v / 1e8, section: undefined, c: undefined })}
+          />
           <NumberField
             label="w"
             value={(m.w ?? 0) / 1000}
@@ -1276,6 +1512,13 @@ function SelectionEditor({
         step={100}
         suffix="kg/m³"
         onChange={(v) => onMember(i, { rho: v })}
+      />
+      <NumberField
+        label="Fᵧ"
+        value={(m.Fy ?? 345e6) / 1e6}
+        step={5}
+        suffix="MPa"
+        onChange={(v) => onMember(i, { Fy: v * 1e6 })}
       />
       <button className="danger-btn" onClick={() => onDeleteMember(i)}>
         Delete member

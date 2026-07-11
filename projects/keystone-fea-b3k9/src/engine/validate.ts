@@ -5,6 +5,8 @@
 
 import { solveFrame, type FrameModel } from './frame'
 import { solveModal, solveBuckling, solveTransient, evalTransient } from './dynamics'
+import { prepareHarmonic, frfSweep } from './harmonic'
+import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
 
@@ -245,6 +247,77 @@ export function runDynamicsBenchmarks(): Check[] {
   return checks
 }
 
+export function runHarmonicBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const I = 8e-6
+  const A = 4e-3
+
+  // 1. Single-DOF oscillator — the exact benchmark for forced response. A single
+  //    axial bar pinned at one end, rolling at the other (so the free end has one
+  //    DOF), driven by an axial force. Its steady-state FRF is the textbook
+  //    damped SDOF curve, so both the static compliance and the resonance peak
+  //    have closed forms.
+  {
+    const L = 2.5
+    const P = 20000
+    const Abar = 1e-3
+    const model: FrameModel = {
+      type: 'truss',
+      nodes: [
+        { x: 0, y: 0, support: 'pin' },
+        { x: L, y: 0, support: 'roller-x' }, // free only along x (axial DOF)
+      ],
+      members: [{ a: 0, b: 1, E: STEEL_E, A: Abar, I: 1, rho: STEEL_RHO }],
+      loads: [{ node: 1, fx: P, fy: 0, mz: 0 }],
+    }
+    const prep = prepareHarmonic(model)
+    const zeta = 0.04
+    const curve = frfSweep(prep, zeta)
+    // Static compliance: |U(ω→0)| = P·L / (E·A).
+    const expectStatic = (P * L) / (STEEL_E * Abar)
+    checks.push(check('Harmonic static compliance', '|U(0)| = PL/EA', expectStatic, curve.staticMag, 'm', 0.01))
+    // Resonance peak amplification for a damped SDOF: max = 1/(2ζ√(1−ζ²)).
+    const expectAmp = 1 / (2 * zeta * Math.sqrt(1 - zeta * zeta))
+    checks.push(
+      check('Resonance amplification', 'max = 1/(2ζ√(1−ζ²))', expectAmp, curve.peaks[0]?.amplification ?? 0, '', 0.01),
+    )
+  }
+
+  // 2. Modal completeness — the ω→0 harmonic response reconstructs the direct
+  //    static deflection of a multi-DOF beam (a cantilever tip-loaded), proving
+  //    the modal superposition Σ φᵢφᵢᵀ/ωᵢ² approaches K⁻¹ over the kept modes.
+  {
+    const L = 4
+    const P = 1000
+    const m = beamLine(0, 0, L, 0, 10, STEEL_E, A, I, 'fixed', 'free')
+    m.loads = [{ node: 10, fx: 0, fy: -P, mz: 0 }]
+    const prep = prepareHarmonic(m)
+    const curve = frfSweep(prep, 0.03)
+    const expected = (P * L ** 3) / (3 * STEEL_E * I)
+    checks.push(check('FRF static limit = beam theory', '|U(0)| → PL³/3EI', expected, curve.staticMag, 'm', 0.02))
+  }
+
+  // 3. Section library — the extreme-fibre distance and second moment of the
+  //    parametric builders match the closed-form geometry. For a solid rectangle
+  //    the true c equals the historical rectangular guess √(3I/A) exactly; a
+  //    thin pipe's I matches the closed-form πr³t of a circular hollow.
+  {
+    const b = 0.1
+    const h = 0.3
+    const s = rectSection(b, h)
+    checks.push(check('Rect section I = bh³/12', 'I = bh³/12', (b * h ** 3) / 12, s.I, 'm⁴', 1e-9))
+    checks.push(check('Rect c = √(3I/A)', 'c = h/2 = √(3I/A)', fibreDistance(s.A, s.I), s.c, 'm', 1e-9))
+    const od = 0.2
+    const t = 0.004
+    const p = pipeSection(od, t)
+    const rm = (od - t) / 2 // mean radius
+    const approx = Math.PI * rm ** 3 * t // thin-wall I ≈ πr³t
+    checks.push(check('Pipe I ≈ πr³t (thin wall)', 'I ≈ π·r_m³·t', approx, p.I, 'm⁴', 0.05))
+  }
+
+  return checks
+}
+
 export function runContinuumBenchmarks(): Check[] {
   const checks: Check[] = []
 
@@ -329,12 +402,14 @@ export function runContinuumBenchmarks(): Check[] {
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
+  harmonic: Check[]
   continuum: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
   const dynamics = runDynamicsBenchmarks()
+  const harmonic = runHarmonicBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...dynamics, ...continuum].every((c) => c.pass)
-  return { frame, dynamics, continuum, allPass }
+  const allPass = [...frame, ...dynamics, ...harmonic, ...continuum].every((c) => c.pass)
+  return { frame, dynamics, harmonic, continuum, allPass }
 }

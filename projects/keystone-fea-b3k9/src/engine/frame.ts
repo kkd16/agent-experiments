@@ -11,6 +11,7 @@
 // against closed-form solutions (cantilever PL³/3EI, etc.).
 
 import { Assembler, matVec, solveCG, type Vec } from './linalg'
+import { fibreDistance } from './sections'
 
 export type SupportKind = 'free' | 'pin' | 'roller-x' | 'roller-y' | 'fixed'
 export type AnalysisType = 'truss' | 'frame'
@@ -28,7 +29,13 @@ export interface FMember {
   I: number // second moment of area (m⁴) — frame mode only
   rho?: number // material mass density (kg/m³) — modal analysis; defaults to steel
   w?: number // uniform transverse distributed load (N/m), +ve along local +v — frame mode
+  section?: string // id of an assigned catalogue section (sets A, I, c together)
+  c?: number // true extreme-fibre distance (m); overrides the rectangular guess
+  Fy?: number // yield strength (Pa) for the design-utilisation check
 }
+
+/** Default yield strength for the design check: A992 / grade-50 steel, Pa. */
+export const DEFAULT_FY = 345e6
 
 /** Default material mass density: structural steel, kg/m³. */
 export const DEFAULT_DENSITY = 7850
@@ -50,6 +57,7 @@ export interface MemberResult {
   stress: number // Pa, axial stress (tension positive)
   bendingStress: number // Pa, peak bending stress ±Mc/I (0 for trusses)
   maxFiberStress: number // Pa, |axial/A| + |M|max·c/I — the governing normal stress
+  utilization: number // maxFiberStress / Fy — design demand/capacity ratio
   shearA: number
   shearB: number
   momentA: number
@@ -77,6 +85,7 @@ export interface FrameResult {
   maxDisp: number
   maxStress: number
   maxAxial: number
+  maxUtilization: number // worst member σ/Fy across the model
   equilibriumResidual: number
   stable: boolean
   iterations: number
@@ -314,6 +323,7 @@ export function solveFrame(model: FrameModel): FrameResult {
   const members: MemberResult[] = []
   let maxStress = 0
   let maxAxial = 0
+  let maxUtilization = 0
   for (const m of model.members) {
     const { L, c, s } = geom(model, m)
     if (model.type === 'truss') {
@@ -325,11 +335,13 @@ export function solveFrame(model: FrameModel): FrameResult {
       const db = ub * c + vb * s // local axial displacement at b
       const axial = ((m.E * m.A) / L) * (db - da)
       const stress = axial / m.A
+      const util = Math.abs(stress) / (m.Fy ?? DEFAULT_FY)
       members.push({
         axial,
         stress,
         bendingStress: 0,
         maxFiberStress: Math.abs(stress),
+        utilization: util,
         shearA: 0,
         shearB: 0,
         momentA: 0,
@@ -338,6 +350,7 @@ export function solveFrame(model: FrameModel): FrameResult {
       })
       maxStress = Math.max(maxStress, Math.abs(stress))
       maxAxial = Math.max(maxAxial, Math.abs(axial))
+      maxUtilization = Math.max(maxUtilization, util)
     } else {
       const kl = beamLocal(m.E, m.A, m.I, L)
       const T = beamRotation(c, s)
@@ -358,20 +371,22 @@ export function solveFrame(model: FrameModel): FrameResult {
       // fl = [N1, V1, M1, N2, V2, M2]; axial tension positive uses node-2 axial.
       const axial = fl[3]
       const stress = axial / m.A
-      // Extreme-fibre distance from a rectangular-section assumption:
-      // I = b·h³/12 and A = b·h ⇒ h = √(12I/A), c = h/2 = √(3I/A).
-      const cDist = Math.sqrt((3 * m.I) / m.A)
+      // Extreme-fibre distance: the member's true section c when assigned, else
+      // the historical rectangular assumption c = √(3I/A) (I = bh³/12, A = bh).
+      const cDist = fibreDistance(m.A, m.I, m.c)
       // Peak bending moment along the span. For a member carrying a uniform
       // load the extremum can fall inside the span, so superpose the linear
       // end-moment field with the simply-supported parabola and scan it.
       const mMax = peakMoment(fl[2], fl[5], w, L)
       const bendingStress = (mMax * cDist) / m.I
       const maxFiberStress = Math.abs(stress) + bendingStress
+      const util = maxFiberStress / (m.Fy ?? DEFAULT_FY)
       members.push({
         axial,
         stress,
         bendingStress,
         maxFiberStress,
+        utilization: util,
         shearA: fl[1],
         shearB: fl[4],
         momentA: fl[2],
@@ -380,6 +395,7 @@ export function solveFrame(model: FrameModel): FrameResult {
       })
       maxStress = Math.max(maxStress, maxFiberStress)
       maxAxial = Math.max(maxAxial, Math.abs(axial))
+      maxUtilization = Math.max(maxUtilization, util)
     }
   }
 
@@ -395,6 +411,7 @@ export function solveFrame(model: FrameModel): FrameResult {
     maxDisp,
     maxStress,
     maxAxial,
+    maxUtilization,
     equilibriumResidual,
     stable,
     iterations: sol.iterations,

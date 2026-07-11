@@ -5,7 +5,7 @@
 import type { FrameModel } from './engine/frame'
 import type { Colormap } from './ui/colormap'
 
-export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response'
+export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic'
 
 export interface Display {
   deformScale: number
@@ -20,6 +20,8 @@ export interface Display {
   showMesh: boolean
   analysis?: FrameAnalysis
   respZeta?: number // damping ratio for transient response
+  harmZeta?: number // damping ratio for the forced-harmonic FRF
+  driveHz?: number // drive frequency (Hz) for the forced-harmonic sweep
 }
 
 export interface Scene {
