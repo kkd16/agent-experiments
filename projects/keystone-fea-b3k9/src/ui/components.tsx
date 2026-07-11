@@ -147,7 +147,7 @@ export function FrfPlot({
     const hzMax = curve.omegaMax / (2 * Math.PI)
     // Log-magnitude range, padded a decade below the peak.
     const magMax = Math.max(curve.magMax, 1e-30)
-    const magMin = Math.max(magMax / 1e4, curve.staticMag / 10, 1e-30)
+    const magMin = Math.max(magMax / 1e4, curve.refMag / 10, 1e-30)
     return { pad, hzMin, hzMax, magMax, magMin }
   }, [curve])
 

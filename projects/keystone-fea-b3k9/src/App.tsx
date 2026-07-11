@@ -23,6 +23,7 @@ import {
   frfAt,
   type HarmonicPrep,
   type FrfCurve,
+  type DriveType,
 } from './engine/harmonic'
 import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
@@ -163,6 +164,7 @@ export default function App() {
 
   // Forced-harmonic (FRF) state.
   const harmZeta = display.harmZeta ?? 0.03
+  const driveType: DriveType = display.driveType ?? 'force'
   const [driveHz, setDriveHz] = useState(1)
   const [harmPlaying, setHarmPlaying] = useState(true)
   const [harmShape, setHarmShape] = useState<NodeDisp[] | null>(null)
@@ -211,12 +213,12 @@ export default function App() {
     [tab, analysis, frame],
   )
   const frf = useMemo<FrfCurve | null>(
-    () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta) : null),
-    [harmPrep, harmZeta],
+    () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta, driveType) : null),
+    [harmPrep, harmZeta, driveType],
   )
   const harmInfo = useMemo(
-    () => (harmPrep?.ok ? frfAt(harmPrep, harmZeta, driveHz * 2 * Math.PI) : null),
-    [harmPrep, harmZeta, driveHz],
+    () => (harmPrep?.ok ? frfAt(harmPrep, harmZeta, driveHz * 2 * Math.PI, driveType) : null),
+    [harmPrep, harmZeta, driveHz, driveType],
   )
   const activeEigen = analysis === 'modal' ? modalResult : analysis === 'buckling' ? bucklingResult : null
   const modeCount = activeEigen?.modes.length ?? 0
@@ -303,8 +305,8 @@ export default function App() {
   // changes, so a shape is drawn even while paused.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHarmShape(harmPrep?.ok ? harmonicShape(harmPrep, harmZeta, driveHz * 2 * Math.PI, 0).shape : null)
-  }, [harmPrep, driveHz, harmZeta])
+    setHarmShape(harmPrep?.ok ? harmonicShape(harmPrep, harmZeta, driveHz * 2 * Math.PI, 0, driveType).shape : null)
+  }, [harmPrep, driveHz, harmZeta, driveType])
 
   // Animate the steady-state oscillation by sweeping the phase θ at a fixed,
   // watchable visual rate (the true drive frequency is arbitrary here — the
@@ -320,12 +322,12 @@ export default function App() {
       const dt = Math.min(0.05, (ts - last) / 1000)
       last = ts
       theta += dt * 2 * Math.PI * 0.4 // ~0.4 Hz visual cycle
-      setHarmShape(harmonicShape(harmPrep, harmZeta, driveOmega, theta).shape)
+      setHarmShape(harmonicShape(harmPrep, harmZeta, driveOmega, theta, driveType).shape)
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [tab, analysis, harmPrep, harmPlaying, harmZeta, driveHz])
+  }, [tab, analysis, harmPrep, harmPlaying, harmZeta, driveHz, driveType])
 
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
@@ -687,7 +689,11 @@ export default function App() {
                       : analysis === 'buckling'
                         ? `buckling mode ${effModeIndex + 1} · λ = ${selMode!.loadFactor.toFixed(2)}`
                         : analysis === 'harmonic'
-                          ? `harmonic · f = ${fmtEng(driveHz, 'Hz')} · ${(harmInfo?.amplification ?? 1).toFixed(1)}× static`
+                          ? `${driveType} · f = ${fmtEng(driveHz, 'Hz')} · ${
+                              driveType === 'base'
+                                ? `TR = ${(harmInfo?.mag ?? 0).toFixed(2)}`
+                                : `${(harmInfo?.amplification ?? 1).toFixed(1)}× ${driveType === 'unbalance' ? 'high-speed' : 'static'}`
+                            }`
                           : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
@@ -882,6 +888,8 @@ export default function App() {
                 playing={harmPlaying}
                 onPlay={setHarmPlaying}
                 info={harmInfo}
+                driveType={driveType}
+                onDriveType={(v) => patchDisplay({ driveType: v })}
               />
             )
           ) : (
@@ -1268,6 +1276,8 @@ function HarmonicPanel({
   playing,
   onPlay,
   info,
+  driveType,
+  onDriveType,
 }: {
   prep: HarmonicPrep | null
   curve: FrfCurve | null
@@ -1278,6 +1288,8 @@ function HarmonicPanel({
   playing: boolean
   onPlay: (v: boolean) => void
   info: { mag: number; phase: number; amplification: number } | null
+  driveType: DriveType
+  onDriveType: (v: DriveType) => void
 }) {
   if (!prep) return null
   if (!prep.ok || !curve) {
@@ -1290,18 +1302,36 @@ function HarmonicPanel({
   }
   const driveMax = curve.omegaMax / (2 * Math.PI)
   const amp = info?.amplification ?? 1
-  const near = amp > 3
+  const isBase = driveType === 'base'
+  const refWord = driveType === 'unbalance' ? 'high-speed' : 'static'
   const outLabel = `joint ${prep.outNode} ${prep.outDir}`
+  const ampBadge = isBase ? `TR ${(info?.mag ?? 0).toFixed(2)}` : `${amp.toFixed(1)}× ${refWord}`
+  const near = isBase ? (info?.mag ?? 0) > 1.2 : amp > 3
+  const ordinate = isBase ? 'transmissibility X/Y' : `|U| at ${outLabel}`
   return (
     <div className="panel">
       <div className="panel-title">
         Forced harmonic response
-        <span className={near ? 'badge warn' : 'badge good'}>{amp.toFixed(1)}× static</span>
+        <span className={near ? 'badge warn' : 'badge good'}>{ampBadge}</span>
       </div>
+      <div className="field-label">Drive</div>
+      <Segmented<DriveType>
+        options={[
+          { value: 'force', label: 'Force' },
+          { value: 'unbalance', label: 'Unbalance' },
+          { value: 'base', label: 'Base' },
+        ]}
+        value={driveType}
+        onChange={onDriveType}
+      />
       <div className="stat-grid">
         <StatTile label="Drive frequency" value={fmtEng(driveHz, 'Hz')} sub={`ω = ${fmtEng(driveHz * 2 * Math.PI, 'rad/s')}`} />
-        <StatTile label="Output amplitude" value={fmtEng(info?.mag ?? 0, 'm')} sub={outLabel} />
-        <StatTile label="Amplification" value={`${amp.toFixed(2)}×`} sub="vs. static" />
+        {isBase ? (
+          <StatTile label="Transmissibility" value={`${(info?.mag ?? 0).toFixed(2)}×`} sub="X / Y" />
+        ) : (
+          <StatTile label="Output amplitude" value={fmtEng(info?.mag ?? 0, 'm')} sub={outLabel} />
+        )}
+        <StatTile label={isBase ? 'Isolation' : 'Amplification'} value={isBase ? ((info?.mag ?? 0) < 1 ? 'isolated' : 'amplified') : `${amp.toFixed(2)}×`} sub={isBase ? 'X<Y ⇒ isolated' : `vs. ${refWord}`} />
         <StatTile label="Fundamental" value={fmtEng(prep.fundamentalHz, 'Hz')} sub="1st resonance" />
         <StatTile label="Phase lag" value={`${Math.round((-(info?.phase ?? 0) * 180) / Math.PI)}°`} />
         <StatTile label="Damping ζ" value={`${(zeta * 100).toFixed(1)}%`} />
@@ -1309,7 +1339,7 @@ function HarmonicPanel({
       <div className="frf-wrap">
         <FrfPlot curve={curve} driveHz={driveHz} onPick={onDriveHz} />
         <div className="frf-caption">
-          |U| at {outLabel} vs drive frequency · <span className="frf-key res">— resonance</span>{' '}
+          {ordinate} vs drive frequency · <span className="frf-key res">— resonance</span>{' '}
           <span className="frf-key drive">— drive</span> · click to set drive
         </div>
       </div>
@@ -1349,14 +1379,20 @@ function HarmonicPanel({
           >
             <span className="mode-idx">#{p.modeIndex + 1}</span>
             <span className="mode-freq">{fmtEng(p.hz, 'Hz')}</span>
-            <span className="mode-part">{p.amplification.toFixed(0)}× static</span>
+            <span className="mode-part">
+              {isBase ? `TR ${p.amplification.toFixed(1)}` : `${p.amplification.toFixed(0)}× ${refWord}`}
+            </span>
           </button>
         ))}
       </div>
       <p className="hint-text">
-        {prep.syntheticDrive
-          ? 'No nodal load placed — a unit probe force drives the most responsive joint. Add a load to shape the forcing.'
-          : 'Steady-state amplitude of the placed load oscillating as F·cos ωt. Each resonance peak is a mode driven at its natural frequency; its height is capped by damping (≈ 1/2ζ).'}
+        {driveType === 'base'
+          ? 'Support (base) excitation: the ground shakes with unit amplitude Y and the plot is the transmissibility X/Y. Below √2·ωₙ the structure amplifies the motion; above it, it isolates (X < Y) — every damping curve passes through TR = 1 at ω = √2·ωₙ.'
+          : driveType === 'unbalance'
+            ? 'Rotating-mass unbalance: the shaking force grows as ω², so the response climbs from zero, peaks just past resonance, and levels off at the high-speed limit — the classic rotor run-up curve.'
+            : prep.syntheticDrive
+              ? 'No nodal load placed — a unit probe force drives the most responsive joint. Add a load to shape the forcing.'
+              : 'Steady-state amplitude of the placed load oscillating as F·cos ωt. Each resonance peak is a mode driven at its natural frequency; its height is capped by damping (≈ 1/2ζ).'}
       </p>
     </div>
   )

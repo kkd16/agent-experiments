@@ -3,6 +3,7 @@
 // in the sandboxed catalog thumbnail (where localStorage and history can throw).
 
 import type { FrameModel } from './engine/frame'
+import type { DriveType } from './engine/harmonic'
 import type { Colormap } from './ui/colormap'
 
 export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic'
@@ -22,6 +23,7 @@ export interface Display {
   respZeta?: number // damping ratio for transient response
   harmZeta?: number // damping ratio for the forced-harmonic FRF
   driveHz?: number // drive frequency (Hz) for the forced-harmonic sweep
+  driveType?: DriveType // force / rotating unbalance / base excitation
 }
 
 export interface Scene {

@@ -127,8 +127,32 @@ rectangular guess), and a **design check** flags members over a yield-based allo
 - [x] UI: section picker in the member editor; "Resonator" / driven-portal presets that
       showcase the resonance sweep
 
-- [ ] Rotating-machine unbalance & base-excitation force models — future
-- [ ] Q4/Q8 continuum elements + nodal stress smoothing — future
+### v5 — Rotating unbalance, base excitation & the transmissibility invariant
+
+The FRF answered "what if a constant force shakes it?" Real excitation is rarely
+constant. Two cases dominate machine and earthquake engineering, and both drop straight
+onto the v4 modal machinery by changing only the *effective modal force*:
+
+- **Rotating unbalance** — a spinning mass `mₑ` at radius `e` throws a force `mₑeω²` that
+  grows with speed. `Feff,i(ω) = (ω/ω₁)²·fᵢ`. The response climbs from zero, peaks just
+  past resonance, and levels off at the high-speed limit — the rotor run-up curve.
+- **Base (support) excitation** — the ground moves as `Y·cos ωt` (an earthquake / shaker
+  table). Using the influence vector ι and modal participation `Γᵢ = φᵢᵀMι`, the effective
+  force is `Feff,i(ω) = ω²ΓᵢY` and the reported quantity is the **transmissibility** `X/Y`.
+  Every damping curve crosses `TR = 1` at exactly `ω = √2·ωₙ` — below it the structure
+  amplifies ground motion, above it it isolates. That crossover is the whole basis of
+  vibration isolation.
+
+- [x] `DriveType` (force / unbalance / base) threaded through the harmonic solver; the
+      effective modal force is the only thing that changes per drive
+- [x] Base-motion influence vector ι + modal participation Γᵢ = φᵢᵀMι; absolute response
+      u_abs = u_rel + ι·Y so the output reads directly as transmissibility
+- [x] Closed-form validation: unbalance peak = 1/(2ζ√(1−ζ²)); base TR(√2·ωₙ) = 1 for two
+      very different ζ (to machine precision); base TR(ω→0) = 1 (rigid follow)
+- [x] UI: a Force / Unbalance / Base drive selector; drive-aware stats (amplitude vs
+      transmissibility, "isolated / amplified"), FRF ordinate, peak table and hint text
+
+(remaining "future" items are listed in the v4 backlog above.)
 
 ## Session log
 
@@ -204,3 +228,22 @@ rectangular guess), and a **design check** flags members over a yield-based allo
   ladder (3.60, 22.5, 63.1 Hz → ratios 1 : 6.26 : 17.5), the phase lag is 90° at
   resonance, dynamic amplification hits 16.2× ≈ 1/(2·3%), and the section picker /
   utilisation render cleanly. 25/25 benchmark badge green, zero runtime errors.
+
+- 2026-07-11 (claude): shipped **v5 — rotating unbalance, base excitation & the
+  transmissibility invariant**, extending the v4 harmonic solver into rotating-machinery
+  and vibration-isolation territory. A `DriveType` (force / unbalance / base) now selects
+  the effective modal force with everything else — the same mass-normalised eigenbasis —
+  unchanged: unbalance scales the force as (ω/ω₁)² (rotor run-up), and base excitation
+  uses the influence vector ι and modal participation Γᵢ = φᵢᵀMι to build the seismic
+  effective force ω²ΓᵢY, returning the *absolute* response u_abs = u_rel + ι·Y so the
+  output reads directly as transmissibility X/Y. Four new closed-form benchmarks (all
+  pass): the unbalance resonance peak equals the force peak 1/(2ζ√(1−ζ²)) by the r↔1/r
+  mirror; the base transmissibility crosses TR = 1 at exactly ω = √2·ωₙ for two very
+  different damping ratios (2% and 12%) — to machine precision (4e-16), the famous
+  isolation-frequency invariant; and TR → 1 as ω → 0 (rigid follow). UI: a Force /
+  Unbalance / Base drive selector with drive-aware stats (output amplitude vs
+  transmissibility, an "isolated / amplified" read-out), FRF-ordinate label, peak table
+  and explanatory hints. Verified end-to-end in Chromium across all three drive types:
+  the resonator shows 16.2× at resonance under force, the rotor run-up under unbalance,
+  and TR = 26 at resonance dropping through the √2 crossover into isolation under base
+  motion. 29/29 benchmark badge green, zero runtime errors.
