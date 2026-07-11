@@ -1381,6 +1381,18 @@ export function runSelfTest(): TestCase[] {
       check('Lookup', 'XOR table rejects a wrong triple (1⊕2 ≠ 2)', !lookup.logupVerify(srs, inst, badP).ok, 'a bad bitwise result fails the lookup')
     }
 
+    // Committed vector lookup: each column KZG-committed, γ drawn by Fiat–Shamir.
+    {
+      const tableRows = lookup.xorTable(2)
+      const N = lookup.padToPow2(tableRows.length)
+      const inst = { tableRows, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      const good = lookup.logupProveVector(srs, inst, [[1n, 2n, 3n], [3n, 3n, 0n], [0n, 1n, 1n]])
+      check('Lookup', 'committed vector lookup: 3 columns, one commitment each', good.proof.cF.length === 3 && lookup.logupVerifyVector(srs, inst, good.proof).ok, 'ff(ζ)=Σγᵏfₖ(ζ) folded from per-column openings')
+      const bad = lookup.logupProveVector(srs, inst, [[1n, 2n, 2n]], { forceCheat: true })
+      check('Lookup', 'committed vector lookup rejects a wrong tuple', !bad.foldedInTable && !lookup.logupVerifyVector(srs, inst, bad.proof).ok, 'the folded triple has no matching row')
+    }
+
     // Plookup: the original transparent multiset-equality identity.
     {
       const table = [3n, 5n, 8n, 13n, 21n, 34n]
