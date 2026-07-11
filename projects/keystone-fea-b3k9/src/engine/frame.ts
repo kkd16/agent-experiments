@@ -32,6 +32,7 @@ export interface FMember {
   section?: string // id of an assigned catalogue section (sets A, I, c together)
   c?: number // true extreme-fibre distance (m); overrides the rectangular guess
   Fy?: number // yield strength (Pa) for the design-utilisation check
+  Mp?: number // plastic moment capacity (N·m) override — pushover analysis (else Z·Fy)
 }
 
 /** Default yield strength for the design check: A992 / grade-50 steel, Pa. */

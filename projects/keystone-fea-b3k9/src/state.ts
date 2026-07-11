@@ -6,7 +6,7 @@ import type { FrameModel } from './engine/frame'
 import type { DriveType } from './engine/harmonic'
 import type { Colormap } from './ui/colormap'
 
-export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic'
+export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic' | 'pushover'
 
 export interface Display {
   deformScale: number
@@ -24,6 +24,7 @@ export interface Display {
   harmZeta?: number // damping ratio for the forced-harmonic FRF
   driveHz?: number // drive frequency (Hz) for the forced-harmonic sweep
   driveType?: DriveType // force / rotating unbalance / base excitation
+  pushSecondOrder?: boolean // include P-Δ geometric stiffness in the pushover
 }
 
 export interface Scene {

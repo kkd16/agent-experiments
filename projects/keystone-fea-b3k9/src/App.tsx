@@ -25,12 +25,13 @@ import {
   type FrfCurve,
   type DriveType,
 } from './engine/harmonic'
+import { solvePushover, pushoverAt, memberMp, type PushoverResult } from './engine/plastic'
 import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
-import { FrfPlot, Legend, Segmented, Slider, StatTile, Toggle, VerifyBadge } from './ui/components'
+import { CapacityCurvePlot, FrfPlot, Legend, Segmented, Slider, StatTile, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
 import {
   addMember,
@@ -142,6 +143,13 @@ function safeSolveHarmonic(m: FrameModel): HarmonicPrep | null {
     return null
   }
 }
+function safeSolvePushover(m: FrameModel, secondOrder: boolean): PushoverResult | null {
+  try {
+    return solvePushover(m, { secondOrder })
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -168,6 +176,11 @@ export default function App() {
   const [driveHz, setDriveHz] = useState(1)
   const [harmPlaying, setHarmPlaying] = useState(true)
   const [harmShape, setHarmShape] = useState<NodeDisp[] | null>(null)
+
+  // Pushover (nonlinear plastic-collapse) state.
+  const pushSecondOrder = display.pushSecondOrder ?? false
+  const [pushS, setPushS] = useState(0) // pseudo-time along the capacity curve
+  const [pushPlaying, setPushPlaying] = useState(true)
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -212,6 +225,10 @@ export default function App() {
     () => (tab === 'frame' && analysis === 'harmonic' ? safeSolveHarmonic(frame) : null),
     [tab, analysis, frame],
   )
+  const pushResult = useMemo(
+    () => (tab === 'frame' && analysis === 'pushover' ? safeSolvePushover(frame, pushSecondOrder) : null),
+    [tab, analysis, frame, pushSecondOrder],
+  )
   const frf = useMemo<FrfCurve | null>(
     () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta, driveType) : null),
     [harmPrep, harmZeta, driveType],
@@ -226,18 +243,41 @@ export default function App() {
   const selMode = activeEigen?.modes[effModeIndex] ?? null
   const modeScale = useMemo(() => 0.16 * boundsDiag(frameBounds(frame)), [frame])
 
-  // The shape drawn on the canvas: a swinging eigenmode (modal/buckling) or the
-  // live transient response.
+  // Pushover: sample the capacity curve at the current pseudo-time, and scale the
+  // deflection so the (real, growing) plastic mechanism stays on screen.
+  const pushInfo = useMemo(
+    () => (pushResult?.ok ? pushoverAt(pushResult, pushS) : null),
+    [pushResult, pushS],
+  )
+  const pushScale = useMemo(() => {
+    if (!pushResult?.ok) return 1
+    let peak = 1e-30
+    for (const st of pushResult.states) for (const d of st) peak = Math.max(peak, Math.hypot(d.ux, d.uy))
+    return (0.16 * boundsDiag(frameBounds(frame))) / peak
+  }, [pushResult, frame])
+  const pushHinges = useMemo(
+    () =>
+      analysis === 'pushover' && pushResult?.ok && pushInfo
+        ? pushResult.events.slice(0, pushInfo.hinges).map((e) => ({ node: e.node, sign: e.sign }))
+        : null,
+    [analysis, pushResult, pushInfo],
+  )
+
+  // The shape drawn on the canvas: a swinging eigenmode (modal/buckling), the
+  // live transient/harmonic response, or the pushover mechanism.
   const isSwing = tab === 'frame' && (analysis === 'modal' || analysis === 'buckling') && !!selMode
   const drawShape: NodeDisp[] | null =
     analysis === 'response'
       ? respShape
       : analysis === 'harmonic'
         ? harmShape
-        : isSwing
-          ? selMode!.shape
-          : null
-  const drawFactor = analysis === 'response' || analysis === 'harmonic' ? 1 : modeT
+        : analysis === 'pushover'
+          ? pushInfo?.shape ?? null
+          : isSwing
+            ? selMode!.shape
+            : null
+  const drawFactor = analysis === 'response' || analysis === 'harmonic' || analysis === 'pushover' ? 1 : modeT
+  const shapeScale = analysis === 'pushover' ? pushScale : modeScale
   const isMode = tab === 'frame' && analysis !== 'static' && !!drawShape
 
   // Sinusoidally swing a mode shape (modal/buckling views).
@@ -329,6 +369,34 @@ export default function App() {
     return () => cancelAnimationFrame(raf)
   }, [tab, analysis, harmPrep, harmPlaying, harmZeta, driveHz, driveType])
 
+  // Seed the pushover scrub at the start (unloaded) when the model / result changes.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPushS(0)
+  }, [pushResult])
+
+  // Advance the pushover load-scrub in pseudo-time: sweep 0 → collapse, hold
+  // briefly at the mechanism, then loop.
+  useEffect(() => {
+    if (!(tab === 'frame' && analysis === 'pushover' && pushResult?.ok && pushPlaying)) return
+    const n = pushResult.curve.length - 1
+    if (n <= 0) return
+    let raf = 0
+    let last = 0
+    const loop = (ts: number) => {
+      if (!last) last = ts
+      const dt = Math.min(0.05, (ts - last) / 1000)
+      last = ts
+      setPushS((s) => {
+        const ns = s + dt * (n / 3.5) // full sweep in ~3.5 s
+        return ns >= n + 0.7 ? 0 : ns // brief hold at collapse, then restart
+      })
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, analysis, pushResult, pushPlaying])
+
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
     if (tab === 'frame' && frameResult && frameResult.maxDisp > 0) {
@@ -404,7 +472,7 @@ export default function App() {
     if (tab === 'frame') {
       drawFrame(ctx, size.w, size.h, frame, isMode ? null : frameResult, {
         view,
-        deformScale: isMode ? modeScale : effectiveDeform,
+        deformScale: isMode ? shapeScale : effectiveDeform,
         loadFactor: isMode ? drawFactor : loadFactor,
         showUndeformed: display.showUndeformed,
         colorBy: display.colorBy,
@@ -417,6 +485,7 @@ export default function App() {
         editing: tool !== 'select',
         pendingNode,
         modeShape: isMode ? drawShape : null,
+        hinges: pushHinges,
       })
     } else if (contInput) {
       drawContinuum(ctx, size.w, size.h, contInput.mesh, contResult, {
@@ -434,7 +503,7 @@ export default function App() {
     }
   }, [
     view, size, tab, frame, frameResult, contInput, contResult, display, hover, sel, tool,
-    pendingNode, loadFactor, effectiveDeform, isMode, modeScale, drawShape, drawFactor,
+    pendingNode, loadFactor, effectiveDeform, isMode, shapeScale, drawShape, drawFactor, pushHinges,
   ])
 
   // --- pointer interaction --------------------------------------------------
@@ -694,7 +763,11 @@ export default function App() {
                                 ? `TR = ${(harmInfo?.mag ?? 0).toFixed(2)}`
                                 : `${(harmInfo?.amplification ?? 1).toFixed(1)}× ${driveType === 'unbalance' ? 'high-speed' : 'static'}`
                             }`
-                          : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
+                          : analysis === 'pushover'
+                            ? `pushover · λ = ${(pushInfo?.lambda ?? 0).toFixed(2)} · ${pushInfo?.hinges ?? 0}/${pushResult?.events.length ?? 0} hinges${
+                                (pushInfo?.hinges ?? 0) >= (pushResult?.events.length ?? -1) && pushResult?.collapse ? ' · collapse' : ''
+                              }`
+                            : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
               ) : tab === 'frame' ? (
@@ -752,6 +825,7 @@ export default function App() {
                   { value: 'buckling', label: 'Buckling' },
                   { value: 'response', label: 'Response' },
                   { value: 'harmonic', label: 'Harmonic' },
+                  { value: 'pushover', label: 'Pushover' },
                 ]}
                 value={analysis}
                 onChange={(v) => {
@@ -761,6 +835,8 @@ export default function App() {
                   setTool('select')
                   setRespPlaying(true)
                   setHarmPlaying(true)
+                  setPushPlaying(true)
+                  setPushS(0)
                 }}
               />
               <p className="hint-text">
@@ -772,7 +848,9 @@ export default function App() {
                       ? 'Linearized (Euler) buckling load factors and modes: (K + λ K_g) φ = 0.'
                       : analysis === 'response'
                         ? 'Transient response: the structure released from its static deflection, rung down by modal superposition Σ φᵢ qᵢ(t).'
-                        : 'Forced harmonic response: drive with F·cos ωt and sweep ω to trace the frequency-response function u(ω) = Σ φᵢ(φᵢᵀF)/(ωᵢ²−ω²+2iζωᵢω).'}
+                        : analysis === 'harmonic'
+                          ? 'Forced harmonic response: drive with F·cos ωt and sweep ω to trace the frequency-response function u(ω) = Σ φᵢ(φᵢᵀF)/(ωᵢ²−ω²+2iζωᵢω).'
+                          : 'Nonlinear pushover: increase the load, forming plastic hinges (Mₚ = Z·Fᵧ) until the frame becomes a mechanism. The collapse load factor is exact plastic limit analysis.'}
               </p>
             </div>
           )}
@@ -876,6 +954,19 @@ export default function App() {
                 onPlay={setRespPlaying}
                 onRestart={restartResponse}
                 elapsed={respElapsed}
+              />
+            ) : analysis === 'pushover' ? (
+              <PushoverPanel
+                result={pushResult}
+                info={pushInfo}
+                playing={pushPlaying}
+                onPlay={setPushPlaying}
+                onScrub={(s) => {
+                  setPushPlaying(false)
+                  setPushS(s)
+                }}
+                secondOrder={pushSecondOrder}
+                onSecondOrder={(v) => patchDisplay({ pushSecondOrder: v })}
               />
             ) : (
               <HarmonicPanel
@@ -1398,6 +1489,105 @@ function HarmonicPanel({
   )
 }
 
+function PushoverPanel({
+  result,
+  info,
+  playing,
+  onPlay,
+  onScrub,
+  secondOrder,
+  onSecondOrder,
+}: {
+  result: PushoverResult | null
+  info: { lambda: number; disp: number; hinges: number } | null
+  playing: boolean
+  onPlay: (v: boolean) => void
+  onScrub: (s: number) => void
+  secondOrder: boolean
+  onSecondOrder: (v: boolean) => void
+}) {
+  if (!result) return null
+  if (!result.ok) {
+    return (
+      <div className="panel">
+        <div className="panel-title">Pushover — plastic collapse</div>
+        <p className="hint-text">{result.note ?? 'No pushover available.'}</p>
+        <Toggle label="Second-order (P-Δ)" checked={secondOrder} onChange={onSecondOrder} />
+      </div>
+    )
+  }
+  const cur = info ?? { lambda: result.collapseLambda, disp: result.collapseDisp, hinges: result.events.length }
+  const atCollapse = result.collapse && cur.hinges >= result.events.length
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Pushover — plastic collapse
+        <span className={result.collapse ? 'badge good' : 'badge warn'}>
+          {result.collapse ? `λc = ${result.collapseLambda.toFixed(2)}` : 'no mechanism'}
+        </span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Collapse factor λc" value={result.collapseLambda.toFixed(3)} sub="× applied load" />
+        <StatTile label="First yield λ₁" value={result.firstYieldLambda.toFixed(3)} sub="elastic limit" />
+        <StatTile
+          label="Plastic reserve"
+          value={`${result.reserve.toFixed(2)}×`}
+          sub="λc / λ₁ (redistribution)"
+        />
+        <StatTile label="Hinges at collapse" value={`${result.events.length}`} sub={result.collapse ? 'mechanism' : 'stable'} />
+        <StatTile label="Control DOF" value={result.controlLabel} />
+        <StatTile
+          label="Live state"
+          value={`λ = ${cur.lambda.toFixed(2)}`}
+          sub={atCollapse ? 'collapsed' : `${cur.hinges} hinge${cur.hinges === 1 ? '' : 's'}`}
+        />
+      </div>
+      <div className="frf-wrap">
+        <CapacityCurvePlot res={result} cursor={{ disp: cur.disp, lambda: cur.lambda }} onScrub={onScrub} />
+        <div className="frf-caption">
+          load factor vs control deflection · <span className="frf-key res">● hinge</span>{' '}
+          <span className="frf-key drive">— load state</span> · click to scrub
+        </div>
+      </div>
+      <div className="btn-row">
+        <button className="ghost-btn" onClick={() => onPlay(!playing)}>
+          {playing ? '⏸ Pause' : '▶ Play'}
+        </button>
+        <button className="ghost-btn" onClick={() => onScrub(0)}>
+          ↺ Unload
+        </button>
+        <button className="ghost-btn" onClick={() => onScrub(result.curve.length - 1)}>
+          ⤒ Collapse
+        </button>
+      </div>
+      <Toggle label="Second-order (P-Δ)" checked={secondOrder} onChange={onSecondOrder} />
+      <div className="table-title">Hinge sequence — click to jump</div>
+      <div className="mode-list">
+        {result.events.map((e) => (
+          <button
+            key={e.order}
+            className={`mode-row ${cur.hinges >= e.order ? 'active' : ''}`}
+            onClick={() => onScrub(e.order)}
+          >
+            <span className="mode-idx">#{e.order}</span>
+            <span className="mode-freq">λ = {e.lambda.toFixed(2)}</span>
+            <span className="mode-part">
+              joint {e.node} · {e.end === 'a' ? 'i' : 'j'}-end
+            </span>
+          </button>
+        ))}
+      </div>
+      <p className="hint-text">
+        {result.collapse
+          ? `Load redistributes through ${result.events.length} plastic hinge${result.events.length === 1 ? '' : 's'} until the frame becomes a mechanism — collapsing at ${result.reserve.toFixed(2)}× the first-yield load. Hinges appear as amber discs on the deflected shape.`
+          : result.note ??
+            'The load pattern shakes down: the hinges shown form, but the structure stabilises without a full collapse mechanism.'}
+        {secondOrder && ' P-Δ softening from axial load is included in the tangent stiffness.'}
+      </p>
+    </div>
+  )
+}
+
 function NumberField({
   label,
   value,
@@ -1556,6 +1746,15 @@ function SelectionEditor({
         suffix="MPa"
         onChange={(v) => onMember(i, { Fy: v * 1e6 })}
       />
+      {model.type === 'frame' && (
+        <NumberField
+          label="Mₚ"
+          value={Math.round(memberMp(m) / 1e3)}
+          step={10}
+          suffix="kN·m"
+          onChange={(v) => onMember(i, { Mp: v * 1e3 })}
+        />
+      )}
       <button className="danger-btn" onClick={() => onDeleteMember(i)}>
         Delete member
       </button>

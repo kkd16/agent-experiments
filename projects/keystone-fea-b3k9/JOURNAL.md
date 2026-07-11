@@ -152,9 +152,83 @@ onto the v4 modal machinery by changing only the *effective modal force*:
 - [x] UI: a Force / Unbalance / Base drive selector; drive-aware stats (amplitude vs
       transmissibility, "isolated / amplified"), FRF ordinate, peak table and hint text
 
+### v6 — Nonlinear pushover: plastic hinges & collapse (the inelastic upgrade)
+
+Everything so far is **linear-elastic**: double the load, double the stress. Real steel does
+not fail that way. Past first yield a cross-section keeps carrying load while a **plastic hinge**
+forms — the moment saturates at the plastic capacity `Mₚ = Z·Fᵧ` and the section rotates freely.
+Load then *redistributes* to the still-elastic parts until enough hinges turn the frame into a
+**mechanism** and it collapses. The load multiplier at that instant — the **collapse load
+factor** — is what plastic design is actually about, and for many frames it is far above first
+yield (a fixed-fixed beam carries 33 % more; a propped cantilever, more still).
+
+This is a genuinely *nonlinear* analysis, and it has a beautiful exactness story to validate
+against: classical **plastic limit analysis** gives closed-form collapse loads (`4Mₚ/L`,
+`6Mₚ/L`, `8Mₚ/L`, `11.66Mₚ/L²`, portal sway `4Mₚ/h`) by the virtual-work mechanism method — so
+the incremental solver can be cross-checked exactly like every other chapter.
+
+The method is **event-to-event elastic–plastic hinge tracking**. At each stage we solve the
+current (partially-hinged) structure elastically for the reference load *rate*, find the smallest
+load increment `Δλ` that brings the next section to `Mₚ`, insert a moment release there (static
+condensation of that rotational DOF), freeze its moment at `±Mₚ`, and repeat — accumulating the
+load factor and the deflection — until the stiffness goes singular (the mechanism). The trace of
+(control deflection, load factor) is the **capacity (pushover) curve**: rising, softening at each
+hinge, flat-topping at collapse.
+
+- [x] `plastic.ts` — hinge-aware beam stiffness (moment-release condensation + released-rotation
+      recovery), `memberMp` from section `Z` / `Fᵧ`, and the accumulated end-force bookkeeping
+- [x] `solvePushover` — incremental event-to-event solver: elastic rate solve, next-hinge search,
+      hinge insertion, **mechanism detection from the tangent spectrum** (smallest/largest
+      eigenvalue ratio — a failed Cholesky pivot alone missed the round-off-singular case), and the
+      mechanism shape from the singular system's null eigenvector
+- [x] Capacity curve + per-event states (deflected shape + cumulative hinge set) for scrubbing;
+      collapse plateau along the mechanism at constant load factor
+- [x] Optional second-order (P-Δ) pushover: add the geometric stiffness from current axial forces
+      so axial load visibly lowers the collapse capacity
+- [x] Exact benchmarks: SS beam `4Mₚ/L`, propped cantilever `6Mₚ/L` (point) & `11.66Mₚ/L²` (UDL),
+      fixed-fixed beam `8Mₚ/L`, fixed-base portal sway `4Mₚ/h`
+- [x] UI: a **Pushover** analysis mode — live capacity-curve plot (load factor vs control
+      deflection, hinge-event markers, load cursor), a load-scrub play/pause that animates the
+      structure deflecting and hinges popping in, a clickable hinge-sequence table, collapse stats
+- [x] Presets that showcase redistribution: propped cantilever (UDL), fixed-fixed beam, portal
+      sway frame — each with a defined `Mₚ` so collapse is dramatic
+- [x] Canvas: plastic-hinge glyphs (a filled amber disc at each formed hinge) drawn on the deflected shape
+
 (remaining "future" items are listed in the v4 backlog above.)
 
 ## Session log
+
+- 2026-07-11 (claude): shipped **v6 — nonlinear pushover: plastic hinges & collapse**,
+  the first *inelastic* chapter. New `plastic.ts`: a concentrated-plasticity,
+  event-to-event elastic–plastic solver. `memberMp` reads the plastic capacity
+  Mₚ = Z·Fᵧ from the assigned section (or a shape-factor estimate). Each increment
+  assembles the current partially-hinged tangent stiffness — plastic hinges are
+  moment releases applied by **static condensation** of the hinged rotational DOF,
+  with the released rotation recovered afterwards so member end forces stay exact —
+  solves for the reference-load *rate* dU/dλ, and finds the smallest Δλ that drives
+  the next un-hinged section to ±Mₚ. It accumulates λ, the deflection and the member
+  end forces, freezes the yielded section at ±Mₚ, and repeats until the tangent goes
+  singular: the collapse mechanism. Detecting that singularity is the subtle part —
+  a failed Cholesky pivot alone let the round-off-singular fixed-fixed case slip
+  through (over-predicting by √3), so collapse is judged from the **tangent
+  spectrum** (smallest/largest eigenvalue ratio < 1e-9, which also catches P-Δ
+  indefiniteness), and the mechanism shape is that null eigenvector. Outputs the
+  capacity curve, the ordered hinge sequence, the collapse load factor, the plastic
+  reserve λc/λ₁, and the deflected shape at every event (plus a mechanism plateau)
+  for animation. Optional second-order (P-Δ) adds the geometric stiffness from the
+  current axial forces so axial load visibly lowers the collapse capacity. Five new
+  live benchmarks — SS beam 4Mₚ/L, propped cantilever 6Mₚ/L (point) and 11.66Mₚ/L²
+  (UDL), fixed-fixed 8Mₚ/L, portal sway 4Mₚ/h — all reproduce classical plastic
+  limit analysis (three exact to ~1e-14, the UDL to 8e-4). UI: a sixth **Pushover**
+  analysis mode — a live load-factor-vs-deflection capacity plot (hinge-event dots,
+  first-yield & collapse reference lines, a load cursor, click-to-scrub), a
+  load-scrub play/pause that animates the frame deflecting with amber plastic-hinge
+  discs popping in on the deformed shape, a clickable hinge-sequence table, a P-Δ
+  toggle, and collapse/reserve stats; plus an Mₚ member editor and three plastic-
+  collapse presets (propped cantilever UDL, fixed-fixed beam, sway portal). Verified
+  end-to-end in Chromium: the sway portal collapses at λc = 5.45 = 4Mₚ/h exactly
+  with four hinges and a 1.21× reserve, P-Δ lowers the capacity, and the badge is
+  green — **34/34 benchmarks**, zero runtime errors.
 
 - 2026-07-10 (claude): created from template. Built the full engine — sparse
   assembler + Jacobi-PCG and dense LDLᵀ solvers; truss + Euler–Bernoulli frame by

@@ -5,6 +5,7 @@
 
 import { solveFrame, type FrameModel } from './frame'
 import { solveModal, solveBuckling, solveTransient, evalTransient } from './dynamics'
+import { solvePushover } from './plastic'
 import { prepareHarmonic, frfSweep, frfAt } from './harmonic'
 import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
@@ -337,6 +338,106 @@ export function runHarmonicBenchmarks(): Check[] {
   return checks
 }
 
+/** Straight line of `n` frame elements, each carrying an explicit plastic
+ *  moment capacity Mₚ — the building block for the plastic-collapse benchmarks. */
+function plasticBeam(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  n: number,
+  supA: FrameModel['nodes'][number]['support'],
+  supB: FrameModel['nodes'][number]['support'],
+  Mp: number,
+): FrameModel {
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++)
+    nodes.push({ x: x0 + ((x1 - x0) * i) / n, y: y0 + ((y1 - y0) * i) / n, support: 'free' })
+  nodes[0].support = supA
+  nodes[n].support = supB
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++) members.push({ a: i, b: i + 1, E: STEEL_E, A: 1e-2, I: 2e-4, Mp })
+  return { type: 'frame', nodes, members, loads: [] }
+}
+
+export function runPlasticBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const Mp = 5e5 // N·m plastic moment capacity assigned to every member
+
+  // The pushover solver is nonlinear (event-to-event hinge tracking); each
+  // benchmark is a classical plastic-limit-analysis collapse load with a known
+  // closed form. Reference loads are unit so the collapse load factor λc reads
+  // directly as the collapse load, and P_c = λc·P_ref.
+
+  // 1. Simply-supported beam, central point load — one hinge at midspan:
+  //    P_c = 4·Mₚ / L (statically determinate ⇒ first yield = collapse).
+  {
+    const L = 6
+    const n = 8
+    const m = plasticBeam(0, 0, L, 0, n, 'pin', 'roller-x', Mp)
+    m.loads = [{ node: n / 2, fx: 0, fy: -1, mz: 0 }]
+    const r = solvePushover(m)
+    checks.push(check('Simply-supported collapse', 'P_c = 4Mₚ/L', (4 * Mp) / L, r.collapseLambda, 'N', 0.01))
+  }
+
+  // 2. Propped cantilever, central point load — hinges at the fixed end and
+  //    midspan: P_c = 6·Mₚ / L (moment redistributes after the first hinge).
+  {
+    const L = 6
+    const n = 8
+    const m = plasticBeam(0, 0, L, 0, n, 'fixed', 'roller-x', Mp)
+    m.loads = [{ node: n / 2, fx: 0, fy: -1, mz: 0 }]
+    const r = solvePushover(m)
+    checks.push(check('Propped-cantilever collapse (point)', 'P_c = 6Mₚ/L', (6 * Mp) / L, r.collapseLambda, 'N', 0.02))
+  }
+
+  // 3. Fixed-fixed beam, central point load — three hinges (both ends + centre):
+  //    P_c = 8·Mₚ / L. Two-fold indeterminate; the ends and centre yield together.
+  {
+    const L = 6
+    const n = 8
+    const m = plasticBeam(0, 0, L, 0, n, 'fixed', 'fixed', Mp)
+    m.loads = [{ node: n / 2, fx: 0, fy: -1, mz: 0 }]
+    const r = solvePushover(m)
+    checks.push(check('Fixed-fixed collapse', 'P_c = 8Mₚ/L', (8 * Mp) / L, r.collapseLambda, 'N', 0.01))
+  }
+
+  // 4. Propped cantilever, uniformly distributed load — the span hinge migrates
+  //    to x ≈ 0.586L and the collapse intensity is w_c = 11.657·Mₚ / L²
+  //    (the classic irrational plastic-analysis result).
+  {
+    const L = 6
+    const n = 14
+    const m = plasticBeam(0, 0, L, 0, n, 'fixed', 'roller-x', Mp)
+    for (const mem of m.members) mem.w = -1 // unit reference intensity
+    const r = solvePushover(m)
+    checks.push(check('Propped-cantilever collapse (UDL)', 'w_c = 11.66Mₚ/L²', (11.657 * Mp) / (L * L), r.collapseLambda, 'N/m', 0.02))
+  }
+
+  // 5. Fixed-base portal frame, horizontal load — the sway mechanism: four
+  //    hinges (both column bases + both beam-column joints), H_c = 4·Mₚ / h.
+  {
+    const h = 4
+    const w = 6
+    const nodes: FrameModel['nodes'] = [
+      { x: 0, y: 0, support: 'fixed' },
+      { x: 0, y: h, support: 'free' },
+      { x: w, y: h, support: 'free' },
+      { x: w, y: 0, support: 'fixed' },
+    ]
+    const members: FrameModel['members'] = [
+      { a: 0, b: 1, E: STEEL_E, A: 1e-2, I: 2e-4, Mp },
+      { a: 1, b: 2, E: STEEL_E, A: 1e-2, I: 2e-4, Mp },
+      { a: 2, b: 3, E: STEEL_E, A: 1e-2, I: 2e-4, Mp },
+    ]
+    const m: FrameModel = { type: 'frame', nodes, members, loads: [{ node: 1, fx: 1, fy: 0, mz: 0 }] }
+    const r = solvePushover(m)
+    checks.push(check('Portal sway collapse', 'H_c = 4Mₚ/h', (4 * Mp) / h, r.collapseLambda, 'N', 0.02))
+  }
+
+  return checks
+}
+
 export function runContinuumBenchmarks(): Check[] {
   const checks: Check[] = []
 
@@ -422,13 +523,15 @@ export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
   harmonic: Check[]
+  plastic: Check[]
   continuum: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
   const dynamics = runDynamicsBenchmarks()
   const harmonic = runHarmonicBenchmarks()
+  const plastic = runPlasticBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...dynamics, ...harmonic, ...continuum].every((c) => c.pass)
-  return { frame, dynamics, harmonic, continuum, allPass }
+  const allPass = [...frame, ...dynamics, ...harmonic, ...plastic, ...continuum].every((c) => c.pass)
+  return { frame, dynamics, harmonic, plastic, continuum, allPass }
 }
