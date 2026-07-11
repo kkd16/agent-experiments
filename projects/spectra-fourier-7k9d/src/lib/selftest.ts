@@ -124,6 +124,19 @@ import {
   type AlgoConfig,
   type ScenarioConfig,
 } from './adaptive'
+import {
+  codeCatalogue as ldpcCatalogue,
+  codeById as ldpcById,
+  encode as ldpcEncode,
+  extractMessage as ldpcExtract,
+  syndromeWeight as ldpcSyndrome,
+  decodeDemo as ldpcDecodeDemo,
+  waterfall as ldpcWaterfall,
+  uncodedBer as ldpcUncodedBer,
+  girth as ldpcGirth,
+  shannonLimitDb as ldpcShannonLimit,
+  mulberry32 as ldpcRng,
+} from './ldpc'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -1901,6 +1914,66 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     )
     const ss = run.posStd[run.posStd.length - 1]
     check('Kalman position uncertainty settles below the measurement σ', ss > 0 && ss < 1.5)
+  }
+
+  // 74. LDPC systematic encoder: every code satisfies H·c = 0 and round-trips the
+  //     message bits back out of the codeword for random messages.
+  {
+    let ok = true
+    for (const code of ldpcCatalogue()) {
+      const rng = ldpcRng(12345)
+      for (let t = 0; t < 12; t++) {
+        const msg = new Uint8Array(code.k)
+        for (let i = 0; i < code.k; i++) msg[i] = rng() < 0.5 ? 0 : 1
+        const c = ldpcEncode(code, msg)
+        if (ldpcSyndrome(code, c) !== 0) ok = false
+        const back = ldpcExtract(code, c)
+        for (let i = 0; i < code.k; i++) if (back[i] !== msg[i]) ok = false
+      }
+      if (code.k !== code.n - code.rank) ok = false
+    }
+    check('LDPC encode satisfies H·c=0 and is systematic (all codes)', ok)
+  }
+
+  // 75. Belief propagation: at a comfortable SNR every decoder in the family
+  //     recovers the transmitted block almost always.
+  {
+    const code = ldpcById('peg_96_48')
+    let worst = 1
+    for (const algo of ['sp', 'ms', 'nms', 'oms'] as const) {
+      let succ = 0
+      const trials = 40
+      for (let s = 0; s < trials; s++) {
+        if (ldpcDecodeDemo(code, 5, algo, 40, 3000 + s).recovered) succ++
+      }
+      worst = Math.min(worst, succ / trials)
+    }
+    check('LDPC decoders recover ≥90% of blocks at 5 dB (all four schedules)', worst >= 0.9)
+  }
+
+  // 76. Coding gain: sum-product BER sits far below uncoded BPSK at the same Eb/N0.
+  {
+    const code = ldpcById('peg_96_48')
+    const pt = ldpcWaterfall(code, 'sp', [3.5], 40, {
+      minBlocks: 200,
+      maxBlocks: 1200,
+      targetBlockErrors: 30,
+      seed: 5,
+    })[0]
+    check('LDPC sum-product BER << uncoded BPSK at 3.5 dB', pt.ber < ldpcUncodedBer(3.5) * 0.25)
+  }
+
+  // 77. Sum-product is the strongest of the four (min-sum never beats it materially),
+  //     and a PEG code has girth ≥ 6 (no 4-cycles) while the dense Hamming code is girth-4.
+  {
+    const code = ldpcById('peg_96_48')
+    const budget = { minBlocks: 200, maxBlocks: 1200, targetBlockErrors: 30, seed: 9 }
+    const sp = ldpcWaterfall(code, 'sp', [2.5], 40, budget)[0]
+    const ms = ldpcWaterfall(code, 'ms', [2.5], 40, budget)[0]
+    const gainOk = sp.ber <= ms.ber * 1.5 + 1e-9
+    const girthOk = ldpcGirth(ldpcById('peg_96_48')) >= 6 && ldpcGirth(ldpcById('hamming74')) === 4
+    const shannonOk = Math.abs(ldpcShannonLimit(0.5)) < 0.01
+    check('LDPC: sum-product ≤ min-sum BER, PEG girth ≥ 6, Shannon(½)≈0 dB', gainOk && girthOk && shannonOk)
   }
 
   return { passed, failed, messages }

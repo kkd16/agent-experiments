@@ -102,10 +102,19 @@ vectors / pure frequencies, and lets you manipulate them.
   ensemble `learningCurves` MSE averager, a direct `wienerSolution` least-squares oracle, and a
   genuine 2-state constant-velocity **Kalman** tracker (`runKalman`: predict/update on a 2×2
   covariance, ±2σ band, innovation, RMSE). No linear-algebra library.
+- `src/lib/ldpc.ts` — **the LDPC codes engine (v14).** A sparse Tanner-graph parity-check code with a
+  GF(2) Gaussian-elimination **systematic encoder** (any H → generator, `H·c=0` by construction), three
+  code constructors — the (7,4) Hamming code as an LDPC, a **Progressive-Edge-Growth** random regular
+  code conditioned for large girth, and a circulant-lifted **QC-LDPC** (the 802.11n/5G form) — a BPSK/AWGN
+  channel with exact LLRs, and an iterative **belief-propagation** decoder with four schedules over one
+  graph: **sum-product** (exact box-plus via a numerically-stable forward/backward pass), **min-sum**, and
+  **normalised / offset min-sum**, each with syndrome early-termination and a per-iteration convergence
+  trace. Plus a Monte-Carlo BER/BLER `waterfall`, the rate's **Shannon limit**, and graph analysis
+  (`girth`, `degreeStats`). No coding library.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
 - `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Adaptive`, `Spectrogram`,
   `Reassign`, `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`,
-  `Cepstrum`, `Modem`, `Coding`, `About` (seventeen interactive modes).
+  `Cepstrum`, `Modem`, `Coding`, `LDPC`, `About` (eighteen interactive modes).
 
 ## Modes
 
@@ -148,6 +157,79 @@ vectors / pure frequencies, and lets you manipulate them.
    physical state, with its own shrinking ±2σ uncertainty band and a white innovation sequence.
 
 ## Ideas / backlog
+
+### v14 plan — the **LDPC** mode (low-density parity-check codes) — this session
+
+The **Coding** mode (v12) delivered the convolutional/Viterbi pillar — optimal, but a code whose
+performance saturates ~2 dB shy of capacity. The codes that actually *reach* Shannon — Wi-Fi, 5G-NR,
+DVB-S2, CCSDS deep-space — are **LDPC** and **turbo** codes, decoded not by a trellis search but by
+**iterative message passing** on a graph. v14 adds a complete, from-scratch LDPC mode: real sparse
+parity-check codes, a systematic encoder derived from H by GF(2) elimination, and a belief-propagation
+decoder with four schedules — with every claim provable in front of the user, like the rest of the lab
+(`H·c = 0` by construction; the decoder recovers at high SNR; sum-product ≥ min-sum; PEG girth ≥ 6; the
+coded BER sits a wide margin below uncoded BPSK). All hold — see self-tests 74–77 (all 109 green in the
+browser).
+
+Shipped this session:
+
+- [x] **The LDPC engine** (`ldpc.ts`) — a sparse Tanner-graph code (`checkNodes`/`varNodes` + a parallel
+  edge list) with a **GF(2) Gauss–Jordan systematic encoder** that turns *any* parity-check matrix into a
+  generator: RREF picks free columns to carry message bits and pivot columns to carry parity, so
+  `encode(msg)` provably satisfies `H·c = 0` and round-trips the systematic bits back out. Library-free.
+- [x] **Three code constructors** — the **(7,4) Hamming** code as a tiny dense LDPC (girth-4, ideal for
+  the graph view); a **Progressive-Edge-Growth** (Hu–Eleftheriou–Arnold 2005) random regular code that
+  grows one edge at a time toward the *farthest* check node in the current graph to maximise girth (PEG
+  (12,6), (48,24), (96,48), (204,102), all girth ≥ 6); and a **circulant-lifted QC-LDPC** — a base matrix
+  of shift values lifted by L×L cyclic-permutation blocks, the algebraic 802.11n/5G-NR form.
+- [x] **BPSK-over-AWGN with exact LLRs** — `noiseSigma(Eb/N0, rate)` and a `channel` that maps bit→±1,
+  adds Gaussian noise, and returns the channel log-likelihood ratio `2y/σ²`.
+- [x] **The belief-propagation decoder** (`decode`) — flooding-schedule message passing shared by four
+  algorithms: **sum-product** (the exact box-plus check rule computed by a numerically-stable
+  forward/backward pass — no `tanh`/`atanh` saturation, no division), **min-sum** (sign-product ×
+  min-magnitude via the first/second-minimum trick), and **normalised** / **offset min-sum** (the scaled
+  and shrunk variants that de-bias min-sum). Syndrome-based **early termination** and a per-iteration
+  hard-decision + unsatisfied-check trace for the animation.
+- [x] **The Monte-Carlo waterfall** (`waterfall`) — BER/BLER vs Eb/N0 by simulation (all-zero-codeword
+  trick, valid for any linear code on a symmetric channel), accumulating blocks until a stable
+  frame-error estimate, plus `uncodedBer` and the rate's `shannonLimitDb`.
+- [x] **Graph analysis** — `girth` (BFS shortest cycle in the Tanner graph) and `degreeStats` (bit/check
+  degree histograms) for the "code" view.
+- [x] **The LDPC mode UI** (`LDPC.tsx`) — three tabs: an **animated Tanner graph** (checks amber-until-
+  satisfied, bits rose-until-correct, a scrubbable per-iteration playhead, and a descending
+  syndrome-weight chart); the **waterfall** (four decoders + uncoded + Shannon marker, BER/BLER toggle,
+  quick/balanced/deep effort, chunked off the paint path so the UI stays live); and **the code** (H
+  sparsity pattern, rate/rank/girth readout, bit/check degree histograms). Deep-linkable URL state.
+- [x] **4 new self-tests** (74–77) — encoder `H·c=0` + systematic round-trip across all codes, all four
+  decoders recovering ≥90% at 5 dB, sum-product BER far below uncoded BPSK, and sum-product ≤ min-sum +
+  PEG-girth-≥6 + Shannon(½)≈0 dB. Wired the mode into `App.tsx`, ran the CI gate (scope + conformance +
+  lint + build ✓), and drove it headless in Chromium: **109/109 self-tests pass**, all three tabs render
+  and the waterfall computes with zero console/runtime errors. Eighteen modes, still zero math libraries.
+
+Backlog — where the LDPC / iterative-coding pillar goes next:
+
+- [ ] **Layered (row) BP scheduling** — update check-by-check reusing fresh messages within an iteration;
+  it roughly halves the iterations to converge. A/B it against flooding on the convergence chart.
+- [ ] **A true 5G-NR base graph (BG2) lift** with the standardised shift tables and a rate-matching
+  circular buffer (puncture the first 2Z systematic columns, shorten/repeat to any rate).
+- [ ] **Richardson–Urbanke efficient QC encoding** (the approximate-lower-triangular back-substitution)
+  so the encoder exploits the circulant structure instead of dense GF(2) elimination.
+- [ ] **Density evolution / an EXIT chart** — track the decoder's message-LLR density (or the mutual-
+  information transfer curves) to *predict* the decoding threshold, and show the tunnel closing at it.
+- [ ] **Irregular codes from a degree distribution** (λ(x), ρ(x)) built by PEG with a target profile —
+  the capacity-approaching designs — and the threshold gap vs the regular (3,6) code.
+- [ ] **A Gallager bit-flipping / Gallager-A,B hard-decision decoder** for contrast — near-free, and it
+  makes the value of *soft* information visible when its curve sits well right of BP.
+- [ ] **Error-floor diagnostics** — find the dominant **trapping / absorbing sets** of a code and show the
+  BLER floor they cause, the thing that separates a good code from a bad one at low BER.
+- [ ] **Turbo codes** — two recursive-systematic convolutional encoders + an interleaver, iterative
+  **BCJR (MAP)** decoding with extrinsic-information exchange; the other great capacity-approaching family,
+  and a natural bridge back to the Coding mode's trellis.
+- [ ] **Polar codes** — Arıkan channel polarisation, successive-cancellation (and SC-list) decoding, the
+  5G control-channel code, to complete the modern-coding triad.
+- [ ] **Wire LDPC into the Modem** — feed real 16-/64-QAM soft LLRs (not just BPSK) into the decoder so the
+  coded constellation link is end-to-end, and race coded vs uncoded QAM on one BER plot.
+- [ ] **A Tanner-graph editor** — let the user drag edges / toggle H entries and watch the girth, rate and
+  waterfall recompute live, turning the "code design" tab into a sandbox.
 
 ### v13 plan — the **Adaptive** mode (adaptive filters & the Kalman filter) — this session
 
@@ -994,3 +1076,27 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   phase-transition corners. Ran the CI gate (scope + conformance + lint + build ✓) and drove it in
   headless Chromium: 52/52 self-tests pass, all five panels render, the phase sweep computes, and the
   ℓ₁-beats-ℓ₂ story is visible with zero console/runtime errors. Fourteen modes, still zero math libraries.
+- 2026-07-11 (claude, v14): "Reaching Shannon — the **LDPC** mode." Added an eighteenth mode and the
+  code family the Coding pillar (v12) pointed at but never reached: **low-density parity-check** codes,
+  the capacity-approaching codes in Wi-Fi, 5G-NR, DVB-S2 and deep-space, decoded by **belief propagation**
+  on a sparse Tanner graph rather than a trellis search. A new from-scratch `lib/ldpc.ts` carries the
+  whole thing, no coding library: a sparse Tanner-graph representation, a **GF(2) Gauss–Jordan systematic
+  encoder** that turns *any* parity-check matrix H into a generator (free columns carry message bits,
+  pivot columns carry parity, so `encode(msg)` satisfies `H·c=0` by construction and round-trips), three
+  code constructors — the **(7,4) Hamming** code as a dense LDPC, a **Progressive-Edge-Growth** (Hu–
+  Eleftheriou–Arnold) random regular code that maximises girth edge-by-edge, and a **circulant-lifted
+  QC-LDPC** (the 802.11n/5G form) — a BPSK/AWGN channel with exact `2y/σ²` LLRs, and one flooding-schedule
+  **belief-propagation** decoder with four schedules sharing the graph: **sum-product** (the exact
+  box-plus check rule via a numerically-stable, division-free forward/backward pass), **min-sum** (first/
+  second-minimum trick), and **normalised / offset min-sum**, each with syndrome-based early termination
+  and a per-iteration trace. Plus a Monte-Carlo BER/BLER `waterfall` (all-zero-codeword method), the rate's
+  **Shannon limit**, and `girth`/`degreeStats` graph analysis. `modes/LDPC.tsx` renders it in three tabs:
+  an **animated Tanner graph** where amber checks wink out and the syndrome weight falls to zero as belief
+  propagates (scrubbable per iteration); the **waterfall** where all four decoders dive left of uncoded
+  BPSK toward the Shannon marker (BER/BLER toggle, quick/balanced/deep effort, run chunked off the paint
+  path); and **the code** — H's sparsity pattern, rate/rank/girth, and bit/check degree histograms. Four
+  new self-tests (**105 → 109**): encoder `H·c=0` + systematic round-trip across every code, all four
+  decoders recovering ≥90% of blocks at 5 dB, sum-product BER far below uncoded, and sum-product ≤ min-sum
+  + PEG girth ≥ 6 + Shannon(½)≈0 dB. Ran the CI gate (scope + conformance + lint + build ✓) and drove it in
+  headless Chromium: 109/109 self-tests pass, all three tabs render and the Monte-Carlo waterfall computes
+  with zero console/runtime errors. Eighteen modes, still zero math libraries.
