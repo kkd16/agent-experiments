@@ -434,10 +434,13 @@ a guided lab.
       the same BLS12-381 KZG this lab already has, and re-checked by the verifier at one Fiat–Shamir
       point ζ from six batched openings (one final pairing). **Plookup** (Gabizon–Williamson 2020) in
       its transparent multiset-equality form. Applications: an n-bit **range check** and a **vector
-      (multi-column) XOR table** via random-γ tuple folding.
-- [x] **+11 self-test checks** (grand-sum closes, correct multiplicities, honest logUp accepts,
+      (multi-column) XOR table** via random-γ tuple folding — including a *committed* vector lookup
+      that KZG-commits each column separately and folds the openings verifier-side (`ff(ζ)=Σγᵏfₖ(ζ)`),
+      the honest zkVM construction where γ is drawn by Fiat–Shamir after the commitments.
+- [x] **+13 self-test checks** (grand-sum closes, correct multiplicities, honest logUp accepts,
       out-of-table rejects, mauled opening rejects, range check accept/reject, XOR table
-      accept/reject, Plookup identity holds/fails); a new **Lookup** subsystem.
+      accept/reject, committed vector lookup accept/reject, Plookup identity holds/fails); a new
+      **Lookup** subsystem.
 - [ ] **Lookup ideas** — a *committed* multi-column logUp (commit each column + prove the fold
       in-circuit rather than folding in the clear); **logUp-GKR** (batch many tables' sums with the
       sum-check protocol from `gkr.ts`); a **cross-table / conditional lookup** (a selector column
@@ -1335,10 +1338,16 @@ channel so the Double Ratchet becomes cipher-agnostic.
   in the clear, a faithful check of the theorem that started the field. (3) Applications: an n-bit
   **range check** (lookup into {0,…,2ⁿ−1}) and a **vector XOR table** (rows (x,y,x⊕y) folded to
   x+γy+γ²(x⊕y) so a tuple lookup becomes a scalar logUp — exactly how a zkVM proves bitwise ops).
+  The XOR path comes in both forms: a fold-in-the-clear helper and a **committed vector lookup**
+  (`logupProveVector`/`logupVerifyVector`) that KZG-commits each column separately, draws γ by
+  Fiat–Shamir *after* the commitments, and has the verifier fold the per-column openings itself
+  (`ff(ζ) = Σ γᵏ fₖ(ζ)`) — the honest construction, so the columns are never revealed.
   The engine was verified end-to-end in Node (a vite-lib bundle harness, 16 assertions: honest
   accept, out-of-table reject via a failed identity, mauled-opening reject via a failed pairing,
   correct multiplicities, range accept/reject, XOR accept/reject, Plookup holds/fails) *before* the UI
-  was wired. New Lab-41 page: an editable table/witness with a live multiplicity histogram, the
+  was wired (a second harness pinned the committed vector lookup: correct triples accept, a wrong
+  triple rejects, and a tampered per-column opening fails the pairing). New Lab-41 page: an editable
+  table/witness with a live multiplicity histogram, the
   grand-sum accumulator S(ωⁱ) across H, the four KZG commitments, and accept/reject verdicts, plus
   inject-an-out-of-table-value and tamper-an-opening toggles, a range-check panel, an interactive
   XOR-table panel, and a Plookup panel showing the sorted merge s and both grand products. Self-test

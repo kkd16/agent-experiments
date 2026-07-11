@@ -333,25 +333,21 @@ function XorPanel() {
 
   const tableRows = useMemo(() => lookup.xorTable(bits), [bits])
   const truth = (a ^ b) & ((1 << bits) - 1)
-  const folded = useMemo(
-    () => lookup.foldVectorLookup({ tableRows, witnessRows: [[BigInt(a), BigInt(b), BigInt(claimed)]], gamma: XOR_GAMMA }),
-    [tableRows, a, b, claimed],
-  )
-  const N = useMemo(() => lookup.padToPow2(folded.table.length), [folded.table.length])
+  const N = useMemo(() => lookup.padToPow2(tableRows.length), [tableRows.length])
   const srs = useSrs(N)
 
-  const [res, setRes] = useState<{ key: string; ok: boolean } | null>(null)
+  const [res, setRes] = useState<{ key: string; ok: boolean; proof: lookup.VectorLogupProof } | null>(null)
   const key = `${bits}|${a}|${b}|${claimed}`
   useEffect(() => {
     if (!srs) return
     let alive = true
     const id = setTimeout(() => {
       try {
-        const inst: lookup.LogupInstance = { table: folded.table, N }
+        const inst: lookup.VectorLogupInstance = { tableRows, N }
         const cheat = claimed !== truth
-        const { proof } = lookup.logupProve(srs, inst, folded.witness, { forceCheat: cheat })
-        const ok = lookup.logupVerify(srs, inst, proof).ok
-        if (alive) setRes({ key, ok })
+        const { proof } = lookup.logupProveVector(srs, inst, [[BigInt(a), BigInt(b), BigInt(claimed)]], { forceCheat: cheat })
+        const ok = lookup.logupVerifyVector(srs, inst, proof).ok
+        if (alive) setRes({ key, ok, proof })
       } catch {
         /* degraded */
       }
@@ -360,14 +356,15 @@ function XorPanel() {
       alive = false
       clearTimeout(id)
     }
-  }, [srs, folded, N, claimed, truth, key])
+  }, [srs, tableRows, N, a, b, claimed, truth, key])
 
   const fresh = res !== null && res.key === key
   const maxV = (1 << bits) - 1
+  const foldedWitness = useMemo(() => lookup.foldTuple([BigInt(a), BigInt(b), BigInt(claimed)], fresh ? res.proof.gamma : XOR_GAMMA), [a, b, claimed, fresh, res])
   return (
     <Panel
-      title="3 · XOR table — a vector (multi-column) lookup"
-      sub="Each table row is a triple (x, y, x⊕y). Folding a triple into x + γ·y + γ²·(x⊕y) turns a tuple lookup into a scalar logUp — how a zkVM proves bitwise ops."
+      title="3 · XOR table — a committed multi-column (vector) lookup"
+      sub="Each table row is a triple (x, y, x⊕y). Each witness column is KZG-committed separately, a challenge γ is drawn by Fiat–Shamir, and the tuple folds to x + γ·y + γ²·(x⊕y) — turning a tuple lookup into a scalar logUp exactly as a zkVM proves bitwise ops."
       right={fresh ? <Verdict ok={res.ok}>{res.ok ? 'triple in table ✓' : 'not in table ✗'}</Verdict> : <span className="tag">building…</span>}
     >
       <div className="field">
@@ -392,13 +389,21 @@ function XorPanel() {
         </div>
       </div>
       <div className="note" style={{ marginTop: '0.6rem' }}>
-        Row (<span className="mono">{a}, {b}, {claimed}</span>) folds to{' '}
-        <span className="mono">{short(folded.witness[0])}</span>. True {a} ⊕ {b} ={' '}
+        Row (<span className="mono">{a}, {b}, {claimed}</span>) folds with γ ={' '}
+        <span className="mono">{fresh ? short(res.proof.gamma) : '…'}</span> to{' '}
+        <span className="mono">{short(foldedWitness)}</span>. True {a} ⊕ {b} ={' '}
         <span className="mono">{truth}</span>{' '}
         {fresh && (res.ok
           ? '— the folded triple is in the XOR table, so the bitwise result is proven correct.'
           : '— the claimed result is wrong, so the folded triple has no matching table row.')}
       </div>
+      {fresh && (
+        <div className="kv mono" style={{ marginTop: '0.6rem', fontSize: '0.82rem' }}>
+          <div className="acc-ix">[a]₁ = {ellipsize(g1hex(res.proof.cF[0]), 8, 6)}</div>
+          <div className="acc-ix">[b]₁ = {ellipsize(g1hex(res.proof.cF[1]), 8, 6)}</div>
+          <div className="acc-ix">[a⊕b]₁ = {ellipsize(g1hex(res.proof.cF[2]), 8, 6)}</div>
+        </div>
+      )}
     </Panel>
   )
 }

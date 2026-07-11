@@ -472,6 +472,274 @@ export function foldVectorLookup(v: VectorLookup): { table: bigint[]; witness: b
   }
 }
 
+// ── A *committed* multi-column vector lookup ─────────────────────────────────
+//
+// The `foldVectorLookup` above folds tuples into scalars *in the clear* — fine
+// when the columns are public, but a real prover commits each column and folds
+// only in the exponent, drawing γ by Fiat–Shamir *after* the commitments so it
+// can't choose them to force a collision. This is that honest construction: one
+// KZG commitment per witness column, a transcript-drawn γ, and a verifier that
+// reconstructs the folded openings ff(ζ) = Σ γᵏ fₖ(ζ), tf(ζ) = Σ γᵏ tₖ(ζ) from
+// the per-column openings itself. The scalar logUp machinery then runs on the
+// folded polynomials exactly as before.
+
+export interface VectorLogupInstance {
+  tableRows: bigint[][] // rows of equal-length tuples (public, preprocessed)
+  N: number
+}
+
+export interface VectorLogupProof {
+  N: number
+  cols: number
+  cF: G1[] // one commitment per witness column
+  cM: G1
+  cS: G1
+  cQ: G1
+  gamma: bigint
+  beta: bigint
+  alpha: bigint
+  zeta: bigint
+  fz: bigint[] // per-column openings at ζ
+  tz: bigint[]
+  mz: bigint
+  sz: bigint
+  sωz: bigint
+  qz: bigint
+  Wf: G1[]
+  Wt: G1[]
+  Wm: G1
+  Ws: G1
+  Wsω: G1
+  Wq: G1
+}
+
+/** Powers γ⁰, γ¹, …, γ^{k−1}. */
+function gammaPowers(gamma: bigint, k: number): bigint[] {
+  const out: bigint[] = new Array(k)
+  let g = 1n
+  for (let i = 0; i < k; i++) {
+    out[i] = g
+    g = mod(g * gamma, R)
+  }
+  return out
+}
+
+/** Build the logUp constraint/quotient for folded value polynomials ffPoly,
+ *  tfPoly (β − f, β − t), a multiplicity poly and an accumulator. Shared by the
+ *  committed vector prover; returns the quotient (or throws on a real witness
+ *  whose constraint fails to vanish, unless the caller is demoing a cheat). */
+function logupQuotient(
+  ffPoly: Poly,
+  tfPoly: Poly,
+  mPoly: Poly,
+  sPoly: Poly,
+  N: number,
+  w: bigint,
+  beta: bigint,
+  alpha: bigint,
+  allowNonExact: boolean,
+): Poly {
+  const phi = pSub([beta], ffPoly, R)
+  const psi = pSub([beta], tfPoly, R)
+  const dS = pSub(shiftByOmega(sPoly, w), sPoly, R)
+  const term1 = pMul(dS, pMul(phi, psi, R), R)
+  const term2 = pSub(psi, pMul(mPoly, phi, R), R)
+  const C = pSub(term1, term2, R)
+  const boundary = pScale(pMul(lagrangeBasis(N, 0), sPoly, R), alpha, R)
+  const combined = pAdd(C, boundary, R)
+  const { q, r } = pDivmod(combined, vanishingH(N), R)
+  if (!allowNonExact && r.length !== 0) throw new Error('vector logup: constraint does not vanish on H')
+  return q
+}
+
+/**
+ * Prove that every witness *tuple* appears as a table row, with each witness
+ * column committed separately and folded by a Fiat–Shamir γ.
+ */
+export function logupProveVector(
+  srs: SRS,
+  inst: VectorLogupInstance,
+  witnessRows: bigint[][],
+  opts: { forceCheat?: boolean } = {},
+): { proof: VectorLogupProof; foldedInTable: boolean } {
+  const N = inst.N
+  const H = domain(N)
+  const w = rootOfUnity(N)
+  const cols = inst.tableRows[0].length
+
+  // Pad rows (witness with a real table row, table with its last row).
+  const tableRowsP = inst.tableRows.map((r) => r.map((x) => mod(x, R)))
+  while (tableRowsP.length < N) tableRowsP.push(tableRowsP[tableRowsP.length - 1].slice())
+  const witnessRowsP = witnessRows.map((r) => r.map((x) => mod(x, R)))
+  while (witnessRowsP.length < N) witnessRowsP.push(inst.tableRows[0].map((x) => mod(x, R)))
+
+  // Per-column polynomials; commit the witness columns.
+  const fPoly: Poly[] = []
+  const tPoly: Poly[] = []
+  const cF: G1[] = []
+  for (let k = 0; k < cols; k++) {
+    const fCol = witnessRowsP.map((r) => r[k])
+    const tCol = tableRowsP.map((r) => r[k])
+    const fp = interpOverH(fCol, H)
+    fPoly.push(fp)
+    tPoly.push(interpOverH(tCol, H))
+    cF.push(kzgCommit(srs, fp))
+  }
+
+  const tr = new Transcript('logup-vec')
+  tr.absorbScalar(BigInt(N))
+  tr.absorbScalar(BigInt(cols))
+  for (const r of tableRowsP) for (const v of r) tr.absorbScalar(v)
+  for (const c of cF) tr.absorbPoint(c)
+  const gamma = tr.challenge()
+
+  const gp = gammaPowers(gamma, cols)
+  const ffVals = witnessRowsP.map((r) => foldTuple(r, gamma))
+  const tfVals = tableRowsP.map((r) => foldTuple(r, gamma))
+  const { m, inTable } = buildMultiplicities(ffVals, tfVals, opts.forceCheat ?? false)
+
+  // Folded polynomials as exact linear combinations of the committed columns.
+  let ffPoly: Poly = []
+  let tfPoly: Poly = []
+  for (let k = 0; k < cols; k++) {
+    ffPoly = pAdd(ffPoly, pScale(fPoly[k], gp[k], R), R)
+    tfPoly = pAdd(tfPoly, pScale(tPoly[k], gp[k], R), R)
+  }
+  const mPoly = interpOverH(m, H)
+  const cM = kzgCommit(srs, mPoly)
+  tr.absorbPoint(cM)
+  const beta = tr.challenge()
+
+  const S: bigint[] = new Array(N)
+  S[0] = 0n
+  for (let i = 1; i < N; i++) {
+    const invF = modInv(mod(beta - ffVals[i - 1], R), R)
+    const invT = modInv(mod(beta - tfVals[i - 1], R), R)
+    S[i] = mod(S[i - 1] + mod(invF - mod(m[i - 1] * invT, R), R), R)
+  }
+  const sPoly = interpOverH(S, H)
+  const cS = kzgCommit(srs, sPoly)
+  tr.absorbPoint(cS)
+  const alpha = tr.challenge()
+
+  const qPoly = logupQuotient(ffPoly, tfPoly, mPoly, sPoly, N, w, beta, alpha, opts.forceCheat ?? false)
+  const cQ = kzgCommit(srs, qPoly)
+  tr.absorbPoint(cQ)
+  const zeta = tr.challenge()
+  const zω = mod(zeta * w, R)
+
+  const fOpen = fPoly.map((p) => kzgOpen(srs, p, zeta))
+  const tOpen = tPoly.map((p) => kzgOpen(srs, p, zeta))
+  const om = kzgOpen(srs, mPoly, zeta)
+  const os = kzgOpen(srs, sPoly, zeta)
+  const osω = kzgOpen(srs, sPoly, zω)
+  const oq = kzgOpen(srs, qPoly, zeta)
+
+  const proof: VectorLogupProof = {
+    N,
+    cols,
+    cF,
+    cM,
+    cS,
+    cQ,
+    gamma,
+    beta,
+    alpha,
+    zeta,
+    fz: fOpen.map((o) => o.y),
+    tz: tOpen.map((o) => o.y),
+    mz: om.y,
+    sz: os.y,
+    sωz: osω.y,
+    qz: oq.y,
+    Wf: fOpen.map((o) => o.W),
+    Wt: tOpen.map((o) => o.W),
+    Wm: om.W,
+    Ws: os.W,
+    Wsω: osω.W,
+    Wq: oq.W,
+  }
+  return { proof, foldedInTable: inTable }
+}
+
+/** Verify a committed vector lookup: batch-check every column opening, then fold
+ *  the openings and re-check the log-derivative identity at ζ. */
+export function logupVerifyVector(
+  srs: SRS,
+  inst: VectorLogupInstance,
+  proof: VectorLogupProof,
+): LogupVerifyResult {
+  const N = inst.N
+  const w = rootOfUnity(N)
+  const H = domain(N)
+  const cols = proof.cols
+
+  const tableRowsP = inst.tableRows.map((r) => r.map((x) => mod(x, R)))
+  while (tableRowsP.length < N) tableRowsP.push(tableRowsP[tableRowsP.length - 1].slice())
+  const tPoly: Poly[] = []
+  const cT: G1[] = []
+  for (let k = 0; k < cols; k++) {
+    const tp = interpOverH(tableRowsP.map((r) => r[k]), H)
+    tPoly.push(tp)
+    cT.push(kzgCommit(srs, tp))
+  }
+
+  const tr = new Transcript('logup-vec')
+  tr.absorbScalar(BigInt(N))
+  tr.absorbScalar(BigInt(cols))
+  for (const r of tableRowsP) for (const v of r) tr.absorbScalar(v)
+  for (const c of proof.cF) tr.absorbPoint(c)
+  const gamma = tr.challenge()
+  tr.absorbPoint(proof.cM)
+  const beta = tr.challenge()
+  tr.absorbPoint(proof.cS)
+  const alpha = tr.challenge()
+  tr.absorbPoint(proof.cQ)
+  const zeta = tr.challenge()
+  const zω = mod(zeta * w, R)
+
+  const challengesOk =
+    gamma === proof.gamma && beta === proof.beta && alpha === proof.alpha && zeta === proof.zeta
+
+  const mkOp = (z: bigint, y: bigint, W: G1): Opening => ({ z, y, W })
+  const items = [
+    ...proof.cF.map((C, k) => ({ C, op: mkOp(zeta, proof.fz[k], proof.Wf[k]) })),
+    ...cT.map((C, k) => ({ C, op: mkOp(zeta, proof.tz[k], proof.Wt[k]) })),
+    { C: proof.cM, op: mkOp(zeta, proof.mz, proof.Wm) },
+    { C: proof.cS, op: mkOp(zeta, proof.sz, proof.Ws) },
+    { C: proof.cS, op: mkOp(zω, proof.sωz, proof.Wsω) },
+    { C: proof.cQ, op: mkOp(zeta, proof.qz, proof.Wq) },
+  ]
+  const openingsOk = batchVerify(srs, items)
+
+  const gp = gammaPowers(gamma, cols)
+  let ffz = 0n
+  let tfz = 0n
+  for (let k = 0; k < cols; k++) {
+    ffz = mod(ffz + mod(gp[k] * proof.fz[k], R), R)
+    tfz = mod(tfz + mod(gp[k] * proof.tz[k], R), R)
+  }
+  const phiZ = mod(beta - ffz, R)
+  const psiZ = mod(beta - tfz, R)
+  const cZ = mod(
+    mod(mod(proof.sωz - proof.sz, R) * mod(phiZ * psiZ, R), R) -
+      mod(psiZ - mod(proof.mz * phiZ, R), R),
+    R,
+  )
+  const combinedZ = mod(cZ + mod(alpha * mod(lagrangeEval(N, 0, zeta) * proof.sz, R), R), R)
+  const identityOk = combinedZ === mod(proof.qz * evalVanishing(N, zeta), R)
+
+  const ok = challengesOk && openingsOk && identityOk
+  const detail = ok
+    ? `${cols} columns committed + folded by γ; identity holds at ζ`
+    : !challengesOk
+      ? 'Fiat–Shamir challenges do not match'
+      : !openingsOk
+        ? 'a per-column KZG opening failed'
+        : 'the folded log-derivative identity does not hold at ζ'
+  return { ok, openingsOk, identityOk, detail }
+}
+
 // ── Range check ──────────────────────────────────────────────────────────────
 
 /** The n-bit range table {0, 1, …, 2ⁿ−1}. Proving a value looks up into this
