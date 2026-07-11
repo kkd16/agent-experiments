@@ -26,7 +26,12 @@ export interface FMember {
   E: number // Young's modulus (Pa)
   A: number // cross-sectional area (m²)
   I: number // second moment of area (m⁴) — frame mode only
+  rho?: number // material mass density (kg/m³) — modal analysis; defaults to steel
+  w?: number // uniform transverse distributed load (N/m), +ve along local +v — frame mode
 }
+
+/** Default material mass density: structural steel, kg/m³. */
+export const DEFAULT_DENSITY = 7850
 export interface FLoad {
   node: number
   fx: number
@@ -78,7 +83,7 @@ export interface FrameResult {
 }
 
 /** Which local DOFs (u, v, θ) a support fixes, as a 3-tuple of booleans. */
-function constrainedDofs(support: SupportKind): [boolean, boolean, boolean] {
+export function constrainedDofs(support: SupportKind): [boolean, boolean, boolean] {
   switch (support) {
     case 'pin':
       return [true, true, false]
@@ -93,7 +98,7 @@ function constrainedDofs(support: SupportKind): [boolean, boolean, boolean] {
   }
 }
 
-function geom(model: FrameModel, m: FMember) {
+export function geom(model: FrameModel, m: FMember) {
   const na = model.nodes[m.a]
   const nb = model.nodes[m.b]
   const dx = nb.x - na.x
@@ -140,8 +145,39 @@ function beamLocal(E: number, A: number, I: number, L: number): number[][] {
   return K
 }
 
+/**
+ * Work-equivalent (consistent) local load vector for a uniform transverse
+ * intensity `w` (N/m, local +v) on a 2-node beam element of length L.
+ * DOF order [u1, v1, θ1, u2, v2, θ2].
+ */
+export function equivLoadLocal(w: number, L: number): number[] {
+  return [0, (w * L) / 2, (w * L * L) / 12, 0, (w * L) / 2, -(w * L * L) / 12]
+}
+
+/**
+ * Peak |bending moment| along a beam element. `m1`, `m2` are the nodal end
+ * moments (fl[2], fl[5]); `w` the uniform transverse intensity. With no span
+ * load the extremum is at an end; with one, the internal moment is the linear
+ * end-moment field plus the simply-supported parabola, whose peak may be
+ * interior — so we scan the span.
+ */
+export function peakMoment(m1: number, m2: number, w: number, L: number): number {
+  if (w === 0) return Math.max(Math.abs(m1), Math.abs(m2))
+  // Sagging-positive bending: M_bend(0) = −m1, M_bend(L) = +m2; a +v load hogs.
+  const b0 = -m1
+  const bL = m2
+  const qs = -w
+  let peak = 0
+  for (let k = 0; k <= 20; k++) {
+    const xi = k / 20
+    const M = b0 * (1 - xi) + bL * xi + qs * (L * L * 0.5) * xi * (1 - xi)
+    peak = Math.max(peak, Math.abs(M))
+  }
+  return peak
+}
+
 /** Rotation matrix (global → local) for a 2-node beam element. */
-function beamRotation(c: number, s: number): number[][] {
+export function beamRotation(c: number, s: number): number[][] {
   const T = Array.from({ length: 6 }, () => new Array(6).fill(0))
   const r = [
     [c, s, 0],
@@ -153,7 +189,7 @@ function beamRotation(c: number, s: number): number[][] {
   return T
 }
 
-function matmul(A: number[][], B: number[][]): number[][] {
+export function matmul(A: number[][], B: number[][]): number[][] {
   const n = A.length
   const m = B[0].length
   const k = B.length
@@ -167,7 +203,7 @@ function matmul(A: number[][], B: number[][]): number[][] {
   return C
 }
 
-function transpose(A: number[][]): number[][] {
+export function transpose(A: number[][]): number[][] {
   const n = A.length
   const m = A[0].length
   const T = Array.from({ length: m }, () => new Array(n).fill(0))
@@ -208,6 +244,23 @@ export function solveFrame(model: FrameModel): FrameResult {
     f[load.node * dpn] += load.fx
     f[load.node * dpn + 1] += load.fy
     if (dpn === 3) f[load.node * dpn + 2] += load.mz
+  }
+  // Distributed member loads (frame only): a uniform transverse intensity w
+  // (N/m, local +v) becomes the work-equivalent consistent nodal load vector
+  //   r = w·[0, L/2, L²/12, 0, L/2, −L²/12]   (local),
+  // rotated to global and scattered onto the member's DOFs. Member end forces
+  // later subtract this same r to recover true internal actions.
+  if (dpn === 3) {
+    for (const m of model.members) {
+      const w = m.w ?? 0
+      if (w === 0) continue
+      const { L, c, s } = geom(model, m)
+      const rl = equivLoadLocal(w, L)
+      const T = beamRotation(c, s)
+      const rg = matVecDense(transpose(T), rl)
+      const dofs = [m.a * 3, m.a * 3 + 1, m.a * 3 + 2, m.b * 3, m.b * 3 + 1, m.b * 3 + 2]
+      for (let k = 0; k < 6; k++) f[dofs[k]] += rg[k]
+    }
   }
   const free = new Uint8Array(nDof).fill(1)
   for (let i = 0; i < nNodes; i++) {
@@ -297,14 +350,21 @@ export function solveFrame(model: FrameModel): FrameResult {
         u[m.b * 3 + 2],
       ]
       const dl = matVecDense(T, ue) // local displacements
-      const fl = matVecDense(kl, dl) // local end forces
+      const w = m.w ?? 0
+      const rl = w !== 0 ? equivLoadLocal(w, L) : null
+      // Element end forces: S = k·d − r_eq (subtract the consistent span load).
+      const fl = matVecDense(kl, dl)
+      if (rl) for (let k = 0; k < 6; k++) fl[k] -= rl[k]
       // fl = [N1, V1, M1, N2, V2, M2]; axial tension positive uses node-2 axial.
       const axial = fl[3]
       const stress = axial / m.A
       // Extreme-fibre distance from a rectangular-section assumption:
       // I = b·h³/12 and A = b·h ⇒ h = √(12I/A), c = h/2 = √(3I/A).
       const cDist = Math.sqrt((3 * m.I) / m.A)
-      const mMax = Math.max(Math.abs(fl[2]), Math.abs(fl[5]))
+      // Peak bending moment along the span. For a member carrying a uniform
+      // load the extremum can fall inside the span, so superpose the linear
+      // end-moment field with the simply-supported parabola and scan it.
+      const mMax = peakMoment(fl[2], fl[5], w, L)
       const bendingStress = (mMax * cDist) / m.I
       const maxFiberStress = Math.abs(stress) + bendingStress
       members.push({

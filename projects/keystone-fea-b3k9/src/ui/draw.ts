@@ -2,7 +2,7 @@
 // a 2-D context, a model, its solved result, and display options, and paint.
 // No React, no state; everything is recomputed each frame from props.
 
-import type { FrameModel, FrameResult, SupportKind } from '../engine/frame'
+import type { FrameModel, FrameResult, NodeDisp, SupportKind } from '../engine/frame'
 import type { ContinuumResult } from '../engine/continuum'
 import type { Mesh, EdgeName } from '../engine/mesh'
 import { edgeSegments } from '../engine/mesh'
@@ -33,6 +33,8 @@ export interface FrameDrawOpts {
   selected: Picked | null
   editing: boolean
   pendingNode: number | null
+  /** When set, draw this mode shape instead of the static response (modal/buckling). */
+  modeShape?: NodeDisp[] | null
 }
 
 function clear(ctx: CanvasRenderingContext2D, w: number, h: number) {
@@ -183,16 +185,22 @@ export function drawFrame(
   drawGrid(ctx, o.view, w, h)
   const { view } = o
   const def = o.deformScale * o.loadFactor
+  const modal = !!o.modeShape
+  const shapeDisp = o.modeShape ?? result?.nodeDisp ?? null
 
   const defPos = (i: number): [number, number] => {
     const n = model.nodes[i]
-    if (!result) return worldToScreen(view, n.x, n.y)
-    const d = result.nodeDisp[i]
+    if (!shapeDisp) return worldToScreen(view, n.x, n.y)
+    const d = shapeDisp[i]
     return worldToScreen(view, n.x + d.ux * def, n.y + d.uy * def)
   }
 
+  // Peak nodal translation of the drawn shape — used to colour mode shapes.
+  let maxShape = 1e-30
+  if (shapeDisp) for (const d of shapeDisp) maxShape = Math.max(maxShape, Math.hypot(d.ux, d.uy))
+
   // Undeformed ghost.
-  if (o.showUndeformed && result && def !== 0) {
+  if (o.showUndeformed && shapeDisp && def !== 0) {
     ctx.strokeStyle = GHOST
     ctx.lineWidth = 1
     ctx.setLineDash([4, 4])
@@ -215,7 +223,13 @@ export function drawFrame(
     const [bx, by] = defPos(m.b)
     let color = ACCENT
     let width = 3
-    if (result) {
+    if (modal && shapeDisp) {
+      // Colour a mode shape by local displacement amplitude along the ramp.
+      const da = Math.hypot(shapeDisp[m.a].ux, shapeDisp[m.a].uy)
+      const db = Math.hypot(shapeDisp[m.b].ux, shapeDisp[m.b].uy)
+      color = rgbStr(fieldColor((0.5 * (da + db)) / maxShape, o.colormap))
+      width = 3.5
+    } else if (result) {
       const r = result.members[i]
       if (o.colorBy === 'force') {
         color = rgbStr(signedColor(r.axial / maxAxial))
@@ -242,7 +256,7 @@ export function drawFrame(
     ctx.lineTo(bx, by)
     ctx.stroke()
 
-    if (o.showLabels && result) {
+    if (o.showLabels && result && !modal) {
       const r = result.members[i]
       ctx.fillStyle = INK
       ctx.font = '11px ui-monospace, monospace'
@@ -252,6 +266,39 @@ export function drawFrame(
     }
   })
 
+  // Distributed member loads (static view only): a comb of little arrows along
+  // any member carrying a uniform transverse load w.
+  if (!modal && o.showLoads) {
+    for (const m of model.members) {
+      const w = m.w ?? 0
+      if (w === 0) continue
+      const na = model.nodes[m.a]
+      const nb = model.nodes[m.b]
+      const [ax, ay] = worldToScreen(view, na.x, na.y)
+      const [bx, by] = worldToScreen(view, nb.x, nb.y)
+      const dx = bx - ax
+      const dy = by - ay
+      const len = Math.hypot(dx, dy) || 1
+      // Unit normal (screen). Local +v maps to (-s, c) in world → rotate to screen.
+      let nxs = -dy / len
+      let nys = dx / len
+      // Draw arrows pointing the way the load pushes (w>0 along local +v).
+      const sgn = w > 0 ? 1 : -1
+      nxs *= sgn
+      nys *= sgn
+      const steps = Math.max(2, Math.min(10, Math.round(len / 26)))
+      const alen = 14
+      ctx.strokeStyle = 'rgba(255,150,90,0.85)'
+      ctx.fillStyle = 'rgba(255,150,90,0.85)'
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps
+        const px = ax + dx * t
+        const py = ay + dy * t
+        arrow(ctx, px + nxs * alen, py + nys * alen, px, py, 'rgba(255,150,90,0.85)', 1.5)
+      }
+    }
+  }
+
   // Supports at undeformed positions.
   model.nodes.forEach((n) => {
     if (n.support === 'free') return
@@ -260,7 +307,7 @@ export function drawFrame(
   })
 
   // Loads (grow with the load factor).
-  if (o.showLoads) {
+  if (o.showLoads && !modal) {
     let maxF = 1e-9
     for (const l of model.loads) maxF = Math.max(maxF, Math.hypot(l.fx, l.fy))
     for (const l of model.loads) {
@@ -275,7 +322,7 @@ export function drawFrame(
   }
 
   // Reactions.
-  if (o.showReactions && result) {
+  if (o.showReactions && result && !modal) {
     let maxR = 1e-9
     for (const rr of result.reactions) maxR = Math.max(maxR, Math.hypot(rr.fx, rr.fy))
     for (const rr of result.reactions) {
