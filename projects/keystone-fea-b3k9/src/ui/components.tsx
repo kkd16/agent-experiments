@@ -1,8 +1,9 @@
 // Presentational building blocks for the studio panels.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORMAP_STOPS, type Colormap } from './colormap'
 import { runAllBenchmarks, type Check } from '../engine/validate'
+import type { FrfCurve } from '../engine/harmonic'
 import { fmtEng } from './format'
 
 export function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -121,6 +122,172 @@ export function Legend({
   )
 }
 
+/**
+ * The frequency-response function, drawn as a log–log resonance curve: the
+ * output-DOF amplitude against drive frequency, with a dashed marker at every
+ * natural frequency and a live cursor at the current drive frequency. This is
+ * the signature plot of forced vibration — flat compliance, then a spike at each
+ * resonance.
+ */
+export function FrfPlot({
+  curve,
+  driveHz,
+  onPick,
+}: {
+  curve: FrfCurve
+  driveHz: number
+  onPick?: (hz: number) => void
+}) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const W = 300
+  const H = 168
+  const box = useMemo(() => {
+    const pad = { l: 40, r: 8, t: 10, b: 26 }
+    const hzMin = Math.max(curve.omegaMin / (2 * Math.PI), 1e-4)
+    const hzMax = curve.omegaMax / (2 * Math.PI)
+    // Log-magnitude range, padded a decade below the peak.
+    const magMax = Math.max(curve.magMax, 1e-30)
+    const magMin = Math.max(magMax / 1e4, curve.staticMag / 10, 1e-30)
+    return { pad, hzMin, hzMax, magMax, magMin }
+  }, [curve])
+
+  const xOf = useMemo(() => {
+    const { pad, hzMin, hzMax } = box
+    const lx0 = Math.log10(hzMin)
+    const lx1 = Math.log10(hzMax)
+    return (hz: number) => pad.l + ((Math.log10(Math.max(hz, hzMin)) - lx0) / (lx1 - lx0)) * (W - pad.l - pad.r)
+  }, [box])
+  const yOf = useMemo(() => {
+    const { pad, magMin, magMax } = box
+    const ly0 = Math.log10(magMin)
+    const ly1 = Math.log10(magMax)
+    return (m: number) => pad.t + (1 - (Math.log10(Math.max(m, magMin)) - ly0) / (ly1 - ly0)) * (H - pad.t - pad.b)
+  }, [box])
+
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    cv.width = W * dpr
+    cv.height = H * dpr
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    const { pad } = box
+    // frame
+    ctx.strokeStyle = '#2c3346'
+    ctx.lineWidth = 1
+    ctx.strokeRect(pad.l, pad.t, W - pad.l - pad.r, H - pad.t - pad.b)
+
+    // decade gridlines (x) with labels
+    ctx.fillStyle = '#626b81'
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    const decHi = Math.ceil(Math.log10(box.hzMax))
+    const decLo = Math.floor(Math.log10(box.hzMin))
+    for (let d = decLo; d <= decHi; d++) {
+      const hz = Math.pow(10, d)
+      if (hz < box.hzMin || hz > box.hzMax) continue
+      const x = xOf(hz)
+      ctx.strokeStyle = 'rgba(44,51,70,0.6)'
+      ctx.beginPath()
+      ctx.moveTo(x, pad.t)
+      ctx.lineTo(x, H - pad.b)
+      ctx.stroke()
+      ctx.fillText(hz >= 1 ? `${hz}` : `${hz}`, x, H - pad.b + 12)
+    }
+    // y decade gridlines
+    const lyHi = Math.ceil(Math.log10(box.magMax))
+    const lyLo = Math.floor(Math.log10(box.magMin))
+    ctx.textAlign = 'right'
+    for (let d = lyLo; d <= lyHi; d++) {
+      const m = Math.pow(10, d)
+      const y = yOf(m)
+      if (y < pad.t || y > H - pad.b) continue
+      ctx.strokeStyle = 'rgba(44,51,70,0.45)'
+      ctx.beginPath()
+      ctx.moveTo(pad.l, y)
+      ctx.lineTo(W - pad.r, y)
+      ctx.stroke()
+      ctx.fillText(`1e${d}`, pad.l - 4, y + 3)
+    }
+
+    // resonance markers
+    for (const p of curve.peaks) {
+      const x = xOf(p.hz)
+      if (x < pad.l || x > W - pad.r) continue
+      ctx.strokeStyle = 'rgba(245,167,66,0.55)'
+      ctx.setLineDash([3, 3])
+      ctx.beginPath()
+      ctx.moveTo(x, pad.t)
+      ctx.lineTo(x, H - pad.b)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    // the FRF curve
+    ctx.strokeStyle = '#6ea8ff'
+    ctx.lineWidth = 1.6
+    ctx.beginPath()
+    curve.samples.forEach((s, i) => {
+      const x = xOf(s.hz)
+      const y = yOf(s.mag)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    })
+    ctx.stroke()
+
+    // peak dots
+    ctx.fillStyle = '#f5a742'
+    for (const p of curve.peaks) {
+      const x = xOf(p.hz)
+      const y = yOf(p.mag)
+      if (x < pad.l || x > W - pad.r) continue
+      ctx.beginPath()
+      ctx.arc(x, y, 2.4, 0, 2 * Math.PI)
+      ctx.fill()
+    }
+
+    // drive cursor
+    const cx = xOf(driveHz)
+    if (cx >= pad.l && cx <= W - pad.r) {
+      ctx.strokeStyle = '#4ade80'
+      ctx.lineWidth = 1.4
+      ctx.beginPath()
+      ctx.moveTo(cx, pad.t)
+      ctx.lineTo(cx, H - pad.b)
+      ctx.stroke()
+    }
+
+    // axis captions
+    ctx.fillStyle = '#8b93a7'
+    ctx.textAlign = 'center'
+    ctx.fillText('drive frequency (Hz)', (pad.l + W - pad.r) / 2, H - 2)
+  }, [curve, driveHz, box, xOf, yOf])
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onPick) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const { pad } = box
+    const lx0 = Math.log10(box.hzMin)
+    const lx1 = Math.log10(box.hzMax)
+    const frac = (x - pad.l) / (W - pad.l - pad.r)
+    const hz = Math.pow(10, lx0 + frac * (lx1 - lx0))
+    onPick(Math.max(box.hzMin, Math.min(box.hzMax, hz)))
+  }
+
+  return (
+    <canvas
+      ref={ref}
+      className="frf-plot"
+      style={{ width: W, height: H, cursor: onPick ? 'crosshair' : 'default' }}
+      onClick={handleClick}
+    />
+  )
+}
+
 function CheckRow({ c }: { c: Check }) {
   return (
     <div className={c.pass ? 'check pass' : 'check fail'}>
@@ -140,9 +307,9 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
+  const { frame, dynamics, harmonic, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...continuum]
+  const all = [...frame, ...dynamics, ...harmonic, ...continuum]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -166,6 +333,10 @@ export function VerifyBadge() {
           <div className="check-group">Dynamics &amp; stability</div>
           {dynamics.map((c, i) => (
             <CheckRow key={`d${i}`} c={c} />
+          ))}
+          <div className="check-group">Harmonic response &amp; sections</div>
+          {harmonic.map((c, i) => (
+            <CheckRow key={`h${i}`} c={c} />
           ))}
           <div className="check-group">Continuum (plane stress)</div>
           {continuum.map((c, i) => (

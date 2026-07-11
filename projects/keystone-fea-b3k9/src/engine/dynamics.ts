@@ -143,7 +143,7 @@ function barRotation(c: number, s: number): Mat {
 
 // --------------------------------------------------------------- assembly core
 
-interface Assembled {
+export interface Assembled {
   dpn: number
   nDof: number
   free: number[] // list of free global DOF indices
@@ -185,7 +185,7 @@ function memberDofs(m: FrameModel['members'][number], dpn: number): number[] {
  * matrices over the free DOFs. `axial` (member axial forces, tension +) is
  * required when withGeom is set.
  */
-function assemble(
+export function assemble(
   model: FrameModel,
   opts: { withMass?: boolean; withGeom?: boolean; axial?: number[] },
 ): Assembled {
@@ -246,14 +246,31 @@ function assemble(
 }
 
 /** Scatter a reduced free-DOF vector back into a full nodal-DOF layout. */
-function expand(free: number[], nDof: number, xr: number[]): Float64Array {
+export function expand(free: number[], nDof: number, xr: number[]): Float64Array {
   const x = new Float64Array(nDof)
   for (let i = 0; i < free.length; i++) x[free[i]] = xr[i]
   return x
 }
 
+/**
+ * Build the applied nodal-load amplitude vector (fx, fy, [mz] per node) and
+ * reduce it to the free DOFs — the forcing pattern `F` that a harmonic drive
+ * `F·cos ωt` oscillates. Distributed member loads are not included here (the
+ * harmonic driver excites the nodal load pattern the user placed).
+ */
+export function reduceLoadVector(model: FrameModel, free: number[], dpn: number): number[] {
+  const nDof = model.nodes.length * dpn
+  const f = new Float64Array(nDof)
+  for (const load of model.loads) {
+    f[load.node * dpn] += load.fx
+    f[load.node * dpn + 1] += load.fy
+    if (dpn === 3) f[load.node * dpn + 2] += load.mz
+  }
+  return free.map((g) => f[g])
+}
+
 /** Split a full DOF vector into per-node {ux, uy, rot}. */
-function toNodeDisp(x: Float64Array, dpn: number, nNodes: number): NodeDisp[] {
+export function toNodeDisp(x: Float64Array, dpn: number, nNodes: number): NodeDisp[] {
   const out: NodeDisp[] = []
   for (let i = 0; i < nNodes; i++)
     out.push({

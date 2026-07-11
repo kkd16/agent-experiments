@@ -85,10 +85,50 @@ theory and Euler's column formula, exactly like the static side.
 - [x] Response analysis mode: live playback, damping-ratio slider, play/pause/restart, elapsed clock
 
 - [ ] Rayleigh / Lanczos partial eigensolver for large continuum modal analysis — future
-- [ ] Forced harmonic excitation + frequency-response (resonance) curves — future
 - [ ] Q4/Q8 continuum elements + nodal stress smoothing — future
 - [ ] Free-form domain sketching + Delaunay/Ruppert meshing — future
-- [ ] Section library (I-beams, HSS) driving A, I and fibre distance c — future
+
+### v4 — Forced harmonic response, the FRF, real steel sections & design checks
+
+The dynamics story so far answers "what are the modes?" (modal), "what makes it
+unstable?" (buckling) and "how does it ring down?" (transient). The one question left is
+the one that actually kills machines and bridges: **what happens when something shakes it
+at a frequency it doesn't like?** That is *forced harmonic response* and its signature is
+the **frequency-response function** — the resonance curve.
+
+Drive the structure with a sinusoidal force `F·cos ωt` and, in steady state, every DOF
+oscillates at ω with a complex amplitude. Solved by **modal superposition** on the same
+mass-normalised eigenbasis the modal solver already produces:
+
+    u(ω) = Σᵢ φᵢ (φᵢᵀF) / (ωᵢ² − ω² + 2iζωᵢω).
+
+As ω sweeps 0→ωmax the response magnitude traces the FRF: flat at the static compliance,
+then a sharp **resonance peak** at each natural frequency whose height is capped only by
+damping (dynamic amplification `1/(2ζ)` for a mode driven at resonance), with the phase
+rolling through −90° at each peak. This is the textbook resonance curve, computed live and
+cross-checked against the closed-form single-DOF oscillator.
+
+Alongside it, sections stop being abstract `A`/`I` numbers: a **library of real steel
+shapes** (AISC W-shapes, HSS, pipe + parametric solid rect/round) drives `A`, `I` and the
+true extreme-fibre distance `c` (so bending stress is `Mc/I` with the *actual* `c`, not a
+rectangular guess), and a **design check** flags members over a yield-based allowable.
+
+- [x] `harmonic.ts` — modal-superposition steady-state FRF: complex response u(ω), frequency
+      sweep with resonance-peak detection, phase, dynamic amplification, animated steady shape
+- [x] Closed-form validation: SDOF static compliance, resonance peak = 1/(2ζ√(1−ζ²)),
+      half-power bandwidth Δω/ωₙ ≈ 2ζ, and ω→0 FRF equals the direct static solve
+- [x] `sections.ts` — real steel section library (W-shapes, HSS, pipe) + parametric
+      rect/round builders, each giving A, I, c and plastic modulus; validation of the formulae
+- [x] Member carries an optional section + true fibre distance c; frame stress uses real c
+- [x] Design check: per-member utilisation σ/σ_allow against an editable yield strength,
+      max-utilisation stat and pass/over-stress flag
+- [x] UI: "Harmonic" analysis mode — live FRF plot (log axes, resonance markers, drive
+      cursor), drive-frequency + damping sliders, steady-state shape animation, peak table
+- [x] UI: section picker in the member editor; "Resonator" / driven-portal presets that
+      showcase the resonance sweep
+
+- [ ] Rotating-machine unbalance & base-excitation force models — future
+- [ ] Q4/Q8 continuum elements + nodal stress smoothing — future
 
 ## Session log
 
@@ -136,3 +176,31 @@ theory and Euler's column formula, exactly like the static side.
   6e-4). Verified end-to-end in Chromium: the response animates smoothly, the clock
   advances, controls work, and switching back to Static/Modal/Buckling is clean.
   19/19 benchmark badge green, zero runtime errors.
+
+- 2026-07-11 (claude): shipped **v4 — forced harmonic response, the FRF, a real
+  steel-section library & design checks**. New `harmonic.ts`: a modal-superposition
+  steady-state solver built on the same mass-normalised eigenbasis the modal solver
+  produces. `prepareHarmonic` assembles the reduced K, M, eigen-decomposes, projects
+  the placed nodal-load pattern onto each mode (fᵢ = φᵢᵀF), and picks the most
+  responsive output DOF; `harmonicResponse`/`frfSweep` evaluate the complex response
+  u(ω) = Σ φᵢ fᵢ/(ωᵢ²−ω²+2iζωᵢω) and sweep ω on a log grid seeded with a point at every
+  natural frequency (and each single-DOF peak ωᵢ√(1−2ζ²)) so no sharp resonance is
+  stepped over; `harmonicShape` animates the steady-state oscillation by cycling the
+  phase θ=ωt. When no load is placed a unit probe force drives the fundamental so the
+  sweep still shows resonance. Three new closed-form benchmarks (all pass to ≤1e-2):
+  a true single-DOF axial oscillator whose static compliance is PL/EA and whose
+  resonance peak is exactly 1/(2ζ√(1−ζ²)) (matched to 9e-8), plus the ω→0 FRF of a
+  cantilever reconstructing PL³/3EI (modal completeness, 5e-5). New `sections.ts`: a
+  library of AISC W-shapes, HSS and pipe (values converted from the handbook in-unit
+  data) plus parametric solid rect/round and pipe builders, each giving A, I, the true
+  extreme-fibre distance c and the plastic modulus Z; three more benchmarks check the
+  section formulae. Members now carry an optional section + true c + yield Fᵧ; frame
+  bending stress uses the real c (not the rectangular √(3I/A) guess) and reports a
+  design-utilisation σ/Fᵧ (a max-utilisation stat + per-member readout, flagged when
+  over-stressed). UI: a fifth **Harmonic** analysis mode — a live log-log FRF plot
+  (resonance markers, drive cursor, click-to-set), drive-frequency + damping sliders,
+  a resonance table, animated steady-state shape, and a "Resonator mast" preset. Verified
+  end-to-end in Chromium: the resonator's peaks reproduce the exact cantilever frequency
+  ladder (3.60, 22.5, 63.1 Hz → ratios 1 : 6.26 : 17.5), the phase lag is 90° at
+  resonance, dynamic amplification hits 16.2× ≈ 1/(2·3%), and the section picker /
+  utilisation render cleanly. 25/25 benchmark badge green, zero runtime errors.

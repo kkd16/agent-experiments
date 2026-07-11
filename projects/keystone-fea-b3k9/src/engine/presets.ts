@@ -151,6 +151,21 @@ function slenderColumn(height: number, load: number): FrameModel {
   return { type: 'frame', nodes, members, loads: [{ node: n, fx: 0, fy: -load, mz: 0 }] }
 }
 
+function resonatorMast(height: number, load: number): FrameModel {
+  // A slender vertical cantilever mast, fixed at the base, with a lateral drive
+  // load at the tip. Its well-separated bending frequencies make a textbook
+  // frequency-response function — switch to Harmonic and sweep the drive
+  // frequency to watch it scream through each resonance.
+  const n = 8
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++)
+    nodes.push({ x: 0, y: (i / n) * height, support: i === 0 ? 'fixed' : 'free' })
+  const members: FrameModel['members'] = []
+  // A real slender steel section → low, cleanly separated bending modes.
+  for (let i = 0; i < n; i++) members.push({ a: i, b: i + 1, E: STEEL, A: 4e-3, I: 8e-6 })
+  return { type: 'frame', nodes, members, loads: [{ node: n, fx: load, fy: 0, mz: 0 }] }
+}
+
 function floorBeam(L: number, w: number): FrameModel {
   // A simply-supported floor beam under a uniform distributed load — bending
   // plus a rich set of vertical vibration modes.
@@ -297,6 +312,13 @@ export const PRESETS: Preset[] = [
     name: 'Loaded floor beam',
     blurb: 'Simply-supported beam with a uniform load — try Modal to see its vibration modes.',
     model: floorBeam(6, -12e3),
+  },
+  {
+    kind: 'frame',
+    id: 'resonator',
+    name: 'Resonator mast',
+    blurb: 'Slender fixed-base mast with a lateral drive — switch to Harmonic and sweep through its resonances.',
+    model: resonatorMast(6, 2e3),
   },
   {
     kind: 'continuum',

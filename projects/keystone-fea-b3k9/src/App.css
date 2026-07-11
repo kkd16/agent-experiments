@@ -697,6 +697,35 @@ body {
   color: var(--faint);
 }
 
+/* ------------------------------------------------------ frequency-response plot */
+.frf-wrap {
+  margin: 8px 0 4px;
+}
+.frf-plot {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 18, 0.6);
+}
+.frf-caption {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--faint);
+  line-height: 1.5;
+}
+.frf-key {
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.frf-key.res {
+  color: var(--warn);
+}
+.frf-key.drive {
+  color: var(--good);
+}
+
 /* ---------------------------------------------------------------- responsive */
 @media (max-width: 1080px) {
   body {
