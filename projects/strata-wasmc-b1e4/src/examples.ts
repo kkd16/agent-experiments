@@ -578,7 +578,7 @@ fn main() {
   {
     id: 'autovec',
     title: 'Auto-vectorization (SIMD)',
-    blurb: 'Write a plain scalar array loop; the optimizer discovers the data parallelism and emits real f32x4 / i32x4 v128.load → lanewise arith → v128.store. Elementwise MAPS and integer REDUCTIONS (sum/product/and/or/xor, folded 4 lanes at a time + a horizontal reduce) both widen. Compare -O0 vs -O3 in the WASM/CFG tabs — and read the Optimizer panel for the vectorize pass.',
+    blurb: 'Write a plain scalar array loop; the optimizer discovers the data parallelism and emits real v128.load → lanewise arith → v128.store. All four lane shapes widen: i32x4 / f32x4 (4-wide) and — for long[] / float[] loops — i64x2 / f64x2 (2-wide, filling the whole register). Elementwise MAPS and integer REDUCTIONS (i32 sum/product/and/or/xor folded 4 lanes at a time, i64 folded 2 at a time, + a horizontal reduce) both widen. Compare -O0 vs -O3 in the WASM/CFG tabs — and read the Optimizer panel for the vectorize pass.',
     source: `// These are ORDINARY scalar loops — no SIMD types, no intrinsics. At -O2+ the
 // auto-vectorizer recognizes each counted "a[i] = f(a[i], b[i], …)" loop, proves
 // the four iterations independent, and runs four lanes at once: one v128.load per
@@ -631,6 +631,30 @@ fn main() {
   // under aliasing.
   for (let i = 0; i < n; i = i + 1) { a[i] = a[i] + a[i] * 3; }
   print(isum(a, n));
+
+  // ---- the 64-bit lane world: i64x2 and f64x2 (2 lanes to a register) --------
+  // The same recognizer widens long[] and float[] loops — only 2 lanes fit a
+  // v128, but it fills the whole register. A long (i64) elementwise kernel packs
+  // i64x2.mul + i64x2.add; the trailing xor-fold is an i64 REDUCTION, folded 2
+  // lanes at a time (vacc = vacc ^ v128.load) then a 2-lane horizontal reduce.
+  let g = long_array(n);
+  let h = long_array(n);
+  for (let i = 0; i < n; i = i + 1) { g[i] = long(i) * 2654435761L + 1L; h[i] = long(i) - 9L; }
+  for (let i = 0; i < n; i = i + 1) { g[i] = g[i] * h[i] + g[i]; }   // i64x2.mul, i64x2.add
+  let hx = 0L;
+  for (let i = 0; i < n; i = i + 1) { hx = hx ^ g[i]; }              // i64 xor-reduction → i64x2
+  print(hx);
+
+  // A double-precision AXPY d[i] = β·p[i] + q[i]: β is splatted across an f64x2,
+  // then f64x2.mul + f64x2.add. Each lane rounds in IEEE-754 double exactly like
+  // the scalar float path, so the widened result is bit-identical. (A float SUM,
+  // by contrast, is declined — lane-reordered rounding would differ.)
+  let p = float_array(m);
+  let q = float_array(m);
+  for (let i = 0; i < m; i = i + 1) { p[i] = float(i) * 0.5; q[i] = float(100 - i); }
+  let beta = 2.25;
+  for (let i = 0; i < m; i = i + 1) { q[i] = beta * p[i] + q[i]; }  // f64x2.mul, f64x2.add
+  print(q[0]); print(q[7]); print(q[m - 1]);
 }
 `,
   },
