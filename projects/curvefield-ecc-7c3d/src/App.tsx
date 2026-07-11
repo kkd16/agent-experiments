@@ -25,6 +25,7 @@ import { HashToCurvePage } from './pages/HashToCurvePage'
 import { Groth16Page } from './pages/Groth16Page'
 import { BulletproofsPage } from './pages/BulletproofsPage'
 import { PlonkPage } from './pages/PlonkPage'
+import { LookupPage } from './pages/LookupPage'
 import { StarkPage } from './pages/StarkPage'
 import { GkrPage } from './pages/GkrPage'
 import { NovaPage } from './pages/NovaPage'
@@ -69,6 +70,7 @@ const ROUTES = [
   { path: '/groth16', label: 'Groth16 SNARK' },
   { path: '/bulletproofs', label: 'Bulletproofs' },
   { path: '/plonk', label: 'PLONK' },
+  { path: '/lookup', label: 'Lookup Args' },
   { path: '/stark', label: 'STARK' },
   { path: '/gkr', label: 'GKR & Sum-Check' },
   { path: '/nova', label: 'Nova (Folding IVC)' },
@@ -136,6 +138,7 @@ export default function App() {
       {base === '/groth16' && <Groth16Page />}
       {base === '/bulletproofs' && <BulletproofsPage />}
       {base === '/plonk' && <PlonkPage />}
+      {base === '/lookup' && <LookupPage />}
       {base === '/stark' && <StarkPage />}
       {base === '/gkr' && <GkrPage />}
       {base === '/nova' && <NovaPage />}
