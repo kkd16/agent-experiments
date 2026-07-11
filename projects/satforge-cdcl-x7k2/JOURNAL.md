@@ -163,6 +163,31 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   layered layout, so the studio can draw *where* the loops (and thus loop formulas) live and flag a
   **tight** program (no positive loop → completion alone suffices, Fages' theorem — cross-checked
   against the live solver's loop-formula count in the self-test).
+- `src/aig/*` — **And-Inverter Graphs & combinational equivalence checking** (Session 27 — the
+  *AIG Studio*, a fifteenth studio). The industrial killer app of SAT, in miniature. `aig.ts` is a
+  hash-consed AIG (one gate — the 2-input AND — and one edge bit, a fused inverter; a literal is
+  `node·2 + inv` and negation is `l ^ 1`), with structural hashing + the seven trivial-case rewrites
+  as a first, free layer of optimization. `build.ts` is a tiny hardware DSL (a lexer + precedence
+  parser over `& | ^ ~`, with input inference, wire memoization and combinational-cycle detection)
+  plus structural generators (ripple / carry-select adders, an array multiplier) that emit genuinely
+  *different* circuits computing the *same* function. `simulate.ts` is bit-parallel simulation over
+  `bigint` signatures (the *incomplete* half of sweeping — it can only prove nodes different, so it
+  shreds them into candidate equivalence classes) plus an independent exhaustive `truthTable` oracle.
+  `cnf.ts` is the Tseitin bridge to the CDCL core (one variable per node, the classic three clauses
+  per AND). `cec.ts` is the heart: **SAT sweeping (FRAIG)** — merge both circuits into one AIG,
+  simulate to candidate classes, then prove each surviving pair equal *by the CDCL solver* (a
+  refutation becomes a fresh simulation pattern that refines the classes), rebuilding a minimal,
+  functionally-reduced graph; combinational **equivalence checking** then folds two designs into one
+  shared graph, sweeps, and reads off the verdict — equal swept literals are proven equivalent for
+  free, and only a genuinely-different output pays for one final miter solve (which hands back a
+  distinguishing input). `examples.ts` is a gallery — the distributive/De-Morgan/consensus identities,
+  a full adder two ways, an 8-bit ripple ≡ carry-select adder, 4-bit `a·b ≡ b·a`, and deliberately
+  *buggy* variants the checker exposes. `selfcheck.ts` pins the whole engine against the exhaustive
+  truth-table oracle (verdicts, function-preserving sweeps, Tseitin soundness, generators vs integer
+  arithmetic, every gallery verdict). UI: `components/AigStudio.tsx` — a circuit-pair authoring
+  editor + gallery, the equivalence verdict with a per-output counterexample table, a live
+  before→after AND-gate / SAT-proof / merge / depth stat grid, a single-circuit SAT-sweep view, and
+  an interactive truth-table explorer.
 
 ## Correctness
 
@@ -2373,3 +2398,88 @@ particular solution, a **basis of the null space** (so the whole affine solution
       reduction, as a live "why linear reasoning wins" chart across a scalable Tseitin family.
 - [ ] **Nonlinear filter generators** — combine several LFSRs through a nonlinear function to show
       *where* the linear attack stops working (the correlation-attack boundary).
+
+### Session 27 — from *deciding a formula* to *verifying a chip*: And-Inverter Graphs & SAT sweeping (a fifteenth studio)
+
+Every studio so far has *decided*, *counted* or *optimized* a formula somebody handed the solver.
+Session 27 turns the tables and points SatForge at the problem that made SAT a billion-dollar
+technology in the first place: **are these two circuits the same function?** Combinational
+equivalence checking (CEC) is what stands between a hand-written RTL design and the gate-level netlist
+a synthesis tool spits out — and the moment logic gets non-trivial, the naïve "XOR the outputs and
+ask SAT for a difference" miter is hopeless. The trick that made CEC industrial — Kuehlmann's FRAIG,
+Mishchenko's ABC — is **SAT sweeping**: fold both circuits into one **And-Inverter Graph** so
+structural hashing fuses everything syntactically identical, then walk the shared graph proving
+*internal* nodes equal one pair at a time, so by the time you reach the outputs the miter has
+collapsed. That whole flow now runs in the browser on the very same CDCL core, and it composes
+beautifully: simulation proposes, the SAT solver disposes.
+
+The AIG is the star. The *entire* combinational world is expressed with one gate — the 2-input AND —
+and one edge attribute — a fused inverter — so a node is a pair of *literals* (`node·2 + inv`) and
+negation is a single XOR (`l ^ 1`). Two invariants make the rest cheap: nodes are topological by
+construction (a fanin is always an earlier node), and `mkAnd` hash-conses through the seven
+trivial-case rewrites (constant folding, idempotence, `x·¬x=0`), so structurally identical gates are
+*physically* the same node — the first, free layer of optimization. SAT sweeping then finds the
+*functional* equivalences hashing can't see: bit-parallel simulation over `bigint` signatures shreds
+the nodes into candidate classes (nodes agreeing on every pattern tried), and each surviving pair is
+handed to the CDCL solver as a two-assumption query; a refutation is not wasted — its distinguishing
+input becomes a new simulation pattern that refines every future class. Every merge is *proved*, never
+trusted, so the rebuilt graph provably computes the identical function.
+
+The self-check keeps to the house rule — nothing trusts the thing it verifies. An independent
+exhaustive `truthTable` evaluator (which never touches the CNF/SAT path) is the oracle: CEC verdicts
+must match truth-table equality on random circuits and every reported counterexample is re-evaluated
+to confirm it genuinely distinguishes; SAT sweeping must *preserve* every output's truth table while
+never growing the AIG; the Tseitin encoding is pinned by fixing all inputs and checking the solver
+derives the simulated output; the ripple / carry-select adders and the array multiplier are checked
+against plain integer arithmetic (4-bit, exhaustive); and every gallery example returns its
+ground-truth verdict. All seven green, in-browser, in well under a second.
+
+**Shipped this session:**
+- [x] `src/aig/aig.ts` — the hash-consed And-Inverter Graph: literal algebra, structural hashing,
+      the trivial-case rewrites, OR/XOR/MUX as De-Morgan identities, and level/depth analysis.
+- [x] `src/aig/build.ts` — a hardware DSL (lexer + precedence parser, input inference, wire
+      memoization, combinational-cycle detection) and structural generators (ripple / carry-select
+      adders, an array multiplier).
+- [x] `src/aig/simulate.ts` — bit-parallel `bigint`-signature simulation with on-the-fly pattern
+      growth, canonical-up-to-complement signatures, and an exhaustive `truthTable` reference.
+- [x] `src/aig/cnf.ts` — the Tseitin bridge to the CDCL core.
+- [x] `src/aig/cec.ts` — SAT sweeping (FRAIG) with counterexample-driven refinement + minimal-graph
+      rebuild, and combinational equivalence checking with a swept-then-miter strategy.
+- [x] `src/aig/examples.ts` — a gallery of identities, structural equivalences, and buggy variants.
+- [x] `src/aig/selfcheck.ts` — a seven-part differential harness pinned to the truth-table oracle
+      (all green, well under a second).
+- [x] `src/components/AigStudio.tsx` + `.css` — the four-panel AIG Studio (Equivalence, SAT Sweep,
+      Truth table, Self-tests), wired into `App.tsx`.
+- [x] Verified: `node scripts/verify-project.mjs satforge-cdcl-x7k2` green (scope + conformance +
+      `pnpm lint` + `tsc -b` + `vite build`); an in-browser Playwright smoke test confirms the MUX
+      proves equivalent (10→9 gates), the buggy adder returns a counterexample, the 8-bit
+      ripple≡carry-select adder proves equivalent, the sweep view shows a real 128→120 reduction,
+      and all seven self-tests pass.
+
+**Backlog / next steps (planned):**
+- [ ] **A visual AIG / DAG renderer** — draw the shared graph (like the implication-graph view) and
+      animate SAT sweeping live: candidate classes forming from simulation, then collapsing node by
+      node as each proof lands, with the merged cones fading into their representatives.
+- [ ] **Sequential equivalence checking** — lift CEC across a clock: latches + a `reset`, then a
+      **bounded** SEC (unroll k frames, miter the outputs) and an **unbounded** one via the existing
+      IMC/PDR engine, so the AIG Studio and the Model Checker share a substrate.
+- [ ] **AIG rewriting / DAG-aware logic optimization** — 4-input-cut enumeration with NPN-canonical
+      truth tables and a precomputed optimal-subgraph library (the *rewrite* pass at the heart of
+      ABC's `resyn`), reported as a further area/depth reduction beyond sweeping.
+- [ ] **Technology mapping to LUTs / a gate library** — priority-cut FPGA mapping (k-LUT) and a
+      simple standard-cell area/delay map, so "synthesize" produces a real mapped netlist, not just a
+      minimized AIG.
+- [ ] **Import / export** — read and write the **AIGER** ASCII (`.aag`) format so circuits round-trip
+      with external tools (ABC, the HWMCC benchmarks), plus a BLIF front-end.
+- [ ] **A `&fraig`-style incremental solver** — keep one persistent `CdclSolver` across all sweep
+      queries (incremental clause addition + assumptions) instead of a fresh solve per pair, with a
+      per-query conflict budget and a "resource-limited, fall back to simulation" mode.
+- [ ] **Random / structural test-pattern generation (ATPG)** — stuck-at fault modelling on the AIG,
+      then SAT-based test generation (the fault-activation + propagation miter) with a fault-coverage
+      readout — CEC's sibling in the same solver.
+- [ ] **A CNF ⇄ AIG bridge in the SAT Studio** — factor a pasted CNF into an AIG (and Tseitin an AIG
+      back), so the two representations can be compared and the SAT Studio can visualize circuit
+      structure behind a raw clause set.
+- [ ] **Don't-care–aware sweeping** — observability/controllability don't-cares (ODC/CDC) so nodes
+      that are only *equal where it matters* can still merge, the optimization that separates a toy
+      FRAIG from a production one.

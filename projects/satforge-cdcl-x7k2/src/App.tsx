@@ -28,6 +28,7 @@ import { InsightStudio } from './components/InsightStudio'
 import { AspStudio } from './components/AspStudio'
 import { CpStudio } from './components/CpStudio'
 import { Gf2Studio } from './components/Gf2Studio'
+import { AigStudio } from './components/AigStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -45,6 +46,7 @@ type Mode =
   | 'insight'
   | 'asp'
   | 'cp'
+  | 'aig'
   | 'lab'
 
 export default function App() {
@@ -137,6 +139,8 @@ export default function App() {
                                       ? 'Parity reasoning as linear algebra: Gaussian elimination over 𝔽₂ decides, counts and solves XOR systems that crush pure clause search.'
                                       : mode === 'cp'
                                       ? 'Finite-domain constraint programming: propagation to a fixpoint, Régin GAC all-different, dom/wdeg + restarts, branch & bound.'
+                                      : mode === 'aig'
+                                      ? 'And-Inverter Graphs & SAT sweeping: combinational equivalence checking, the industrial killer app of SAT.'
                                       : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
@@ -184,6 +188,9 @@ export default function App() {
           <button className={mode === 'gf2' ? 'active' : ''} onClick={() => setMode('gf2')}>
             XOR Studio
           </button>
+          <button className={mode === 'aig' ? 'active' : ''} onClick={() => setMode('aig')}>
+            AIG Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -203,6 +210,7 @@ export default function App() {
       {mode === 'asp' && <AspStudio />}
       {mode === 'cp' && <CpStudio />}
       {mode === 'gf2' && <Gf2Studio />}
+      {mode === 'aig' && <AigStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -330,7 +338,12 @@ export default function App() {
         infeasibility diagnosis into every minimal-unsatisfiable and minimal-correction subset by <b>MARCO</b>
         (deletion &amp; QuickXplain shrinking over selector-assumption cores), and <b>approximate model counting</b>
         by ApproxMC-style XOR-parity hashing with an (ε,δ) guarantee, every answer cross-checked against a
-        brute-force truth-table oracle — all hand-written in TypeScript.
+        brute-force truth-table oracle · plus an <b>AIG Studio</b> for the industrial killer app of SAT —
+        combinational <b>equivalence checking</b> by <b>SAT sweeping</b> (FRAIG): two circuits folded into one
+        hash-consed <b>And-Inverter Graph</b>, bit-parallel simulation shredding nodes into candidate classes,
+        then each merge <b>proved</b> by the CDCL core until the miter collapses, with a hardware DSL, ripple /
+        carry-select adder and array-multiplier generators, and every verdict pinned to an exhaustive
+        truth-table oracle — all hand-written in TypeScript.
       </footer>
     </div>
   )
