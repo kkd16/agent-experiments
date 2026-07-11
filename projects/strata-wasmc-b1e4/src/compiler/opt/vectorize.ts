@@ -4,17 +4,30 @@ import { findNaturalLoops, isInnermost } from '../ir/loops';
 import type { NaturalLoop } from '../ir/loops';
 
 // =====================================================================
-// The auto-vectorizer — counted array loops → 4-wide v128 SIMD
+// The auto-vectorizer — counted array loops → v128 SIMD (2- or 4-wide)
 // =====================================================================
 //
 // A counted loop that walks an array one element per iteration
 //
 //      for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * b[i] + a[i]; }
 //
-// has four *independent* iterations sitting side by side: nothing iteration `i`
+// has W *independent* iterations sitting side by side: nothing iteration `i`
 // writes is read by iteration `i+1`. This pass discovers that parallelism and
-// runs four lanes at once — one `v128.load` per array, lanewise `f32x4.mul`/
-// `f32x4.add`, one `v128.store` — for the classic 4× data-parallel win.
+// runs a whole v128 register of lanes at once — one `v128.load` per array,
+// lanewise arithmetic, one `v128.store` — for the classic data-parallel win.
+//
+// The lane *shape* is chosen from the array's element type, and with it the lane
+// count W and the byte stride E of one vector step:
+//
+//      i32[] / f32[]  →  i32x4 / f32x4   (W = 4 lanes, E = 16 bytes)
+//      long[] (i64)   →  i64x2           (W = 2 lanes, E = 16 bytes)
+//      float[] (f64)  →  f64x2           (W = 2 lanes, E = 16 bytes)
+//
+// so a 64-bit kernel packs the entire 64-bit world — f64 scientific loops and
+// i64 hashing/bit-mixing loops — two lanes to a register, while the 32-bit
+// shapes keep their 4× width. Every lane still runs the *identical* scalar op it
+// replaced (f64x2.mul rounds exactly like f64.mul, i64x2.mul wraps exactly like
+// i64.mul), so a widened elementwise kernel is bit-for-bit the scalar one.
 //
 // The rewrite mirrors **partial unrolling**'s strictly-safe shape (see
 // `partial-unroll.ts`): it never deletes the original loop, it only *prepends* a
@@ -26,35 +39,37 @@ import type { NaturalLoop } from '../ir/loops';
 //      preheader                          preheader
 //          │                                  │
 //          ▼                                  ▼
-//     ┌──[header]──┐        ──►          ┌──[vec hdr]── guard: 4 more? ─┐ no
-//     │   c[i]=…    │                    │  vload/arith/vstore  (i+=4)  │
+//     ┌──[header]──┐        ──►          ┌──[vec hdr]── guard: W more? ─┐ no
+//     │   c[i]=…    │                    │  vload/arith/vstore  (i+=W)  │
 //     └────────────┘                     └──────────────┬───────────────┘
 //                                                        ▼
 //                                              ┌──[header (remainder)]──┐
 //                                              │   the original loop    │
 //                                              └────────────────────────┘
 //
-// The "4 more?" guard is the exact, overflow-blind predicate partial unrolling
-// uses: it evaluates the loop's real `i < n` test at `i, i+1, i+2, i+3` with the
-// same wrapping i32 arithmetic and signed compare, and enters the vector body
-// only when *all four* say iterate. The body therefore runs only on full groups
-// of four; the original loop handles the rest, exactly.
+// The "W more?" guard is the exact, overflow-blind predicate partial unrolling
+// uses: it evaluates the loop's real `i < n` test at `i, i+1, …, i+(W−1)` with
+// the same wrapping i32 arithmetic and signed compare, and enters the vector
+// body only when *all W* say iterate. The body therefore runs only on full
+// groups of W; the original loop handles the rest, exactly.
 //
 // --- why it is sound (the load-bearing dependence argument) ----------------
 //
 // The pass requires **every** array subscript to be *exactly the induction
 // variable* (`a[i]`, offset 0): each access's address must reduce to
-// `handle + ARRAY_HEADER + i·4`, with the index operand being the IV itself.
-// Under that single rule the four lanes are independent regardless of aliasing:
+// `handle + ARRAY_HEADER + i·E₀`, with `E₀` the element size (4 or 8 bytes) and
+// the index operand being the IV itself. Under that single rule the W lanes are
+// independent regardless of aliasing:
 //
 //   • Same array, same index each iteration ⇒ lane k touches element i+k only.
 //     A store/load pair on one array is *within-lane*, and the vector body keeps
 //     program order, so a read-after-write on one element is preserved exactly.
-//   • Distinct arrays never collide across lanes. The "4 more?" guard means any
-//     array the vector body touches is indexed at i … i+3, so it has ≥ 4 live
-//     elements and occupies ≥ ARRAY_HEADER + 16 bytes. Two distinct 8-byte-
-//     aligned bump allocations therefore have base handles ≥ 20 bytes apart,
-//     while a cross-lane collision would need them within 4·3 = 12 bytes —
+//   • Distinct arrays never collide across lanes. The "W more?" guard means any
+//     array the vector body touches is indexed at i … i+(W−1), so it has ≥ W live
+//     elements and occupies ≥ ARRAY_HEADER + W·E₀ = ARRAY_HEADER + 16 bytes (a
+//     full v128, either shape). Two distinct 8-byte-aligned bump allocations
+//     therefore have base handles ≥ ARRAY_HEADER + 16 ≥ 24 bytes apart, while a
+//     cross-lane collision would need them within (W−1)·E₀ ≤ 12 bytes —
 //     impossible. So `a[i+1] = a[i]` stencils (which *do* carry a dependence)
 //     are rejected up front (index ≠ IV), and everything that survives is
 //     provably lane-independent.
@@ -65,18 +80,32 @@ import type { NaturalLoop } from '../ir/loops';
 // proves the fast path it *did* take never changed behaviour.
 
 const ARRAY_HEADER = 8; // bytes before element data — must match ir/builder.ts
-const ELEM_SIZE = 4; // i32 / f32 element width (the shapes we pack 4-wide)
-const LANES = 4;
 
-// A scalar integer op promoted to its i32x4 / v128 lanewise form. No SIMD integer
-// divide, remainder or shift exists, so a vector body using them is declined.
-const IBIN_VEC: Record<string, string> = {
-  add: 'i32x4.add', sub: 'i32x4.sub', mul: 'i32x4.mul',
-  and: 'v128.and', or: 'v128.or', xor: 'v128.xor',
+// The four lane shapes, keyed by the array element's IR type. Each fixes the lane
+// count (how many iterations one vector step consumes) and the element byte size
+// (the subscript scale `i·E₀`). The 32-bit shapes pack 4 lanes; the 64-bit shapes
+// pack 2 — both fill exactly one 128-bit register.
+type VShape = 'i32x4' | 'f32x4' | 'i64x2' | 'f64x2';
+const SHAPE_OF: Record<'i32' | 'f32' | 'i64' | 'f64', VShape> = { i32: 'i32x4', f32: 'f32x4', i64: 'i64x2', f64: 'f64x2' };
+const LANES_OF: Record<VShape, number> = { i32x4: 4, f32x4: 4, i64x2: 2, f64x2: 2 };
+const ELEMSIZE_OF: Record<VShape, number> = { i32x4: 4, f32x4: 4, i64x2: 8, f64x2: 8 };
+// The IR type of one lane — the scalar type of a splatted operand, an extracted
+// reduction lane, and a reduction's monoid-identity constant.
+const LANE_IR_OF: Record<VShape, IRType> = { i32x4: 'i32', f32x4: 'f32', i64x2: 'i64', f64x2: 'f64' };
+
+// A scalar integer op promoted to its lanewise form for each integer shape. No
+// SIMD integer divide, remainder or shift exists, so a vector body using them is
+// declined. The bitwise ops are whole-register (`v128.*`), lane-shape agnostic.
+const IBIN_VEC: Record<VShape, Record<string, string>> = {
+  i32x4: { add: 'i32x4.add', sub: 'i32x4.sub', mul: 'i32x4.mul', and: 'v128.and', or: 'v128.or', xor: 'v128.xor' },
+  i64x2: { add: 'i64x2.add', sub: 'i64x2.sub', mul: 'i64x2.mul', and: 'v128.and', or: 'v128.or', xor: 'v128.xor' },
+  f32x4: {}, f64x2: {},
 };
-// A scalar float op promoted to its f32x4 lanewise form.
-const FBIN_VEC: Record<string, string> = {
-  add: 'f32x4.add', sub: 'f32x4.sub', mul: 'f32x4.mul', div: 'f32x4.div', min: 'f32x4.min', max: 'f32x4.max',
+// A scalar float op promoted to its lanewise form for each float shape.
+const FBIN_VEC: Record<VShape, Record<string, string>> = {
+  f32x4: { add: 'f32x4.add', sub: 'f32x4.sub', mul: 'f32x4.mul', div: 'f32x4.div', min: 'f32x4.min', max: 'f32x4.max' },
+  f64x2: { add: 'f64x2.add', sub: 'f64x2.sub', mul: 'f64x2.mul', div: 'f64x2.div', min: 'f64x2.min', max: 'f64x2.max' },
+  i32x4: {}, i64x2: {},
 };
 
 // =====================================================================
@@ -89,25 +118,29 @@ const FBIN_VEC: Record<string, string> = {
 //
 // Here `s` is loop-carried (iteration `i` reads what `i-1` wrote), so the naive
 // lane-independence argument fails. But the fold is over an **associative and
-// commutative** monoid, so the elements may be summed in any order: run four
-// independent partial sums in the four lanes, then collapse them once at exit.
+// commutative** monoid, so the elements may be summed in any order: run W
+// independent partial sums in the W lanes, then collapse them once at exit.
 // The vector body keeps a `v128` accumulator (`vacc = vacc ⊕ vload a[i]`); the
-// exit block does a **horizontal reduce** — four `extract_lane`s combined with the
+// exit block does a **horizontal reduce** — W `extract_lane`s combined with the
 // same scalar op — and seeds the remainder loop's accumulator with it. Because
-// `⊕` is exactly associative+commutative on i32 (`add`/`mul` wrap mod 2³², and
-// the bitwise ops are trivially so), the lane-shuffled fold is *bit-identical* to
-// the sequential one — which the three-engine oracle then proves.
+// `⊕` is exactly associative+commutative on i32 (`add`/`mul` wrap mod 2³², the
+// bitwise ops trivially so) and equally on i64 (mod 2⁶⁴), the lane-shuffled fold
+// is *bit-identical* to the sequential one — which the three-engine oracle proves.
 //
-// Only **integer** reductions qualify: f32 `add`/`mul` are NOT associative under
-// rounding, so a lane-shuffled float sum would round differently — that loses the
-// bit-for-bit equality the oracle demands, so float accumulators are declined.
-// The horizontal-combine, the per-lane init (the monoid identity) and the
-// final init-fold are all the *same* scalar op `⊕`, which is what makes the one
-// table below sufficient.
+// Only **integer** reductions qualify (i32 folded 4-wide, i64 folded 2-wide): f32
+// and f64 `add`/`mul` are NOT associative under rounding, so a lane-shuffled float
+// sum would round differently — that loses the bit-for-bit equality the oracle
+// demands, so float accumulators are declined. The horizontal-combine, the
+// per-lane init (the monoid identity) and the final init-fold are all the *same*
+// scalar op `⊕` at the lane's own width.
 const REDUCE_OPS = new Set(['add', 'mul', 'and', 'or', 'xor']);
 // The monoid identity per reduce op — the value each lane starts at so that
-// `identity ⊕ x = x` and the four partial folds compose to the whole.
-const REDUCE_IDENTITY: Record<string, number> = { add: 0, mul: 1, and: -1, or: 0, xor: 0 };
+// `identity ⊕ x = x` and the W partial folds compose to the whole — as a typed
+// constant of the accumulator's lane width (bigint for i64).
+function reduceIdentity(laneIR: IRType, op: string): Operand {
+  const n = op === 'mul' ? 1 : op === 'and' ? -1 : 0;
+  return { tag: 'const', ty: laneIR, num: laneIR === 'i64' ? BigInt(n) : n };
+}
 
 // A loop-carried integer accumulator `acc = acc ⊕ contrib`, recognised as a
 // reduction. `vaccRes`/`init`/`enterRes` are filled in as the rewrite proceeds.
@@ -183,16 +216,27 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
   const stores = bodyInsts.filter((i) => i.kind === 'store');
   if (loads.length === 0 && stores.length === 0) return false; // nothing to widen
 
-  // One lane shape per loop: every element access must be the same 4-byte type.
-  let elem: 'i32' | 'f32' | null = null;
+  // One lane shape per loop: every element access must be the same element type.
+  // The type picks the shape (i32x4 / f32x4 / i64x2 / f64x2), and with it the lane
+  // count and the subscript scale.
+  let elem: 'i32' | 'f32' | 'i64' | 'f64' | null = null;
   for (const m of [...loads, ...stores]) {
-    if (m.sub !== 'i32' && m.sub !== 'f32') return false; // only 4-wide shapes in v1
+    if (m.sub !== 'i32' && m.sub !== 'f32' && m.sub !== 'i64' && m.sub !== 'f64') return false;
     if (elem === null) elem = m.sub;
-    else if (elem !== m.sub) return false; // mixed i32/f32 in one body — decline
+    else if (elem !== m.sub) return false; // mixed element widths in one body — decline
   }
-  const shape = elem === 'i32' ? 'i32x4' : 'f32x4';
-  // Integer accumulators only fold bit-exactly into an i32x4 lane vector.
-  if (accs.length > 0 && shape !== 'i32x4') return false;
+  if (elem === null) return false; // no typed element access — nothing to widen
+  const shape = SHAPE_OF[elem];
+  const LANES = LANES_OF[shape];
+  const ELEM_SIZE = ELEMSIZE_OF[shape];
+  const laneIR = LANE_IR_OF[shape];
+  // Reductions fold bit-exactly only into integer lanes, and the accumulator's
+  // width must match the loop's lane shape (so a widening `long` acc over an
+  // `int[]` — lanes of different widths — is declined rather than mis-packed).
+  for (const acc of accs) {
+    if (shape === 'f32x4' || shape === 'f64x2') return false; // float folds aren't associative
+    if (acc.phi.ty !== laneIR) return false;
+  }
 
   // `vec` = SSA values that hold (or derive from) loaded vector data. A reduction
   // accumulator phi also rides in the lanes, so seed it as a vector too — its fold
@@ -224,11 +268,11 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
       case 'copy':
         break; // transparent (handled by `chase`)
       case 'load': {
-        if (handleOfElemAddr(findInst, chase, inst.args[0], ivPhi.res) === null) return nope('load addr');
+        if (handleOfElemAddr(findInst, chase, inst.args[0], ivPhi.res, ELEM_SIZE) === null) return nope('load addr');
         break;
       }
       case 'store': {
-        if (handleOfElemAddr(findInst, chase, inst.args[0], ivPhi.res) === null) return nope('store addr');
+        if (handleOfElemAddr(findInst, chase, inst.args[0], ivPhi.res, ELEM_SIZE) === null) return nope('store addr');
         const v = inst.args[1];
         if (!isVec(v) && !invariant(v)) return nope('store val per-lane'); // can't splat
         break;
@@ -237,7 +281,7 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
       case 'fbin': {
         const isV = inst.res !== null && vec.has(inst.res);
         if (isV) {
-          const table = inst.kind === 'ibin' ? IBIN_VEC : FBIN_VEC;
+          const table = inst.kind === 'ibin' ? IBIN_VEC[shape] : FBIN_VEC[shape];
           if (!(inst.sub in table)) return nope(`no lanewise ${inst.kind}.${inst.sub}`);
           // a scalar operand of a vector op must be loop-invariant (so a splat is correct).
           for (const a of inst.args) if (!isVec(a) && !invariant(a)) return nope(`vec op scalar non-invariant operand`);
@@ -322,7 +366,7 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
       case 'fbin': {
         const isV = inst.res !== null && vec.has(inst.res);
         if (isV) {
-          const sub = (inst.kind === 'ibin' ? IBIN_VEC : FBIN_VEC)[inst.sub];
+          const sub = (inst.kind === 'ibin' ? IBIN_VEC[shape] : FBIN_VEC[shape])[inst.sub];
           const id = fresh('v128');
           vb.insts.push({ res: id, ty: 'v128', kind: 'vbin', sub, args: [vecOperand(inst.args[0]), vecOperand(inst.args[1])] });
           map.set(inst.res!, { tag: 'val', id });
@@ -344,11 +388,11 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
   const vi: Operand = { tag: 'val', id: viRes };
   const ph = byId.get(PH)!;
   // A reduction's lane accumulator enters the loop at the monoid identity, splatted
-  // into all four lanes in the preheader (so `identity ⊕ x = x` per lane).
+  // into all W lanes in the preheader (so `identity ⊕ x = x` per lane).
   const accPhis: Phi[] = [];
   for (const acc of accs) {
     const sid = fresh('v128');
-    ph.insts.push({ res: sid, ty: 'v128', kind: 'vsplat', sub: shape, args: [{ tag: 'const', ty: 'i32', num: REDUCE_IDENTITY[acc.op] }] });
+    ph.insts.push({ res: sid, ty: 'v128', kind: 'vsplat', sub: shape, args: [reduceIdentity(laneIR, acc.op)] });
     accPhis.push({ res: acc.vaccRes!, ty: 'v128', incomings: [{ pred: PH, val: { tag: 'val', id: sid } }, { pred: VB, val: acc.vaccNext! }] });
   }
   const vh: Block = {
@@ -379,14 +423,14 @@ function tryVectorize(fn: IRFunc, loop: NaturalLoop, done: Set<number>): boolean
   for (const acc of accs) {
     const lanes: Operand[] = [];
     for (let k = 0; k < LANES; k++) {
-      lanes.push(push(ve, fresh('i32'), 'i32', 'vextract', `${shape}.extract_lane:${k}`, [{ tag: 'val', id: acc.vaccRes! }]));
+      lanes.push(push(ve, fresh(laneIR), laneIR, 'vextract', `${shape}.extract_lane:${k}`, [{ tag: 'val', id: acc.vaccRes! }]));
     }
-    // Fold the four lanes pairwise, then fold in the loop-invariant initial value
-    // — every combine is the same associative+commutative op the loop carried.
-    const r01 = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [lanes[0], lanes[1]]);
-    const r23 = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [lanes[2], lanes[3]]);
-    const hred = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [r01, r23]);
-    acc.accEnter = push(ve, fresh('i32'), 'i32', 'ibin', acc.op, [clone(acc.init), hred]);
+    // Fold the W lanes together, then fold in the loop-invariant initial value —
+    // every combine is the same associative+commutative op the loop carried, at
+    // the lane's own width (i32 for a 4-lane fold, i64 for a 2-lane fold).
+    let hred = lanes[0];
+    for (let k = 1; k < LANES; k++) hred = push(ve, fresh(laneIR), laneIR, 'ibin', acc.op, [hred, lanes[k]]);
+    acc.accEnter = push(ve, fresh(laneIR), laneIR, 'ibin', acc.op, [clone(acc.init), hred]);
   }
 
   // --- splice: preheader → vector header; guard "no" edge → remainder ----------
@@ -504,7 +548,7 @@ function recognize(fn: IRFunc, loop: NaturalLoop, byId: Map<number, Block>): Rec
  *  associative+commutative op (so the four lanes may fold independently). Returns
  *  the reduction, or null to decline. */
 function recognizeAcc(fn: IRFunc, body: Set<number>, phi: Phi, PH: number, latchId: number, bodyInsts: Inst[]): Acc | null {
-  if (phi.ty !== 'i32') return null; // only the exact integer monoids reorder bit-for-bit
+  if (phi.ty !== 'i32' && phi.ty !== 'i64') return null; // only the exact integer monoids (i32/i64) reorder bit-for-bit
   const initInc = phi.incomings.find((x) => x.pred === PH);
   const latchInc = phi.incomings.find((x) => x.pred === latchId);
   if (!initInc || !latchInc || latchInc.val.tag !== 'val') return null;
@@ -544,9 +588,9 @@ function recognizeAcc(fn: IRFunc, body: Set<number>, phi: Phi, PH: number, latch
 type Find = (res: number) => Inst | undefined;
 type Chase = (o: Operand) => Operand;
 
-/** If `addr` is the canonical element address `handle + ARRAY_HEADER + iv·ELEM_SIZE`
+/** If `addr` is the canonical element address `handle + ARRAY_HEADER + iv·elemSize`
  *  (subscript exactly the IV, offset 0), return the array handle operand; else null. */
-function handleOfElemAddr(find: Find, chase: Chase, addr: Operand, iv: number): Operand | null {
+function handleOfElemAddr(find: Find, chase: Chase, addr: Operand, iv: number, elemSize: number): Operand | null {
   const a0 = chase(addr);
   if (a0.tag !== 'val') return null;
   const add = find(a0.id);
@@ -554,7 +598,7 @@ function handleOfElemAddr(find: Find, chase: Chase, addr: Operand, iv: number): 
   // addr = dataStart + off, in either operand order.
   for (const [ds, of] of [[add.args[0], add.args[1]], [add.args[1], add.args[0]]] as [Operand, Operand][]) {
     const dataStart = dataStartHandle(find, chase, ds);
-    if (dataStart !== null && isIvTimesElem(find, chase, of, iv)) return dataStart;
+    if (dataStart !== null && isIvTimesElem(find, chase, of, iv, elemSize)) return dataStart;
   }
   return null;
 }
@@ -571,15 +615,15 @@ function dataStartHandle(find: Find, chase: Chase, ds: Operand): Operand | null 
   return null;
 }
 
-/** `of` is `iv * ELEM_SIZE` (subscript exactly the IV, offset 0)? */
-function isIvTimesElem(find: Find, chase: Chase, of: Operand, iv: number): boolean {
+/** `of` is `iv * elemSize` (subscript exactly the IV, offset 0)? */
+function isIvTimesElem(find: Find, chase: Chase, of: Operand, iv: number, elemSize: number): boolean {
   const o0 = chase(of);
   if (o0.tag !== 'val') return false;
   const i = find(o0.id);
   if (!i || i.kind !== 'ibin' || i.sub !== 'mul') return false;
   const isIv = (o: Operand): boolean => { const c = chase(o); return c.tag === 'val' && c.id === iv; };
   const [a, b] = i.args;
-  return (isIv(a) && b.tag === 'const' && b.num === ELEM_SIZE) || (isIv(b) && a.tag === 'const' && a.num === ELEM_SIZE);
+  return (isIv(a) && b.tag === 'const' && b.num === elemSize) || (isIv(b) && a.tag === 'const' && a.num === elemSize);
 }
 
 // --- small CFG helpers -------------------------------------------------------

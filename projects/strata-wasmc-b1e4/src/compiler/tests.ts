@@ -3739,4 +3739,45 @@ fn main() {
   print(minOf(f));
 }`,
   },
+  {
+    // i64x2 auto-vectorization: an elementwise long kernel (i64x2.mul + i64x2.add)
+    // over a runtime-trip loop with a scalar remainder. 23 = 11·2 + 1.
+    name: 'vec-i64-map',
+    source: `fn main(){
+  let n = 23;
+  let a = long_array(n); let b = long_array(n); let c = long_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = long(i) * 3L - 40L; b[i] = long(i) * 2L + 1L; }
+  for (let i = 0; i < n; i = i + 1) { c[i] = a[i] * b[i] + a[i]; }
+  let s = 0L; for (let i = 0; i < n; i = i + 1) { s = s + c[i]; }
+  print(s);
+}`,
+  },
+  {
+    // i64 REDUCTIONS folded 2 lanes at a time + a 2-lane horizontal reduce. mul
+    // wraps mod 2^64 (associative+commutative), so the lane-shuffled product is
+    // bit-exact — and the constants force real 64-bit overflow.
+    name: 'vec-i64-reduce',
+    source: `fn main(){
+  let n = 19;
+  let a = long_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = long(i) * 6364136223846793005L + 1442695040888963407L; }
+  let sum = 0L; let xr = 0L; let prod = 1L; let andv = 0L - 1L; let orv = 0L;
+  for (let i = 0; i < n; i = i + 1) { sum = sum + a[i]; xr = xr ^ a[i]; prod = prod * a[i]; andv = andv & a[i]; orv = orv | a[i]; }
+  print(sum); print(xr); print(prod); print(andv); print(orv);
+}`,
+  },
+  {
+    // f64x2 auto-vectorization: a double-precision AXPY. Each lane rounds in
+    // IEEE-754 double exactly like the scalar path, so the widened result is
+    // bit-identical. A float SUM is *declined* (lane-reordered rounding differs).
+    name: 'vec-f64-axpy',
+    source: `fn main(){
+  let m = 18;
+  let x = float_array(m); let y = float_array(m);
+  for (let i = 0; i < m; i = i + 1) { x[i] = float(i) * 0.5 + 1.0; y[i] = float(100 - i) * 0.25; }
+  let a = 2.25;
+  for (let i = 0; i < m; i = i + 1) { y[i] = a * x[i] + y[i]; }
+  print(y[0]); print(y[7]); print(y[m - 1]);
+}`,
+  },
 ];

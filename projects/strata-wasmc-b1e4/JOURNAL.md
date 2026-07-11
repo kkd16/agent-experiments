@@ -29,8 +29,9 @@ reference interpreter at every optimization level.
     implements `str(float)` (shortest round-trip double→string) — is likewise
     written in Strata and injected only when a program formats a float.
 - `src/compiler/opt/optimize.ts` — pass pipeline: copy-propagation, **SCCP** (sparse
-  conditional constant propagation), **auto-vectorization** (counted array loops → 4-wide
-  `v128` SIMD, see `opt/vectorize.ts`), **loop unswitching** (a loop-invariant branch hoisted
+  conditional constant propagation), **auto-vectorization** (counted array loops → `v128`
+  SIMD: `i32x4`/`f32x4` 4-wide, `i64x2`/`f64x2` 2-wide, see `opt/vectorize.ts`), **loop
+  unswitching** (a loop-invariant branch hoisted
   above the loop → two branch-free clones, see `opt/unswitch.ts`), **devirtualization**,
   **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
@@ -95,12 +96,17 @@ reference interpreter at every optimization level.
   cleanup round optimizes across the contiguous copies.
 - `src/compiler/opt/vectorize.ts` — the **auto-vectorizer** at -O2+: recognizes a counted array
   loop `for (i…) a[i] = f(a[i], b[i], …)` whose every subscript is exactly the IV (offset 0),
-  proves the four iterations independent, and — using the very same splice as partial unrolling —
-  prepends a **4-wide vector main loop** (real `v128.load` → lanewise `i32x4`/`f32x4` arithmetic →
-  `v128.store`) while **reusing the original loop as the scalar remainder** for the trailing `< 4`
-  iterations. The "4 more?" guard (the real predicate at `i…i+3`, ANDed) means any widened array
-  has ≥ 4 live elements, so distinct bump allocations can never collide across lanes — sound under
-  aliasing, with genuine carriers (stencils, reductions, per-lane stores) declined up front.
+  proves the `W` iterations independent, and — using the very same splice as partial unrolling —
+  prepends a **W-wide vector main loop** (real `v128.load` → lanewise arithmetic → `v128.store`)
+  while **reusing the original loop as the scalar remainder** for the trailing `< W` iterations.
+  The lane **shape is chosen from the array element type** — `i32x4`/`f32x4` (W=4) for the 32-bit
+  world and `i64x2`/`f64x2` (W=2) for `long[]`/`float[]` — both filling one v128 register. The
+  "W more?" guard (the real predicate at `i…i+(W−1)`, ANDed) means any widened array has ≥ W live
+  elements (≥ ARRAY_HEADER + 16 bytes either way), so distinct bump allocations can never collide
+  across lanes — sound under aliasing, with genuine carriers (stencils, per-lane stores, and
+  *float* reductions — lane-reordered rounding differs) declined up front. **Integer** reductions
+  do widen (i32 folded 4-wide, i64 folded 2-wide, then a lane-count-generic horizontal reduce),
+  bit-exact because `+ * & | ^` are associative+commutative mod 2³²/2⁶⁴.
 - `src/compiler/loopAnalysis.ts` — best-effort, never-throwing induction-variable/loop
   classifier (counted / strided-main / general, with IV, step, bound, static trip count) that
   powers the **Loops** tab; descriptive only, never mutates the IR.
@@ -359,6 +365,23 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **64-bit lane auto-vectorization — `i64x2` / `f64x2`** (`opt/vectorize.ts`, -O2+) — the
+      auto-vectorizer, formerly `i32x4`/`f32x4`-only, now widens the entire 64-bit world. It picks
+      the lane **shape from the array element type** and with it the lane count `W` and the byte
+      stride: `long[]` → **i64x2** and `float[]` (f64) → **f64x2**, both 2 lanes to a v128 (the
+      32-bit shapes keep W=4). A `float[]` kernel packs `f64x2.mul`/`add`/… (bit-exact — each lane
+      rounds in IEEE-754 double exactly like the scalar path); a `long[]` kernel packs
+      `i64x2.mul`/`add` + whole-register `v128.and`/`or`/`xor`, and an **i64 reduction** folds 2
+      lanes at a time into a `v128` accumulator then a 2-lane horizontal reduce — bit-exact because
+      `+ * & | ^` are associative+commutative mod 2⁶⁴. **Float** reductions stay declined (lane
+      reordering would round differently). The change is local to `vectorize.ts` — the SIMD IR,
+      codegen, encoder and from-scratch VM already spoke `i64x2`/`f64x2` from the explicit-vector
+      value types, so the transform reuses the identical proven splice/guard/remainder machinery
+      and the same ≥ W-live-element soundness argument. Proven by the three-engine oracle
+      (interp = V8 = VM) at -O0…-O3 — three new corpus tests (`vec-i64-map`, `vec-i64-reduce`,
+      `vec-f64-axpy`) — plus a **1,040-run** randomized i64/f64 kernel+reduction fuzz (244/260
+      programs actually emitting the target shape) and decline-path checks (integer `/`, stencils,
+      float sums), all zero mismatches. See the 2026-07-11 plan.
 - [x] **Known-bits — a bitwise (congruence) lattice analysis** (`opt/knownbits.ts`, -O2+) — VRP's
       orthogonal twin. Where VRP tracks a value's *magnitude* (a signed interval), this tracks its
       *individual bits*: every i32/i64 SSA value gets two `W`-bit masks — `z` (bits proven 0) and `o`
@@ -632,6 +655,68 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-07-11 — plan + shipped: 64-bit lane auto-vectorization — `i64x2` / `f64x2` (claude / claude-opus-4-8)
+
+**The gap.** The auto-vectorizer (2026-06-23) was a highlight of the mid-end — it *discovers* data
+parallelism in an ordinary scalar array loop and lowers it to real `v128` SIMD — but it only ever
+emitted the two **32-bit** shapes, `i32x4` and `f32x4`. Every `long[]` (i64) and `float[]` (f64)
+loop it declined outright, so the entire 64-bit numeric world sat outside it: f64 scientific
+kernels (AXPY, dot-scaled maps, the transcendental library's inner loops) and i64 bit-mixing /
+hashing loops (a 64-bit xor-fold, an LCG state array) all ran scalar even at -O3. This was an
+explicit open item ("2-wide `i64`/`f64` arrays — the lane plumbing"), and — unusually — the entire
+SIMD stack *below* the vectorizer already spoke both shapes end to end, because the **explicit**
+vector value types (`long2`/`double2`) had wired `i64x2`/`f64x2` through the IR, codegen, byte
+encoder and the from-scratch VM since the SIMD-vectors session. Only the *discovery* pass hadn't
+caught up.
+
+**The plan (the steps).**
+1. Parameterize `vectorize.ts` over a **lane shape** derived from the array element type, replacing
+   the hardcoded `ELEM_SIZE = 4` / `LANES = 4`: `i32→i32x4`, `f32→f32x4` (W=4, E₀=4) and
+   `i64→i64x2`, `f64→f64x2` (W=2, E₀=8) — both a full 128-bit register.
+2. Per-shape lanewise op tables: `i64x2.add/sub/mul` (+ whole-register `v128.and/or/xor`) and
+   `f64x2.add/sub/mul/div/min/max`, chosen by shape at both the validation and the rewrite step.
+3. Thread the element size into the address recognizer so `handle + ARRAY_HEADER + i·E₀` is matched
+   for E₀ ∈ {4, 8} (a `long[]` subscript is `i·8`).
+4. **i64 reductions**: allow a loop-carried `i64` accumulator (`recognizeAcc`), fold it 2 lanes at
+   a time into a `v128` accumulator, and generalize the horizontal reduce from the hardcoded 4-lane
+   pairwise tree to a lane-count-generic left-fold at the accumulator's own width; the monoid
+   identity is now a typed constant (bigint for i64). Float reductions remain declined.
+5. Generalize the "N more iterations?" guard and the preheader identity-splat to `W`.
+6. New corpus tests, an extended `autovec` example showcasing all four shapes, refreshed copy.
+
+**Why it stays sound.** The load-bearing dependence argument is unchanged and, pleasingly, still
+closes at W=2. Every subscript must be *exactly the IV* (offset 0), so a store/load on one array is
+within-lane, and the "W more?" guard means any touched array holds ≥ W live elements = ≥
+ARRAY_HEADER + W·E₀ = ARRAY_HEADER + 16 bytes (a full v128, either shape). Two distinct 8-byte-
+aligned bump allocations are therefore ≥ 24 bytes apart while a cross-lane collision would need them
+within (W−1)·E₀ ≤ 12 bytes — impossible. Elementwise widening is **bit-exact** because each lane
+runs the identical scalar op (`f64x2.mul` rounds exactly like `f64.mul`, `i64x2.mul` wraps exactly
+like `i64.mul` mod 2⁶⁴ — no reassociation). Integer reductions are bit-exact because `+ * & | ^` are
+associative+commutative on i64 mod 2⁶⁴; **float** reductions are declined precisely because a
+lane-shuffled float sum rounds differently. The transform reuses the exact splice/guard/remainder
+machinery of the 32-bit path, so the original loop is always kept verbatim as the scalar remainder —
+a bug can only miss an opportunity, never miscompile.
+
+**What it took.** The change is essentially **local to `vectorize.ts`** — no new IR op, no
+backend/encoder/VM change — because the SIMD lowering already existed. The reference engine in the
+differential oracle is the tree-walking **AST** interpreter, wholly independent of the vectorized
+IR, so "compiled wasm ≡ interpreter" is a genuine oracle for the transform.
+
+**Verification.** The three-engine oracle (interpreter = V8 = from-scratch VM) agrees byte-for-byte
+at -O0…-O3 across the full corpus with **zero regressions** (348 programs × 4 levels), including
+three new tests — `vec-i64-map` (i64x2 elementwise + remainder), `vec-i64-reduce` (all five i64
+monoids, with constants forcing real 64-bit overflow), `vec-f64-axpy` (f64x2 AXPY). A dedicated
+**1,040-run** randomized fuzz of i64/f64 kernels and reductions (odd trip counts 1…23, every
+operator, invariant splats) produced zero mismatches, with 244/260 programs actually emitting the
+target SIMD shape (the rest small constant-trip loops the full unroller consumes first). Decline
+paths were checked to stay correct *and* emit no SIMD: an integer `/` kernel (no SIMD int divide),
+an `a[i+1]` stencil (carried dependence), and a `float` sum (non-associative).
+
+**Follow-ups (added to the open list):** 2-wide `i64x2`/`f64x2` for the aligned `v128.load` hint;
+mixed-width loops (an i32 map feeding an i64 widening reduction) via a `i32x4 → i64x2` extend;
+`f64x2.sqrt`/`abs`/`min`/`max` idioms from the transcendental library; and feeding VRP trip-count
+ranges in to pick W without the runtime guard when the count is statically a multiple of W.
 
 ## 2026-07-09 — plan + shipped: known-bits — a bitwise (congruence) lattice analysis + a live Bits inspector (claude / claude-opus-4-8)
 
@@ -1789,8 +1874,16 @@ result.
       then reduce them with `i32x4.min_s`/`max_s` + a horizontal min/max (already in the VM).
 - [ ] **Reduction + IV-affine contributions** (`sum += i`, `sum += a[i]*i`) — needs a lane-offset
       vector `[i, i+1, i+2, i+3]` for the IV, which the pass splats as a scalar today (so declines).
-- [ ] **2-wide `i64`/`f64` arrays** (`i64x2`/`f64x2`, stride-2, 8-byte elements) — the lane plumbing
-      already exists; only the recognizer's element-size and guard stride are hard-wired to 4.
+- [x] **2-wide `i64`/`f64` arrays** (`i64x2`/`f64x2`, stride-2, 8-byte elements) — SHIPPED
+      2026-07-11. The recognizer now derives the lane shape, count and element size from the array
+      element type; `long[]`/`float[]` kernels widen 2-wide, and i64 reductions fold + 2-lane
+      horizontal-reduce. Bit-exact (elementwise) and integer-reduction-exact; float reductions stay
+      declined. Local to `vectorize.ts`; 3-engine oracle + a 1,040-run fuzz, zero mismatches.
+- [ ] **Mixed-width widening reductions** (`long s = 0; for i: s += a[i]` over an `int[]`) — an
+      `i32x4` load feeding an `i64x2` accumulator via a lanewise `i32x4 → i64x2` sign-extend; today
+      the width-mismatch is declined so the loop runs scalar.
+- [ ] **Aligned `v128.load`/`store` hints** for the 2-wide shapes once the bump allocator guarantees
+      16-byte alignment for `long[]`/`float[]` data (the header is already 8).
 - [ ] **Constant offsets / small stencils** (`a[i+1]`, `a[i-1]`) once a proper dependence test (or a
       runtime no-overlap check) replaces the conservative offset-0 rule.
 - [ ] **`vselect`-based if-conversion in the body** — a per-lane `cond ? x : y` (compare → mask →
