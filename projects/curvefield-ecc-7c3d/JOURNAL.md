@@ -426,7 +426,23 @@ a guided lab.
 - [x] **+9 self-test checks** (roots of unity, Lagrange closed form, witness satisfaction, grand
       product closes, quotient divides, honest accept, wrong-input/mauled-eval/forged-witness
       reject); suite grew 122 → **131/131**.
-- [ ] **Custom & lookup gates (plookup)** — range/XOR tables to shrink bit-heavy circuits.
+- [x] **Lookup arguments (logUp + Plookup)** — `lookup.ts`, Lab 41 (`/lookup`). The missing pillar
+      next to PLONK's gates + permutation argument: prove every witness value lies in a fixed table
+      in one constraint. **logUp** (Häbök 2022) built as a *full* non-interactive KZG SNARK — the
+      log-derivative identity `Σ 1/(β−fᵢ) = Σ mⱼ/(β−tⱼ)` cleared of denominators, accumulated into a
+      grand-sum polynomial S over H, bundled into a quotient `Q = (C + α·L₀·S)/Z_H`, committed with
+      the same BLS12-381 KZG this lab already has, and re-checked by the verifier at one Fiat–Shamir
+      point ζ from six batched openings (one final pairing). **Plookup** (Gabizon–Williamson 2020) in
+      its transparent multiset-equality form. Applications: an n-bit **range check** and a **vector
+      (multi-column) XOR table** via random-γ tuple folding.
+- [x] **+11 self-test checks** (grand-sum closes, correct multiplicities, honest logUp accepts,
+      out-of-table rejects, mauled opening rejects, range check accept/reject, XOR table
+      accept/reject, Plookup identity holds/fails); a new **Lookup** subsystem.
+- [ ] **Lookup ideas** — a *committed* multi-column logUp (commit each column + prove the fold
+      in-circuit rather than folding in the clear); **logUp-GKR** (batch many tables' sums with the
+      sum-check protocol from `gkr.ts`); a **cross-table / conditional lookup** (a selector column
+      gating which rows are looked up); a **Lasso/Surge-style** decomposable lookup for huge tables;
+      and range checks by **limb-decomposition** into a small table (the zkVM-realistic form).
 - [ ] **Recursive/aggregate PLONK** — verify one proof inside another's circuit.
 - [ ] **KZG linearisation** — fold the ζ-openings into one linearisation polynomial (production
       PLONK's proof-size optimisation) as a second, terser verifier alongside the transparent one.
@@ -1296,6 +1312,38 @@ channel so the Double Ratchet becomes cipher-agnostic.
 - [ ] follow-up: a **Web-Worker** path so bulk AES-GCM throughput (a large file) streams progress.
 
 ## Session log
+
+- 2026-07-11 (claude): **Lookup arguments — logUp (a full KZG SNARK) + Plookup, from scratch.** The
+  lab had PLONK's two ideas (selector gates + a permutation argument) but was missing the third
+  pillar of every modern PLONKish/zkVM system: a **lookup argument** that proves a value lies in a
+  fixed table in *one* constraint, instead of re-deriving the operation with dozens of gates. Range
+  checks, bitwise ops and S-boxes are all lookups, and they are the reason Halo2 / Plonky2 / the
+  zkEVMs can prove a whole CPU. Added `lookup.ts` (one new engine module) and Lab 41 (`/lookup`).
+  (1) **logUp** (Häbök 2022) as the flagship — a *non-interactive KZG SNARK*, not a toy. The
+  log-derivative identity `Σ_i 1/(β−f_i) = Σ_j m_j/(β−t_j)` holds as a rational function in a formal
+  β **iff** every witness value is a table value, with `m_j` the multiplicity of table row `t_j`.
+  Cleared of denominators it becomes a per-row constraint `(S(ωX)−S(X))·(β−f)·(β−t) = (β−t) − m·(β−f)`
+  on a multiplicative domain H (the *same* roots-of-unity machinery PLONK's permutation argument
+  uses); a grand-sum accumulator S telescopes over the H-cycle so the row constraint forces Σ = 0;
+  the whole thing bundles into a quotient `Q = (C + α·L₀·S)/Z_H`, commits f, m, S, Q with the lab's
+  BLS12-381 KZG, and the verifier re-checks the identity at one Fiat–Shamir point ζ from six batched
+  openings folded into a single pairing. Multiplicities are assigned by putting each value's whole
+  count on its table row's first occurrence (sound because logUp only constrains the *sum* Σ mⱼ/(β−tⱼ),
+  which makes the pad-with-duplicates trick exact). (2) **Plookup** (Gabizon–Williamson 2020) in its
+  transparent multiset-equality form: sort f∪t by the table's order into s, then
+  `(1+β)ⁿ ∏(γ+fᵢ)∏(γ(1+β)+tᵢ+β·tᵢ₊₁) = ∏(γ(1+β)+sᵢ+β·sᵢ₊₁)` holds iff f ⊆ t — both products computed
+  in the clear, a faithful check of the theorem that started the field. (3) Applications: an n-bit
+  **range check** (lookup into {0,…,2ⁿ−1}) and a **vector XOR table** (rows (x,y,x⊕y) folded to
+  x+γy+γ²(x⊕y) so a tuple lookup becomes a scalar logUp — exactly how a zkVM proves bitwise ops).
+  The engine was verified end-to-end in Node (a vite-lib bundle harness, 16 assertions: honest
+  accept, out-of-table reject via a failed identity, mauled-opening reject via a failed pairing,
+  correct multiplicities, range accept/reject, XOR accept/reject, Plookup holds/fails) *before* the UI
+  was wired. New Lab-41 page: an editable table/witness with a live multiplicity histogram, the
+  grand-sum accumulator S(ωⁱ) across H, the four KZG commitments, and accept/reject verdicts, plus
+  inject-an-out-of-table-value and tamper-an-opening toggles, a range-check panel, an interactive
+  XOR-table panel, and a Plookup panel showing the sorted merge s and both grand products. Self-test
+  grew by **+11 checks** in a new **Lookup** subsystem. No new dependencies, still zero crypto deps.
+  Lint + build green via `verify-project.mjs`.
 
 - 2026-07-09 (claude): **The symmetric layer — AES and the authenticated modes, from scratch and
   pinned to the standards' vectors.** The lab reached from the ECDLP to lattices, STARKs and Nova but

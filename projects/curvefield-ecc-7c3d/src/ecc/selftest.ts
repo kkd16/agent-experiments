@@ -149,6 +149,7 @@ import {
 import * as groth16 from './groth16'
 import * as plonk from './plonk'
 import * as bp from './bulletproofs'
+import * as lookup from './lookup'
 import {
   setup as novaSetup,
   stepR1CS as novaStepR1CS,
@@ -1308,6 +1309,86 @@ export function runSelfTest(): TestCase[] {
       plonk.verify(pp, [w4.out], p4).accepted && !plonk.verify(pp, [out], p4).accepted,
       'the proof reveals only out, never x',
     )
+  }
+
+  // ── 32b. Lookup arguments: logUp (KZG SNARK) + Plookup + range/XOR tables ──
+  {
+    const LTAU = 0x1234_5678_9abc_def0_feed_face_dead_beefn
+
+    // logUp: an honest lookup accepts, and the multiplicities are correct.
+    {
+      const table = [3n, 5n, 8n, 13n, 21n, 34n, 55n, 89n]
+      const witness = [8n, 8n, 55n, 3n, 21n, 8n]
+      const N = lookup.padToPow2(Math.max(table.length, witness.length))
+      const inst = { table, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      const { proof, aux } = lookup.logupProve(srs, inst, witness)
+      const rep = lookup.logupReplay(aux)
+      check('Lookup', 'logUp grand-sum closes to 0 (Σ aᵢ = 0)', rep.closes && rep.rowsOk, 'the log-derivative accumulator telescopes over H')
+      const row8 = aux.tablePadded.findIndex((v) => v === 8n)
+      check('Lookup', 'logUp multiplicity of 8 is 3', aux.multiplicities[row8] === 3n, '8 is looked up 3× → m₈ = 3')
+      const res = lookup.logupVerify(srs, inst, proof)
+      check('Lookup', 'logUp proof verifies (6 openings, one pairing)', res.ok && res.openingsOk && res.identityOk, res.detail)
+    }
+
+    // logUp: an out-of-table value is rejected.
+    {
+      const table = [3n, 5n, 8n, 13n, 21n]
+      const witness = [8n, 999n, 3n] // 999 ∉ table
+      const N = lookup.padToPow2(Math.max(table.length, witness.length))
+      const inst = { table, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      const { proof, aux } = lookup.logupProve(srs, inst, witness, { forceCheat: true })
+      check('Lookup', 'logUp: an out-of-table value is unassignable', !aux.inTable, '999 has no matching table row')
+      check('Lookup', 'logUp soundness: out-of-table proof is rejected', !lookup.logupVerify(srs, inst, proof).ok, 'the identity cannot close, so verify fails')
+    }
+
+    // logUp: a tampered opening breaks the pairing check.
+    {
+      const table = [1n, 2n, 4n, 8n, 16n, 32n]
+      const witness = [4n, 16n, 1n, 8n]
+      const N = lookup.padToPow2(Math.max(table.length, witness.length))
+      const inst = { table, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      const { proof } = lookup.logupProve(srs, inst, witness)
+      const mauled = { ...proof, fz: (proof.fz + 1n) % BLS_SCALAR }
+      check('Lookup', 'logUp soundness: a mauled opening is rejected', !lookup.logupVerify(srs, inst, mauled).ok, 'a wrong evaluation fails the KZG pairing')
+    }
+
+    // Range check via logUp: in-range accepts, out-of-range rejects.
+    {
+      const table = lookup.rangeTable(4) // {0,…,15}
+      const N = lookup.padToPow2(table.length)
+      const inst = { table, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      const good = lookup.logupVerify(srs, inst, lookup.logupProve(srs, inst, [0n, 7n, 15n, 3n, 10n]).proof)
+      check('Lookup', 'range check 0 ≤ x < 2⁴ accepts', good.ok, 'every value looks up into {0,…,15}')
+      const badP = lookup.logupProve(srs, inst, [0n, 7n, 16n], { forceCheat: true }).proof
+      check('Lookup', 'range check rejects 16 ∉ [0,16)', !lookup.logupVerify(srs, inst, badP).ok, 'the escaped value breaks the lookup')
+    }
+
+    // XOR table via a vector (multi-column) lookup.
+    {
+      const tableRows = lookup.xorTable(2) // (x,y,x⊕y), x,y ∈ {0,1,2,3}
+      const gamma = 0x9e3779b97f4a7c15n
+      const good = lookup.foldVectorLookup({ tableRows, witnessRows: [[1n, 2n, 3n], [3n, 3n, 0n], [2n, 1n, 3n]], gamma })
+      const N = lookup.padToPow2(Math.max(good.table.length, good.witness.length))
+      const inst = { table: good.table, N }
+      const srs = lookup.logupSetup(N, LTAU)
+      check('Lookup', 'XOR table accepts correct triples (1⊕2=3, …)', lookup.logupVerify(srs, inst, lookup.logupProve(srs, inst, good.witness).proof).ok, 'folded (a,b,a⊕b) rows are in the table')
+      const bad = lookup.foldVectorLookup({ tableRows, witnessRows: [[1n, 2n, 2n]], gamma })
+      const badP = lookup.logupProve(srs, inst, bad.witness, { forceCheat: true }).proof
+      check('Lookup', 'XOR table rejects a wrong triple (1⊕2 ≠ 2)', !lookup.logupVerify(srs, inst, badP).ok, 'a bad bitwise result fails the lookup')
+    }
+
+    // Plookup: the original transparent multiset-equality identity.
+    {
+      const table = [3n, 5n, 8n, 13n, 21n, 34n]
+      const good = lookup.plookupCheck([8n, 8n, 21n, 3n, 34n], table)
+      check('Lookup', 'Plookup identity holds for f ⊆ t', good.equal, `sorted merge |s| = ${good.s.length}; LHS = RHS`)
+      const bad = lookup.plookupCheck([8n, 7n, 3n], table) // 7 ∉ t
+      check('Lookup', 'Plookup identity fails for f ⊄ t', !bad.equal, '7 ∉ t breaks the (1+β)ⁿ product equality')
+    }
   }
 
   // ── 33. Goldilocks field 𝔽_p, p = 2^64 − 2^32 + 1 (the STARK field) ──
