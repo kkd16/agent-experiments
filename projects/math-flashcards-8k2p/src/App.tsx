@@ -710,6 +710,7 @@ function App() {
     const [focusMode, setFocusMode] = useState<boolean>(getInitialFocusMode());
   const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
   const [largeTextMode, setLargeTextMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsLargeTextMode') === 'true'; } catch { return false; } });
+  const [invertColors, setInvertColors] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsInvertColors') === 'true'; } catch { return false; } });
   const [showCurrentTime, setShowCurrentTime] = useState<boolean>(getInitialShowCurrentTime());
   const [floatingBubbles, setFloatingBubbles] = useState<boolean>(getInitialFloatingBubbles());
   const [bubbleProps, setBubbleProps] = useState<Array<{left: string, width: string, height: string, animationDelay: string, animationDuration: string}>>([]);
@@ -768,6 +769,7 @@ function App() {
     useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFocusMode', focusMode.toString()); } catch (e) { console.error(e); } }, [focusMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideNightOwl', hideNightOwl.toString()); } catch (e) { console.error(e); } }, [hideNightOwl]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLargeTextMode', largeTextMode.toString()); } catch (e) { console.error(e); } }, [largeTextMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsInvertColors', invertColors.toString()); } catch (e) { console.error(e); } }, [invertColors]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShowCurrentTime', showCurrentTime.toString()); } catch (e) { console.error(e); } }, [showCurrentTime]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFloatingBubbles', floatingBubbles.toString()); } catch (e) { console.error(e); } }, [floatingBubbles]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsPulsingFlashcard', pulsingFlashcard.toString()); } catch (e) { console.error(e); } }, [pulsingFlashcard]);
@@ -1709,7 +1711,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''}`} style={{ backgroundColor: theme === 'light' && bgColor ? bgColor : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -2048,6 +2050,10 @@ function App() {
             <input type="checkbox" checked={enableScreenShake} onChange={(e) => setEnableScreenShake(e.target.checked)} />
             Screen Shake
           </label>
+          <label>
+            <input type="checkbox" checked={invertColors} onChange={(e) => setInvertColors(e.target.checked)} />
+            Invert Flashcard Colors
+          </label>
           <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
             <input type="checkbox" checked={colorBlindMode} onChange={(e) => setColorBlindMode(e.target.checked)} />
             Color Blind Mode
@@ -2210,7 +2216,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''}`} style={{color: flashcardTextColor || undefined}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined}}>
 
         <div className="problem" style={{position: 'relative'}}>
           {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
@@ -2317,6 +2323,7 @@ function App() {
         <div className="summary-modal-overlay">
           <div className="summary-modal">
             <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit)) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
+            {history.length > 0 && history.every(h => h.isCorrect) && <div style={{ color: '#f1c40f', fontWeight: 'bold', fontSize: '1.5rem', animation: 'pulse 1.5s infinite', marginBottom: '1rem' }}>Perfect Game! 🌟</div>}
             <p>Final Score: <strong>{score}</strong></p>
             <p>Session Duration: <strong>{Math.floor(currentSessionDuration / 60000)}m {Math.floor((currentSessionDuration % 60000) / 1000)}s</strong></p>
             <p>High Score: <strong>{highScore}</strong></p>
