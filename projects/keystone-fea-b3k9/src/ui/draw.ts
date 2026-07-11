@@ -35,6 +35,8 @@ export interface FrameDrawOpts {
   pendingNode: number | null
   /** When set, draw this mode shape instead of the static response (modal/buckling). */
   modeShape?: NodeDisp[] | null
+  /** Plastic hinges to mark on the deformed shape (pushover). */
+  hinges?: { node: number; sign: number }[] | null
 }
 
 function clear(ctx: CanvasRenderingContext2D, w: number, h: number) {
@@ -355,6 +357,24 @@ export function drawFrame(
       ctx.stroke()
     }
   })
+
+  // Plastic hinges (pushover): a filled amber disc with a ring at each formed
+  // hinge, drawn on the deformed shape — the classic "•" a plastic-analysis
+  // sketch marks where a section has yielded and is rotating.
+  if (o.hinges && o.hinges.length) {
+    for (const hg of o.hinges) {
+      const [sx, sy] = defPos(hg.node)
+      ctx.beginPath()
+      ctx.arc(sx, sy, 5.5, 0, 7)
+      ctx.fillStyle = '#ff5d3b'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(255,214,102,0.95)'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(sx, sy, 9, 0, 7)
+      ctx.stroke()
+    }
+  }
 }
 
 // ------------------------------------------------------------------ continuum

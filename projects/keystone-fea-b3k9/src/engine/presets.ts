@@ -194,6 +194,74 @@ function portalFrame(width: number, height: number, load: number): FrameModel {
   return { type: 'frame', nodes, members, loads: [{ node: 1, fx: load, fy: 0, mz: 0 }] }
 }
 
+// ----------------------------------------------------------- pushover makers
+//
+// Plastic-collapse showcases: members carry an explicit plastic moment Mₚ so the
+// capacity is defined, and are subdivided enough for a hinge to appear in a span.
+// Each is a textbook mechanism whose collapse load factor has a closed form.
+
+const A_PLASTIC = 8e-3 // 80 cm²
+const I_PLASTIC = 1.2e-4 // m⁴
+const MP = 6e5 // N·m plastic moment capacity
+
+function proppedCantileverUDL(L: number, w: number): FrameModel {
+  // Fixed at the left, propped (roller) at the right, under a downward UDL. The
+  // first hinge forms at the fixed end; load redistributes until a second hinge
+  // opens in the span — collapse at w_c = 11.66·Mₚ/L².
+  const n = 12
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++) nodes.push({ x: (i / n) * L, y: 0, support: 'free' })
+  nodes[0].support = 'fixed'
+  nodes[n].support = 'roller-x'
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++)
+    members.push({ a: i, b: i + 1, E: STEEL, A: A_PLASTIC, I: I_PLASTIC, w, Mp: MP })
+  return { type: 'frame', nodes, members, loads: [] }
+}
+
+function fixedFixedBeam(L: number, load: number): FrameModel {
+  // Both ends built in, a central point load. Three hinges (both ends + centre)
+  // and a 50 % reserve over first yield — collapse at P_c = 8·Mₚ/L.
+  const n = 8
+  const nodes: FrameModel['nodes'] = []
+  for (let i = 0; i <= n; i++) nodes.push({ x: (i / n) * L, y: 0, support: 'free' })
+  nodes[0].support = 'fixed'
+  nodes[n].support = 'fixed'
+  const members: FrameModel['members'] = []
+  for (let i = 0; i < n; i++)
+    members.push({ a: i, b: i + 1, E: STEEL, A: A_PLASTIC, I: I_PLASTIC, Mp: MP })
+  return { type: 'frame', nodes, members, loads: [{ node: n / 2, fx: 0, fy: -load, mz: 0 }] }
+}
+
+function swayPortal(width: number, height: number, load: number): FrameModel {
+  // Fixed-base portal under a lateral load — the sway mechanism forms four hinges
+  // (both column bases and both beam-column joints): H_c = 4·Mₚ/h. Columns are
+  // subdivided so the hinges read cleanly on the deflected shape.
+  const nc = 3
+  const nodes: FrameModel['nodes'] = []
+  const idxL: number[] = []
+  for (let i = 0; i <= nc; i++) {
+    idxL.push(nodes.length)
+    nodes.push({ x: 0, y: (i / nc) * height, support: i === 0 ? 'fixed' : 'free' })
+  }
+  const idxR: number[] = []
+  for (let i = 0; i <= nc; i++) {
+    idxR.push(nodes.length)
+    nodes.push({ x: width, y: (i / nc) * height, support: i === 0 ? 'fixed' : 'free' })
+  }
+  const members: FrameModel['members'] = []
+  const beam = (a: number, b: number) => members.push({ a, b, E: STEEL, A: A_PLASTIC, I: I_PLASTIC, Mp: MP })
+  for (let i = 0; i < nc; i++) beam(idxL[i], idxL[i + 1]) // left column
+  for (let i = 0; i < nc; i++) beam(idxR[i], idxR[i + 1]) // right column
+  beam(idxL[nc], idxR[nc]) // beam
+  return {
+    type: 'frame',
+    nodes,
+    members,
+    loads: [{ node: idxL[nc], fx: load, fy: 0, mz: 0 }],
+  }
+}
+
 // ------------------------------------------------------------- continuum makers
 
 function continuumPlateTension(density: number): ContinuumInput {
@@ -319,6 +387,27 @@ export const PRESETS: Preset[] = [
     name: 'Resonator mast',
     blurb: 'Slender fixed-base mast with a lateral drive — switch to Harmonic and sweep through its resonances.',
     model: resonatorMast(6, 2e3),
+  },
+  {
+    kind: 'frame',
+    id: 'propped-plastic',
+    name: 'Propped cantilever (plastic)',
+    blurb: 'Fixed–roller beam under a UDL — switch to Pushover to watch hinges form and collapse at 11.66Mₚ/L².',
+    model: proppedCantileverUDL(8, -22e3),
+  },
+  {
+    kind: 'frame',
+    id: 'fixed-plastic',
+    name: 'Fixed-fixed beam (plastic)',
+    blurb: 'Built-in beam, central load — Pushover shows 3 hinges and a 50 % reserve beyond first yield (8Mₚ/L).',
+    model: fixedFixedBeam(6, 220e3),
+  },
+  {
+    kind: 'frame',
+    id: 'sway-portal',
+    name: 'Sway portal (plastic)',
+    blurb: 'Fixed-base portal under lateral load — Pushover traces the sway mechanism collapse at 4Mₚ/h.',
+    model: swayPortal(6, 4, 110e3),
   },
   {
     kind: 'continuum',
