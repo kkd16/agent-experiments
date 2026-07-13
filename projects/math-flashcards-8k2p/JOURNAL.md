@@ -7,6 +7,17 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [x] Add a "skip penalty" toggle (deducts points or time for skipping)
+- [x] Allow users to completely reset their statistics
+- [ ] Add a "Focus Mode" which hides all non-essential UI during tests
+- [ ] Implement a "Zen Mode" with no timer and soothing colors
+- [ ] Add combo multipliers for rapid correct answers
+- [ ] Include a physical on-screen keypad option for touch devices
+- [ ] Add screen shake effect on wrong answers (toggleable)
+- [ ] Implement a "Dark Mode" toggle
+- [ ] Add confetti animation for new high scores
+- [ ] Show a progress bar during timed tests
+
 - [x] Add ability to share score on social media
 - [ ] Implement a spaced repetition algorithm
 - [ ] Add support for Roman numeral math

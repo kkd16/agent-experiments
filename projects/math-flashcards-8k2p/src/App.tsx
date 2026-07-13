@@ -1012,6 +1012,15 @@ function App() {
   }, [enableScreenShake]);
 
 
+  const [skipPenalty, setSkipPenalty] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsSkipPenalty') === 'true'; } catch { return false; } });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsSkipPenalty', skipPenalty.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [skipPenalty]);
+
   useEffect(() => {
     try {
       window.localStorage.setItem('mathFlashcardsAllowNegatives', allowNegatives.toString());
@@ -1057,6 +1066,18 @@ function App() {
         try { window.localStorage.setItem('mathFlashcardsBgImage', url); } catch(e) { console.error(e); }
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const resetLifetimeStats = () => {
+    if (window.confirm("Are you sure you want to completely reset all lifetime statistics? This cannot be undone.")) {
+      const keys = ['mathFlashcardsLifetimeQuestions', 'mathFlashcardsLifetimeCorrect', 'mathFlashcardsLifetimeSkips', 'mathFlashcardsLifetimeLongestStreak', 'mathFlashcardsLifetimeTimePlayed'];
+      keys.forEach(k => window.localStorage.removeItem(k));
+      setLifetimeQuestions(0);
+      setLifetimeCorrectAnswers(0);
+      setLifetimeSkips(0);
+      setLifetimeLongestStreak(0);
+      setLifetimeTimePlayed(0);
     }
   };
 
@@ -1238,7 +1259,7 @@ function App() {
   const handleGiveUp = () => {
     setLifetimeSkips(prev => prev + 1);
     if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack')) {
-      setTimeLeft(prev => Math.max(0, prev - 5));
+      setTimeLeft(prev => Math.max(0, prev - (skipPenalty ? 15 : 5)));
     }
     const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2);
     const newHistoryItem: HistoryItem = { num1, num2, operation, userAnswer: 'Skipped', correctAnswer: correctAns, isCorrect: false };
@@ -1752,6 +1773,7 @@ function App() {
 
       {!(isSpeedRunActive && focusMode) && (<>
       <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
+      <button onClick={resetLifetimeStats} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#e74c3c'}}>Reset Lifetime Stats</button>
       <button onClick={clearRecentHistoryOnly} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#f39c12'}}>Clear Recent History</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
@@ -1775,6 +1797,7 @@ function App() {
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
         <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
+        <label htmlFor="skipPenalty"><input id="skipPenalty" type="checkbox" checked={skipPenalty} onChange={(e) => setSkipPenalty(e.target.checked)} /> Skip Penalty (-15s)</label>
         <label htmlFor="hideKeypad"><input id="hideKeypad" type="checkbox" checked={hideKeypad} onChange={(e) => setHideKeypad(e.target.checked)} /> Hide Keypad</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
