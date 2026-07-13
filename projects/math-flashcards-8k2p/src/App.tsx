@@ -118,6 +118,15 @@ function getInitialFlashcardTextColor(): string {
   }
 }
 
+function getInitialFlashcardBgColor(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsBgColor') || '';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return '';
+  }
+}
+
 function getInitialInputMethod(): 'numpad' | 'row' {
   try {
     return (window.localStorage.getItem('mathFlashcardsInputMethod') as 'numpad' | 'row') || 'numpad';
@@ -711,6 +720,7 @@ function App() {
   const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
   const [hideHighScore, setHideHighScore] = useState<boolean>(getInitialHideHighScore());
   const [flashcardTextColor, setFlashcardTextColor] = useState<string>(getInitialFlashcardTextColor());
+  const [flashcardBgColor, setFlashcardBgColor] = useState<string>(getInitialFlashcardBgColor());
     const [focusMode, setFocusMode] = useState<boolean>(getInitialFocusMode());
   const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
   const [largeTextMode, setLargeTextMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsLargeTextMode') === 'true'; } catch { return false; } });
@@ -770,6 +780,7 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsConfettiTrigger', confettiTrigger.toString()); } catch (e) { console.error(e); } }, [confettiTrigger]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideHighScore', hideHighScore.toString()); } catch (e) { console.error(e); } }, [hideHighScore]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTextColor', flashcardTextColor); } catch (e) { console.error(e); } }, [flashcardTextColor]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsBgColor', flashcardBgColor); } catch (e) { console.error(e); } }, [flashcardBgColor]);
     useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFocusMode', focusMode.toString()); } catch (e) { console.error(e); } }, [focusMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideNightOwl', hideNightOwl.toString()); } catch (e) { console.error(e); } }, [hideNightOwl]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLargeTextMode', largeTextMode.toString()); } catch (e) { console.error(e); } }, [largeTextMode]);
@@ -845,7 +856,7 @@ function App() {
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen'>('time');
+  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'marathon'>('time');
   useEffect(() => {
     if (distractionMode && isSpeedRunActive && !isPaused) {
       const interval = setInterval(() => {
@@ -1274,7 +1285,7 @@ function App() {
     } else {
       setHideOperator(false);
     }
-    if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit) : true))) {
+    if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered < (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : true))) {
       setMessage('');
     }
     inputRef.current?.focus();
@@ -1288,7 +1299,7 @@ function App() {
       if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === 'n' || e.key === 'N') {
-        if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : (gameMode === 'questions' ? questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit) : true))) {
+        if (!isSpeedRunActive || ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered < (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : true))) {
           generateProblem();
         }
       } else if (e.key === 'd' || e.key === 'D') {
@@ -1411,7 +1422,7 @@ function App() {
   const checkAnswer = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft === 0) return;
-    if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) return;
+    if (isSpeedRunActive && (gameMode === 'questions' || gameMode === 'marathon') && questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit))) return;
     if (isSuddenDeathMode && showSummary) return;
 
     const answer = parseInt(userAnswer, 10);
@@ -1563,7 +1574,7 @@ function App() {
       const newQuestionsAnswered = questionsAnswered + 1;
       setQuestionsAnswered(newQuestionsAnswered);
 
-      if (isSpeedRunActive && gameMode === 'questions' && newQuestionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) {
+      if (isSpeedRunActive && (gameMode === 'questions' || gameMode === 'marathon') && newQuestionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit))) {
         setElapsedTime((Date.now() - (startTime || Date.now())) / 1000);
         setIsSpeedRunActive(false);
         setShowSummary(true);
@@ -1758,6 +1769,8 @@ function App() {
         <div className="setting-group">
           <label htmlFor="flashcardTextColor">Flashcard Text Color (Leave blank for default)</label>
           <input id="flashcardTextColor" type="text" placeholder="#333333 or black" value={flashcardTextColor} onChange={(e) => setFlashcardTextColor(e.target.value)} />
+          <label htmlFor="flashcardBgColor">Flashcard Background Color</label>
+          <input id="flashcardBgColor" type="color" value={flashcardBgColor || '#ffffff'} onChange={(e) => setFlashcardBgColor(e.target.value)} />
         </div>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Correct: <input type="color" value={correctColor} onChange={(e) => setCorrectColor(e.target.value)} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Incorrect: <input type="color" value={incorrectColor} onChange={(e) => setIncorrectColor(e.target.value)} /></label>
@@ -2119,12 +2132,28 @@ function App() {
                   {ghostPacer && runScores.length > 0 && (
                     <div className="ghost-pacer-bar" style={{ position: 'absolute', top: 0, left: 0, height: '100%', backgroundColor: 'rgba(255, 255, 255, 0.4)', width: `${Math.max(0, 100 - (elapsedTime / (runScores.reduce((acc, val) => acc + val.score, 0) / runScores.length || 1)) * 100)}%`, zIndex: 1, pointerEvents: 'none', transition: 'width 1s linear' }}></div>
                   )}
-                  <div className="progress-text" style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
+                  <div style={{ display: 'flex', alignItems: 'center', zIndex: 2, position: 'relative' }}>
+                    <div className="progress-text" style={{ marginRight: '8px' }}>{timeLeft}s</div>
+                    <svg width="24" height="24" viewBox="0 0 24 24" style={{ zIndex: 2 }}>
+                      <circle cx="12" cy="12" r="10" stroke="var(--text-color, #333)" strokeWidth="2" fill="none" opacity="0.3" />
+                      <circle
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="var(--text-color, #333)"
+                        strokeWidth="2"
+                        fill="none"
+                        strokeDasharray="62.83"
+                        strokeDashoffset={62.83 - (62.83 * (timeLeft / (selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration)))}
+                        style={{ transition: 'stroke-dashoffset 1s linear' }}
+                      />
+                    </svg>
+                  </div>
                 </div>
-              ) : gameMode === 'questions' ? (
+              ) : (gameMode === 'questions' || gameMode === 'marathon') ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
-                  <div className="progress-bar" style={{ width: `${(questionsAnswered / (questionLimit === 0 ? customQuestionLimit : questionLimit)) * 100}%` }}></div>
-                  <div className="progress-text">{questionsAnswered} / {questionLimit === 0 ? customQuestionLimit : questionLimit}</div>
+                  <div className="progress-bar" style={{ width: `${(questionsAnswered / (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit))) * 100}%` }}></div>
+                  <div className="progress-text">{questionsAnswered} / {gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)}</div>
                 </div>
               ) : gameMode === 'endless' ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
@@ -2161,12 +2190,13 @@ function App() {
                 />
                 Hardcore
               </label>
-              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless' | 'timeAttack' | 'zen')} className="timer-select">
+              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'marathon')} className="timer-select">
                 <option value="time">Time Limit</option>
                 <option value="questions">Question Limit</option>
                 <option value="endless">Endless</option>
                 <option value="timeAttack">Time Attack</option>
                 <option value="zen">Zen Mode</option>
+                <option value="marathon">Marathon</option>
               </select>
               {(gameMode === 'time' || gameMode === 'timeAttack') ? (
                 <>
@@ -2187,7 +2217,7 @@ function App() {
                     />
                   )}
                 </>
-              ) : gameMode === 'questions' ? (
+              ) : (gameMode === 'questions' || gameMode === 'marathon') ? (
                 <>
                   <select value={questionLimit} onChange={(e) => setQuestionLimit(parseInt(e.target.value, 10))} className="timer-select">
                     <option value={10}>10 Qs</option>
@@ -2222,7 +2252,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined, backgroundColor: flashcardBgColor || undefined}}>
 
         <div className="problem" style={{position: 'relative'}}>
           {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
@@ -2250,9 +2280,9 @@ function App() {
             autoFocus
             className="answer-input"
             placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
-            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}
           />
-          <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
+          <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}>Check</button>
         </form>
 
         {!hideKeypad && (
@@ -2262,7 +2292,7 @@ function App() {
               key={num}
               type="button"
               className="numpad-btn"
-              disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+              disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}
               onClick={() => setUserAnswer(prev => prev + num)}
             >
               {num}
@@ -2271,7 +2301,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}
             onClick={() => setUserAnswer('')}
           >
             C
@@ -2279,7 +2309,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn"
-            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}
             onClick={() => setUserAnswer(prev => prev + '0')}
           >
             0
@@ -2287,7 +2317,7 @@ function App() {
           <button
             type="button"
             className="numpad-btn control-btn"
-            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
+            disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}
             onClick={() => setUserAnswer(prev => prev.slice(0, -1))}
           >
             ⌫
@@ -2322,13 +2352,13 @@ function App() {
       )}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
 
-      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
+      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : ((gameMode === 'questions' || gameMode === 'marathon') ? questionsAnswered >= (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit)) : false)))}>Give Up / Skip</button>}
       {isSpeedRunActive && <button type="button" onClick={() => setIsPaused(!isPaused)} className="next-button" style={{marginLeft: '0.5rem'}}>{isPaused ? 'Resume (P)' : 'Pause (P)'}</button>}
 
       {showSummary && (
         <div className="summary-modal-overlay">
           <div className="summary-modal">
-            <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit)) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
+            <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (gameMode === 'marathon' ? 100 : (questionLimit === 0 ? customQuestionLimit : questionLimit))) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
             {history.length > 0 && history.every(h => h.isCorrect) && <div style={{ color: '#f1c40f', fontWeight: 'bold', fontSize: '1.5rem', animation: 'pulse 1.5s infinite', marginBottom: '1rem' }}>Perfect Game! 🌟</div>}
             <p>Final Score: <strong>{score}</strong></p>
             <p>Session Duration: <strong>{Math.floor(currentSessionDuration / 60000)}m {Math.floor((currentSessionDuration % 60000) / 1000)}s</strong></p>
