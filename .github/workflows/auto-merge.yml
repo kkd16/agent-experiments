@@ -79,7 +79,7 @@ jobs:
       - uses: pnpm/action-setup@v6
         if: steps.scope.outputs.slug != ''
         with:
-          version: 11.5.2
+          version: 11
 
       # Overlay only the PR's project folder; everything else stays at main.
       - name: Overlay the PR's project folder onto main

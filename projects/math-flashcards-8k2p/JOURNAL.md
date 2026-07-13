@@ -376,8 +376,7 @@ live here as long as you like.
 - [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
 - [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
 - [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
-
-- [x] Add a visual timer circle instead of just text
+- [ ] Add a visual timer circle instead of just text
 - [ ] Add support for fractions math problems
 - [ ] Implement a history screen to show past games
 - [ ] Add custom CSS themes for different holidays
@@ -387,3 +386,4 @@ live here as long as you like.
 - [x] Implement a "marathon mode" with 100 questions
 - [ ] Add voice synthesis to read problems out loud
 - [x] Implement customizable flashcard colors
+- [x] Add a visual timer circle instead of just text
