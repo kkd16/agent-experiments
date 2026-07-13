@@ -376,3 +376,15 @@ live here as long as you like.
 - [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
 - [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
 - [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
+
+## Even More Jules Improvements Batch
+- [ ] Add a "Show/Hide Milliseconds" toggle for the timer display.
+- [x] Add an "Average Score" metric in the lifetime stats section.
+- [ ] Add a "Snowfall" background effect toggle in settings.
+- [x] Add a "Mirror Mode" that flips the entire UI horizontally.
+- [ ] Add an option to "Hide the Timer" completely during timed mode for reduced anxiety.
+- [x] Add a "Retro 8-bit Font" option for the flashcard text.
+- [x] Add a "Show Current Streak" in the page title/tab title.
+- [x] Add a "Pulsing Background" effect option when the timer is low.
+- [ ] Add a "Confetti Customization" menu to let users choose confetti colors.
+- [ ] Add an option to toggle "Dyslexia Friendly Font" for better readability.

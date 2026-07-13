@@ -835,6 +835,11 @@ function App() {
   const [lifetimeTimePlayed, setLifetimeTimePlayed] = useState<number>(() => { try { return parseInt(window.localStorage.getItem('mathFlashcardsLifetimeTimePlayed') || '0', 10); } catch { return 0; } });
 
   useEffect(() => {
+    document.title = streak > 0 ? `🔥 Streak: ${streak} | Math Flashcards` : 'Math Flashcards';
+  }, [streak]);
+
+
+  useEffect(() => {
     try {
       window.localStorage.setItem('mathFlashcardsBestCombo', bestHistoricalCombo.toString());
     } catch (e) {
@@ -1715,7 +1720,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${mirrorMode ? 'mirror-mode' : ''} ${timeLeft <= 5 && isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') ? 'pulse-bg' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1766,10 +1771,11 @@ function App() {
       <div className="difficulty-selector" style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label htmlFor="dailyGoal">Daily Goal: <input id="dailyGoal" type="number" min="1" value={dailyGoal} onChange={(e) => setDailyGoal(parseInt(e.target.value, 10) || 50)} style={{ width: '60px' }} /></label>
         <label htmlFor="avatar">Avatar: <input id="avatar" type="text" value={avatar} onChange={(e) => setAvatar(e.target.value)} maxLength={2} style={{ width: '40px', fontSize: '1rem', textAlign: 'center' }} /></label>
-        <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option></select></label>
+        <label htmlFor="fontFamily">Font: <select id="fontFamily" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}><option value="sans-serif">Sans-serif</option><option value="serif">Serif</option><option value="monospace">Monospace</option><option value="'Press Start 2P', monospace">Retro 8-bit</option></select></label>
         <label htmlFor="inputMethod">Input: <select id="inputMethod" value={inputMethod} onChange={(e) => setInputMethod(e.target.value as 'numpad' | 'row')}><option value="numpad">Numpad</option><option value="row">Row</option></select></label>
         <label htmlFor="disableKeyboardShortcuts"><input id="disableKeyboardShortcuts" type="checkbox" checked={disableKeyboardShortcuts} onChange={(e) => setDisableKeyboardShortcuts(e.target.checked)} /> Disable Shortcuts</label>
         <label htmlFor="grayscaleMode"><input id="grayscaleMode" type="checkbox" checked={grayscaleMode} onChange={(e) => setGrayscaleMode(e.target.checked)} /> Grayscale Mode</label>
+        <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
         <label htmlFor="crtMode"><input id="crtMode" type="checkbox" checked={crtMode} onChange={(e) => setCrtMode(e.target.checked)} /> CRT Monitor Effect</label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
@@ -1779,7 +1785,6 @@ function App() {
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
-        <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
         <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
@@ -1851,6 +1856,7 @@ function App() {
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
           <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak} | Total Time Played: {Math.floor(lifetimeTimePlayed / 3600)}h {Math.floor((lifetimeTimePlayed % 3600) / 60)}m {lifetimeTimePlayed % 60}s</div>
+          <div className="stat">Average Score: {runScores.length > 0 ? (runScores.reduce((acc, r) => acc + r.score, 0) / runScores.length).toFixed(1) : 0}</div>
 
           {(() => {
             let bestTime = 'N/A';

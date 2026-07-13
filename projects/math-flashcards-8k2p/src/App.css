@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -893,4 +894,15 @@ h1 {
   );
   z-index: 101;
   pointer-events: none;
+}
+.mirror-mode { transform: scaleX(-1); }
+
+@keyframes pulse-bg {
+  0% { opacity: 1; }
+  50% { opacity: 0.8; background-color: rgba(255, 0, 0, 0.2); }
+  100% { opacity: 1; }
+}
+
+.pulse-bg {
+  animation: pulse-bg 1s infinite;
 }
