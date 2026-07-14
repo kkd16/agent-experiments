@@ -873,6 +873,18 @@ function App() {
   const [isHardcoreMode, setIsHardcoreMode] = useState<boolean>(false);
   const [hideOperator, setHideOperator] = useState<boolean>(getInitialBlindMode());
 
+  const [isWordMode, setIsWordMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsWordMode') === 'true'; } catch(e) { console.error(e); return false; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsWordMode', isWordMode.toString()); } catch(e) { console.error(e); } }, [isWordMode]);
+  const numberToWords = (num: number): string => {
+    const ones = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    if (num < 0) return 'Negative ' + numberToWords(Math.abs(num));
+    if (num < 20) return ones[num];
+    if (num < 100) return tens[Math.floor(num / 10)] + (num % 10 !== 0 ? ' ' + ones[num % 10] : '');
+    if (num < 1000) return ones[Math.floor(num / 100)] + ' Hundred' + (num % 100 !== 0 ? ' and ' + numberToWords(num % 100) : '');
+    return num.toString();
+  };
+
   useEffect(() => {
     try { window.localStorage.setItem('mathFlashcardsBlindMode', hideOperator.toString()); } catch (e) { console.error(e); }
   }, [hideOperator]);
@@ -1780,17 +1792,25 @@ function App() {
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
         <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
+
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
         <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
+        <label htmlFor="isWordMode"><input id="isWordMode" type="checkbox" checked={isWordMode} onChange={(e) => setIsWordMode(e.target.checked)} /> Word Mode</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
         <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
         <label htmlFor="showHints"><input id="showHints" type="checkbox" checked={showHints} onChange={(e) => setShowHints(e.target.checked)} /> Show Hints</label>
         <label htmlFor="ghostPacer"><input id="ghostPacer" type="checkbox" checked={ghostPacer} onChange={(e) => setGhostPacer(e.target.checked)} /> Ghost Pacer</label>
         <label htmlFor="distractionMode"><input id="distractionMode" type="checkbox" checked={distractionMode} onChange={(e) => setDistractionMode(e.target.checked)} /> Distraction Mode</label>
-        <label htmlFor="blindMode"><input id="blindMode" type="checkbox" checked={hideOperator} onChange={(e) => setHideOperator(e.target.checked)} /> Blind Mode (Hide Operation)</label>
+        <label htmlFor="blindMode"><input id="blindMode" type="checkbox" checked={hideOperator}
+              onChange={(e) => setHideOperator(e.target.checked)}
+            />
+            Blind Mode
+          </label>
+
+
         <label htmlFor="invertKeypad"><input id="invertKeypad" type="checkbox" checked={invertKeypad} onChange={(e) => setInvertKeypad(e.target.checked)} /> Invert Keypad Numbers</label>
       </div>
 
@@ -2119,7 +2139,7 @@ function App() {
                   {ghostPacer && runScores.length > 0 && (
                     <div className="ghost-pacer-bar" style={{ position: 'absolute', top: 0, left: 0, height: '100%', backgroundColor: 'rgba(255, 255, 255, 0.4)', width: `${Math.max(0, 100 - (elapsedTime / (runScores.reduce((acc, val) => acc + val.score, 0) / runScores.length || 1)) * 100)}%`, zIndex: 1, pointerEvents: 'none', transition: 'width 1s linear' }}></div>
                   )}
-                  <div className="progress-text" style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
+                  <div className={`progress-text ${(timeLeft <= 10 && timeLeft > 0) ? 'heartbeat' : ''}`} style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
                 </div>
               ) : gameMode === 'questions' ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
@@ -2237,9 +2257,9 @@ function App() {
             </span>
           )}
 
-          <span className="number">{num1}</span>
+          <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
           <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
-          <span className="number">{num2}</span>
+          <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
         </div>
         <form onSubmit={checkAnswer} className="answer-form">
           <input
