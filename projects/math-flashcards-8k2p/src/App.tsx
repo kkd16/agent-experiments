@@ -425,7 +425,11 @@ function getInitialHideStats(): boolean {
 
 
 
-function getInitialTheme(): 'light' | 'dark' {
+function getInitialBgPattern(): 'solid' | 'stripes' | 'dots' {
+  try { const stored = window.localStorage.getItem('mathFlashcardsBgPattern'); if (stored === 'solid' || stored === 'stripes' || stored === 'dots') return stored; } catch (e) { console.error(e); } return 'solid';
+}
+
+function getInitialTheme(): 'light' | 'dark' | 'neon' {
   try {
     const stored = window.localStorage.getItem('mathFlashcardsTheme');
     if (stored === 'dark' || stored === 'light') return stored;
@@ -566,8 +570,16 @@ function getInitialAvgTimePerDigit(): number {
   return 0;
 }
 
+function getInitialHideAllButtons(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsHideAllButtons') === 'true'; } catch { return false; }
+}
+
 function getInitialGrayscaleMode(): boolean {
   try { return window.localStorage.getItem('mathFlashcardsGrayscaleMode') === 'true'; } catch { return false; }
+}
+
+function getInitialDyslexiaFont(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsDyslexiaFont') === 'true'; } catch { return false; }
 }
 function getInitialTotalDigitsAnswered(): number {
   try {
@@ -644,7 +656,7 @@ function App() {
     } catch (e) { console.error(e); }
   }, [customMinNumber, customMaxNumber]);
 
-  const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme());
+  const [theme, setTheme] = useState<'light' | 'dark' | 'neon'>(getInitialTheme());
   const [autoDarkMode, setAutoDarkMode] = useState<boolean>(getInitialAutoDarkMode());
 
   useEffect(() => {
@@ -706,6 +718,8 @@ function App() {
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
 
+  const [hideAllButtons, setHideAllButtons] = useState<boolean>(getInitialHideAllButtons());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideAllButtons', hideAllButtons.toString()); } catch (e) { console.error(e); } }, [hideAllButtons]);
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
   const [disableConfetti, setDisableConfetti] = useState<boolean>(getInitialDisableConfetti());
   const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
@@ -714,6 +728,8 @@ function App() {
     const [focusMode, setFocusMode] = useState<boolean>(getInitialFocusMode());
   const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
   const [largeTextMode, setLargeTextMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsLargeTextMode') === 'true'; } catch { return false; } });
+  const [dyslexiaFont, setDyslexiaFont] = useState<boolean>(getInitialDyslexiaFont());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDyslexiaFont', dyslexiaFont.toString()); } catch (e) { console.error(e); } }, [dyslexiaFont]);
   const [invertColors, setInvertColors] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsInvertColors') === 'true'; } catch { return false; } });
   const [showCurrentTime, setShowCurrentTime] = useState<boolean>(getInitialShowCurrentTime());
   const [floatingBubbles, setFloatingBubbles] = useState<boolean>(getInitialFloatingBubbles());
@@ -828,6 +844,8 @@ function App() {
   const [todayStreak, setTodayStreak] = useState<number>(0);
   const [nightOwlUnlocked, setNightOwlUnlocked] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsNightOwl') === 'true'; } catch { return false; } });
   const [bgImage, setBgImage] = useState<string>(() => { try { return window.localStorage.getItem('mathFlashcardsBgImage') || ''; } catch { return ''; } });
+  const [bgPattern, setBgPattern] = useState<'solid' | 'stripes' | 'dots'>(getInitialBgPattern());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsBgPattern', bgPattern); } catch (e) { console.error(e); } }, [bgPattern]);
   const [highScore, setHighScore] = useState<number>(getInitialHighScore());
   const [showHighScoreBanner, setShowHighScoreBanner] = useState<boolean>(false);
   const [bestHistoricalCombo, setBestHistoricalCombo] = useState<number>(getInitialBestCombo());
@@ -1069,6 +1087,23 @@ function App() {
     }
   };
 
+
+  const exportSettings = () => {
+    const settings: Record<string, string> = {};
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key && key.startsWith('mathFlashcards')) {
+        settings[key] = window.localStorage.getItem(key) || '';
+      }
+    }
+    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mathFlashcardsSettings.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const resetSettings = () => {
     if (window.confirm("Are you sure you want to reset all settings to their default values? (Scores and history will not be affected.)")) {
@@ -1376,7 +1411,7 @@ function App() {
   };
 
   const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
+    const newTheme = theme === 'light' ? 'dark' : (theme === 'dark' ? 'neon' : 'light');
     setTheme(newTheme);
     try {
       window.localStorage.setItem('mathFlashcardsTheme', newTheme);
@@ -1715,7 +1750,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${dyslexiaFont ? 'dyslexia-font' : ''} ${mirrorMode ? 'mirror-mode' : ''} ${lowBatteryMode ? 'low-battery-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : (bgPattern === 'stripes' ? 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.05) 10px, rgba(0,0,0,0.05) 20px)' : bgPattern === 'dots' ? 'radial-gradient(rgba(0,0,0,0.1) 2px, transparent 2px)' : 'none')), backgroundSize: bgPattern === 'dots' ? '20px 20px' : 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1733,7 +1768,7 @@ function App() {
         <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
-            {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
+            {theme === 'light' ? '🌙 Dark' : (theme === 'dark' ? '🔥 Neon' : '☀️ Light')}
           </button>
           <button onClick={() => setAutoDarkMode(!autoDarkMode)} className="theme-toggle" style={{ marginRight: '0.5rem' }}>
             {autoDarkMode ? '🌙 Auto Dark' : '⚪ Manual Dark'}
@@ -1751,7 +1786,8 @@ function App() {
 
 
       {!(isSpeedRunActive && focusMode) && (<>
-      <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
+            <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
+      <button onClick={exportSettings} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#3498db'}}>Export Settings</button>
       <button onClick={clearRecentHistoryOnly} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#f39c12'}}>Clear Recent History</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
@@ -1775,6 +1811,7 @@ function App() {
                 <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
         <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
+        <label htmlFor="hideAllButtons"><input id="hideAllButtons" type="checkbox" checked={hideAllButtons} onChange={(e) => setHideAllButtons(e.target.checked)} /> Hide All Buttons (Keyboard Only)</label>
         <label htmlFor="hideKeypad"><input id="hideKeypad" type="checkbox" checked={hideKeypad} onChange={(e) => setHideKeypad(e.target.checked)} /> Hide Keypad</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
@@ -1784,6 +1821,7 @@ function App() {
         <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
+        <label htmlFor="dyslexiaFont"><input id="dyslexiaFont" type="checkbox" checked={dyslexiaFont} onChange={(e) => setDyslexiaFont(e.target.checked)} /> Dyslexia Friendly Font</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
         <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
@@ -1797,6 +1835,12 @@ function App() {
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
 
         <span style={{ alignSelf: 'center', fontSize: '0.9rem' }}>Background:</span>
+        <span style={{ alignSelf: 'center', fontSize: '0.9rem', marginLeft: '1rem' }}>Pattern:</span>
+        <select value={bgPattern} onChange={(e) => setBgPattern(e.target.value as 'solid' | 'stripes' | 'dots')} style={{ alignSelf: 'center' }}>
+          <option value="solid">Solid</option>
+          <option value="stripes">Stripes</option>
+          <option value="dots">Dots</option>
+        </select>
         <button className="color-btn" style={{ backgroundColor: '#f0f4f8' }} onClick={() => updateBgColor('#f0f4f8')} title="Default"></button>
         <button className="color-btn" style={{ backgroundColor: '#e8f5e9' }} onClick={() => updateBgColor('#e8f5e9')} title="Light Green"></button>
         <button className="color-btn" style={{ backgroundColor: '#fff3e0' }} onClick={() => updateBgColor('#fff3e0')} title="Light Orange"></button>
@@ -2252,10 +2296,10 @@ function App() {
             placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
             disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
           />
-          <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
+          {!hideAllButtons && <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>}
         </form>
 
-        {!hideKeypad && (
+        {!hideKeypad && !hideAllButtons && (
         <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
           {(invertKeypad ? (numpadLayout === 'phone' ? [7, 8, 9, 4, 5, 6, 1, 2, 3] : [1, 2, 3, 4, 5, 6, 7, 8, 9]) : (numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3])).map(num => (
             <button
@@ -2322,7 +2366,7 @@ function App() {
       )}
       {isPaused && <div className="message info" style={{animation: 'pulse 1.5s infinite'}}>Paused (Press 'P' to resume)</div>}
 
-      {!hideSkipButton && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
+      {!hideSkipButton && !hideAllButtons && <button type="button" onClick={handleGiveUp} className="next-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Give Up / Skip</button>}
       {isSpeedRunActive && <button type="button" onClick={() => setIsPaused(!isPaused)} className="next-button" style={{marginLeft: '0.5rem'}}>{isPaused ? 'Resume (P)' : 'Pause (P)'}</button>}
 
       {showSummary && (

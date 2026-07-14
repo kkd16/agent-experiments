@@ -376,3 +376,15 @@ live here as long as you like.
 - [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
 - [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
 - [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
+
+## Yet Another Jules Improvements Batch
+- [x] Add an option to toggle "Dyslexia Friendly Font" for better readability.
+- [x] Implement a "Mirror Mode" where the numbers are flipped horizontally.
+- [x] Add a "Low Battery" indicator simulation that dims the screen slightly when active.
+- [x] Create a "Neon Theme" with glowing text and borders.
+- [ ] Add a visual "Heartbeat" pulse effect to the timer when time is low.
+- [x] Implement an option to hide all buttons and rely solely on keyboard shortcuts.
+- [ ] Add a "Typing Speed" indicator (WPM or similar) for inputs.
+- [ ] Create an interactive tutorial on first launch to guide new users.
+- [x] Add an option to customize the background pattern (stripes, dots, etc.).
+- [x] Implement a feature to export the current settings configuration.

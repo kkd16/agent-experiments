@@ -894,3 +894,37 @@ h1 {
   z-index: 101;
   pointer-events: none;
 }
+
+.dyslexia-font { font-family: 'Comic Sans MS', 'OpenDyslexic', sans-serif !important; letter-spacing: 0.05em !important; line-height: 1.5 !important; }
+
+.mirror-mode { transform: scaleX(-1); }
+
+.low-battery-mode { opacity: 0.7; filter: brightness(0.7); }
+
+.neon {
+  background-color: #0a0a0a;
+  color: #0ff;
+}
+.neon h1, .neon h2 {
+  color: #0ff;
+  text-shadow: 0 0 5px #0ff, 0 0 10px #0ff, 0 0 20px #0ff;
+}
+.neon .flashcard {
+  background-color: #111;
+  border: 2px solid #f0f;
+  box-shadow: 0 0 10px #f0f, 0 0 20px #f0f inset;
+  color: #f0f;
+  text-shadow: 0 0 5px #f0f, 0 0 10px #f0f;
+}
+.neon button {
+  background-color: #111;
+  border: 1px solid #0f0;
+  color: #0f0;
+  text-shadow: 0 0 5px #0f0;
+  box-shadow: 0 0 5px #0f0 inset;
+}
+.neon input, .neon select {
+  background-color: #111;
+  border: 1px solid #ff0;
+  color: #ff0;
+}
