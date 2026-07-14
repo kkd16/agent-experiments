@@ -376,3 +376,15 @@ live here as long as you like.
 - [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
 - [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
 - [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
+
+## Autonomously Added Jules Improvements
+- [x] Add a visual heartbeat animation to the timer when less than 10 seconds remain.
+- [ ] Implement an option to change the flashcard background pattern (dots, lines, grid).
+- [ ] Add a small "New High Score!" confetti burst when breaking a previous record.
+- [x] Implement a "Mirror Mode" where the equation is displayed backwards.
+- [ ] Add a "Night Mode" toggle that inverts the entire UI color scheme for low light.
+- [ ] Create a "Math Bingo" mini-game mode using a 5x5 grid of answers.
+- [x] Add an option to display equations using word problems instead of numbers (e.g. "Two plus Two").
+- [ ] Implement a visual indicator showing the average time taken per question in the current run.
+- [ ] Add a "Share Score" button on the summary screen that copies a formatted text string to clipboard.
+- [ ] Implement an option to practice specific multiplication tables (e.g. only 7s and 8s).
