@@ -388,3 +388,15 @@ live here as long as you like.
 - [ ] Implement a visual indicator showing the average time taken per question in the current run.
 - [ ] Add a "Share Score" button on the summary screen that copies a formatted text string to clipboard.
 - [ ] Implement an option to practice specific multiplication tables (e.g. only 7s and 8s).
+
+## Custom Autonomous Improvements
+- [ ] Add an option to play a custom background music track or provide ambient noise options.
+- [x] Implement a system to highlight the operator in red if the previous question had a different operator (to prevent careless mistakes).
+- [ ] Create a "Zen Mode+" which provides gentle visual cues to encourage slow, deep breathing while answering.
+- [x] Add an "Easter Egg" animation if the user enters a specific number (like 1337 or 42).
+- [x] Add a visual "Speedometer" during speed runs to show answers per minute.
+- [ ] Introduce a "Sudden Death+" mode where the font size shrinks with each correct answer until it's barely readable.
+- [x] Add an option for "Dyslexia Friendly" font (e.g., OpenDyslexic).
+- [ ] Implement a mode where the user has to type out the number word (e.g., "four") instead of digits.
+- [ ] Add a daily goal tracking visual fill bar on the main menu.
+- [ ] Create an achievement for answering 10 questions in a row in under 1 second each.
