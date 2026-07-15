@@ -752,6 +752,7 @@ function App() {
   const [inputMethod, setInputMethod] = useState<'numpad' | 'row'>(getInitialInputMethod());
   const [statsCollapsed, setStatsCollapsed] = useState<boolean>(false);
   const [hasOpenedSettings, setHasOpenedSettings] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsHasOpenedSettings') === 'true'; } catch { return false; } });
+  const [dyslexiaFriendly, setDyslexiaFriendly] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsDyslexiaFriendly') === 'true'; } catch { return false; } });
   const [currentTimeStr, setCurrentTimeStr] = useState<string>(new Date().toLocaleTimeString());
 
 
@@ -772,6 +773,7 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTextColor', flashcardTextColor); } catch (e) { console.error(e); } }, [flashcardTextColor]);
     useEffect(() => { try { window.localStorage.setItem('mathFlashcardsFocusMode', focusMode.toString()); } catch (e) { console.error(e); } }, [focusMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHideNightOwl', hideNightOwl.toString()); } catch (e) { console.error(e); } }, [hideNightOwl]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDyslexiaFriendly', dyslexiaFriendly.toString()); } catch (e) { console.error(e); } }, [dyslexiaFriendly]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsLargeTextMode', largeTextMode.toString()); } catch (e) { console.error(e); } }, [largeTextMode]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsInvertColors', invertColors.toString()); } catch (e) { console.error(e); } }, [invertColors]);
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShowCurrentTime', showCurrentTime.toString()); } catch (e) { console.error(e); } }, [showCurrentTime]);
@@ -825,6 +827,8 @@ function App() {
   const [scoreBump, setScoreBump] = useState<boolean>(false);
 
   const [streak, setStreak] = useState<number>(getInitialStreak());
+  const [previousOperation, setPreviousOperation] = useState<string>('');
+  const [showEasterEgg, setShowEasterEgg] = useState(false);
   const [todayStreak, setTodayStreak] = useState<number>(0);
   const [nightOwlUnlocked, setNightOwlUnlocked] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsNightOwl') === 'true'; } catch { return false; } });
   const [bgImage, setBgImage] = useState<string>(() => { try { return window.localStorage.getItem('mathFlashcardsBgImage') || ''; } catch { return ''; } });
@@ -1426,6 +1430,7 @@ function App() {
     if (isSpeedRunActive && gameMode === 'questions' && questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) return;
     if (isSuddenDeathMode && showSummary) return;
 
+    if (userAnswer === '1337' || userAnswer === '42') { setShowEasterEgg(true); setTimeout(() => setShowEasterEgg(false), 2000); }
     const answer = parseInt(userAnswer, 10);
     if (isNaN(answer)) {
       setMessage("Please enter a valid number.");
@@ -1441,6 +1446,7 @@ function App() {
       setTotalDigitsAnswered(newTotalDigits);
       setAvgTimePerDigit(newAvgTime);
     }
+    setPreviousOperation(operation);
 
     let correctAnswer = 0;
     switch (operation) {
@@ -1735,7 +1741,7 @@ function App() {
           ))}
         </div>
       )}
-    <div className={`app-container ${theme}`} style={{ fontFamily }}>
+    <div className={`app-container ${theme} ${showEasterEgg ? 'easter-egg-active' : ''} ${dyslexiaFriendly ? 'dyslexia-friendly-mode' : ''}`} style={{ fontFamily }}>
       {isOffline && (
         <div style={{ backgroundColor: '#e74c3c', color: 'white', textAlign: 'center', padding: '0.2rem', fontSize: '0.8rem', fontWeight: 'bold' }}>
           Offline Mode
@@ -1797,6 +1803,7 @@ function App() {
         <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
+        <label htmlFor="dyslexiaFriendly"><input id="dyslexiaFriendly" type="checkbox" checked={dyslexiaFriendly} onChange={(e) => setDyslexiaFriendly(e.target.checked)} /> Dyslexia Friendly Font</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="isWordMode"><input id="isWordMode" type="checkbox" checked={isWordMode} onChange={(e) => setIsWordMode(e.target.checked)} /> Word Mode</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
@@ -2140,6 +2147,7 @@ function App() {
                     <div className="ghost-pacer-bar" style={{ position: 'absolute', top: 0, left: 0, height: '100%', backgroundColor: 'rgba(255, 255, 255, 0.4)', width: `${Math.max(0, 100 - (elapsedTime / (runScores.reduce((acc, val) => acc + val.score, 0) / runScores.length || 1)) * 100)}%`, zIndex: 1, pointerEvents: 'none', transition: 'width 1s linear' }}></div>
                   )}
                   <div className={`progress-text ${(timeLeft <= 10 && timeLeft > 0) ? 'heartbeat' : ''}`} style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
+                  {isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && <div className="stat speedometer" style={{marginTop: '0.5rem', fontWeight: 'bold', zIndex: 10, position: 'relative'}}>Speed: {elapsedTime > 0 ? ((questionsAnswered / (elapsedTime / 1000)) * 60).toFixed(1) : 0} ans/min</div>}
                 </div>
               ) : gameMode === 'questions' ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
@@ -2258,7 +2266,7 @@ function App() {
           )}
 
           <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
-          <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
+          <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
           <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
         </div>
         <form onSubmit={checkAnswer} className="answer-form">
