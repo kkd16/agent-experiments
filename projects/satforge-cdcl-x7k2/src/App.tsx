@@ -29,6 +29,7 @@ import { AspStudio } from './components/AspStudio'
 import { CpStudio } from './components/CpStudio'
 import { Gf2Studio } from './components/Gf2Studio'
 import { AigStudio } from './components/AigStudio'
+import { SymxStudio } from './components/SymxStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -47,6 +48,7 @@ type Mode =
   | 'asp'
   | 'cp'
   | 'aig'
+  | 'symx'
   | 'lab'
 
 export default function App() {
@@ -141,6 +143,8 @@ export default function App() {
                                       ? 'Finite-domain constraint programming: propagation to a fixpoint, Régin GAC all-different, dom/wdeg + restarts, branch & bound.'
                                       : mode === 'aig'
                                       ? 'And-Inverter Graphs & SAT sweeping: combinational equivalence checking, the industrial killer app of SAT.'
+                                      : mode === 'symx'
+                                      ? 'Symbolic execution: verify imperative programs by discharging path conditions to the integer-linear core, with concrete counterexamples.'
                                       : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
@@ -191,6 +195,9 @@ export default function App() {
           <button className={mode === 'aig' ? 'active' : ''} onClick={() => setMode('aig')}>
             AIG Studio
           </button>
+          <button className={mode === 'symx' ? 'active' : ''} onClick={() => setMode('symx')}>
+            Symbolic Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -211,6 +218,7 @@ export default function App() {
       {mode === 'cp' && <CpStudio />}
       {mode === 'gf2' && <Gf2Studio />}
       {mode === 'aig' && <AigStudio />}
+      {mode === 'symx' && <SymxStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -343,7 +351,13 @@ export default function App() {
         hash-consed <b>And-Inverter Graph</b>, bit-parallel simulation shredding nodes into candidate classes,
         then each merge <b>proved</b> by the CDCL core until the miter collapses, with a hardware DSL, ripple /
         carry-select adder and array-multiplier generators, and every verdict pinned to an exhaustive
-        truth-table oracle — all hand-written in TypeScript.
+        truth-table oracle · plus a <b>Symbolic Studio</b> that turns the solver on <b>software</b> —
+        a from-scratch <b>symbolic-execution</b> engine for a small imperative language that walks every
+        control-flow path, turns the branch guards into linear integer constraints, and discharges each{' '}
+        <code>assert</code> to the very same <b>Omega test</b>, so a violated assertion returns a concrete{' '}
+        <b>counterexample input</b> and a loop-free program is proven safe for <em>all</em> integers (loops
+        unrolled to a bound — bounded model checking in miniature), every verdict replayed and refereed by an
+        independent concrete interpreter — all hand-written in TypeScript.
       </footer>
     </div>
   )

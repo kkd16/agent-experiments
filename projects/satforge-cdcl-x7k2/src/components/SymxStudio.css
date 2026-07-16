@@ -1,0 +1,254 @@
+/* Symbolic Studio — bounded software verification by symbolic execution. */
+
+.symx-bound-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.symx-bound-row input[type='range'] {
+  flex: 1;
+  accent-color: var(--accent, #4f8cff);
+}
+.symx-bound-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent, #7ab0ff);
+  min-width: 1.4rem;
+  text-align: right;
+}
+.symx-hint {
+  font-size: 0.74rem;
+  color: var(--muted, #8b97a8);
+  margin: 0.35rem 0 0;
+  line-height: 1.4;
+}
+.symx-hint code,
+.imc-blurb code {
+  background: var(--panel-2, #11161f);
+  border: 1px solid var(--border, #283142);
+  border-radius: 4px;
+  padding: 0.02rem 0.28rem;
+  font-size: 0.85em;
+}
+
+.symx-editor {
+  margin-top: 0.4rem;
+}
+.symx-editor label {
+  display: block;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted, #8b97a8);
+  margin-bottom: 0.4rem;
+}
+.symx-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-2, #0d1219);
+  color: var(--text, #e6edf6);
+  border: 1px solid var(--border, #283142);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  resize: vertical;
+  tab-size: 2;
+}
+.symx-editor textarea:focus {
+  outline: none;
+  border-color: var(--accent, #4f8cff);
+}
+
+.symx-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.85rem 0;
+}
+.lia-chip.warn {
+  border-color: color-mix(in srgb, #e0a52a 55%, var(--border, #283142));
+  color: #f0c163;
+}
+.lia-chip.bad {
+  border-color: color-mix(in srgb, #ff5c5c 55%, var(--border, #283142));
+  color: #ff8f8f;
+}
+
+.status-pill.unknown {
+  background: color-mix(in srgb, #e0a52a 16%, transparent);
+  border: 1px solid color-mix(in srgb, #e0a52a 55%, transparent);
+}
+
+.symx-safe h3 {
+  margin: 0 0 0.4rem;
+}
+.symx-safe p {
+  margin: 0;
+  color: var(--muted, #9aa6b6);
+  line-height: 1.5;
+}
+
+.symx-viol h3 {
+  margin: 0 0 0.7rem;
+}
+.symx-cex-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.symx-cex {
+  background: var(--panel-2, #0f141d);
+  border: 1px solid color-mix(in srgb, #ff5c5c 30%, var(--border, #283142));
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+}
+.symx-cex-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.symx-assert {
+  color: #ff9d9d;
+  font-size: 0.86rem;
+}
+.symx-repro {
+  font-size: 0.74rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.symx-repro.ok {
+  background: color-mix(in srgb, #2ecc71 18%, transparent);
+  color: #74e39b;
+  border: 1px solid color-mix(in srgb, #2ecc71 45%, transparent);
+}
+.symx-repro.bad {
+  background: color-mix(in srgb, #ff5c5c 18%, transparent);
+  color: #ff8f8f;
+  border: 1px solid color-mix(in srgb, #ff5c5c 45%, transparent);
+}
+.symx-cex-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.symx-assign {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--panel, #131a24);
+  border: 1px solid var(--border, #283142);
+  border-radius: 6px;
+  padding: 0.16rem 0.5rem;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.84rem;
+}
+.symx-name {
+  color: var(--accent, #7ab0ff);
+}
+.symx-eq {
+  color: var(--muted, #8b97a8);
+}
+.symx-val {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.symx-guards {
+  margin-top: 0.5rem;
+  font-size: 0.76rem;
+  color: var(--muted, #8b97a8);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+.symx-guard {
+  background: var(--panel, #131a24);
+  border: 1px solid var(--border, #283142);
+  border-radius: 5px;
+  padding: 0.06rem 0.4rem;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.76rem;
+  color: var(--text, #cdd7e4);
+}
+.symx-muted {
+  color: var(--muted, #8b97a8);
+  font-size: 0.8rem;
+}
+
+.symx-cross {
+  margin: 0.7rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+.symx-cross-confirm {
+  background: color-mix(in srgb, #2ecc71 12%, transparent);
+  border: 1px solid color-mix(in srgb, #2ecc71 40%, transparent);
+  color: #8fe6ac;
+}
+.symx-cross-mismatch {
+  background: color-mix(in srgb, #ff5c5c 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ff5c5c 40%, transparent);
+  color: #ff9d9d;
+}
+.symx-cross-note {
+  background: var(--panel-2, #11161f);
+  border: 1px solid var(--border, #283142);
+  color: var(--muted, #9aa6b6);
+}
+
+.symx-paths {
+  margin-top: 0.5rem;
+}
+.symx-paths-toggle {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--accent, #7ab0ff);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.2rem 0;
+}
+.symx-path-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.symx-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.24rem 0.4rem;
+  border-radius: 6px;
+  background: var(--panel-2, #0f141d);
+  border: 1px solid var(--border, #283142);
+}
+.symx-path-icon {
+  font-weight: 700;
+  width: 1.1rem;
+  text-align: center;
+}
+.symx-path-complete .symx-path-icon {
+  color: #74e39b;
+}
+.symx-path-bounded .symx-path-icon {
+  color: #f0c163;
+}
+.symx-path-violation .symx-path-icon {
+  color: #ff8f8f;
+}
