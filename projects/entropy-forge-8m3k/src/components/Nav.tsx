@@ -17,6 +17,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
       { route: 'arithmetic', name: 'Arithmetic' },
       { route: 'rans', name: 'rANS' },
       { route: 'tans', name: 'tANS / FSE' },
+      { route: 'rice', name: 'Rice · Elias · integer codes' },
     ],
   },
   {
@@ -36,6 +37,7 @@ const GROUPS: { label: string; items: { route: string; name: string }[] }[] = [
       { route: 'lzma', name: 'LZMA' },
       { route: 'png', name: 'PNG · Image Studio' },
       { route: 'jpeg', name: 'JPEG · Rate–Distortion' },
+      { route: 'flac', name: 'FLAC · lossless audio' },
     ],
   },
   {
