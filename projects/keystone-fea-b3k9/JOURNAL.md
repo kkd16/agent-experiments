@@ -25,10 +25,18 @@ implemented from scratch, numerically validated in-app.
   mesher for parametric domains (bar, cantilever, plate-with-hole, L-bracket). Assemble global
   stiffness (2 DOF/node), apply Dirichlet + traction BCs, solve, recover element stress/strain,
   von Mises, principal stresses.
-- `src/engine/validate.ts` — analytical benchmarks that run live: truss statics, cantilever
-  tip deflection PL³/3EI, simply-supported 5wL⁴/384EI, uniaxial patch test. Reports rel. error.
+- `src/engine/plastic.ts` — nonlinear pushover: event-to-event elastic–plastic hinge tracking
+  (moment-release condensation, mechanism detection from the tangent spectrum), capacity curve.
+- `src/engine/seismic.ts` — seismic time-history: a Newmark-β integrator, Rayleigh damping, a
+  seeded ground-motion library, and the elastic response spectrum.
+- `src/engine/inelastic.ts` — inelastic (nonlinear hysteretic) seismic time-history: bilinear
+  kinematic-hardening plastic hinges + a Newmark-β / Newton–Raphson march (initial-stiffness with
+  line search), giving hysteresis loops, ductility, residual drift and the R factor.
+- `src/engine/validate.ts` — analytical benchmarks that run live (45 of them): truss statics,
+  cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
+  seismic, and the inelastic hinge/hysteresis checks. Reports rel. error.
 - `src/engine/presets.ts` — Warren/Pratt bridges, transmission tower, portal frame, cantilever,
-  plate-with-hole, L-bracket.
+  plate-with-hole, L-bracket, plastic-collapse frames, and seismic/inelastic moment frames.
 - `src/ui/` — React + canvas. Pan/zoom viewport, interactive editing, results & reactions
   tables, stress legend, deformation-scale + load-ramp animation, a live "Verified ✓" badge.
 
@@ -254,13 +262,116 @@ cross-checked live against closed-form structural dynamics.
       near-fault pulse) — member density scaled to lump realistic floor mass so the
       periods land in the earthquake-sensitive band.
 
-- [ ] Inelastic time-history (hysteretic hinges) — marry v6's plasticity to the
-      Newmark march for a true nonlinear seismic response — future
+- [x] Inelastic time-history (hysteretic hinges) — marry v6's plasticity to the
+      Newmark march for a true nonlinear seismic response — **shipped in v8**
 - [ ] Multi-support / asynchronous excitation and a design-spectrum overlay — future
 
 (remaining "future" items are also listed in the v4 backlog above.)
 
+### v8 — Inelastic (nonlinear hysteretic) seismic time-history (the ductility chapter)
+
+Every earthquake chapter so far is **linear-elastic**: the frame rings under the
+ground motion but always returns to plumb, and the base shear it reports climbs
+with intensity without limit. Real buildings do not survive a design earthquake
+elastically — they are *designed* to yield. Past first yield a section forms a
+**plastic hinge**, its moment saturates at Mₚ, and the structure dissipates energy
+in fat hysteresis loops instead of storing it elastically. That inelastic action
+is the whole basis of modern seismic design — the response-modification (R)
+factor, the ductility demand, and the **residual drift** a building is left with.
+v8 marries the plastic hinges of v6 to the Newmark march of v7 and computes it
+directly:
+
+    M·ü + C·u̇ + f_s(u) = −M·ι·a_g(t),
+
+where the restoring force f_s(u) is now **nonlinear**. Members carry **bilinear
+kinematic-hardening** hinges at both ends (elastic slope k up to Mₚ, post-yield
+slope α·k, elastic unloading — α = 0 is elastic–perfectly-plastic), and the
+equation is marched by Newmark-β with **Newton–Raphson equilibrium iterations**:
+each iterate does a per-member *state determination* (a coupled two-hinge return
+map enforcing the full KKT conditions) and the effective-stiffness system is
+re-solved to equilibrium before the hinge states are committed. The tangent
+discontinuities of plasticity are handled by the **initial-stiffness method** (a
+constant, once-factored elastic effective stiffness — provably non-divergent)
+with a **backtracking line search** for monotone residual decrease.
+
+- [x] `inelastic.ts` — the whole chapter, pure/deterministic, built on the existing
+      assembler + Newmark constants.
+- [x] `springReturn` / `newmarkEPP` — the fundamental **bilinear kinematic-hardening
+      spring** (1-D return map) and a scalar EPP oscillator with a full energy ledger
+      (input / kinetic / damping / strain / hysteretic) — the SDOF reference.
+- [x] `memberState` — coupled **two-hinge return map** at a beam's rotational ends,
+      with an active-set that enforces the *full* KKT conditions (plastic-multiplier
+      sign **and** every inactive hinge inside the yield surface) so f_s stays
+      continuous, plus the consistent tangent (= static condensation when α = 0).
+- [x] `solveInelasticSeismic` — MDOF Newmark-β + initial-stiffness Newton–Raphson
+      with line search; outputs the roof history, the **nonlinear base shear** ιᵀf_s,
+      the yielded-hinge set + peak plastic rotations, per-step hinge-active flags, an
+      energy time-history, ductility μ, **residual drift**, dissipated hysteretic
+      energy, and — for the force-reduction story — the elastic response of the same
+      record (the **R factor** = elastic peak base shear / inelastic peak).
+- [x] **6 closed-form benchmarks** (all green): the bilinear backbone f(2u_y) =
+      f_y + αk·u_y, the post-yield tangent αk, the perfectly-plastic unload (f = 0 at
+      the plastic offset), the EPP **energy balance** (closes to 0.1 %), the SDOF
+      **elastic limit** (f_y→∞ reproduces the linear Newmark SDOF to 4e-14), and — the
+      strongest — the **MDOF elastic limit**: with Mₚ→∞ the full nonlinear march
+      reproduces the independent linear `solveSeismic` to **2e-13** (machine
+      precision, two entirely separate codepaths). Badge **39 → 45**.
+- [x] UI: an eighth **Inelastic** analysis mode — record selector, a live shaking
+      canvas where amber plastic-hinge glyphs pop in as sections yield (and the frame
+      carries its permanent residual drift), the iconic **base-shear-vs-roof-drift
+      hysteresis loop** (`HysteresisPlot`), ground + roof time-series with scrub,
+      play/pause/restart, PGA / **yield-strength ×** / **post-yield α** / damping
+      sliders, and stat tiles (μ, R, peak roof, residual drift, hysteretic energy,
+      hinges yielded, peak vs elastic base shear, T₁).
+- [x] A **Ductile frame (inelastic)** preset (4-storey moment frame, capacity-designed
+      weak-beam/strong-column Mₚ) plus the existing 5- and 10-storey seismic frames,
+      which yield under the stronger records.
+
+- [ ] Inelastic **constant-ductility** / strength-reduction spectra (Rμ–μ–T) — future
+- [ ] P-Δ in the nonlinear march (marry v6's geometric stiffness to the hinge model) — future
+
 ## Session log
+
+- 2026-07-16 (claude): shipped **v8 — inelastic (nonlinear hysteretic) seismic
+  time-history**, the ductility chapter that marries v6's plastic hinges to v7's
+  Newmark march. New `inelastic.ts` solves `M ü + C u̇ + f_s(u) = −M ι a_g(t)`
+  with a **nonlinear** restoring force: members carry **bilinear
+  kinematic-hardening** plastic hinges at both ends (elastic slope k → yield Mₚ →
+  post-yield slope α·k, elastic unloading; α = 0 is elastic–perfectly-plastic).
+  The march is Newmark-β with **Newton–Raphson** equilibrium iterations — each
+  iterate runs a per-member *state determination* (a coupled two-hinge return map
+  that enforces the *full* KKT conditions: the plastic-multiplier sign **and**
+  every inactive hinge staying inside the yield surface, so f_s is continuous),
+  with the consistent tangent reducing to exactly the pushover's static
+  condensation when α = 0. The tangent discontinuities of plasticity are tamed by
+  the **initial-stiffness method** (a constant, once-factored elastic effective
+  stiffness `K̂₀ = K + b₀M + b₁C`, provably non-divergent) plus a **backtracking
+  line search** for monotone residual decrease — which took the model from ~10–20
+  non-converged steps per record (worst residual > 1) to a clean **converged**
+  march (worst residual < 5e-6) on every showcase frame. Outputs: the roof
+  history, the *nonlinear* base shear ιᵀf_s, the yielded-hinge set with peak
+  plastic rotations, per-step hinge-active flags for the animation, an energy
+  time-history, the **ductility** μ, the **residual (permanent) drift**, the
+  dissipated **hysteretic energy**, and — running the same record elastically as a
+  reference — the **force-reduction (R) factor**. Six new closed-form benchmarks
+  (all green): the bilinear backbone, the post-yield tangent αk, the
+  perfectly-plastic unload, the EPP **energy balance** (closes to 0.1 %), the SDOF
+  **elastic limit** (f_y→∞ = linear Newmark to 4e-14), and — the strongest — the
+  **MDOF elastic limit**, where the full nonlinear Newton march reproduces the
+  independent linear `solveSeismic` to **2e-13** when nothing yields. Badge **39 →
+  45**. UI: an eighth **Inelastic** analysis mode — a live shaking canvas with
+  amber plastic-hinge glyphs popping in as sections yield (the frame carrying its
+  permanent residual drift), the iconic **base-shear-vs-roof-drift hysteresis
+  loop**, ground + roof traces with click-to-scrub, play/pause/restart, and PGA /
+  **yield-strength ×** / **post-yield α** / damping sliders, plus a stat grid (μ,
+  R, peak roof, residual drift, hysteretic energy, hinges yielded, peak vs elastic
+  base shear, T₁). A new **Ductile frame (inelastic)** preset (4-storey,
+  capacity-designed weak-beam/strong-column Mₚ) showcases it. Verified end-to-end
+  in headless Chromium: the badge reads **45/45**, the ductile frame yields at 4
+  hinges under the synthetic quake (μ ≈ 1.3, R ≈ 1.1) and far harder under the
+  near-fault pulse (μ up to 6, R up to ~4, ~0.5 m residual drift), the amber
+  hinges render at the drift-concentration story, the hysteresis loops open, and
+  Seismic / Pushover / the other modes still work with zero runtime errors.
 
 - 2026-07-16 (claude): shipped **v7 — seismic time-history & the response
   spectrum**, the earthquake chapter. New `seismic.ts`: a **Newmark-β**

@@ -277,6 +277,7 @@ function momentFrame(
   bayW: number,
   rhoEff: number,
   floorLoad: number,
+  mp?: { col: number; beam: number },
 ): FrameModel {
   const Acol = 1.2e-2
   const Icol = 1.0e-4
@@ -290,14 +291,15 @@ function momentFrame(
     for (let col = 0; col < cols; col++)
       nodes.push({ x: col * bayW, y: lvl * storyH, support: lvl === 0 ? 'fixed' : 'free' })
   const members: FrameModel['members'] = []
-  // Columns.
+  // Columns (a defined Mₚ gives the sections a plastic capacity for the
+  // inelastic time-history — "strong column, weak beam" capacity design).
   for (let lvl = 0; lvl < stories; lvl++)
     for (let col = 0; col < cols; col++)
-      members.push({ a: id(col, lvl), b: id(col, lvl + 1), E: STEEL, A: Acol, I: Icol, rho: rhoEff })
+      members.push({ a: id(col, lvl), b: id(col, lvl + 1), E: STEEL, A: Acol, I: Icol, rho: rhoEff, ...(mp ? { Mp: mp.col } : {}) })
   // Beams.
   for (let lvl = 1; lvl < levels; lvl++)
     for (let col = 0; col < bays; col++)
-      members.push({ a: id(col, lvl), b: id(col + 1, lvl), E: STEEL, A: Abeam, I: Ibeam, rho: rhoEff })
+      members.push({ a: id(col, lvl), b: id(col + 1, lvl), E: STEEL, A: Abeam, I: Ibeam, rho: rhoEff, ...(mp ? { Mp: mp.beam } : {}) })
   // A modest lateral floor load at the leftmost column of every level, so the
   // Static view already shows the sway shape the earthquake will excite.
   const loads: FrameModel['loads'] = []
@@ -456,15 +458,22 @@ export const PRESETS: Preset[] = [
     kind: 'frame',
     id: 'moment-frame',
     name: 'Moment frame (5-storey)',
-    blurb: 'A 5-storey, 2-bay steel moment frame — switch to Seismic to shake it with an earthquake and read its response spectrum.',
+    blurb: 'A 5-storey, 2-bay steel moment frame — Seismic reads its response spectrum; Inelastic yields its hinges and traces the hysteresis loops.',
     model: momentFrame(5, 2, 3.5, 5, 62000, 8e3),
   },
   {
     kind: 'frame',
     id: 'tall-building',
     name: 'Tall building (10-storey)',
-    blurb: 'A slender 10-storey tower with a long fundamental period — near-fault pulses hit it hardest. Best seen in Seismic.',
+    blurb: 'A slender 10-storey tower with a long fundamental period — near-fault pulses hit it hardest. Best seen in Seismic / Inelastic.',
     model: momentFrame(10, 2, 3.4, 5.5, 80000, 6e3),
+  },
+  {
+    kind: 'frame',
+    id: 'ductile-frame',
+    name: 'Ductile frame (inelastic)',
+    blurb: 'A 4-storey moment frame with capacity-designed plastic hinges (weak beam, strong column) — switch to Inelastic and shake it past yield to open the hysteresis loops.',
+    model: momentFrame(4, 2, 3.5, 5, 70000, 9e3, { col: 9e5, beam: 5e5 }),
   },
   {
     kind: 'continuum',
