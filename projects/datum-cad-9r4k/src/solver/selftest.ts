@@ -9,6 +9,7 @@ import { analyzeConflicts } from './conflicts'
 import { autoConstrain } from '../model/autoConstrain'
 import { toJSONString, fromJSONString, encodeHash, decodeHash } from '../model/persist'
 import { EXAMPLES } from '../model/examples'
+import { computeKinematics, directionalDerivatives } from './kinematics'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
 
@@ -484,6 +485,169 @@ export function runSelfTests(): TestResult[] {
     const l = s.point(L0)
     const rr = s.point(R0)
     check('spline petal stays mirror-symmetric', r.converged && approx(rr.x, -l.x, 1e-3) && approx(rr.y, l.y, 1e-3), `L0=(${l.x.toFixed(2)},${l.y.toFixed(2)}) R0=(${rr.x.toFixed(2)},${rr.y.toFixed(2)})`)
+  }
+
+  // --- Kinematics: exact velocity & acceleration of a driven mechanism -------
+
+  // 28. The hyper-dual second-order backend's *first* directional derivative equals
+  //     the sparse-AD Jacobian-vector product J·t to machine precision, at a generic
+  //     configuration and along an arbitrary seed t. This proves the two independent
+  //     AD backends compute the same first derivatives — the base of the whole stack.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'four-bar')!.build().sketch
+    const refs = s.freeParams()
+    const x = s.readParams(refs)
+    for (let j = 0; j < x.length; j++) x[j] += 0.27 * (1 + Math.abs(x[j])) * Math.sin((j + 1) * 5.1)
+    s.writeParams(refs, x)
+    const seed = new Float64Array(refs.length)
+    for (let i = 0; i < seed.length; i++) seed[i] = Math.sin((i + 1) * 2.3)
+    const { d1 } = directionalDerivatives(s, seed)
+    const { J, m, n } = residualsAndJacobian(s, s.constraints, refs)
+    let worst = 0
+    for (let i = 0; i < m; i++) {
+      let jv = 0
+      for (let j = 0; j < n; j++) jv += J[i * n + j] * seed[j]
+      worst = Math.max(worst, Math.abs(jv - d1[i]))
+    }
+    check('hyper-dual d¹ = sparse-AD J·t', worst < 1e-9, `worst |Δd¹| = ${worst.toExponential(1)}`)
+  }
+
+  // 29. The hyper-dual *second* directional derivative d²_t r = tᵀ(∇²r)t agrees with
+  //     an independent central finite difference of the first directional derivative
+  //     along the same seed — the analytic Hessian action proven against a numeric one.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'slider-crank')!.build().sketch
+    const refs = s.freeParams()
+    const x0 = s.readParams(refs)
+    for (let j = 0; j < x0.length; j++) x0[j] += 0.22 * (1 + Math.abs(x0[j])) * Math.sin((j + 1) * 3.7)
+    s.writeParams(refs, x0)
+    const seed = new Float64Array(refs.length)
+    for (let i = 0; i < seed.length; i++) seed[i] = 0.5 * Math.sin((i + 1) * 1.9)
+    const { d2 } = directionalDerivatives(s, seed)
+    const h = 1e-5
+    const step = (sign: number) => {
+      const xp = Float64Array.from(x0)
+      for (let j = 0; j < xp.length; j++) xp[j] += sign * h * seed[j]
+      s.writeParams(refs, xp)
+      return directionalDerivatives(s, seed).d1
+    }
+    const dp = step(1)
+    const dm = step(-1)
+    s.writeParams(refs, x0)
+    let worst = 0
+    for (let i = 0; i < d2.length; i++) worst = Math.max(worst, Math.abs((dp[i] - dm[i]) / (2 * h) - d2[i]))
+    check('hyper-dual d² = finite-diff of d¹', worst < 1e-4, `worst |Δd²| = ${worst.toExponential(1)}`)
+  }
+
+  // 30. The exact velocity field ẋ = dx/dθ agrees with a central finite difference of
+  //     a full re-solve at θ±h — the analytic implicit-function derivative validated
+  //     against the mechanism's actual displacement, across two linkages.
+  {
+    let worst = 0
+    for (const id of ['four-bar', 'slider-crank']) {
+      const built = EXAMPLES.find((e) => e.id === id)!.build()
+      const s = built.sketch
+      const drv = built.driver!
+      const c = s.constraints.find((k) => k.id === drv.constraintId)!
+      const theta0 = 50
+      c.value = theta0
+      solve(s, { maxIterations: 160 })
+      const k = computeKinematics(s, drv.constraintId)
+      const h = 5e-3 // degrees; small enough for truncation, large enough vs solver tol
+      c.value = theta0 + h
+      const sp = s.clone()
+      solve(sp, { maxIterations: 160 })
+      c.value = theta0 - h
+      const sm = s.clone()
+      solve(sm, { maxIterations: 160 })
+      const hr = h * (Math.PI / 180)
+      for (const pm of k.points) {
+        const pP = sp.point(pm.id)
+        const pM = sm.point(pm.id)
+        worst = Math.max(worst, Math.abs((pP.x - pM.x) / (2 * hr) - pm.vx), Math.abs((pP.y - pM.y) / (2 * hr) - pm.vy))
+      }
+    }
+    check('velocity field = finite-diff of a re-solve', worst < 5e-2, `worst |Δẋ| = ${worst.toExponential(1)} over four-bar + slider`)
+  }
+
+  // 31. The exact acceleration field ẍ = d²x/dθ² agrees with a central finite
+  //     difference of the *velocity* field — the second-order coefficient validated
+  //     end to end, independently of the hyper-dual arithmetic it was built from.
+  {
+    let worst = 0
+    for (const id of ['four-bar', 'slider-crank']) {
+      const built = EXAMPLES.find((e) => e.id === id)!.build()
+      const s = built.sketch
+      const drv = built.driver!
+      const c = s.constraints.find((k) => k.id === drv.constraintId)!
+      const theta0 = 65
+      c.value = theta0
+      solve(s, { maxIterations: 160 })
+      const k = computeKinematics(s, drv.constraintId)
+      const h = 2e-2
+      c.value = theta0 + h
+      const sp = s.clone()
+      solve(sp, { maxIterations: 160 })
+      const kp = computeKinematics(sp, drv.constraintId)
+      c.value = theta0 - h
+      const sm = s.clone()
+      solve(sm, { maxIterations: 160 })
+      const km = computeKinematics(sm, drv.constraintId)
+      const hr = h * (Math.PI / 180)
+      for (const pm of k.points) {
+        const pP = kp.points.find((p) => p.id === pm.id)!
+        const pM = km.points.find((p) => p.id === pm.id)!
+        worst = Math.max(worst, Math.abs((pP.vx - pM.vx) / (2 * hr) - pm.ax), Math.abs((pP.vy - pM.vy) / (2 * hr) - pm.ay))
+      }
+    }
+    check('acceleration field = finite-diff of velocity', worst < 5e-2, `worst |Δẍ| = ${worst.toExponential(1)} over four-bar + slider`)
+  }
+
+  // 32. Slider-crank against textbook kinematics. The crank end swings on a circle of
+  //     radius r = 40, so its velocity coefficient has magnitude exactly r and is
+  //     perpendicular to the crank arm; and the slider's along-guide velocity matches
+  //     the closed-form slider-crank result dx/dθ derived from |A−B| = rod length —
+  //     an entirely independent hand derivation, checked across the crank cycle.
+  {
+    const DEG = Math.PI / 180
+    const built = EXAMPLES.find((e) => e.id === 'slider-crank')!.build()
+    const s = built.sketch
+    const drv = built.driver!
+    const c = s.constraints.find((k) => k.id === drv.constraintId)!
+    const A = built.tracePoints![0] // crank end
+    // The crank pivot O is A's *fixed* distance neighbour (the rod's other end B is free).
+    let O = -1
+    for (const k of s.constraints) {
+      if (k.kind !== 'distance' || !k.entities.includes(A)) continue
+      const other = k.entities.find((e) => e !== A)!
+      const oe = s.get(other)
+      if (oe?.kind === 'point' && oe.fixed) O = other
+    }
+    const B = s.constraints.find((k) => k.kind === 'pointOnLine')!.entities[0] // slider
+    let worstCrank = 0
+    let worstPerp = 0
+    let worstSlider = 0
+    for (const theta of [30, 65, 115, 200, 305]) {
+      c.value = theta
+      solve(s, { maxIterations: 180 })
+      const k = computeKinematics(s, drv.constraintId)
+      const aM = k.points.find((p) => p.id === A)!
+      // |v_A| = crank radius (40), and v_A ⟂ (A − O).
+      worstCrank = Math.max(worstCrank, Math.abs(Math.hypot(aM.vx, aM.vy) - 40))
+      const oPt = s.point(O)
+      const armx = aM.x - oPt.x
+      const army = aM.y - oPt.y
+      worstPerp = Math.max(worstPerp, Math.abs(aM.vx * armx + aM.vy * army) / (40 * 40))
+      // Slider along-guide velocity, closed form: with the guide horizontal, crank r=40,
+      // rod L=150 and the crank pivot 35 above the guide, dx_B/dθ (θ in radians).
+      const th = theta * DEG
+      const g = 22500 - Math.pow(40 * Math.sin(th) + 35, 2)
+      const dBx = -40 * Math.sin(th) - (40 * Math.cos(th) * (40 * Math.sin(th) + 35)) / Math.sqrt(g)
+      const bM = k.points.find((p) => p.id === B)!
+      worstSlider = Math.max(worstSlider, Math.abs(bM.vx - dBx))
+    }
+    const ok = worstCrank < 1e-4 && worstPerp < 1e-4 && worstSlider < 1e-3
+    check('slider-crank = closed-form kinematics', ok, `|v_A|−r ${worstCrank.toExponential(1)}, ⟂ ${worstPerp.toExponential(1)}, slider ${worstSlider.toExponential(1)}`)
   }
 
   return out

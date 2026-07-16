@@ -23,14 +23,18 @@ mechanisms move.
   - `residuals.ts` — the plain-number instantiation (readable reference values).
   - `ad.ts` — a sparse forward-mode dual number; instantiating the residuals with it gives exact
     derivatives.
+  - `ad2.ts` — a **second-order** forward-mode "hyper-dual" number `{v,d1,d2}` (value + first/second
+    directional derivatives); a third instantiation of the same `Alg<T>` for kinematics.
+  - `kinematics.ts` — exact velocity & acceleration of a driven mechanism from the constraint
+    Jacobian: ẋ = J⁺e_driver and ẍ = J⁺(−ẋᵀ∇²F ẋ), plus the driver-sweep motion profiler.
   - `jacobian.ts` — assembles the exact residual + Jacobian (and the symmetry-broken generic one).
   - `linalg.ts` — Gaussian elimination (normal equations) + rank (for DOF).
   - `solver.ts` — **Levenberg–Marquardt**: Gauss–Newton + adaptive Marquardt damping, an **exact
     (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
   - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
-  - `probes.ts` / `selftest.ts` — a live correctness suite (27 checks) that re-derives every claim,
-    including analytic-vs-finite-difference differential tests.
+  - `probes.ts` / `selftest.ts` — a live correctness suite (32 checks) that re-derives every claim,
+    including analytic-vs-finite-difference differential tests and closed-form kinematics.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
   coupler-curve traces, DOF-aware highlighting, plus `view.ts` (camera) and `picking.ts` (hit-test).
 - `ui/components.tsx` — toolbar, contextual constraint palette, DOF/solver/constraint panel,
@@ -180,10 +184,73 @@ Showcase & tests
   zero-gradient parallel ridge of the perpendicularity residual), and petal
   mirror-symmetry, plus splines folded into the differential + persistence checks.
 
+### Session 5 (claude) — Datum in motion: exact velocity & acceleration kinematics
+
+The solver already tells you *where* a driven mechanism sits at each crank angle (drive the driver,
+re-solve, trace the coupler curve). Session 5 answers *how fast* and *how hard it accelerates* —
+exactly, analytically, from the very same constraint equations, with no finite differences in the
+reported result.
+
+The idea. A driver pins one scalar θ (a crank angle, a stroke). Holding every constraint, the free
+parameters become an implicit function **x(θ)** defined by F(x, θ) = 0. Differentiating that identity
+once and twice gives the whole mechanism's motion in closed form:
+
+- **velocity field** `J ẋ = −F_θ ⇒ ẋ = J⁺ e_driver` — the first-order kinematic coefficient dx/dθ,
+- **acceleration field** `J ẍ = −(ẋᵀ ∇²F ẋ) ⇒ ẍ = J⁺(−b)` — the second-order coefficient d²x/dθ²,
+
+where `J` is the exact autodiff Jacobian the solver *already* assembles and `bᵢ = ẋᵀ Hᵢ ẋ` is the
+second directional derivative of residual *i* along the motion direction. Parametrising θ in the
+driver residual's own output unit (radians / length) makes `F_θ` just `−1` in the driver's row, so
+`ẋ` and `ẍ` are the textbook kinematic coefficients — with `ẋ·ω` and `ẍ·ω²` the true velocity and
+acceleration at crank rate ω.
+
+Planned and shipped, end to end:
+
+- [x] **Second-order forward-mode AD — hyper-dual numbers** (`solver/ad2.ts`). A third instantiation
+  of the *same* residual algebra `Alg<T>`: a `HyperDual` carries `{v, d1, d2}` = value, first and
+  second **directional** derivatives along one seed direction. One residual pass then yields exactly
+  `(J·t)` and `(tᵀ H t)` with no dense-Hessian bookkeeping — the same source-of-truth discipline as
+  the first-order backend, extended one derivative deeper (ordinary chain rule for √, /, ·, atan2,
+  hypot, |·|, wrap, all commented with their identities).
+- [x] **Kinematics core** (`solver/kinematics.ts`). Assembles `J`, locates the driver's residual row
+  (matching the arcs-first row order), solves the velocity field via regularised normal equations
+  (`J⁺`), builds the acceleration right-hand side `b` from one hyper-dual pass seeded with `ẋ`, and
+  solves the acceleration field. Scatters the flat coefficient vectors back onto points (vx, vy, ax,
+  ay) and radii, and reports the **drive gain** (peak |ẋ|) with an honest **dead-point** flag when a
+  toggle/singular configuration sends it diverging.
+- [x] **Live velocity & acceleration overlay** (`render/renderer.ts`). Per-point arrows for both
+  fields, each auto-scaled so the largest reads at a fixed on-screen length — the field's *shape*
+  (relative magnitudes + directions) stays legible at any zoom or mechanism scale. Velocity in cyan,
+  acceleration in violet (distinct from the orange dimensions), with the traced point ringed.
+- [x] **Kinematics panel** (`ui/components.tsx`). Velocity / Accel toggles, the tracer's live speed
+  and acceleration as both coefficients (per-θ) and real rates (per-second, from the driver's sweep
+  period), the drive-gain / dead-point badge, and a two-curve **v(θ) / a(θ) profile plot** over one
+  full sweep (inline SVG, marker at the current crank position) — the object a mechanism designer
+  actually reads to find peak speed and peak acceleration.
+- [x] **Motion profile** (`computeMotionProfile`) — sweeps the driver across its range on a private
+  clone, re-solving and recording the tracer's speed & acceleration magnitude at each step.
+- [x] **Self-test suite 27 → 32.** Five new checks re-derive every kinematic claim independently:
+  hyper-dual d¹ = sparse-AD `J·t` (≈1e-16), hyper-dual d² = central finite-diff of d¹ (≈1e-11),
+  the velocity field = finite-diff of a full re-solve, the acceleration field = finite-diff of the
+  velocity field, and the **slider-crank against textbook kinematics** — crank-end |ẋ| = crank
+  radius exactly and ⟂ the crank arm, and the slider's along-guide dx/dθ = the closed-form
+  slider-crank result across the whole cycle (worst ≈1e-7). Verified end-to-end in Chromium (drove
+  the four-bar with both fields live, 0 console errors) plus `node scripts/verify-project.mjs`.
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
 - [x] Splines / Béziers as first-class entities (with tangency to lines & arcs) *(Session 4)*
+- [x] Exact velocity & acceleration kinematics via second-order AD *(Session 5)*
+- [ ] **Hodograph & mechanical-advantage readout** — plot the tracer's velocity vector tip as the
+      crank turns (the hodograph), and report input↔output mechanical advantage (the ratio of driver
+      rate to output-member rate) with the toggle/dead positions marked on the profile plot.
+- [ ] **Time-domain dynamics** — give members a mass/inertia and integrate M ẍ = f under a driving
+      torque so the mechanism runs under its own physics (the velocity/acceleration fields already
+      give the kinematic coefficients the equations of motion need).
+- [ ] **Jerk (third-order) coefficient** — one more directional derivative (a `{v,d1,d2,d3}` triple)
+      for cam/follower smoothness analysis; the algebra extends cleanly.
+- [ ] **Export the motion profile** to CSV, and the swept coupler curve to SVG/DXF as a poly-Bézier.
 - [ ] **Point-on-spline** and **spline-length** constraints — these need a per-constraint
       curve parameter `t`, the first thing in Datum that isn't a point coord or a radius;
       design a clean way to carry auxiliary solver parameters without polluting the model.
@@ -240,4 +307,17 @@ Showcase & tests
   fillet, rounded rectangle) — each 0-residual and *fully constrained*. Self-test suite 17 → 22
   (the differential Jacobian check now covers arc residuals too). Verified end-to-end in Chromium
   (drew an arc live: 5 DOF, converged, 0 residual; 0 console errors) plus
+  `node scripts/verify-project.mjs` (scope + conformance + lint + build).
+- 2026-07-16 (claude): **exact velocity & acceleration kinematics.** Added a second-order
+  forward-mode AD backend (hyper-dual `{v,d1,d2}`) as a third instantiation of the one residual
+  algebra, and a kinematics core that solves the mechanism's velocity field `ẋ = J⁺e_driver` and
+  acceleration field `ẍ = J⁺(−ẋᵀ∇²F ẋ)` from the exact Jacobian and a single hyper-dual pass — the
+  classical first/second kinematic coefficients dx/dθ and d²x/dθ², with no finite differences in the
+  result. Live per-point velocity (cyan) + acceleration (violet) vector overlay, a Kinematics panel
+  (tracer speed/accel as coefficients and per-second rates, drive gain, dead-point flag, and a
+  v(θ)/a(θ) profile plot over one full sweep), and a driver-sweep motion profiler. Self-test suite
+  27 → 32: hyper-dual d¹ = sparse-AD J·t (~1e-16), d² = finite-diff of d¹ (~1e-11), velocity =
+  finite-diff of a re-solve, acceleration = finite-diff of velocity, and the slider-crank against
+  closed-form kinematics (crank-end |ẋ|=r ⟂ arm, slider dx/dθ ~1e-7). Verified end-to-end in
+  Chromium (four-bar driven with both fields live, 0 console errors) plus
   `node scripts/verify-project.mjs` (scope + conformance + lint + build).

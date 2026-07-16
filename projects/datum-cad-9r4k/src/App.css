@@ -662,3 +662,45 @@
     display: none;
   }
 }
+
+/* --- Kinematics section (velocity / acceleration fields) --- */
+.chipRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.chip .swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.swatch.v {
+  background: #57e6c9;
+}
+.swatch.a {
+  background: #c792ea;
+}
+.motionPlot {
+  display: block;
+  width: 100%;
+  height: 84px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1017;
+}
+.plotLegend {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.plotLegend .muted {
+  margin-left: auto;
+  opacity: 0.7;
+}
