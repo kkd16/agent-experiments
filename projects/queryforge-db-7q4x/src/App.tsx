@@ -9,6 +9,7 @@ import { TestsPanel } from './ui/TestsPanel'
 import { Reference } from './ui/Reference'
 import { Internals } from './ui/Internals'
 import { ConcurrencyLab } from './ui/ConcurrencyLab'
+import { ProtocolsLab } from './ui/ProtocolsLab'
 import { RecoveryLab } from './ui/RecoveryLab'
 import { OptimizerLab } from './ui/OptimizerLab'
 import { ExecutionLab } from './ui/ExecutionLab'
@@ -49,6 +50,7 @@ const TABS = [
   { id: 'compile', label: 'Compile Lab' },
   { id: 'fuzz', label: 'Fuzz Lab' },
   { id: 'concurrency', label: 'Concurrency Lab' },
+  { id: 'protocols', label: 'Protocols Lab' },
   { id: 'recovery', label: 'Recovery Lab' },
   { id: 'internals', label: 'Internals' },
   { id: 'tests', label: 'Self-tests' },
@@ -165,6 +167,7 @@ export default function App() {
           {route === 'compile' && <CompileLab />}
           {route === 'fuzz' && <FuzzLab />}
           {route === 'concurrency' && <ConcurrencyLab />}
+          {route === 'protocols' && <ProtocolsLab />}
           {route === 'recovery' && <RecoveryLab />}
           {route === 'internals' && <Internals />}
           {route === 'tests' && <TestsPanel />}
@@ -177,7 +180,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · Spilling exec (work_mem) · MVCC · ARIES WAL recovery · LSM storage</span>
+        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · Spilling exec (work_mem) · MVCC · 2PL/OCC/T-O protocols · ARIES WAL recovery · LSM storage</span>
       </footer>
     </div>
   )

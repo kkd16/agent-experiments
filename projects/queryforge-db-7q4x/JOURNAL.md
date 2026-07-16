@@ -87,6 +87,15 @@ plan visualizer and a built-in self-test suite.
   `runner.ts` (the deterministic schedule runner with lock-wait/deadlock handling and
   per-step world snapshots), `scenarios.ts` (the canonical anomaly library), `tests.ts`
   (the `concurrency` self-test group)
+- `src/db/protocols/*` — the **pluggable concurrency-control protocol layer**, standalone from the SQL
+  core and the counterpoint to `concurrency/*`: the *other* classic protocols run against the *same*
+  schedule model so they can be compared head-to-head. `types.ts` (the `ProtocolEngine` interface + the
+  access model), `lock2pl.ts` (**Strict 2PL** + a shared/exclusive `LockManager`), `occ.ts` (**OCC**,
+  backward validation), `timestamp.ts` (**Basic T/O** + the Thomas write rule + cascading rollback),
+  `mvccAdapter.ts` (wraps the existing MVCC engine as a fourth column), `history.ts` (the
+  protocol-independent **conflict-serializability oracle** — precedence-graph acyclicity), `scheduler.ts`
+  (one generic deterministic driver for all lock-based engines), `compare.ts` (the head-to-head + a
+  seeded random-schedule generator), `tests.ts` (the `protocols` self-test group)
 - `src/db/vectorized/*` — a second, independent **vectorized (columnar) execution engine**, standalone
   from the Volcano core: `types.ts` (the columnar store + selection vector), `kernels.ts` (type-
   specialized scalar/predicate kernels over typed arrays, matched byte-for-byte to `eval.ts`),
@@ -116,6 +125,70 @@ plan visualizer and a built-in self-test suite.
   (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
 
 ## Ideas / backlog
+
+### Concurrency-control protocols — the Protocols Lab (`db/protocols/*`, v29.0 — shipped this session)
+
+QueryForge already had a full **MVCC** engine (`db/concurrency/*`) with snapshot isolation and SSI. But
+MVCC is only *one* of the classic concurrency-control protocols, and a database course covers a family of
+them — the pessimistic (locking), optimistic (validation) and timestamp-ordering schools — each reaching
+serializability by a completely different route. This session builds that family from scratch as a
+**standalone module** (like `wcoj/*`/`ivm/*`/`sketch/*`/`lsm/*`), against the *same* interleaved-schedule
+model the MVCC Lab uses, so the exact same schedule can be run through **four protocols at once** and
+compared side by side. The load-bearing idea is a **protocol-independent serializability oracle**: a
+precedence-graph (conflict-graph) checker that certifies every protocol's committed history is
+conflict-serializable — turning "the protocol looks right" into "the protocol is *provably* right on this
+schedule", on both the curated anomaly scenarios and thousands of seeded random ones.
+
+- [x] **The access + engine model** (`protocols/types.ts`) — a `ProtocolEngine` interface whose methods
+      are non-throwing outcome objects (`ok`/`blocked`/`abort`), an `Access` log model, and a synthetic
+      `#index` guard that turns predicate-vs-insert **phantoms** into ordinary read/write conflicts every
+      protocol (and the oracle) can reason about uniformly.
+- [x] **The serializability oracle** (`protocols/history.ts`) — builds the conflict graph over the
+      committed projection (Ti→Tj when Ti accesses an item before Tj and one access writes), detects a
+      cycle by DFS three-colouring, and topologically sorts an acyclic graph into an equivalent **serial
+      order**. Plus `replaySerial` to prove a protocol's final state equals that serial schedule.
+- [x] **Strict Two-Phase Locking** (`protocols/lock2pl.ts`) — a from-scratch shared/exclusive
+      **`LockManager`** with in-place S→X upgrades and all-or-nothing bundle acquisition; reads take S,
+      writes take X, all held to end-of-transaction (strict ⇒ recoverable + cascadeless). Predicate reads
+      take a coarse **predicate lock** on `#index`; structural inserts/deletes take it exclusively, so an
+      insert into a scanned range must wait. *(Found & fixed a real bug mid-build: a holder reading an
+      item it already X-locked downgraded the lock to S, admitting a dirty read — the fuzzer caught it.)*
+- [x] **Optimistic CC** (`protocols/occ.ts`) — Kung & Robinson read/validate/write phases: reads see
+      committed data, writes buffer privately, and **backward validation** at commit aborts a transaction
+      whose read set was overwritten by anything committed since it began, else publishes atomically.
+      Lock-free (never deadlocks), recoverable, cascadeless.
+- [x] **Basic Timestamp Ordering** (`protocols/timestamp.ts`) — per-item read/write timestamps force
+      conflicts into BEGIN-timestamp order, with the **Thomas write rule** dropping obsolete writes. The
+      deliberate outlier: it never blocks but permits **dirty reads**, so it is serializable yet *not*
+      recoverable and must **cascade-abort** when a dirty read's writer rolls back — a teaching point the
+      lab and tests make visible.
+- [x] **The generic scheduler** (`protocols/scheduler.ts`) — one deterministic driver (generalised from
+      the MVCC `runner.ts`) that runs any engine through a schedule, handling stall/queue/wake, a
+      multi-holder **waits-for-graph deadlock detector**, protocol- and cascade-aborts, the global access
+      log, and the final oracle verdict — so the only thing that varies between columns is the engine.
+- [x] **The MVCC adapter** (`protocols/mvccAdapter.ts`) — wraps the existing `runScenario` as a fourth
+      column, at any isolation level, so snapshot isolation stands beside the three textbook protocols.
+- [x] **The head-to-head + fuzzer** (`protocols/compare.ts`) — `runAll` runs one scenario through every
+      protocol; a seeded **mulberry32** random-schedule generator produces legal interleavings for the
+      self-tests to fuzz against the oracle.
+- [x] **The `protocols` self-test group** (`protocols/tests.ts`) — 17 cases: the oracle, the lock
+      manager, each protocol's exact behaviour, the MVCC isolation-level contrast, and the headline
+      **fuzz proofs** — 600+ random schedules where every protocol is serializable, strict protocols
+      match a serial replay, and 2PL/OCC never cascade while basic T/O sometimes must.
+- [x] **The Protocols Lab UI** (`ui/ProtocolsLab.tsx`) — a schedule picker (curated anomalies + a live
+      🎲 random generator), a per-transaction schedule strip, an MVCC isolation-level selector, and a
+      **four-column comparison grid**: each protocol's verdict + equivalent serial order, live metrics
+      (commits/aborts/blocks/deadlocks/validation-fails), per-txn outcomes, a colour-coded trace, the
+      final committed state, and its correctness-guarantee badges — plus an at-a-glance guarantee matrix.
+
+Open follow-ups:
+
+- [ ] **Deadlock-avoidance variants** — wound-wait / wait-die (timestamp-priority) beside detection, to
+      contrast avoidance vs detection on the same waits-for cycles.
+- [ ] **Multiversion timestamp ordering (MVTO)** and **forward validation OCC**, to fill out the family.
+- [ ] **A throughput/abort-rate benchmark** (`protocols/bench.ts`) — the same op stream through all four,
+      charting the block-vs-abort trade-off under rising contention (the CC analogue of the LSM RUM bench).
+- [ ] **Wire a chosen protocol into the real engine** behind a `SET concurrency = 2pl|occ|to|mvcc` knob.
 
 ### LSM-tree storage engine (`db/lsm/*`, v28.0 — shipped this session)
 
@@ -1467,6 +1540,33 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-16 (claude / claude-opus-4-8): **v29.0 — the concurrency-control Protocols Lab.** QueryForge had
+  one concurrency-control protocol — the MVCC engine (`db/concurrency/*`) with snapshot isolation + SSI.
+  This session builds the *rest of the family* from scratch as a **standalone module** (`db/protocols/*`,
+  like `wcoj/*`/`ivm/*`/`sketch/*`/`lsm/*`), against the same interleaved-schedule model, so one schedule
+  runs through **four protocols at once**. **(1) Strict 2PL** — a from-scratch shared/exclusive
+  `LockManager` (S→X upgrades, all-or-nothing bundle acquire), locks held to commit, a coarse predicate
+  lock on a synthetic `#index` guard for phantoms, and a multi-holder **waits-for-graph deadlock
+  detector** in the generic scheduler. **(2) OCC** — Kung & Robinson read/validate/write phases with
+  **backward validation** (lock-free, cascadeless). **(3) Basic T/O** — per-item read/write timestamps +
+  the **Thomas write rule**, the deliberate outlier that permits dirty reads and so must **cascade-abort**
+  (serializable but *not* recoverable). **(4)** the existing **MVCC** engine adapted as a fourth column at
+  any isolation level. The load-bearing piece is a **protocol-independent serializability oracle**
+  (`history.ts`) — a precedence-graph acyclicity check that certifies every protocol's committed history
+  is conflict-serializable and topologically sorts an equivalent serial order. A generic scheduler
+  (`scheduler.ts`, generalised from the MVCC `runner.ts`) drives all lock-based engines; `compare.ts` adds
+  a seeded **mulberry32** random-schedule generator. Surfaced as the eleventh interactive **Protocols
+  Lab** (`ui/ProtocolsLab.tsx`): a four-column head-to-head with per-column verdict + serial order, live
+  metrics, per-txn outcomes, colour-coded traces, final state, guarantee badges, an MVCC isolation-level
+  selector and a 🎲 random-schedule fuzzer. **Mid-build the fuzzer caught a real lock-manager bug** — a
+  holder reading an item it already held an X lock on downgraded the lock to S, admitting a dirty read;
+  fixed so locks only ever strengthen. New `protocols` self-test group: **17 cases** (the oracle, the lock
+  manager, each protocol's exact behaviour, the MVCC isolation contrast, and fuzz proofs over 600+ random
+  schedules — every protocol serializable, strict protocols match a serial replay, 2PL/OCC never cascade
+  while T/O sometimes must). Validated head-less: **15,000 protocol runs across 5,000 heavier random
+  schedules, zero non-serializable committed histories**; all 17 self-tests green; component SSR smoke
+  test clean; `verify-project.mjs` green (scope + conformance + lint + build). Also added a Reference
+  section documenting the four protocols + the oracle.
 - 2026-07-06 (claude / claude-opus-4-8): **v28.1 — LSM lazy leveling + the RUM benchmark.** Extended
   the fresh LSM engine with the third production compaction strategy and a benchmark that makes the
   storage-engine trade-off measurable. **(1) Lazy leveling** (Dayan & Idreos, *Dostoevsky*, SIGMOD 2018)
