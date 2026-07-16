@@ -188,6 +188,28 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   editor + gallery, the equivalence verdict with a per-output counterexample table, a live
   before→after AND-gate / SAT-proof / merge / depth stat grid, a single-circuit SAT-sweep view, and
   an interactive truth-table explorer.
+- `src/symx/*` — **Symbolic execution & bounded software verification** (Session 28 — the *Symbolic
+  Studio*, a sixteenth studio). The solver, turned on *software*. `ast.ts` defines "Mini" — a tiny
+  imperative language of unbounded-integer variables, `if` / `while` / `assume` / `assert`, and
+  *linear* expressions (multiplication must keep one side constant, which is exactly what pins every
+  path condition inside the QF_LIA fragment the LIA Studio decides). `parse.ts` is a hand-written
+  lexer + recursive-descent parser (line-accurate errors). `symexec.ts` is the heart: a worklist
+  symbolic executor that carries a symbolic store mapping each variable to a `Lin` affine form over
+  the free inputs, compiles branch guards to **disjunctive normal form over linear atoms**, prunes
+  infeasible forks with the Omega test, unrolls loops to a bound K, and at each `assert(c)` discharges
+  `PC ∧ ¬c` to `omegaTest` — a SAT verdict yields an *integer model* that is a concrete
+  counterexample input. `interp.ts` is the independent oracle: a concrete `bigint` interpreter that
+  runs the program forward and reports the first failing assertion — every symbolic counterexample is
+  replayed on it and must actually crash. `examples.ts` is the gallery (abs, broken/fixed max, clamp
+  with assumptions, sign classifier, a proven loop invariant, a bounded-safe loop, an off-by-two loop
+  bug, a non-linear program the engine honestly declines). `selfcheck.ts` — `runSymxChecks()`: every
+  gallery verdict + witness, plus a randomized differential battery (hundreds of generated
+  straight-line programs where exhaustive box enumeration certifies *both* directions — SAFE ⇒ no
+  box violation, any box violation ⇒ UNSAFE — and every counterexample reproduces concretely). UI:
+  `components/SymxStudio.tsx` — a program editor + gallery, an unroll-bound slider, the SAFE / SAFE≤K
+  / UNSAFE / UNKNOWN verdict, a counterexample list (inputs + path guards + a live "reproduced
+  concretely" badge), a path-explosion stat grid, an independent box-scan cross-check, and a
+  collapsible explored-paths tree.
 
 ## Correctness
 
@@ -2483,3 +2505,81 @@ ground-truth verdict. All seven green, in-browser, in well under a second.
 - [ ] **Don't-care–aware sweeping** — observability/controllability don't-cares (ODC/CDC) so nodes
       that are only *equal where it matters* can still merge, the optimization that separates a toy
       FRAIG from a production one.
+
+### Session 28 — from *proving formulas* to *proving programs*: symbolic execution (a sixteenth studio)
+
+- 2026-07-16 (claude): Turned the reasoning engine on **software**. Added a from-scratch
+  **symbolic-execution / bounded-verification** studio (`src/symx/*`) — a whole new self-contained
+  subsystem that leaves every prior assertion untouched and reuses the LIA Studio's **Omega test** as
+  its decision procedure. A tiny imperative language, **Mini** (unbounded-integer variables,
+  `if` / `while` / `assume` / `assert`, linear expressions), is symbolically executed along every
+  control-flow path: the symbolic store maps each variable to a `Lin` affine form over the free
+  inputs, branch guards are compiled to **DNF over linear atoms** (integer-exact negation of each
+  comparison, `≠` split into two disjuncts, De-Morgan on `∧`/`∨`), infeasible forks are pruned with
+  Omega, and loops unroll to a bound K (bounded model checking). At each `assert(c)` the executor asks
+  Omega whether `PC ∧ ¬c` is satisfiable — a SAT verdict returns an **integer model that is a concrete
+  counterexample input**, and a clean loop-free program is verified for **all** integers. The whole
+  thing answers to an **independent concrete interpreter** (`interp.ts`, sharing no code with the
+  symbolic path) that replays every counterexample and must actually crash on it. New **Symbolic
+  Studio** mode (`SymxStudio.tsx`, a sixteenth top-level studio): a program editor + gallery, an
+  unroll-bound slider, the SAFE / SAFE≤K / UNSAFE / UNKNOWN verdict, a counterexample list (inputs +
+  path guards + a live "✓ reproduced concretely" badge), a stat grid (paths, bounded-out paths,
+  assert checks, Omega queries), an independent **box-scan cross-check**, and a collapsible
+  explored-paths tree. Certified the project's way: `runSymxChecks()` folds **1459 assertions** into
+  the studio badge — every gallery verdict and witness, plus a randomized differential battery of
+  ~280 generated straight-line programs where exhaustive concrete box enumeration certifies *both*
+  directions (**SAFE ⇒ no box violation** for soundness, **any box violation ⇒ UNSAFE** for
+  completeness) and every reported model both satisfies its path condition (`verifyModel`) and
+  reproduces on the interpreter. Lint + build + full gate green.
+
+**What shipped (this session):**
+- [x] **`src/symx/ast.ts`** — the Mini AST (arithmetic `Expr`, Boolean `BExpr` with ¬/∧/∨/comparisons,
+      statements) + faithful pretty-printers for guard/counterexample rendering.
+- [x] **`src/symx/parse.ts`** — a from-scratch lexer + recursive-descent parser with line-accurate
+      errors, `//`/`#` comments, C-style precedence, and single-statement-or-braced blocks.
+- [x] **`src/symx/interp.ts`** — the concrete reference interpreter / oracle (`bigint` semantics,
+      full loop execution with a step cap, first-failing-assert reporting, `assume` filtering).
+- [x] **`src/symx/symexec.ts`** — the worklist symbolic executor: symbolic store over `Lin`,
+      guard→DNF compilation, Omega feasibility pruning, bounded loop unrolling, per-assert proof
+      obligations discharged to `omegaTest` with concrete-model counterexamples, and a SAFE /
+      SAFE-bounded / UNSAFE / UNKNOWN verdict with full budgets.
+- [x] **`src/symx/examples.ts`** — a curated gallery spanning every verdict class.
+- [x] **`src/symx/selfcheck.ts`** — `runSymxChecks()`: gallery + witnesses + a randomized
+      soundness/completeness differential battery against exhaustive box enumeration.
+- [x] **`src/components/SymxStudio.tsx` + `.css`** — the studio UI, wired into `App.tsx` as the
+      sixteenth mode, with a matching footer clause.
+
+**Backlog / next steps (planned):**
+- [ ] **Integer division & modulo by a constant** — lower `x / c`, `x % c` to Presburger
+      divisibility predicates (the LIA layer already has `dvd`), widening the decidable fragment to
+      the bit-twiddling programs symbolic execution is most often pointed at.
+- [ ] **Fixed-width machine integers (QF_BV mode)** — a second backend that discharges path
+      conditions to the existing **bit-blaster** instead of Omega, so overflow/wraparound bugs
+      (`int` arithmetic) are modelled exactly and the studio can find genuine two's-complement
+      counterexamples, with a toggle between "mathematical ℤ" and "n-bit" semantics.
+- [ ] **Arrays & a heap** — a theory-of-arrays store (`a[i] = e`, `a[i]` reads) lowered to the
+      SMT array theory already in `src/smt`, unlocking the classic buffer-overflow / out-of-bounds
+      obligations (`assert(0 <= i && i < n)` auto-inserted on each access).
+- [ ] **Assertion-guided path prioritization** — a worklist ordered toward unproven asserts
+      (directed symbolic execution) instead of DFS, plus a per-assert "reached / proven / refuted"
+      ledger so large programs report partial results usefully.
+- [ ] **Loop invariants (from bounded to unbounded)** — accept a user-supplied `invariant(...)` and
+      discharge the three Hoare obligations (initiation, preservation, and post ⇒ assert) to Omega,
+      turning a SAFE≤K result into an **unbounded** proof — and cross-check by handing the same
+      transition system to the existing IMC/PDR model checker.
+- [ ] **CEGIS loop-invariant synthesis** — search a template space (linear inequalities over the
+      live variables) for an inductive invariant using counterexamples from failed obligations,
+      closing the gap to fully-automatic unbounded verification.
+- [ ] **Weakest-precondition / VC generation view** — show, per assertion, the verification
+      condition as a formula (the symbolic path merged with `∧`/`∨`) beside the path tree, so the
+      studio teaches *why* an assert holds, not just *that* it does.
+- [ ] **A concrete/​symbolic (concolic) mode** — seed with a concrete input, then flip one branch
+      at a time to reach new paths (DART/SAGE), with a coverage readout — the technique behind
+      real-world fuzzers, on the same core.
+- [ ] **Richer language** — `for` loops (sugar over `while`), multiple assertions with named labels,
+      `assert`-on-every-division-nonzero, and a `havoc x;` statement for re-symbolizing a variable.
+- [ ] **An animated path-tree renderer** — draw the symbolic execution tree as an SVG (like the
+      implication-graph view), each node a branch, feasible edges solid and pruned edges ghosted, with
+      the counterexample path highlighted and the accumulated path condition on hover.
+- [ ] **Cross-studio bridge** — export a program's bounded unrolling as a raw CNF/SMT instance into
+      the SAT/SMT studios, so the same bug can be inspected as an implication graph or a DRAT proof.
