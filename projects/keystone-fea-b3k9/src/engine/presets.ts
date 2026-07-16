@@ -262,6 +262,49 @@ function swayPortal(width: number, height: number, load: number): FrameModel {
   }
 }
 
+// ------------------------------------------------------------- seismic makers
+//
+// Multi-storey moment frames for the Seismic time-history mode. Member density is
+// scaled up (rho_eff) to lump realistic tributary floor mass onto the steel, so
+// the fundamental period lands in the earthquake-sensitive 0.3–1.2 s band rather
+// than the sub-0.1 s of a self-mass-only bare frame — i.e. the response spectrum
+// bites where it matters and the sway is dramatic.
+
+function momentFrame(
+  stories: number,
+  bays: number,
+  storyH: number,
+  bayW: number,
+  rhoEff: number,
+  floorLoad: number,
+): FrameModel {
+  const Acol = 1.2e-2
+  const Icol = 1.0e-4
+  const Abeam = 8e-3
+  const Ibeam = 1.4e-4
+  const cols = bays + 1
+  const levels = stories + 1
+  const id = (col: number, lvl: number) => lvl * cols + col
+  const nodes: FrameModel['nodes'] = []
+  for (let lvl = 0; lvl < levels; lvl++)
+    for (let col = 0; col < cols; col++)
+      nodes.push({ x: col * bayW, y: lvl * storyH, support: lvl === 0 ? 'fixed' : 'free' })
+  const members: FrameModel['members'] = []
+  // Columns.
+  for (let lvl = 0; lvl < stories; lvl++)
+    for (let col = 0; col < cols; col++)
+      members.push({ a: id(col, lvl), b: id(col, lvl + 1), E: STEEL, A: Acol, I: Icol, rho: rhoEff })
+  // Beams.
+  for (let lvl = 1; lvl < levels; lvl++)
+    for (let col = 0; col < bays; col++)
+      members.push({ a: id(col, lvl), b: id(col + 1, lvl), E: STEEL, A: Abeam, I: Ibeam, rho: rhoEff })
+  // A modest lateral floor load at the leftmost column of every level, so the
+  // Static view already shows the sway shape the earthquake will excite.
+  const loads: FrameModel['loads'] = []
+  for (let lvl = 1; lvl < levels; lvl++) loads.push({ node: id(0, lvl), fx: floorLoad, fy: 0, mz: 0 })
+  return { type: 'frame', nodes, members, loads }
+}
+
 // ------------------------------------------------------------- continuum makers
 
 function continuumPlateTension(density: number): ContinuumInput {
@@ -408,6 +451,20 @@ export const PRESETS: Preset[] = [
     name: 'Sway portal (plastic)',
     blurb: 'Fixed-base portal under lateral load — Pushover traces the sway mechanism collapse at 4Mₚ/h.',
     model: swayPortal(6, 4, 110e3),
+  },
+  {
+    kind: 'frame',
+    id: 'moment-frame',
+    name: 'Moment frame (5-storey)',
+    blurb: 'A 5-storey, 2-bay steel moment frame — switch to Seismic to shake it with an earthquake and read its response spectrum.',
+    model: momentFrame(5, 2, 3.5, 5, 62000, 8e3),
+  },
+  {
+    kind: 'frame',
+    id: 'tall-building',
+    name: 'Tall building (10-storey)',
+    blurb: 'A slender 10-storey tower with a long fundamental period — near-fault pulses hit it hardest. Best seen in Seismic.',
+    model: momentFrame(10, 2, 3.4, 5.5, 80000, 6e3),
   },
   {
     kind: 'continuum',
