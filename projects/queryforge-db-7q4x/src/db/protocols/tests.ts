@@ -7,6 +7,7 @@
 import { SCENARIOS, scenarioById, type ScheduleOp } from '../concurrency/scenarios'
 import type { Val } from '../concurrency/mvcc'
 import { runOne, generateSchedule } from './compare'
+import { runBenchmark } from './bench'
 import { analyzeHistory, replaySerial } from './history'
 import { LockManager } from './lock2pl'
 import type { Access } from './types'
@@ -227,6 +228,34 @@ test('recoverability: S2PL and OCC never cascade-abort; basic T/O sometimes must
     if (to.outcomes.some((o) => o.reason === 'cascade abort')) toCascades++
   }
   assert(toCascades > 0, 'basic T/O should exhibit cascading rollback on some schedule (it is not recoverable)')
+})
+
+test('benchmark: commit rate falls as contention rises, for every protocol', () => {
+  const b = runBenchmark({ keySizes: [1, 8], txns: 4, opsPerTxn: 6, seeds: 80 })
+  const hot = b.points.find((p) => p.keys === 1)!
+  const cold = b.points.find((p) => p.keys === 8)!
+  for (const id of ['s2pl', 'occ', 'to', 'mvcc'] as const) {
+    const h = hot.stats.find((s) => s.protocol === id)!
+    const c = cold.stats.find((s) => s.protocol === id)!
+    assert(h.commitRate >= 0 && h.commitRate <= 1, `${id}: commit rate in range`)
+    assert(
+      c.commitRate >= h.commitRate - 1e-9,
+      `${id}: low contention (${c.commitRate.toFixed(2)}) should commit at least as much as high contention (${h.commitRate.toFixed(2)})`,
+    )
+  }
+})
+
+test('benchmark: only the blocking protocols ever deadlock; only OCC counts validation fails', () => {
+  const b = runBenchmark({ keySizes: [1, 3], txns: 4, opsPerTxn: 6, seeds: 80 })
+  for (const p of b.points) {
+    const occ = p.stats.find((s) => s.protocol === 'occ')!
+    const to = p.stats.find((s) => s.protocol === 'to')!
+    assert(to.deadlocks === 0, 'basic T/O never deadlocks')
+    assert(occ.deadlocks === 0, 'OCC never deadlocks')
+    assert(to.blocks === 0, 'basic T/O never blocks')
+    assert(occ.blocks === 0, 'OCC never blocks')
+    assert(occ.cascades === 0, 'OCC never cascades')
+  }
 })
 
 export const protocolsCases = cases

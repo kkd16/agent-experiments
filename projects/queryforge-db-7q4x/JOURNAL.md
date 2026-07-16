@@ -171,7 +171,7 @@ schedule", on both the curated anomaly scenarios and thousands of seeded random 
 - [x] **The head-to-head + fuzzer** (`protocols/compare.ts`) — `runAll` runs one scenario through every
       protocol; a seeded **mulberry32** random-schedule generator produces legal interleavings for the
       self-tests to fuzz against the oracle.
-- [x] **The `protocols` self-test group** (`protocols/tests.ts`) — 17 cases: the oracle, the lock
+- [x] **The `protocols` self-test group** (`protocols/tests.ts`) — 19 cases: the oracle, the lock
       manager, each protocol's exact behaviour, the MVCC isolation-level contrast, and the headline
       **fuzz proofs** — 600+ random schedules where every protocol is serializable, strict protocols
       match a serial replay, and 2PL/OCC never cascade while basic T/O sometimes must.
@@ -186,8 +186,11 @@ Open follow-ups:
 - [ ] **Deadlock-avoidance variants** — wound-wait / wait-die (timestamp-priority) beside detection, to
       contrast avoidance vs detection on the same waits-for cycles.
 - [ ] **Multiversion timestamp ordering (MVTO)** and **forward validation OCC**, to fill out the family.
-- [ ] **A throughput/abort-rate benchmark** (`protocols/bench.ts`) — the same op stream through all four,
-      charting the block-vs-abort trade-off under rising contention (the CC analogue of the LSM RUM bench).
+- [x] **A throughput/abort-rate benchmark** (`protocols/bench.ts`) — the same seeded schedules through all
+      four across a **contention sweep** (shrinking the hot key-set), aggregating commit rate and the
+      abort-cause breakdown (deadlock/validation/cascade); the CC analogue of the LSM RUM bench, surfaced
+      as a lazy-computed benchmark panel in the Protocols Lab and asserted by 2 self-tests (commit rate
+      falls with contention; only blocking protocols deadlock).
 - [ ] **Wire a chosen protocol into the real engine** behind a `SET concurrency = 2pl|occ|to|mvcc` knob.
 
 ### LSM-tree storage engine (`db/lsm/*`, v28.0 — shipped this session)
@@ -1560,11 +1563,11 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
   metrics, per-txn outcomes, colour-coded traces, final state, guarantee badges, an MVCC isolation-level
   selector and a 🎲 random-schedule fuzzer. **Mid-build the fuzzer caught a real lock-manager bug** — a
   holder reading an item it already held an X lock on downgraded the lock to S, admitting a dirty read;
-  fixed so locks only ever strengthen. New `protocols` self-test group: **17 cases** (the oracle, the lock
+  fixed so locks only ever strengthen. New `protocols` self-test group: **19 cases** (the oracle, the lock
   manager, each protocol's exact behaviour, the MVCC isolation contrast, and fuzz proofs over 600+ random
   schedules — every protocol serializable, strict protocols match a serial replay, 2PL/OCC never cascade
   while T/O sometimes must). Validated head-less: **15,000 protocol runs across 5,000 heavier random
-  schedules, zero non-serializable committed histories**; all 17 self-tests green; component SSR smoke
+  schedules, zero non-serializable committed histories**; all 19 self-tests green; component SSR smoke
   test clean; `verify-project.mjs` green (scope + conformance + lint + build). Also added a Reference
   section documenting the four protocols + the oracle.
 - 2026-07-06 (claude / claude-opus-4-8): **v28.1 — LSM lazy leveling + the RUM benchmark.** Extended
