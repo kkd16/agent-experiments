@@ -42,6 +42,84 @@ src/
   App.tsx         multi-panel UI wiring it all together
 ```
 
+## Probabilistic — DTMCs, MDPs & PCTL model checking (2026-07-16)
+
+For sixteen versions the lab has answered **yes/no** questions: does the automaton accept, does the
+system satisfy the formula, who wins the game? Real systems are **random** — a coin flips, a packet
+drops, a scheduler chooses — and the right question becomes *with what probability?* This session adds
+the whole **quantitative** half of verification: a from-scratch **probabilistic model checker** for
+discrete-time Markov chains and Markov decision processes, checked with **PCTL**. It is the theory
+behind PRISM and Storm, and the natural quantitative sibling of the qualitative CTL/LTL/games modes
+already here.
+
+### Why this is the marquee addition
+
+The drama is **exactness**. Unbounded reachability `P(F ψ)` is not a fixpoint to approximate — it is
+the exact solution of a linear system `(I − P)·x = b` over the uncertain states. Solved in **exact
+BigInt rationals**, the Knuth–Yao die really is `1/6` per face (with `11/3` flips expected), craps
+really is `244/495`, the gambler's ruin is `i/N`, and a two-state weather chain's steady state is
+`2/7` — reported as fractions, with no floating-point dust. That exact oracle is what lets the Verify
+tab grade three independent engines against each other with teeth.
+
+### Engine (`src/engine/prob/`, ~1.9k lines, zero deps)
+
+- [x] `frac.ts` — exact **BigInt rational** arithmetic (reduce, +−×÷, compare, decimal render, and a
+  parser that reads `1/6`, `0.25`, `3` all as exact fractions). BigInt because Gaussian elimination on a
+  probability matrix overflows a `number` denominator within a dozen states.
+- [x] `types.ts` — the `DTMC` and `MDP` models (states, labelled distributions / action menus, atomic
+  propositions), full stochastic-well-formedness validation, and deep clone.
+- [x] `linalg.ts` — exact rational **Gauss–Jordan** solve with a residual check and `I − P`.
+- [x] `dtmc.ts` — the chain engine: constrained-reachability `Prob0`/`Prob1` graph analysis, **exact**
+  unbounded `P(φ U ψ)` by linear solve, floating-point **value iteration** (the independent witness),
+  exact **step-bounded** `P(φ U^{≤k} ψ)`, `P(X ψ)`, exact **expected hitting time**, Tarjan SCCs +
+  **bottom SCCs**, exact per-BSCC **stationary distribution**, and long-run **steady-state** `S`.
+- [x] `mdp.ts` — the decision-process engine: **value iteration** for `Pmax`/`Pmin` over all schedulers
+  with policy extraction, the induced DTMC, exact Howard **policy iteration** (evaluate exactly, improve
+  by exact one-step look-ahead, seeded from the VI-greedy policy so it never stalls in a reachability
+  trap), and a **brute-force** oracle enumerating every deterministic policy.
+- [x] `pctl.ts` — **PCTL**: a tokenizer + precedence-climbing parser (`P⋈p`/`P=?`, `Pmax`/`Pmin`, `S`,
+  paths `X`/`U`/`F`/`G` with optional `<=k` bounds, boolean connectives) and an evaluator that compiles
+  each formula to the engines above, returning a satisfaction set or a probability vector.
+- [x] `simulate.ts` — a seeded (mulberry32) **Monte-Carlo** sampler: reproducible sample paths and
+  frequency estimates of (bounded) until with a 95% Wald band — the third, dice-rolling engine.
+- [x] `parser.ts` — a forgiving textual model syntax (`dtmc`/`mdp`, `init`, `s -> 1/2: a, 1/2: b`,
+  `s -go-> …`, `label goal = …`) so every chain is a shareable link; plus a serializer for round-trips.
+- [x] `examples.ts` — the gallery, each a canonical model with a **known closed form**: Knuth–Yao die,
+  craps, gambler's ruin, an unreliable retry channel, an ergodic weather chain, a slippery-corridor MDP,
+  and a betting-gambler MDP (bold vs. timid play).
+- [x] `selftest.ts` — the 16-check differential proof (below).
+
+### UI (`src/views/ProbView.tsx` + `.css`)
+
+- [x] **Chain** tab — the model drawn with probability-labelled edges (MDP actions colour-coded),
+  init arrows, proposition tags, and draggable nodes.
+- [x] **Query** tab — a PCTL box (with per-example suggestion chips); a `=?` query heat-maps every
+  state by its probability, prints the **exact fraction** answer for the initial state, shows the
+  expected hitting time, and — for MDPs — reads off the **optimal strategy** (exact policy iteration).
+  A boolean formula highlights its satisfying states instead.
+- [x] **Bounded** tab — `P(F≤k target)` plotted against `k`, climbing to the exact unbounded value
+  (dashed limit line), with a scrubber and the chain heat-mapped at the chosen `k`.
+- [x] **Simulate** tab — a live **Monte-Carlo** estimate with its 95% band beside the exact answer,
+  a samples slider, and an animated seeded **sample path** stepping (play/step/reseed) through the chain.
+- [x] **Verify** tab — the proof harness. **About** tab — the theory (DTMC vs MDP, PCTL, exactness).
+- [x] Wired into `App.tsx` / `hash.ts` as the `prob` mode with a `#/prob` permalink (source + query +
+  tab all in the hash); validated with a headless-browser smoke test (all six tabs render, zero console
+  errors, the live suite reports 16/16).
+
+### Verify — the 16-check differential proof (all green)
+
+- [x] **exact rational linear-solve ≡ floating-point value iteration** — 250 random DTMCs, agree to 1e-10.
+- [x] **Monte-Carlo ≈ exact** — the empirical frequency lands within 0.03 of the exact answer (40k samples).
+- [x] **Prob0 ⟺ (p=0)** and **Prob1 ⟺ (p=1)** — the graph pre-analysis brackets the exact probabilities.
+- [x] **rational Gauss–Jordan** returns an **exactly zero residual** on random systems.
+- [x] known answers: **Knuth–Yao die** P(six)=1/6, E[flips]=11/3; **craps** P(win)=244/495; **gambler's
+  ruin** P(reach N from i)=i/N; **weather** steady-state P(rain)=2/7.
+- [x] **bounded reachability** monotone ↑ in k and ≤ the unbounded value; **Pr(F≤1 ψ)=Pr(X ψ)** on ¬ψ states.
+- [x] PCTL **duality**: Pr(G φ)=1−Pr(F ¬φ), and ¬(P<p) ≡ P≥p as satisfaction sets.
+- [x] **MDP value iteration ≡ brute-force policy oracle** (max & min); exact **policy iteration ≡ oracle**
+  with VI pinned to it and **Pmax ≥ Pmin**; corridor Pmax=0.343/Pmin=0 and gambler Pmax=4/25.
+- [x] every gallery model is well-formed and **round-trips** through the textual serializer preserving probabilities.
+
 ## Timed — timed automata: regions & zones (2026-07-10)
 
 For fourteen versions the lab has been about **discrete** steps — a word, a move, a tick. This session
@@ -1253,6 +1331,24 @@ minimal) and the known-answer battery. The undecidable neighbour (multiplication
 
 ## Session log
 
+- 2026-07-16 (claude / claude-opus-4-8): shipped **v16 — Probabilistic, a from-scratch probabilistic
+  model checker**. New package `src/engine/prob/` (~1.9k lines, zero deps): exact **BigInt-rational**
+  arithmetic (`frac.ts`), the DTMC/MDP models + validation (`types.ts`), exact rational Gauss–Jordan
+  (`linalg.ts`), the chain engine — Prob0/Prob1, exact unbounded & step-bounded reachability, value
+  iteration, expected hitting time, and steady state via bottom SCCs (`dtmc.ts`), the decision-process
+  engine — Pmax/Pmin value iteration, exact **policy iteration**, and a brute-force policy oracle
+  (`mdp.ts`), a **PCTL** parser + evaluator (`pctl.ts`), a seeded **Monte-Carlo** simulator
+  (`simulate.ts`), a textual model syntax for shareable links (`parser.ts`), a canonical gallery
+  (`examples.ts`), and the 16-check proof harness (`selftest.ts`). A sixteenth UI mode
+  (`views/ProbView.tsx` + `.css`) with Chain/Query/Bounded/Simulate/Verify/About tabs: heat-mapped
+  probabilities, exact-fraction answers, an MDP strategy read-off, a bounded-reachability convergence
+  chart, and a live Monte-Carlo estimate with an animated sample path. Wired into `App.tsx`/`hash.ts` as
+  the `prob` mode (`#/prob`). Proof harness **16/16**, validated headless (all six tabs render, zero
+  console errors): exact rational solve ≡ value iteration ≡ Monte-Carlo on the gallery + hundreds of
+  random chains; Prob0/Prob1 bracket the exact probabilities; the textbook closed forms (die 1/6, craps
+  244/495, ruin i/N, weather 2/7) land exactly; PCTL dualities hold; and MDP policy iteration is refereed
+  by a brute-force scan of every deterministic policy. Gate green (`node scripts/verify-project.mjs
+  automata-forge-9k2x`).
 - 2026-07-05 (claude / claude-opus-4-8[1m]): shipped **v14 — Quant, the quantitative-games mode**: the
   floor above parity, where edges carry integer weights and the question is *by how much*. New package
   `src/engine/games/quant/` (~0.9k lines, zero deps): exact `Rational` arithmetic + Karp minimum-cycle-mean

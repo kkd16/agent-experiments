@@ -36,6 +36,9 @@ import { DEFAULT_REGEX as ALGEBRA_DEFAULT_REGEX } from './engine/algebra/example
 import TimedView from './views/TimedView'
 import type { TimedTab } from './views/TimedView'
 import { DEFAULT_TIMED } from './engine/timed/examples'
+import ProbView from './views/ProbView'
+import type { ProbTab } from './views/ProbView'
+import { DEFAULT_PROB } from './engine/prob/examples'
 import type { Strategy } from './engine/learn/lstar'
 import { copyText } from './lib/download'
 import { decodeHash, encodeHash } from './lib/hash'
@@ -71,6 +74,7 @@ const VALID_GAMES_TABS: GamesTab[] = ['arena', 'solve', 'play', 'synth', 'verify
 const VALID_QUANT_TABS: QuantTab[] = ['arena', 'value', 'reduce', 'verify', 'about']
 const VALID_ALGEBRA_TABS: AlgebraTab[] = ['monoid', 'green', 'structure', 'starfree', 'verify', 'about']
 const VALID_TIMED_TABS: TimedTab[] = ['automaton', 'regions', 'zones', 'run', 'verify', 'about']
+const VALID_PROB_TABS: ProbTab[] = ['chain', 'query', 'bounded', 'simulate', 'verify', 'about']
 const VALID_CONDITIONS: Condition[] = ['reachability', 'safety', 'buchi', 'parity']
 const VALID_STRATEGIES: Strategy[] = ['angluin', 'rivest-schapire']
 const VALID_OPS = ['union', 'inter', 'diffAB', 'diffBA', 'symdiff']
@@ -98,6 +102,7 @@ const DEFAULT_STATE: AppState = {
   quant: { preset: DEFAULT_QUANT.id, tab: 'value' },
   algebra: { regex: ALGEBRA_DEFAULT_REGEX, tab: 'monoid' },
   timed: { source: DEFAULT_TIMED.source, tab: 'automaton', input: '' },
+  prob: { source: DEFAULT_PROB.source, query: DEFAULT_PROB.queries[0], tab: 'query' },
 }
 
 /** Sanitize a decoded state so a hand-edited URL can never wedge a view. */
@@ -119,6 +124,7 @@ function clean(s: AppState): AppState {
   const qtab = VALID_QUANT_TABS.includes(s.quant.tab as QuantTab) ? s.quant.tab : 'value'
   const algtab = VALID_ALGEBRA_TABS.includes(s.algebra.tab as AlgebraTab) ? s.algebra.tab : 'monoid'
   const timedtab = VALID_TIMED_TABS.includes(s.timed.tab as TimedTab) ? s.timed.tab : 'automaton'
+  const probtab = VALID_PROB_TABS.includes(s.prob.tab as ProbTab) ? s.prob.tab : 'query'
   const lstrat = VALID_STRATEGIES.includes(s.learn.strategy as Strategy)
     ? s.learn.strategy
     : 'rivest-schapire'
@@ -140,6 +146,7 @@ function clean(s: AppState): AppState {
     quant: { ...s.quant, tab: qtab },
     algebra: { ...s.algebra, tab: algtab },
     timed: { ...s.timed, tab: timedtab },
+    prob: { ...s.prob, tab: probtab },
   }
 }
 
@@ -209,6 +216,8 @@ export default function App() {
                                         ? 'algebraic automata theory: the syntactic monoid, Green’s relations & Schützenberger’s star-free theorem — is your language first-order definable?'
                                         : state.mode === 'timed'
                                         ? 'timed automata: real-valued clocks, guards & invariants — the infinite state space collapsed to Alur–Dill’s finite region automaton and DBM zones, graded against each other'
+                                        : state.mode === 'prob'
+                                        ? 'probabilistic model checking: DTMCs & MDPs with PCTL — exact rational reachability, step-bounded & steady-state, Pmax/Pmin over schedulers, graded against value iteration & Monte-Carlo'
                                         : 'Turing machines: the top of the hierarchy — run, trace & watch the tape'}
             </p>
           </div>
@@ -343,6 +352,14 @@ export default function App() {
             >
               Timed
             </button>
+            <button
+              role="tab"
+              aria-selected={state.mode === 'prob'}
+              className={`mode-btn${state.mode === 'prob' ? ' active' : ''}`}
+              onClick={() => setMode('prob')}
+            >
+              Probabilistic
+            </button>
           </div>
           <button
             className="share-btn"
@@ -361,7 +378,16 @@ export default function App() {
         </div>
       </header>
 
-      {state.mode === 'timed' ? (
+      {state.mode === 'prob' ? (
+        <ProbView
+          source={state.prob.source}
+          onSource={(source) => setState((s) => ({ ...s, prob: { ...s.prob, source } }))}
+          query={state.prob.query}
+          onQuery={(query) => setState((s) => ({ ...s, prob: { ...s.prob, query } }))}
+          tab={state.prob.tab as ProbTab}
+          onTab={(tab) => setState((s) => ({ ...s, prob: { ...s.prob, tab } }))}
+        />
+      ) : state.mode === 'timed' ? (
         <TimedView
           source={state.timed.source}
           onSource={(source) => setState((s) => ({ ...s, timed: { ...s.timed, source } }))}
