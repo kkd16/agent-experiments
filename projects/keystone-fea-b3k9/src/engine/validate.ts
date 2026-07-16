@@ -10,7 +10,8 @@ import { prepareHarmonic, frfSweep, frfAt } from './harmonic'
 import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
-import { newmarkSDOF, syntheticQuake } from './seismic'
+import { newmarkSDOF, syntheticQuake, solveSeismic, harmonicGround } from './seismic'
+import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -555,6 +556,136 @@ export function runSeismicBenchmarks(): Check[] {
   return checks
 }
 
+// -------------------------------------------------- inelastic (nonlinear) seismic
+//
+// The inelastic time-history marries the plastic hinges of the pushover chapter
+// to the Newmark march of the seismic chapter: members yield at bilinear
+// kinematic-hardening hinges and the equation of motion is solved by
+// Newton–Raphson each step. These benchmarks pin down the hinge law
+// (backbone, post-yield slope, unloading), the SDOF integrator (energy balance
+// and the elastic limit against the linear solver), and — the strongest check —
+// that the full nonlinear MDOF march reproduces the validated *linear* seismic
+// solver, to machine precision, whenever nothing yields.
+
+export function runInelasticBenchmarks(): Check[] {
+  const checks: Check[] = []
+
+  // 1. Bilinear backbone. Push a kinematic-hardening spring (stiffness k, yield
+  //    f_y, post-yield ratio α) monotonically to twice its yield displacement:
+  //    the force is exactly f_y + α·k·u_y (elastic to f_y, then slope α·k).
+  {
+    const k = 1000
+    const fy = 10
+    const alpha = 0.05
+    const H = (alpha * k) / (1 - alpha)
+    const uy = fy / k
+    let up = 0
+    let f = 0
+    for (const u of [uy, 1.5 * uy, 2 * uy]) {
+      const r = springReturn(u, k, fy, H, up)
+      up = r.up
+      f = r.f
+    }
+    const expected = fy + alpha * k * uy
+    checks.push(check('Hinge bilinear backbone', 'f(2u_y) = f_y + αk·u_y', expected, f, 'N', 1e-9))
+  }
+
+  // 2. Post-yield tangent. Well past yield the bilinear spring's tangent is
+  //    exactly α·k — the strain-hardening slope.
+  {
+    const k = 1000
+    const fy = 10
+    const alpha = 0.05
+    const H = (alpha * k) / (1 - alpha)
+    const r = springReturn(0.05, k, fy, H, 0.03)
+    checks.push(check('Hinge post-yield tangent', 'k_t = αk', alpha * k, r.kt, 'N/m', 1e-9))
+  }
+
+  // 3. Perfectly-plastic unloading. Load a rate-independent (α = 0) spring to
+  //    3×yield, leaving a plastic offset u_p = 2u_y; unloading is elastic (slope
+  //    k), so the force is exactly zero back at u = u_p.
+  {
+    const k = 1000
+    const fy = 10
+    const uy = fy / k
+    const r1 = springReturn(3 * uy, k, fy, 0, 0)
+    const r2 = springReturn(r1.up, k, fy, 0, r1.up)
+    checks.push(check('Perfectly-plastic unload', 'f(u_p) = 0 on elastic unload', 0, r2.f, 'N', 1e-6))
+  }
+
+  // 4. Elastoplastic energy balance. Drive a damped EPP oscillator hard enough to
+  //    yield and cycle: the input work equals the sum of kinetic + damping +
+  //    recoverable strain + dissipated hysteretic energy (the ledger closes).
+  {
+    const m = 1
+    const k = 100
+    const zeta = 0.03
+    const w = Math.sqrt(k / m)
+    const c = 2 * zeta * w * m
+    const dt = 0.005
+    const n = 6000
+    const p = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      const t = i * dt
+      const env = t < 3 ? t / 3 : Math.exp(-(t - 3) * 0.4)
+      p[i] = env * 30 * Math.sin(0.9 * w * t)
+    }
+    const r = newmarkEPP(m, c, k, 8, 0.02, dt, p)
+    const dissipated = r.eKinetic + r.eDamping + r.eStrain + r.eHysteretic
+    checks.push(check('EPP energy balance', 'E_in = E_k + E_c + E_s + E_h', r.eInput, dissipated, 'J', 0.01))
+  }
+
+  // 5. Elastic limit (SDOF). With the yield force set enormous the EPP integrator
+  //    never yields and must reproduce the linear Newmark SDOF response exactly.
+  {
+    const m = 1
+    const k = 100
+    const zeta = 0.05
+    const w = Math.sqrt(k / m)
+    const c = 2 * zeta * w * m
+    const dt = 0.01
+    const n = 3000
+    const p = new Float64Array(n)
+    for (let i = 0; i < n; i++) p[i] = 20 * Math.sin(0.7 * w * i * dt)
+    const epp = newmarkEPP(m, c, k, 1e12, 0, dt, p)
+    const lin = newmarkSDOF(m, c, k, dt, p)
+    let maxAbs = 0
+    let diff = 0
+    for (let i = 0; i < n; i++) {
+      maxAbs = Math.max(maxAbs, Math.abs(lin[i]))
+      diff = Math.max(diff, Math.abs(epp.u[i] - lin[i]))
+    }
+    checks.push(check('EPP elastic limit (SDOF)', 'f_y→∞ ⇒ nonlinear = linear', 0, diff / maxAbs, '', 1e-6))
+  }
+
+  // 6. Elastic limit (MDOF). The strongest cross-check: with every member's Mₚ
+  //    set enormous, the full nonlinear Newton–Raphson MDOF march must reproduce
+  //    the independent *linear* seismic time-history solver (solveSeismic) — two
+  //    entirely separate integration codepaths — to machine precision. A soft
+  //    cantilever column (T₁ ≈ 0.8 s) driven by a harmonic ground record at the
+  //    shared step (dt = 0.02) makes the comparison exact.
+  {
+    const model: FrameModel = {
+      type: 'frame',
+      nodes: [
+        { x: 0, y: 0, support: 'fixed' },
+        { x: 0, y: 3, support: 'free' },
+      ],
+      members: [{ a: 0, b: 1, E: 200e9, A: 0.01, I: 8e-6, rho: 4e5, Mp: 3e5 }],
+      loads: [],
+    }
+    const g = harmonicGround(0.3, 10, 0.02, 1.0)
+    const inel = solveInelasticSeismic(model, g, { zeta: 0.05, alpha: 0, strengthFactor: 1e6 })
+    const el = solveSeismic(model, g, 0.05)
+    const ok = inel.ok && el.ok && inel.nHingesYielded === 0
+    checks.push(
+      check('Inelastic elastic-limit (MDOF)', 'no yield ⇒ matches linear seismic', el.peakRoof, ok ? inel.peakRoof : 0, 'm', 1e-4),
+    )
+  }
+
+  return checks
+}
+
 export function runContinuumBenchmarks(): Check[] {
   const checks: Check[] = []
 
@@ -642,6 +773,7 @@ export function runAllBenchmarks(): {
   harmonic: Check[]
   seismic: Check[]
   plastic: Check[]
+  inelastic: Check[]
   continuum: Check[]
   allPass: boolean
 } {
@@ -650,7 +782,10 @@ export function runAllBenchmarks(): {
   const harmonic = runHarmonicBenchmarks()
   const seismic = runSeismicBenchmarks()
   const plastic = runPlasticBenchmarks()
+  const inelastic = runInelasticBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...continuum].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, continuum, allPass }
+  const allPass = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum].every(
+    (c) => c.pass,
+  )
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, allPass }
 }

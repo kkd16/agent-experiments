@@ -7,7 +7,15 @@ import type { DriveType } from './engine/harmonic'
 import type { GroundRecord } from './engine/seismic'
 import type { Colormap } from './ui/colormap'
 
-export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic' | 'pushover' | 'seismic'
+export type FrameAnalysis =
+  | 'static'
+  | 'modal'
+  | 'buckling'
+  | 'response'
+  | 'harmonic'
+  | 'pushover'
+  | 'seismic'
+  | 'inelastic'
 
 export interface Display {
   deformScale: number
@@ -29,6 +37,8 @@ export interface Display {
   seisRecord?: GroundRecord // ground-motion record for the seismic time-history
   seisPga?: number // target peak ground acceleration (g)
   seisZeta?: number // modal damping ratio for the seismic response
+  inelAlpha?: number // post-yield stiffness ratio for inelastic hinges (0 = EPP)
+  inelStrength?: number // member-Mₚ scale factor for the inelastic time-history
 }
 
 export interface Scene {

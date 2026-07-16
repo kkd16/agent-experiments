@@ -33,12 +33,18 @@ import {
   type SeismicResult,
   type GroundRecord,
 } from './engine/seismic'
+import {
+  solveInelasticSeismic,
+  inelasticShape,
+  inelasticHinges,
+  type InelasticResult,
+} from './engine/inelastic'
 import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
-import { CapacityCurvePlot, FrfPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
+import { CapacityCurvePlot, FrfPlot, HysteresisPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
 import {
   addMember,
@@ -164,6 +170,20 @@ function safeSolveSeismic(m: FrameModel, record: GroundRecord, pga: number, zeta
     return null
   }
 }
+function safeSolveInelastic(
+  m: FrameModel,
+  record: GroundRecord,
+  pga: number,
+  zeta: number,
+  alpha: number,
+  strengthFactor: number,
+): InelasticResult | null {
+  try {
+    return solveInelasticSeismic(m, makeGround(record, pga), { zeta, alpha, strengthFactor })
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -204,6 +224,15 @@ export default function App() {
   const [seisShape, setSeisShape] = useState<NodeDisp[] | null>(null)
   const [seisElapsed, setSeisElapsed] = useState(0)
   const seisTimeRef = useRef(0)
+
+  // Inelastic (nonlinear hysteretic time-history) state.
+  const inelAlpha = display.inelAlpha ?? 0.03
+  const inelStrength = display.inelStrength ?? 0.5
+  const [inelPlaying, setInelPlaying] = useState(true)
+  const [inelShape, setInelShape] = useState<NodeDisp[] | null>(null)
+  const [inelHinges, setInelHinges] = useState<{ node: number; sign: number }[]>([])
+  const [inelElapsed, setInelElapsed] = useState(0)
+  const inelTimeRef = useRef(0)
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -259,6 +288,13 @@ export default function App() {
         : null,
     [tab, analysis, frame, seisRecord, seisPga, seisZeta],
   )
+  const inelasticResult = useMemo(
+    () =>
+      tab === 'frame' && analysis === 'inelastic'
+        ? safeSolveInelastic(frame, seisRecord, seisPga, seisZeta, inelAlpha, inelStrength)
+        : null,
+    [tab, analysis, frame, seisRecord, seisPga, seisZeta, inelAlpha, inelStrength],
+  )
   const frf = useMemo<FrfCurve | null>(
     () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta, driveType) : null),
     [harmPrep, harmZeta, driveType],
@@ -305,14 +341,23 @@ export default function App() {
           ? pushInfo?.shape ?? null
           : analysis === 'seismic'
             ? seisShape
-            : isSwing
-              ? selMode!.shape
-              : null
+            : analysis === 'inelastic'
+              ? inelShape
+              : isSwing
+                ? selMode!.shape
+                : null
   const drawFactor =
-    analysis === 'response' || analysis === 'harmonic' || analysis === 'pushover' || analysis === 'seismic'
+    analysis === 'response' ||
+    analysis === 'harmonic' ||
+    analysis === 'pushover' ||
+    analysis === 'seismic' ||
+    analysis === 'inelastic'
       ? 1
       : modeT
   const shapeScale = analysis === 'pushover' ? pushScale : modeScale
+  // Amber plastic-hinge glyphs: the pushover mechanism, or the hinges that have
+  // yielded so far in the inelastic time-history at the current instant.
+  const drawHinges = analysis === 'pushover' ? pushHinges : analysis === 'inelastic' ? inelHinges : null
   const isMode = tab === 'frame' && analysis !== 'static' && !!drawShape
 
   // Sinusoidally swing a mode shape (modal/buckling views).
@@ -480,6 +525,64 @@ export default function App() {
     if (seismicResult?.ok) setSeisShape(seismicShape(seismicResult, 0))
   }, [seismicResult])
 
+  // Set both the deflected shape and the yielded-hinge glyphs at a stored step.
+  const setInelFrame = useCallback((res: InelasticResult, idx: number) => {
+    setInelShape(inelasticShape(res, idx))
+    setInelHinges(inelasticHinges(res, idx))
+  }, [])
+
+  // Seed the inelastic shape at t=0 whenever the model / record / knobs change.
+  useEffect(() => {
+    inelTimeRef.current = 0
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInelElapsed(0)
+    if (inelasticResult?.ok) setInelFrame(inelasticResult, 0)
+    else {
+      setInelShape(null)
+      setInelHinges([])
+    }
+  }, [inelasticResult, setInelFrame])
+
+  // Play the inelastic time-history: the frame rides the quake carrying its
+  // permanent (residual) drift, and amber hinges pop in as sections yield.
+  useEffect(() => {
+    if (!(tab === 'frame' && analysis === 'inelastic' && inelasticResult?.ok && inelPlaying)) return
+    const dur = inelasticResult.nSteps * inelasticResult.dt
+    let raf = 0
+    let last = 0
+    const loop = (ts: number) => {
+      if (!last) last = ts
+      const dt = Math.min(0.05, (ts - last) / 1000)
+      last = ts
+      inelTimeRef.current += dt
+      if (inelTimeRef.current >= dur) inelTimeRef.current = 0
+      const t = inelTimeRef.current
+      const idx = Math.min(inelasticResult.nSteps - 1, Math.round(t / inelasticResult.dt))
+      setInelFrame(inelasticResult, idx)
+      setInelElapsed(t)
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, analysis, inelasticResult, inelPlaying, setInelFrame])
+
+  const scrubInelastic = useCallback(
+    (t: number) => {
+      if (!inelasticResult?.ok) return
+      setInelPlaying(false)
+      inelTimeRef.current = t
+      setInelElapsed(t)
+      const idx = Math.min(inelasticResult.nSteps - 1, Math.max(0, Math.round(t / inelasticResult.dt)))
+      setInelFrame(inelasticResult, idx)
+    },
+    [inelasticResult, setInelFrame],
+  )
+  const restartInelastic = useCallback(() => {
+    inelTimeRef.current = 0
+    setInelElapsed(0)
+    if (inelasticResult?.ok) setInelFrame(inelasticResult, 0)
+  }, [inelasticResult, setInelFrame])
+
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
     if (tab === 'frame' && frameResult && frameResult.maxDisp > 0) {
@@ -568,7 +671,7 @@ export default function App() {
         editing: tool !== 'select',
         pendingNode,
         modeShape: isMode ? drawShape : null,
-        hinges: pushHinges,
+        hinges: drawHinges,
       })
     } else if (contInput) {
       drawContinuum(ctx, size.w, size.h, contInput.mesh, contResult, {
@@ -586,7 +689,7 @@ export default function App() {
     }
   }, [
     view, size, tab, frame, frameResult, contInput, contResult, display, hover, sel, tool,
-    pendingNode, loadFactor, effectiveDeform, isMode, shapeScale, drawShape, drawFactor, pushHinges,
+    pendingNode, loadFactor, effectiveDeform, isMode, shapeScale, drawShape, drawFactor, drawHinges,
   ])
 
   // --- pointer interaction --------------------------------------------------
@@ -852,7 +955,9 @@ export default function App() {
                               }`
                             : analysis === 'seismic'
                               ? `earthquake · ${fmtEng(seisPga * 9.80665, 'm/s²')} PGA · roof ${fmtEng(seismicResult?.peakRoof ?? 0, 'm')} · t = ${seisElapsed.toFixed(1)} s`
-                              : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
+                              : analysis === 'inelastic'
+                                ? `inelastic · μ = ${(inelasticResult?.ductility ?? 0).toFixed(1)} · ${inelHinges.length}/${inelasticResult?.nHingesYielded ?? 0} hinges · t = ${inelElapsed.toFixed(1)} s`
+                                : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
               ) : tab === 'frame' ? (
@@ -912,6 +1017,7 @@ export default function App() {
                   { value: 'harmonic', label: 'Harmonic' },
                   { value: 'pushover', label: 'Pushover' },
                   { value: 'seismic', label: 'Seismic' },
+                  { value: 'inelastic', label: 'Inelastic' },
                 ]}
                 value={analysis}
                 onChange={(v) => {
@@ -924,6 +1030,7 @@ export default function App() {
                   setPushPlaying(true)
                   setPushS(0)
                   setSeisPlaying(true)
+                  setInelPlaying(true)
                 }}
               />
               <p className="hint-text">
@@ -939,7 +1046,9 @@ export default function App() {
                           ? 'Forced harmonic response: drive with F·cos ωt and sweep ω to trace the frequency-response function u(ω) = Σ φᵢ(φᵢᵀF)/(ωᵢ²−ω²+2iζωᵢω).'
                           : analysis === 'seismic'
                             ? 'Seismic time-history: shake the base with a ground motion and integrate M ü + C u̇ + K u = −M ι a_g(t) by Newmark-β, plus the elastic response spectrum.'
-                            : 'Nonlinear pushover: increase the load, forming plastic hinges (Mₚ = Z·Fᵧ) until the frame becomes a mechanism. The collapse load factor is exact plastic limit analysis.'}
+                            : analysis === 'inelastic'
+                              ? 'Inelastic time-history: members yield at bilinear plastic hinges and M ü + C u̇ + f_s(u) = −M ι a_g(t) is solved by Newmark-β with Newton–Raphson — hysteresis loops, ductility, residual drift and the R factor.'
+                              : 'Nonlinear pushover: increase the load, forming plastic hinges (Mₚ = Z·Fᵧ) until the frame becomes a mechanism. The collapse load factor is exact plastic limit analysis.'}
               </p>
             </div>
           )}
@@ -1071,6 +1180,25 @@ export default function App() {
                 onRestart={restartSeismic}
                 onScrub={scrubSeismic}
                 elapsed={seisElapsed}
+              />
+            ) : analysis === 'inelastic' ? (
+              <InelasticPanel
+                result={inelasticResult}
+                record={seisRecord}
+                onRecord={(v) => patchDisplay({ seisRecord: v })}
+                pga={seisPga}
+                onPga={(v) => patchDisplay({ seisPga: v })}
+                zeta={seisZeta}
+                onZeta={(v) => patchDisplay({ seisZeta: v })}
+                alpha={inelAlpha}
+                onAlpha={(v) => patchDisplay({ inelAlpha: v })}
+                strength={inelStrength}
+                onStrength={(v) => patchDisplay({ inelStrength: v })}
+                playing={inelPlaying}
+                onPlay={setInelPlaying}
+                onRestart={restartInelastic}
+                onScrub={scrubInelastic}
+                elapsed={inelElapsed}
               />
             ) : (
               <HarmonicPanel
@@ -1727,6 +1855,184 @@ function SeismicPanel({
           : record === 'harmonic'
             ? 'A steady harmonic shaker — its response spectrum spikes at the drive period. Tune the structure near it (or vice-versa) to watch resonance build.'
             : 'A seeded broadband accelerogram (Kanai–Tajimi soil spectrum × Jennings envelope), integrated by Newmark-β with Rayleigh damping. The spectrum reads the peak SDOF demand at every period.'}
+      </p>
+    </div>
+  )
+}
+
+function InelasticPanel({
+  result,
+  record,
+  onRecord,
+  pga,
+  onPga,
+  zeta,
+  onZeta,
+  alpha,
+  onAlpha,
+  strength,
+  onStrength,
+  playing,
+  onPlay,
+  onRestart,
+  onScrub,
+  elapsed,
+}: {
+  result: InelasticResult | null
+  record: GroundRecord
+  onRecord: (v: GroundRecord) => void
+  pga: number
+  onPga: (v: number) => void
+  zeta: number
+  onZeta: (v: number) => void
+  alpha: number
+  onAlpha: (v: number) => void
+  strength: number
+  onStrength: (v: number) => void
+  playing: boolean
+  onPlay: (v: boolean) => void
+  onRestart: () => void
+  onScrub: (t: number) => void
+  elapsed: number
+}) {
+  if (!result) return null
+  const g = result.ground
+  const ok = result.ok
+  const cursorIdx = result.dt > 0 ? elapsed / result.dt : 0
+  const yielded = result.nHingesYielded > 0
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Inelastic response
+        {ok && (
+          <span className={result.Rfactor >= 1.5 ? 'badge good' : 'badge warn'}>
+            R ≈ {result.Rfactor.toFixed(1)}
+          </span>
+        )}
+      </div>
+      <div className="field-label">Ground motion</div>
+      <Segmented<GroundRecord>
+        options={[
+          { value: 'synthetic', label: 'Quake' },
+          { value: 'pulse', label: 'Pulse' },
+          { value: 'harmonic', label: 'Shaker' },
+        ]}
+        value={record}
+        onChange={onRecord}
+      />
+      {ok ? (
+        <div className="stat-grid">
+          <StatTile label="Ductility μ" value={yielded ? result.ductility.toFixed(1) : '1.0'} sub="peak / yield roof" />
+          <StatTile label="Force reduction R" value={result.Rfactor.toFixed(1)} sub="elastic / inelastic V" />
+          <StatTile label="Peak roof" value={fmtEng(result.peakRoof, 'm')} sub={`joint ${result.outNode} ${result.outDir}`} />
+          <StatTile label="Residual drift" value={fmtEng(Math.abs(result.residualRoof), 'm')} sub="permanent" />
+          <StatTile label="Hyst. energy" value={fmtEng(result.hystEnergy, 'J')} sub="dissipated" />
+          <StatTile label="Hinges yielded" value={`${result.nHingesYielded}`} sub="plastic" />
+          <StatTile label="Peak base shear" value={fmtEng(result.peakBaseShear, 'N')} sub={`elastic ${fmtEng(result.elasticPeakBaseShear, 'N')}`} />
+          <StatTile label="Fundamental T₁" value={fmtEng(result.T1, 's')} />
+        </div>
+      ) : (
+        <p className="hint-text">{result.note ?? 'Inelastic time-history unavailable for this model.'}</p>
+      )}
+
+      {ok && (
+        <div className="frf-wrap">
+          <TimeSeriesPlot
+            data={g.ag}
+            dt={g.dt}
+            cursorTime={elapsed}
+            color="#f5a742"
+            unit="m/s²"
+            label="ground a(t)"
+            onPick={onScrub}
+          />
+          {result.roof.length > 0 && (
+            <TimeSeriesPlot
+              data={result.roof}
+              dt={result.dt}
+              cursorTime={elapsed}
+              color="#6ea8ff"
+              unit="m"
+              label="roof drift"
+              onPick={onScrub}
+            />
+          )}
+          <div className="frf-caption">
+            {g.name} · {g.duration.toFixed(0)} s · click a trace to scrub
+          </div>
+        </div>
+      )}
+
+      {ok && (
+        <div className="btn-row">
+          <button className="ghost-btn" onClick={() => onPlay(!playing)}>
+            {playing ? '⏸ Pause' : '▶ Play'}
+          </button>
+          <button className="ghost-btn" onClick={onRestart}>
+            ↺ Restart
+          </button>
+        </div>
+      )}
+
+      {ok && result.roof.length > 1 && (
+        <>
+          <div className="table-title">Hysteresis loop</div>
+          <div className="frf-wrap">
+            <HysteresisPlot roof={result.roof} baseShear={result.baseShear} cursorIndex={cursorIdx} />
+            <div className="frf-caption">
+              base shear vs roof drift · fat loops are dissipated energy · a straight line would be elastic
+            </div>
+          </div>
+        </>
+      )}
+
+      <Slider
+        label="Peak ground accel."
+        min={0.05}
+        max={1.2}
+        step={0.05}
+        value={pga}
+        onChange={onPga}
+        format={(v) => `${v.toFixed(2)} g`}
+      />
+      <Slider
+        label="Yield strength ×"
+        min={0.15}
+        max={2}
+        step={0.05}
+        value={strength}
+        onChange={onStrength}
+        format={(v) => `${v.toFixed(2)}× Mₚ`}
+      />
+      <Slider
+        label="Post-yield ratio α"
+        min={0}
+        max={0.2}
+        step={0.01}
+        value={alpha}
+        onChange={onAlpha}
+        format={(v) => (v === 0 ? 'EPP' : `${(v * 100).toFixed(0)}%`)}
+      />
+      <Slider
+        label="Damping ratio ζ"
+        min={0.02}
+        max={0.15}
+        step={0.005}
+        value={zeta}
+        onChange={onZeta}
+        format={(v) => `${(v * 100).toFixed(1)}%`}
+      />
+
+      {ok && !result.converged && (
+        <p className="hint-text">
+          ⚠ {result.nonConverged} step(s) hit the Newton cap (worst residual{' '}
+          {(result.worstResidual * 100).toFixed(1)}%) — try raising the yield strength or the post-yield ratio α.
+        </p>
+      )}
+      <p className="hint-text">
+        {yielded
+          ? `The frame yields at ${result.nHingesYielded} plastic hinge${result.nHingesYielded === 1 ? '' : 's'}: the base shear saturates near capacity (an R ≈ ${result.Rfactor.toFixed(1)}× cut below the elastic demand), the loops dissipate ${fmtEng(result.hystEnergy, 'J')}, and it is left ${fmtEng(Math.abs(result.residualRoof), 'm')} off plumb. Lower the yield strength to yield harder.`
+          : 'The frame rides this record elastically — no hinge forms. Raise the peak ground acceleration or lower the yield strength to drive it past yield and open the hysteresis loops.'}
       </p>
     </div>
   )

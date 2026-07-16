@@ -466,6 +466,132 @@ export function CapacityCurvePlot({
 }
 
 /**
+ * The **hysteresis loop** — base shear against roof displacement, the single
+ * most-recognisable picture of inelastic seismic response. An elastic structure
+ * would trace a straight line back and forth; a yielding one opens fat
+ * parallelogram loops whose enclosed area is the energy it dissipated. The full
+ * path is drawn faint, the portion up to the current instant bright, a marker
+ * rides the live point, and the ±capacity guide lines show where the base shear
+ * saturates. Signed on both axes, centred on the origin.
+ */
+export function HysteresisPlot({
+  roof,
+  baseShear,
+  cursorIndex,
+  capacity,
+}: {
+  roof: Float64Array
+  baseShear: Float64Array
+  cursorIndex: number
+  capacity?: number
+}) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const W = 300
+  const H = 200
+  const box = useMemo(() => {
+    const pad = { l: 46, r: 12, t: 12, b: 30 }
+    let xMax = 1e-30
+    let yMax = 1e-30
+    const n = Math.min(roof.length, baseShear.length)
+    for (let i = 0; i < n; i++) {
+      xMax = Math.max(xMax, Math.abs(roof[i]))
+      yMax = Math.max(yMax, Math.abs(baseShear[i]))
+    }
+    if (capacity) yMax = Math.max(yMax, Math.abs(capacity))
+    return { pad, xMax: xMax * 1.08, yMax: yMax * 1.1, n }
+  }, [roof, baseShear, capacity])
+
+  const xOf = useMemo(() => {
+    const { pad, xMax } = box
+    return (d: number) => pad.l + ((d / xMax + 1) / 2) * (W - pad.l - pad.r)
+  }, [box])
+  const yOf = useMemo(() => {
+    const { pad, yMax } = box
+    return (f: number) => H - pad.b - ((f / yMax + 1) / 2) * (H - pad.t - pad.b)
+  }, [box])
+
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    cv.width = W * dpr
+    cv.height = H * dpr
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    const { pad, n } = box
+    ctx.strokeStyle = '#2c3346'
+    ctx.lineWidth = 1
+    ctx.strokeRect(pad.l, pad.t, W - pad.l - pad.r, H - pad.t - pad.b)
+
+    // zero axes through the origin
+    ctx.strokeStyle = 'rgba(98,107,129,0.5)'
+    ctx.beginPath()
+    ctx.moveTo(xOf(0), pad.t)
+    ctx.lineTo(xOf(0), H - pad.b)
+    ctx.moveTo(pad.l, yOf(0))
+    ctx.lineTo(W - pad.r, yOf(0))
+    ctx.stroke()
+
+    // ±capacity guide lines (base-shear saturation band)
+    if (capacity && capacity > 0) {
+      ctx.strokeStyle = 'rgba(245,167,66,0.4)'
+      ctx.setLineDash([3, 3])
+      for (const s of [1, -1]) {
+        ctx.beginPath()
+        ctx.moveTo(pad.l, yOf(s * capacity))
+        ctx.lineTo(W - pad.r, yOf(s * capacity))
+        ctx.stroke()
+      }
+      ctx.setLineDash([])
+    }
+
+    const cur = Math.max(0, Math.min(n - 1, Math.round(cursorIndex)))
+    // full path (faint)
+    ctx.strokeStyle = 'rgba(110,168,255,0.22)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let i = 0; i < n; i++) {
+      const x = xOf(roof[i])
+      const y = yOf(baseShear[i])
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+    // traced-so-far (bright)
+    ctx.strokeStyle = '#6ea8ff'
+    ctx.lineWidth = 1.6
+    ctx.beginPath()
+    for (let i = 0; i <= cur; i++) {
+      const x = xOf(roof[i])
+      const y = yOf(baseShear[i])
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+    // live point
+    ctx.fillStyle = '#4ade80'
+    ctx.beginPath()
+    ctx.arc(xOf(roof[cur]), yOf(baseShear[cur]), 3.6, 0, 2 * Math.PI)
+    ctx.fill()
+
+    // captions
+    ctx.fillStyle = '#8b93a7'
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('roof displacement', (pad.l + W - pad.r) / 2, H - 4)
+    ctx.save()
+    ctx.translate(12, (pad.t + H - pad.b) / 2)
+    ctx.rotate(-Math.PI / 2)
+    ctx.fillText('base shear', 0, 0)
+    ctx.restore()
+  }, [roof, baseShear, cursorIndex, capacity, box, xOf, yOf])
+
+  return <canvas ref={ref} className="frf-plot" style={{ width: W, height: H }} />
+}
+
+/**
  * A compact time-series strip: a signal (ground acceleration or roof drift)
  * against time, symmetric about zero, with a live cursor at the current instant.
  * Click to scrub the animation to that time.
@@ -750,9 +876,12 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, harmonic, seismic, plastic, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
+  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, allPass } = useMemo(
+    () => runAllBenchmarks(),
+    [],
+  )
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...continuum]
+  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -788,6 +917,10 @@ export function VerifyBadge() {
           <div className="check-group">Plastic collapse (pushover)</div>
           {plastic.map((c, i) => (
             <CheckRow key={`p${i}`} c={c} />
+          ))}
+          <div className="check-group">Inelastic seismic (hysteretic)</div>
+          {inelastic.map((c, i) => (
+            <CheckRow key={`i${i}`} c={c} />
           ))}
           <div className="check-group">Continuum (plane stress)</div>
           {continuum.map((c, i) => (
