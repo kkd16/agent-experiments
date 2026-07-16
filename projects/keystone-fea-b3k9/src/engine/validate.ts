@@ -10,6 +10,7 @@ import { prepareHarmonic, frfSweep, frfAt } from './harmonic'
 import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
+import { newmarkSDOF, syntheticQuake } from './seismic'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -438,6 +439,122 @@ export function runPlasticBenchmarks(): Check[] {
   return checks
 }
 
+/** Local maxima (time, value) of a positive-going oscillation, for peak ratios. */
+function localMaxima(u: Float64Array, dt: number): { t: number; v: number }[] {
+  const out: { t: number; v: number }[] = []
+  for (let i = 1; i < u.length - 1; i++) {
+    if (u[i] > u[i - 1] && u[i] >= u[i + 1] && u[i] > 0) out.push({ t: i * dt, v: u[i] })
+  }
+  return out
+}
+
+/**
+ * Seismic time-history benchmarks. The Newmark-β integrator and the response
+ * spectrum are cross-checked against closed-form structural-dynamics results:
+ * the undamped period fidelity, the step-load dynamic-amplification factor of 2,
+ * the damped log-decrement, the SDOF harmonic steady-state amplitude, and the
+ * high-frequency spectral limit Sa → PGA. All exact, all live.
+ */
+export function runSeismicBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const G = 9.80665
+
+  // 1. Undamped period fidelity. Release a mass-normalised SDOF (m=1, k=ωₙ²) from
+  //    u₀ = 1 with zero velocity: u(t) = cos(ωₙt). Newmark's average-acceleration
+  //    scheme conserves amplitude and elongates the period only as O((Δt/T)²), so
+  //    after one full period the displacement returns to +1.
+  {
+    const T = 1
+    const w = (2 * Math.PI) / T
+    const k = w * w
+    const dt = T / 400
+    const steps = 401 // through t = T exactly
+    const p = new Float64Array(steps)
+    const u = newmarkSDOF(1, 0, k, dt, p, 1, 0)
+    checks.push(check('Newmark period fidelity', 'u(T) = u₀ (cos ωₙT)', 1, u[steps - 1], '', 0.005))
+  }
+
+  // 2. Step-load dynamic amplification. An undamped SDOF suddenly loaded with a
+  //    constant force F overshoots to exactly twice its static deflection —
+  //    the classic dynamic-amplification factor DAF = 2 (u_max = 2·F/k).
+  {
+    const w = 2 * Math.PI
+    const k = w * w
+    const F = k // so static deflection F/k = 1
+    const dt = 1 / 800
+    const steps = 1600 // ~2 periods, enough to reach the peak
+    const p = new Float64Array(steps).fill(F)
+    const u = newmarkSDOF(1, 0, k, dt, p, 0, 0)
+    let peak = 0
+    for (const x of u) peak = Math.max(peak, x)
+    checks.push(check('Step-load overshoot (DAF=2)', 'u_max = 2·F/k', 2, peak, '', 0.005))
+  }
+
+  // 3. Damped log-decrement via direct integration. A damped SDOF rung down from
+  //    u₀ = 1 loses a fixed fraction each cycle: the ratio of successive positive
+  //    peaks is e^(−2πζ/√(1−ζ²)). This validates the damping term in Newmark.
+  {
+    const w = 2 * Math.PI
+    const k = w * w
+    const zeta = 0.05
+    const c = 2 * zeta * w
+    const dt = 1 / 800
+    const steps = 4000 // several cycles
+    const p = new Float64Array(steps)
+    const u = newmarkSDOF(1, c, k, dt, p, 1, 0)
+    const peaks = localMaxima(u, dt)
+    const decay = peaks.length >= 2 ? peaks[1].v / peaks[0].v : 0
+    const analytic = Math.exp((-2 * Math.PI * zeta) / Math.sqrt(1 - zeta * zeta))
+    checks.push(check('Newmark log-decrement', 'aₙ₊₁/aₙ = e^(−2πζ/√(1−ζ²))', analytic, decay, '', 0.01))
+  }
+
+  // 4. Harmonic steady-state amplitude. Drive a damped SDOF with F·cos Ωt; once
+  //    the starting transient decays, the amplitude is the textbook resonance
+  //    formula (F/k)/√((1−r²)² + (2ζr)²) with r = Ω/ωₙ. Integrating 60 cycles
+  //    leaves the transient e^(−ζωₙt) at ~1e-8, so the peak is the steady value.
+  {
+    const wn = 2 * Math.PI
+    const k = wn * wn
+    const zeta = 0.05
+    const c = 2 * zeta * wn
+    const r = 0.8
+    const Om = r * wn
+    const Td = (2 * Math.PI) / Om
+    const dt = Td / 240
+    const steps = Math.round((60 * Td) / dt)
+    const F = 1
+    const p = new Float64Array(steps)
+    for (let i = 0; i < steps; i++) p[i] = F * Math.cos(Om * i * dt)
+    const u = newmarkSDOF(1, c, k, dt, p, 0, 0)
+    // Steady amplitude = peak over the final third of the record.
+    let amp = 0
+    for (let i = Math.floor((2 * steps) / 3); i < steps; i++) amp = Math.max(amp, Math.abs(u[i]))
+    const expected = (F / k) / Math.sqrt((1 - r * r) ** 2 + (2 * zeta * r) ** 2)
+    checks.push(check('SDOF harmonic steady-state', '|U| = (F/k)/√((1−r²)²+(2ζr)²)', expected, amp, 'm', 0.01))
+  }
+
+  // 5. Spectral high-frequency limit. A very stiff SDOF is rigid — it rides the
+  //    ground, and its pseudo-acceleration Sa = ω²·Sd approaches the peak ground
+  //    acceleration (PGA). Drive a T = 0.02 s (50 Hz) oscillator with a synthetic
+  //    record (content below 9 Hz) and recover its PGA.
+  {
+    const g = syntheticQuake(0.4, 20, 0.005, 7)
+    const T = 0.02
+    const w = (2 * Math.PI) / T
+    const k = w * w
+    const c = 2 * 0.05 * w
+    const p = new Float64Array(g.ag.length)
+    for (let i = 0; i < p.length; i++) p[i] = -g.ag[i]
+    const u = newmarkSDOF(1, c, k, g.dt, p)
+    let Sd = 0
+    for (const x of u) Sd = Math.max(Sd, Math.abs(x))
+    const Sa = w * w * Sd
+    checks.push(check('Spectral limit Sa→PGA (T→0)', 'Sa(T→0) = PGA', g.pga / G, Sa / G, 'g', 0.03))
+  }
+
+  return checks
+}
+
 export function runContinuumBenchmarks(): Check[] {
   const checks: Check[] = []
 
@@ -523,6 +640,7 @@ export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
   harmonic: Check[]
+  seismic: Check[]
   plastic: Check[]
   continuum: Check[]
   allPass: boolean
@@ -530,8 +648,9 @@ export function runAllBenchmarks(): {
   const frame = runFrameBenchmarks()
   const dynamics = runDynamicsBenchmarks()
   const harmonic = runHarmonicBenchmarks()
+  const seismic = runSeismicBenchmarks()
   const plastic = runPlasticBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...dynamics, ...harmonic, ...plastic, ...continuum].every((c) => c.pass)
-  return { frame, dynamics, harmonic, plastic, continuum, allPass }
+  const allPass = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...continuum].every((c) => c.pass)
+  return { frame, dynamics, harmonic, seismic, plastic, continuum, allPass }
 }

@@ -5,6 +5,7 @@ import { COLORMAP_STOPS, type Colormap } from './colormap'
 import { runAllBenchmarks, type Check } from '../engine/validate'
 import type { FrfCurve } from '../engine/harmonic'
 import type { PushoverResult } from '../engine/plastic'
+import type { SpectrumPoint } from '../engine/seismic'
 import { fmtEng } from './format'
 
 export function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -464,6 +465,272 @@ export function CapacityCurvePlot({
   )
 }
 
+/**
+ * A compact time-series strip: a signal (ground acceleration or roof drift)
+ * against time, symmetric about zero, with a live cursor at the current instant.
+ * Click to scrub the animation to that time.
+ */
+export function TimeSeriesPlot({
+  data,
+  dt,
+  cursorTime,
+  color = '#6ea8ff',
+  unit,
+  label,
+  onPick,
+}: {
+  data: Float64Array
+  dt: number
+  cursorTime: number
+  color?: string
+  unit: string
+  label: string
+  onPick?: (t: number) => void
+}) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const W = 300
+  const H = 96
+  const box = useMemo(() => {
+    const pad = { l: 40, r: 8, t: 12, b: 16 }
+    let mx = 1e-30
+    for (let i = 0; i < data.length; i++) mx = Math.max(mx, Math.abs(data[i]))
+    const dur = Math.max((data.length - 1) * dt, 1e-6)
+    return { pad, mx: mx * 1.08, dur }
+  }, [data, dt])
+
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    cv.width = W * dpr
+    cv.height = H * dpr
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    const { pad, mx, dur } = box
+    const x0 = pad.l
+    const x1 = W - pad.r
+    const y0 = pad.t
+    const y1 = H - pad.b
+    const xOf = (t: number) => x0 + (t / dur) * (x1 - x0)
+    const yOf = (v: number) => (y0 + y1) / 2 - (v / mx) * ((y1 - y0) / 2)
+
+    ctx.strokeStyle = '#2c3346'
+    ctx.lineWidth = 1
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0)
+    // zero line
+    ctx.strokeStyle = 'rgba(139,147,167,0.35)'
+    ctx.beginPath()
+    ctx.moveTo(x0, yOf(0))
+    ctx.lineTo(x1, yOf(0))
+    ctx.stroke()
+    // axis labels
+    ctx.fillStyle = '#626b81'
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textAlign = 'right'
+    ctx.fillText(fmtEng(mx, unit), x0 - 3, y0 + 8)
+    ctx.fillText(fmtEng(-mx, unit), x0 - 3, y1 - 1)
+    ctx.textAlign = 'left'
+    ctx.fillStyle = '#8b93a7'
+    ctx.fillText(label, x0 + 3, y0 + 8)
+
+    // the trace
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.3
+    ctx.beginPath()
+    const step = Math.max(1, Math.floor(data.length / (x1 - x0) / 1.5))
+    for (let i = 0; i < data.length; i += step) {
+      const x = xOf(i * dt)
+      const y = yOf(data[i])
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+
+    // cursor
+    const cx = xOf(Math.max(0, Math.min(dur, cursorTime)))
+    ctx.strokeStyle = '#4ade80'
+    ctx.lineWidth = 1.3
+    ctx.beginPath()
+    ctx.moveTo(cx, y0)
+    ctx.lineTo(cx, y1)
+    ctx.stroke()
+
+    ctx.fillStyle = '#626b81'
+    ctx.textAlign = 'right'
+    ctx.fillText(`${dur.toFixed(0)} s`, x1 - 1, y1 + 12)
+  }, [data, dt, cursorTime, box, color, unit, label])
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onPick) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * W
+    const { pad, dur } = box
+    const frac = Math.max(0, Math.min(1, (x - pad.l) / (W - pad.l - pad.r)))
+    onPick(frac * dur)
+  }
+
+  return (
+    <canvas
+      ref={ref}
+      className="frf-plot"
+      style={{ width: W, height: H, cursor: onPick ? 'crosshair' : 'default' }}
+      onClick={handleClick}
+    />
+  )
+}
+
+/**
+ * The elastic **response spectrum**: peak pseudo-acceleration Sa (in g) against
+ * oscillator period T, on a log period axis. Dashed markers show the structure's
+ * own natural periods — where its modes read their spectral demand — with the
+ * fundamental highlighted. This is the plot a seismic designer actually uses.
+ */
+export function SpectrumPlot({
+  spec,
+  periods,
+  T1,
+}: {
+  spec: SpectrumPoint[]
+  periods: number[]
+  T1: number
+}) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const W = 300
+  const H = 150
+  const box = useMemo(() => {
+    const pad = { l: 40, r: 8, t: 10, b: 26 }
+    const Tmin = spec.length ? spec[0].T : 0.05
+    const Tmax = spec.length ? spec[spec.length - 1].T : 4
+    let saMax = 1e-30
+    for (const s of spec) saMax = Math.max(saMax, s.SaG)
+    return { pad, Tmin, Tmax, saMax: saMax * 1.1 }
+  }, [spec])
+
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    cv.width = W * dpr
+    cv.height = H * dpr
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    const { pad, Tmin, Tmax, saMax } = box
+    const x0 = pad.l
+    const x1 = W - pad.r
+    const y0 = pad.t
+    const y1 = H - pad.b
+    const lx0 = Math.log10(Tmin)
+    const lx1 = Math.log10(Tmax)
+    const xOf = (T: number) => x0 + ((Math.log10(Math.max(T, Tmin)) - lx0) / (lx1 - lx0)) * (x1 - x0)
+    const yOf = (sa: number) => y1 - (sa / saMax) * (y1 - y0)
+
+    ctx.strokeStyle = '#2c3346'
+    ctx.lineWidth = 1
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0)
+
+    // x decade + half-decade gridlines
+    ctx.fillStyle = '#626b81'
+    ctx.font = '9px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    for (const T of [0.05, 0.1, 0.2, 0.5, 1, 2, 4]) {
+      if (T < Tmin || T > Tmax) continue
+      const x = xOf(T)
+      ctx.strokeStyle = 'rgba(44,51,70,0.55)'
+      ctx.beginPath()
+      ctx.moveTo(x, y0)
+      ctx.lineTo(x, y1)
+      ctx.stroke()
+      ctx.fillStyle = '#626b81'
+      ctx.fillText(`${T}`, x, y1 + 12)
+    }
+    // y ticks
+    ctx.textAlign = 'right'
+    for (let i = 0; i <= 4; i++) {
+      const sa = (saMax * i) / 4
+      const y = yOf(sa)
+      ctx.strokeStyle = 'rgba(44,51,70,0.4)'
+      ctx.beginPath()
+      ctx.moveTo(x0, y)
+      ctx.lineTo(x1, y)
+      ctx.stroke()
+      ctx.fillStyle = '#626b81'
+      ctx.fillText(sa.toFixed(2), x0 - 3, y + 3)
+    }
+
+    // filled spectrum
+    ctx.beginPath()
+    ctx.moveTo(xOf(spec[0]?.T ?? Tmin), yOf(0))
+    for (const s of spec) ctx.lineTo(xOf(s.T), yOf(s.SaG))
+    ctx.lineTo(xOf(spec[spec.length - 1]?.T ?? Tmax), yOf(0))
+    ctx.closePath()
+    ctx.fillStyle = 'rgba(245,167,66,0.10)'
+    ctx.fill()
+
+    // period markers (natural periods)
+    periods.forEach((T, i) => {
+      if (T < Tmin || T > Tmax) return
+      const x = xOf(T)
+      const first = i === 0
+      ctx.strokeStyle = first ? 'rgba(74,222,128,0.8)' : 'rgba(110,168,255,0.4)'
+      ctx.setLineDash(first ? [] : [3, 3])
+      ctx.lineWidth = first ? 1.4 : 1
+      ctx.beginPath()
+      ctx.moveTo(x, y0)
+      ctx.lineTo(x, y1)
+      ctx.stroke()
+      ctx.setLineDash([])
+    })
+
+    // the spectrum curve
+    ctx.strokeStyle = '#f5a742'
+    ctx.lineWidth = 1.8
+    ctx.beginPath()
+    spec.forEach((s, i) => {
+      const x = xOf(s.T)
+      const y = yOf(s.SaG)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    })
+    ctx.stroke()
+
+    // Sa(T1) dot
+    if (T1 > 0) {
+      let sa1 = 0
+      // linear-in-logT interpolation to T1
+      for (let i = 1; i < spec.length; i++) {
+        if (T1 <= spec[i].T) {
+          const a = spec[i - 1]
+          const b = spec[i]
+          const f = (Math.log(T1) - Math.log(a.T)) / (Math.log(b.T) - Math.log(a.T))
+          sa1 = a.SaG + f * (b.SaG - a.SaG)
+          break
+        }
+      }
+      if (sa1 === 0 && spec.length) sa1 = T1 <= spec[0].T ? spec[0].SaG : spec[spec.length - 1].SaG
+      ctx.fillStyle = '#4ade80'
+      ctx.beginPath()
+      ctx.arc(xOf(T1), yOf(sa1), 3.2, 0, 2 * Math.PI)
+      ctx.fill()
+    }
+
+    // captions
+    ctx.fillStyle = '#8b93a7'
+    ctx.textAlign = 'center'
+    ctx.fillText('period T (s)', (x0 + x1) / 2, H - 2)
+    ctx.save()
+    ctx.translate(10, (y0 + y1) / 2)
+    ctx.rotate(-Math.PI / 2)
+    ctx.fillText('Sa (g)', 0, 0)
+    ctx.restore()
+  }, [spec, periods, T1, box])
+
+  return <canvas ref={ref} className="frf-plot" style={{ width: W, height: H }} />
+}
+
 function CheckRow({ c }: { c: Check }) {
   return (
     <div className={c.pass ? 'check pass' : 'check fail'}>
@@ -483,9 +750,9 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, harmonic, plastic, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
+  const { frame, dynamics, harmonic, seismic, plastic, continuum, allPass } = useMemo(() => runAllBenchmarks(), [])
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...harmonic, ...plastic, ...continuum]
+  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...continuum]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -513,6 +780,10 @@ export function VerifyBadge() {
           <div className="check-group">Harmonic response &amp; sections</div>
           {harmonic.map((c, i) => (
             <CheckRow key={`h${i}`} c={c} />
+          ))}
+          <div className="check-group">Seismic time-history &amp; spectrum</div>
+          {seismic.map((c, i) => (
+            <CheckRow key={`s${i}`} c={c} />
           ))}
           <div className="check-group">Plastic collapse (pushover)</div>
           {plastic.map((c, i) => (

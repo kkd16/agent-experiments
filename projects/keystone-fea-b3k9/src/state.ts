@@ -4,9 +4,10 @@
 
 import type { FrameModel } from './engine/frame'
 import type { DriveType } from './engine/harmonic'
+import type { GroundRecord } from './engine/seismic'
 import type { Colormap } from './ui/colormap'
 
-export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic' | 'pushover'
+export type FrameAnalysis = 'static' | 'modal' | 'buckling' | 'response' | 'harmonic' | 'pushover' | 'seismic'
 
 export interface Display {
   deformScale: number
@@ -25,6 +26,9 @@ export interface Display {
   driveHz?: number // drive frequency (Hz) for the forced-harmonic sweep
   driveType?: DriveType // force / rotating unbalance / base excitation
   pushSecondOrder?: boolean // include P-Δ geometric stiffness in the pushover
+  seisRecord?: GroundRecord // ground-motion record for the seismic time-history
+  seisPga?: number // target peak ground acceleration (g)
+  seisZeta?: number // modal damping ratio for the seismic response
 }
 
 export interface Scene {

@@ -26,12 +26,19 @@ import {
   type DriveType,
 } from './engine/harmonic'
 import { solvePushover, pushoverAt, memberMp, type PushoverResult } from './engine/plastic'
+import {
+  solveSeismic,
+  seismicShape,
+  makeGround,
+  type SeismicResult,
+  type GroundRecord,
+} from './engine/seismic'
 import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
 import { drawFrame, drawContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
-import { CapacityCurvePlot, FrfPlot, Legend, Segmented, Slider, StatTile, Toggle, VerifyBadge } from './ui/components'
+import { CapacityCurvePlot, FrfPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
 import {
   addMember,
@@ -150,6 +157,13 @@ function safeSolvePushover(m: FrameModel, secondOrder: boolean): PushoverResult 
     return null
   }
 }
+function safeSolveSeismic(m: FrameModel, record: GroundRecord, pga: number, zeta: number): SeismicResult | null {
+  try {
+    return solveSeismic(m, makeGround(record, pga), zeta)
+  } catch {
+    return null
+  }
+}
 
 const WARREN = (PRESETS.find((p) => p.id === 'warren') as FramePreset).model
 
@@ -181,6 +195,15 @@ export default function App() {
   const pushSecondOrder = display.pushSecondOrder ?? false
   const [pushS, setPushS] = useState(0) // pseudo-time along the capacity curve
   const [pushPlaying, setPushPlaying] = useState(true)
+
+  // Seismic (time-history) state.
+  const seisRecord: GroundRecord = display.seisRecord ?? 'synthetic'
+  const seisPga = display.seisPga ?? 0.4
+  const seisZeta = display.seisZeta ?? 0.05
+  const [seisPlaying, setSeisPlaying] = useState(true)
+  const [seisShape, setSeisShape] = useState<NodeDisp[] | null>(null)
+  const [seisElapsed, setSeisElapsed] = useState(0)
+  const seisTimeRef = useRef(0)
 
   const [tool, setTool] = useState<Tool>('select')
   const [sel, setSel] = useState<Picked | null>(null)
@@ -229,6 +252,13 @@ export default function App() {
     () => (tab === 'frame' && analysis === 'pushover' ? safeSolvePushover(frame, pushSecondOrder) : null),
     [tab, analysis, frame, pushSecondOrder],
   )
+  const seismicResult = useMemo(
+    () =>
+      tab === 'frame' && analysis === 'seismic'
+        ? safeSolveSeismic(frame, seisRecord, seisPga, seisZeta)
+        : null,
+    [tab, analysis, frame, seisRecord, seisPga, seisZeta],
+  )
   const frf = useMemo<FrfCurve | null>(
     () => (harmPrep?.ok ? frfSweep(harmPrep, harmZeta, driveType) : null),
     [harmPrep, harmZeta, driveType],
@@ -273,10 +303,15 @@ export default function App() {
         ? harmShape
         : analysis === 'pushover'
           ? pushInfo?.shape ?? null
-          : isSwing
-            ? selMode!.shape
-            : null
-  const drawFactor = analysis === 'response' || analysis === 'harmonic' || analysis === 'pushover' ? 1 : modeT
+          : analysis === 'seismic'
+            ? seisShape
+            : isSwing
+              ? selMode!.shape
+              : null
+  const drawFactor =
+    analysis === 'response' || analysis === 'harmonic' || analysis === 'pushover' || analysis === 'seismic'
+      ? 1
+      : modeT
   const shapeScale = analysis === 'pushover' ? pushScale : modeScale
   const isMode = tab === 'frame' && analysis !== 'static' && !!drawShape
 
@@ -396,6 +431,54 @@ export default function App() {
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [tab, analysis, pushResult, pushPlaying])
+
+  // Seed the seismic shape at t=0 whenever the model / record / damping changes.
+  useEffect(() => {
+    seisTimeRef.current = 0
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSeisElapsed(0)
+    setSeisShape(seismicResult?.ok ? seismicShape(seismicResult, 0) : null)
+  }, [seismicResult])
+
+  // Play the earthquake in real time: march the stored time-history, expanding
+  // the relative shape + ground sway at each instant, looping at the record end.
+  useEffect(() => {
+    if (!(tab === 'frame' && analysis === 'seismic' && seismicResult?.ok && seisPlaying)) return
+    const dur = seismicResult.nSteps * seismicResult.dt
+    let raf = 0
+    let last = 0
+    const loop = (ts: number) => {
+      if (!last) last = ts
+      const dt = Math.min(0.05, (ts - last) / 1000)
+      last = ts
+      seisTimeRef.current += dt
+      if (seisTimeRef.current >= dur) seisTimeRef.current = 0
+      const t = seisTimeRef.current
+      const idx = Math.min(seismicResult.nSteps - 1, Math.round(t / seismicResult.dt))
+      setSeisShape(seismicShape(seismicResult, idx))
+      setSeisElapsed(t)
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, analysis, seismicResult, seisPlaying])
+
+  const scrubSeismic = useCallback(
+    (t: number) => {
+      if (!seismicResult?.ok) return
+      setSeisPlaying(false)
+      seisTimeRef.current = t
+      setSeisElapsed(t)
+      const idx = Math.min(seismicResult.nSteps - 1, Math.max(0, Math.round(t / seismicResult.dt)))
+      setSeisShape(seismicShape(seismicResult, idx))
+    },
+    [seismicResult],
+  )
+  const restartSeismic = useCallback(() => {
+    seisTimeRef.current = 0
+    setSeisElapsed(0)
+    if (seismicResult?.ok) setSeisShape(seismicShape(seismicResult, 0))
+  }, [seismicResult])
 
   // --- auto deformation scale ----------------------------------------------
   const autoScale = useMemo(() => {
@@ -767,7 +850,9 @@ export default function App() {
                             ? `pushover · λ = ${(pushInfo?.lambda ?? 0).toFixed(2)} · ${pushInfo?.hinges ?? 0}/${pushResult?.events.length ?? 0} hinges${
                                 (pushInfo?.hinges ?? 0) >= (pushResult?.events.length ?? -1) && pushResult?.collapse ? ' · collapse' : ''
                               }`
-                            : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
+                            : analysis === 'seismic'
+                              ? `earthquake · ${fmtEng(seisPga * 9.80665, 'm/s²')} PGA · roof ${fmtEng(seismicResult?.peakRoof ?? 0, 'm')} · t = ${seisElapsed.toFixed(1)} s`
+                              : `response · ζ = ${(respZeta * 100).toFixed(0)}% · t = ${respElapsed.toFixed(2)} s`}
                   </span>
                 </div>
               ) : tab === 'frame' ? (
@@ -826,6 +911,7 @@ export default function App() {
                   { value: 'response', label: 'Response' },
                   { value: 'harmonic', label: 'Harmonic' },
                   { value: 'pushover', label: 'Pushover' },
+                  { value: 'seismic', label: 'Seismic' },
                 ]}
                 value={analysis}
                 onChange={(v) => {
@@ -837,6 +923,7 @@ export default function App() {
                   setHarmPlaying(true)
                   setPushPlaying(true)
                   setPushS(0)
+                  setSeisPlaying(true)
                 }}
               />
               <p className="hint-text">
@@ -850,7 +937,9 @@ export default function App() {
                         ? 'Transient response: the structure released from its static deflection, rung down by modal superposition Σ φᵢ qᵢ(t).'
                         : analysis === 'harmonic'
                           ? 'Forced harmonic response: drive with F·cos ωt and sweep ω to trace the frequency-response function u(ω) = Σ φᵢ(φᵢᵀF)/(ωᵢ²−ω²+2iζωᵢω).'
-                          : 'Nonlinear pushover: increase the load, forming plastic hinges (Mₚ = Z·Fᵧ) until the frame becomes a mechanism. The collapse load factor is exact plastic limit analysis.'}
+                          : analysis === 'seismic'
+                            ? 'Seismic time-history: shake the base with a ground motion and integrate M ü + C u̇ + K u = −M ι a_g(t) by Newmark-β, plus the elastic response spectrum.'
+                            : 'Nonlinear pushover: increase the load, forming plastic hinges (Mₚ = Z·Fᵧ) until the frame becomes a mechanism. The collapse load factor is exact plastic limit analysis.'}
               </p>
             </div>
           )}
@@ -967,6 +1056,21 @@ export default function App() {
                 }}
                 secondOrder={pushSecondOrder}
                 onSecondOrder={(v) => patchDisplay({ pushSecondOrder: v })}
+              />
+            ) : analysis === 'seismic' ? (
+              <SeismicPanel
+                result={seismicResult}
+                record={seisRecord}
+                onRecord={(v) => patchDisplay({ seisRecord: v })}
+                pga={seisPga}
+                onPga={(v) => patchDisplay({ seisPga: v })}
+                zeta={seisZeta}
+                onZeta={(v) => patchDisplay({ seisZeta: v })}
+                playing={seisPlaying}
+                onPlay={setSeisPlaying}
+                onRestart={restartSeismic}
+                onScrub={scrubSeismic}
+                elapsed={seisElapsed}
               />
             ) : (
               <HarmonicPanel
@@ -1484,6 +1588,145 @@ function HarmonicPanel({
             : prep.syntheticDrive
               ? 'No nodal load placed — a unit probe force drives the most responsive joint. Add a load to shape the forcing.'
               : 'Steady-state amplitude of the placed load oscillating as F·cos ωt. Each resonance peak is a mode driven at its natural frequency; its height is capped by damping (≈ 1/2ζ).'}
+      </p>
+    </div>
+  )
+}
+
+function SeismicPanel({
+  result,
+  record,
+  onRecord,
+  pga,
+  onPga,
+  zeta,
+  onZeta,
+  playing,
+  onPlay,
+  onRestart,
+  onScrub,
+  elapsed,
+}: {
+  result: SeismicResult | null
+  record: GroundRecord
+  onRecord: (v: GroundRecord) => void
+  pga: number
+  onPga: (v: number) => void
+  zeta: number
+  onZeta: (v: number) => void
+  playing: boolean
+  onPlay: (v: boolean) => void
+  onRestart: () => void
+  onScrub: (t: number) => void
+  elapsed: number
+}) {
+  if (!result) return null
+  const g = result.ground
+  const GG = 9.80665
+  const timeOk = result.ok
+  const saG = result.SaT1 / GG
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Seismic response
+        <span className={saG > 0.5 ? 'badge warn' : 'badge good'}>{saG.toFixed(2)} g @ T₁</span>
+      </div>
+      <div className="field-label">Ground motion</div>
+      <Segmented<GroundRecord>
+        options={[
+          { value: 'synthetic', label: 'Quake' },
+          { value: 'pulse', label: 'Pulse' },
+          { value: 'harmonic', label: 'Shaker' },
+        ]}
+        value={record}
+        onChange={onRecord}
+      />
+      {timeOk ? (
+        <div className="stat-grid">
+          <StatTile label="Fundamental T₁" value={fmtEng(result.T1, 's')} sub={fmtEng(1 / (result.T1 || 1), 'Hz')} />
+          <StatTile label="Spectral accel" value={`${saG.toFixed(2)} g`} sub="Sa(T₁)" />
+          <StatTile label="Peak roof" value={fmtEng(result.peakRoof, 'm')} sub={`joint ${result.outNode} ${result.outDir}`} />
+          <StatTile label="Peak drift" value={fmtEng(result.peakDrift, 'm')} sub="inter-level" />
+          <StatTile label="Peak base shear" value={fmtEng(result.peakBaseShear, 'N')} />
+          <StatTile label="PGA" value={`${(g.pga / GG).toFixed(2)} g`} sub={fmtEng(g.pga, 'm/s²')} />
+          <StatTile label="PGV" value={fmtEng(g.pgv, 'm/s')} />
+          <StatTile label="Damping ζ" value={`${(zeta * 100).toFixed(0)}%`} />
+        </div>
+      ) : (
+        <p className="hint-text">{result.note ?? 'Time-history unavailable — the response spectrum is still shown below.'}</p>
+      )}
+
+      <div className="frf-wrap">
+        <TimeSeriesPlot
+          data={g.ag}
+          dt={g.dt}
+          cursorTime={elapsed}
+          color="#f5a742"
+          unit="m/s²"
+          label="ground a(t)"
+          onPick={onScrub}
+        />
+        {timeOk && result.roof.length > 0 && (
+          <TimeSeriesPlot
+            data={result.roof}
+            dt={result.dt}
+            cursorTime={elapsed}
+            color="#6ea8ff"
+            unit="m"
+            label="roof drift"
+            onPick={onScrub}
+          />
+        )}
+        <div className="frf-caption">
+          {g.name} · {g.duration.toFixed(0)} s · click a trace to scrub
+        </div>
+      </div>
+
+      {timeOk && (
+        <div className="btn-row">
+          <button className="ghost-btn" onClick={() => onPlay(!playing)}>
+            {playing ? '⏸ Pause' : '▶ Play'}
+          </button>
+          <button className="ghost-btn" onClick={onRestart}>
+            ↺ Restart
+          </button>
+        </div>
+      )}
+
+      <Slider
+        label="Peak ground accel."
+        min={0.05}
+        max={1}
+        step={0.05}
+        value={pga}
+        onChange={onPga}
+        format={(v) => `${v.toFixed(2)} g`}
+      />
+      <Slider
+        label="Damping ratio ζ"
+        min={0.02}
+        max={0.15}
+        step={0.005}
+        value={zeta}
+        onChange={onZeta}
+        format={(v) => `${(v * 100).toFixed(1)}%`}
+      />
+
+      <div className="table-title">Elastic response spectrum</div>
+      <div className="frf-wrap">
+        <SpectrumPlot spec={result.spectrum} periods={result.periods} T1={result.T1} />
+        <div className="frf-caption">
+          Sa vs period · <span className="frf-key drive">— T₁</span>{' '}
+          <span className="frf-key res">┆ higher modes</span> · peak SDOF response of every period under this record
+        </div>
+      </div>
+
+      <p className="hint-text">
+        {record === 'pulse'
+          ? 'A near-fault velocity pulse (Ricker wavelet) — one dominant swing that hammers long-period structures far harder than a broadband record of equal PGA.'
+          : record === 'harmonic'
+            ? 'A steady harmonic shaker — its response spectrum spikes at the drive period. Tune the structure near it (or vice-versa) to watch resonance build.'
+            : 'A seeded broadband accelerogram (Kanai–Tajimi soil spectrum × Jennings envelope), integrated by Newmark-β with Rayleigh damping. The spectrum reads the peak SDOF demand at every period.'}
       </p>
     </div>
   )

@@ -194,9 +194,106 @@ hinge, flat-topping at collapse.
       sway frame — each with a defined `Mₚ` so collapse is dramatic
 - [x] Canvas: plastic-hinge glyphs (a filled amber disc at each formed hinge) drawn on the deflected shape
 
-(remaining "future" items are listed in the v4 backlog above.)
+### v7 — Seismic time-history & the response spectrum (the earthquake chapter)
+
+Modal found the frequencies, transient rang the structure down from a kick, and
+harmonic traced the resonance of a *steady* sinusoid. The one excitation left is
+the one earthquake engineering is built on: an **arbitrary ground motion**, with
+no single frequency and no steady state. The support accelerates along a recorded
+accelerogram `a_g(t)` and the equation of motion must be marched forward in time:
+
+    M·ü + C·u̇ + K·u = −M·ι·a_g(t),
+
+with `u` the displacement *relative to the moving ground*, `ι` the influence
+vector (unit rigid ground translation), and `C = a₀M + a₁K` **Rayleigh
+(proportional) damping** tuned to a target modal damping ζ at the first and third
+modal frequencies. The integrator is the unconditionally-stable **Newmark-β
+average-acceleration** scheme (γ = ½, β = ¼): the effective stiffness
+`K̂ = K + (γ/βΔt)C + (1/βΔt²)M` is Cholesky-factored *once* and every step is two
+triangular solves. Alongside the history it computes the **elastic response
+spectrum** — for a whole bank of SDOF oscillators spanning 0.05–4 s, each is
+driven by the *same* record and its peak recorded, giving Sd(T) and the
+pseudo-spectral Sv = ωSd, Sa = ω²Sd. The spectrum is *the* object a seismic
+designer reads demand from, and the structure's own natural periods are marked on
+it. Three deterministic (seeded, never `Math.random`) ground motions ship: a
+broadband synthetic (Kanai–Tajimi soil spectrum × Jennings envelope), a near-fault
+velocity **pulse** (Ricker wavelet), and a **harmonic shaker**. Everything is
+cross-checked live against closed-form structural dynamics.
+
+- [x] `seismic.ts` — the whole chapter, pure/deterministic, built on the eigen +
+      dynamics assembler already in place.
+- [x] **Newmark-β integrator** (average-acceleration, γ=½/β=¼): cached-Cholesky
+      effective-stiffness solve, both an MDOF form and a fast scalar SDOF form.
+- [x] **Rayleigh damping** `C = a₀M + a₁K` from a target ζ at ω₁ and ω₃
+      (`rayleighCoeffs`) — proportional damping that keeps the modal picture clean.
+- [x] **Ground-motion library**: `syntheticQuake` (seeded broadband, Kanai–Tajimi
+      × Jennings, baseline-corrected to give velocity/displacement), `pulseGround`
+      (near-fault Ricker wavelet), `harmonicGround` (ramped shaker) — all scaled to
+      a target PGA in g, with PGA/PGV/PGD reported.
+- [x] **Response spectrum** `responseSpectrum`: a bank of 64 log-spaced SDOF
+      oscillators integrated under the record → Sd, Sv, Sa(T); `spectrumAt`
+      interpolates the demand at any period.
+- [x] MDOF time-history: relative-displacement response, output/roof DOF picked
+      from the largest running peak, elastic base-shear history ιᵀKu, peak roof
+      drift, peak inter-level drift, and a strided store so the animation stays cheap.
+- [x] `seismicShape` — the drawn frame at any instant: relative deformation
+      (normalised) **plus a rigid ground sway** so the whole structure rides the
+      quake, drifting against the fixed undeformed ghost.
+- [x] **5 closed-form benchmarks** (all green): Newmark undamped period fidelity
+      `u(T)=u₀`; the step-load dynamic-amplification factor **DAF = 2**; the damped
+      log-decrement `e^(−2πζ/√(1−ζ²))` via direct integration; the SDOF harmonic
+      steady-state amplitude `(F/k)/√((1−r²)²+(2ζr)²)`; and the spectral
+      high-frequency limit **Sa(T→0) = PGA**.
+- [x] UI: a seventh **Seismic** analysis mode — record selector (Quake / Pulse /
+      Shaker), live-shaking canvas animation, a ground-acceleration trace, a roof
+      time-history, and the **response-spectrum plot** with the structure's periods
+      marked; PGA + damping sliders, play/pause/restart, click-to-scrub the traces,
+      and stat tiles (T₁, Sa(T₁), peak roof, peak drift, peak base shear, PGA, PGV).
+- [x] Two showcase presets: a **5-storey moment frame** (T₁ ≈ 0.84 s, resonates
+      under the shaker) and a slender **10-storey tower** (T₁ ≈ 2 s, hammered by the
+      near-fault pulse) — member density scaled to lump realistic floor mass so the
+      periods land in the earthquake-sensitive band.
+
+- [ ] Inelastic time-history (hysteretic hinges) — marry v6's plasticity to the
+      Newmark march for a true nonlinear seismic response — future
+- [ ] Multi-support / asynchronous excitation and a design-spectrum overlay — future
+
+(remaining "future" items are also listed in the v4 backlog above.)
 
 ## Session log
+
+- 2026-07-16 (claude): shipped **v7 — seismic time-history & the response
+  spectrum**, the earthquake chapter. New `seismic.ts`: a **Newmark-β**
+  average-acceleration integrator (γ=½, β=¼, unconditionally stable) that marches
+  `M ü + C u̇ + K u = −M ι a_g(t)` — the relative-displacement equation of motion
+  under support acceleration — with **Rayleigh damping** `C = a₀M + a₁K` tuned to a
+  target ζ at the 1st and 3rd modal frequencies. The effective stiffness is
+  Cholesky-factored once and reused every step. A seeded (never `Math.random`)
+  ground-motion library ships three records: a broadband synthetic accelerogram
+  (Kanai–Tajimi soil spectrum × Jennings envelope, baseline-corrected so the
+  velocity/displacement don't drift), a near-fault velocity **pulse** (Ricker
+  wavelet), and a ramped **harmonic shaker** — each scaled to a target PGA. On top
+  sits the **elastic response spectrum**: 64 log-spaced SDOF oscillators (0.05–4 s)
+  each integrated under the same record to give the peak Sd and the pseudo-spectral
+  Sv = ωSd, Sa = ω²Sd. The MDOF time-history reports the roof/output-DOF drift
+  history, the elastic base-shear history ιᵀKu, peak roof + inter-level drift, and
+  a rigid-ground-sway shape (`seismicShape`) so the whole frame visibly rides the
+  quake against the fixed ghost. Five new closed-form benchmarks — Newmark period
+  fidelity, the step-load DAF = 2, the damped log-decrement via direct integration,
+  the SDOF harmonic steady-state amplitude, and the spectral limit Sa(T→0) = PGA —
+  all pass (errors ≤ 8e-3), taking the badge to **39/39**. UI: a seventh **Seismic**
+  analysis mode — a record selector, a live-shaking canvas, a ground-acceleration
+  trace, a roof time-history, and the response-spectrum plot with the structure's
+  natural periods marked and Sa(T₁) called out; PGA + damping sliders, play / pause
+  / restart, click-to-scrub the traces, and a stat grid (T₁, Sa(T₁), peak roof,
+  peak drift, peak base shear, PGA, PGV). Two showcase presets: a 5-storey moment
+  frame (T₁ ≈ 0.84 s — resonates under the shaker at 0.59 g demand, 130 mm roof
+  drift) and a slender 10-storey tower (T₁ ≈ 2 s — the near-fault pulse drives it to
+  640 mm, an order of magnitude the pulse's own displacement, the classic long-
+  period vulnerability). Verified end-to-end in headless Chromium across frames and
+  trusses and all three records: the badge reads 39/39, the frame sways and rings
+  down, the spectrum renders with the T₁ marker on its descending branch, and there
+  are zero runtime errors.
 
 - 2026-07-11 (claude): shipped **v6 — nonlinear pushover: plastic hinges & collapse**,
   the first *inelastic* chapter. New `plastic.ts`: a concentrated-plasticity,
