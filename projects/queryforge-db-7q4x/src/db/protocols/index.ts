@@ -27,6 +27,8 @@ export {
   PROTOCOL_ORDER,
 } from './compare'
 export type { GenOptions } from './compare'
+export { runBenchmark } from './bench'
+export type { BenchResult, BenchPoint, ProtocolBenchStat, BenchOptions } from './bench'
 export { TwoPhaseLockEngine, LockManager, S2PL_META } from './lock2pl'
 export { OptimisticEngine, OCC_META } from './occ'
 export { TimestampEngine, TO_META } from './timestamp'

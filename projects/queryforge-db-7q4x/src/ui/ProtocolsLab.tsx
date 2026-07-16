@@ -8,8 +8,8 @@ import { useMemo, useState } from 'react'
 import type { Scenario } from '../db/concurrency/scenarios'
 import { SCENARIOS } from '../db/concurrency/scenarios'
 import { ISOLATION_LEVELS, LEVEL_ABBR, type IsolationLevel, type Val } from '../db/concurrency/mvcc'
-import { runAll, generateSchedule, PROTOCOL_METAS } from '../db/protocols'
-import type { ProtocolRunResult, ProtocolStep, TxnOutcome } from '../db/protocols'
+import { runAll, generateSchedule, runBenchmark, PROTOCOL_METAS } from '../db/protocols'
+import type { ProtocolRunResult, ProtocolStep, TxnOutcome, ProtocolId } from '../db/protocols'
 
 function fmtVal(v: Val): string {
   if (v === null) return '∅'
@@ -110,8 +110,72 @@ export function ProtocolsLab() {
           </p>
         )}
         <GuaranteeMatrix />
+        <BenchPanel />
       </div>
     </div>
+  )
+}
+
+const PROTO_COLOR: Record<ProtocolId, string> = {
+  s2pl: 'var(--accent)',
+  occ: 'var(--green)',
+  to: 'var(--amber)',
+  mvcc: 'var(--violet)',
+}
+const PROTO_SHORT: Record<ProtocolId, string> = { s2pl: 'S2PL', occ: 'OCC', to: 'T/O', mvcc: 'MVCC' }
+
+/** The contention-sweep benchmark, computed lazily when opened. */
+function BenchPanel() {
+  const [open, setOpen] = useState(false)
+  const bench = useMemo(() => (open ? runBenchmark({ seeds: 120 }) : null), [open])
+  return (
+    <section className="pl-matrix">
+      <div className="pl-bench-head">
+        <h3 className="cc-panel-title">Contention benchmark</h3>
+        <button className="pl-lvl" onClick={() => setOpen((o) => !o)}>
+          {open ? 'hide' : 'run ▸'}
+        </button>
+      </div>
+      <p className="pl-matrix-note" style={{ marginTop: 0 }}>
+        The same {bench?.config.seeds ?? 120} random schedules run through every protocol as the shared key
+        space shrinks (fewer keys ⇒ more transactions fighting over the same rows). Watch the commit rate
+        fall — and <i>how</i> each protocol pays: locking blocks and occasionally deadlocks, OCC and T/O burn
+        work on aborts.
+      </p>
+      {bench && (
+        <div className="pl-bench">
+          <div className="pl-bench-legend">
+            {(['s2pl', 'occ', 'to', 'mvcc'] as ProtocolId[]).map((id) => (
+              <span key={id} className="pl-bench-key">
+                <span className="pl-bench-swatch" style={{ background: PROTO_COLOR[id] }} /> {PROTO_SHORT[id]}
+              </span>
+            ))}
+          </div>
+          {bench.points.map((p) => (
+            <div key={p.keys} className="pl-bench-row">
+              <span className="pl-bench-label">
+                {p.keys} key{p.keys === 1 ? '' : 's'}
+                <em>{p.keys === 1 ? ' · hottest' : p.keys >= 8 ? ' · coolest' : ''}</em>
+              </span>
+              <div className="pl-bench-bars">
+                {p.stats.map((s) => (
+                  <div key={s.protocol} className="pl-bench-bar-wrap" title={`${PROTO_SHORT[s.protocol]}: ${(s.commitRate * 100).toFixed(0)}% commit · ${(s.abortRate * 100).toFixed(0)}% abort${s.deadlocks ? ` · ${s.deadlocks} deadlocks` : ''}${s.validationFails ? ` · ${s.validationFails} valid.fails` : ''}${s.cascades ? ` · ${s.cascades} cascades` : ''}`}>
+                    <div className="pl-bench-bar-track">
+                      <div
+                        className="pl-bench-bar-fill"
+                        style={{ height: `${Math.round(s.commitRate * 100)}%`, background: PROTO_COLOR[s.protocol] }}
+                      />
+                    </div>
+                    <span className="pl-bench-pct">{Math.round(s.commitRate * 100)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          <p className="pl-bench-axis">bar height = % of transactions that commit · hover for the abort breakdown</p>
+        </div>
+      )}
+    </section>
   )
 }
 

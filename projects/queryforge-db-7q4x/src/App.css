@@ -2928,3 +2928,19 @@ body {
 
 @media (max-width: 1100px) { .pl-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 860px) { .pl-lab { grid-template-columns: 1fr; } .pl-aside { position: static; } .pl-grid { grid-template-columns: 1fr; } }
+
+/* Protocols Lab — contention benchmark */
+.pl-bench-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pl-bench { margin-top: 10px; }
+.pl-bench-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.pl-bench-key { display: inline-flex; align-items: center; gap: 5px; font: 0.68rem var(--mono); color: var(--txt-dim); }
+.pl-bench-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.pl-bench-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: end; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.pl-bench-label { font: 0.72rem var(--mono); color: var(--txt); align-self: center; }
+.pl-bench-label em { color: var(--txt-faint); font-style: normal; font-size: 0.62rem; }
+.pl-bench-bars { display: flex; gap: 16px; align-items: flex-end; height: 92px; }
+.pl-bench-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: 1; max-width: 60px; height: 100%; justify-content: flex-end; }
+.pl-bench-bar-track { width: 100%; height: 76px; background: var(--bg-2); border-radius: 4px 4px 0 0; display: flex; align-items: flex-end; overflow: hidden; }
+.pl-bench-bar-fill { width: 100%; border-radius: 4px 4px 0 0; transition: height 0.3s ease; min-height: 2px; }
+.pl-bench-pct { font: 700 0.6rem var(--mono); color: var(--txt-dim); }
+.pl-bench-axis { margin: 8px 0 0; font: 0.66rem var(--sans); color: var(--txt-faint); }
