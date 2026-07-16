@@ -295,6 +295,16 @@ const SECTIONS: Section[] = [
       { syntax: 'SAVEPOINT sp · ROLLBACK TO [SAVEPOINT] sp · RELEASE [SAVEPOINT] sp', note: 'Nested, named rollback points inside a transaction. ROLLBACK TO undoes the work since the savepoint but keeps it (you can roll back to it again); RELEASE folds it away, keeping its work; COMMIT/ROLLBACK clear all savepoints.' },
     ],
   },
+  {
+    title: 'Concurrency-control protocols  —  the Protocols Lab',
+    entries: [
+      { syntax: 'Strict 2PL  —  lock to read (S), lock to write (X), hold to commit', note: 'The pessimistic protocol. Conflicts *block* rather than abort, so it is recoverable and cascadeless; the price is deadlocks, detected on the waits-for graph and broken by aborting a victim. Phantoms are handled with a coarse predicate lock on a synthetic index guard.' },
+      { syntax: 'OCC  —  read phase · backward validation · write phase', note: 'The optimistic protocol (Kung & Robinson). Reads see committed data, writes buffer privately, nothing blocks; at commit it validates its read set against everything committed since it began and aborts if it lost the bet, then publishes atomically. Lock-free, so it never deadlocks.' },
+      { syntax: 'Basic T/O  —  timestamp at BEGIN · per-item read/write stamps · Thomas write rule', note: 'The timestamp protocol. Conflicting operations are forced into timestamp order, aborting whichever arrives late. It never blocks, but writes are visible immediately, so it permits dirty reads and is *not* recoverable — an abort cascades to everyone who read the uncommitted value.' },
+      { syntax: 'MVCC (SSI)  —  version chains + serializable snapshot isolation', note: 'The multi-version protocol QueryForge runs for real (see the Concurrency Lab). Readers never block writers; at SERIALIZABLE, Cahill’s SSI aborts a transaction when a dangerous rw-antidependency structure forms.' },
+      { syntax: 'the serializability oracle', note: 'A protocol-independent precedence-graph checker certifies every protocol’s committed history: acyclic ⇒ conflict-serializable (and a topological order is an equivalent serial schedule). The Protocols Lab runs one schedule through all four at once and the self-tests fuzz thousands of random schedules against the oracle.' },
+    ],
+  },
 ]
 
 export function Reference() {

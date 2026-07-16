@@ -4,6 +4,7 @@
 
 import { Engine, type RowsResult } from './engine'
 import { mvccCases } from './concurrency/tests'
+import { protocolsCases } from './protocols/tests'
 import { recoveryCases } from './recovery/tests'
 import { vectorizedCases } from './vectorized/tests'
 import { compiledCases } from './compiled/tests'
@@ -3435,7 +3436,7 @@ test('execution', 'the statement parse cache serves repeated read-only queries',
 })
 
 export function runTests(): TestResult[] {
-  return cases.concat(storageCases).concat(mvccCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).concat(ivmCases).concat(sketchCases).concat(wcojCases).concat(lsmCases).map((c) => {
+  return cases.concat(storageCases).concat(mvccCases).concat(protocolsCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).concat(ivmCases).concat(sketchCases).concat(wcojCases).concat(lsmCases).map((c) => {
     try {
       c.run()
       return { name: c.name, group: c.group, pass: true, detail: 'ok' }
