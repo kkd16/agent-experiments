@@ -22,6 +22,7 @@ export type Mode =
   | 'quant'
   | 'algebra'
   | 'timed'
+  | 'prob'
 
 export interface AppState {
   mode: Mode
@@ -41,6 +42,7 @@ export interface AppState {
   quant: { preset: string; tab: string }
   algebra: { regex: string; tab: string }
   timed: { source: string; tab: string; input: string }
+  prob: { source: string; query: string; tab: string }
 }
 
 export function encodeHash(s: AppState): string {
@@ -134,6 +136,12 @@ export function encodeHash(s: AppState): string {
     q.set('t', s.timed.tab)
     if (s.timed.input) q.set('i', s.timed.input)
     return `#/timed?${q.toString()}`
+  }
+  if (s.mode === 'prob') {
+    q.set('s', s.prob.source)
+    q.set('q', s.prob.query)
+    q.set('t', s.prob.tab)
+    return `#/prob?${q.toString()}`
   }
   q.set('r', s.explore.regex)
   q.set('t', s.explore.tab)
@@ -312,6 +320,17 @@ export function decodeHash(raw: string, fallback: AppState): AppState {
           source: q.get('s') ?? fallback.timed.source,
           tab: q.get('t') ?? fallback.timed.tab,
           input: q.get('i') ?? '',
+        },
+      }
+    }
+    if (path === 'prob') {
+      return {
+        ...fallback,
+        mode: 'prob',
+        prob: {
+          source: q.get('s') ?? fallback.prob.source,
+          query: q.get('q') ?? fallback.prob.query,
+          tab: q.get('t') ?? fallback.prob.tab,
         },
       }
     }
