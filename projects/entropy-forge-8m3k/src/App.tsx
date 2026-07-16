@@ -9,6 +9,7 @@ import { Adaptive } from './routes/Adaptive'
 import { Arithmetic } from './routes/Arithmetic'
 import { Rans } from './routes/Rans'
 import { Tans } from './routes/Tans'
+import { Rice } from './routes/Rice'
 import { Ppm } from './routes/Ppm'
 import { ContextMixing } from './routes/ContextMixing'
 import { Lempel } from './routes/Lempel'
@@ -16,6 +17,7 @@ import { Deflate } from './routes/Deflate'
 import { Lzma } from './routes/Lzma'
 import { Png } from './routes/Png'
 import { Jpeg } from './routes/Jpeg'
+import { Flac } from './routes/Flac'
 import { RateDistortion } from './routes/RateDistortion'
 import { Channel } from './routes/Channel'
 import { HammingCode } from './routes/HammingCode'
@@ -38,6 +40,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   arithmetic: Arithmetic,
   rans: Rans,
   tans: Tans,
+  rice: Rice,
   ppm: Ppm,
   cm: ContextMixing,
   lempel: Lempel,
@@ -45,6 +48,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   lzma: Lzma,
   png: Png,
   jpeg: Jpeg,
+  flac: Flac,
   ratedistortion: RateDistortion,
   channel: Channel,
   hamming: HammingCode,

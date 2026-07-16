@@ -74,6 +74,21 @@ round-trips** its input — correctness is a first-class feature, surfaced on it
     — allocate power across parallel Gaussian sub-channels to maximise capacity) and
     `reverseWaterFill`/`gaussianVectorRD` (reverse — allocate distortion across a Gaussian *vector*
     source to minimise rate, i.e. the exact theory of transform-coding bit allocation).
+  - `intcodes.ts` — **codes for the integers** (v13): the universal family (unary, Elias **γ/δ/ω**,
+    **Fibonacci**/Zeckendorf) and the parametric family (**Golomb**, multiply-free **Rice**, **exp-Golomb**),
+    plus zig-zag signed folding, truncated binary, and the optimal-parameter estimators (`bestRiceK`
+    exhaustive, `riceKFromMean`/`golombMFromMean` closed-form). A reflective `INT_CODES` registry powers
+    the codeword-table visualiser. The residual substrate FLAC/JPEG-LS/ALAC/H.264 all spend.
+  - `flac.ts` — a from-scratch, spec-faithful **FLAC** lossless-audio codec (v13): inter-channel
+    decorrelation (mid/side, left/right-side, chosen per frame), CONSTANT/VERBATIM/**FIXED**(0–4)/**LPC**
+    subframes (Levinson–Durbin on the Welch-windowed autocorrelation → error-feedback-quantised integer
+    coefficients + shift), **partitioned Rice** residual coding (optimal partition order + per-partition k,
+    with a raw-bits escape), and a real bitstream — the `fLaC` marker, a STREAMINFO metadata block, and
+    frames with the 14-bit sync code, UTF-8-coded frame numbers, and per-frame **CRC-8**/**CRC-16**.
+    Integer + coefficient-storing, so the decoder replays exactly → bit-exact PCM by construction.
+  - `audio.ts` — procedural PCM sources (sine, chord, chirp, Karplus–Strong pluck, source–filter vowel
+    "speech", detuned stereo pad, white noise) chosen to make each predictor win, a 16/8/24/32-bit **WAV**
+    (RIFF/PCM) encode+decode container (playback + upload), and a peak-preserving waveform binner.
   - `selftest.ts` — round-trip + invertibility harness (runs in-browser and under Node).
 - `src/routes/` — one page per module; `src/components/` — SVG charts, tree, stat tiles.
 
@@ -723,8 +738,76 @@ bits they promise. It is the theoretical keystone the whole lab has been circlin
 - [ ] **The information bottleneck** (Tishby) as a third Blahut–Arimoto direction — a lovely bridge
       from rate–distortion to representation learning.
 
+## Entropy Forge v13 — FLAC & the integer codes (a whole new modality: audio)
+
+The lab had text and images; it had never coded a **time series**. v13 adds audio — and with it the
+last big idea the lab was missing, **linear prediction** — plus the integer-coding substrate it rides on.
+
+### What shipped (all from scratch, zero new deps)
+
+- [x] **`intcodes.ts` — codes for the integers.** The universal family (unary, Elias **γ/δ/ω**,
+      **Fibonacci**) and the parametric family (**Golomb**, multiply-free **Rice**, **exp-Golomb**), plus
+      zig-zag signed folding, truncated binary, and optimal-parameter estimators (`bestRiceK` exhaustive,
+      `golombMFromMean`/`riceKFromMean` closed-form). Every code round-trips a mixed stream with no
+      separators (it's a prefix code); 6,000+ offline round-trips + the in-app suite are green.
+- [x] **`intcodes` lab page (`Rice.tsx`).** One-value-every-code table, the codeword table across values,
+      a length-vs-value curve (unary linear, Elias logarithmic, Rice's flat floor), and the headline
+      "which code wins?" — expected bits on a geometric source vs the Shannon floor, with the optimal k*/m*
+      called out; plus a live Rice round-trip and a "where these live" map (FLAC, JPEG-LS, H.264, indexes).
+- [x] **`flac.ts` — a spec-faithful FLAC lossless-audio codec.** Inter-channel decorrelation (mid/side,
+      left/right-side, chosen per frame by a cheap 2nd-difference cost), CONSTANT/VERBATIM/**FIXED**(0–4)/
+      **LPC** subframes (Levinson–Durbin on the Welch-windowed autocorrelation → error-feedback-quantised
+      15-bit integer coefficients + shift), **partitioned Rice** residual coding (optimal partition order +
+      per-partition k, with a raw-bits escape for noise), and a real bitstream — `fLaC` + STREAMINFO,
+      frames with the 14-bit sync code, UTF-8 frame numbers, and per-frame **CRC-8**/**CRC-16**.
+- [x] **`audio.ts` — the sources + a WAV container.** Seven procedural signals (each makes a different
+      predictor win), 16/8/24/32-bit **WAV** encode+decode (playback + upload), and a waveform binner.
+- [x] **FLAC lab page (`Flac.tsx`).** Signal picker + .wav upload, WebAudio **playback**, the waveform,
+      a size race (raw / WAV / gzip(PCM) / FLAC), the **prediction-shrinks-entropy** panel (original vs
+      residual waveform + best-Rice bits/sample before and after), the per-frame subframe-method table +
+      aggregate counts, the **partitioned-Rice-parameter** strip, the quantised **LPC coefficients**, a
+      per-frame size chart, and a live **bit-exact round-trip** badge on whatever you're viewing.
+- [x] **Correctness.** decode∘encode is the identity, proven on every signal shape × stereo mode ×
+      subframe type × block size, plus a 60-case fuzz; the in-browser Self-test grows **723 → 810** checks.
+
+### FLAC / lossless-audio roadmap (honest next steps — not yet built)
+
+- [ ] **The exact LPC order search** (FLAC's `-e`): estimate residual bits from the Levinson error at
+      every order and pick by predicted cost, instead of an order ladder — a few % smaller for free.
+- [ ] **Wasted-bits detection** — factor out common trailing-zero bits per subframe (reduced-depth or
+      upsampled audio) via the format's unary wasted-bits field; the decoder already handles it.
+- [ ] **A real .flac interop proof** — decode a `.flac` produced by an *independent* encoder (a frozen
+      known-answer vector, mirroring the gzip/PNG/JPEG interop badges), and verify our MD5 STREAMINFO.
+- [ ] **Apodisation choice** — race Tukey/Hann/Welch analysis windows and keep the best (FLAC's `-A`).
+- [ ] **A spectral view** — the residual's flattened spectrum next to the source's, making "LPC whitens
+      the signal" literal (it's the same story the reassignment page tells about instantaneous frequency).
+- [ ] **Stereo LPC / long-term prediction** — a pitch-lag predictor for the periodic part, the idea
+      behind Shorten's and MPEG-4 ALS's long-term prediction.
+
 ## Session log
 
+- 2026-07-16 (claude): **v13 — FLAC & the integer codes: a whole new modality (audio).** The lab had
+  coded symbols, text and images but never a *time series*, and it was missing the one big idea audio
+  turns on — **linear prediction**. v13 adds it, bottom-up. First the substrate: `intcodes.ts`, the
+  **codes for the integers** — the universal family (unary, Elias γ/δ/ω, Fibonacci/Zeckendorf) and the
+  parametric one (Golomb, the multiply-free Rice, exp-Golomb), with zig-zag folding, truncated binary and
+  exhaustive/closed-form optimal-parameter finders — the residual coder every lossless-audio format spends,
+  with a lab page (`Rice.tsx`) that shows one value in every code, the length-vs-value curves, and the
+  "parametric codes hug the Shannon floor on a geometric source" story. Then the codec: `flac.ts`, a
+  spec-faithful **FLAC** — mid/side inter-channel decorrelation, CONSTANT/VERBATIM/FIXED/LPC subframes
+  (Levinson–Durbin → error-feedback-quantised integer coefficients), partitioned Rice residual coding, and
+  a genuine `fLaC` stream (STREAMINFO, framed subframes, the 14-bit sync, UTF-8 frame numbers, CRC-8/CRC-16).
+  Because every predictor is integer and its coefficients are stored, the decoder replays the identical
+  arithmetic and reconstructs bit-for-bit — the same "correct model ⇒ correct codec" invariant PPM and CM
+  rely on. `audio.ts` supplies the sources (a tone, chord, chirp, a Karplus–Strong pluck, a source–filter
+  vowel, a detuned stereo pad, white noise — each making a different predictor win) and a WAV container so
+  the browser can *play* what we made and *load* what you drop in. The `Flac.tsx` page makes the whole
+  thing legible: playback, a size race (FLAC beats gzip on audio by a mile — 14–18% vs raw on tones, ~100%
+  on noise, exactly as theory says), the original-vs-residual waveforms with best-Rice bits/sample before
+  (~15) and after (~3) prediction, the per-frame method table, the per-partition Rice-parameter strip, the
+  quantised LPC coefficients, and a live bit-exact round-trip badge. Verified under Node first — every
+  signal × stereo mode × subframe type × block size, plus a 60-case fuzz — then wired into the Self-test
+  as two new groups (**723 → 810** checks, all green). Zero new dependencies beyond React.
 - 2026-07-09 (claude): **v12 — Rate–Distortion & Quantisation: computing the limits, not just
   reaching for them.** The lab could measure H and quote capacities in closed form, and JPEG showed
   *one operational point* of rate–distortion — but it never computed a limit that has no formula.

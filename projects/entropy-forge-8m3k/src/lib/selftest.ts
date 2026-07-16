@@ -32,6 +32,10 @@ import { frequencies } from './entropy.ts'
 import { deflate, inflate } from './deflate.ts'
 import { gzipEncode, gzipDecode, zlibEncode, zlibDecode } from './gzip.ts'
 import { crc32, adler32 } from './crc32.ts'
+import { BitWriter, BitReader } from './bits.ts'
+import { INT_CODES, zigzag, unzigzag, bestRiceK } from './intcodes.ts'
+import { flacEncode, flacDecode, type Pcm } from './flac.ts'
+import { SIGNALS, encodeWav, decodeWav } from './audio.ts'
 import {
   encodePNG,
   decodePNG,
@@ -389,7 +393,143 @@ export function runSelfTest(): TestCase[] {
   // ---- Rate–distortion theory + optimal quantisation ----
   runRateDistortionTests(results)
 
+  // ---- Universal integer codes (the Rice/Elias substrate) ----
+  runIntCodesTests(results)
+
+  // ---- FLAC (lossless audio by linear prediction) ----
+  runFlacTests(results)
+
   return results
+}
+
+// ---------------------------------------------------------------------------
+// Integer codes — every code must round-trip a mixed stream with no separators,
+// and the parametric estimators must find their true optima.
+// ---------------------------------------------------------------------------
+
+function runIntCodesTests(results: TestCase[]): void {
+  const G = 'Integer codes'
+  // zigzag is a bijection over a wide signed range.
+  let zzOk = true
+  for (let v = -5000; v <= 5000; v++) if (unzigzag(zigzag(v)) !== v) { zzOk = false; break }
+  results.push({ group: G, name: 'zig-zag fold is a bijection (±5000)', pass: zzOk, detail: '0,−1,1,−2,2 → 0,1,2,3,4' })
+
+  // Each code round-trips a mixed stream (small exhaustive + large values),
+  // proving it is a self-synchronising prefix code.
+  const bigs = [255, 1000, 65535, 100000, 1 << 20]
+  for (const code of INT_CODES) {
+    const params = code.param ? [1, 2, 3, 5, 8] : [0]
+    let allOk = true
+    let detail = ''
+    for (const p of params) {
+      const vals: number[] = []
+      for (let nn = 0; nn < 256; nn++) vals.push(nn)
+      for (let i = 0; i < bigs.length; i++) vals.push(bigs[(i + p) % bigs.length])
+      const bw = new BitWriter()
+      for (const v of vals) code.encode(bw, v, p)
+      const br = new BitReader(bw.finish())
+      for (const v of vals) if (code.decode(br, p) !== v) { allOk = false; break }
+      if (!allOk) { detail = `param ${p}`; break }
+    }
+    results.push({ group: G, name: `${code.name} round-trips a mixed stream`, pass: allOk, detail: detail || `${params.length} param(s)` })
+  }
+
+  // bestRiceK returns the genuine convex minimum.
+  try {
+    const vals: number[] = []
+    let x = 20260716
+    for (let i = 0; i < 4000; i++) { x = (1103515245 * x + 12345) & 0x7fffffff; vals.push(Math.floor(-Math.log((x / 0x7fffffff) + 1e-9) * 18)) }
+    const { k, bits } = bestRiceK(vals)
+    let brute = Infinity
+    for (let kk = 0; kk <= 30; kk++) { let b = 0; for (const v of vals) b += (v >>> kk) + 1 + kk; brute = Math.min(brute, b) }
+    results.push({ group: G, name: 'bestRiceK = exhaustive optimum', pass: bits === brute, detail: `k=${k}, ${bits} bits` })
+  } catch (e) {
+    results.push({ group: G, name: 'bestRiceK optimum', pass: false, detail: (e as Error).message })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FLAC — the headline invariant is that decode∘encode is the identity on the
+// raw PCM, for every signal shape, stereo mode and subframe type.
+// ---------------------------------------------------------------------------
+
+function pcmEqual(a: Pcm, b: Pcm): boolean {
+  if (a.channels !== b.channels || a.sampleRate !== b.sampleRate || a.bitsPerSample !== b.bitsPerSample) return false
+  for (let c = 0; c < a.channels; c++) {
+    if (a.samples[c].length !== b.samples[c].length) return false
+    for (let i = 0; i < a.samples[c].length; i++) if (a.samples[c][i] !== b.samples[c][i]) return false
+  }
+  return true
+}
+
+function runFlacTests(results: TestCase[]): void {
+  const G = 'FLAC (lossless audio)'
+  const clamp16 = (v: number) => Math.max(-32768, Math.min(32767, Math.round(v)))
+  const mono = (nn: number, gen: (i: number) => number, bps = 16, sr = 8000): Pcm => {
+    const s = new Int32Array(nn)
+    for (let i = 0; i < nn; i++) s[i] = gen(i)
+    return { sampleRate: sr, bitsPerSample: bps, channels: 1, samples: [s] }
+  }
+  let rng = 424242
+  const rnd = () => { rng = (1103515245 * rng + 12345) & 0x7fffffff; return rng / 0x7fffffff }
+
+  const edge: { name: string; pcm: Pcm }[] = [
+    { name: 'silence', pcm: mono(3000, () => 0) },
+    { name: 'constant', pcm: mono(3000, () => 4321) },
+    { name: 'impulse', pcm: mono(2048, (i) => (i === 77 ? 30000 : 0)) },
+    { name: 'ramp', pcm: mono(2048, (i) => clamp16(i * 11 - 8000)) },
+    { name: 'full-scale square', pcm: mono(2048, (i) => (i % 2 ? 32767 : -32768)) },
+    { name: 'single sample', pcm: mono(1, () => 777) },
+    { name: 'tiny (3)', pcm: mono(3, (i) => i * 50) },
+    { name: 'white noise', pcm: mono(4000, () => clamp16((rnd() * 2 - 1) * 30000)) },
+    { name: 'quiet noise', pcm: mono(4000, () => clamp16((rnd() * 2 - 1) * 25)) },
+    { name: '8-bit sine', pcm: mono(3000, (i) => clamp16(100 * Math.sin(i * 0.1)), 8) },
+    { name: 'partial frames', pcm: mono(4096 + 37, (i) => clamp16(12000 * Math.sin(i * 0.05))) },
+  ]
+  // procedural signals from the audio library (short, at their own rate)
+  for (const s of SIGNALS) edge.push({ name: s.id, pcm: s.gen(8000, 0.4) })
+
+  for (const { name, pcm } of edge) {
+    for (const bs of [4096, 1024]) {
+      for (const lpc of [0, 8]) {
+        try {
+          const enc = flacEncode(pcm, { blockSize: bs, maxLpcOrder: lpc })
+          const dec = flacDecode(enc)
+          results.push({
+            group: G,
+            name: `${name} bs=${bs} lpc=${lpc}`,
+            pass: pcmEqual(pcm, dec),
+            detail: `${enc.length}B`,
+          })
+        } catch (e) {
+          results.push({ group: G, name: `${name} bs=${bs} lpc=${lpc}`, pass: false, detail: (e as Error).message })
+        }
+      }
+    }
+  }
+
+  // Compression sanity: a tone must compress well; noise must not.
+  try {
+    const tone = mono(8000, (i) => clamp16(22000 * Math.sin((2 * Math.PI * 440 * i) / 8000)))
+    const noise = mono(8000, () => clamp16((rnd() * 2 - 1) * 30000))
+    const toneR = flacEncode(tone, { maxLpcOrder: 12 }).length / (8000 * 2)
+    const noiseR = flacEncode(noise, { maxLpcOrder: 12 }).length / (8000 * 2)
+    results.push({ group: G, name: 'tone compresses (< 60% of raw)', pass: toneR < 0.6, detail: `${(toneR * 100).toFixed(1)}%` })
+    results.push({ group: G, name: 'noise is near-incompressible (> 90%)', pass: noiseR > 0.9, detail: `${(noiseR * 100).toFixed(1)}%` })
+  } catch (e) {
+    results.push({ group: G, name: 'compression sanity', pass: false, detail: (e as Error).message })
+  }
+
+  // WAV container round-trip (encode → decode → identical PCM).
+  for (const s of SIGNALS.slice(0, 3)) {
+    try {
+      const pcm = s.gen(8000, 0.3)
+      const back = decodeWav(encodeWav(pcm))
+      results.push({ group: G, name: `WAV round-trip: ${s.id}`, pass: pcmEqual(pcm, back), detail: '' })
+    } catch (e) {
+      results.push({ group: G, name: `WAV round-trip: ${s.id}`, pass: false, detail: (e as Error).message })
+    }
+  }
 }
 
 // The lossy pillar gets its own correctness gate. Unlike the lossless codecs it
