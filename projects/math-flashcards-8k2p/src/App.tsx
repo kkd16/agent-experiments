@@ -849,7 +849,7 @@ function App() {
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
-  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen'>('time');
+  const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'targetScore'>('time');
   useEffect(() => {
     if (distractionMode && isSpeedRunActive && !isPaused) {
       const interval = setInterval(() => {
@@ -1126,19 +1126,7 @@ function App() {
     }
   };
 
-  const handleExportCSV = () => {
-    if (history.length === 0) return;
-    const header = "Num1,Operation,Num2,UserAnswer,CorrectAnswer,IsCorrect\n";
-    const rows = history.map(h => `${h.num1},${h.operation},${h.num2},${h.userAnswer},${h.correctAnswer},${h.isCorrect}`).join("\n");
-    const csvContent = "data:text/csv;charset=utf-8," + header + rows;
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "math_flashcards_history.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+
 
   const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1170,6 +1158,21 @@ function App() {
     reader.readAsText(file);
     // Reset input value so same file can be selected again
     e.target.value = '';
+  };
+
+  const handleExportCSV = () => {
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "Num1,Num2,Operation,UserAnswer,CorrectAnswer,IsCorrect\n";
+    fullHistory.forEach(row => {
+      csvContent += `${row.num1},${row.num2},${row.operation},${row.userAnswer},${row.correctAnswer},${row.isCorrect}\n`;
+    });
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `math-flashcards-history-${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleExportJSON = () => {
@@ -1541,6 +1544,11 @@ function App() {
 
       const newStreak = streak + 1; setTodayStreak(ts => ts + 1);
       updateStreak(newStreak);
+
+      if (gameMode === 'targetScore' && newScore >= 1000) {
+        setIsSpeedRunActive(false);
+        setShowSummary(true);
+      }
 
       if (isSpeedRunActive && gameMode === 'timeAttack') {
         setTimeLeft(t => t + 2); // Add 2 seconds for a correct answer in Time Attack
@@ -2189,11 +2197,12 @@ function App() {
                 />
                 Hardcore
               </label>
-              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless' | 'timeAttack' | 'zen')} className="timer-select">
+              <select value={gameMode} onChange={(e) => setGameMode(e.target.value as 'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'targetScore')} className="timer-select">
                 <option value="time">Time Limit</option>
                 <option value="questions">Question Limit</option>
                 <option value="endless">Endless</option>
                 <option value="timeAttack">Time Attack</option>
+                <option value="targetScore">Target Score (1000)</option>
                 <option value="zen">Zen Mode</option>
               </select>
               {(gameMode === 'time' || gameMode === 'timeAttack') ? (
@@ -2252,6 +2261,7 @@ function App() {
 
       <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined}}>
 
+        {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
         <div className="problem" style={{position: 'relative'}}>
           {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
           {answerStatus && (
@@ -2473,11 +2483,12 @@ function App() {
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem'}}>
                 <h3 style={{margin: 0}}>History</h3>
                 <div style={{display: 'flex', gap: '0.5rem'}}>
-                  {history.length > 0 && (
-                    <button onClick={handleExportCSV} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem'}}>Export CSV</button>
-                  )}
+
                   {fullHistory.length > 0 && (
-                    <button onClick={handleExportJSON} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#8e44ad'}}>Export JSON</button>
+                    <>
+                      <button onClick={handleExportJSON} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#8e44ad'}}>Export JSON</button>
+                      <button onClick={handleExportCSV} className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#34495e', marginLeft: '0.5rem'}}>Export CSV</button>
+                    </>
                   )}
                   <label className="submit-button" style={{padding: '0.2rem 0.5rem', fontSize: '0.8rem', backgroundColor: '#27ae60', cursor: 'pointer', marginLeft: '0.5rem'}}>Import JSON<input type="file" accept=".json" onChange={handleImportJSON} style={{display: 'none'}} /></label>
                 </div>
@@ -2509,6 +2520,11 @@ function App() {
               <button onClick={() => setShowSummary(false)} className="submit-button">Close</button>
               <button onClick={() => { setShowSummary(false); setTimeout(() => startSpeedRun(), 0); }} className="speed-run-button" style={{marginLeft: '1rem', backgroundColor: '#e67e22'}}>Quick Restart</button>
               <a href={`https://twitter.com/intent/tweet?text=I scored ${runScores.length > 0 ? runScores[runScores.length - 1].score : 0} on ${difficulty} difficulty in Math Flashcards!`} target="_blank" rel="noopener noreferrer" className="submit-button" style={{marginLeft: '1rem', display: 'inline-block', textDecoration: 'none', backgroundColor: '#1DA1F2', color: 'white'}}>Share to X</a>
+              <button onClick={() => {
+                const recentScore = runScores.length > 0 ? runScores[runScores.length - 1].score : 0;
+                navigator.clipboard.writeText(`Math Flashcards Run! Score: ${recentScore} on ${difficulty} difficulty.`);
+                alert('Copied to clipboard!');
+              }} className="submit-button" style={{marginLeft: '1rem', backgroundColor: '#9b59b6'}}>Share to Clipboard</button>
               <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
             </div>
           </div>
