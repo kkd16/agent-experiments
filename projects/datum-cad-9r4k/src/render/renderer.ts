@@ -6,6 +6,17 @@ import { worldToScreen } from './view'
 
 export type TracePath = { pts: [number, number][]; color: string }
 
+// One point's instantaneous motion, in world coordinates: position plus the
+// first- and second-order kinematic coefficients (velocity / acceleration fields).
+export type MotionArrow = { x: number; y: number; vx: number; vy: number; ax: number; ay: number }
+export type MotionOverlay = {
+  arrows: MotionArrow[]
+  showVelocity: boolean
+  showAccel: boolean
+  tracer: EntityId | null // the traced point, emphasised
+  tracerPos: [number, number] | null
+}
+
 export type RenderState = {
   view: View
   selection: Set<EntityId>
@@ -17,6 +28,7 @@ export type RenderState = {
   highlight: Set<EntityId> // entities to accent (e.g. the geometry of a hovered constraint)
   showConstraints: boolean
   showGrid: boolean
+  motion: MotionOverlay | null
   preview:
     | { kind: 'line' | 'circle'; from: [number, number]; to: [number, number] }
     | { kind: 'arc'; center: [number, number]; from: [number, number]; to: [number, number] }
@@ -44,6 +56,8 @@ const COL = {
   conflict: '#ff5c72',
   highlight: '#8ad4ff',
   splineHandle: '#5a6b7d',
+  velocity: '#57e6c9',
+  accel: '#c792ea',
 }
 
 export function statusColor(s: DofStatus): string {
@@ -73,9 +87,70 @@ export function render(ctx: CanvasRenderingContext2D, sketch: Sketch, st: Render
   drawGeometry(ctx, sketch, st)
   if (st.showConstraints) drawConstraints(ctx, sketch, st)
   drawPoints(ctx, sketch, st)
+  if (st.motion) drawMotion(ctx, v, st.motion)
   if (st.preview) drawPreview(ctx, v, st.preview)
 
   ctx.restore()
+}
+
+// The velocity and acceleration fields of a driven mechanism, drawn as arrows at
+// each moving point. Both fields are auto-scaled independently so the largest arrow
+// of each reads at a fixed on-screen length — the *shape* of the field (relative
+// magnitudes and directions) is what matters, and it stays legible at any zoom or
+// mechanism scale. Screen y is flipped, so the world→screen vector negates dy.
+function drawMotion(ctx: CanvasRenderingContext2D, v: View, m: MotionOverlay) {
+  const MAX_PX = 62 // on-screen length of the single largest arrow in each field
+  let maxV = 0
+  let maxA = 0
+  for (const a of m.arrows) {
+    maxV = Math.max(maxV, Math.hypot(a.vx, a.vy))
+    maxA = Math.max(maxA, Math.hypot(a.ax, a.ay))
+  }
+  const drawField = (pick: (a: MotionArrow) => [number, number], max: number, color: string) => {
+    if (max <= 1e-9) return
+    for (const a of m.arrows) {
+      const [dx, dy] = pick(a)
+      const mag = Math.hypot(dx, dy)
+      if (mag < max * 0.01) continue // hide numerically dead arrows
+      const [sx, sy] = worldToScreen(v, a.x, a.y)
+      const lenPx = (mag / max) * MAX_PX
+      // Unit direction in screen space (y flips).
+      const ux = (dx / mag) * lenPx
+      const uy = -(dy / mag) * lenPx
+      drawArrow(ctx, sx, sy, sx + ux, sy + uy, color)
+    }
+  }
+  if (m.showVelocity) drawField((a) => [a.vx, a.vy], maxV, COL.velocity)
+  if (m.showAccel) drawField((a) => [a.ax, a.ay], maxA, COL.accel)
+
+  if (m.tracerPos) {
+    const [tx, ty] = worldToScreen(v, m.tracerPos[0], m.tracerPos[1])
+    ctx.beginPath()
+    ctx.arc(tx, ty, 7, 0, Math.PI * 2)
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+}
+
+function drawArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string) {
+  const ang = Math.atan2(y1 - y0, x1 - x0)
+  const head = 6
+  ctx.strokeStyle = color
+  ctx.fillStyle = color
+  ctx.lineWidth = 1.8
+  ctx.globalAlpha = 0.92
+  ctx.beginPath()
+  ctx.moveTo(x0, y0)
+  ctx.lineTo(x1, y1)
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.moveTo(x1, y1)
+  ctx.lineTo(x1 - head * Math.cos(ang - 0.4), y1 - head * Math.sin(ang - 0.4))
+  ctx.lineTo(x1 - head * Math.cos(ang + 0.4), y1 - head * Math.sin(ang + 0.4))
+  ctx.closePath()
+  ctx.fill()
+  ctx.globalAlpha = 1
 }
 
 function niceStep(worldPerPx: number): number {

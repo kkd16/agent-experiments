@@ -14,8 +14,10 @@ import { analyzeDof } from './solver/dof'
 import { analyzeConflicts } from './solver/conflicts'
 import { runSelfTests } from './solver/selftest'
 import type { TestResult } from './solver/selftest'
+import { computeKinematics, computeMotionProfile } from './solver/kinematics'
 import { render } from './render/renderer'
-import type { RenderState, TracePath } from './render/renderer'
+import type { RenderState, TracePath, MotionOverlay } from './render/renderer'
+import type { MotionData } from './ui/components'
 import { pickEntity } from './render/picking'
 import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
@@ -38,6 +40,8 @@ export default function App() {
   const toolRef = useRef<ToolId>('select')
   const playingRef = useRef(false)
   const showTraceRef = useRef(true)
+  const showVelocityRef = useRef(false)
+  const showAccelRef = useRef(false)
   const showConstraintsRef = useRef(true)
   const showGridRef = useRef(true)
   const cursorWorldRef = useRef<[number, number]>([0, 0])
@@ -72,6 +76,8 @@ export default function App() {
   const [showConstraints, setShowConstraints] = useState(true)
   const [showGrid, setShowGrid] = useState(true)
   const [showTrace, setShowTrace] = useState(true)
+  const [showVelocity, setShowVelocity] = useState(false)
+  const [showAccel, setShowAccel] = useState(false)
   const [driverValue, setDriverValue] = useState(0)
   const [driver, setDriver] = useState<DriverSpec | null>(null)
   const [valuePrompt, setValuePrompt] = useState<ConstraintOption | null>(null)
@@ -89,6 +95,8 @@ export default function App() {
   useEffect(() => void (selectionRef.current = selection), [selection])
   useEffect(() => void (playingRef.current = playing), [playing])
   useEffect(() => void (showTraceRef.current = showTrace), [showTrace])
+  useEffect(() => void (showVelocityRef.current = showVelocity), [showVelocity])
+  useEffect(() => void (showAccelRef.current = showAccel), [showAccel])
   useEffect(() => void (showConstraintsRef.current = showConstraints), [showConstraints])
   useEffect(() => void (showGridRef.current = showGrid), [showGrid])
 
@@ -362,6 +370,25 @@ export default function App() {
       })
       preview = { kind: 'spline', ctrl, to: cursorWorldRef.current }
     }
+    // Live velocity / acceleration field overlay, computed exactly from the current
+    // (solved) configuration via the constraint Jacobian. Only when a driver exists
+    // and at least one field is shown — otherwise the arrays stay off the render state.
+    let motion: MotionOverlay | null = null
+    const drv = driverRef.current
+    if (drv && (showVelocityRef.current || showAccelRef.current)) {
+      const k = computeKinematics(sketchRef.current, drv.constraint.id)
+      if (k.ok) {
+        const tracer = traceTargetsRef.current[0] ?? null
+        const tp = tracer !== null ? sketchRef.current.point(tracer) : null
+        motion = {
+          arrows: k.points.map((p) => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, ax: p.ax, ay: p.ay })),
+          showVelocity: showVelocityRef.current,
+          showAccel: showAccelRef.current,
+          tracer,
+          tracerPos: tp ? [tp.x, tp.y] : null,
+        }
+      }
+    }
     const st: RenderState = {
       view: viewRef.current,
       selection: new Set(selectionRef.current),
@@ -381,6 +408,7 @@ export default function App() {
       highlight: highlightRef.current,
       showConstraints: showConstraintsRef.current,
       showGrid: showGridRef.current,
+      motion,
       preview,
     }
     render(ctx, sketchRef.current, st, w, h)
@@ -715,6 +743,55 @@ export default function App() {
     () => selection.map((id) => sketchRef.current.get(id)).filter((e): e is NonNullable<typeof e> => !!e),
     [selection, rev],
   )
+
+  // The v(θ)/a(θ) motion profile of the tracer point across one full driver sweep.
+  // Sweeping re-solves the mechanism at ~100 crank positions, so it is recomputed
+  // only when the sketch structure (rev) or the driver changes — never per frame.
+  const motionProfile = useMemo(() => {
+    const d = driver
+    const tracer = traceTargetsRef.current[0]
+    if (!d || tracer === undefined) return null
+    return computeMotionProfile(
+      sketchRef.current,
+      d.constraintId,
+      tracer,
+      { min: d.min, max: d.max },
+      (deg) => (deg * Math.PI) / 180,
+      (s) => void solve(s, { maxIterations: 120 }),
+    )
+  }, [rev, driver])
+
+  // Live kinematics readout for the InfoPanel's Kinematics section. Recomputes as the
+  // driver scrubs / animates (driverValue) so the tracer's speed and acceleration
+  // track the motion; the expensive profile above is reused from its own memo.
+  const motionData = useMemo<MotionData | null>(() => {
+    const d = driver
+    if (!d) return null
+    const k = computeKinematics(sketchRef.current, d.constraintId)
+    if (!k.ok) return null
+    const tracer = traceTargetsRef.current[0]
+    const pm = tracer !== undefined ? k.points.find((p) => p.id === tracer) : undefined
+    const speedCoeff = pm ? Math.hypot(pm.vx, pm.vy) : 0
+    const accelCoeff = pm ? Math.hypot(pm.ax, pm.ay) : 0
+    const span = d.max - d.min || 1
+    const perSec = span / d.period // driver units (deg or length) per second
+    const omega = k.unit === 'rad' ? (perSec * Math.PI) / 180 : perSec
+    return {
+      unit: k.unit,
+      tracerLabel: tracer !== undefined ? String(tracer) : '—',
+      speedCoeff,
+      accelCoeff,
+      omega,
+      driveGain: k.driveGain,
+      nearDeadPoint: k.nearDeadPoint,
+      currentFrac: (driverValue - d.min) / span,
+      showVelocity,
+      showAccel,
+      onToggleVelocity: () => setShowVelocity((v) => !v),
+      onToggleAccel: () => setShowAccel((v) => !v),
+      profile: motionProfile,
+    }
+  }, [rev, driver, driverValue, showVelocity, showAccel, motionProfile])
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // --- constraint actions --------------------------------------------------
@@ -956,6 +1033,7 @@ export default function App() {
           selected={selectedEntities}
           constraints={constraintList}
           redundant={conflicts.redundant}
+          motion={motionData}
           onRemoveConstraint={removeConstraint}
           onHoverConstraint={setHoverConstraint}
         />
