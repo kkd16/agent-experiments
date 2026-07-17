@@ -10,6 +10,8 @@ type Props = {
   onReset: () => void
   onSeedJulia: () => void
   onExport: () => void
+  onShare: () => void
+  shareLabel: string
   onSetMode: (mode: 'mandelbrot' | 'julia') => void
 }
 
@@ -29,6 +31,8 @@ export default function ControlPanel({
   onReset,
   onSeedJulia,
   onExport,
+  onShare,
+  shareLabel,
   onSetMode,
 }: Props) {
   const effectiveIter = params.autoIter ? recommendedIter(span) : params.maxIter
@@ -116,7 +120,7 @@ export default function ControlPanel({
           <input
             type="range"
             min={60}
-            max={6000}
+            max={30000}
             step={20}
             value={params.maxIter}
             disabled={params.autoIter}
@@ -135,6 +139,28 @@ export default function ControlPanel({
         </Row>
       </div>
 
+      <div className="panel-section">
+        <div className="section-title">Distance estimation</div>
+        <Row label="Outline filaments">
+          <input
+            type="checkbox"
+            checked={params.de}
+            onChange={(e) => setParam('de', e.target.checked)}
+          />
+        </Row>
+        <Row label={`Glow ${params.deStrength.toFixed(1)}`}>
+          <input
+            type="range"
+            min={0.5}
+            max={12}
+            step={0.5}
+            value={params.deStrength}
+            disabled={!params.de}
+            onChange={(e) => setParam('deStrength', Number(e.target.value))}
+          />
+        </Row>
+      </div>
+
       <div className="panel-section actions">
         {params.mode === 'mandelbrot' && (
           <button className="btn" onClick={onSeedJulia}>
@@ -143,6 +169,9 @@ export default function ControlPanel({
         )}
         <button className="btn" onClick={onExport}>
           Save PNG
+        </button>
+        <button className="btn" onClick={onShare}>
+          {shareLabel}
         </button>
         <button className="btn subtle" onClick={onReset}>
           Reset view

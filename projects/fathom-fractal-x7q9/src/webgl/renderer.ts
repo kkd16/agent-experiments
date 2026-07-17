@@ -1,8 +1,8 @@
 import { buildPaletteTexture, getPalette } from './palettes'
-import { FRAG_SRC, VERT_SRC } from './shaders'
+import { FRAG_PERTURB_SRC, FRAG_SRC, VERT_SRC } from './shaders'
 import type { FractalMode } from '../fractal/types'
 
-// One immutable snapshot of everything the shader needs for a single frame.
+// One immutable snapshot of everything the shaders need for a single frame.
 export type FrameState = {
   centerX: number
   centerY: number
@@ -15,10 +15,13 @@ export type FrameState = {
   colorOffset: number
   aa: number
   paletteId: string
+  de: boolean
+  deStrength: number
+  perturbation: boolean // use the reference-orbit deep engine
+  orbitLen: number // highest valid reference index (perturbation mode)
 }
 
 // Split a JS double into the (hi, lo) float32 pair the df64 shader expects.
-// hi + lo reproduces the double to ~48 bits, which is what caps the zoom depth.
 function splitDouble(x: number): [number, number] {
   const hi = Math.fround(x)
   const lo = Math.fround(x - hi)
@@ -56,30 +59,37 @@ function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string)
   return program
 }
 
-const UNIFORM_NAMES = [
-  'u_resolution',
-  'u_cx',
-  'u_cy',
-  'u_scale',
-  'u_maxIter',
-  'u_mode',
-  'u_jx',
-  'u_jy',
-  'u_palette',
-  'u_colorScale',
-  'u_colorOffset',
-  'u_aa',
-] as const
+// Query every active uniform of a program into a name -> location map.
+function uniformMap(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+): Record<string, WebGLUniformLocation | null> {
+  const map: Record<string, WebGLUniformLocation | null> = {}
+  const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number
+  for (let i = 0; i < count; i++) {
+    const info = gl.getActiveUniform(program, i)
+    if (!info) continue
+    const name = info.name.replace(/\[0\]$/, '')
+    map[name] = gl.getUniformLocation(program, name)
+  }
+  return map
+}
 
-type UniformName = (typeof UNIFORM_NAMES)[number]
+const ORBIT_TEX_WIDTH = 2048 // reference orbit packed as a 2D RG32F texture
 
 export class FractalRenderer {
   private gl: WebGL2RenderingContext
-  private program: WebGLProgram
-  private uniforms: Record<UniformName, WebGLUniformLocation | null>
+  private direct: WebGLProgram
+  private directU: Record<string, WebGLUniformLocation | null>
+  private perturb: WebGLProgram | null = null
+  private perturbU: Record<string, WebGLUniformLocation | null> = {}
   private paletteTex: WebGLTexture
+  private orbitTex: WebGLTexture | null = null
   private vao: WebGLVertexArrayObject
   private paletteId = ''
+
+  /** Whether the deep perturbation engine compiled successfully on this GPU. */
+  readonly perturbationAvailable: boolean
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', {
@@ -92,13 +102,24 @@ export class FractalRenderer {
     if (!gl) throw new Error('WebGL2 is not available in this browser.')
     this.gl = gl
 
-    this.program = createProgram(gl, VERT_SRC, FRAG_SRC)
-    gl.useProgram(this.program)
+    this.direct = createProgram(gl, VERT_SRC, FRAG_SRC)
+    this.directU = uniformMap(gl, this.direct)
 
-    this.uniforms = {} as Record<UniformName, WebGLUniformLocation | null>
-    for (const name of UNIFORM_NAMES) {
-      this.uniforms[name] = gl.getUniformLocation(this.program, name)
+    // The deep engine is a best-effort upgrade: if it fails to compile on this
+    // driver (or float textures aren't sampleable), we simply fall back to the
+    // df64 engine and clamp zoom to its precision floor.
+    let perturbOk: boolean
+    try {
+      this.perturb = createProgram(gl, VERT_SRC, FRAG_PERTURB_SRC)
+      this.perturbU = uniformMap(gl, this.perturb)
+      this.orbitTex = gl.createTexture()
+      perturbOk = this.orbitTex !== null
+    } catch {
+      this.perturb = null
+      this.orbitTex = null
+      perturbOk = false
     }
+    this.perturbationAvailable = perturbOk
 
     const vao = gl.createVertexArray()
     if (!vao) throw new Error('Failed to allocate vertex array')
@@ -124,6 +145,27 @@ export class FractalRenderer {
     this.paletteId = id
   }
 
+  /** Upload a fresh reference orbit (Z_n) for the perturbation engine. */
+  setReferenceOrbit(xs: Float32Array, ys: Float32Array, length: number) {
+    const gl = this.gl
+    if (!this.orbitTex) return
+    const count = length + 1
+    const w = ORBIT_TEX_WIDTH
+    const h = Math.max(1, Math.ceil(count / w))
+    const data = new Float32Array(w * h * 2)
+    for (let i = 0; i < count; i++) {
+      data[i * 2] = xs[i]
+      data[i * 2 + 1] = ys[i]
+    }
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.orbitTex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, w, h, 0, gl.RG, gl.FLOAT, data)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  }
+
   resize(width: number, height: number) {
     this.gl.viewport(0, 0, width, height)
   }
@@ -131,35 +173,60 @@ export class FractalRenderer {
   render(state: FrameState) {
     const gl = this.gl
     const canvas = gl.canvas as HTMLCanvasElement
-    const u = this.uniforms
-
     this.setPalette(state.paletteId)
 
-    gl.useProgram(this.program)
+    const usePerturb = state.perturbation && this.perturb !== null
     gl.bindVertexArray(this.vao)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.paletteTex)
 
-    gl.uniform2f(u.u_resolution, canvas.width, canvas.height)
-    gl.uniform2fv(u.u_cx, splitDouble(state.centerX))
-    gl.uniform2fv(u.u_cy, splitDouble(state.centerY))
-    gl.uniform2fv(u.u_scale, splitDouble(state.scale))
-    gl.uniform1i(u.u_maxIter, Math.max(1, Math.round(state.maxIter)))
-    gl.uniform1i(u.u_mode, state.mode === 'julia' ? 1 : 0)
-    gl.uniform2fv(u.u_jx, splitDouble(state.juliaX))
-    gl.uniform2fv(u.u_jy, splitDouble(state.juliaY))
-    gl.uniform1i(u.u_palette, 0)
-    gl.uniform1f(u.u_colorScale, state.colorScale)
-    gl.uniform1f(u.u_colorOffset, state.colorOffset)
-    gl.uniform1i(u.u_aa, Math.max(1, Math.min(3, Math.round(state.aa))))
+    const aa = Math.max(1, Math.min(3, Math.round(state.aa)))
+    const maxIter = Math.max(1, Math.round(state.maxIter))
+
+    if (usePerturb) {
+      const u = this.perturbU
+      gl.useProgram(this.perturb)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, this.orbitTex)
+      gl.uniform2f(u.u_resolution, canvas.width, canvas.height)
+      gl.uniform1f(u.u_pixelScale, state.scale)
+      gl.uniform1i(u.u_maxIter, maxIter)
+      gl.uniform1i(u.u_orbitLen, Math.max(1, state.orbitLen))
+      gl.uniform1i(u.u_orbit, 1)
+      gl.uniform1i(u.u_aa, aa)
+      gl.uniform1i(u.u_palette, 0)
+      gl.uniform1f(u.u_colorScale, state.colorScale)
+      gl.uniform1f(u.u_colorOffset, state.colorOffset)
+      gl.uniform1i(u.u_de, state.de ? 1 : 0)
+      gl.uniform1f(u.u_deStrength, state.deStrength)
+    } else {
+      const u = this.directU
+      gl.useProgram(this.direct)
+      gl.uniform2f(u.u_resolution, canvas.width, canvas.height)
+      gl.uniform2fv(u.u_cx, splitDouble(state.centerX))
+      gl.uniform2fv(u.u_cy, splitDouble(state.centerY))
+      gl.uniform2fv(u.u_scale, splitDouble(state.scale))
+      gl.uniform1i(u.u_maxIter, maxIter)
+      gl.uniform1i(u.u_mode, state.mode === 'julia' ? 1 : 0)
+      gl.uniform2fv(u.u_jx, splitDouble(state.juliaX))
+      gl.uniform2fv(u.u_jy, splitDouble(state.juliaY))
+      gl.uniform1i(u.u_aa, aa)
+      gl.uniform1i(u.u_palette, 0)
+      gl.uniform1f(u.u_colorScale, state.colorScale)
+      gl.uniform1f(u.u_colorOffset, state.colorOffset)
+      gl.uniform1i(u.u_de, state.de ? 1 : 0)
+      gl.uniform1f(u.u_deStrength, state.deStrength)
+    }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
   dispose() {
     const gl = this.gl
-    gl.deleteProgram(this.program)
+    gl.deleteProgram(this.direct)
+    if (this.perturb) gl.deleteProgram(this.perturb)
     gl.deleteTexture(this.paletteTex)
+    if (this.orbitTex) gl.deleteTexture(this.orbitTex)
     gl.deleteVertexArray(this.vao)
     gl.getExtension('WEBGL_lose_context')?.loseContext()
   }
