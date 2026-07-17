@@ -78,9 +78,14 @@ export default function About() {
             spectrogram, and a pitch <strong>tuner</strong> that names the note you're hearing.
           </li>
           <li>
-            <strong>Wavelet</strong> — the continuous wavelet transform dilates a little wave (the
-            Morlet) to fit each frequency: short and sharp up high, long and selective down low.
-            Its adaptive resolution is shown side-by-side with the fixed-window STFT.
+            <strong>Wavelet</strong> — three tabs. A continuous-wavelet <em>scalogram</em> dilates a
+            little wave (the Morlet) to fit each frequency — short and sharp up high, long and
+            selective down low — beside the fixed-window STFT. A <em>multiresolution</em> tab runs
+            the discrete wavelet transform through orthonormal filter banks{' '}
+            <strong>derived from scratch</strong> (Daubechies &amp; Symlet, spectrally factored, no
+            tables), peeling a signal into octave bands that sum back exactly. A <em>denoise</em> tab
+            shrinks the wavelet coefficients (VisuShrink / SureShrink / BayesShrink) to pull a clean
+            signal out of noise.
           </li>
           <li>
             <strong>Image (2-D)</strong> — the transform is separable, so an image FFT is just
@@ -420,8 +425,14 @@ export default function About() {
           (⟨A x, y⟩ = ⟨x, Aᵀ y⟩ to 1e-9), CGLS's residual is confirmed to fall monotonically, SART is
           verified to converge faster per sweep than SIRT, the stepped solver is checked to match the
           batch solver bit-for-bit, and — the headline — on a <em>sparse</em> 20-angle scan CGLS is
-          confirmed to beat filtered back-projection outright. Open the console to see all fifty-nine
-          pass.
+          confirmed to beat filtered back-projection outright. The <strong>discrete wavelet</strong>{' '}
+          transform is held to the strictest bar in the lab: every derived Daubechies/Symlet filter
+          is confirmed to sum to √2 and be double-shift orthonormal to 1e-9, db2 is checked against
+          its published coefficients, multi-level analysis→synthesis is verified an{' '}
+          <em>exact identity</em> for every wavelet (with Parseval energy preserved), db2 is confirmed
+          to annihilate a linear ramp (its two vanishing moments), the multiresolution bands are
+          verified to sum back to the signal, and wavelet shrinkage is confirmed to raise SNR on the
+          Donoho benchmark for all three threshold rules. Open the console to see all 115 pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

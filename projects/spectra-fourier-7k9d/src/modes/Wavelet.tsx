@@ -1,78 +1,124 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CanvasCard } from '../components/CanvasCard'
-import { Panel, Field, Slider, Select, Readout, Button } from '../components/Controls'
+import { Panel, Field, Slider, Select, Segmented, Toggle, Readout, Button } from '../components/Controls'
 import { useDprCanvas, prepareContext } from '../hooks/useDprCanvas'
+import type { CanvasSize } from '../hooks/useDprCanvas'
 import { COLORMAPS, colormapLUT } from '../lib/colormap'
 import type { ColormapName } from '../lib/colormap'
 import { cwtMorlet, reduceTime } from '../lib/wavelet'
 import { stft } from '../lib/stft'
+import {
+  WAVELETS,
+  getBank,
+  maxLevel,
+  mra,
+  denoise,
+  magnitudeResponse,
+  snrDb,
+  type ShrinkRule,
+  type ThresholdMode,
+} from '../lib/dwt'
+import {
+  DWT_SIGNALS,
+  dwtSignal,
+  mraDemoSignal,
+  addNoise,
+  type DwtSignalName,
+} from '../lib/dwtSignals'
 import { readHashParams, shareLink, readNum, readStr } from '../lib/urlState'
 
 const FS = 500
 const LEN = 1000
 const DURATION = LEN / FS // 2 s
+const DWT_N = 1024 // power of two for the critically-sampled transform
 
-type WSignal = 'crossing' | 'transient' | 'steps' | 'chirp' | 'twoTone'
+// Palette shared with the app's brand.
+const TEAL = '#5eead4'
+const BLUE = '#38bdf8'
+const VIOLET = '#a78bfa'
+const ROSE = '#fb7185'
+const AMBER = '#fbbf24'
 
-const SIGNALS: { id: WSignal; label: string }[] = [
-  { id: 'crossing', label: 'Crossing chirps' },
-  { id: 'transient', label: 'Tone + click' },
-  { id: 'steps', label: 'Frequency steps' },
-  { id: 'chirp', label: 'Chirp (sweep)' },
-  { id: 'twoTone', label: 'Two tones' },
+type Tab = 'scalogram' | 'mra' | 'denoise'
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'scalogram', label: 'Scalogram (CWT)' },
+  { id: 'mra', label: 'Multiresolution' },
+  { id: 'denoise', label: 'Denoise' },
 ]
 
-// Signals chosen to expose the wavelet's adaptive time/frequency resolution.
-function waveletSignal(name: WSignal, n: number, fs: number, base: number): Float64Array {
-  const out = new Float64Array(n)
-  const dur = n / fs
-  for (let i = 0; i < n; i++) {
-    const t = i / fs
-    let v = 0
-    switch (name) {
-      case 'chirp': {
-        const f1 = base * 6
-        const rate = (f1 - base) / dur
-        v = Math.sin(2 * Math.PI * (base * t + 0.5 * rate * t * t))
-        break
-      }
-      case 'crossing': {
-        const up = base + ((base * 5) / dur) * t
-        const down = base * 6 - ((base * 5) / dur) * t
-        v =
-          0.7 * Math.sin(2 * Math.PI * up * t) +
-          0.7 * Math.sin(2 * Math.PI * down * t)
-        break
-      }
-      case 'transient': {
-        // A steady mid tone plus a sharp broadband click at the midpoint.
-        v = 0.8 * Math.sin(2 * Math.PI * base * 3 * t)
-        const tc = dur * 0.5
-        const env = Math.exp(-((t - tc) ** 2) / (2 * 0.004 ** 2))
-        v += 1.4 * env * Math.sin(2 * Math.PI * base * 14 * t)
-        break
-      }
-      case 'steps': {
-        // Three sequential tones (an arpeggio) — frequency changes in time.
-        const seg = Math.floor((t / dur) * 3)
-        const f = base * [1, 2, 4][Math.min(2, seg)]
-        v = Math.sin(2 * Math.PI * f * t)
-        break
-      }
-      case 'twoTone':
-        v = 0.6 * Math.sin(2 * Math.PI * base * t) + 0.5 * Math.sin(2 * Math.PI * base * 3 * t)
-        break
-    }
-    out[i] = v
-  }
-  return out
+// ---------------------------------------------------------------------------
+// Small canvas plotters
+// ---------------------------------------------------------------------------
+
+interface Series {
+  data: ArrayLike<number>
+  color: string
+  width?: number
+  alpha?: number
 }
 
-// Render a [rows][cols] matrix (row 0 = lowest frequency) as a colormapped image,
-// flipping so low frequency sits at the bottom. Values are dB-normalized.
+function drawLines(
+  canvas: HTMLCanvasElement | null,
+  size: CanvasSize,
+  series: Series[],
+  opts?: { symmetric?: boolean; lo?: number; hi?: number; pad?: number },
+): CanvasRenderingContext2D | null {
+  const ctx = prepareContext(canvas, size)
+  if (!ctx) return null
+  const { width: w, height: h } = size
+  ctx.fillStyle = '#0a0e1a'
+  ctx.fillRect(0, 0, w, h)
+  let lo = opts?.lo ?? Infinity
+  let hi = opts?.hi ?? -Infinity
+  if (opts?.lo === undefined || opts?.hi === undefined) {
+    for (const s of series) for (let i = 0; i < s.data.length; i++) {
+      const v = s.data[i]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+  }
+  if (opts?.symmetric) {
+    const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1
+    lo = -m
+    hi = m
+  }
+  if (!isFinite(lo) || !isFinite(hi) || lo === hi) {
+    lo = -1
+    hi = 1
+  }
+  const pad = opts?.pad ?? 8
+  const xAt = (i: number, n: number) => pad + (n <= 1 ? 0 : (i / (n - 1)) * (w - 2 * pad))
+  const yAt = (v: number) => pad + (1 - (v - lo) / (hi - lo)) * (h - 2 * pad)
+  if (lo < 0 && hi > 0) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(pad, yAt(0))
+    ctx.lineTo(w - pad, yAt(0))
+    ctx.stroke()
+  }
+  for (const s of series) {
+    const n = s.data.length
+    ctx.strokeStyle = s.color
+    ctx.lineWidth = s.width ?? 1.5
+    ctx.globalAlpha = s.alpha ?? 1
+    ctx.beginPath()
+    for (let i = 0; i < n; i++) {
+      const px = xAt(i, n)
+      const py = yAt(s.data[i])
+      if (i) ctx.lineTo(px, py)
+      else ctx.moveTo(px, py)
+    }
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+  return ctx
+}
+
+// Render a [rows][cols] matrix (row 0 = lowest frequency) as a colormapped image.
 function drawMatrix(
   canvas: HTMLCanvasElement | null,
-  size: { width: number; height: number; dpr: number },
+  size: CanvasSize,
   rows: Float64Array[],
   cols: number,
   maxVal: number,
@@ -91,7 +137,7 @@ function drawMatrix(
   const range = -floorDb
   for (let r = 0; r < nRows; r++) {
     const row = rows[r]
-    const y = nRows - 1 - r // low freq at bottom
+    const y = nRows - 1 - r
     for (let c = 0; c < cols; c++) {
       const db = 10 * Math.log10(row[c] / maxVal + 1e-12)
       let tt = (db - floorDb) / range
@@ -111,7 +157,65 @@ function drawMatrix(
   return ctx
 }
 
-export default function Wavelet() {
+// ---------------------------------------------------------------------------
+// Signals for the CWT scalogram tab (unchanged behaviour)
+// ---------------------------------------------------------------------------
+
+type WSignal = 'crossing' | 'transient' | 'steps' | 'chirp' | 'twoTone'
+const SIGNALS: { id: WSignal; label: string }[] = [
+  { id: 'crossing', label: 'Crossing chirps' },
+  { id: 'transient', label: 'Tone + click' },
+  { id: 'steps', label: 'Frequency steps' },
+  { id: 'chirp', label: 'Chirp (sweep)' },
+  { id: 'twoTone', label: 'Two tones' },
+]
+
+function waveletSignal(name: WSignal, n: number, fs: number, base: number): Float64Array {
+  const out = new Float64Array(n)
+  const dur = n / fs
+  for (let i = 0; i < n; i++) {
+    const t = i / fs
+    let v = 0
+    switch (name) {
+      case 'chirp': {
+        const f1 = base * 6
+        const rate = (f1 - base) / dur
+        v = Math.sin(2 * Math.PI * (base * t + 0.5 * rate * t * t))
+        break
+      }
+      case 'crossing': {
+        const up = base + ((base * 5) / dur) * t
+        const down = base * 6 - ((base * 5) / dur) * t
+        v = 0.7 * Math.sin(2 * Math.PI * up * t) + 0.7 * Math.sin(2 * Math.PI * down * t)
+        break
+      }
+      case 'transient': {
+        v = 0.8 * Math.sin(2 * Math.PI * base * 3 * t)
+        const tc = dur * 0.5
+        const env = Math.exp(-((t - tc) ** 2) / (2 * 0.004 ** 2))
+        v += 1.4 * env * Math.sin(2 * Math.PI * base * 14 * t)
+        break
+      }
+      case 'steps': {
+        const seg = Math.floor((t / dur) * 3)
+        const f = base * [1, 2, 4][Math.min(2, seg)]
+        v = Math.sin(2 * Math.PI * f * t)
+        break
+      }
+      case 'twoTone':
+        v = 0.6 * Math.sin(2 * Math.PI * base * t) + 0.5 * Math.sin(2 * Math.PI * base * 3 * t)
+        break
+    }
+    out[i] = v
+  }
+  return out
+}
+
+// ===========================================================================
+// Tab 1 — CWT scalogram vs STFT
+// ===========================================================================
+
+function ScalogramTab() {
   const sp = useMemo(() => readHashParams(), [])
   const [signal, setSignal] = useState<WSignal>(() =>
     readStr<WSignal>(sp, 'sig', 'crossing', SIGNALS.map((s) => s.id)),
@@ -129,7 +233,6 @@ export default function Wavelet() {
 
   const raw = useMemo(() => waveletSignal(signal, LEN, FS, base), [signal, base])
 
-  // Continuous wavelet transform → time-reduced scalogram.
   const scalogram = useMemo(() => {
     const res = cwtMorlet(raw, { fs: FS, omega0, scalesPerOctave: 14 })
     const reduced = reduceTime(res, 520)
@@ -138,10 +241,8 @@ export default function Wavelet() {
     return { ...reduced, max, freqs: res.freqs }
   }, [raw, omega0])
 
-  // A fixed-window STFT of the same signal, for contrast.
   const spectro = useMemo(() => {
     const res = stft(raw, { fftSize: 128, hop: 16, window: 'hann' })
-    // Convert dB frames (rows are frames→columns; each frame length = bins).
     const bins = res.bins
     const cols = res.frames.length
     const rows: Float64Array[] = []
@@ -149,8 +250,6 @@ export default function Wavelet() {
     for (let b = 0; b < bins; b++) {
       const row = new Float64Array(cols)
       for (let c = 0; c < cols; c++) {
-        // frames[c][b] holds dB; convert back to power for the shared drawMatrix
-        // (which re-logs it against the matrix maximum).
         const p = Math.pow(10, res.frames[c][b] / 10)
         row[c] = p
         if (p > max) max = p
@@ -160,21 +259,11 @@ export default function Wavelet() {
     return { rows, cols, max, bins }
   }, [raw])
 
-  // ---- draw scalogram ----
   useEffect(() => {
     const lut = colormapLUT(cmap)
-    const ctx = drawMatrix(
-      cwtRef.current,
-      cwtSize,
-      scalogram.cols,
-      scalogram.columns,
-      scalogram.max,
-      floorDb,
-      lut,
-    )
+    const ctx = drawMatrix(cwtRef.current, cwtSize, scalogram.cols, scalogram.columns, scalogram.max, floorDb, lut)
     if (!ctx) return
     const { width: w, height: h } = cwtSize
-    // Frequency ticks (log axis; freqs[0] = lowest, drawn at the bottom).
     const freqs = scalogram.freqs
     const nRows = freqs.length
     ctx.font = '11px JetBrains Mono, ui-monospace, monospace'
@@ -198,20 +287,13 @@ export default function Wavelet() {
     }
   }, [scalogram, cwtSize, cwtRef, cmap, floorDb])
 
-  // ---- draw STFT comparison ----
   useEffect(() => {
     const lut = colormapLUT(cmap)
     drawMatrix(stftRef.current, stftSize, spectro.rows, spectro.cols, spectro.max, floorDb, lut)
   }, [spectro, stftSize, stftRef, cmap, floorDb])
 
   const onShare = () => {
-    shareLink('wavelet', {
-      sig: signal,
-      f: base,
-      w0: omega0,
-      cm: cmap,
-      fl: floorDb,
-    }).then((ok) => {
+    shareLink('wavelet', { tab: 'scalogram', sig: signal, f: base, w0: omega0, cm: cmap, fl: floorDb }).then((ok) => {
       if (ok) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1400)
@@ -230,14 +312,13 @@ export default function Wavelet() {
             <Slider min={6} max={30} step={1} value={base} onChange={(v) => setBase(Math.round(v))} />
           </Field>
         </Panel>
-
         <Panel title="Wavelet">
           <Field label="Morlet width ω₀" value={omega0.toFixed(1)}>
             <Slider min={4} max={12} step={0.5} value={omega0} onChange={setOmega0} />
           </Field>
           <p className="hint">
-            Low ω₀ favours <em>time</em> resolution (sharp events); high ω₀ favours{' '}
-            <em>frequency</em> resolution (pure tones).
+            Low ω₀ favours <em>time</em> resolution (sharp events); high ω₀ favours <em>frequency</em>{' '}
+            resolution (pure tones).
           </p>
           <Readout
             items={[
@@ -247,7 +328,6 @@ export default function Wavelet() {
             ]}
           />
         </Panel>
-
         <Panel title="Display">
           <Field label="Colormap">
             <Select value={cmap} options={COLORMAPS} onChange={setCmap} />
@@ -262,23 +342,411 @@ export default function Wavelet() {
           </div>
         </Panel>
       </div>
-
       <div className="mode-main">
         <p className="mode-intro">
-          The STFT analyses every frequency with the <strong>same</strong> window, so it must trade
-          time sharpness for frequency sharpness once and for all. The <strong>wavelet</strong>{' '}
+          The STFT analyses every frequency with the <strong>same</strong> window, so it trades time
+          sharpness for frequency sharpness once and for all. The <strong>continuous wavelet</strong>{' '}
           transform instead stretches a little wave — the <em>Morlet</em> — to fit each frequency:
-          short and punchy up high, long and selective down low. Compare the two views of the same
-          signal below. Try <em>Tone + click</em>: the wavelet pins the click to an instant while
-          still resolving the tone.
+          short and punchy up high, long and selective down low. Try <em>Tone + click</em>: the
+          wavelet pins the click to an instant while still resolving the tone.
         </p>
-        <CanvasCard title="Wavelet scalogram" note={`Morlet CWT · log-frequency`} aspect={2.2}>
+        <CanvasCard title="Wavelet scalogram" note="Morlet CWT · log-frequency" aspect={2.2}>
           <canvas ref={cwtRef} />
         </CanvasCard>
         <CanvasCard title="STFT spectrogram" note="128-pt fixed window · for contrast" aspect={2.8}>
           <canvas ref={stftRef} />
         </CanvasCard>
       </div>
+    </div>
+  )
+}
+
+// ===========================================================================
+// Tab 2 — Multiresolution analysis (DWT)
+// ===========================================================================
+
+function MraTab() {
+  const sp = useMemo(() => readHashParams(), [])
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'db4', WAVELETS.map((w) => w.id)))
+  const [levels, setLevels] = useState(() => readNum(sp, 'lv', 5))
+  const [copied, setCopied] = useState(false)
+
+  const { ref: sigRef, size: sigSize } = useDprCanvas()
+  const { ref: bandsRef, size: bandsSize } = useDprCanvas()
+  const { ref: respRef, size: respSize } = useDprCanvas()
+
+  const bank = useMemo(() => getBank(wavelet), [wavelet])
+  const signal = useMemo(() => mraDemoSignal(DWT_N), [])
+  const maxLv = useMemo(() => maxLevel(DWT_N, bank), [bank])
+  const lv = Math.min(levels, maxLv)
+
+  const decomp = useMemo(() => mra(signal, bank, lv), [signal, bank, lv])
+
+  // Reconstruction error + per-band energy.
+  const stats = useMemo(() => {
+    let err = 0
+    const N = signal.length
+    for (let i = 0; i < N; i++) {
+      let s = decomp.approx[i]
+      for (const d of decomp.details) s += d[i]
+      err = Math.max(err, Math.abs(s - signal[i]))
+    }
+    const energyOf = (a: Float64Array) => {
+      let e = 0
+      for (let i = 0; i < a.length; i++) e += a[i] * a[i]
+      return e
+    }
+    let total = energyOf(decomp.approx)
+    for (const d of decomp.details) total += energyOf(d)
+    const bandEnergy = [energyOf(decomp.approx) / total, ...decomp.details.map((d) => energyOf(d) / total)]
+    return { err, bandEnergy }
+  }, [decomp, signal])
+
+  // ---- draw original ----
+  useEffect(() => {
+    drawLines(sigRef.current, sigSize, [{ data: signal, color: TEAL, width: 1.2 }], { symmetric: true })
+  }, [signal, sigSize, sigRef])
+
+  // ---- draw stacked bands ----
+  useEffect(() => {
+    const ctx = prepareContext(bandsRef.current, bandsSize)
+    if (!ctx) return
+    const { width: w, height: h } = bandsSize
+    ctx.fillStyle = '#0a0e1a'
+    ctx.fillRect(0, 0, w, h)
+    const bands: { data: Float64Array; label: string; color: string }[] = [
+      { data: decomp.approx, label: `A${lv} · approximation`, color: BLUE },
+      ...decomp.details
+        .map((d, i) => ({ data: d, label: `D${i + 1} · detail`, color: i % 2 ? VIOLET : TEAL }))
+        .reverse(),
+    ]
+    const laneH = h / bands.length
+    const N = signal.length
+    ctx.font = '10px JetBrains Mono, ui-monospace, monospace'
+    bands.forEach((band, li) => {
+      const y0 = li * laneH
+      // local symmetric scale
+      let m = 1e-9
+      for (let i = 0; i < N; i++) m = Math.max(m, Math.abs(band.data[i]))
+      const mid = y0 + laneH / 2
+      // lane separator + baseline
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, y0)
+      ctx.lineTo(w, y0)
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'
+      ctx.beginPath()
+      ctx.moveTo(0, mid)
+      ctx.lineTo(w, mid)
+      ctx.stroke()
+      // trace
+      ctx.strokeStyle = band.color
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      for (let i = 0; i < N; i++) {
+        const px = (i / (N - 1)) * w
+        const py = mid - (band.data[i] / m) * (laneH * 0.42)
+        if (i) ctx.lineTo(px, py)
+        else ctx.moveTo(px, py)
+      }
+      ctx.stroke()
+      // label + energy
+      const eng = stats.bandEnergy[li === 0 ? 0 : lv - (li - 1)]
+      ctx.fillStyle = 'rgba(7,9,18,0.6)'
+      ctx.fillRect(4, y0 + 3, 150, 14)
+      ctx.fillStyle = band.color
+      ctx.textAlign = 'left'
+      ctx.fillText(`${band.label}   ${(eng * 100).toFixed(1)}% energy`, 8, y0 + 13)
+    })
+  }, [decomp, bandsSize, bandsRef, signal, lv, stats])
+
+  // ---- draw filter frequency responses ----
+  useEffect(() => {
+    const ctx = prepareContext(respRef.current, respSize)
+    if (!ctx) return
+    const { width: w, height: h } = respSize
+    ctx.fillStyle = '#0a0e1a'
+    ctx.fillRect(0, 0, w, h)
+    const M = 256
+    const loR = magnitudeResponse(bank.lo, M)
+    const hiR = magnitudeResponse(bank.hi, M)
+    const pad = 6
+    const xAt = (i: number) => pad + (i / M) * (w - 2 * pad)
+    const yAt = (v: number) => h - pad - (v / Math.SQRT2) * (h - 2 * pad)
+    // grid at |H|=1
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+    ctx.beginPath()
+    ctx.moveTo(pad, yAt(1))
+    ctx.lineTo(w - pad, yAt(1))
+    ctx.stroke()
+    const trace = (r: Float64Array, color: string) => {
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1.6
+      ctx.beginPath()
+      for (let i = 0; i <= M; i++) {
+        const px = xAt(i)
+        const py = yAt(r[i])
+        if (i) ctx.lineTo(px, py)
+        else ctx.moveTo(px, py)
+      }
+      ctx.stroke()
+    }
+    trace(loR, BLUE)
+    trace(hiR, ROSE)
+    ctx.font = '10px JetBrains Mono, ui-monospace, monospace'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = BLUE
+    ctx.fillText('H₀ scaling (low-pass)', 8, 14)
+    ctx.fillStyle = ROSE
+    ctx.fillText('H₁ wavelet (high-pass)', 8, 28)
+    ctx.fillStyle = 'rgba(238,241,255,0.6)'
+    ctx.textAlign = 'right'
+    ctx.fillText('ω = 0', xAt(0) + 34, h - 8)
+    ctx.fillText('π', xAt(M) - 2, h - 8)
+  }, [bank, respSize, respRef])
+
+  const onShare = () => {
+    shareLink('wavelet', { tab: 'mra', w: wavelet, lv }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
+
+  const spec = WAVELETS.find((x) => x.id === wavelet)!
+
+  return (
+    <div className="mode">
+      <div className="mode-side">
+        <Panel title="Wavelet">
+          <Field label="Family">
+            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+          </Field>
+          <Field label="Decomposition levels" value={`${lv} / ${maxLv}`}>
+            <Slider min={1} max={maxLv} step={1} value={lv} onChange={(v) => setLevels(Math.round(v))} />
+          </Field>
+          <Readout
+            items={[
+              { label: 'Filter taps', value: String(bank.len) },
+              { label: 'Vanishing moments', value: String(spec.N) },
+              { label: 'Recon. error', value: stats.err.toExponential(1) },
+            ]}
+          />
+          <p className="hint">
+            The scaling & wavelet filters are <strong>derived from scratch</strong> — Daubechies'
+            half-band polynomial, factored by the lab's own root finder. No coefficient tables.
+          </p>
+        </Panel>
+        <Panel title="Filter bank">
+          <CanvasCard title="Analysis QMF pair" note="|H(ω)| over [0, π]" aspect={2.1}>
+            <canvas ref={respRef} />
+          </CanvasCard>
+          <p className="hint">
+            The two half-band filters split the spectrum at ω = π/2 and power-complement to a flat
+            line — that is exactly what makes the transform lossless.
+          </p>
+          <div className="btn-row">
+            <Button variant="primary" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
+        </Panel>
+      </div>
+      <div className="mode-main">
+        <p className="mode-intro">
+          A <strong>multiresolution analysis</strong> peels a signal apart scale by scale. Each level
+          splits what's left into a smooth <em>approximation</em> and a <em>detail</em> band an octave
+          wide, then recurses on the approximation. Every band is projected back to full length here,
+          and they sum <em>exactly</em> back to the input — reconstruction error{' '}
+          <strong>{stats.err.toExponential(1)}</strong>, at the floating-point floor.
+        </p>
+        <CanvasCard title="Signal" note="carrier + mid burst + steady tone + sharp click" aspect={4.5}>
+          <canvas ref={sigRef} />
+        </CanvasCard>
+        <CanvasCard
+          title="Multiresolution bands"
+          note="approximation on top, finest detail at the bottom"
+          aspect={1.05}
+        >
+          <canvas ref={bandsRef} />
+        </CanvasCard>
+      </div>
+    </div>
+  )
+}
+
+// ===========================================================================
+// Tab 3 — Wavelet denoising
+// ===========================================================================
+
+const RULES: { id: ShrinkRule; label: string }[] = [
+  { id: 'universal', label: 'VisuShrink' },
+  { id: 'sure', label: 'SureShrink' },
+  { id: 'bayes', label: 'BayesShrink' },
+]
+const MODES: { id: ThresholdMode; label: string }[] = [
+  { id: 'soft', label: 'Soft' },
+  { id: 'hard', label: 'Hard' },
+]
+
+function DenoiseTab() {
+  const sp = useMemo(() => readHashParams(), [])
+  const [signalName, setSignalName] = useState<DwtSignalName>(() =>
+    readStr<DwtSignalName>(sp, 'sig', 'blocks', DWT_SIGNALS.map((s) => s.id)),
+  )
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym8', WAVELETS.map((w) => w.id)))
+  const [sigma, setSigma] = useState(() => readNum(sp, 'n', 0.5))
+  const [rule, setRule] = useState<ShrinkRule>(() =>
+    readStr<ShrinkRule>(sp, 'r', 'sure', RULES.map((r) => r.id)),
+  )
+  const [mode, setMode] = useState<ThresholdMode>(() =>
+    readStr<ThresholdMode>(sp, 'm', 'soft', MODES.map((m) => m.id)),
+  )
+  const [showClean, setShowClean] = useState(true)
+  const [copied, setCopied] = useState(false)
+
+  const { ref: noisyRef, size: noisySize } = useDprCanvas()
+  const { ref: cleanRef, size: cleanSize } = useDprCanvas()
+
+  const bank = useMemo(() => getBank(wavelet), [wavelet])
+  const clean = useMemo(() => dwtSignal(signalName, DWT_N), [signalName])
+  const noisy = useMemo(() => addNoise(clean, sigma, 7), [clean, sigma])
+  const lv = useMemo(() => maxLevel(DWT_N, bank), [bank])
+  const result = useMemo(() => denoise(noisy, bank, lv, rule, mode), [noisy, bank, lv, rule, mode])
+
+  const snrIn = useMemo(() => snrDb(clean, noisy), [clean, noisy])
+  const snrOut = useMemo(() => snrDb(clean, result.clean), [clean, result])
+
+  // shared y-range across both plots for honest comparison
+  const range = useMemo(() => {
+    let m = 1e-9
+    for (let i = 0; i < DWT_N; i++) m = Math.max(m, Math.abs(noisy[i]))
+    return m
+  }, [noisy])
+
+  useEffect(() => {
+    drawLines(
+      noisyRef.current,
+      noisySize,
+      [
+        ...(showClean ? [{ data: clean, color: 'rgba(94,234,212,0.35)', width: 1 } as Series] : []),
+        { data: noisy, color: ROSE, width: 0.8, alpha: 0.9 },
+      ],
+      { lo: -range, hi: range },
+    )
+  }, [noisy, clean, noisySize, noisyRef, range, showClean])
+
+  useEffect(() => {
+    drawLines(
+      cleanRef.current,
+      cleanSize,
+      [
+        ...(showClean ? [{ data: clean, color: 'rgba(94,234,212,0.4)', width: 1.4 } as Series] : []),
+        { data: result.clean, color: AMBER, width: 1.4 },
+      ],
+      { lo: -range, hi: range },
+    )
+  }, [result, clean, cleanSize, cleanRef, range, showClean])
+
+  const onShare = () => {
+    shareLink('wavelet', { tab: 'denoise', sig: signalName, w: wavelet, n: sigma, r: rule, m: mode }).then(
+      (ok) => {
+        if (ok) {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1400)
+        }
+      },
+    )
+  }
+
+  const gain = snrOut - snrIn
+
+  return (
+    <div className="mode">
+      <div className="mode-side">
+        <Panel title="Signal">
+          <Field label="Test signal">
+            <Select value={signalName} options={DWT_SIGNALS} onChange={setSignalName} />
+          </Field>
+          <Field label="Noise σ" value={sigma.toFixed(2)}>
+            <Slider min={0.1} max={1.2} step={0.05} value={sigma} onChange={setSigma} />
+          </Field>
+          <Toggle label="Show clean reference" checked={showClean} onChange={setShowClean} />
+        </Panel>
+        <Panel title="Shrinkage">
+          <Field label="Wavelet">
+            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+          </Field>
+          <Field label="Threshold rule">
+            <Segmented value={rule} options={RULES} onChange={setRule} />
+          </Field>
+          <Field label="Thresholding">
+            <Segmented value={mode} options={MODES} onChange={setMode} />
+          </Field>
+          <Readout
+            items={[
+              { label: 'σ̂ (from d₁)', value: result.sigma.toFixed(3) },
+              { label: 'Coeffs kept', value: `${(result.kept * 100).toFixed(1)}%` },
+              { label: 'Levels', value: String(lv) },
+            ]}
+          />
+          <div className="btn-row">
+            <Button variant="primary" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
+        </Panel>
+        <Panel title="Result">
+          <Readout
+            items={[
+              { label: 'Input SNR', value: `${snrIn.toFixed(1)} dB` },
+              { label: 'Output SNR', value: `${snrOut.toFixed(1)} dB` },
+              { label: 'Gain', value: `${gain >= 0 ? '+' : ''}${gain.toFixed(1)} dB` },
+            ]}
+          />
+        </Panel>
+      </div>
+      <div className="mode-main">
+        <p className="mode-intro">
+          Noise spreads its energy across <em>every</em> wavelet coefficient; a signal with edges or
+          spikes concentrates its energy into a <em>few</em> large ones. So{' '}
+          <strong>threshold the coefficients</strong> — kill the small ones, keep the big ones — and
+          the noise falls away while the features survive. The noise level σ̂ is read straight off the
+          finest detail band by its median absolute deviation. Here shrinkage keeps only{' '}
+          <strong>{(result.kept * 100).toFixed(1)}%</strong> of the detail coefficients and lifts SNR
+          by <strong>{gain >= 0 ? '+' : ''}{gain.toFixed(1)} dB</strong>.
+        </p>
+        <CanvasCard title="Noisy input" note={`${signalName} · σ = ${sigma.toFixed(2)} · ${snrIn.toFixed(1)} dB`} aspect={3.4}>
+          <canvas ref={noisyRef} />
+        </CanvasCard>
+        <CanvasCard
+          title="Wavelet-denoised"
+          note={`${RULES.find((r) => r.id === rule)!.label} · ${mode} · ${snrOut.toFixed(1)} dB`}
+          aspect={3.4}
+        >
+          <canvas ref={cleanRef} />
+        </CanvasCard>
+      </div>
+    </div>
+  )
+}
+
+// ===========================================================================
+
+export default function Wavelet() {
+  const sp = useMemo(() => readHashParams(), [])
+  const [tab, setTab] = useState<Tab>(() => readStr<Tab>(sp, 'tab', 'scalogram', TABS.map((t) => t.id)))
+  return (
+    <div className="mode-wrap">
+      <div className="mode-tabs">
+        <Segmented value={tab} options={TABS} onChange={setTab} />
+      </div>
+      {tab === 'scalogram' && <ScalogramTab />}
+      {tab === 'mra' && <MraTab />}
+      {tab === 'denoise' && <DenoiseTab />}
     </div>
   )
 }

@@ -6,6 +6,19 @@ import { fromReal, magnitude } from './complex'
 import { fft, ifft, dft } from './fft'
 import { fieldFromGray, fft2 } from './fft2'
 import { cwtMorlet } from './wavelet'
+import {
+  WAVELETS,
+  getBank,
+  maxLevel,
+  wavedec,
+  waverec,
+  dwtStep,
+  mra,
+  denoise,
+  snrDb as dwtSnrDb,
+  orthonormalityDefect,
+} from './dwt'
+import { dwtSignal, addNoise } from './dwtSignals'
 import { timeStretch, pitchTimeShift, hannPeriodic, snrDb } from './phasevocoder'
 import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
 import { cepstrum } from './cepstrum'
@@ -274,6 +287,99 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     let maxPower = 0
     for (const row of res.power) for (let i = 0; i < row.length; i++) if (row[i] > maxPower) maxPower = row[i]
     check('Morlet wavelet has zero mean (no DC response)', maxPower < 1e-6)
+  }
+
+  // 8b. The from-scratch orthonormal wavelet filters (Daubechies + Symlet) are
+  //     each derived by spectral-factoring the half-band polynomial. Every one
+  //     must sum to √2 and be double-shift orthonormal to machine precision.
+  {
+    let worstDefect = 0
+    let worstSum = 0
+    for (const w of WAVELETS) {
+      const bank = getBank(w.id)
+      let sum = 0
+      for (const v of bank.lo) sum += v
+      worstSum = Math.max(worstSum, Math.abs(sum - Math.SQRT2))
+      worstDefect = Math.max(worstDefect, orthonormalityDefect(bank.lo))
+    }
+    check('derived wavelet filters sum to √2 and are orthonormal', worstSum < 1e-9 && worstDefect < 1e-9)
+  }
+
+  // 8c. db2 matches the published Daubechies coefficients (validates the
+  //     derivation against a known reference; reversal is an equally valid
+  //     orthonormal filter, so accept either order).
+  {
+    const db2 = Array.from(getBank('db2').lo)
+    const ref = [0.48296291314469025, 0.836516303737469, 0.22414386804185735, -0.12940952255092145]
+    const eq = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) < 1e-6)
+    check('db2 matches published Daubechies coefficients', eq(db2, ref) || eq(db2, ref.slice().reverse()))
+  }
+
+  // 8d. The periodic DWT is paraunitary: multi-level analysis → synthesis is an
+  //     exact identity for every wavelet, and energy is preserved (Parseval).
+  {
+    const N = 1024
+    const x = new Float64Array(N)
+    for (let i = 0; i < N; i++) x[i] = Math.sin(0.05 * i) + 0.4 * Math.sin(0.3 * i + 1) + (i > 500 && i < 520 ? 2 : 0)
+    let worst = 0
+    for (const w of WAVELETS) {
+      const bank = getBank(w.id)
+      const dec = wavedec(x, bank, maxLevel(N, bank))
+      const rec = waverec(dec)
+      for (let i = 0; i < N; i++) worst = Math.max(worst, Math.abs(rec[i] - x[i]))
+    }
+    const bank = getBank('db4')
+    const dec = wavedec(x, bank, maxLevel(N, bank))
+    let ex = 0
+    for (const v of x) ex += v * v
+    let ec = 0
+    for (const v of dec.approx) ec += v * v
+    for (const d of dec.details) for (const v of d) ec += v * v
+    check('DWT perfect reconstruction (all wavelets) + Parseval', worst < 1e-9 && Math.abs(ex - ec) / ex < 1e-9)
+  }
+
+  // 8e. Vanishing moments: db2 (2 vanishing moments) annihilates a linear ramp,
+  //     so its interior detail coefficients are ~0.
+  {
+    const N = 256
+    const x = new Float64Array(N)
+    for (let i = 0; i < N; i++) x[i] = 3 + 0.5 * i
+    const { cD } = dwtStep(x, getBank('db2'))
+    let mx = 0
+    for (let i = 2; i < cD.length - 2; i++) mx = Math.max(mx, Math.abs(cD[i]))
+    check('db2 annihilates a linear signal (2 vanishing moments)', mx < 1e-9)
+  }
+
+  // 8f. Multiresolution bands are additive: A_J + Σ D_j reproduces the signal.
+  {
+    const N = 1024
+    const x = dwtSignal('doppler', N)
+    const bank = getBank('sym6')
+    const m = mra(x, bank, maxLevel(N, bank))
+    let e = 0
+    for (let i = 0; i < N; i++) {
+      let s = m.approx[i]
+      for (const d of m.details) s += d[i]
+      e = Math.max(e, Math.abs(s - x[i]))
+    }
+    check('MRA bands sum exactly back to the signal', e < 1e-9)
+  }
+
+  // 8g. Wavelet shrinkage denoising raises SNR on the Donoho "blocks" signal for
+  //     all three threshold rules.
+  {
+    const N = 1024
+    const clean = dwtSignal('blocks', N)
+    const noisy = addNoise(clean, 0.5, 7)
+    const bank = getBank('sym8')
+    const lv = maxLevel(N, bank)
+    const before = dwtSnrDb(clean, noisy)
+    let worstGain = Infinity
+    for (const rule of ['universal', 'sure', 'bayes'] as const) {
+      const r = denoise(noisy, bank, lv, rule, 'soft')
+      worstGain = Math.min(worstGain, dwtSnrDb(clean, r.clean) - before)
+    }
+    check('wavelet denoising improves SNR (VisuShrink/SURE/Bayes)', worstGain > 1.5)
   }
 
   // 9. Phase vocoder identity: an unmodified analysis/synthesis round-trip

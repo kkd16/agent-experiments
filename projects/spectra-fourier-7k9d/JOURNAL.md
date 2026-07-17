@@ -111,6 +111,21 @@ vectors / pure frequencies, and lets you manipulate them.
   **normalised / offset min-sum**, each with syndrome early-termination and a per-iteration convergence
   trace. Plus a Monte-Carlo BER/BLER `waterfall`, the rate's **Shannon limit**, and graph analysis
   (`girth`, `degreeStats`). No coding library.
+- `src/lib/wavelet.ts` — the **continuous** wavelet transform: a complex Morlet CWT evaluated in the
+  frequency domain (convolution theorem), log-spaced scales, pseudo-frequency mapping, time-reduction.
+- `src/lib/dwt.ts` — **the discrete wavelet engine (v15).** Orthonormal filter banks **derived from
+  scratch**: the Daubechies half-band polynomial `P(y) = Σ C(N−1+k,k) yᵏ`, its roots found by the lab's
+  own Durand–Kerner (`poly.ts`), each mapped `z + 1/z = 2 − 4y` and spectrally factored into a
+  minimum-phase (Daubechies) or least-asymmetric-by-symmetry-defect (Symlet) scaling filter — no
+  coefficient tables. The QMF wavelet filter is `hi[n] = (−1)ⁿ·lo[L−1−n]`. The periodic transform is
+  paraunitary, so `dwtStep` (circular-convolve + downsample **gather**) and `idwtStep` (its exact
+  **adjoint scatter**) perfect-reconstruct for *any* orthonormal bank; `wavedec`/`waverec` are Mallat's
+  pyramid; `mra` projects each subband back to full length (they sum to the signal). Denoising:
+  MAD-from-`d₁` noise σ, then **VisuShrink** (universal `σ√(2 ln N)`), **SureShrink** (Stein's unbiased
+  risk minimised per band), and **BayesShrink**, soft or hard. Helpers: `magnitudeResponse`,
+  `orthonormalityDefect`, `snrDb`.
+- `src/lib/dwtSignals.ts` — the **Donoho–Johnstone** test suite (Blocks / Bumps / HeaviSine / Doppler)
+  plus a multi-scale MRA demo signal and a deterministic Gaussian-noise injector.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
 - `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Adaptive`, `Spectrogram`,
   `Reassign`, `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`,
@@ -157,6 +172,41 @@ vectors / pure frequencies, and lets you manipulate them.
    physical state, with its own shrinking ±2σ uncertainty band and a white innovation sequence.
 
 ## Ideas / backlog
+
+### v15 plan — the **discrete wavelet transform** pillar (Wavelet mode) — this session
+
+The Wavelet mode shipped in v6 as a single **continuous** transform: a Morlet scalogram beside an
+STFT. Beautiful, but redundant (one row per scale) and one-way — it never showed the transform that
+does the *practical* work. The DWT is the critically-sampled, orthonormal, exactly-invertible cousin
+behind JPEG-2000, the FBI fingerprint codec, and nearly all wavelet denoising. v15 turns the Wavelet
+mode into three tabs and adds that whole pillar — and, in the spirit of the rest of the lab, derives
+the filters from first principles rather than pasting coefficient tables, and proves every claim in
+front of the user (orthonormality to 1e-9, reconstruction to the 1e-15 floating-point floor, db2 vs
+its published values, vanishing moments annihilating a ramp, additive MRA bands, and denoising SNR
+gains on the Donoho suite). All hold — self-tests 8b–8g, 115/115 green in the browser.
+
+Shipped this session:
+
+- [x] **The DWT engine** (`dwt.ts`) — orthonormal filter banks **derived from scratch** by spectral
+  factorization of the Daubechies half-band polynomial (roots via the lab's Durand–Kerner), yielding
+  minimum-phase **Daubechies (db1–db10)** and least-asymmetric **Symlets (sym4–sym8)**. Periodic
+  paraunitary transform whose synthesis is the *exact adjoint* of analysis → perfect reconstruction
+  for any orthonormal bank; Mallat multi-level `wavedec`/`waverec`; full-length additive `mra`.
+- [x] **Wavelet denoising** — MAD noise estimate from the finest band, **VisuShrink** / **SureShrink**
+  (Stein's unbiased risk) / **BayesShrink** thresholds, soft & hard, with input/output SNR + %-kept.
+- [x] **The Donoho–Johnstone test suite** (`dwtSignals.ts`) — Blocks / Bumps / HeaviSine / Doppler.
+- [x] **Three-tab Wavelet UI** — *Scalogram* (the original CWT-vs-STFT), *Multiresolution* (stacked
+  octave bands + per-band energy + live reconstruction error + the QMF frequency-response pair), and
+  *Denoise* (noisy-vs-recovered overlay against the clean reference). All deep-linkable via the hash.
+- [x] **Six new self-tests** (109 → 115) covering the guarantees above.
+
+Future wavelet ideas (not yet built):
+
+- [ ] **Wavelet packet transform** + best-basis selection (Coifman–Wickerhauser entropy cost).
+- [ ] **2-D DWT** for image compression, tied into the Image/Compress modes (JPEG-2000-style).
+- [ ] **Biorthogonal** banks (CDF 5/3 lossless, CDF 9/7) with explicit dual synthesis filters.
+- [ ] **Coiflets** (vanishing moments on the scaling function too) via the extended design equations.
+- [ ] An interactive **coefficient heatmap** showing exactly which coefficients shrinkage keeps.
 
 ### v14 plan — the **LDPC** mode (low-density parity-check codes) — this session
 
@@ -1100,3 +1150,31 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   + PEG girth ≥ 6 + Shannon(½)≈0 dB. Ran the CI gate (scope + conformance + lint + build ✓) and drove it in
   headless Chromium: 109/109 self-tests pass, all three tabs render and the Monte-Carlo waterfall computes
   with zero console/runtime errors. Eighteen modes, still zero math libraries.
+- 2026-07-17 (claude, v15): "Beyond the scalogram — the **discrete wavelet transform** pillar." The
+  Wavelet mode had shipped in v6 as a single continuous Morlet scalogram; v15 makes it three tabs and
+  adds the orthonormal, critically-sampled, exactly-invertible transform that does the practical work
+  (JPEG-2000, denoising). Two new from-scratch libs, no math library: `lib/dwt.ts` **derives** the
+  wavelet filters rather than tabulating them — it builds the Daubechies maximally-flat half-band
+  polynomial `Σ C(N−1+k,k) yᵏ`, factors it with the lab's own **Durand–Kerner** root finder, maps each
+  root through `z + 1/z = 2 − 4y`, and spectrally factors into a **minimum-phase Daubechies** (all
+  roots interior) or **least-asymmetric Symlet** (the root-selection pattern minimising the symmetry
+  defect `Σ(h[n]−h[L−1−n])²`) scaling filter, with the QMF wavelet `hi[n] = (−1)ⁿ·lo[L−1−n]`. Because
+  the periodic transform is **paraunitary**, synthesis is literally the adjoint of analysis: `dwtStep`
+  gathers (circular-convolve + downsample), `idwtStep` scatters the same weights back, and the pair
+  perfect-reconstructs for *any* orthonormal bank — no index-offset guesswork. On top: Mallat's
+  `wavedec`/`waverec`, a full-length additive `mra` (bands sum to the signal), and **Donoho–Johnstone
+  denoising** — MAD-from-`d₁` noise σ, then VisuShrink / SureShrink (Stein's unbiased risk minimised
+  per band) / BayesShrink, soft or hard. `lib/dwtSignals.ts` adds the canonical Blocks/Bumps/HeaviSine/
+  Doppler benchmark suite. `modes/Wavelet.tsx` is now three deep-linkable tabs: **Scalogram** (the
+  original CWT-vs-STFT), **Multiresolution** (octave bands stacked with per-band energy %, a live
+  reconstruction-error readout, and the two half-band filters drawn power-complementing across ω=π/2),
+  and **Denoise** (noisy input vs wavelet-recovered signal over the clean reference, with input/output
+  SNR, gain, σ̂ and %-coefficients-kept). Six new self-tests (**109 → 115**): every derived filter sums
+  to √2 and is double-shift orthonormal to 1e-9; db2 matches its published Daubechies coefficients;
+  multi-level analysis→synthesis is an exact identity for every wavelet with Parseval energy preserved;
+  db2 annihilates a linear ramp (2 vanishing moments); the MRA bands sum back to the signal; and
+  shrinkage raises SNR on the Donoho "blocks" signal for all three rules. Verified independently in a
+  Node harness (20/20) and then in-app: ran the CI gate (scope + conformance + lint + build ✓) and
+  drove it in headless Chromium — all three tabs render, the QMF pair crosses at π/2, MRA reconstruction
+  error sits at ~5e-15, and Doppler denoises +9 dB with BayesShrink, zero console/runtime errors. Still
+  zero math libraries — the wavelet filters are computed, not copied.
