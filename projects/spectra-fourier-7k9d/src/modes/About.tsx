@@ -83,7 +83,9 @@ export default function About() {
             selective down low — beside the fixed-window STFT. A <em>multiresolution</em> tab runs
             the discrete wavelet transform through orthonormal filter banks{' '}
             <strong>derived from scratch</strong> (Daubechies &amp; Symlet, spectrally factored, no
-            tables), peeling a signal into octave bands that sum back exactly. A <em>denoise</em> tab
+            tables) plus the symmetric <strong>biorthogonal</strong> CDF 5/3 &amp; 9/7 pair (the
+            JPEG-2000 wavelets, run by the lifting scheme), peeling a signal into octave bands that
+            sum back exactly. A <em>denoise</em> tab
             shrinks the wavelet coefficients (VisuShrink / SureShrink / BayesShrink) to pull a clean
             signal out of noise. A fourth <em>best-basis</em> tab runs the full wavelet{' '}
             <strong>packet</strong> tree and picks the Coifman–Wickerhauser minimum-cost basis, drawing
@@ -437,8 +439,10 @@ export default function About() {
           Donoho benchmark for all three threshold rules. The <strong>wavelet packet</strong> tree is
           checked too: the full tree and every best-basis cover reconstruct exactly, the best basis is
           confirmed no costlier than either trivial basis (root or full depth), and it is verified to
-          subdivide down to its finest frequency resolution around a pure tone. Open the console to
-          see all 118 pass.
+          subdivide down to its finest frequency resolution around a pure tone. The{' '}
+          <strong>biorthogonal</strong> CDF 5/3 and 9/7 transforms (run by the lifting scheme) are
+          checked to reconstruct exactly, to have additive MRA bands, and to send a constant to the
+          approximation band alone. Open the console to see all 119 pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

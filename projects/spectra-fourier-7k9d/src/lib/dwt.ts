@@ -27,12 +27,23 @@
 import type { Cx } from './cplx'
 import { cx, cabs, cconj, csqrt, cscale, cadd, cmul, cdiv } from './cplx'
 import { polyFromRoots, polyRoots, type Poly } from './poly'
+import {
+  cdf53Forward,
+  cdf53Inverse,
+  cdf97Forward,
+  cdf97Inverse,
+  BIOR_ANALYSIS,
+} from './lifting'
 
 // ---------------------------------------------------------------------------
 // Filter-bank derivation
 // ---------------------------------------------------------------------------
 
-export type WaveletFamily = 'db' | 'sym'
+export type WaveletFamily = 'db' | 'sym' | 'bior'
+
+/** How a bank computes one transform level. Orthogonal families convolve;
+ *  biorthogonal families run the lifting scheme (see lifting.ts). */
+export type TransformKind = 'ortho' | 'cdf53' | 'cdf97'
 
 export interface FilterBank {
   name: string
@@ -44,6 +55,8 @@ export interface FilterBank {
   /** number of vanishing moments */
   vanishing: number
   family: WaveletFamily
+  /** transform implementation; absent/`ortho` = the orthonormal filter bank */
+  transform?: TransformKind
 }
 
 function binom(n: number, k: number): number {
@@ -202,13 +215,43 @@ export const WAVELETS: WaveletSpec[] = [
   { id: 'sym8', label: 'Symlet sym8', N: 8, family: 'sym' },
 ]
 
+/** Biorthogonal (symmetric, linear-phase) wavelets, computed by lifting. */
+export const BIOR_WAVELETS: { id: string; label: string; transform: TransformKind; vanishing: number }[] = [
+  { id: 'cdf53', label: 'CDF 5/3 (LeGall)', transform: 'cdf53', vanishing: 2 },
+  { id: 'cdf97', label: 'CDF 9/7 (JPEG-2000)', transform: 'cdf97', vanishing: 4 },
+]
+
+/** All wavelets for a UI picker: orthonormal families plus the biorthogonal pair. */
+export const ALL_WAVELETS: { id: string; label: string }[] = [
+  ...WAVELETS.map((w) => ({ id: w.id, label: w.label })),
+  ...BIOR_WAVELETS.map((w) => ({ id: w.id, label: w.label })),
+]
+
 const bankCache = new Map<string, FilterBank>()
+
+function makeBiorBank(id: string): FilterBank {
+  const spec = BIOR_WAVELETS.find((w) => w.id === id)!
+  const taps = BIOR_ANALYSIS[id]
+  return {
+    name: id,
+    lo: Float64Array.from(taps.lo),
+    hi: Float64Array.from(taps.hi),
+    len: taps.lo.length,
+    vanishing: spec.vanishing,
+    family: 'bior',
+    transform: spec.transform,
+  }
+}
 
 export function getBank(id: string): FilterBank {
   const hit = bankCache.get(id)
   if (hit) return hit
-  const spec = WAVELETS.find((w) => w.id === id) ?? WAVELETS[0]
-  const bank = makeBank(spec.id, spec.N, spec.family)
+  const bank = BIOR_WAVELETS.some((w) => w.id === id)
+    ? makeBiorBank(id)
+    : (() => {
+        const spec = WAVELETS.find((w) => w.id === id) ?? WAVELETS[0]
+        return makeBank(spec.id, spec.N, spec.family)
+      })()
   bankCache.set(id, bank)
   return bank
 }
@@ -222,8 +265,11 @@ export interface OneLevel {
   cD: Float64Array
 }
 
-/** One analysis level: circular convolve + downsample by 2 (the gather). */
+/** One analysis level: circular convolve + downsample by 2 (the gather), or the
+ *  lifting scheme for biorthogonal banks. */
 export function dwtStep(x: Float64Array, bank: FilterBank): OneLevel {
+  if (bank.transform === 'cdf53') return cdf53Forward(x)
+  if (bank.transform === 'cdf97') return cdf97Forward(x)
   const N = x.length
   const half = N >> 1
   const cA = new Float64Array(half)
@@ -244,8 +290,11 @@ export function dwtStep(x: Float64Array, bank: FilterBank): OneLevel {
   return { cA, cD }
 }
 
-/** One synthesis level: the exact adjoint of dwtStep (the scatter). */
+/** One synthesis level: the exact adjoint of dwtStep (the scatter), or the
+ *  inverse lifting scheme for biorthogonal banks. */
 export function idwtStep(cA: Float64Array, cD: Float64Array, bank: FilterBank): Float64Array {
+  if (bank.transform === 'cdf53') return cdf53Inverse(cA, cD)
+  if (bank.transform === 'cdf97') return cdf97Inverse(cA, cD)
   const half = cA.length
   const N = half * 2
   const x = new Float64Array(N)

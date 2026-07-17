@@ -126,6 +126,12 @@ vectors / pure frequencies, and lets you manipulate them.
   `orthonormalityDefect`, `snrDb`.
 - `src/lib/dwtSignals.ts` — the **Donoho–Johnstone** test suite (Blocks / Bumps / HeaviSine / Doppler)
   plus a multi-scale MRA demo signal and a deterministic Gaussian-noise injector.
+- `src/lib/lifting.ts` — **the biorthogonal engine (v15).** The symmetric (linear-phase) **CDF 5/3**
+  and **CDF 9/7** wavelets — the JPEG-2000 pair — implemented by the **lifting scheme** (Sweldens):
+  a sequence of predict/update steps between even and odd samples. Each step is trivially invertible,
+  so perfect reconstruction is *structural and exact* with no filter-alignment bookkeeping. `dwt.ts`
+  dispatches `dwtStep`/`idwtStep` to these when a bank's `transform` is `cdf53`/`cdf97`, so the whole
+  stack (wavedec/mra/denoise/wavelet-packets) works with biorthogonal wavelets unchanged.
 - `src/lib/wp.ts` — **the wavelet-packet engine (v15).** Where the DWT only recurses on the low-pass
   child, `wpAnalyze` splits **both** children at every node into a full binary tree of subbands (built
   on the same `dwtStep`). `bestBasis` runs the **Coifman–Wickerhauser** bottom-up search over an
@@ -212,10 +218,13 @@ Shipped this session:
   packet tiling as a magma time-frequency heatmap with a compaction figure). All deep-linkable.
 - [x] **Nine new self-tests** (109 → 118) covering the guarantees above.
 
+- [x] **Biorthogonal wavelets** (`lifting.ts`) — the symmetric CDF 5/3 & 9/7 (JPEG-2000) pair by the
+  lifting scheme, wired through `dwt.ts`'s transform dispatch so they flow through every DWT tab
+  (multiresolution, denoise, best-basis) with structural perfect reconstruction. +1 self-test (→119).
+
 Future wavelet ideas (not yet built):
 
 - [ ] **2-D DWT** for image compression, tied into the Image/Compress modes (JPEG-2000-style).
-- [ ] **Biorthogonal** banks (CDF 5/3 lossless, CDF 9/7) with explicit dual synthesis filters.
 - [ ] **Coiflets** (vanishing moments on the scaling function too) via the extended design equations.
 - [ ] An interactive **coefficient heatmap** showing exactly which coefficients shrinkage keeps.
 
@@ -1201,3 +1210,21 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   with BayesShrink, and the best-basis tiling packs 99% of the Doppler energy into 3.7% of the
   coefficients, zero console/runtime errors. Still zero math libraries — the wavelet filters are
   computed, not copied.
+- 2026-07-17 (claude, v15.2): "Symmetric wavelets — the biorthogonal CDF 5/3 & 9/7 (JPEG-2000)." A
+  hard theorem says an orthonormal wavelet can never be symmetric (Haar excepted), and asymmetry
+  smears edges — which is why image codecs use *biorthogonal* wavelets, whose analysis and synthesis
+  filters differ and can both be symmetric. Rather than juggle two filter pairs and their alignment,
+  `lib/lifting.ts` implements the **CDF 5/3** (LeGall, the reversible transform) and **CDF 9/7**
+  (Daubechies–Feauveau) via the **lifting scheme** — predict/update steps between even and odd samples,
+  each trivially invertible, so perfect reconstruction is *structural and exact* with zero alignment
+  bookkeeping (exactly how the JPEG-2000 reference codec computes them). `dwt.ts` gained a `transform`
+  field on the filter bank and dispatches `dwtStep`/`idwtStep` to lifting for biorthogonal banks, so
+  the entire DWT stack — multiresolution, denoise, and the wavelet-packet best basis — flows through
+  the new wavelets unchanged; the three DWT tabs' pickers now list CDF 5/3 & 9/7 alongside the
+  orthonormal families, with mode copy that adapts (the QMF panel explains the differing synthesis
+  duals). One new self-test (**118 → 119**): both biorthogonal transforms multi-level reconstruct
+  exactly, their MRA bands sum back, and a constant maps to the approximation band alone. Verified in a
+  Node harness (single- and multi-level PR to ~1e-15) and in headless Chromium via the DevTools
+  protocol (all four tabs paint; CDF 9/7 BayesShrink denoises a noisy HeaviSine +14 dB, its symmetric
+  filter preserving the jumps). Ran the CI gate (scope + conformance + lint + build ✓). Still zero math
+  libraries.
