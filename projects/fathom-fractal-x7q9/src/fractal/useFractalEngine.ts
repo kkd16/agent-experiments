@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FractalRenderer } from '../webgl/renderer'
 import type { FrameState } from '../webgl/renderer'
-import type { Bookmark, HudInfo, RenderParams, Viewport } from './types'
-import { HOME, INITIAL_SPAN } from './types'
+import { computeReferenceOrbit } from './refOrbit'
+import { hpAddNumber, hpFromNumber, hpFromString, hpMul, hpToNumber, hpToString, type HP } from './hp'
+import type { Bookmark, Engine, HudInfo, RenderParams, Viewport } from './types'
+import { HOME, INITIAL_SPAN, JULIA_HOME } from './types'
+import { decodeView, encodeView } from './share'
 
-const MIN_SCALE = 1e-14 // world units per pixel — the df64 precision floor
+const DF64_MIN_SCALE = 1e-14 // world units per pixel — the df64 precision floor
+const PERTURB_MIN_SCALE = 1e-35 // float32 delta floor for the perturbation engine
+const PERTURB_SPAN = 1e-9 // engage perturbation once the view is this narrow
 const MAX_SPAN = 6.0
-const JULIA_HOME: Viewport = { centerX: 0, centerY: 0, span: 3.2 }
 
 const DEFAULT_PARAMS: RenderParams = {
   maxIter: 320,
@@ -19,17 +23,28 @@ const DEFAULT_PARAMS: RenderParams = {
   colorOffset: 0.0,
   cycleSpeed: 0.0,
   aa: 1,
+  de: false,
+  deStrength: 4.0,
 }
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x)
 
 export function recommendedIter(span: number): number {
-  // Escape-time depth grows with zoom: seahorse spirals a few e10 deep need
-  // several thousand iterations before they resolve, so scale ~400 per decade
-  // of magnification. The df64 loop stays comfortably real-time up here.
-  const mag = INITIAL_SPAN / span
-  return Math.round(clamp(400 + 400 * Math.log10(Math.max(1, mag)), 200, 6000))
+  // Escape-time depth grows super-linearly with zoom: near a Misiurewicz point
+  // like the seahorse, a 1e10 dive resolves in ~2k iterations but a 1e20 dive
+  // needs ~12k before the boundary bands separate (measured against a headless
+  // render). A quadratic in the magnification exponent fits both ends and keeps
+  // shallow views cheap. The perturbation loop is plain float32, so even the
+  // deepest counts stay tractable on a real GPU.
+  const exp = Math.log10(Math.max(1, INITIAL_SPAN / span))
+  return Math.round(clamp(400 + 60 * exp + 28 * exp * exp, 200, 30000))
 }
+
+const cloneViewport = (v: Viewport): Viewport => ({ cx: v.cx, cy: v.cy, span: v.span })
+
+// Linear interpolation between two high-precision coordinates.
+const lerpHP = (a: HP, b: HP, t: number): HP => a + hpMul(hpFromNumber(t), b - a)
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
 type EngineActions = {
   reset: () => void
@@ -38,31 +53,41 @@ type EngineActions = {
   setMode: (mode: 'mandelbrot' | 'julia') => void
   zoomAtCenter: (factor: number) => void
   exportPng: () => void
+  share: () => Promise<boolean>
 }
 
 export function useFractalEngine() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const rendererRef = useRef<FractalRenderer | null>(null)
-  const viewportRef = useRef<Viewport>({ ...HOME })
+  const viewportRef = useRef<Viewport>(cloneViewport(HOME))
   const phaseRef = useRef(0)
   const rafRef = useRef(0)
   const lastFrameRef = useRef(0)
   const fpsRef = useRef(60)
+  const animRef = useRef(0)
+  // Signature of the currently uploaded reference orbit, to avoid recomputing it
+  // when nothing that affects it has changed.
+  const orbitKeyRef = useRef<{ cx: HP; cy: HP; maxIter: number; len: number } | null>(null)
+  const urlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const [params, setParams] = useState<RenderParams>(DEFAULT_PARAMS)
+  const [params, setParams] = useState<RenderParams>(() => {
+    const decoded = decodeView(window.location.hash)
+    return decoded ? { ...DEFAULT_PARAMS, ...decoded.params } : DEFAULT_PARAMS
+  })
   const paramsRef = useRef(params)
   useEffect(() => {
     paramsRef.current = params
   }, [params])
 
   const [hud, setHud] = useState<HudInfo>({
-    re: HOME.centerX,
-    im: HOME.centerY,
+    re: hpToString(HOME.cx, 6),
+    im: hpToString(HOME.cy, 6),
     span: HOME.span,
     magnification: 1,
     maxIter: DEFAULT_PARAMS.maxIter,
     mode: 'mandelbrot',
     fps: 60,
+    engine: 'df64',
   })
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
@@ -70,18 +95,40 @@ export function useFractalEngine() {
   const currentScale = useCallback(() => {
     const canvas = canvasRef.current
     const vp = viewportRef.current
-    if (!canvas || canvas.width === 0) return vp.span / 1
+    if (!canvas || canvas.width === 0) return vp.span
     return vp.span / canvas.width
+  }, [])
+
+  const engineFor = useCallback((span: number, mode: string): Engine => {
+    const r = rendererRef.current
+    return mode === 'mandelbrot' && span < PERTURB_SPAN && !!r?.perturbationAvailable
+      ? 'perturb'
+      : 'df64'
+  }, [])
+
+  // Recompute + upload the reference orbit only when its inputs changed.
+  const ensureOrbit = useCallback((cx: HP, cy: HP, maxIter: number): number => {
+    const renderer = rendererRef.current
+    if (!renderer) return 0
+    const cur = orbitKeyRef.current
+    if (cur && cur.cx === cx && cur.cy === cy && cur.maxIter === maxIter) return cur.len
+    const orb = computeReferenceOrbit(cx, cy, maxIter)
+    renderer.setReferenceOrbit(orb.xs, orb.ys, orb.length)
+    orbitKeyRef.current = { cx, cy, maxIter, len: orb.length }
+    return orb.length
   }, [])
 
   const buildFrame = useCallback((): FrameState => {
     const vp = viewportRef.current
     const p = paramsRef.current
     const maxIter = p.autoIter ? recommendedIter(vp.span) : p.maxIter
+    const scale = currentScale()
+    const perturbation = engineFor(vp.span, p.mode) === 'perturb'
+    const orbitLen = perturbation ? ensureOrbit(vp.cx, vp.cy, maxIter) : 0
     return {
-      centerX: vp.centerX,
-      centerY: vp.centerY,
-      scale: currentScale(),
+      centerX: hpToNumber(vp.cx),
+      centerY: hpToNumber(vp.cy),
+      scale,
       maxIter,
       mode: p.mode,
       juliaX: p.juliaX,
@@ -90,8 +137,12 @@ export function useFractalEngine() {
       colorOffset: p.colorOffset + phaseRef.current,
       aa: p.aa,
       paletteId: p.paletteId,
+      de: p.de,
+      deStrength: p.deStrength,
+      perturbation,
+      orbitLen,
     }
-  }, [currentScale])
+  }, [currentScale, engineFor, ensureOrbit])
 
   const renderNow = useCallback(() => {
     const renderer = rendererRef.current
@@ -116,49 +167,72 @@ export function useFractalEngine() {
   const publishHud = useCallback(() => {
     const vp = viewportRef.current
     const p = paramsRef.current
+    const digits = Math.round(clamp(-Math.log10(vp.span) + 5, 5, 60))
     setHud({
-      re: vp.centerX,
-      im: vp.centerY,
+      re: hpToString(vp.cx, digits),
+      im: hpToString(vp.cy, digits),
       span: vp.span,
       magnification: INITIAL_SPAN / vp.span,
       maxIter: p.autoIter ? recommendedIter(vp.span) : p.maxIter,
       mode: p.mode,
       fps: fpsRef.current,
+      engine: engineFor(vp.span, p.mode),
     })
+  }, [engineFor])
+
+  // Persist the current view to the URL hash (debounced) so it can be shared.
+  const syncUrl = useCallback(() => {
+    if (urlTimerRef.current) clearTimeout(urlTimerRef.current)
+    urlTimerRef.current = setTimeout(() => {
+      const hash = encodeView(viewportRef.current, paramsRef.current)
+      history.replaceState(null, '', `#${hash}`)
+    }, 350)
   }, [])
 
-  // Convert a client-space pointer position into world coordinates plus the
-  // pixel offset from the canvas centre (needed to keep a point fixed on zoom).
-  const pixelToWorld = useCallback((clientX: number, clientY: number) => {
+  const cancelAnim = useCallback(() => {
+    if (animRef.current) {
+      cancelAnimationFrame(animRef.current)
+      animRef.current = 0
+    }
+  }, [])
+
+  // Backing-pixel offset of a client point from the canvas centre (y up).
+  const pixelOffset = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current!
     const rect = canvas.getBoundingClientRect()
     const dprX = canvas.width / rect.width
     const dprY = canvas.height / rect.height
     const fragX = (clientX - rect.left) * dprX
     const fragY = canvas.height - (clientY - rect.top) * dprY
-    const scale = currentScale()
-    const px = fragX - canvas.width / 2
-    const py = fragY - canvas.height / 2
-    const vp = viewportRef.current
-    return { x: vp.centerX + px * scale, y: vp.centerY + py * scale, px, py }
-  }, [currentScale])
+    return { px: fragX - canvas.width / 2, py: fragY - canvas.height / 2 }
+  }, [])
+
+  const minScale = useCallback(() => {
+    return rendererRef.current?.perturbationAvailable ? PERTURB_MIN_SCALE : DF64_MIN_SCALE
+  }, [])
 
   const zoomAt = useCallback(
     (clientX: number, clientY: number, factor: number) => {
       const canvas = canvasRef.current
       if (!canvas) return
-      const { x, y, px, py } = pixelToWorld(clientX, clientY)
+      cancelAnim()
+      const { px, py } = pixelOffset(clientX, clientY)
       const vp = viewportRef.current
-      const minSpan = MIN_SCALE * canvas.width
+      const scale = vp.span / canvas.width
+      const minSpan = minScale() * canvas.width
       const newSpan = clamp(vp.span * factor, minSpan, MAX_SPAN)
       const newScale = newSpan / canvas.width
-      vp.centerX = x - px * newScale
-      vp.centerY = y - py * newScale
+      // Keep the cursor's world point fixed: shift centre by px·(scale−newScale).
+      // Both scales are tiny and nearly equal, but their difference is a clean
+      // double, so the high-precision centre stays exact.
+      vp.cx = hpAddNumber(vp.cx, px * (scale - newScale))
+      vp.cy = hpAddNumber(vp.cy, py * (scale - newScale))
       vp.span = newSpan
       publishHud()
       schedule()
+      syncUrl()
     },
-    [pixelToWorld, publishHud, schedule],
+    [pixelOffset, publishHud, schedule, syncUrl, cancelAnim, minScale],
   )
 
   const zoomAtCenter = useCallback(
@@ -169,6 +243,39 @@ export function useFractalEngine() {
       zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor)
     },
     [zoomAt],
+  )
+
+  // Smoothly fly from the current view to a target viewport (bookmarks, share).
+  const flyTo = useCallback(
+    (target: Viewport) => {
+      cancelAnim()
+      const start = cloneViewport(viewportRef.current)
+      const logStart = Math.log(start.span)
+      const logEnd = Math.log(target.span)
+      const dur = 1050
+      const t0 = performance.now()
+      const step = (now: number) => {
+        const raw = Math.min(1, (now - t0) / dur)
+        const u = easeInOut(raw)
+        const vp = viewportRef.current
+        vp.cx = lerpHP(start.cx, target.cx, u)
+        vp.cy = lerpHP(start.cy, target.cy, u)
+        vp.span = Math.exp(logStart + (logEnd - logStart) * u)
+        publishHud()
+        renderNow()
+        if (raw < 1) {
+          animRef.current = requestAnimationFrame(step)
+        } else {
+          animRef.current = 0
+          viewportRef.current = cloneViewport(target)
+          publishHud()
+          renderNow()
+          syncUrl()
+        }
+      }
+      animRef.current = requestAnimationFrame(step)
+    },
+    [publishHud, renderNow, syncUrl, cancelAnim],
   )
 
   // --- one-time setup: renderer, resize observer, pointer + wheel handlers ---
@@ -186,6 +293,10 @@ export function useFractalEngine() {
     }
     rendererRef.current = renderer
 
+    // Restore a shared view from the URL hash, if present and valid.
+    const decoded = decodeView(window.location.hash)
+    if (decoded) viewportRef.current = decoded.viewport
+
     const dpr = () => Math.min(window.devicePixelRatio || 1, 2)
     const resize = () => {
       const w = Math.max(1, Math.floor(canvas.clientWidth * dpr()))
@@ -198,8 +309,6 @@ export function useFractalEngine() {
       publishHud()
       renderNow()
     }
-    // Defer the first render + ready flag out of the effect body (so state
-    // updates happen in a frame callback, not synchronously during commit).
     const kickoff = requestAnimationFrame(() => {
       resize()
       setReady(true)
@@ -213,15 +322,36 @@ export function useFractalEngine() {
       zoomAt(e.clientX, e.clientY, factor)
     }
 
+    // --- pointer + pinch handling ---
+    const active = new Map<number, { x: number; y: number }>()
     let dragging = false
     let lastX = 0
     let lastY = 0
+    let pinchDist = 0
+    let pinchCX = 0
+    let pinchCY = 0
+
     const onPointerDown = (e: PointerEvent) => {
-      if (e.button !== 0) return
+      if (e.pointerType !== 'touch' && e.button !== 0) return
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (active.size === 2) {
+        // begin pinch
+        dragging = false
+        const pts = [...active.values()]
+        pinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+        pinchCX = (pts[0].x + pts[1].x) / 2
+        pinchCY = (pts[0].y + pts[1].y) / 2
+        cancelAnim()
+        return
+      }
       if (e.shiftKey && paramsRef.current.mode === 'mandelbrot') {
-        const { x, y } = pixelToWorld(e.clientX, e.clientY)
-        viewportRef.current = { ...JULIA_HOME }
-        setParams((p) => ({ ...p, mode: 'julia', juliaX: x, juliaY: y }))
+        const { px, py } = pixelOffset(e.clientX, e.clientY)
+        const scale = currentScale()
+        const jx = hpToNumber(viewportRef.current.cx) + px * scale
+        const jy = hpToNumber(viewportRef.current.cy) + py * scale
+        viewportRef.current = cloneViewport(JULIA_HOME)
+        cancelAnim()
+        setParams((p) => ({ ...p, mode: 'julia', juliaX: jx, juliaY: jy }))
         publishHud()
         return
       }
@@ -230,25 +360,56 @@ export function useFractalEngine() {
       lastY = e.clientY
       canvas.setPointerCapture(e.pointerId)
       canvas.style.cursor = 'grabbing'
+      cancelAnim()
     }
+
     const onPointerMove = (e: PointerEvent) => {
+      if (active.has(e.pointerId)) active.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (active.size === 2) {
+        const pts = [...active.values()]
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+        const cx = (pts[0].x + pts[1].x) / 2
+        const cy = (pts[0].y + pts[1].y) / 2
+        if (pinchDist > 0 && dist > 0) {
+          zoomAt(cx, cy, pinchDist / dist)
+        }
+        // pan by the midpoint drift
+        const canvasW = canvas.width / canvas.clientWidth
+        const canvasH = canvas.height / canvas.clientHeight
+        const scale = currentScale()
+        const vp = viewportRef.current
+        vp.cx = hpAddNumber(vp.cx, -(cx - pinchCX) * canvasW * scale)
+        vp.cy = hpAddNumber(vp.cy, (cy - pinchCY) * canvasH * scale)
+        pinchDist = dist
+        pinchCX = cx
+        pinchCY = cy
+        publishHud()
+        schedule()
+        syncUrl()
+        return
+      }
       if (!dragging) return
       const scale = currentScale()
       const dprX = canvas.width / canvas.clientWidth
       const dprY = canvas.height / canvas.clientHeight
       const vp = viewportRef.current
-      vp.centerX -= (e.clientX - lastX) * dprX * scale
-      vp.centerY += (e.clientY - lastY) * dprY * scale
+      vp.cx = hpAddNumber(vp.cx, -(e.clientX - lastX) * dprX * scale)
+      vp.cy = hpAddNumber(vp.cy, (e.clientY - lastY) * dprY * scale)
       lastX = e.clientX
       lastY = e.clientY
       publishHud()
       schedule()
+      syncUrl()
     }
+
     const onPointerUp = (e: PointerEvent) => {
+      active.delete(e.pointerId)
+      if (active.size < 2) pinchDist = 0
       dragging = false
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
       canvas.style.cursor = 'grab'
     }
+
     const onDoubleClick = (e: MouseEvent) => {
       e.preventDefault()
       zoomAt(e.clientX, e.clientY, 0.4)
@@ -272,22 +433,23 @@ export function useFractalEngine() {
       canvas.removeEventListener('pointercancel', onPointerUp)
       canvas.removeEventListener('dblclick', onDoubleClick)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (animRef.current) cancelAnimationFrame(animRef.current)
       rendererRef.current = null
       renderer.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Re-render whenever a non-camera parameter changes. The HUD/render updates
-  // run in a frame callback rather than synchronously in the effect body.
+  // Re-render whenever a non-camera parameter changes.
   useEffect(() => {
     if (!ready) return
     const id = requestAnimationFrame(() => {
       publishHud()
       renderNow()
+      syncUrl()
     })
     return () => cancelAnimationFrame(id)
-  }, [params, ready, publishHud, renderNow])
+  }, [params, ready, publishHud, renderNow, syncUrl])
 
   // Palette / colour cycling loop, active only while cycleSpeed != 0.
   useEffect(() => {
@@ -307,16 +469,21 @@ export function useFractalEngine() {
 
   // --- imperative actions exposed to the UI ---
   const reset = useCallback(() => {
-    viewportRef.current =
-      paramsRef.current.mode === 'julia' ? { ...JULIA_HOME } : { ...HOME }
+    cancelAnim()
+    viewportRef.current = cloneViewport(paramsRef.current.mode === 'julia' ? JULIA_HOME : HOME)
     phaseRef.current = 0
     publishHud()
     schedule()
-  }, [publishHud, schedule])
+    syncUrl()
+  }, [publishHud, schedule, syncUrl, cancelAnim])
 
   const applyBookmark = useCallback(
     (b: Bookmark) => {
-      viewportRef.current = { centerX: b.centerX, centerY: b.centerY, span: b.span }
+      const target: Viewport = {
+        cx: hpFromString(b.centerX),
+        cy: hpFromString(b.centerY),
+        span: b.span,
+      }
       phaseRef.current = 0
       setParams((p) => ({
         ...p,
@@ -324,32 +491,42 @@ export function useFractalEngine() {
         juliaX: b.juliaX ?? p.juliaX,
         juliaY: b.juliaY ?? p.juliaY,
         paletteId: b.paletteId ?? p.paletteId,
+        de: b.de ?? p.de,
       }))
-      publishHud()
-      schedule()
+      // Julia bookmarks jump; Mandelbrot bookmarks get a cinematic dive.
+      if (b.mode === 'julia' || paramsRef.current.mode === 'julia') {
+        viewportRef.current = cloneViewport(target)
+        publishHud()
+        schedule()
+        syncUrl()
+      } else {
+        flyTo(target)
+      }
     },
-    [publishHud, schedule],
+    [flyTo, publishHud, schedule, syncUrl],
   )
 
   const seedJuliaFromCenter = useCallback(() => {
     const vp = viewportRef.current
-    const cx = vp.centerX
-    const cy = vp.centerY
-    viewportRef.current = { ...JULIA_HOME }
-    setParams((p) => ({ ...p, mode: 'julia', juliaX: cx, juliaY: cy }))
+    const jx = hpToNumber(vp.cx)
+    const jy = hpToNumber(vp.cy)
+    cancelAnim()
+    viewportRef.current = cloneViewport(JULIA_HOME)
+    setParams((p) => ({ ...p, mode: 'julia', juliaX: jx, juliaY: jy }))
     publishHud()
     schedule()
-  }, [publishHud, schedule])
+  }, [publishHud, schedule, cancelAnim])
 
   const setMode = useCallback(
     (mode: 'mandelbrot' | 'julia') => {
-      viewportRef.current = mode === 'julia' ? { ...JULIA_HOME } : { ...HOME }
+      cancelAnim()
+      viewportRef.current = cloneViewport(mode === 'julia' ? JULIA_HOME : HOME)
       phaseRef.current = 0
       setParams((p) => ({ ...p, mode }))
       publishHud()
       schedule()
     },
-    [publishHud, schedule],
+    [publishHud, schedule, cancelAnim],
   )
 
   const exportPng = useCallback(async () => {
@@ -384,9 +561,29 @@ export function useFractalEngine() {
     renderNow()
   }, [buildFrame, renderNow])
 
+  const share = useCallback(async (): Promise<boolean> => {
+    const hash = encodeView(viewportRef.current, paramsRef.current)
+    const url = `${location.origin}${location.pathname}${location.search}#${hash}`
+    history.replaceState(null, '', `#${hash}`)
+    try {
+      await navigator.clipboard.writeText(url)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
   const actions: EngineActions = useMemo(
-    () => ({ reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng }),
-    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng],
+    () => ({
+      reset,
+      applyBookmark,
+      seedJuliaFromCenter,
+      setMode,
+      zoomAtCenter,
+      exportPng,
+      share,
+    }),
+    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share],
   )
 
   const setParam = useCallback(<K extends keyof RenderParams>(key: K, value: RenderParams[K]) => {

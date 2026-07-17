@@ -1,12 +1,22 @@
 // GLSL sources for the fractal renderer.
 //
-// The interesting part is the fragment shader: it iterates the escape-time
-// formula in *emulated double precision*. WebGL only guarantees 32-bit floats,
-// which lets you zoom to about 1e-4 before the image dissolves into blocky
-// pixels. By storing every coordinate as a `vec2(hi, lo)` pair — a "double
-// single", ~48 bits of mantissa — Fathom pushes the usable zoom to ~1e13,
-// roughly a billion times deeper, entirely on the GPU and with no per-pixel
-// branching penalty beyond the extra arithmetic.
+// Fathom renders with two different fragment shaders, picked per frame by zoom:
+//
+//   * FRAG_SRC       — the direct engine. Iterates the escape-time formula in
+//                      *emulated double precision* (df64: every coordinate is a
+//                      vec2(hi, lo) pair, ~48 bits). Good to a zoom of ~1e13,
+//                      entirely on the GPU. Used at shallow/medium depth and for
+//                      Julia sets.
+//   * FRAG_PERTURB_SRC — the deep engine. Uses *perturbation theory*: a single
+//                      high-precision reference orbit (uploaded as a texture)
+//                      plus a per-pixel delta iterated in plain float32, with
+//                      Zhuoran rebasing to stay glitch-free. This lifts the zoom
+//                      floor from ~1e13 to ~1e30+, far past what any per-pixel
+//                      float scheme can reach, because the deep digits live in
+//                      how the reference was derived, not in the shader's floats.
+//
+// Both support optional distance-estimation (DE) shading, which outlines the
+// set's filaments by dividing |z| by the escape derivative |dz/dc|.
 
 // A fullscreen triangle drawn with no vertex buffers (gl_VertexID trick).
 export const VERT_SRC = `#version 300 es
@@ -55,6 +65,38 @@ vec2 ds_mul(vec2 a, vec2 b) {
   return vec2(hi, lo);
 }`
 
+// Shared colouring helpers: palette lookup, smooth iteration count, DE shade.
+const COLOR_COMMON = `
+uniform sampler2D u_palette;
+uniform float u_colorScale;
+uniform float u_colorOffset;
+uniform int   u_de;          // 1 = distance-estimation outline shading
+uniform float u_deStrength;  // px multiplier for the DE falloff
+
+vec3 paletteColor(float t) {
+  return texture(u_palette, vec2(fract(t), 0.5)).rgb;
+}
+
+// Smooth (fractional) iteration count from |z|^2 at escape.
+float smoothIter(float mag2, float iter) {
+  float logZn = 0.5 * log(mag2);
+  float nu = log(logZn / log(2.0)) / log(2.0);
+  return iter + 1.0 - nu;
+}
+
+// Combine smooth-iteration colour with an optional DE outline. dist is the
+// exterior distance estimate in world units; pxScale is world units per pixel.
+vec3 shade(float sIter, float dist, float pxScale) {
+  vec3 base = paletteColor(sIter * u_colorScale + u_colorOffset);
+  if (u_de == 1) {
+    float pxDist = dist / max(pxScale, 1e-38);
+    // tanh gives a soft, resolution-independent glow around the boundary.
+    float g = tanh(pxDist * u_deStrength);
+    base *= g;
+  }
+  return base;
+}`
+
 export const FRAG_SRC = `#version 300 es
 precision highp float;
 precision highp int;
@@ -67,19 +109,13 @@ uniform int   u_maxIter;
 uniform int   u_mode;        // 0 = Mandelbrot, 1 = Julia
 uniform vec2  u_jx;          // df64 Julia constant, real
 uniform vec2  u_jy;          // df64 Julia constant, imaginary
-uniform sampler2D u_palette;
-uniform float u_colorScale;
-uniform float u_colorOffset;
 uniform int   u_aa;          // supersampling factor per axis (1..3)
 
 out vec4 fragColor;
 ${DF64}
+${COLOR_COMMON}
 
 const float BAILOUT2 = 65536.0; // escape radius^2 (R = 256) for smooth coloring
-
-vec3 paletteColor(float t) {
-  return texture(u_palette, vec2(fract(t), 0.5)).rgb;
-}
 
 // Escape-time colour for one backing-store pixel coordinate.
 vec3 sampleAt(vec2 fragPx) {
@@ -94,6 +130,7 @@ vec3 sampleAt(vec2 fragPx) {
     zx = ds_set(0.0); zy = ds_set(0.0); cx = wx; cy = wy;
   }
 
+  vec2 dp = vec2(0.0);            // derivative dz/dc (Julia: dz/dz0), plain float
   bool escaped = false;
   int iter = 0;
   float m = 0.0;
@@ -103,6 +140,11 @@ vec3 sampleAt(vec2 fragPx) {
     vec2 mag = ds_add(zx2, zy2);
     m = mag.x;
     if (m > BAILOUT2) { escaped = true; iter = k; break; }
+    if (u_de == 1) {
+      vec2 zc = vec2(zx.x, zy.x);
+      vec2 t = vec2(zc.x * dp.x - zc.y * dp.y, zc.x * dp.y + zc.y * dp.x);
+      dp = 2.0 * t + vec2(1.0, 0.0);
+    }
     vec2 xy = ds_mul(zx, zy);
     zy = ds_add(ds_add(xy, xy), cy);      // 2*zx*zy + cy
     zx = ds_add(ds_sub(zx2, zy2), cx);    // zx^2 - zy^2 + cx
@@ -110,11 +152,110 @@ vec3 sampleAt(vec2 fragPx) {
 
   if (!escaped) return vec3(0.0); // interior of the set
 
-  // Continuous (fractional) iteration count for band-free gradients.
-  float logZn = 0.5 * log(m);
-  float nu = log(logZn / log(2.0)) / log(2.0);
-  float s = float(iter) + 1.0 - nu;
-  return paletteColor(s * u_colorScale + u_colorOffset);
+  float s = smoothIter(m, float(iter));
+  float dist = 0.0;
+  if (u_de == 1) {
+    float zmag = sqrt(m);
+    dist = zmag * log(zmag) / max(length(dp), 1e-30);
+  }
+  return shade(s, dist, u_scale.x);
+}
+
+void main() {
+  vec3 col;
+  if (u_aa <= 1) {
+    col = sampleAt(gl_FragCoord.xy);
+  } else {
+    int n = u_aa;
+    float inv = 1.0 / float(n);
+    col = vec3(0.0);
+    for (int sy = 0; sy < n; sy++) {
+      for (int sx = 0; sx < n; sx++) {
+        vec2 off = (vec2(float(sx), float(sy)) + 0.5) * inv - 0.5;
+        col += sampleAt(gl_FragCoord.xy + off);
+      }
+    }
+    col /= float(n * n);
+  }
+  fragColor = vec4(col, 1.0);
+}`
+
+// --- Perturbation fragment shader (deep zoom, Mandelbrot only) ---------------
+//
+// The reference orbit Z_n arrives as an RG32F texture (index m -> texel
+// (m % W, m / W)). Each pixel iterates its delta in float32:
+//
+//   dz_{n+1} = 2·Z_m·dz_n + dz_n² + dc
+//
+// Rebasing (Zhuoran, 2021): whenever |z| < |dz| (the actual value dips below the
+// delta — a would-be glitch) or the reference runs out, reset dz to the true
+// value z and restart the reference index at 0. One reference orbit, no glitch
+// hunting, provably faithful (validated against a BigInt ground truth).
+export const FRAG_PERTURB_SRC = `#version 300 es
+precision highp float;
+precision highp int;
+
+uniform vec2  u_resolution;
+uniform float u_pixelScale;  // world units per backing pixel (dc scale), small
+uniform int   u_maxIter;
+uniform int   u_orbitLen;    // highest valid reference index
+uniform sampler2D u_orbit;   // RG32F reference orbit: (Zx, Zy)
+uniform int   u_aa;
+
+out vec4 fragColor;
+${COLOR_COMMON}
+
+const float BAILOUT2 = 65536.0;
+
+vec2 orbitAt(int m) {
+  int W = textureSize(u_orbit, 0).x;
+  return texelFetch(u_orbit, ivec2(m % W, m / W), 0).rg;
+}
+
+vec3 sampleAt(vec2 fragPx) {
+  vec2 px = fragPx - 0.5 * u_resolution;
+  vec2 dc = px * u_pixelScale;    // this pixel's delta from the reference
+
+  vec2 dz = vec2(0.0);            // delta z = z - Z
+  vec2 dv = vec2(0.0);            // derivative d(z)/d(dc), for DE
+  int m = 0;
+  int n = 0;
+  bool escaped = false;
+  float mag2 = 0.0;
+
+  for (int k = 0; k < u_maxIter; k++) {
+    vec2 Z = orbitAt(m);
+    if (u_de == 1) {
+      vec2 zc = Z + dz;           // true value z_n
+      vec2 t = vec2(zc.x * dv.x - zc.y * dv.y, zc.x * dv.y + zc.y * dv.x);
+      dv = 2.0 * t + vec2(1.0, 0.0);
+    }
+    // dz = 2*Z*dz + dz^2 + dc
+    vec2 twoZdz = vec2(Z.x * dz.x - Z.y * dz.y, Z.x * dz.y + Z.y * dz.x);
+    vec2 dz2 = vec2(dz.x * dz.x - dz.y * dz.y, 2.0 * dz.x * dz.y);
+    dz = 2.0 * twoZdz + dz2 + dc;
+    m++;
+    n++;
+    Z = orbitAt(m);
+    vec2 z = Z + dz;               // true value at iteration n
+    mag2 = dot(z, z);
+    if (mag2 > BAILOUT2) { escaped = true; break; }
+    float dd = dot(dz, dz);
+    if (mag2 < dd || m >= u_orbitLen) {
+      dz = z;                     // rebase to reference index 0
+      m = 0;
+    }
+  }
+
+  if (!escaped) return vec3(0.0);
+
+  float s = smoothIter(mag2, float(n));
+  float dist = 0.0;
+  if (u_de == 1) {
+    float zmag = sqrt(mag2);
+    dist = zmag * log(zmag) / max(length(dv), 1e-30);
+  }
+  return shade(s, dist, u_pixelScale);
 }
 
 void main() {

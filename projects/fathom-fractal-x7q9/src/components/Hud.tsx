@@ -7,23 +7,23 @@ function formatMag(m: number): string {
   return `${mant.toFixed(2)}e${exp}×`
 }
 
-function formatCoord(x: number, span: number): string {
-  const digits = Math.min(17, Math.max(4, Math.round(-Math.log10(span)) + 4))
-  const s = x.toFixed(digits)
-  return x >= 0 ? `+${s}` : s
+// The centre coordinates can run to dozens of digits at deep zoom; wrap them so
+// the HUD stays readable instead of overflowing.
+function CoordRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="hud-row hud-coord">
+      <span className="hud-key">{label}</span>
+      <span className="hud-val hud-coord-val">{value}</span>
+    </div>
+  )
 }
 
 export default function Hud({ hud }: { hud: HudInfo }) {
+  const deep = hud.engine === 'perturb'
   return (
     <div className="hud">
-      <div className="hud-row">
-        <span className="hud-key">re</span>
-        <span className="hud-val">{formatCoord(hud.re, hud.span)}</span>
-      </div>
-      <div className="hud-row">
-        <span className="hud-key">im</span>
-        <span className="hud-val">{formatCoord(hud.im, hud.span)}</span>
-      </div>
+      <CoordRow label="re" value={hud.re} />
+      <CoordRow label="im" value={hud.im} />
       <div className="hud-row">
         <span className="hud-key">zoom</span>
         <span className="hud-val">{formatMag(hud.magnification)}</span>
@@ -31,6 +31,12 @@ export default function Hud({ hud }: { hud: HudInfo }) {
       <div className="hud-row">
         <span className="hud-key">iter</span>
         <span className="hud-val">{hud.maxIter}</span>
+      </div>
+      <div className="hud-row">
+        <span className="hud-key">engine</span>
+        <span className={deep ? 'hud-val hud-engine deep' : 'hud-val hud-engine'}>
+          {deep ? 'perturbation' : 'df64'}
+        </span>
       </div>
       <div className="hud-row">
         <span className="hud-key">fps</span>

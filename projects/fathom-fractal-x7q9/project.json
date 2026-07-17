@@ -1,8 +1,8 @@
 {
   "title": "Fathom",
-  "description": "A GPU deep-zoom Mandelbrot & Julia explorer that emulates double precision in the shader to dive far past the point where float32 renderers pixelate.",
+  "description": "A GPU deep-zoom Mandelbrot & Julia explorer. Emulated double precision gets you to ~1e13; a perturbation-theory engine (BigInt reference orbit + float32 deltas with rebasing) then dives past 1e28 — with distance-estimation shading, shareable deep links, and pinch-to-zoom.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["fractal", "mandelbrot", "webgl", "shaders", "math", "visualization"],
+  "tags": ["fractal", "mandelbrot", "webgl", "shaders", "perturbation", "deep-zoom", "math", "visualization"],
   "createdAt": "2026-07-17"
 }

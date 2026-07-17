@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import './App.css'
 import { useFractalEngine } from './fractal/useFractalEngine'
 import ControlPanel from './components/ControlPanel'
@@ -9,6 +9,15 @@ export default function App() {
   const { canvasRef, params, setParam, hud, error, actions } = useFractalEngine()
   const [panelOpen, setPanelOpen] = useState(true)
   const [showHelp, setShowHelp] = useState(true)
+  const [shareLabel, setShareLabel] = useState('Copy share link')
+  const shareTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const onShare = useCallback(async () => {
+    const ok = await actions.share()
+    setShareLabel(ok ? 'Link copied ✓' : 'Link in address bar')
+    if (shareTimer.current) clearTimeout(shareTimer.current)
+    shareTimer.current = setTimeout(() => setShareLabel('Copy share link'), 2200)
+  }, [actions])
 
   return (
     <div className="stage">
@@ -47,6 +56,8 @@ export default function App() {
               onReset={actions.reset}
               onSeedJulia={actions.seedJuliaFromCenter}
               onExport={actions.exportPng}
+              onShare={onShare}
+              shareLabel={shareLabel}
               onSetMode={actions.setMode}
             />
           )}
@@ -57,9 +68,10 @@ export default function App() {
                 ×
               </button>
               <strong>Drag</strong> to pan · <strong>scroll</strong> or <strong>double-click</strong>{' '}
-              to zoom · <strong>shift-click</strong> a point to spin up its Julia set. Everything is
-              computed on the GPU in emulated double precision, so you can dive far past the point
-              where ordinary float renderers pixelate.
+              to zoom · <strong>shift-click</strong> a point to spin up its Julia set · pinch on
+              touch. Past a zoom of ~1e9 Fathom switches to a <strong>perturbation</strong> engine —
+              a high-precision reference orbit computed on the CPU lets the GPU dive past 1e28, far
+              beyond where ordinary float renderers dissolve into blocks.
             </div>
           )}
         </>
