@@ -6,6 +6,9 @@ import type { FrameModel, FrameResult, NodeDisp, SupportKind } from '../engine/f
 import type { ContinuumResult } from '../engine/continuum'
 import type { Mesh, EdgeName } from '../engine/mesh'
 import { edgeSegments } from '../engine/mesh'
+import type { QuadMesh } from '../engine/quadmesh'
+import { boundaryElementEdges } from '../engine/quadmesh'
+import type { QuadResult } from '../engine/quadsolve'
 import { fieldColor, signedColor, rgbStr, type Colormap } from './colormap'
 import { worldToScreen, type View } from './viewport'
 
@@ -502,6 +505,155 @@ export function drawContinuum(
     const uy = (-d.ty / mag) * 22 // screen y down
     for (const [n1, n2] of edgeSegments(mesh, o.tractionEdge)) {
       const mx = worldToScreen(view, (mesh.x[n1] + mesh.x[n2]) / 2, (mesh.y[n1] + mesh.y[n2]) / 2)
+      arrow(ctx, mx[0] - ux, mx[1] - uy, mx[0], mx[1], '#ffd166', 2)
+    }
+  }
+}
+
+// ------------------------------------------------ isoparametric (Q4/Q8) quads
+
+export interface QuadDrawOpts extends ContinuumDrawOpts {
+  /** Optional per-node displacement override (mode shape for modal animation). */
+  overrideDisp?: { dispX: Float64Array; dispY: Float64Array } | null
+  /** When true, colour by displacement magnitude regardless of `field`. */
+  colorByDisp?: boolean
+}
+
+/**
+ * Render an isoparametric quad mesh with a *smooth* nodal stress field. Each
+ * element's corner quad is split into two triangles flat-shaded by the average
+ * of its nodes' recovered von-Mises stress — because the stress is nodal
+ * (C⁰-continuous), the field reads as a smooth gradient, unlike the flat
+ * per-element CST picture. Q8 mid-side nodes refine the solve but the corner
+ * quad is enough to draw.
+ */
+export function drawQuadContinuum(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  mesh: QuadMesh,
+  result: QuadResult | null,
+  o: QuadDrawOpts,
+) {
+  clear(ctx, w, h)
+  drawGrid(ctx, o.view, w, h)
+  const { view } = o
+  const def = o.deformScale * o.loadFactor
+  const order = mesh.order
+
+  const dispX = o.overrideDisp?.dispX ?? result?.dispX
+  const dispY = o.overrideDisp?.dispY ?? result?.dispY
+
+  const px = new Float64Array(mesh.nodeCount)
+  const py = new Float64Array(mesh.nodeCount)
+  for (let i = 0; i < mesh.nodeCount; i++) {
+    let x = mesh.x[i]
+    let y = mesh.y[i]
+    if (dispX && dispY) {
+      x += dispX[i] * def
+      y += dispY[i] * def
+    }
+    const [sx, sy] = worldToScreen(view, x, y)
+    px[i] = sx
+    py[i] = sy
+  }
+
+  // Undeformed ghost outline (corner quads).
+  if (o.showUndeformed && def !== 0 && (dispX || result)) {
+    ctx.strokeStyle = GHOST
+    ctx.lineWidth = 0.6
+    ctx.beginPath()
+    for (let e = 0; e < mesh.elemCount; e++) {
+      const base = e * order
+      const c = [0, 1, 2, 3].map((k) => mesh.elems[base + k])
+      const p0 = worldToScreen(view, mesh.x[c[0]], mesh.y[c[0]])
+      ctx.moveTo(p0[0], p0[1])
+      for (let k = 1; k < 4; k++) {
+        const p = worldToScreen(view, mesh.x[c[k]], mesh.y[c[k]])
+        ctx.lineTo(p[0], p[1])
+      }
+      ctx.closePath()
+    }
+    ctx.stroke()
+  }
+
+  // Per-node scalar to colour by.
+  const useDisp = o.colorByDisp || o.field === 'disp'
+  const nodeVal = new Float64Array(mesh.nodeCount)
+  let lo = Infinity
+  let hi = -Infinity
+  for (let i = 0; i < mesh.nodeCount; i++) {
+    let v = 0
+    if (useDisp && dispX && dispY) v = Math.hypot(dispX[i], dispY[i])
+    else if (result) v = result.nodalVonMises[i]
+    nodeVal[i] = v
+    if (v < lo) lo = v
+    if (v > hi) hi = v
+  }
+  if (!Number.isFinite(lo)) {
+    lo = 0
+    hi = 1
+  }
+  if (useDisp) lo = 0
+  const span = hi - lo || 1
+
+  const tri = (a: number, b: number, c: number) => {
+    const t = ((nodeVal[a] + nodeVal[b] + nodeVal[c]) / 3 - lo) / span
+    ctx.fillStyle = rgbStr(fieldColor(t, o.colormap))
+    ctx.beginPath()
+    ctx.moveTo(px[a], py[a])
+    ctx.lineTo(px[b], py[b])
+    ctx.lineTo(px[c], py[c])
+    ctx.closePath()
+    ctx.fill()
+  }
+  for (let e = 0; e < mesh.elemCount; e++) {
+    const base = e * order
+    const c0 = mesh.elems[base]
+    const c1 = mesh.elems[base + 1]
+    const c2 = mesh.elems[base + 2]
+    const c3 = mesh.elems[base + 3]
+    tri(c0, c1, c2)
+    tri(c0, c2, c3)
+    if (o.showMesh) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)'
+      ctx.lineWidth = 0.5
+      ctx.beginPath()
+      ctx.moveTo(px[c0], py[c0])
+      ctx.lineTo(px[c1], py[c1])
+      ctx.lineTo(px[c2], py[c2])
+      ctx.lineTo(px[c3], py[c3])
+      ctx.closePath()
+      ctx.stroke()
+    }
+  }
+
+  // Boundary conditions.
+  if (o.fixedEdges) {
+    ctx.strokeStyle = '#8fb0ff'
+    ctx.lineWidth = 3
+    for (const edge of o.fixedEdges) {
+      for (const nodes of boundaryElementEdges(mesh, edge)) {
+        const a = nodes[0]
+        const b = nodes[nodes.length - 1]
+        const [x1, y1] = worldToScreen(view, mesh.x[a], mesh.y[a])
+        const [x2, y2] = worldToScreen(view, mesh.x[b], mesh.y[b])
+        ctx.beginPath()
+        ctx.moveTo(x1, y1)
+        ctx.lineTo(x2, y2)
+        ctx.stroke()
+      }
+    }
+  }
+  if (o.tractionEdge) {
+    const d = o.tractionDir ?? { tx: 1, ty: 0 }
+    const mag = Math.hypot(d.tx, d.ty) || 1
+    const ux = (d.tx / mag) * 22
+    const uy = (-d.ty / mag) * 22
+    for (const nodes of boundaryElementEdges(mesh, o.tractionEdge)) {
+      const a = nodes[0]
+      const b = nodes[nodes.length - 1]
+      const mx = worldToScreen(view, (mesh.x[a] + mesh.x[b]) / 2, (mesh.y[a] + mesh.y[b]) / 2)
       arrow(ctx, mx[0] - ux, mx[1] - uy, mx[0], mx[1], '#ffd166', 2)
     }
   }

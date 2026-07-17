@@ -25,6 +25,16 @@ implemented from scratch, numerically validated in-app.
   mesher for parametric domains (bar, cantilever, plate-with-hole, L-bracket). Assemble global
   stiffness (2 DOF/node), apply Dirichlet + traction BCs, solve, recover element stress/strain,
   von Mises, principal stresses.
+- `src/engine/isoparam.ts` — higher-order **isoparametric** plane-stress elements (v9): Q4
+  (bilinear, 2×2 Gauss) and Q8 (8-node serendipity, 3×3 Gauss) shape functions + natural
+  derivatives, the mapped Jacobian/B matrix, element stiffness + consistent mass, and the
+  Gauss→node **stress-recovery** (extrapolation) matrices. Pure, testable.
+- `src/engine/quadmesh.ts` — structured **quadrilateral** meshers for the same four domains
+  (Q4 or Q8, with de-duplicated mid-side nodes), plus edge / boundary-edge helpers for BCs and
+  consistent edge tractions.
+- `src/engine/quadsolve.ts` — the Q4/Q8 static solver (smooth recovered nodal stress field) and
+  **continuum modal** analysis (K φ = ω² M φ) by scalable **subspace iteration** on the sparse
+  system — the lowest modes without a full dense eigensolve.
 - `src/engine/plastic.ts` — nonlinear pushover: event-to-event elastic–plastic hinge tracking
   (moment-release condensation, mechanism detection from the tangent spectrum), capacity curve.
 - `src/engine/seismic.ts` — seismic time-history: a Newmark-β integrator, Rayleigh damping, a
@@ -32,9 +42,11 @@ implemented from scratch, numerically validated in-app.
 - `src/engine/inelastic.ts` — inelastic (nonlinear hysteretic) seismic time-history: bilinear
   kinematic-hardening plastic hinges + a Newmark-β / Newton–Raphson march (initial-stiffness with
   line search), giving hysteresis loops, ductility, residual drift and the R factor.
-- `src/engine/validate.ts` — analytical benchmarks that run live (45 of them): truss statics,
+- `src/engine/validate.ts` — analytical benchmarks that run live (55 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
-  seismic, and the inelastic hinge/hysteresis checks. Reports rel. error.
+  seismic, the inelastic hinge/hysteresis checks, and the v9 isoparametric checks (Q4/Q8 patch
+  test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency). Reports
+  rel. error.
 - `src/engine/presets.ts` — Warren/Pratt bridges, transmission tower, portal frame, cantilever,
   plate-with-hole, L-bracket, plastic-collapse frames, and seismic/inelastic moment frames.
 - `src/ui/` — React + canvas. Pan/zoom viewport, interactive editing, results & reactions
@@ -92,8 +104,9 @@ theory and Euler's column formula, exactly like the static side.
 - [x] Damped free-vibration benchmark: successive-peak ratio = log-decrement e^{−2πζ/√(1−ζ²)}
 - [x] Response analysis mode: live playback, damping-ratio slider, play/pause/restart, elapsed clock
 
-- [ ] Rayleigh / Lanczos partial eigensolver for large continuum modal analysis — future
-- [ ] Q4/Q8 continuum elements + nodal stress smoothing — future
+- [x] Rayleigh / Lanczos partial eigensolver for large continuum modal analysis — **shipped in
+      v9** (subspace iteration; sparse-CG inner solves, dense reduced eigenproblem)
+- [x] Q4/Q8 continuum elements + nodal stress smoothing — **shipped in v9**
 - [ ] Free-form domain sketching + Delaunay/Ruppert meshing — future
 
 ### v4 — Forced harmonic response, the FRF, real steel sections & design checks
@@ -330,7 +343,101 @@ with a **backtracking line search** for monotone residual decrease.
 - [ ] Inelastic **constant-ductility** / strength-reduction spectra (Rμ–μ–T) — future
 - [ ] P-Δ in the nonlinear march (marry v6's geometric stiffness to the hinge model) — future
 
+### v9 — Higher-order continuum: isoparametric Q4/Q8 elements, smooth stress recovery & continuum dynamics
+
+Every continuum result so far came from the **constant-strain triangle** (CST): one B matrix per
+element, stress *constant* across each element, and a notoriously **stiff** bending response — a
+coarse CST cantilever is ~12 % too stiff, and its stress field is a jumpy patchwork of flat
+tiles. That is the weakest part of the studio, and v9 fixes it with the workhorses of real 2-D
+FEA:
+
+- **Isoparametric Q4** — the bilinear quadrilateral (4 nodes, 2×2 Gauss). Passes the patch test
+  exactly; converges to the right answer under refinement (its shear-locking bending error dies
+  as the mesh refines).
+- **Isoparametric Q8** — the quadratic **serendipity** quadrilateral (8 nodes, 3×3 Gauss). It
+  captures bending and curved stress gradients a CST cannot: a **coarse** Q8 mesh reproduces
+  Euler–Bernoulli beam deflection to <1 % and the full **Timoshenko** (bending + shear) answer to
+  <0.1 %.
+
+Both are integrated numerically over the parent square [-1,1]² and mapped to the physical element
+by the isoparametric Jacobian. The element stress is sampled at the **superconvergent** Gauss
+points and **extrapolated to the nodes** (a per-order extrapolation matrix), then averaged across
+the mesh — turning FEA's jumpy element stresses into the **smooth C⁰ nodal field** engineers
+actually read. And because the two questions of dynamics matter for solids too, v9 adds
+**continuum modal** analysis (K φ = ω² M φ with a consistent mass matrix), solved by **subspace
+iteration** so only the lowest handful of modes are computed — the sparse-CG inner solves keep it
+interactive at thousands of DOFs where a dense eigensolve would freeze. The fundamental of a
+cantilever plate lands exactly on the Euler–Bernoulli beam frequency, closing the loop with the
+frame modal chapter.
+
+- [x] `isoparam.ts` — Q4/Q8 shape functions + natural derivatives, 2×2 / 3×3 Gauss rules, the
+      mapped Jacobian + B matrix, element stiffness Kᵉ = ∫BᵀDB t dΩ and consistent mass
+      Mᵉ = ∫ρNᵀN t dΩ, and the Gauss→node stress-extrapolation matrices (bilinear/biquadratic fit)
+- [x] `quadmesh.ts` — structured Q4/Q8 meshers for the four domains (plate, cantilever,
+      plate-with-hole, L-bracket) with de-duplicated mid-side nodes and boundary-edge helpers
+- [x] `quadsolve.ts` — `solveQuad` (assemble → BC-aware PCG solve → smooth recovered nodal
+      σxx/σyy/τxy, von Mises, principal, strain energy, equilibrium residual) and `solveQuadModal`
+- [x] **Subspace (Bathe) iteration** for the lowest continuum modes: solve K X̄ = M X (sparse CG),
+      project to a small K_r/M_r, dense-eig the reduced system, rotate, iterate to convergence
+- [x] **10 new closed-form benchmarks** (badge 45 → **55**): Q4 & Q8 patch test (σ uniform, σyy/τxy
+      vanish, u = σW/E — all exact to ~1e-6); Q8 cantilever vs Euler PL³/3EI (<1.5 %) and vs the
+      full Timoshenko bending+shear answer (<0.5 %); Q4 cantilever converging under refinement; and
+      the continuum modal fundamental = the Euler–Bernoulli cantilever bending frequency (<2 %)
+- [x] UI: an **Element formulation** selector (CST / Q4 / Q8) and a continuum **Static / Modes**
+      switch in the 2-D continuum tab; a smooth quad stress renderer (nodal-averaged field);
+      continuum mode selector + live mode-shape animation; quad-aware results panel (recovered
+      max von Mises, element/node counts, formulation, PCG iters) and a modal panel (frequencies,
+      periods, free-DOF count)
+- [x] Verified end-to-end in headless Chromium: the plate-with-hole Q8 renders the smooth Kt
+      stress concentration at the hole, the Q8 cantilever bends with the correct through-depth
+      stress gradient on 20 elements, continuum Modes animates the first mode of a 1486-DOF part in
+      real time, and the badge reads **55/55** with zero runtime errors
+
+- [ ] **Superconvergent Patch Recovery (Zienkiewicz–Zhu)** proper — a least-squares patch fit per
+      node instead of simple averaging, plus the **ZZ error estimator** (‖σ* − σ_h‖) to drive
+      adaptive refinement — future
+- [ ] **Q9 (full biquadratic Lagrange) + Q6 incompatible modes / B-bar** for near-incompressible
+      plane strain (locking-free) — future
+- [ ] **Plane strain toggle** (the other 2-D elasticity model) and a **thermal load** (α·ΔT) term — future
+- [ ] **6-node quadratic triangle (LST/T6)** to mesh curved boundaries (the hole) exactly — future
+- [ ] **Continuum buckling & harmonic** (reuse the geometric-stiffness / FRF machinery on the
+      isoparametric mesh) so the plate gets the full dynamics story the frames already have — future
+- [ ] **Free-form domain sketching + Delaunay/Ruppert meshing** feeding the Q4/Q8 assembler — future
+
 ## Session log
+
+- 2026-07-17 (claude): shipped **v9 — higher-order continuum: isoparametric Q4/Q8
+  elements, smooth stress recovery & continuum modal dynamics**, the chapter that
+  upgrades the app's weakest part (constant-strain triangles). New `isoparam.ts`:
+  the bilinear **Q4** (2×2 Gauss) and quadratic 8-node serendipity **Q8** (3×3
+  Gauss) plane-stress elements — shape functions + natural derivatives, the mapped
+  isoparametric Jacobian and B matrix, element stiffness Kᵉ = ∫BᵀDB t dΩ and
+  consistent mass Mᵉ = ∫ρNᵀN t dΩ, plus per-order Gauss→node stress-extrapolation
+  matrices (a bilinear/biquadratic fit through the superconvergent Gauss-point
+  stresses). New `quadmesh.ts`: structured Q4/Q8 meshers for the four domains with
+  de-duplicated mid-side nodes and boundary-edge helpers for BCs + consistent edge
+  tractions ({½,½} for Q4, {⅙,⅔,⅙} for Q8). New `quadsolve.ts`: the static solver
+  (BC-aware PCG, then a **smooth recovered nodal stress field** — the C⁰ picture,
+  not the CST's flat tiles) and **continuum modal** analysis K φ = ω² M φ solved by
+  scalable **subspace (Bathe) iteration** — solve K X̄ = M X with sparse CG, project
+  to a small reduced eigenproblem, rotate, iterate — so the lowest modes of a
+  thousands-of-DOF part stay interactive where a dense Jacobi solve would freeze the
+  tab. Ten new closed-form benchmarks (badge **45 → 55**, all green): the Q4 and Q8
+  patch tests (uniform σ, vanishing σyy/τxy, u = σW/E — exact to ~1e-6); the Q8
+  cantilever reproducing Euler–Bernoulli PL³/3EI to <1 % *and* the full Timoshenko
+  (bending + shear) answer to <0.1 % on a coarse 12×3 mesh (where a CST needs a 12 %
+  tolerance); the Q4 cantilever converging under refinement (shear-locking cured);
+  and the **continuum modal fundamental** matching the Euler–Bernoulli cantilever
+  bending frequency (β₁L = 1.875) to 0.15 %. UI: an **Element formulation** selector
+  (CST / Q4 / Q8), a continuum **Static / Modes** switch, a smooth quad stress
+  renderer, a continuum mode selector with live mode-shape animation, and
+  quad/modal-aware results panels. Verified end-to-end in headless Chromium: the
+  plate-with-hole Q8 renders the smooth Kt stress concentration (max von Mises
+  156.7 MPa, converged, equilibrium 4e-11), the Q8 cantilever bends with the correct
+  through-depth stress gradient on 20 elements, continuum Modes animates the first
+  mode of a **1486-DOF** part in real time (fundamental 45.3 Hz, 6 modes found), the
+  badge reads **55/55**, and Static/Modal/… on the frame side and CST/Q4/Q8 on the
+  continuum side all switch cleanly with zero runtime errors.
 
 - 2026-07-16 (claude): shipped **v8 — inelastic (nonlinear hysteretic) seismic
   time-history**, the ductility chapter that marries v6's plastic hinges to v7's

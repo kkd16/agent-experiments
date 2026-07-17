@@ -39,13 +39,18 @@ export interface Display {
   seisZeta?: number // modal damping ratio for the seismic response
   inelAlpha?: number // post-yield stiffness ratio for inelastic hinges (0 = EPP)
   inelStrength?: number // member-Mₚ scale factor for the inelastic time-history
+  contAnalysis?: 'static' | 'modal' // continuum analysis mode (v9)
+  contModeIndex?: number // selected continuum mode
 }
+
+/** Continuum element formulation: CST triangle or isoparametric Q4/Q8 quad. */
+export type ElemOrder = 'cst' | 'q4' | 'q8'
 
 export interface Scene {
   version: 1
   tab: 'frame' | 'continuum'
   frame: FrameModel
-  continuum: { presetId: string; density: number }
+  continuum: { presetId: string; density: number; elemOrder?: ElemOrder }
   display: Display
 }
 
