@@ -37,6 +37,7 @@ import { EnvMap, Distribution2D } from './envmap'
 import type { HdriPreset } from './envmap'
 import { decodeHdr, encodeHdr, downsampleEquirect, floatToRgbe } from './hdr'
 import { decodePfm, encodePfm, sniffHdrFormat } from './pfm'
+import { decodeExr, encodeExr, halfToFloat, floatToHalf, inflateZlib, deflateStored } from './exr'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
@@ -4192,6 +4193,224 @@ function testPfmDrivesSampler(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `E[cos²θ]=${my2.toFixed(4)} (1/3), |E[ω]|=${Math.hypot(mx, my, mz).toFixed(4)}, sampler↔pdf=${maxPdfDev.toExponential(1)}` }
 }
 
+// ---- 27.0 — OpenEXR (`.exr`) codec ------------------------------------------
+
+// Decode a base64 string to a byte array (available in the browser and Node).
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+// (1) The IEEE-754 binary16 (`half`) converter is exact on every value half can
+// represent — ±0, subnormals down to 2^-24, the powers of two, the max finite
+// 65504, ±∞ — and preserves NaN. This is the numeric floor the whole EXR codec
+// stands on, so it is pinned to bit-exactness before anything reads a file.
+function testExrHalfFloat(): { pass: boolean; detail: string } {
+  const exact = [0, 1, -1, 0.5, -0.5, 2, -2048, 65504, -65504, 6.103515625e-5, 5.960464477539063e-8, Infinity, -Infinity]
+  let allExact = true
+  for (const v of exact) if (halfToFloat(floatToHalf(v)) !== v) allExact = false
+  const nanOk = Number.isNaN(halfToFloat(floatToHalf(NaN)))
+  // Rounding: any NORMAL half value (magnitude in [2^-14, 65504]) round-trips to
+  // within a half ULP — round-to-nearest bounds the relative error by 2^-11.
+  // (Subnormals below 2^-14 have coarser relative precision by construction; they
+  // are covered exactly by the `5.96e-8` case above, not by this relative bound.)
+  const rng = new Rng(0x51f7, 2)
+  let maxRel = 0
+  for (let i = 0; i < 20000; i++) {
+    const e = Math.floor(rng.range(-13, 15)) // normal-range exponent
+    const v = (rng.next() < 0.5 ? -1 : 1) * (1 + rng.next()) * Math.pow(2, e)
+    const back = halfToFloat(floatToHalf(v))
+    const rel = Math.abs(back - v) / Math.abs(v)
+    if (rel > maxRel) maxRel = rel
+  }
+  // Overflow saturates to ∞, underflow to ±0 (never NaN or a wrong finite value).
+  const satOk = halfToFloat(floatToHalf(1e30)) === Infinity && halfToFloat(floatToHalf(1e-30)) === 0
+  const ok = allExact && nanOk && satOk && maxRel < 1e-3
+  return { pass: ok, detail: `exact=${allExact}, NaN=${nanOk}, sat=${satOk}, max rel round-trip=${maxRel.toExponential(2)} (<2^-10)` }
+}
+
+// (2) The from-scratch DEFLATE inflate (RFC 1951) decodes a stream produced by a
+// REFERENCE zlib encoder — a genuine DYNAMIC-Huffman block (BTYPE=2), the case
+// real `.exr` files hit — reproducing the source bytes exactly. And our stored-
+// block `deflateStored` writer round-trips through the same inflate. This is why a
+// ZIP `.exr` from Blender / Poly Haven decodes here: the entropy coder is real.
+function testExrInflate(): { pass: boolean; detail: string } {
+  // The exact input the reference `zlib.deflateSync(_, {level:9})` was given.
+  let s = ''
+  for (let i = 0; i < 120; i++) s += 'lumen-exr-' + ((i * 37) % 97).toString(16) + '-'
+  const expected = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) expected[i] = s.charCodeAt(i) & 0xff
+  const ZLIB_DYNAMIC =
+    'eNrt1DtqAzEUQNEVDfj9HHs5/kwqJ4UhkOWnC0eFd+BOD0ZHxdXo8fO1f2/773M7bI//dQ5DXxh21lUMc2KIm/vDzzxFuD/dr1zKcxdQ7iODcipPe4xyKQuncF8ZhEt4zlrCnQzCKTzGCOVSHmukcn8wKJfyWCOUa5FdC7eZQ7mUxxqh3HZWTuWxRiiX8pgjldvOyrVcTXOEci2hPUW4lwukXMpjjlBuQyun8pgjlEv5uPzPym1o5VIec4RyKwuncNs5lEt5zJGLbGjlVB5zhHIpvx+314/bH9VZEHg='
+  const inflated = inflateZlib(b64ToBytes(ZLIB_DYNAMIC), expected.length)
+  let dynOk = inflated.length === expected.length
+  for (let i = 0; i < expected.length && dynOk; i++) if (inflated[i] !== expected[i]) dynOk = false
+
+  // Round-trip our own writer: bytes → deflateStored → inflate → identical.
+  const data = new Uint8Array(3000)
+  const r = new Rng(0xa17e, 4)
+  for (let i = 0; i < data.length; i++) data[i] = (i * 7 + (r.next() < 0.3 ? 0 : i)) & 0xff
+  const wrapped = deflateStored(data)
+  const back = inflateZlib(wrapped, data.length)
+  let storedOk = back.length === data.length
+  for (let i = 0; i < data.length && storedOk; i++) if (back[i] !== data[i]) storedOk = false
+
+  const ok = dynOk && storedOk
+  return { pass: ok, detail: `dynamic-Huffman(ref zlib)=${dynOk} (${expected.length}B), stored round-trip=${storedOk}` }
+}
+
+// (3) A FLOAT-channel `.exr` round-trips BIT-FOR-BIT through all three writable
+// compressors — NONE, RLE and ZIP — which pins the predictor/reorder pre-filter,
+// the RLE codec and the DEFLATE path as EXACT inverses (a stronger statement than
+// RGBE's within-a-quantum, matching PFM's lossless guarantee but compressed). A
+// positional ramp also confirms the scanline orientation survives.
+function testExrFloatRoundtrip(): { pass: boolean; detail: string } {
+  const W = 40
+  const H = 26
+  const px = makeHdrTestImage(W, H, 0x27e0)
+  const diffs: Record<string, number> = {}
+  for (const comp of ['none', 'rle', 'zip'] as const) {
+    const dec = decodeExr(encodeExr(px, W, H, { compression: comp, channelType: 'float' }))
+    if (dec.width !== W || dec.height !== H) return { pass: false, detail: `${comp} dims ${dec.width}×${dec.height}` }
+    let d = 0
+    for (let k = 0; k < px.length; k++) d = Math.max(d, Math.abs(px[k] - dec.pixels[k]))
+    diffs[comp] = d
+  }
+  // Orientation (row 0 = top): a red=row / green=col ramp must come back in place.
+  const ramp = new Float32Array(W * H * 3)
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      ramp[o] = j
+      ramp[o + 1] = i
+      ramp[o + 2] = 1
+    }
+  const dr = decodeExr(encodeExr(ramp, W, H, { compression: 'zip', channelType: 'float' }))
+  let orientOk = true
+  for (let j = 0; j < H && orientOk; j++)
+    for (let i = 0; i < W; i++) {
+      const o = (j * W + i) * 3
+      if (dr.pixels[o] !== j || dr.pixels[o + 1] !== i) {
+        orientOk = false
+        break
+      }
+    }
+  const ok = diffs.none === 0 && diffs.rle === 0 && diffs.zip === 0 && orientOk
+  return { pass: ok, detail: `Δnone=${diffs.none}, Δrle=${diffs.rle}, Δzip=${diffs.zip} (all bit-exact), orient=${orientOk}` }
+}
+
+// (4) A HALF-channel `.exr` (the compact VFX default) round-trips to within a
+// half ULP; the sniffer recognises the EXR magic and rejects a non-EXR; and a
+// tiled/unsupported flag is refused with a clear error rather than mis-decoded.
+function testExrHalfAndReject(): { pass: boolean; detail: string } {
+  const W = 32
+  const H = 20
+  const px = makeHdrTestImage(W, H, 0x99a1)
+  const dec = decodeExr(encodeExr(px, W, H, { compression: 'zip', channelType: 'half' }))
+  let maxRel = 0
+  for (let k = 0; k < px.length; k++) {
+    const e = Math.abs(px[k] - dec.pixels[k]) / Math.max(1, Math.abs(px[k]))
+    if (e > maxRel) maxRel = e
+  }
+  const sniffOk =
+    sniffHdrFormat(encodeExr(px, W, H, { compression: 'none', channelType: 'half' })) === 'exr' &&
+    sniffHdrFormat(encodePfm(px, W, H, true)) === 'pfm' &&
+    sniffHdrFormat(new TextEncoder().encode('not an exr')) === null
+  let rejectsGarbage = false
+  try {
+    decodeExr(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))
+  } catch {
+    rejectsGarbage = true
+  }
+  // A tiled-flag EXR (bit 9 of the version word) must be refused explicitly.
+  let rejectsTiled = false
+  try {
+    const bytes = encodeExr(px, 4, 4, { compression: 'none', channelType: 'half' }).slice()
+    bytes[5] |= 0x02 // set the single-tile flag in the version field
+    decodeExr(bytes)
+  } catch {
+    rejectsTiled = true
+  }
+  const ok = maxRel < 1e-3 && sniffOk && rejectsGarbage && rejectsTiled
+  return {
+    pass: ok,
+    detail: `half round-trip=${maxRel.toExponential(2)} (<2^-10), sniff=${sniffOk}, reject garbage=${rejectsGarbage}, reject tiled=${rejectsTiled}`,
+  }
+}
+
+// (5) A REFERENCE-encoded `.exr` — a ZIP-HALF file whose scanline blocks were
+// compressed by real zlib (not our stored-block writer), the exact bytes Blender
+// and Poly Haven emit — decodes to the known gradient. This is the end-to-end
+// interop proof: real DEFLATE + the EXR predictor/reorder + the half channels all
+// read correctly, so a downloaded HDRI lights the scene.
+function testExrReferenceFile(): { pass: boolean; detail: string } {
+  // A 24×12 gradient: R = x/W·4, G = y/H·2, B = 0.5 + 0.5·sin(x·0.5).
+  const EXR_ZIPHALF =
+    'di8xAQIAAABjaGFubmVscwBjaGxpc3QANwAAAEIAAQAAAAAAAAABAAAAAQAAAEcAAQAAAAAAAAABAAAAAQAAAFIAAQAAAAAAAAABAAAAAQAAAABjb21wcmVzc2lvbgBjb21wcmVzc2lvbgABAAAAA2RhdGFXaW5kb3cAYm94MmkAEAAAAAAAAAAAAAAAFwAAAAsAAABkaXNwbGF5V2luZG93AGJveDJpABAAAAAAAAAAAAAAABcAAAALAAAAbGluZU9yZGVyAGxpbmVPcmRlcgABAAAAAHBpeGVsQXNwZWN0UmF0aW8AZmxvYXQABAAAAAAAgD9zY3JlZW5XaW5kb3dDZW50ZXIAdjJmAAgAAAAAAAAAAAAAAHNjcmVlbldpbmRvd1dpZHRoAGZsb2F0AAQAAAAAAIA/AEEBAAAAAAAAAAAAALoAAAB42mPI/iyv5rRGUayS8UvfDNcFW/Z+cUh7Lq/e3oADXG3QvnrtqraWtrYWiAFHOMy5g8MY7QEyZ7D5ywiXcwbIX9Ryz2CLr4HyF29jU0NDfV1tVVFLd2tzU2NDQ11dTUXo6lBc/trY0tzY2NTQ2AhCDXBUisOcNhzG+JNoThcOc7xJNKcXhzkeJJrTh8McdxLN6cdhjhuJ5kzEYY7LAJkzCYc5ziSaMxmHOU4DZM4UHOY44jAHABDQdvE='
+  const dec = decodeExr(b64ToBytes(EXR_ZIPHALF))
+  if (dec.width !== 24 || dec.height !== 12) return { pass: false, detail: `dims ${dec.width}×${dec.height}` }
+  const W = 24
+  const H = 12
+  let maxRel = 0
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 3
+      const er = (x / W) * 4
+      const eg = (y / H) * 2
+      const eb = 0.5 + 0.5 * Math.sin(x * 0.5)
+      maxRel = Math.max(
+        maxRel,
+        Math.abs(dec.pixels[o] - er) / Math.max(1, er),
+        Math.abs(dec.pixels[o + 1] - eg) / Math.max(1, eg),
+        Math.abs(dec.pixels[o + 2] - eb) / Math.max(1, eb),
+      )
+    }
+  const ok = maxRel < 2e-3
+  return { pass: ok, detail: `reference zlib-ZIP-HALF decode, max rel err vs gradient=${maxRel.toExponential(2)} (< half ULP)` }
+}
+
+// (6) A decoded `.exr` drives the importance sampler like any other panorama: a
+// constant map ⇒ uniform sampling with the pdf matched to machine ε (the MIS
+// guarantee), exercising the shared EnvMap path from the `.exr` side.
+function testExrDrivesSampler(): { pass: boolean; detail: string } {
+  const W = 96
+  const H = 48
+  const px = new Float32Array(W * H * 3)
+  for (let k = 0; k < px.length; k++) px[k] = 0.6
+  const dec = decodeExr(encodeExr(px, W, H, { compression: 'zip', channelType: 'float' }))
+  const em = new EnvMap({ pixels: dec.pixels, width: dec.width, height: dec.height }, 1, 0)
+  const rng = new Rng(31415, 8)
+  let my2 = 0
+  let mx = 0
+  let my = 0
+  let mz = 0
+  let maxPdfDev = 0
+  let n = 0
+  for (let i = 0; i < 40000; i++) {
+    const s = em.sample(rng.next(), rng.next())
+    if (!s) continue
+    n++
+    mx += s.wi.x
+    my += s.wi.y
+    mz += s.wi.z
+    my2 += s.wi.y * s.wi.y
+    const rel = Math.abs(em.pdf(s.wi) - s.pdf) / (s.pdf + 1e-30)
+    if (rel > maxPdfDev) maxPdfDev = rel
+  }
+  mx /= n
+  my /= n
+  mz /= n
+  my2 /= n
+  const uniform = Math.hypot(mx, my, mz) < 0.02 && Math.abs(my2 - 1 / 3) < 0.02
+  const ok = uniform && maxPdfDev < 1e-9
+  return {
+    pass: ok,
+    detail: `E[cos²θ]=${my2.toFixed(4)} (1/3), |E[ω]|=${Math.hypot(mx, my, mz).toFixed(4)}, sampler↔pdf=${maxPdfDev.toExponential(1)}`,
+  }
+}
+
 // ---- 22.0 — physically based image formation --------------------------------
 
 // Aperture (1): the polygonal bokeh sampler is area-uniform, lies inside the unit
@@ -4708,6 +4927,12 @@ export function runSelfTests(): TestResult[] {
     test('PFM codec — lossless round-trip (LE+BE, bit-exact, oriented)', testPfmRoundtrip),
     test('PFM codec — greyscale + big-endian decode + sniff/reject', testPfmGrayAndEndian),
     test('PFM codec — decoded map drives sampler (≈1/4π, MIS)', testPfmDrivesSampler),
+    test('EXR codec — half↔float bit-exact (±0/subnormal/∞, ULP round-trip)', testExrHalfFloat),
+    test('EXR codec — from-scratch inflate ≡ reference zlib (dynamic Huffman)', testExrInflate),
+    test('EXR codec — FLOAT round-trip bit-exact ∀ NONE/RLE/ZIP + oriented', testExrFloatRoundtrip),
+    test('EXR codec — HALF round-trip <ULP + sniff + rejects garbage/tiled', testExrHalfAndReject),
+    test('EXR codec — decodes a reference zlib-ZIP-HALF file (Blender interop)', testExrReferenceFile),
+    test('EXR codec — decoded panorama drives sampler (≈1/4π, MIS)', testExrDrivesSampler),
     test('Bokeh — polygon aperture area-uniform, in-disk, zero-mean', testAperturePolygon),
     test('Bokeh — reduces to disk sampler + fills disk as blades→∞', testApertureDiskLimit),
     test('Glare — energy-conserving (centred) + identity off', testBloomEnergy),

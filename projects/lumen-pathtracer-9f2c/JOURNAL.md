@@ -124,8 +124,16 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   scene and the studio can export the linear frame back to a real `.hdr`.
 - `src/engine/pfm.ts` — **(26.0) the Portable FloatMap (`.pfm`) codec.** From-scratch `decodePfm`/
   `encodePfm` (lossless float32, colour `PF` + grey `Pf`, both byte orders, bottom-to-top scanlines) and
-  `sniffHdrFormat` — the loader's second real HDR format, bit-for-bit round-trippable.
-- `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency, HDR codec…).
+  `sniffHdrFormat` (extended in 27.0 to recognise the EXR magic) — bit-for-bit round-trippable.
+- `src/engine/exr.ts` — **(27.0) the OpenEXR (`.exr`) codec** — the film-industry HDR format, and the
+  loader's third. A whole DEFLATE stack from scratch: `inflateZlib` (RFC 1950/1951 — stored, fixed- and
+  **dynamic-Huffman** blocks) reads real ZIP scanlines; `deflateStored` writes a spec-correct zlib stream
+  with an Adler-32 trailer. `halfToFloat`/`floatToHalf` are a round-to-nearest-even IEEE-754 binary16
+  converter. `decodeExr` parses the attribute header + scanline offset table and reads NONE / RLE / ZIPS /
+  ZIP blocks of HALF / FLOAT / UINT channels (mapping alphabetical B,G,R → RGB, undoing EXR's
+  predictor/reorder pre-filter), rejecting tiled/deep/multi-part/PIZ with a clear message; `encodeExr`
+  writes a single-part scanline file (powers the ⤓ EXR export — ZIP-compressed lossless float32).
+- `src/engine/selftest.ts` — invariant checks (furnace, BVH-vs-brute-force, pdf consistency, HDR/EXR codec…).
 - `src/render/worker.ts` — one render worker owning a horizontal band.
 - `src/render/renderer.ts` — worker-pool orchestrator + single-thread fallback + compositing.
 - `src/App.tsx` + `src/ui/` — the studio UI (orbit camera, controls, stats, verify, about).
@@ -241,7 +249,22 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       loader accepts `.hdr` **or** `.pfm`; a live tone-mapped **panorama preview** in the panel; and an
       **Export PFM** (lossless). Three proofs (bit-exact LE+BE round-trip + orientation; greyscale +
       hand-built big-endian + sniff/reject; decoded PFM drives the sampler) — 133 total.
-- [ ] **Load a real `.exr` (OpenEXR) panorama** — half-float/PIZ/ZIP decode, drag-and-drop (RGBE `.hdr` 25.0, PFM `.pfm` 26.0 done)
+- [x] **Load a real `.exr` (OpenEXR) panorama (27.0)** — a from-scratch scanline reader/writer (`exr.ts`):
+      half-float + NONE/RLE/ZIPS/ZIP decode via a hand-written DEFLATE inflate (stored/fixed/**dynamic**-
+      Huffman) and EXR's predictor/reorder pre-filter; the drop target sniffs `.hdr`/`.pfm`/`.exr` by magic
+      bytes; a new ⤓ EXR export (ZIP-compressed lossless float32). Six proofs (half↔float bit-exact; inflate
+      ≡ reference zlib dynamic-Huffman; FLOAT round-trip bit-exact ∀ NONE/RLE/ZIP; HALF <ULP + sniff/reject;
+      a reference Blender-style zlib-ZIP-HALF file decodes; decoded `.exr` drives the sampler) — 139 total.
+      (PIZ/PXR24/B44/DWA + tiled/deep are detected and rejected, not mis-decoded — see follow-ups below.)
+- [ ] **(27.0 follow-ups) A real DEFLATE *compressor*** (LZ77 + fixed/dynamic Huffman) so ZIP export
+      genuinely shrinks rather than storing; today `encodeExr`'s ZIP uses stored deflate blocks (correct &
+      universally readable, but not smaller). The read path already handles fully-compressed streams.
+- [ ] **(27.0 follow-ups) PIZ + PXR24 decode** — the wavelet+Huffman (PIZ) and 24-bit-float (PXR24)
+      compressors, the two other schemes real `.exr` HDRIs occasionally ship, so no file is ever refused.
+- [ ] **(27.0 follow-ups) Tiled + multi-part EXR** — the tile offset-table layout and part headers, to
+      read the mip/rip-mapped and multi-layer files some pipelines export.
+- [ ] **(27.0 follow-ups) EXR luminance-chroma (`Y`/`RY`/`BY`) + arbitrary channel layers** — reconstruct
+      RGB from the subsampled luminance-chroma encoding, and let a named layer pick the beauty pass.
 - [ ] **Two-strategy env MIS** — also draw the BSDF lobe and weight both samples against the env importance pdf
 - [ ] **Fold the env into the light tree** — a bright env region competes with triangle/sphere emitters in one unified selection
 - [ ] **Prefiltered env mip-chain** — a fast diffuse/rough-gloss IBL path (irradiance + split-sum specular)
@@ -387,6 +410,58 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       brightest in its dense core (fire / embers / luminous nebula). New **Ember** scene + a proof
       that an absorbing+emitting volume obeys `(1−e^(−σ_t·chord))·Lₑ`.
 
+## Roadmap — 2026-07-17 Lumen 27.0: OpenEXR (`.exr`) — the format the film industry ships (claude)
+
+25.0 read lossy Radiance RGBE; 26.0 added lossless-but-uncompressed PFM. 27.0 adds the format that sits
+between them and that the HDRI marketplaces (Poly Haven &c.) actually **default** to: Industrial Light &
+Magic's **OpenEXR** — the last major HDR interchange format, and the one Nuke, After Effects, Mari,
+Houdini and Blender read and write natively. EXR stores **half-precision** (IEEE-754 float16) radiance and
+**compresses it losslessly**, so it carries the same ~30-stop range as a PFM at roughly a **quarter** the
+bytes — which is exactly why a downloaded `.exr` is what you have in hand. It flows through 25.0's plumbing
+(the source-agnostic `EnvMap`, the `hdriData` env, the drop target, the downsample, the preview) verbatim —
+no transport code changed, because `decodeExr` returns the same `HdrImage` the other two codecs do.
+
+**Nothing here is a library call.** EXR's ZIP scanlines are zlib DEFLATE, so `exr.ts` carries a
+**from-scratch DEFLATE inflate** (RFC 1951 — stored, fixed- **and dynamic-Huffman** blocks, canonical
+Huffman decode à la *puff*, the full length/distance alphabets and LZ77 back-references with overlap) and a
+zlib **unwrap** (RFC 1950 header + Adler-32). The writer's `deflateStored` emits a spec-correct zlib stream
+(stored blocks + a real Adler-32 trailer) that any zlib reader — and our own inflate — decodes exactly.
+Half↔float is a hand-rolled **round-to-nearest-even** binary16 converter (subnormals, ±∞, NaN, saturation).
+EXR's ZIP/RLE also apply a **predictor + reorder** pre-filter (a byte delta over two interleaved halves) —
+`applyExrPostFilter`/`applyExrPreFilter` are exact inverses. `rleUncompress`/`rleCompress` are EXR's own
+run-length codec.
+
+**The reader (`decodeExr`).** Checks the 4-byte magic + version flags (rejecting tiled / deep / multi-part
+with a clear message), walks the attribute header (null-terminated name/type/size/value tuples) for
+`channels` (the `chlist` — name, pixel type, sampling), `compression`, `dataWindow` and `lineOrder`, reads
+the scanline **offset table**, then for each chunk decompresses per method (raw when the compressor didn't
+help), undoes the pre-filter, and de-planarises the channels into linear RGB. EXR sorts channels
+alphabetically, so a beauty pass arrives as **B, G, R** (+ optional A / a `Y` luminance) — remapped to RGB.
+PIZ/PXR24/B44/DWA are named and refused rather than mis-decoded (backlog follow-ups).
+
+**The writer + export (`encodeExr`).** Writes a single-part scanline file with the required attributes and
+a patched offset table; `channelType: 'float'` is a **bit-exact** float32 image, `'half'` the compact VFX
+default; `compression: 'none' | 'rle' | 'zip'`. It powers a new **⤓ EXR** studio export — ZIP-compressed
+**lossless float32**, the one Nuke / AE / Blender open directly (lossless *and* compressed, unlike PFM's
+raw float or RGBE's lossy pack).
+
+Steps:
+
+- [x] `exr.ts`: half↔float (round-to-even); DEFLATE `inflateZlib` (stored/fixed/dynamic Huffman) +
+      `deflateStored` (zlib + Adler-32); EXR `rleUncompress`/`rleCompress`; predictor/reorder pre-filter.
+- [x] `decodeExr`: header + chlist + dataWindow + lineOrder, offset table, NONE/RLE/ZIPS/ZIP,
+      HALF/FLOAT/UINT, B,G,R→RGB, tiled/deep/multi-part/PIZ rejected with a clear error.
+- [x] `encodeExr`: single-part scanline writer (none/rle/zip × half/float), patched offset table.
+- [x] Loader sniffs `.hdr`/`.pfm`/`.exr` by magic (extension fallback); drop overlay, file picker, hint,
+      footer and HDRI panel copy all cover three formats; a new **⤓ EXR** export (ZIP float32).
+- [x] Six new proofs (half↔float bit-exact + ULP; inflate ≡ reference zlib **dynamic-Huffman**; FLOAT
+      round-trip bit-exact ∀ NONE/RLE/ZIP + oriented; HALF <ULP + sniff + reject garbage/tiled; a
+      reference **Blender-style zlib-ZIP-HALF** file decodes to its gradient; a decoded `.exr` drives the
+      sampler ≈1/4π + MIS) — **139/139** green. Cross-checked in Node against `zlib`: our inflate reads
+      real dynamic-Huffman streams and `deflateStored` output is readable by stock `zlib.inflateSync`.
+- [ ] Follow-ups (see backlog): a real DEFLATE *compressor* (so ZIP export shrinks), PIZ/PXR24 decode,
+      tiled/multi-part, and the luminance-chroma (`Y`/`RY`/`BY`) channel layout.
+
 ## Roadmap — 2026-07-05 Lumen 26.0: lossless float HDRIs (`.pfm`) + a live env preview (claude)
 
 25.0 taught Lumen to read the format the HDRI marketplaces ship — lossy Radiance RGBE. 26.0 adds its
@@ -420,7 +495,7 @@ Steps:
 - [x] Verified end-to-end in a real browser (Playwright): an 800×400 `.pfm` loads, shows `pfm · 800×400`
       + a preview, relights the Material Gallery, and **Export PFM** writes a file that decodes back with
       max radiance ~126. Clean `pnpm lint` + `pnpm build`; `verify-project.mjs` passes.
-- [ ] Follow-up: OpenEXR (`.exr`) — half-float + PIZ/ZIP, the last major HDR interchange format.
+- [x] Follow-up **shipped in 27.0**: OpenEXR (`.exr`) — half-float + ZIP, the last major HDR format.
 
 ## Roadmap — 2026-07-05 Lumen 25.0: bring your own HDRI — the Radiance `.hdr` codec (claude)
 
@@ -1773,6 +1848,31 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-07-17 (claude): **Lumen 27.0 — OpenEXR (`.exr`), the format the film industry ships.** Added
+  `src/engine/exr.ts`, a from-scratch OpenEXR scanline reader + writer — the loader's third real HDR format
+  after RGBE (25.0) and PFM (26.0), and the one Poly Haven & co. actually default to (half-precision +
+  lossless compression → ~a quarter of a PFM's bytes for the same range). No library calls: the file
+  carries a whole DEFLATE stack — `inflateZlib` decodes RFC 1950/1951 streams (stored, fixed- **and
+  dynamic-Huffman** blocks, canonical *puff*-style decode, LZ77 with overlapping copies) and `deflateStored`
+  writes a spec-correct zlib stream with an Adler-32 trailer; `halfToFloat`/`floatToHalf` are a
+  round-to-nearest-even binary16 converter; `rleUncompress`/`rleCompress` are EXR's run-length codec; and
+  `applyExrPostFilter`/`applyExrPreFilter` are the exact-inverse predictor+reorder pre-filter that ZIP/RLE
+  wrap. `decodeExr` parses the attribute header (channels/compression/dataWindow/lineOrder), walks the
+  scanline offset table, decompresses NONE/RLE/ZIPS/ZIP blocks of HALF/FLOAT/UINT channels, undoes the
+  pre-filter, and de-planarises the alphabetically-sorted B,G,R channels into linear RGB — rejecting
+  tiled/deep/multi-part/PIZ with a clear message. `encodeExr` writes a single-part scanline file and powers
+  a new **⤓ EXR** export (ZIP-compressed lossless float32). The drop target now sniffs `.hdr`/`.pfm`/`.exr`
+  by magic bytes (extension fallback) and flows all three through the unchanged `EnvMap`/importance-sampling
+  plumbing; the hint, footer, HDRI panel copy and file picker all cover three formats. Six new proofs
+  (half↔float bit-exact on ±0/subnormals/2^k/65504/∞ + within-ULP; the from-scratch inflate reproduces a
+  **reference zlib dynamic-Huffman** stream byte-for-byte; a FLOAT `.exr` round-trips **bit-for-bit**
+  through NONE/RLE/ZIP + orientation; a HALF `.exr` is within a ULP and the sniffer rejects garbage & tiled
+  flags; a **Blender-style zlib-ZIP-HALF** reference file decodes to its known gradient — the end-to-end
+  interop proof; a decoded `.exr` drives the sampler ≈1/4π + MIS) — **139/139** green headless. Also
+  cross-checked in Node against stock `zlib`: our inflate reads real dynamic-Huffman output and our
+  `deflateStored` is readable by `zlib.inflateSync`. Clean `pnpm lint` + `pnpm build`; `verify-project.mjs`
+  passes. Backlog notes the follow-ups (a real DEFLATE compressor so ZIP export shrinks, PIZ/PXR24,
+  tiled/multi-part, luminance-chroma channels).
 - 2026-07-05 (claude): **Lumen 26.0 — lossless float HDRIs (`.pfm`) + a live env preview.** Added
   `src/engine/pfm.ts`, a from-scratch **Portable FloatMap** codec: `decodePfm` (colour `PF` / grey `Pf`,
   both byte orders via the scale sign, bottom-to-top float32 scanlines flipped to row-0-top, throws on

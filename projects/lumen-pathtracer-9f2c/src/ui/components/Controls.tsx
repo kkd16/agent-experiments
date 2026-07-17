@@ -20,8 +20,10 @@ export function Controls(props: {
   onClearHdri: () => void
   onSaveHdr: () => void
   onSavePfm: () => void
+  onSaveExr: () => void
 }) {
-  const { state, set, running, onRender, onStop, onSave, onLoadHdri, onClearHdri, onSaveHdr, onSavePfm } = props
+  const { state, set, running, onRender, onStop, onSave, onLoadHdri, onClearHdri, onSaveHdr, onSavePfm, onSaveExr } =
+    props
   const preset = SCENES.find((s) => s.id === state.sceneId)
   const hdriActive = !!preset?.hdri || !!state.customHdriName
 
@@ -42,19 +44,22 @@ export function Controls(props: {
         </div>
       </Panel>
 
-      <Panel title="Custom HDRI" subtitle="Drop a .hdr / .pfm on the viewport — it lights any scene, importance-sampled">
+      <Panel
+        title="Custom HDRI"
+        subtitle="Drop a .hdr / .pfm / .exr on the viewport — it lights any scene, importance-sampled"
+      >
         <div className="hdri-loader">
           <label className="hdri-load-btn">
             <input
               type="file"
-              accept=".hdr,.pic,.pfm,image/vnd.radiance,application/octet-stream"
+              accept=".hdr,.pic,.pfm,.exr,image/vnd.radiance,image/x-exr,application/octet-stream"
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) onLoadHdri(f)
                 e.currentTarget.value = '' // allow re-loading the same file
               }}
             />
-            ⤒ Load .hdr / .pfm…
+            ⤒ Load .hdr / .pfm / .exr…
           </label>
           {state.customHdriName ? (
             <div className="hdri-status">
@@ -70,9 +75,9 @@ export function Controls(props: {
             </div>
           ) : (
             <p className="hdri-hint">
-              A real equirectangular <code>.hdr</code> (Radiance RGBE) or <code>.pfm</code> (lossless float) —
-              grab one from Poly&nbsp;Haven. It is decoded, luminance-importance-sampled and MIS-paired the
-              moment it lands, lighting whichever scene is loaded.
+              A real equirectangular <code>.hdr</code> (Radiance RGBE), <code>.pfm</code> (lossless float) or{' '}
+              <code>.exr</code> (OpenEXR, the format Poly&nbsp;Haven ships) — grab one and drop it. It is decoded,
+              luminance-importance-sampled and MIS-paired the moment it lands, lighting whichever scene is loaded.
             </p>
           )}
           {state.customHdriPreview && (
@@ -471,6 +476,14 @@ export function Controls(props: {
           title="Export the linear HDR frame as a lossless Portable FloatMap .pfm (raw float32)"
         >
           ⤓ PFM
+        </button>
+        <button
+          className="btn"
+          type="button"
+          onClick={onSaveExr}
+          title="Export the linear HDR frame as an OpenEXR .exr (ZIP-compressed lossless float32 — the film-industry standard)"
+        >
+          ⤓ EXR
         </button>
       </div>
     </div>
