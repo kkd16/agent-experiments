@@ -5,7 +5,7 @@
 // renderer's own equatorial integrator. Everything runs in the browser (and headless in Node), so
 // the claims are re-checkable on every load, not just asserted in a comment.
 
-import { B_CRIT, M, ISCO, PHOTON_SPHERE, DEFAULT_PARAMS, kerrHorizon, kerrISCO, kerrPhotonOrbit } from '../state'
+import { B_CRIT, M, ISCO, PHOTON_SPHERE, DEFAULT_PARAMS, kerrHorizon, kerrISCO, kerrPhotonOrbit, chargeQ2 } from '../state'
 import type { Params } from '../types'
 import { tracePhoton, cameraRay, aberrate, observerVelocity } from './probe'
 import {
@@ -19,6 +19,9 @@ import {
   iscoRadius,
   spinA,
   isCaptured,
+  rnPhotonSphere,
+  rnCritical,
+  knPhotonRings,
 } from './kerr'
 import {
   tracePhotonSchw,
@@ -370,6 +373,151 @@ export function runSelfTests(): TestResult[] {
       ok ? 0 : 1,
       0.5,
       'Photon probe',
+    )
+  }
+
+  // ---- Kerr–Newman: charge generalises the whole shadow story --------------------------------
+  {
+    // Reissner–Nordström (a → 0, charged): the shadow stays a circle, of radius r_ph²/√Δ(r_ph).
+    const q2 = chargeQ2(0.6)
+    const bc = rnCritical(q2)
+    const curve = shadowCurve(0.0015, Math.PI / 2, 400, q2)
+    let maxDev = 0
+    for (const p of curve) maxDev = Math.max(maxDev, Math.abs(Math.hypot(p.alpha, p.beta) - bc))
+    add(
+      'Reissner–Nordström shadow → circle of r_ph²/√Δ',
+      `Q* = 0.6: max |√(α²+β²) − ${bc.toFixed(4)}| = ${maxDev.toExponential(2)} rs, r_ph = ${rnPhotonSphere(q2).toFixed(4)} rs`,
+      maxDev,
+      3e-3,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // RN critical impact parameter recovers 3√3·M uncharged and 4M (= 2 rs) at the extremal Q = M
+    // (whose photon sphere sits at r = 2M = 1 rs).
+    const atZero = Math.abs(rnCritical(0) - B_CRIT)
+    const atExtremal = Math.abs(rnCritical(chargeQ2(1)) - 4 * M)
+    add(
+      'RN critical b: 3√3·M uncharged → 4M extremal',
+      `b(Q=0) = ${rnCritical(0).toFixed(5)} rs, b(Q=M) = ${rnCritical(chargeQ2(1)).toFixed(5)} rs (= 4M), r_ph = ${rnPhotonSphere(chargeQ2(1)).toFixed(4)} rs`,
+      Math.max(atZero, atExtremal),
+      1e-6,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // Charged spherical photon orbits still satisfy R(r) = R'(r) = 0 — the KN shadow algebra holds.
+    let worstR = 0
+    let worstRp = 0
+    const h = 1e-5
+    for (const [aStar, qStar] of [[0.3, 0.4], [0.5, 0.5], [0.6, 0.6], [0.8, 0.3]] as const) {
+      const a = spinA(aStar)
+      const q2 = chargeQ2(qStar)
+      const [rlo, rhi] = knPhotonRings(a, q2)
+      for (let i = 0; i <= 8; i++) {
+        const r = rlo + ((rhi - rlo) * i) / 8
+        const xi = xiOfR(r, a, q2)
+        const eta = etaOfR(r, a, q2)
+        worstR = Math.max(worstR, Math.abs(radialPotential(r, a, xi, eta, q2)))
+        const rp = (radialPotential(r + h, a, xi, eta, q2) - radialPotential(r - h, a, xi, eta, q2)) / (2 * h)
+        worstRp = Math.max(worstRp, Math.abs(rp))
+      }
+    }
+    add(
+      'Charged spherical orbits solve R(r) = R′(r) = 0',
+      `max |R| = ${worstR.toExponential(2)}, max |dR/dr| = ${worstRp.toExponential(2)} over 4 (a*,Q*) × 9 radii`,
+      Math.max(worstR, worstRp * 1e-2),
+      1e-5,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // The KN photon-ring finder reduces to Bardeen's closed form exactly when uncharged.
+    let worst = 0
+    for (const aStar of [0.2, 0.5, 0.8, 0.95]) {
+      const a = spinA(aStar)
+      const [rlo, rhi] = knPhotonRings(a, 0)
+      worst = Math.max(worst, Math.abs(rlo - photonRingRadius(aStar, true)))
+      worst = Math.max(worst, Math.abs(rhi - photonRingRadius(aStar, false)))
+    }
+    add(
+      'KN light-ring finder = Bardeen at Q = 0',
+      `max |r_numeric − r_Bardeen| across 4 spins = ${worst.toExponential(2)} rs`,
+      worst,
+      1e-6,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // The two charged equatorial light rings still carry η = 0 exactly.
+    let worst = 0
+    for (const [aStar, qStar] of [[0.4, 0.4], [0.6, 0.5], [0.7, 0.4]] as const) {
+      const a = spinA(aStar)
+      const q2 = chargeQ2(qStar)
+      const [rlo, rhi] = knPhotonRings(a, q2)
+      worst = Math.max(worst, Math.abs(etaOfR(rlo, a, q2)))
+      worst = Math.max(worst, Math.abs(etaOfR(rhi, a, q2)))
+    }
+    add(
+      'Charged light rings have η = 0',
+      `max |η| at the KN prograde/retrograde photon orbits = ${worst.toExponential(2)}`,
+      worst,
+      1e-6,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // The analytic KN shadow edges match the renderer's own integrated equatorial geodesics — the
+    // charge is honoured identically by the closed form and by the ray tracer.
+    const aStar = 0.6
+    const q2 = chargeQ2(0.5)
+    const a = spinA(aStar)
+    const [numLo, numHi] = bisectEquatorialShadowEdges(aStar, q2)
+    const [rlo, rhi] = knPhotonRings(a, q2)
+    const anaPro = Math.abs(xiOfR(rlo, a, q2))
+    const anaRet = Math.abs(xiOfR(rhi, a, q2))
+    const [anaLo, anaHi] = anaPro <= anaRet ? [anaPro, anaRet] : [anaRet, anaPro]
+    add(
+      'Integrated charged shadow edges (a* = 0.6, Q* = 0.5)',
+      `bisected |b| = {${numLo.toFixed(3)}, ${numHi.toFixed(3)}} vs analytic |ξ| = {${anaLo.toFixed(3)}, ${anaHi.toFixed(3)}} rs`,
+      Math.max(rel(numLo, anaLo), rel(numHi, anaHi)),
+      2e-2,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // Charge shrinks the shadow: at fixed spin, more charge ⇒ smaller enclosed area.
+    const a0 = shadowMetrics(shadowCurve(0.6, Math.PI / 2, 600, 0)).area
+    const aQ = shadowMetrics(shadowCurve(0.6, Math.PI / 2, 600, chargeQ2(0.6))).area
+    add(
+      'Charge shrinks the shadow at fixed spin',
+      `area(Q=0) = ${a0.toFixed(3)} rs² → area(Q*=0.6) = ${aQ.toFixed(3)} rs² (${(((a0 - aQ) / a0) * 100).toFixed(1)}% smaller)`,
+      aQ < a0 - 0.1 ? 0 : 1,
+      0.5,
+      'Kerr–Newman (charge)',
+    )
+  }
+  {
+    // The probe's Kerr–Newman path: a Reissner–Nordström centre ray is captured, and its capture
+    // edge equals the RN critical impact parameter — the click-to-trace machinery honours charge.
+    const q2 = chargeQ2(0.6)
+    const bcRN = rnCritical(q2)
+    const pc: Params = { ...DEFAULT_PARAMS, spin: 0, charge: 0.6, cameraDistance: 30, fov: 40 }
+    const centre = tracePhoton(cameraRay(pc, 0, 0).pos, cameraRay(pc, 0, 0).dir, pc)
+    let maxCapturedB = 0
+    for (let n = 0; n <= 240; n++) {
+      const ndc = (n / 240) * 0.5
+      const c = cameraRay(pc, ndc, 0)
+      const res = tracePhoton(c.pos, c.dir, pc)
+      if (res.captured) maxCapturedB = Math.max(maxCapturedB, res.b)
+    }
+    const ok = centre.captured && Math.abs(maxCapturedB - bcRN) < 8e-2
+    add(
+      'Probe: RN capture edge = r_ph²/√Δ (Q* = 0.6)',
+      `centre ${centre.fate}; max captured b = ${maxCapturedB.toFixed(4)} rs vs RN b_crit = ${bcRN.toFixed(4)} rs`,
+      ok ? 0 : 1,
+      0.5,
+      'Kerr–Newman (charge)',
     )
   }
 

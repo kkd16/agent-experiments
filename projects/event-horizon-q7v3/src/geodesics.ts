@@ -116,13 +116,14 @@ function blToWorldEq(r: number, phi: number, a: number): [number, number] {
   return [rho * Math.cos(phi), rho * Math.sin(phi)]
 }
 
-export function traceGeodesicKerr(b: number, spinAM: number, opts: TraceOpts = {}): Geodesic {
+export function traceGeodesicKerr(b: number, spinAM: number, chargeM = 0, opts: TraceOpts = {}): Geodesic {
   const a = Math.min(Math.max(spinAM, 0), 0.9995) * MASS
+  const q2 = Math.pow(Math.max(chargeM, 0) * MASS, 2) // electric charge² (Kerr–Newman)
   const startX = opts.startX ?? -22
   const escapeR = opts.escapeR ?? 24
   const maxSteps = opts.maxSteps ?? 5000
   const baseStep = opts.baseStep ?? 0.06
-  const rplus = MASS + Math.sqrt(Math.max(MASS * MASS - a * a, 0))
+  const rplus = MASS + Math.sqrt(Math.max(MASS * MASS - a * a - q2, 0))
 
   // initial conditions from a photon coming in along +x with impact parameter b
   let [r, phi] = worldToBLeq(startX, b, a)
@@ -135,12 +136,13 @@ export function traceGeodesicKerr(b: number, spinAM: number, opts: TraceOpts = {
 
   // covariant equatorial metric at the start (far away → nearly flat)
   const cov = (rr: number) => {
-    const Delta = rr * rr - 2 * MASS * rr + a * a
+    const Delta = rr * rr - 2 * MASS * rr + a * a + q2
+    const MR = 2 * MASS * rr - q2 // Kerr–Newman mass function
     return {
-      gtt: -(1 - 2 * MASS / rr),
-      gtp: (-2 * MASS * a) / rr,
+      gtt: -(1 - MR / (rr * rr)),
+      gtp: (-MR * a) / (rr * rr),
       grr: (rr * rr) / Delta,
-      gpp: rr * rr + a * a + (2 * MASS * a * a) / rr,
+      gpp: rr * rr + a * a + (MR * a * a) / (rr * rr),
       Delta,
     }
   }
@@ -155,17 +157,19 @@ export function traceGeodesicKerr(b: number, spinAM: number, opts: TraceOpts = {
 
   // inverse equatorial metric contraction 2H(r) at fixed pr (for the p_r force via finite diff)
   const twoH = (rr: number, prr: number): number => {
-    const Delta = rr * rr - 2 * MASS * rr + a * a
+    const Delta = rr * rr - 2 * MASS * rr + a * a + q2
+    const MR = 2 * MASS * rr - q2
     const A = (rr * rr + a * a) * (rr * rr + a * a) - a * a * Delta
     const gtt = -A / (rr * rr * Delta)
-    const gtp = (-2 * MASS * a) / (rr * Delta)
+    const gtp = (-MR * a) / (rr * rr * Delta)
     const grr = Delta / (rr * rr)
     const gpp = (Delta - a * a) / (rr * rr * Delta)
     return gtt * E * E - 2 * gtp * E * L + grr * prr * prr + gpp * L * L
   }
   const invMetric = (rr: number) => {
-    const Delta = rr * rr - 2 * MASS * rr + a * a
-    const gtp = (-2 * MASS * a) / (rr * Delta)
+    const Delta = rr * rr - 2 * MASS * rr + a * a + q2
+    const MR = 2 * MASS * rr - q2
+    const gtp = (-MR * a) / (rr * rr * Delta)
     const grr = Delta / (rr * rr)
     const gpp = (Delta - a * a) / (rr * rr * Delta)
     return { gtp, grr, gpp }
@@ -217,13 +221,13 @@ export function traceGeodesicKerr(b: number, spinAM: number, opts: TraceOpts = {
   return { b, points: Float32Array.from(pts), count: pts.length / 2, fate, deflection }
 }
 
-/** A fan of Kerr photons across a range of impact parameters. */
-export function traceFanKerr(count: number, maxB: number, spinAM: number): Geodesic[] {
+/** A fan of Kerr–Newman photons across a range of impact parameters. */
+export function traceFanKerr(count: number, maxB: number, spinAM: number, chargeM = 0): Geodesic[] {
   const out: Geodesic[] = []
   for (let i = 0; i < count; i++) {
     const frac = (i + 0.5) / count
     const b = (frac * 2 - 1) * maxB
-    out.push(traceGeodesicKerr(b, spinAM))
+    out.push(traceGeodesicKerr(b, spinAM, chargeM))
   }
   return out
 }

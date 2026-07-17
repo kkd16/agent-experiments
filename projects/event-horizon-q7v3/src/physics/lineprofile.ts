@@ -8,7 +8,7 @@
 // frame — then histogram the boosted line flux (∝ g³, emissivity ∝ r⁻³) by g. Light bending is the
 // one effect left out, which is what keeps this cheap enough to recompute live on the CPU.
 
-import { M } from '../state'
+import { M, chargeQ2 } from '../state'
 
 export interface LineProfile {
   /** Normalised flux per bin (peak = 1). */
@@ -26,9 +26,11 @@ export interface LineProfile {
  * @param rIn   inner disk radius (rs units)
  * @param rOut  outer disk radius (rs units)
  * @param bins  number of g-bins
+ * @param charge dimensionless charge Q/M ∈ [0, 1) — a Kerr–Newman disk (0 = uncharged Kerr)
  */
-export function computeLineProfile(spin: number, incDeg: number, rIn: number, rOut: number, bins = 96): LineProfile {
+export function computeLineProfile(spin: number, incDeg: number, rIn: number, rOut: number, bins = 96, charge = 0): LineProfile {
   const a = Math.min(Math.max(spin, 0), 0.9995) * M
+  const q2 = chargeQ2(charge)
   // The renderer's "inclination" is elevation above the disk plane; the disk-normal angle used by
   // the Doppler projection is its complement. Edge-on (elevation→0) gives the strongest shifts.
   const iNormal = (90 - Math.abs(incDeg)) * (Math.PI / 180)
@@ -50,17 +52,19 @@ export function computeLineProfile(spin: number, incDeg: number, rIn: number, rO
     const r = lo * Math.pow(hi / lo, fr)
     const dr = r * Math.log(hi / lo) / nR
 
-    // equatorial Kerr metric (θ = π/2)
+    // equatorial Kerr–Newman metric (θ = π/2): the mass function 2Mr becomes 2Mr − Q², Δ gains +Q²
     const r2 = r * r
-    const Delta = r2 - 2 * M * r + a * a
-    const gtp = -2 * M * a / r
-    const gpp = r2 + a * a + 2 * M * a * a / r
+    const Delta = r2 - 2 * M * r + a * a + q2
+    const MR = 2 * M * r - q2
+    const gtp = -MR * a / r2
+    const gpp = r2 + a * a + MR * a * a / r2
     const A = (r2 + a * a) * (r2 + a * a) - a * a * Delta // = A at sinθ=1
     if (Delta <= 0 || A <= 0) continue
 
     const lapse = Math.sqrt((Delta * r2) / A) // α
     const omega = -gtp / gpp // ZAMO frame-dragging angular velocity
-    const Omega = Math.sqrt(M) / (Math.pow(r, 1.5) + a * Math.sqrt(M)) // prograde orbital Ω
+    const rootMr = Math.sqrt(Math.max(M * r - q2, 0))
+    const Omega = rootMr / (r2 + a * rootMr) // prograde Kerr–Newman orbital Ω
     let v = ((Omega - omega) * Math.sqrt(gpp)) / lapse // physical orbital speed in the ZAMO frame
     v = Math.min(Math.max(v, 0), 0.9995)
     const gamma = 1 / Math.sqrt(1 - v * v)

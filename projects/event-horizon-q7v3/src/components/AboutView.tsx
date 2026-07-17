@@ -6,8 +6,9 @@ export default function AboutView() {
         <p className="lead">
           Nothing here is a texture of a black hole. Every frame of the main view is a physics
           simulation: for each pixel we launch a ray of light from the camera and integrate its
-          path through curved spacetime — around either a non-rotating (Schwarzschild) or a{' '}
-          <strong>spinning (Kerr)</strong> black hole — then colour the pixel by whatever that ray
+          path through curved spacetime — around any member of the black-hole family, from a
+          non-rotating (Schwarzschild) hole to a <strong>spinning (Kerr)</strong> and even{' '}
+          <strong>charged (Kerr–Newman)</strong> one — then colour the pixel by whatever that ray
           eventually hits.
         </p>
 
@@ -65,6 +66,41 @@ export default function AboutView() {
           <strong>Geodesics</strong> tab to watch a fan of photons go lopsided as the spin rises.
         </p>
 
+        <h2>Charge: the Kerr–Newman family</h2>
+        <p>
+          Spin is one of only <em>three</em> things a black hole can carry. The{' '}
+          <strong>no-hair theorem</strong> says any stationary black hole in general relativity is
+          fixed completely by its mass <code>M</code>, its angular momentum <code>a</code>, and its
+          electric <strong>charge <code>Q</code></strong> — nothing else survives the collapse. Turn
+          up the <strong>Charge Q/M</strong> control and the renderer switches from Kerr to the fully
+          general <strong>Kerr–Newman</strong> metric, the most general isolated black hole there is.
+        </p>
+        <p>
+          Remarkably, charge enters the geometry through a single, tidy change: the “mass function”{' '}
+          <code>2Mr</code> that appears throughout the metric becomes <code>2Mr − Q²</code>, and the
+          horizon function picks up one term,
+        </p>
+        <pre className="eq">Δ(r) = r² − 2Mr + a² + Q²</pre>
+        <p>
+          Everything else follows. The outer horizon contracts to{' '}
+          <code>r₊ = M + √(M² − a² − Q²)</code>, the ergosphere and the photon rings pull inward, and
+          the shadow <strong>shrinks</strong> — charge curves spacetime and grips light much as extra
+          mass would. Because the photons themselves are neutral, their null geodesics are still pure
+          metric motion, so the same Hamiltonian integrator traces them; only <code>Δ</code> and the
+          mass function change. With no spin you get a <strong>Reissner–Nordström</strong> hole: a
+          perfectly circular shadow, but smaller than Schwarzschild’s — its radius slides from{' '}
+          <code>3√3·M ≈ 2.598 rs</code> down toward <code>4M = 2 rs</code> as the charge approaches
+          extremal.
+        </p>
+        <p>
+          Spin and charge draw on one shared budget. A real (non-naked) horizon demands{' '}
+          <code>a*² + Q*² ≤ 1</code>, so pushing either toward the extremal edge caps the other — the
+          control enforces it for you. (Astrophysical holes are essentially neutral, since any net
+          charge is quickly screened by surrounding plasma; Kerr–Newman is here because it is the{' '}
+          <em>exact, general</em> solution — and because the Observatory can prove the app gets it
+          right for every member of the family, not just the uncharged ones.)
+        </p>
+
         <h2>The accretion disk &amp; the g-factor</h2>
         <p>
           A thin disk of gas orbits in the equatorial plane. Where a ray crosses it we emit light
@@ -91,7 +127,10 @@ export default function AboutView() {
         <pre className="eq">g = √(−(g_tt + 2Ω·g_tφ + Ω²·g_φφ)) / (1 − Ω·b)</pre>
         <p>
           This one number bundles gravitational redshift, transverse <em>and</em> longitudinal
-          Doppler, <em>and</em> the frame-dragging contribution. Colour shifts by <code>g</code> and
+          Doppler, <em>and</em> the frame-dragging contribution — and it generalises to a charged
+          disk for free, since <code>g_tt</code>, <code>g_tφ</code>, <code>g_φφ</code> and the
+          Kepler frequency <code>Ω</code> all inherit the same <code>2Mr → 2Mr − Q²</code> shift.
+          Colour shifts by <code>g</code> and
           brightness by <code>g³</code>. The <strong>spectrograph</strong> overlay plots the same
           shift across the whole disk as an emission-line profile — the skewed, double-horned shape
           astronomers actually fit to X-ray spectra to <em>measure</em> a real black hole's spin.
@@ -251,8 +290,12 @@ export default function AboutView() {
           integration is done in Boyer–Lindquist coordinates, which are elegant but have a coordinate
           seam along the rotation axis — you may spot a faint speckle there on near-edge-on,
           high-spin views (production codes switch to Kerr–Schild coordinates to remove it). The
-          qualitative physics — the off-axis shadow, frame dragging, the ergosphere, the exactly
-          computed disk shifts — is faithful; exact photometry is not the goal.
+          charged (Kerr–Newman) geodesics and shadow are exact, but the disk’s ISCO-tracking inner
+          edge uses the uncharged-Kerr innermost stable orbit — charge shifts it only slightly and
+          the inner edge is a display choice, not part of the null-geodesic physics. The
+          qualitative physics — the off-axis shadow, frame dragging, the ergosphere, the charge-shrunk
+          horizon and shadow, the exactly computed disk shifts — is faithful; exact photometry is not
+          the goal.
         </p>
         <p className="muted small">
           Open the <strong>Geodesics</strong> tab to see the individual light rays that all of this

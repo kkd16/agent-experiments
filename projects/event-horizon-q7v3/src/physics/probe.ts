@@ -14,7 +14,7 @@
 // Units: rs = 1, so M = 0.5 (matches the shader's `MASS` and the rest of the app).
 
 import type { Params } from '../types'
-import { M, B_CRIT, effectiveDiskInner } from '../state'
+import { M, B_CRIT, effectiveDiskInner, chargeQ2 } from '../state'
 import { horizons } from './kerr'
 import { initKerrPhoton, kerrDeriv, kerrCov, worldToBL, carterConstant } from './cpu-geodesic'
 import type { Vec3 } from '../math/vec'
@@ -57,6 +57,8 @@ export interface ProbeResult {
   b: number
   /** Dimensionless spin a/M the trace was run at. */
   spin: number
+  /** Dimensionless charge Q/M the trace was run at (0 for an uncharged hole). */
+  charge: number
 }
 
 // ------------------------------------------------------------------ relativistic aberration
@@ -98,9 +100,10 @@ export function observerVelocity(params: Params): Vec3 {
 
   let betaPhi = 0
   const a = params.spin * M
+  const q2 = chargeQ2(params.charge)
   if (a > 1e-5) {
     const bl = worldToBL(eye, a)
-    const c = kerrCov(bl.r, bl.th, a)
+    const c = kerrCov(bl.r, bl.th, a, q2)
     const omega = -c.gtp / c.gpp // ZAMO coordinate angular velocity
     betaPhi = omega * Math.sqrt(Math.max(c.gpp, 0)) // ω · proper circumferential radius
   }
@@ -249,14 +252,16 @@ function tracePhotonPathSchw(pos0: Vec3, dir0: Vec3, params: Params): ProbeResul
     Q: 0,
     b: Math.sqrt(h2),
     spin: 0,
+    charge: 0,
   }
 }
 
 // ------------------------------------------------------------------ Kerr path recorder
 function tracePhotonPathKerr(pos0: Vec3, dir0: Vec3, params: Params): ProbeResult {
   const a = params.spin * M
-  const { rPlus } = horizons(a)
-  const init = initKerrPhoton(pos0, normalize(dir0), a)
+  const q2 = chargeQ2(params.charge)
+  const { rPlus } = horizons(a, q2)
+  const init = initKerrPhoton(pos0, normalize(dir0), a, q2)
   let { r, th, ph, pr, pth } = init
   const { E, L } = init
   const Q = carterConstant(th, pth, E, L, a)
@@ -297,10 +302,10 @@ function tracePhotonPathKerr(pos0: Vec3, dir0: Vec3, params: Params): ProbeResul
     const prox = Math.min(Math.max((r - rPlus) * 1.6, 0.12), 1)
     const dt = stepSize * (0.35 + 0.22 * r) * prox
 
-    const k1 = kerrDeriv(r, th, pr, pth, E, L, a)
-    const k2 = kerrDeriv(r + 0.5 * dt * k1.dr, th + 0.5 * dt * k1.dth, pr + 0.5 * dt * k1.dpr, pth + 0.5 * dt * k1.dpth, E, L, a)
-    const k3 = kerrDeriv(r + 0.5 * dt * k2.dr, th + 0.5 * dt * k2.dth, pr + 0.5 * dt * k2.dpr, pth + 0.5 * dt * k2.dpth, E, L, a)
-    const k4 = kerrDeriv(r + dt * k3.dr, th + dt * k3.dth, pr + dt * k3.dpr, pth + dt * k3.dpth, E, L, a)
+    const k1 = kerrDeriv(r, th, pr, pth, E, L, a, q2)
+    const k2 = kerrDeriv(r + 0.5 * dt * k1.dr, th + 0.5 * dt * k1.dth, pr + 0.5 * dt * k1.dpr, pth + 0.5 * dt * k1.dpth, E, L, a, q2)
+    const k3 = kerrDeriv(r + 0.5 * dt * k2.dr, th + 0.5 * dt * k2.dth, pr + 0.5 * dt * k2.dpr, pth + 0.5 * dt * k2.dpth, E, L, a, q2)
+    const k4 = kerrDeriv(r + dt * k3.dr, th + dt * k3.dth, pr + dt * k3.dpr, pth + dt * k3.dpth, E, L, a, q2)
 
     const nr = r + (dt / 6) * (k1.dr + 2 * k2.dr + 2 * k3.dr + k4.dr)
     let nth = th + (dt / 6) * (k1.dth + 2 * k2.dth + 2 * k3.dth + k4.dth)
@@ -371,12 +376,18 @@ function tracePhotonPathKerr(pos0: Vec3, dir0: Vec3, params: Params): ProbeResul
     Q,
     b: Math.abs(L / (Math.abs(E) < 1e-9 ? 1e-9 : E)),
     spin: params.spin,
+    charge: params.charge,
   }
 }
 
-/** Trace the photon a clicked pixel is showing. Picks the Schwarzschild or Kerr integrator by spin. */
+/**
+ * Trace the photon a clicked pixel is showing. The fast reduced-Cartesian Schwarzschild recorder is
+ * used only for the truly static, uncharged hole; any spin *or* charge routes through the full
+ * Kerr–Newman Hamiltonian recorder (which handles a = 0, Q > 0 as the Reissner–Nordström limit).
+ */
 export function tracePhoton(pos: Vec3, dir: Vec3, params: Params): ProbeResult {
-  return params.spin < 0.0015 ? tracePhotonPathSchw(pos, dir, params) : tracePhotonPathKerr(pos, dir, params)
+  const kerrNewman = params.spin >= 0.0015 || chargeQ2(params.charge) > 1e-6
+  return kerrNewman ? tracePhotonPathKerr(pos, dir, params) : tracePhotonPathSchw(pos, dir, params)
 }
 
 /** A short, plain-language verdict for the probe read-out. */

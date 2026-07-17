@@ -304,7 +304,16 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
   }
 
   const spinning = params.spin >= 0.0015
+  const charged = params.charge >= 0.002
   const inner = effectiveDiskInner(params)
+  // Name the member of the no-hair family currently on screen.
+  const holeLabel = spinning
+    ? charged
+      ? `Kerr–Newman a/M ${params.spin.toFixed(2)} · Q/M ${params.charge.toFixed(2)}`
+      : `Kerr a/M ${params.spin.toFixed(2)} · ISCO ${kerrISCO(params.spin).toFixed(2)} rs`
+    : charged
+      ? `Reissner–Nordström Q/M ${params.charge.toFixed(2)}`
+      : ''
 
   return (
     <div className="stage" ref={containerRef}>
@@ -314,11 +323,7 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       <div className="hud" aria-hidden="true">
         <span className="hud__fps">{fps} fps</span>
         <span className="hud__fps">{Math.round(effScale * 100)}%</span>
-        {spinning && (
-          <span className="hud__fps hud__kerr">
-            Kerr a/M {params.spin.toFixed(2)} · ISCO {kerrISCO(params.spin).toFixed(2)} rs
-          </span>
-        )}
+        {holeLabel && <span className="hud__fps hud__kerr">{holeLabel}</span>}
         {obs.active && (
           <span className="hud__fps hud__rain">
             Rain frame · r {obs.r.toFixed(2)} rs · β {obs.beta.toFixed(3)} · γ {obs.gamma.toFixed(2)}
@@ -344,6 +349,16 @@ export default function RenderView({ params, onOrbit, onDolly }: Props) {
       </div>
     </div>
   )
+}
+
+/** Name the black-hole model a probe result was traced in, from its spin and charge. */
+function probeModel(res: ProbeResult): string {
+  const spinning = res.spin >= 0.0015
+  const charged = res.charge >= 0.002
+  if (spinning && charged) return `Kerr–Newman a/M ${res.spin.toFixed(2)}, Q/M ${res.charge.toFixed(2)}`
+  if (spinning) return `Kerr a/M ${res.spin.toFixed(2)}`
+  if (charged) return `Reissner–Nordström Q/M ${res.charge.toFixed(2)}`
+  return 'Schwarzschild'
 }
 
 /** Live read-out for a traced photon: its conserved quantities, geometry and fate. */
@@ -393,7 +408,7 @@ function ProbePanel({ res, onClear }: { res: ProbeResult; onClear: () => void })
         </div>
         <div>
           <dt>Model</dt>
-          <dd>{res.kind === 'kerr' ? `Kerr a/M ${res.spin.toFixed(2)}` : 'Schwarzschild'}</dd>
+          <dd>{probeModel(res)}</dd>
         </div>
       </dl>
     </div>

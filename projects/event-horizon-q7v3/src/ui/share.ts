@@ -17,6 +17,7 @@ const FIELDS: Record<keyof Params, Codec> = {
   fov: { code: 'fv', kind: 'num', prec: 0 },
   freeFall: { code: 'ff', kind: 'bool' },
   spin: { code: 'sp', kind: 'num', prec: 3 },
+  charge: { code: 'qc', kind: 'num', prec: 3 },
   ergosphere: { code: 'eg', kind: 'bool' },
   iscoTrack: { code: 'it', kind: 'bool' },
   diskInner: { code: 'di', kind: 'num', prec: 2 },

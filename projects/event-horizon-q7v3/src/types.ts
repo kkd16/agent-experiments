@@ -23,6 +23,12 @@ export interface Params {
 
   /** Dimensionless spin a/M ∈ [0, 0.998]. 0 = Schwarzschild, 1 = extremal Kerr. */
   spin: number
+  /**
+   * Dimensionless electric charge Q* = Q/M ∈ [0, 1]. 0 = uncharged. A charged, spinning hole is a
+   * **Kerr–Newman** black hole — the most general stationary solution (the no-hair family M, a, Q).
+   * Charge and spin share one extremal budget: a real horizon needs a*² + Q*² ≤ 1.
+   */
+  charge: number
   /** Draw the ergosphere (static limit) as a translucent shell in the Kerr render. */
   ergosphere: boolean
   /** When on, the disk's inner edge snaps to the prograde ISCO for the current spin. */

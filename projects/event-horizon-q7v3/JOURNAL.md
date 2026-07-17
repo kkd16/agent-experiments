@@ -267,6 +267,67 @@ way everything else in this app is.
       overlay tracks the orbit, the light-echo tint appears, the new self-tests pass live, zero console
       errors.
 
+## v6 — "The Charged Hole" (the Kerr–Newman / no-hair release)
+
+v1–v5 covered the two-parameter sub-family of black holes: mass and spin (Schwarzschild → Kerr).
+But general relativity's **no-hair theorem** says a stationary black hole is fixed by *three*
+numbers — mass `M`, spin `a`, and electric **charge `Q`**. v6 completes the family. It adds the
+charge parameter and generalises **every layer of the engine** — the GPU renderer, the CPU
+integrators, the closed-form observables, the analytic shadow, the disk photometry, the probe, the
+spectrograph, and the verification suite — from Kerr to the fully general **Kerr–Newman** metric.
+With no spin this is a **Reissner–Nordström** hole; with both, it is the most general isolated black
+hole there is. Charge shrinks the horizon and the shadow, and it does so through one tidy
+substitution that runs through the whole codebase: the mass function `2Mr` becomes `2Mr − Q²`, and
+the horizon function gains a term, `Δ = r² − 2Mr + a² + Q²`.
+
+### The physics (all validated in a Node oracle first, then ported)
+
+- [x] **Charge parameter** `Q* = Q/M ∈ [0, 1]`, wired through `Params`, the share-hash (`qc`), and a
+      new slider in the Black-hole group. Spin and charge share one **extremal budget**
+      `a*² + Q*² ≤ 1` (a real horizon requires it); the UI clamps the charge to whatever room the
+      current spin leaves, so the hole is never driven super-extremal / naked.
+- [x] **Closed-form Kerr–Newman observables** (`physics/kerr.ts`): horizons `r± = M ± √(M²−a²−Q²)`,
+      the RN photon sphere `r_ph = ½(3M+√(9M²−8Q²))` and its critical impact parameter `r_ph²/√Δ`
+      (→ `3√3·M` uncharged, → `4M` at extremal), the charged spherical-photon-orbit ratios
+      `ξ(r) = −(r³−3Mr²+a²r+a²M+2Q²r)/[a(r−M)]` and
+      `η(r) = r²[4a²Δ−(r²−3Mr+2a²+2Q²)²]/[a²(r−M)²]` (derived by hand, verified to reduce to the
+      Kerr forms), a numeric **KN photon-ring finder** (the η=0 roots — no Bardeen closed form once
+      charged), and the charge-aware radial potential, `isCaptured` test, shadow critical curve, and
+      `g`-factor.
+- [x] **GPU renderer** (`gl/shaders.ts`): `uCharge2` uniform threaded through `kerrCov`/`kerrInv`,
+      the horizon + ergosphere capture radii, and both the thin and volumetric disk photometry (the
+      KN Kepler frequency `Ω = √(Mr−Q²)/(r²+a√(Mr−Q²))` and the `2Mr−Q²` metric). The reduced
+      Cartesian Schwarzschild fast path is now taken only for a *static, uncharged* hole; any spin
+      **or** charge engages the full Hamiltonian loop (which handles a=0, Q>0 as Reissner–Nordström).
+- [x] **CPU integrators** (`cpu-geodesic.ts`, `geodesics.ts`, `probe.ts`, `lineprofile.ts`): the
+      same `q2` substitution ported line-for-line, so the click-a-photon probe, the 2-D equatorial
+      explorer, the conservation tracer, and the emission-line profile all honour charge — and the
+      probe's Model read-out now names the family member (Schwarzschild / Kerr / Reissner–Nordström /
+      Kerr–Newman).
+- [x] **Three new presets** — *Reissner–Nordström* (static, heavily charged), *Kerr–Newman*
+      (spinning + charged), *Extremal charge* (pushed to `a*²+Q*²≈1`). New HUD readout naming the
+      hole and its `Q/M`.
+
+### UX, docs & proof
+
+- [x] **Observatory** gains a **charge slider** (capped by the extremal budget) that drives the live
+      shadow: the cyan critical curve and the independent radial-potential silhouette both shrink as
+      charge rises; new read-outs for the charged light rings and the extremal budget
+      `√(a*²+Q*²)/1`; the caption explains the `Δ = r²−2Mr+a²+Q²` mechanism.
+- [x] **Geodesic Explorer** gains a charge slider — the equatorial fan tightens symmetrically, the
+      horizon / ergosphere / light-ring / capture-guide all track the charge (RN when static).
+- [x] **Physics primer**: a new *"Charge: the Kerr–Newman family"* section (the no-hair theorem, the
+      `2Mr−Q²` substitution, the shrinking horizon/shadow, the shared extremal budget), plus updates
+      to the g-factor and honest-caveats sections.
+- [x] **Verification**: a new *"Kerr–Newman (charge)"* self-test group — the RN shadow is a circle of
+      `r_ph²/√Δ`; the RN critical `b` recovers `3√3·M` uncharged and `4M` extremal; charged spherical
+      orbits satisfy `R=R'=0` (~1e-12); the KN ring-finder matches Bardeen at Q=0 (~1e-16); charged
+      light rings have `η=0`; the **analytic charged shadow edges match the renderer's own integrated
+      equatorial geodesics** (<1%); charge measurably shrinks the shadow; and the probe's RN capture
+      edge equals the RN critical impact parameter. The live suite goes from **25 → 33 checks**.
+- [x] **Ship green + headless-verified**: `node scripts/verify-project.mjs event-horizon-q7v3` (scope
+      + conformance + lint + tsc + build) **and** driven in Chromium against the production build.
+
 ## Session log
 
 - 2026-07-05 (claude, opus-4.8): created from template. Built the full v1 described above —
@@ -332,3 +393,22 @@ way everything else in this app is.
   production build — shader compiles, probe traces a captured photon on click (`b=1.02 rs < b_crit`),
   a grazing click shows an order-2 looping ray that escapes, the ZAMO+spin+echo scene renders,
   **25/25 self-tests pass live, zero console errors**.
+- 2026-07-17 (claude, opus-4.8): **v6 "The Charged Hole"**. Completed the no-hair family by adding
+  electric **charge** and generalising the entire engine from Kerr to **Kerr–Newman**. Derived the
+  charged spherical-photon-orbit ratios `ξ(r)`, `η(r)`, the RN photon sphere / critical impact
+  parameter, and a numeric KN light-ring finder by hand, validated them in a throwaway Node oracle
+  (rings = Bardeen to 1e-12 at Q=0; `R=R'=0` to 1e-15; extremal `a*²+Q*²=1` → degenerate horizon at
+  r=M; shadow area monotone-decreasing in charge), *then* ported. The charge enters through one
+  substitution — the mass function `2Mr → 2Mr − Q²`, `Δ` gains `+Q²` — threaded through the GLSL
+  renderer (`uCharge2`: metric, horizon, ergosphere, both disk paths + the KN Kepler frequency), the
+  CPU integrators (`cpu-geodesic`, `geodesics`, `probe`, `lineprofile`), and the closed-form
+  observables + analytic shadow in `physics/kerr.ts`. Spin and charge now share the extremal budget
+  `a*²+Q*² ≤ 1` (UI-clamped). New charge sliders in the Controls, Observatory and Geodesic Explorer;
+  three KN presets; a HUD/probe read-out that names the family member (Schwarzschild / Kerr / RN /
+  Kerr–Newman); a new primer section on the no-hair theorem. New **"Kerr–Newman (charge)"** self-test
+  group cross-checks the charged shadow two independent ways (analytic critical curve vs the
+  renderer's own integrated equatorial geodesics, <1%) and the RN limits (`3√3·M → 4M`) — the live
+  suite goes **25 → 33 checks**. Full gate green (scope + conformance + lint + tsc + build), the
+  suite runs **33/33 in headless Node**, and driven in Chromium against the production build:
+  Reissner–Nordström, Kerr–Newman and extremal-charge scenes render with a visibly smaller shadow,
+  the Observatory charge slider shrinks the critical curve live, zero console/shader errors.
