@@ -19,6 +19,7 @@ import {
   orthonormalityDefect,
 } from './dwt'
 import { dwtSignal, addNoise } from './dwtSignals'
+import { wpAnalyze, bestBasis, wpReconstruct, wpLeafSignal, spectralCentroid } from './wp'
 import { timeStretch, pitchTimeShift, hannPeriodic, snrDb } from './phasevocoder'
 import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
 import { cepstrum } from './cepstrum'
@@ -380,6 +381,64 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       worstGain = Math.min(worstGain, dwtSnrDb(clean, r.clean) - before)
     }
     check('wavelet denoising improves SNR (VisuShrink/SURE/Bayes)', worstGain > 1.5)
+  }
+
+  // 8h. The full wavelet-packet tree (split every node) reconstructs exactly, and
+  //     the best-basis cover — for both cost functions — is also an exact inverse.
+  {
+    const N = 1024
+    const bank = getBank('sym6')
+    const x = dwtSignal('doppler', N)
+    const J = 4
+    const nodes = wpAnalyze(x, bank, J)
+    const splitAll = nodes.map((lvl, j) => lvl.map(() => j < J))
+    const recFull = wpReconstruct(nodes, splitAll, bank)
+    let worst = 0
+    for (let i = 0; i < N; i++) worst = Math.max(worst, Math.abs(recFull[i] - x[i]))
+    for (const c of ['shannon', 'l1'] as const) {
+      const bb = bestBasis(nodes, c)
+      const rec = wpReconstruct(nodes, bb.split, bank)
+      for (let i = 0; i < N; i++) worst = Math.max(worst, Math.abs(rec[i] - x[i]))
+    }
+    check('wavelet-packet full-tree + best-basis reconstruction exact', worst < 1e-9)
+  }
+
+  // 8i. The best basis is genuinely optimal: its total Shannon cost is ≤ both the
+  //     undivided root and the full-depth cover (the two trivial bases).
+  {
+    const nodes = wpAnalyze(dwtSignal('heavisine', 1024), getBank('sym6'), 5)
+    const bb = bestBasis(nodes, 'shannon')
+    check(
+      'wavelet-packet best-basis cost ≤ root and ≤ full-depth cover',
+      bb.bestCost <= bb.fullTreeCost + 1e-6 && bb.bestCost <= bb.finestCost + 1e-6,
+    )
+  }
+
+  // 8j. Adaptivity: for a pure tone the best basis subdivides down to its finest
+  //     level near the tone and concentrates ≥90% of the energy in that band.
+  {
+    const N = 1024
+    const f0 = 0.09375
+    const x = new Float64Array(N)
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * f0 * i)
+    const nodes = wpAnalyze(x, getBank('sym8'), 5)
+    const bb = bestBasis(nodes, 'shannon')
+    let near = 0
+    let tot = 0
+    let maxLevel = 0
+    let maxE = 0
+    for (const lf of bb.leaves) {
+      const band = nodes[lf.j][lf.k]
+      let e = 0
+      for (const v of band) e += v * v
+      tot += e
+      if (Math.abs(spectralCentroid(wpLeafSignal(nodes, lf, getBank('sym8'))) - f0) < 0.03) near += e
+      if (e > maxE) {
+        maxE = e
+        maxLevel = lf.j
+      }
+    }
+    check('wavelet-packet best basis adapts fine resolution to a tone', near / tot > 0.9 && maxLevel >= 3)
   }
 
   // 9. Phase vocoder identity: an unmodified analysis/synthesis round-trip
