@@ -212,6 +212,83 @@ keep it current.
 
 ## Ideas / backlog
 
+### Session 24 — The active-learning studio grows two modern learners (2026-07-17, claude)
+
+Session 12 shipped the **Learn** tab with two learners: Angluin's **L\*** (active, one counterexample-
+handling strategy — the classic "add every prefix to S") and **RPNI** (passive). That was the *textbook*
+L\*; the modern automata-learning literature is really about doing it *cheaply*, and the tab never showed
+the two ideas that matter. This session fills that gap: it turns the tab into a proper **active-learning
+studio** with **three** learners racing on the same teacher, and holds them to the studio's usual standard —
+a seeded differential fuzzer proving each one recovers the studio's own minimal DFA and that they agree.
+
+The two additions are the famous query-efficiency improvements over classic L\*:
+
+- **Rivest–Schapire counterexample analysis** (1993). Classic L\* dumps *all* prefixes of a counterexample
+  into the row set **S**, so a long counterexample balloons the table (and its query count). RS instead
+  **binary-searches** the counterexample for the *single* distinguishing suffix and adds that one experiment
+  to **E** — the table gains exactly one row per counterexample, in O(log m) membership probes rather than
+  O(m). The split is the breakpoint of `γ(i) = member(access_H(ce[:i]) · ce[i:])`, which equals the target's
+  answer at `i=0` and the hypothesis' answer at `i=m` (which differ), so it must flip at some `i`; the suffix
+  `ce[i+1:]` distinguishes two rows the table currently equates. Implemented as a `ceHandling` option on the
+  existing `learnLStar` (`'prefixes' | 'rivest-schapire'`), so it reuses the whole observation-table machinery
+  and the closedness/consistency loop unchanged — only the counterexample fold differs.
+- **Kearns–Vazirani** (`engine/learn-kv.ts`). The table is thrown away entirely for a binary **discrimination
+  tree**: inner nodes are distinguishing suffixes, leaves are states. To classify a word you **sift** it from
+  the root — one membership query per node, right on yes / left on no — so it lands in ≤ (tree depth) queries
+  instead of scanning a whole table. A counterexample is analysed Rivest–Schapire-style and **splits one leaf
+  in two**, so the tree gains exactly one state per round and needs only *n* equivalence queries for an
+  *n*-state target. Reuses `learnAlphabet` and the same teacher (membership over the target DFA, equivalence
+  via `compareDFAs`), and lowers the tree to the studio's own `DFA` so the hypothesis flows into the graph /
+  minimise views unchanged.
+
+The headline is the **race** (`engine/learn-race.ts`, rendered in the panel): all three learners interrogate
+the *same* minimally-adequate teacher and must converge on the *same* minimal DFA — so what's left to compare
+is **cost**, tabulated live (membership queries, equivalence rounds, structure size). On a random 2-state draw
+the tab shows 30 membership queries for classic L\*, 23 for Rivest–Schapire, 17 for Kearns–Vazirani — KV's
+textbook trade of *more* equivalence rounds for *far fewer* membership queries, measured rather than asserted.
+
+Proved the house way: `engine/learn-verify.ts` now runs **all three** active learners on every random pattern
+and asserts (1) each recovers a DFA equivalent to the target with *exactly* the same state count — its own
+minimal DFA, not merely *some* equivalent machine, (2) the three **agree with one another** (a second,
+independent equivalence check), and (3) RPNI still recovers it from a complete sample; it also sums the
+membership queries each learner spent so the aggregate savings surface. **3,600 patterns × 6 seeds, zero
+disagreements** (offline): Rivest–Schapire spends ~35% fewer membership queries than classic in aggregate,
+Kearns–Vazirani ~63% fewer. Honest caveat surfaced by the fuzzer and now stated in the UI: the per-instance
+ordering is **not** monotone — binary search spends its own probes and each new experiment widens *every*
+row, which can outweigh the saving on a 2–3-state toy language — so cost is *measured*, never asserted per
+instance.
+
+Files touched (all inside `projects/regex-studio-r8k4/`, Golden-Rule clean): `engine/learn.ts` (added the
+`ceHandling` option + the Rivest–Schapire analysis, backward-compatible — the default is still `'prefixes'`),
+`engine/learn-kv.ts` (new), `engine/learn-race.ts` (new), `engine/learn-verify.ts` (extended to three
+learners + aggregate query stats), `components/LearnPanel.tsx` (a learner picker, the discrimination-tree
+view, the race leaderboard, the extended cross-check console), `App.css` (picker / tree / race styles),
+`project.json` and this journal. No other engine touched; no new tab (the Learn tab deepens in place). The
+CI gate (conformance + lint + build) is green, and a headless Chromium smoke test confirmed the picker, the
+discrimination tree, the race board and the cross-check verdict all render.
+
+The plan, all shipped this session:
+
+- [x] **Rivest–Schapire counterexample analysis** — a `ceHandling` option on `learnLStar`; binary-search the
+      counterexample for the one distinguishing suffix and add it to E; instrument the suffix/probe counts.
+- [x] **Kearns–Vazirani** (`engine/learn-kv.ts`) — the discrimination tree, `sift`, RS-style leaf-splitting
+      counterexample analysis, hypothesis read-off to the studio's `DFA`, a tree snapshot for the UI.
+- [x] **The race** (`engine/learn-race.ts`) — run classic-L\* · RS-L\* · KV on one target, collect comparable
+      membership/equivalence/structure metrics, verdict that all recovered the minimal DFA.
+- [x] **The extended fuzzer** (`engine/learn-verify.ts`) — all three learners per pattern; each ≡ target &
+      minimal, the three agree, RPNI recovers; per-learner membership totals for the aggregate-savings view.
+- [x] **The panel** (`components/LearnPanel.tsx`) — a segmented learner picker (L\* classic / RS / KV), the
+      L\* observation-table view (RS adds suffix/probe stats), the KV discrimination-tree + stats view, the
+      race leaderboard, and the aggregate membership-query table in the cross-check console.
+- [x] **Copy + verify** — `project.json` headline & tags refreshed; CI gate green; headless render smoke test.
+
+Stretch (parked for a later session): **TTT** (the discrimination-tree learner with a discriminator-
+finalisation phase that keeps the tree *minimal*, Isberner–Howar–Steffen 2014); **observation packs / the
+Rivest–Schapire "Suffix1by1" variant**; **Mealy-machine learning** (learn the studio's *transducers*, not
+just DFAs); **NL\*** (learning a residual NFA, Bollig et al.) so the learner can land on a sub-minimal-DFA
+NFA; and a **query-complexity growth chart** (membership queries vs target size across a family like
+`(a|b)*a(a|b)^k`, the exponential-DFA family, so the three curves separate visibly).
+
 ### Session 23 — Beyond regular: the Context-Free studio (2026-07-06, claude)
 
 For twenty-two sessions this studio has mapped the **regular** world from every side — six matching
