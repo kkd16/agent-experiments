@@ -37,7 +37,7 @@ import { EnvMap, Distribution2D } from './envmap'
 import type { HdriPreset } from './envmap'
 import { decodeHdr, encodeHdr, downsampleEquirect, floatToRgbe } from './hdr'
 import { decodePfm, encodePfm, sniffHdrFormat } from './pfm'
-import { decodeExr, encodeExr, halfToFloat, floatToHalf, inflateZlib, deflateStored } from './exr'
+import { decodeExr, encodeExr, halfToFloat, floatToHalf, inflateZlib, deflateStored, deflate } from './exr'
 import { radiance } from './integrator'
 import type { RayStats } from './integrator'
 import { Guide, DTree, dirToSquare, squareToDir } from './guiding'
@@ -4261,6 +4261,45 @@ function testExrInflate(): { pass: boolean; detail: string } {
   return { pass: ok, detail: `dynamic-Huffman(ref zlib)=${dynOk} (${expected.length}B), stored round-trip=${storedOk}` }
 }
 
+// (2b) The from-scratch DEFLATE *compressor* (LZ77 hash-chain + fixed Huffman) is
+// the exact inverse of the inflate: for a mix of inputs (a long run, periodic
+// text, structured bytes) `deflate → inflateZlib` recovers the source byte-for-
+// byte AND the compressed form is genuinely smaller than the input (real entropy
+// coding, not stored blocks). This is what makes a ZIP `.exr` export actually
+// shrink; spec-correctness (decodable by any zlib) is cross-checked offline.
+function testExrDeflate(): { pass: boolean; detail: string } {
+  const cases: { name: string; data: Uint8Array }[] = []
+  cases.push({ name: 'run', data: new Uint8Array(4000).fill(0x41) })
+  const periodic = new Uint8Array(6000)
+  for (let i = 0; i < periodic.length; i++) periodic[i] = 'lumen-exr-'.charCodeAt(i % 10)
+  cases.push({ name: 'periodic', data: periodic })
+  const wave = new Uint8Array(9000)
+  for (let i = 0; i < wave.length; i++) wave[i] = (Math.sin(i * 0.01) * 40 + (i % 13)) & 0xff
+  cases.push({ name: 'wave', data: wave })
+  let allExact = true
+  let allShrink = true
+  let worstRatio = 0
+  for (const c of cases) {
+    const z = deflate(c.data)
+    const back = inflateZlib(z, c.data.length)
+    let exact = back.length === c.data.length
+    for (let i = 0; i < c.data.length && exact; i++) if (back[i] !== c.data[i]) exact = false
+    if (!exact) allExact = false
+    const ratio = z.length / c.data.length
+    if (ratio >= 1) allShrink = false
+    if (ratio > worstRatio) worstRatio = ratio
+  }
+  // Empty and 1-byte inputs must not throw and must round-trip too.
+  let edgeOk = true
+  for (const d of [new Uint8Array(0), new Uint8Array([0x2a])]) {
+    const back = inflateZlib(deflate(d), d.length)
+    if (back.length !== d.length) edgeOk = false
+    for (let i = 0; i < d.length; i++) if (back[i] !== d[i]) edgeOk = false
+  }
+  const ok = allExact && allShrink && edgeOk
+  return { pass: ok, detail: `round-trip exact=${allExact}, all shrink=${allShrink} (worst ratio ${worstRatio.toFixed(3)}), edge cases=${edgeOk}` }
+}
+
 // (3) A FLOAT-channel `.exr` round-trips BIT-FOR-BIT through all three writable
 // compressors — NONE, RLE and ZIP — which pins the predictor/reorder pre-filter,
 // the RLE codec and the DEFLATE path as EXACT inverses (a stronger statement than
@@ -4929,6 +4968,7 @@ export function runSelfTests(): TestResult[] {
     test('PFM codec — decoded map drives sampler (≈1/4π, MIS)', testPfmDrivesSampler),
     test('EXR codec — half↔float bit-exact (±0/subnormal/∞, ULP round-trip)', testExrHalfFloat),
     test('EXR codec — from-scratch inflate ≡ reference zlib (dynamic Huffman)', testExrInflate),
+    test('EXR codec — from-scratch DEFLATE compressor round-trips + shrinks', testExrDeflate),
     test('EXR codec — FLOAT round-trip bit-exact ∀ NONE/RLE/ZIP + oriented', testExrFloatRoundtrip),
     test('EXR codec — HALF round-trip <ULP + sniff + rejects garbage/tiled', testExrHalfAndReject),
     test('EXR codec — decodes a reference zlib-ZIP-HALF file (Blender interop)', testExrReferenceFile),
