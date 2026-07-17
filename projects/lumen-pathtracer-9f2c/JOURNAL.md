@@ -127,8 +127,9 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
   `sniffHdrFormat` (extended in 27.0 to recognise the EXR magic) — bit-for-bit round-trippable.
 - `src/engine/exr.ts` — **(27.0) the OpenEXR (`.exr`) codec** — the film-industry HDR format, and the
   loader's third. A whole DEFLATE stack from scratch: `inflateZlib` (RFC 1950/1951 — stored, fixed- and
-  **dynamic-Huffman** blocks) reads real ZIP scanlines; `deflateStored` writes a spec-correct zlib stream
-  with an Adler-32 trailer. `halfToFloat`/`floatToHalf` are a round-to-nearest-even IEEE-754 binary16
+  **dynamic-Huffman** blocks) reads real ZIP scanlines; `deflate` (27.1 — a hash-chain **LZ77** match
+  finder + the fixed-Huffman alphabet) and `deflateStored` write a spec-correct zlib stream (Adler-32
+  trailer), decodable by stock `zlib`, so ZIP export genuinely shrinks. `halfToFloat`/`floatToHalf` are a round-to-nearest-even IEEE-754 binary16
   converter. `decodeExr` parses the attribute header + scanline offset table and reads NONE / RLE / ZIPS /
   ZIP blocks of HALF / FLOAT / UINT channels (mapping alphabetical B,G,R → RGB, undoing EXR's
   predictor/reorder pre-filter), rejecting tiled/deep/multi-part/PIZ with a clear message; `encodeExr`
@@ -256,9 +257,11 @@ photon emitter, so daylight scenes get photon-mapped sun caustics).
       ≡ reference zlib dynamic-Huffman; FLOAT round-trip bit-exact ∀ NONE/RLE/ZIP; HALF <ULP + sniff/reject;
       a reference Blender-style zlib-ZIP-HALF file decodes; decoded `.exr` drives the sampler) — 139 total.
       (PIZ/PXR24/B44/DWA + tiled/deep are detected and rejected, not mis-decoded — see follow-ups below.)
-- [ ] **(27.0 follow-ups) A real DEFLATE *compressor*** (LZ77 + fixed/dynamic Huffman) so ZIP export
-      genuinely shrinks rather than storing; today `encodeExr`'s ZIP uses stored deflate blocks (correct &
-      universally readable, but not smaller). The read path already handles fully-compressed streams.
+- [x] **(27.1) A real DEFLATE *compressor*** — `deflate()` in `exr.ts`: a hash-chain LZ77 match finder
+      (32 KB window, 3–258-byte matches) + the **fixed-Huffman** alphabet (RFC 1951 §3.2.6), the exact
+      inverse of the inflate. `encodeExr`'s ZIP now genuinely shrinks (falling back to raw only when a
+      block doesn't compress). Spec-correct: the output decodes in stock `zlib` *and* our own inflate. A
+      new proof round-trips a run/periodic/wave/empty/1-byte set and asserts real compression — **140** total.
 - [ ] **(27.0 follow-ups) PIZ + PXR24 decode** — the wavelet+Huffman (PIZ) and 24-bit-float (PXR24)
       compressors, the two other schemes real `.exr` HDRIs occasionally ship, so no file is ever refused.
 - [ ] **(27.0 follow-ups) Tiled + multi-part EXR** — the tile offset-table layout and part headers, to
@@ -459,8 +462,9 @@ Steps:
       reference **Blender-style zlib-ZIP-HALF** file decodes to its gradient; a decoded `.exr` drives the
       sampler ≈1/4π + MIS) — **139/139** green. Cross-checked in Node against `zlib`: our inflate reads
       real dynamic-Huffman streams and `deflateStored` output is readable by stock `zlib.inflateSync`.
-- [ ] Follow-ups (see backlog): a real DEFLATE *compressor* (so ZIP export shrinks), PIZ/PXR24 decode,
-      tiled/multi-part, and the luminance-chroma (`Y`/`RY`/`BY`) channel layout.
+- [x] Follow-up **shipped in 27.1**: a real DEFLATE *compressor* (`deflate()` — LZ77 + fixed Huffman), so
+      ZIP `.exr` export genuinely shrinks. Remaining backlog: PIZ/PXR24 decode, tiled/multi-part, and the
+      luminance-chroma (`Y`/`RY`/`BY`) channel layout.
 
 ## Roadmap — 2026-07-05 Lumen 26.0: lossless float HDRIs (`.pfm`) + a live env preview (claude)
 
@@ -1848,6 +1852,16 @@ verification suite, the scene registry, and the UI so it is observable and prove
 
 ## Session log
 
+- 2026-07-17 (claude): **Lumen 27.1 — a real DEFLATE compressor (ZIP `.exr` export now shrinks).**
+  Completed the DEFLATE story: `exr.ts` already had a from-scratch *inflate* (27.0); this adds `deflate()`,
+  a hash-chain **LZ77** match finder (RFC 1951's 32 KB window, 3–258-byte matches) driving the
+  **fixed-Huffman** code alphabet (§3.2.6) — the exact inverse of the inflate, written MSB-first into the
+  LSB-first bit stream. `encodeExr`'s ZIP path now calls it (falling back to a raw block only when a block
+  doesn't compress), so the ⤓ EXR export produces genuinely smaller files instead of stored blocks. A new
+  self-test (**140** total, all green) round-trips a run / periodic-text / structured-wave / empty / 1-byte
+  set through `deflate → inflateZlib` byte-for-byte and asserts each shrinks. Cross-checked offline: every
+  case also decodes with stock `zlib.inflateSync`, so the output is spec-correct and universally readable.
+  Clean `pnpm lint` + `pnpm build`; `verify-project.mjs` passes.
 - 2026-07-17 (claude): **Lumen 27.0 — OpenEXR (`.exr`), the format the film industry ships.** Added
   `src/engine/exr.ts`, a from-scratch OpenEXR scanline reader + writer — the loader's third real HDR format
   after RGBE (25.0) and PFM (26.0), and the one Poly Haven & co. actually default to (half-precision +

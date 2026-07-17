@@ -359,6 +359,165 @@ export function deflateStored(data: Uint8Array): Uint8Array {
   return out.subarray(0, o)
 }
 
+// ---- DEFLATE compressor (LZ77 + fixed Huffman) ------------------------------
+//
+// A real entropy-coding compressor — the inverse of `inflateRaw`, so ZIP `.exr`
+// export genuinely shrinks rather than storing. It uses a hash-chain LZ77 match
+// finder (RFC 1951's 32 KB window, 3–258-byte matches) and the FIXED Huffman code
+// alphabet (§3.2.6): simpler and safer than emitting an optimal dynamic tree, yet
+// still spec-correct — the output decodes in stock `zlib` and in our own inflate.
+
+// A bit sink that packs LSB-first (DEFLATE's bit order for the stream).
+class BitWriter {
+  private out: number[] = []
+  private buf = 0
+  private cnt = 0
+  bit(b: number): void {
+    this.buf |= (b & 1) << this.cnt
+    if (++this.cnt === 8) {
+      this.out.push(this.buf)
+      this.buf = 0
+      this.cnt = 0
+    }
+  }
+  // Write `n` low bits of `val`, least-significant first (values + extra bits).
+  bits(val: number, n: number): void {
+    for (let i = 0; i < n; i++) this.bit((val >>> i) & 1)
+  }
+  // Write a Huffman code of `len` bits MOST-significant first (Huffman codes are
+  // transmitted high bit first even though the surrounding stream is LSB-first).
+  code(code: number, len: number): void {
+    for (let i = len - 1; i >= 0; i--) this.bit((code >>> i) & 1)
+  }
+  finish(): Uint8Array {
+    if (this.cnt > 0) {
+      this.out.push(this.buf)
+      this.buf = 0
+      this.cnt = 0
+    }
+    return Uint8Array.from(this.out)
+  }
+}
+
+// Fixed literal/length Huffman code (§3.2.6): the canonical (code,len) for symbol.
+function fixedLitCode(sym: number): { c: number; len: number } {
+  if (sym <= 143) return { c: 0x30 + sym, len: 8 }
+  if (sym <= 255) return { c: 0x190 + (sym - 144), len: 9 }
+  if (sym <= 279) return { c: sym - 256, len: 7 }
+  return { c: 0xc0 + (sym - 280), len: 8 }
+}
+// Map a match length (3..258) to its length symbol + extra bits.
+function lengthSymbol(len: number): { sym: number; extra: number; nbits: number } {
+  let i = LEN_BASE.length - 1
+  while (i > 0 && LEN_BASE[i] > len) i--
+  return { sym: 257 + i, extra: len - LEN_BASE[i], nbits: LEN_EXTRA[i] }
+}
+// Map a match distance (1..32768) to its distance symbol + extra bits.
+function distanceSymbol(dist: number): { sym: number; extra: number; nbits: number } {
+  let i = DIST_BASE.length - 1
+  while (i > 0 && DIST_BASE[i] > dist) i--
+  return { sym: i, extra: dist - DIST_BASE[i], nbits: DIST_EXTRA[i] }
+}
+
+const DEFLATE_WINDOW = 32768
+const MIN_MATCH = 3
+const MAX_MATCH = 258
+const HASH_BITS = 15
+const HASH_SIZE = 1 << HASH_BITS
+const MAX_CHAIN = 256
+
+// Compress `data` into a zlib stream (RFC 1950 header + one BFINAL fixed-Huffman
+// DEFLATE block + Adler-32). Decodable by any zlib and by `inflateZlib`.
+export function deflate(data: Uint8Array): Uint8Array {
+  const w = new BitWriter()
+  // Block header: BFINAL=1, BTYPE=01 (fixed Huffman) — written LSB-first.
+  w.bit(1)
+  w.bit(1)
+  w.bit(0)
+
+  const n = data.length
+  const head = new Int32Array(HASH_SIZE).fill(-1)
+  const prev = new Int32Array(n < 1 ? 1 : n).fill(-1)
+  const hash = (p: number): number =>
+    ((data[p] << 10) ^ (data[p + 1] << 5) ^ data[p + 2]) & (HASH_SIZE - 1)
+
+  const emitLiteral = (byte: number) => {
+    const { c, len } = fixedLitCode(byte)
+    w.code(c, len)
+  }
+
+  let pos = 0
+  while (pos < n) {
+    let bestLen = 0
+    let bestDist = 0
+    if (pos + MIN_MATCH <= n) {
+      const h = hash(pos)
+      let cand = head[h]
+      let chain = MAX_CHAIN
+      const maxLen = Math.min(MAX_MATCH, n - pos)
+      while (cand >= 0 && chain-- > 0) {
+        const dist = pos - cand
+        if (dist > DEFLATE_WINDOW) break
+        // Quick reject: check the byte at the current best length first.
+        if (data[cand + bestLen] === data[pos + bestLen]) {
+          let l = 0
+          while (l < maxLen && data[cand + l] === data[pos + l]) l++
+          if (l > bestLen) {
+            bestLen = l
+            bestDist = dist
+            if (l >= maxLen) break
+          }
+        }
+        cand = prev[cand]
+      }
+    }
+
+    if (bestLen >= MIN_MATCH) {
+      const ls = lengthSymbol(bestLen)
+      const lc = fixedLitCode(ls.sym)
+      w.code(lc.c, lc.len)
+      w.bits(ls.extra, ls.nbits)
+      const ds = distanceSymbol(bestDist)
+      w.code(ds.sym, 5) // fixed distance codes are the 5-bit symbol value
+      w.bits(ds.extra, ds.nbits)
+      // Insert hashes for every position the match covers, then advance.
+      const end = pos + bestLen
+      while (pos < end) {
+        if (pos + MIN_MATCH <= n) {
+          const h = hash(pos)
+          prev[pos] = head[h]
+          head[h] = pos
+        }
+        pos++
+      }
+    } else {
+      emitLiteral(data[pos])
+      if (pos + MIN_MATCH <= n) {
+        const h = hash(pos)
+        prev[pos] = head[h]
+        head[h] = pos
+      }
+      pos++
+    }
+  }
+  // End-of-block symbol (256) then flush to a byte boundary.
+  const eob = fixedLitCode(256)
+  w.code(eob.c, eob.len)
+  const body = w.finish()
+
+  const out = new Uint8Array(2 + body.length + 4)
+  out[0] = 0x78
+  out[1] = 0x01
+  out.set(body, 2)
+  const sum = adler32(data)
+  const o = 2 + body.length
+  out[o] = (sum >>> 24) & 0xff
+  out[o + 1] = (sum >>> 16) & 0xff
+  out[o + 2] = (sum >>> 8) & 0xff
+  out[o + 3] = sum & 0xff
+  return out
+}
+
 // ---- EXR run-length codec + predictor/reorder pre-filter --------------------
 
 // EXR's run-length decode (ImfRle.cpp `rleUncompress`): a signed control byte —
@@ -762,7 +921,8 @@ export function encodeExr(pixels: Float32Array, width: number, height: number, o
       const c = rleCompress(applyExrPreFilter(rawBlock))
       payload = c.length < rawSize ? c : rawBlock // store raw if it didn't shrink
     } else {
-      const c = deflateStored(applyExrPreFilter(rawBlock))
+      // Real DEFLATE (LZ77 + fixed Huffman); fall back to raw if it didn't shrink.
+      const c = deflate(applyExrPreFilter(rawBlock))
       payload = c.length < rawSize ? c : rawBlock
     }
 
