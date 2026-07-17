@@ -8,6 +8,13 @@ import {
 } from './engine/frame'
 import { solveContinuum, type ContinuumInput, type ContinuumResult } from './engine/continuum'
 import {
+  solveQuad,
+  solveQuadModal,
+  type QuadInput,
+  type QuadResult,
+  type QuadModalResult,
+} from './engine/quadsolve'
+import {
   solveModal,
   solveBuckling,
   solveTransient,
@@ -42,7 +49,7 @@ import {
 import { SECTIONS, findSection } from './engine/sections'
 import type { NodeDisp } from './engine/frame'
 import { PRESETS, type ContinuumPreset, type FramePreset } from './engine/presets'
-import { drawFrame, drawContinuum, type Picked } from './ui/draw'
+import { drawFrame, drawContinuum, drawQuadContinuum, type Picked } from './ui/draw'
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
 import { CapacityCurvePlot, FrfPlot, HysteresisPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
@@ -68,6 +75,7 @@ import {
   writeHash,
   type Display,
   type FrameAnalysis,
+  type ElemOrder,
   type Scene,
 } from './state'
 
@@ -109,6 +117,9 @@ function frameBounds(m: FrameModel): Bounds {
 function meshBounds(inp: ContinuumInput): Bounds {
   return { minX: inp.mesh.minX, maxX: inp.mesh.maxX, minY: inp.mesh.minY, maxY: inp.mesh.maxY }
 }
+function quadBounds(inp: QuadInput): Bounds {
+  return { minX: inp.mesh.minX, maxX: inp.mesh.maxX, minY: inp.mesh.minY, maxY: inp.mesh.maxY }
+}
 function boundsDiag(b: Bounds): number {
   return Math.hypot(b.maxX - b.minX, b.maxY - b.minY) || 1
 }
@@ -124,6 +135,20 @@ function safeSolveFrame(m: FrameModel): FrameResult | null {
 function safeSolveContinuum(inp: ContinuumInput): ContinuumResult | null {
   try {
     return solveContinuum(inp)
+  } catch {
+    return null
+  }
+}
+function safeSolveQuad(inp: QuadInput): QuadResult | null {
+  try {
+    return solveQuad(inp)
+  } catch {
+    return null
+  }
+}
+function safeSolveQuadModal(inp: QuadInput): QuadModalResult | null {
+  try {
+    return solveQuadModal(inp, 6)
   } catch {
     return null
   }
@@ -193,7 +218,12 @@ export default function App() {
   const [frame, setFrame] = useState<FrameModel>(() => cloneFrame(initial?.frame ?? WARREN))
   const [contId, setContId] = useState(initial?.continuum.presetId ?? 'c-hole')
   const [density, setDensity] = useState(initial?.continuum.density ?? 1)
+  const [elemOrder, setElemOrder] = useState<ElemOrder>(initial?.continuum.elemOrder ?? 'q8')
   const [display, setDisplay] = useState<Display>(initial?.display ?? DEFAULT_DISPLAY)
+  const contAnalysis = display.contAnalysis ?? 'static'
+  const [contModeIdx, setContModeIdx] = useState(0)
+  const [contModeT, setContModeT] = useState(0)
+  const [contModePlaying, setContModePlaying] = useState(true)
 
   const analysis: FrameAnalysis = display.analysis ?? 'static'
   const [modeIndex, setModeIndex] = useState(0)
@@ -251,14 +281,39 @@ export default function App() {
     () => PRESETS.find((p) => p.id === contId) as ContinuumPreset,
     [contId],
   )
+  const useQuad = elemOrder === 'q4' || elemOrder === 'q8'
   const contInput = useMemo(
-    () => (tab === 'continuum' ? contPreset.make(density) : null),
-    [tab, contPreset, density],
+    () => (tab === 'continuum' && !useQuad ? contPreset.make(density) : null),
+    [tab, contPreset, density, useQuad],
   )
   const contResult = useMemo(
     () => (contInput ? safeSolveContinuum(contInput) : null),
     [contInput],
   )
+  const quadInput = useMemo(
+    () =>
+      tab === 'continuum' && useQuad
+        ? contPreset.makeQuad(elemOrder === 'q8' ? 8 : 4, density)
+        : null,
+    [tab, contPreset, density, useQuad, elemOrder],
+  )
+  const quadResult = useMemo(
+    () => (quadInput ? safeSolveQuad(quadInput) : null),
+    [quadInput],
+  )
+  const quadModal = useMemo(
+    () =>
+      quadInput && contAnalysis === 'modal' ? safeSolveQuadModal(quadInput) : null,
+    [quadInput, contAnalysis],
+  )
+  const activeContBounds = useMemo<Bounds | null>(
+    () => (quadInput ? quadBounds(quadInput) : contInput ? meshBounds(contInput) : null),
+    [quadInput, contInput],
+  )
+  // Clamp the selected continuum mode to the available range.
+  const contModeCount = quadModal?.modes.length ?? 0
+  const contModeSel = contModeCount > 0 ? Math.min(contModeIdx, contModeCount - 1) : 0
+  const contMode = quadModal?.modes[contModeSel] ?? null
 
   // --- eigen-analysis results (modal / buckling) ---------------------------
   const modalResult = useMemo(
@@ -377,6 +432,21 @@ export default function App() {
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [isSwing, analysis, effModeIndex])
+
+  // Continuum modal: swing the selected mode shape (phase fraction in [0,1)).
+  useEffect(() => {
+    const active = tab === 'continuum' && contAnalysis === 'modal' && contModePlaying
+    if (!active) return
+    let raf = 0
+    let t0 = 0
+    const loop = (t: number) => {
+      if (!t0) t0 = t
+      setContModeT((((t - t0) / 1000) * 0.6) % 1) // 0.6 Hz visual swing
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tab, contAnalysis, contModePlaying, contModeSel])
 
   // Seed the transient shape at t=0 whenever the model / result changes.
   useEffect(() => {
@@ -588,25 +658,26 @@ export default function App() {
     if (tab === 'frame' && frameResult && frameResult.maxDisp > 0) {
       return (0.12 * boundsDiag(frameBounds(frame))) / frameResult.maxDisp
     }
-    if (tab === 'continuum' && contResult && contInput && contResult.maxDisp > 0) {
-      return (0.1 * boundsDiag(meshBounds(contInput))) / contResult.maxDisp
+    if (tab === 'continuum' && activeContBounds) {
+      const md = quadResult?.maxDisp ?? contResult?.maxDisp ?? 0
+      if (md > 0) return (0.1 * boundsDiag(activeContBounds)) / md
     }
     return 1
-  }, [tab, frameResult, contResult, frame, contInput])
+  }, [tab, frameResult, contResult, quadResult, frame, activeContBounds])
   const effectiveDeform = (display.autoDeform ? autoScale : 1) * display.deformScale
 
   // --- fit view when the model changes -------------------------------------
   const currentBounds = useMemo<Bounds>(() => {
     if (tab === 'frame') return frameBounds(frame)
-    return contInput ? meshBounds(contInput) : { minX: 0, maxX: 1, minY: 0, maxY: 1 }
-  }, [tab, frame, contInput])
+    return activeContBounds ?? { minX: 0, maxX: 1, minY: 0, maxY: 1 }
+  }, [tab, frame, activeContBounds])
 
   const fitToModel = useCallback(() => {
     setView(fitView(currentBounds, size.w, size.h))
   }, [currentBounds, size])
 
   // Re-fit on tab / preset switch and first sizing.
-  const fitKey = tab === 'frame' ? 'frame' : `cont:${contId}`
+  const fitKey = tab === 'frame' ? 'frame' : `cont:${contId}:${elemOrder}`
   const lastFitKey = useRef('')
   useEffect(() => {
     if (view === null || lastFitKey.current !== fitKey) {
@@ -638,12 +709,12 @@ export default function App() {
       version: 1,
       tab,
       frame,
-      continuum: { presetId: contId, density },
+      continuum: { presetId: contId, density, elemOrder },
       display,
     }
     saveLocal(scene)
     writeHash(scene)
-  }, [tab, frame, contId, density, display])
+  }, [tab, frame, contId, density, elemOrder, display])
 
   // --- draw -----------------------------------------------------------------
   useEffect(() => {
@@ -673,6 +744,26 @@ export default function App() {
         modeShape: isMode ? drawShape : null,
         hinges: drawHinges,
       })
+    } else if (quadInput) {
+      const modalActive = contAnalysis === 'modal' && contMode !== null
+      // Mode animation: scale the (unit-peak) shape by a smooth sinusoid.
+      const modeAmp = modalActive
+        ? 0.12 * boundsDiag(quadBounds(quadInput)) * Math.sin(2 * Math.PI * contModeT)
+        : 0
+      drawQuadContinuum(ctx, size.w, size.h, quadInput.mesh, modalActive ? null : quadResult, {
+        view,
+        deformScale: modalActive ? modeAmp : effectiveDeform,
+        loadFactor: modalActive ? 1 : loadFactor,
+        showMesh: display.showMesh,
+        showUndeformed: display.showUndeformed,
+        colormap: display.colormap,
+        field: display.field,
+        overrideDisp: modalActive ? contMode : null,
+        colorByDisp: modalActive,
+        tractionEdge: modalActive ? undefined : quadInput.traction?.edge,
+        tractionDir: quadInput.traction,
+        fixedEdges: quadInput.fix.map((f) => f.edge).filter((e): e is NonNullable<typeof e> => !!e),
+      })
     } else if (contInput) {
       drawContinuum(ctx, size.w, size.h, contInput.mesh, contResult, {
         view,
@@ -688,7 +779,8 @@ export default function App() {
       })
     }
   }, [
-    view, size, tab, frame, frameResult, contInput, contResult, display, hover, sel, tool,
+    view, size, tab, frame, frameResult, contInput, contResult, quadInput, quadResult,
+    contAnalysis, contMode, contModeT, display, hover, sel, tool,
     pendingNode, loadFactor, effectiveDeform, isMode, shapeScale, drawShape, drawFactor, drawHinges,
   ])
 
@@ -1094,6 +1186,47 @@ export default function App() {
               </>
             ) : (
               <>
+                <div className="field-label">Element formulation</div>
+                <Segmented
+                  options={[
+                    { value: 'cst', label: 'CST' },
+                    { value: 'q4', label: 'Q4' },
+                    { value: 'q8', label: 'Q8' },
+                  ]}
+                  value={elemOrder}
+                  onChange={(v) => setElemOrder(v as ElemOrder)}
+                />
+                {useQuad && (
+                  <>
+                    <div className="field-label">Continuum analysis</div>
+                    <Segmented
+                      options={[
+                        { value: 'static', label: 'Static' },
+                        { value: 'modal', label: 'Modes' },
+                      ]}
+                      value={contAnalysis}
+                      onChange={(v) => patchDisplay({ contAnalysis: v as 'static' | 'modal' })}
+                    />
+                  </>
+                )}
+                {useQuad && contAnalysis === 'modal' && contModeCount > 0 && (
+                  <>
+                    <div className="field-label">Mode</div>
+                    <Segmented
+                      options={quadModal!.modes.map((_, i) => ({
+                        value: String(i),
+                        label: `${i + 1}`,
+                      }))}
+                      value={String(contModeSel)}
+                      onChange={(v) => setContModeIdx(Number(v))}
+                    />
+                    <Toggle
+                      label="Animate mode"
+                      checked={contModePlaying}
+                      onChange={setContModePlaying}
+                    />
+                  </>
+                )}
                 <div className="field-label">Field</div>
                 <Segmented
                   options={[
@@ -1215,6 +1348,16 @@ export default function App() {
                 onDriveType={(v) => patchDisplay({ driveType: v })}
               />
             )
+          ) : quadInput ? (
+            <QuadResults
+              result={quadResult}
+              input={quadInput}
+              order={elemOrder === 'q8' ? 8 : 4}
+              analysis={contAnalysis}
+              modal={quadModal}
+              selectedMode={contModeSel}
+              onSelectMode={setContModeIdx}
+            />
           ) : (
             <ContinuumResults result={contResult} input={contInput} />
           )}
@@ -1406,7 +1549,101 @@ function ContinuumResults({
       </div>
       <p className="hint-text">
         Constant-strain triangles ⇒ stress is uniform within each element (shown flat). Refine the
-        mesh density to sharpen gradients near concentrations.
+        mesh density to sharpen gradients near concentrations. Switch the element formulation to Q4
+        or Q8 for higher-order accuracy and a smooth recovered stress field.
+      </p>
+    </div>
+  )
+}
+
+function QuadResults({
+  result,
+  input,
+  order,
+  analysis,
+  modal,
+  selectedMode,
+  onSelectMode,
+}: {
+  result: QuadResult | null
+  input: QuadInput
+  order: 4 | 8
+  analysis: 'static' | 'modal'
+  modal: QuadModalResult | null
+  selectedMode: number
+  onSelectMode: (i: number) => void
+}) {
+  const label = order === 8 ? 'Q8 (8-node serendipity)' : 'Q4 (bilinear)'
+  if (analysis === 'modal') {
+    const modes = modal?.modes ?? []
+    return (
+      <div className="panel">
+        <div className="panel-title">
+          Continuum modes
+          <span className={modes.length > 0 ? 'badge good' : 'badge warn'}>
+            {modes.length > 0 ? `${modes.length} found` : 'solving…'}
+          </span>
+        </div>
+        {modes.length > 0 ? (
+          <>
+            <div className="stat-grid">
+              <StatTile
+                label="Fundamental"
+                value={fmtEng(modes[0].frequency, 'Hz')}
+                sub={`ω = ${fmtEng(modes[0].omega, 'rad/s')}`}
+              />
+              <StatTile label="Period" value={fmtEng(1 / modes[0].frequency, 's')} />
+              <StatTile label="Free DOF" value={`${modal?.freeDofCount ?? 0}`} sub={label} />
+              <StatTile label="Elements" value={`${input.mesh.elemCount}`} sub={`${input.mesh.nodeCount} nodes`} />
+            </div>
+            <div className="table-title">Modes — click to animate</div>
+            <div className="mode-list">
+              {modes.map((md, i) => (
+                <button
+                  key={i}
+                  className={`mode-row ${i === selectedMode ? 'active' : ''}`}
+                  onClick={() => onSelectMode(i)}
+                >
+                  <span className="mode-idx">#{i + 1}</span>
+                  <span className="mode-freq">{fmtEng(md.frequency, 'Hz')}</span>
+                  <span className="mode-part">T = {fmtEng(1 / md.frequency, 's')}</span>
+                </button>
+              ))}
+            </div>
+            <p className="hint-text">
+              Natural frequencies of the 2-D part from the consistent-mass eigenproblem
+              K φ = ω² M φ, solved on the isoparametric mesh. The selected mode oscillates live.
+            </p>
+          </>
+        ) : (
+          <p className="hint-text">No modes — check the supports leave the part free to vibrate.</p>
+        )}
+      </div>
+    )
+  }
+  if (!result) return null
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Results
+        <span className={result.stable ? 'badge good' : 'badge warn'}>
+          {result.stable ? 'converged' : 'check'}
+        </span>
+      </div>
+      <div className="stat-grid">
+        <StatTile label="Max von Mises" value={fmtEng(result.maxVonMises, 'Pa')} sub="recovered nodal" />
+        <StatTile label="Max displacement" value={fmtEng(result.maxDisp, 'm')} />
+        <StatTile label="Strain energy" value={fmtEng(result.strainEnergy, 'J')} />
+        <StatTile label="Elements" value={`${input.mesh.elemCount}`} sub={`${input.mesh.nodeCount} nodes · ${label}`} />
+        <StatTile label="Equilibrium" value={result.equilibriumResidual.toExponential(1)} sub="‖Ku−f‖/‖f‖" />
+        <StatTile label="Solver" value={`${result.iterations}`} sub="PCG iters" />
+      </div>
+      <p className="hint-text">
+        {order === 8
+          ? 'Quadratic serendipity elements (3×3 Gauss) capture bending and curved stress gradients a CST cannot — a coarse mesh already matches beam theory to a fraction of a percent.'
+          : 'Bilinear quads (2×2 Gauss) with a smooth recovered nodal-stress field. Refine the mesh (or switch to Q8) to overcome shear locking in bending.'}{' '}
+        Stress is extrapolated from the superconvergent Gauss points and averaged to nodes for a
+        continuous field.
       </p>
     </div>
   )

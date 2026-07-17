@@ -5,7 +5,16 @@
 
 import type { FrameModel } from './frame'
 import type { ContinuumInput } from './continuum'
+import type { QuadInput } from './quadsolve'
+import type { QOrder } from './isoparam'
 import { cantileverMesh, lBracket, plateWithHole, rectPlate, nodeNearest } from './mesh'
+import {
+  cantileverMeshQ,
+  lBracketQ,
+  plateWithHoleQ,
+  rectPlateQ,
+  nodeNearestQ,
+} from './quadmesh'
 
 const STEEL = 210e9
 const A_TRUSS = 4e-3 // 40 cm²
@@ -25,6 +34,8 @@ export interface ContinuumPreset {
   name: string
   blurb: string
   make: (density: number) => ContinuumInput
+  /** Same domain + BCs meshed with isoparametric Q4/Q8 quadrilaterals. */
+  makeQuad: (order: QOrder, density: number) => QuadInput
 }
 export type Preset = FramePreset | ContinuumPreset
 
@@ -367,6 +378,77 @@ function continuumLBracket(density: number): ContinuumInput {
   }
 }
 
+// --------------------------------------------------- continuum quad makers (v9)
+//
+// Same four domains, meshed with isoparametric Q4/Q8 quadrilaterals. Q8 elements
+// are far more accurate per element (they capture bending and curved-stress
+// gradients a CST cannot), so the element counts are chosen so a modest mesh
+// already reproduces theory — deliberately coarser than the CST presets to make
+// the accuracy jump visible at the same cost.
+
+function baseCells(order: QOrder, density: number, q4: number, q8: number): number {
+  const n = order === 8 ? q8 : q4
+  return Math.max(2, Math.round(n * density))
+}
+
+function quadPlateTension(order: QOrder, density: number): QuadInput {
+  const nx = baseCells(order, density, 12, 6)
+  const mesh = rectPlateQ(order, 3, 1.5, nx, Math.max(2, Math.round(nx / 2)))
+  return {
+    mesh,
+    E: 70e9,
+    nu: 0.33,
+    thickness: 0.01,
+    fix: [
+      { edge: 'left', dofs: ['x'] },
+      { nodes: [nodeNearestQ(mesh, 0, 0)], dofs: ['y'] },
+    ],
+    traction: { edge: 'right', tx: 50e6, ty: 0 },
+  }
+}
+
+function quadCantilever(order: QOrder, density: number): QuadInput {
+  const nx = baseCells(order, density, 24, 10)
+  const mesh = cantileverMeshQ(order, 5, 1, nx, Math.max(2, Math.round(nx / 5)))
+  return {
+    mesh,
+    E: 200e9,
+    nu: 0.3,
+    thickness: 0.05,
+    fix: [{ edge: 'left', dofs: ['x', 'y'] }],
+    traction: { edge: 'right', tx: 0, ty: -2e6 },
+  }
+}
+
+function quadPlateHole(order: QOrder, density: number): QuadInput {
+  const nx = baseCells(order, density, 24, 16)
+  const mesh = plateWithHoleQ(order, 4, 4, 0.8, nx, nx)
+  return {
+    mesh,
+    E: 70e9,
+    nu: 0.33,
+    thickness: 0.01,
+    fix: [
+      { edge: 'left', dofs: ['x'] },
+      { nodes: [nodeNearestQ(mesh, 0, 0)], dofs: ['y'] },
+    ],
+    traction: { edge: 'right', tx: 40e6, ty: 0 },
+  }
+}
+
+function quadLBracket(order: QOrder, density: number): QuadInput {
+  const nx = baseCells(order, density, 20, 14)
+  const mesh = lBracketQ(order, 3, 3, nx, nx)
+  return {
+    mesh,
+    E: 200e9,
+    nu: 0.3,
+    thickness: 0.02,
+    fix: [{ edge: 'top', dofs: ['x', 'y'] }],
+    traction: { edge: 'right', tx: 0, ty: -8e6 },
+  }
+}
+
 // ------------------------------------------------------------------- registry
 
 export const PRESETS: Preset[] = [
@@ -481,6 +563,7 @@ export const PRESETS: Preset[] = [
     name: 'Plate in tension',
     blurb: 'Uniform edge traction — a clean uniaxial stress field (the FEM patch test).',
     make: continuumPlateTension,
+    makeQuad: quadPlateTension,
   },
   {
     kind: 'continuum',
@@ -488,6 +571,7 @@ export const PRESETS: Preset[] = [
     name: 'Cantilever plate',
     blurb: 'Deep cantilever under tip shear — bending stress varies through the depth.',
     make: continuumCantilever,
+    makeQuad: quadCantilever,
   },
   {
     kind: 'continuum',
@@ -495,6 +579,7 @@ export const PRESETS: Preset[] = [
     name: 'Plate with a hole',
     blurb: 'Classic stress concentration — tension around a central circular hole (Kt ≈ 3).',
     make: continuumPlateHole,
+    makeQuad: quadPlateHole,
   },
   {
     kind: 'continuum',
@@ -502,5 +587,6 @@ export const PRESETS: Preset[] = [
     name: 'L-bracket',
     blurb: 'Re-entrant corner under tip shear — stress peaks sharply at the inside corner.',
     make: continuumLBracket,
+    makeQuad: quadLBracket,
   },
 ]

@@ -10,6 +10,9 @@ import { prepareHarmonic, frfSweep, frfAt } from './harmonic'
 import { rectSection, pipeSection, fibreDistance } from './sections'
 import { solveContinuum } from './continuum'
 import { rectPlate, cantileverMesh, nodeNearest } from './mesh'
+import { solveQuad, solveQuadModal, type QuadInput } from './quadsolve'
+import { rectPlateQ, cantileverMeshQ, nodeNearestQ } from './quadmesh'
+import type { QOrder } from './isoparam'
 import { newmarkSDOF, syntheticQuake, solveSeismic, harmonicGround } from './seismic'
 import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
 
@@ -767,6 +770,121 @@ export function runContinuumBenchmarks(): Check[] {
   return checks
 }
 
+// v9 — isoparametric (Q4/Q8) continuum elements, stress recovery & modal.
+export function runQuadBenchmarks(): Check[] {
+  const checks: Check[] = []
+
+  // 1 & 2. Patch test for Q4 and Q8: a uniform edge traction σ must develop a
+  //   perfectly uniform stress field. Because the isoparametric elements pass
+  //   the patch test, both σxx = σ (from the *recovered nodal* field) and the
+  //   Hooke's-law edge displacement u = σW/E come out exact.
+  const patch = (order: QOrder, tag: string) => {
+    const E = 1
+    const nu = 0.3
+    const sigma = 1
+    const W = 2
+    const H = 1
+    const mesh = rectPlateQ(order, W, H, 5, 3)
+    const corner = nodeNearestQ(mesh, 0, 0)
+    const input: QuadInput = {
+      mesh,
+      E,
+      nu,
+      thickness: 1,
+      fix: [
+        { edge: 'left', dofs: ['x'] },
+        { nodes: [corner], dofs: ['y'] },
+      ],
+      traction: { edge: 'right', tx: sigma, ty: 0 },
+    }
+    const r = solveQuad(input)
+    let maxSxxErr = 0
+    let maxOther = 0
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      // skip orphan-free nodes: recovered where an element touched them
+      maxSxxErr = Math.max(maxSxxErr, Math.abs(r.nodalSxx[n] - sigma))
+      maxOther = Math.max(maxOther, Math.abs(r.nodalSyy[n]), Math.abs(r.nodalSxy[n]))
+    }
+    checks.push(check(`${tag} patch σxx uniform`, 'σxx = σ everywhere', sigma, sigma - maxSxxErr, 'Pa', 1e-6))
+    checks.push(check(`${tag} patch σyy, τxy vanish`, 'σyy = τxy = 0', 0, maxOther, 'Pa', 1e-6))
+    let edgeU = 0
+    for (let n = 0; n < mesh.nodeCount; n++)
+      if (Math.abs(mesh.x[n] - W) < 1e-9) edgeU = Math.max(edgeU, r.dispX[n])
+    checks.push(check(`${tag} patch edge displacement`, 'u = σW/E', (sigma * W) / E, edgeU, 'm', 1e-6))
+  }
+  patch(4, 'Q4')
+  patch(8, 'Q8')
+
+  // Cantilever plate under tip shear. The 2-D elasticity answer is the
+  // Timoshenko beam (bending + shear); the classical Euler–Bernoulli value
+  // PL³/3EI is the bending-only part. Q8 matches *both* on a coarse mesh.
+  const E = 210e9
+  const nu = 0.0 // decouple Poisson so beam theory applies cleanly
+  const L = 4
+  const h = 0.4
+  const t = 1
+  const P = 1e6
+  const I = (t * h ** 3) / 12
+  const G = E / (2 * (1 + nu))
+  const A = h * t
+  const eulerDelta = (P * L ** 3) / (3 * E * I)
+  const timoDelta = eulerDelta + (6 / 5) * (P * L) / (G * A) // shear-corrected
+
+  const cantileverTip = (order: QOrder, nx: number, ny: number): number => {
+    const mesh = cantileverMeshQ(order, L, h, nx, ny)
+    const r = solveQuad({
+      mesh,
+      E,
+      nu,
+      thickness: t,
+      fix: [{ edge: 'left', dofs: ['x', 'y'] }],
+      traction: { edge: 'right', tx: 0, ty: -P / (h * t) },
+    })
+    let sum = 0
+    let n = 0
+    for (let i = 0; i < mesh.nodeCount; i++)
+      if (Math.abs(mesh.x[i] - L) < 1e-9) {
+        sum += -r.dispY[i]
+        n++
+      }
+    return sum / n
+  }
+
+  // 3. Q8 reproduces Euler–Bernoulli bending on a coarse mesh (CST needs 12 %).
+  const q8Tip = cantileverTip(8, 12, 3)
+  checks.push(check('Q8 cantilever vs Euler', 'δ = PL³/3EI (coarse Q8)', eulerDelta, q8Tip, 'm', 0.015))
+  // 4. …and matches the full Timoshenko (bending + shear) answer to <0.5 %.
+  checks.push(check('Q8 cantilever vs Timoshenko', 'δ = PL³/3EI + 6PL/5GA', timoDelta, q8Tip, 'm', 0.005))
+  // 5. Q4 converges to the same answer under refinement (shear-locking cured).
+  const q4Tip = cantileverTip(4, 60, 8)
+  checks.push(check('Q4 cantilever (refined)', 'δ → PL³/3EI as h→0', eulerDelta, q4Tip, 'm', 0.02))
+
+  // 6. Continuum modal: the fundamental of the cantilever plate is its first
+  //   *bending* mode, whose frequency is the Euler–Bernoulli beam value
+  //   f₁ = (β₁L)²/(2π)·√(EI/(ρAL⁴)), β₁L = 1.875104. Solved from K φ = ω² M φ
+  //   on the isoparametric consistent-mass system.
+  {
+    const Em = 200e9
+    const rho = 7850
+    const Lm = 3
+    const hm = 0.15
+    const tm = 1
+    const mesh = cantileverMeshQ(8, Lm, hm, 20, 3)
+    const modal = solveQuadModal(
+      { mesh, E: Em, nu: 0, thickness: tm, density: rho, fix: [{ edge: 'left', dofs: ['x', 'y'] }] },
+      4,
+    )
+    const Im = (tm * hm ** 3) / 12
+    const Am = hm * tm
+    const beta1L = 1.8751040687
+    const f1 = (beta1L * beta1L) / (2 * Math.PI) * Math.sqrt((Em * Im) / (rho * Am * Lm ** 4))
+    const computed = modal.modes.length > 0 ? modal.modes[0].frequency : 0
+    checks.push(check('Continuum modal (Q8) f₁', 'cantilever 1st bending mode', f1, computed, 'Hz', 0.02))
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -775,6 +893,7 @@ export function runAllBenchmarks(): {
   plastic: Check[]
   inelastic: Check[]
   continuum: Check[]
+  quad: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -784,8 +903,16 @@ export function runAllBenchmarks(): {
   const plastic = runPlasticBenchmarks()
   const inelastic = runInelasticBenchmarks()
   const continuum = runContinuumBenchmarks()
-  const allPass = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum].every(
-    (c) => c.pass,
-  )
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, allPass }
+  const quad = runQuadBenchmarks()
+  const allPass = [
+    ...frame,
+    ...dynamics,
+    ...harmonic,
+    ...seismic,
+    ...plastic,
+    ...inelastic,
+    ...continuum,
+    ...quad,
+  ].every((c) => c.pass)
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, allPass }
 }
