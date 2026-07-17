@@ -8,7 +8,7 @@ import type { ColormapName } from '../lib/colormap'
 import { cwtMorlet, reduceTime } from '../lib/wavelet'
 import { stft } from '../lib/stft'
 import {
-  WAVELETS,
+  ALL_WAVELETS,
   getBank,
   maxLevel,
   mra,
@@ -375,7 +375,7 @@ function ScalogramTab() {
 
 function MraTab() {
   const sp = useMemo(() => readHashParams(), [])
-  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'db4', WAVELETS.map((w) => w.id)))
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'db4', ALL_WAVELETS.map((w) => w.id)))
   const [levels, setLevels] = useState(() => readNum(sp, 'lv', 5))
   const [copied, setCopied] = useState(false)
 
@@ -524,28 +524,38 @@ function MraTab() {
     })
   }
 
-  const spec = WAVELETS.find((x) => x.id === wavelet)!
+  const isBior = bank.family === 'bior'
 
   return (
     <div className="mode">
       <div className="mode-side">
         <Panel title="Wavelet">
           <Field label="Family">
-            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+            <Select value={wavelet} options={ALL_WAVELETS} onChange={setWavelet} />
           </Field>
           <Field label="Decomposition levels" value={`${lv} / ${maxLv}`}>
             <Slider min={1} max={maxLv} step={1} value={lv} onChange={(v) => setLevels(Math.round(v))} />
           </Field>
           <Readout
             items={[
-              { label: 'Filter taps', value: String(bank.len) },
-              { label: 'Vanishing moments', value: String(spec.N) },
+              { label: isBior ? 'Analysis taps' : 'Filter taps', value: String(bank.len) },
+              { label: 'Vanishing moments', value: String(bank.vanishing) },
               { label: 'Recon. error', value: stats.err.toExponential(1) },
             ]}
           />
           <p className="hint">
-            The scaling & wavelet filters are <strong>derived from scratch</strong> — Daubechies'
-            half-band polynomial, factored by the lab's own root finder. No coefficient tables.
+            {isBior ? (
+              <>
+                A <strong>biorthogonal</strong> pair — symmetric (linear-phase), unlike any orthonormal
+                wavelet but Haar — run by the <strong>lifting scheme</strong>. It is the transform
+                JPEG-2000 uses; 5/3 is the reversible one.
+              </>
+            ) : (
+              <>
+                The scaling &amp; wavelet filters are <strong>derived from scratch</strong> — Daubechies'
+                half-band polynomial, factored by the lab's own root finder. No coefficient tables.
+              </>
+            )}
           </p>
         </Panel>
         <Panel title="Filter bank">
@@ -553,8 +563,17 @@ function MraTab() {
             <canvas ref={respRef} />
           </CanvasCard>
           <p className="hint">
-            The two half-band filters split the spectrum at ω = π/2 and power-complement to a flat
-            line — that is exactly what makes the transform lossless.
+            {isBior ? (
+              <>
+                The analysis low-/high-pass split the spectrum near ω = π/2. Their <em>synthesis</em>{' '}
+                duals differ (that is what "biorthogonal" means) — lifting keeps the round-trip exact.
+              </>
+            ) : (
+              <>
+                The two half-band filters split the spectrum at ω = π/2 and power-complement to a flat
+                line — that is exactly what makes the transform lossless.
+              </>
+            )}
           </p>
           <div className="btn-row">
             <Button variant="primary" onClick={onShare}>
@@ -605,7 +624,7 @@ function DenoiseTab() {
   const [signalName, setSignalName] = useState<DwtSignalName>(() =>
     readStr<DwtSignalName>(sp, 'sig', 'blocks', DWT_SIGNALS.map((s) => s.id)),
   )
-  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym8', WAVELETS.map((w) => w.id)))
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym8', ALL_WAVELETS.map((w) => w.id)))
   const [sigma, setSigma] = useState(() => readNum(sp, 'n', 0.5))
   const [rule, setRule] = useState<ShrinkRule>(() =>
     readStr<ShrinkRule>(sp, 'r', 'sure', RULES.map((r) => r.id)),
@@ -686,7 +705,7 @@ function DenoiseTab() {
         </Panel>
         <Panel title="Shrinkage">
           <Field label="Wavelet">
-            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+            <Select value={wavelet} options={ALL_WAVELETS} onChange={setWavelet} />
           </Field>
           <Field label="Threshold rule">
             <Segmented value={rule} options={RULES} onChange={setRule} />
@@ -756,7 +775,7 @@ function PacketsTab() {
   const [signalName, setSignalName] = useState<DwtSignalName>(() =>
     readStr<DwtSignalName>(sp, 'sig', 'doppler', DWT_SIGNALS.map((s) => s.id)),
   )
-  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym6', WAVELETS.map((w) => w.id)))
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym6', ALL_WAVELETS.map((w) => w.id)))
   const [depth, setDepth] = useState(() => readNum(sp, 'd', 5))
   const [costName, setCostName] = useState<CostName>(() =>
     readStr<CostName>(sp, 'c', 'shannon', COSTS.map((c) => c.id)),
@@ -890,7 +909,7 @@ function PacketsTab() {
             <Select value={signalName} options={DWT_SIGNALS} onChange={setSignalName} />
           </Field>
           <Field label="Wavelet">
-            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+            <Select value={wavelet} options={ALL_WAVELETS} onChange={setWavelet} />
           </Field>
         </Panel>
         <Panel title="Packet tree">

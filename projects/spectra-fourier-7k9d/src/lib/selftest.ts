@@ -8,6 +8,7 @@ import { fieldFromGray, fft2 } from './fft2'
 import { cwtMorlet } from './wavelet'
 import {
   WAVELETS,
+  BIOR_WAVELETS,
   getBank,
   maxLevel,
   wavedec,
@@ -439,6 +440,36 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       }
     }
     check('wavelet-packet best basis adapts fine resolution to a tone', near / tot > 0.9 && maxLevel >= 3)
+  }
+
+  // 8k. Biorthogonal wavelets (CDF 5/3 & 9/7, the JPEG-2000 pair) run by the
+  //     lifting scheme: multi-level analysis→synthesis is exact for every signal,
+  //     the additive MRA bands sum back, and a constant maps to the approximation
+  //     only (its detail band is ~0).
+  {
+    let worst = 0
+    let mraErr = 0
+    let dcDetail = 0
+    for (const w of BIOR_WAVELETS) {
+      const bank = getBank(w.id)
+      for (const sig of ['blocks', 'doppler', 'heavisine'] as const) {
+        const x = dwtSignal(sig, 1024)
+        const L = maxLevel(1024, bank)
+        const rec = waverec(wavedec(x, bank, L))
+        for (let i = 0; i < 1024; i++) worst = Math.max(worst, Math.abs(rec[i] - x[i]))
+      }
+      const dop = dwtSignal('doppler', 1024)
+      const m = mra(dop, bank, maxLevel(1024, bank))
+      for (let i = 0; i < 1024; i++) {
+        let s = m.approx[i]
+        for (const d of m.details) s += d[i]
+        mraErr = Math.max(mraErr, Math.abs(s - dop[i]))
+      }
+      const constant = new Float64Array(256).fill(3)
+      const { cD } = dwtStep(constant, bank)
+      for (let i = 0; i < cD.length; i++) dcDetail = Math.max(dcDetail, Math.abs(cD[i]))
+    }
+    check('biorthogonal (CDF 5/3 & 9/7) lifting PR + MRA + DC-to-approx', worst < 1e-9 && mraErr < 1e-9 && dcDetail < 1e-8)
   }
 
   // 9. Phase vocoder identity: an unmodified analysis/synthesis round-trip
