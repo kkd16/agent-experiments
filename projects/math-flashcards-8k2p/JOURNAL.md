@@ -336,8 +336,8 @@ live here as long as you like.
 - [ ] Add support for drawing answers on a canvas and recognizing the digit.
 - [ ] Support complex numbers in a special university mode.
 - [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
-- [ ] Include a "Max Combo Reached" in the post-game summary screen.
-- [ ] Add a small "Total Time Played" lifetime stat in the statistics menu.
+- [x] Include a "Max Combo Reached" in the post-game summary screen.
+- [x] Add a small "Total Time Played" lifetime stat in the statistics menu.
 - [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
 
 - [x] Add an option to export statistics to a JSON file
@@ -400,3 +400,15 @@ live here as long as you like.
 - [ ] Implement a mode where the user has to type out the number word (e.g., "four") instead of digits.
 - [ ] Add a daily goal tracking visual fill bar on the main menu.
 - [ ] Create an achievement for answering 10 questions in a row in under 1 second each.
+
+## New Jules Enhancements Batch 2
+- [x] Implement an option to toggle a 'High Contrast' mode for better visibility.
+- [ ] Add a visual 'Combo Milestone' notification (e.g., '10 Combo!') during gameplay.
+- [x] Implement a 'Practice Mode' where incorrect answers don't reset the combo streak.
+- [x] Add a setting to auto-hide the on-screen keypad when physical keyboard is used.
+- [ ] Add an option to toggle the visibility of the timer bar during Time Attack mode.
+- [ ] Implement a 'Typo Forgiveness' mode that allows one backspace per question.
+- [ ] Include a feature to log out 'Session Summary' text for quick copying.
+- [ ] Add a 'Review Mode' to only show questions missed in previous runs.
+- [ ] Implement an option to limit answer length to avoid massive typo mistakes.
+- [x] Add an option to disable the flashcard drop shadow for a flatter UI.

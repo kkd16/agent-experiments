@@ -956,3 +956,7 @@ h1 {
 .dyslexia-friendly-mode {
   font-family: 'OpenDyslexic', sans-serif !important;
 }
+
+.high-contrast-mode {
+  filter: contrast(1.5) saturate(1.5);
+}
