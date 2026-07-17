@@ -85,7 +85,9 @@ export default function About() {
             <strong>derived from scratch</strong> (Daubechies &amp; Symlet, spectrally factored, no
             tables), peeling a signal into octave bands that sum back exactly. A <em>denoise</em> tab
             shrinks the wavelet coefficients (VisuShrink / SureShrink / BayesShrink) to pull a clean
-            signal out of noise.
+            signal out of noise. A fourth <em>best-basis</em> tab runs the full wavelet{' '}
+            <strong>packet</strong> tree and picks the Coifman–Wickerhauser minimum-cost basis, drawing
+            its adaptive time-frequency tiling.
           </li>
           <li>
             <strong>Image (2-D)</strong> — the transform is separable, so an image FFT is just
@@ -432,7 +434,11 @@ export default function About() {
           <em>exact identity</em> for every wavelet (with Parseval energy preserved), db2 is confirmed
           to annihilate a linear ramp (its two vanishing moments), the multiresolution bands are
           verified to sum back to the signal, and wavelet shrinkage is confirmed to raise SNR on the
-          Donoho benchmark for all three threshold rules. Open the console to see all 115 pass.
+          Donoho benchmark for all three threshold rules. The <strong>wavelet packet</strong> tree is
+          checked too: the full tree and every best-basis cover reconstruct exactly, the best basis is
+          confirmed no costlier than either trivial basis (root or full depth), and it is verified to
+          subdivide down to its finest frequency resolution around a pure tone. Open the console to
+          see all 118 pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

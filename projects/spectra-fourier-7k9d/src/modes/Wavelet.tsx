@@ -25,6 +25,13 @@ import {
   addNoise,
   type DwtSignalName,
 } from '../lib/dwtSignals'
+import {
+  wpAnalyze,
+  bestBasis,
+  wpLeafSignal,
+  spectralCentroid,
+  type CostName,
+} from '../lib/wp'
 import { readHashParams, shareLink, readNum, readStr } from '../lib/urlState'
 
 const FS = 500
@@ -39,11 +46,12 @@ const VIOLET = '#a78bfa'
 const ROSE = '#fb7185'
 const AMBER = '#fbbf24'
 
-type Tab = 'scalogram' | 'mra' | 'denoise'
+type Tab = 'scalogram' | 'mra' | 'denoise' | 'packets'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'scalogram', label: 'Scalogram (CWT)' },
   { id: 'mra', label: 'Multiresolution' },
   { id: 'denoise', label: 'Denoise' },
+  { id: 'packets', label: 'Best basis' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -735,6 +743,206 @@ function DenoiseTab() {
 }
 
 // ===========================================================================
+// Tab 4 — Wavelet packet best basis
+// ===========================================================================
+
+const COSTS: { id: CostName; label: string }[] = [
+  { id: 'shannon', label: 'Shannon entropy' },
+  { id: 'l1', label: 'ℓ¹ sparsity' },
+]
+
+function PacketsTab() {
+  const sp = useMemo(() => readHashParams(), [])
+  const [signalName, setSignalName] = useState<DwtSignalName>(() =>
+    readStr<DwtSignalName>(sp, 'sig', 'doppler', DWT_SIGNALS.map((s) => s.id)),
+  )
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'sym6', WAVELETS.map((w) => w.id)))
+  const [depth, setDepth] = useState(() => readNum(sp, 'd', 5))
+  const [costName, setCostName] = useState<CostName>(() =>
+    readStr<CostName>(sp, 'c', 'shannon', COSTS.map((c) => c.id)),
+  )
+  const [copied, setCopied] = useState(false)
+
+  const { ref: sigRef, size: sigSize } = useDprCanvas()
+  const { ref: tileRef, size: tileSize } = useDprCanvas()
+
+  const bank = useMemo(() => getBank(wavelet), [wavelet])
+  const signal = useMemo(() => dwtSignal(signalName, DWT_N), [signalName])
+  const maxD = useMemo(() => maxLevel(DWT_N, bank), [bank])
+  const J = Math.min(depth, maxD)
+
+  // Analyse the packet tree, pick the best basis, and place each leaf on the
+  // true frequency axis by the spectral centroid of its band-limited component.
+  const basis = useMemo(() => {
+    const nodes = wpAnalyze(signal, bank, J)
+    const bb = bestBasis(nodes, costName)
+    const items = bb.leaves.map((lf) => {
+      const band = nodes[lf.j][lf.k]
+      let energy = 0
+      let localMax = 0
+      for (let i = 0; i < band.length; i++) {
+        energy += band[i] * band[i]
+        const a = Math.abs(band[i])
+        if (a > localMax) localMax = a
+      }
+      const centroid = spectralCentroid(wpLeafSignal(nodes, lf, bank))
+      return { lf, band, energy, centroid, localMax, h: 1 / Math.pow(2, lf.j) }
+    })
+    const gmax = Math.max(1e-12, ...items.map((it) => it.localMax))
+    items.sort((a, b) => a.centroid - b.centroid)
+    const totalEnergy = items.reduce((s, it) => s + it.energy, 0) || 1
+    return { items, gmax, leaves: bb.leaves.length, bb, totalEnergy }
+  }, [signal, bank, J, costName])
+
+  useEffect(() => {
+    drawLines(sigRef.current, sigSize, [{ data: signal, color: TEAL, width: 1.1 }], { symmetric: true })
+  }, [signal, sigSize, sigRef])
+
+  // ---- the adaptive time–frequency tiling ----
+  useEffect(() => {
+    const ctx = prepareContext(tileRef.current, tileSize)
+    if (!ctx) return
+    const { width: w, height: h } = tileSize
+    ctx.fillStyle = '#0a0e1a'
+    ctx.fillRect(0, 0, w, h)
+    const lut = colormapLUT('magma')
+    const off = document.createElement('canvas')
+    off.width = Math.max(2, Math.round(w))
+    off.height = Math.max(2, Math.round(h))
+    const octx = off.getContext('2d')
+    if (!octx) return
+    const floorDb = -42
+    let yFrac = 0
+    // low frequency at the bottom
+    for (const it of basis.items) {
+      const stripH = it.h * off.height
+      const y0 = off.height - (yFrac + it.h) * off.height
+      yFrac += it.h
+      const M = it.band.length
+      const cellW = off.width / M
+      for (let t = 0; t < M; t++) {
+        const mag = Math.abs(it.band[t]) / basis.gmax
+        const db = 20 * Math.log10(mag + 1e-12)
+        let tt = (db - floorDb) / -floorDb
+        tt = tt < 0 ? 0 : tt > 1 ? 1 : tt
+        const li = (Math.round(tt * 255) & 255) * 4
+        octx.fillStyle = `rgb(${lut[li]},${lut[li + 1]},${lut[li + 2]})`
+        octx.fillRect(t * cellW, y0, Math.ceil(cellW), Math.ceil(stripH))
+      }
+    }
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(off, 0, 0, w, h)
+    // strip separators + level labels
+    ctx.font = '10px JetBrains Mono, ui-monospace, monospace'
+    yFrac = 0
+    for (const it of basis.items) {
+      const yTop = h - (yFrac + it.h) * h
+      yFrac += it.h
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, yTop)
+      ctx.lineTo(w, yTop)
+      ctx.stroke()
+      if (it.h > 0.035) {
+        ctx.fillStyle = 'rgba(238,241,255,0.72)'
+        ctx.fillText(`L${it.lf.j}`, 4, Math.min(h - 4, yTop + it.h * h - 4))
+      }
+    }
+    ctx.fillStyle = 'rgba(238,241,255,0.6)'
+    ctx.textAlign = 'right'
+    ctx.fillText('high f', w - 6, 12)
+    ctx.fillText('low f', w - 6, h - 6)
+    ctx.textAlign = 'left'
+  }, [basis, tileSize, tileRef])
+
+  const onShare = () => {
+    shareLink('wavelet', { tab: 'packets', sig: signalName, w: wavelet, d: J, c: costName }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
+
+  // Compression figure: fraction of coefficients holding 99% of the energy in
+  // the best basis (all leaves' coefficients concatenated).
+  const compaction = useMemo(() => {
+    const all: number[] = []
+    for (const it of basis.items) for (let i = 0; i < it.band.length; i++) all.push(it.band[i] * it.band[i])
+    all.sort((a, b) => b - a)
+    const total = all.reduce((s, v) => s + v, 0) || 1
+    let acc = 0
+    let n = 0
+    for (const v of all) {
+      acc += v
+      n++
+      if (acc >= 0.99 * total) break
+    }
+    return (n / all.length) * 100
+  }, [basis])
+
+  return (
+    <div className="mode">
+      <div className="mode-side">
+        <Panel title="Signal">
+          <Field label="Test signal">
+            <Select value={signalName} options={DWT_SIGNALS} onChange={setSignalName} />
+          </Field>
+          <Field label="Wavelet">
+            <Select value={wavelet} options={WAVELETS} onChange={setWavelet} />
+          </Field>
+        </Panel>
+        <Panel title="Packet tree">
+          <Field label="Tree depth" value={`${J} / ${maxD}`}>
+            <Slider min={2} max={Math.min(7, maxD)} step={1} value={J} onChange={(v) => setDepth(Math.round(v))} />
+          </Field>
+          <Field label="Cost function">
+            <Segmented value={costName} options={COSTS} onChange={setCostName} />
+          </Field>
+          <Readout
+            items={[
+              { label: 'Best-basis leaves', value: String(basis.leaves) },
+              { label: 'Full-tree leaves', value: String(Math.pow(2, J)) },
+              { label: '99% energy in', value: `${compaction.toFixed(1)}%` },
+            ]}
+          />
+          <p className="hint">
+            The best basis minimises an additive information cost across every possible pruning of the
+            packet tree — fine frequency bands where the signal is tonal, coarse where it is transient.
+          </p>
+          <div className="btn-row">
+            <Button variant="primary" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
+        </Panel>
+      </div>
+      <div className="mode-main">
+        <p className="mode-intro">
+          The DWT always splits the low-pass band — a fixed octave tiling. A <strong>wavelet packet</strong>{' '}
+          transform splits <em>both</em> children everywhere, so every pruning of the resulting binary
+          tree is a different orthonormal basis. The <strong>best basis</strong> (Coifman–Wickerhauser)
+          is the one that represents <em>this</em> signal most sparsely. The tiling below is that basis:
+          each horizontal strip is one leaf — its height is its frequency bandwidth, its columns are its
+          time cells — and the partition <strong>adapts</strong> to the signal.
+        </p>
+        <CanvasCard title="Signal" note={signalName} aspect={4.5}>
+          <canvas ref={sigRef} />
+        </CanvasCard>
+        <CanvasCard
+          title="Best-basis time–frequency tiling"
+          note={`${basis.leaves} leaves · ${COSTS.find((c) => c.id === costName)!.label} · magma = |coefficient|`}
+          aspect={1.5}
+        >
+          <canvas ref={tileRef} />
+        </CanvasCard>
+      </div>
+    </div>
+  )
+}
+
+// ===========================================================================
 
 export default function Wavelet() {
   const sp = useMemo(() => readHashParams(), [])
@@ -747,6 +955,7 @@ export default function Wavelet() {
       {tab === 'scalogram' && <ScalogramTab />}
       {tab === 'mra' && <MraTab />}
       {tab === 'denoise' && <DenoiseTab />}
+      {tab === 'packets' && <PacketsTab />}
     </div>
   )
 }

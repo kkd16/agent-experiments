@@ -126,6 +126,14 @@ vectors / pure frequencies, and lets you manipulate them.
   `orthonormalityDefect`, `snrDb`.
 - `src/lib/dwtSignals.ts` — the **Donoho–Johnstone** test suite (Blocks / Bumps / HeaviSine / Doppler)
   plus a multi-scale MRA demo signal and a deterministic Gaussian-noise injector.
+- `src/lib/wp.ts` — **the wavelet-packet engine (v15).** Where the DWT only recurses on the low-pass
+  child, `wpAnalyze` splits **both** children at every node into a full binary tree of subbands (built
+  on the same `dwtStep`). `bestBasis` runs the **Coifman–Wickerhauser** bottom-up search over an
+  *additive* information cost (Shannon entropy `−Σ xᵢ²log xᵢ²` or ℓ¹) — a parent is kept split iff its
+  children are jointly cheaper — returning the minimum-cost admissible cover. `wpReconstruct` inverts
+  any cover exactly (PR inherited from `idwtStep`); `wpLeafSignal` synthesises one leaf's band-limited
+  component to full length, and `spectralCentroid` (on the shared FFT) places each leaf on the true
+  frequency axis for the adaptive tiling.
 - `src/hooks/` — `useHashRoute`, `useAnimationFrame`, `useDprCanvas` (devicePixelRatio-aware).
 - `src/modes/` — `Epicycles`, `Spectrum`, `Resolve`, `Filter`, `Design`, `Adaptive`, `Spectrogram`,
   `Reassign`, `Live`, `Wavelet`, `ImageFFT`, `Tomography`, `Sensing`, `Vocoder`, `Compress`,
@@ -195,14 +203,17 @@ Shipped this session:
 - [x] **Wavelet denoising** — MAD noise estimate from the finest band, **VisuShrink** / **SureShrink**
   (Stein's unbiased risk) / **BayesShrink** thresholds, soft & hard, with input/output SNR + %-kept.
 - [x] **The Donoho–Johnstone test suite** (`dwtSignals.ts`) — Blocks / Bumps / HeaviSine / Doppler.
-- [x] **Three-tab Wavelet UI** — *Scalogram* (the original CWT-vs-STFT), *Multiresolution* (stacked
-  octave bands + per-band energy + live reconstruction error + the QMF frequency-response pair), and
-  *Denoise* (noisy-vs-recovered overlay against the clean reference). All deep-linkable via the hash.
-- [x] **Six new self-tests** (109 → 115) covering the guarantees above.
+- [x] **The wavelet-packet engine + best basis** (`wp.ts`) — the full packet tree, Coifman–Wickerhauser
+  best-basis selection (Shannon / ℓ¹ additive cost), exact reconstruction of any cover, and per-leaf
+  band synthesis + spectral-centroid placement for the adaptive time-frequency tiling.
+- [x] **Four-tab Wavelet UI** — *Scalogram* (the original CWT-vs-STFT), *Multiresolution* (stacked
+  octave bands + per-band energy + live reconstruction error + the QMF frequency-response pair),
+  *Denoise* (noisy-vs-recovered overlay against the clean reference), and *Best basis* (the adaptive
+  packet tiling as a magma time-frequency heatmap with a compaction figure). All deep-linkable.
+- [x] **Nine new self-tests** (109 → 118) covering the guarantees above.
 
 Future wavelet ideas (not yet built):
 
-- [ ] **Wavelet packet transform** + best-basis selection (Coifman–Wickerhauser entropy cost).
 - [ ] **2-D DWT** for image compression, tied into the Image/Compress modes (JPEG-2000-style).
 - [ ] **Biorthogonal** banks (CDF 5/3 lossless, CDF 9/7) with explicit dual synthesis filters.
 - [ ] **Coiflets** (vanishing moments on the scaling function too) via the extended design equations.
@@ -1151,7 +1162,7 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   headless Chromium: 109/109 self-tests pass, all three tabs render and the Monte-Carlo waterfall computes
   with zero console/runtime errors. Eighteen modes, still zero math libraries.
 - 2026-07-17 (claude, v15): "Beyond the scalogram — the **discrete wavelet transform** pillar." The
-  Wavelet mode had shipped in v6 as a single continuous Morlet scalogram; v15 makes it three tabs and
+  Wavelet mode had shipped in v6 as a single continuous Morlet scalogram; v15 makes it four tabs and
   adds the orthonormal, critically-sampled, exactly-invertible transform that does the practical work
   (JPEG-2000, denoising). Two new from-scratch libs, no math library: `lib/dwt.ts` **derives** the
   wavelet filters rather than tabulating them — it builds the Daubechies maximally-flat half-band
@@ -1169,12 +1180,24 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   original CWT-vs-STFT), **Multiresolution** (octave bands stacked with per-band energy %, a live
   reconstruction-error readout, and the two half-band filters drawn power-complementing across ω=π/2),
   and **Denoise** (noisy input vs wavelet-recovered signal over the clean reference, with input/output
-  SNR, gain, σ̂ and %-coefficients-kept). Six new self-tests (**109 → 115**): every derived filter sums
-  to √2 and is double-shift orthonormal to 1e-9; db2 matches its published Daubechies coefficients;
-  multi-level analysis→synthesis is an exact identity for every wavelet with Parseval energy preserved;
-  db2 annihilates a linear ramp (2 vanishing moments); the MRA bands sum back to the signal; and
-  shrinkage raises SNR on the Donoho "blocks" signal for all three rules. Verified independently in a
-  Node harness (20/20) and then in-app: ran the CI gate (scope + conformance + lint + build ✓) and
-  drove it in headless Chromium — all three tabs render, the QMF pair crosses at π/2, MRA reconstruction
-  error sits at ~5e-15, and Doppler denoises +9 dB with BayesShrink, zero console/runtime errors. Still
-  zero math libraries — the wavelet filters are computed, not copied.
+  SNR, gain, σ̂ and %-coefficients-kept). Then a fourth **Best-basis** tab and a second engine
+  (`lib/wp.ts`): the **wavelet packet** transform splits *both* children at every node into a full
+  binary tree, and the **Coifman–Wickerhauser** bottom-up search picks the minimum-cost admissible
+  cover (Shannon-entropy or ℓ¹ additive cost) — the orthonormal basis that represents *this* signal
+  most sparsely. Each leaf is placed on the true frequency axis by the spectral centroid of its
+  band-limited component, and the result renders as an **adaptive time-frequency tiling** (a magma
+  heatmap whose strip heights vary with the local frequency resolution): fine bands where the signal
+  is tonal, coarse where it is transient — Doppler tiles into 13 leaves tracking its chirp down in
+  frequency, Blocks into a coarse 7-leaf basis with the jumps showing as broadband vertical streaks.
+  Nine new self-tests (**109 → 118**): every derived filter sums to √2 and is double-shift orthonormal
+  to 1e-9; db2 matches its published Daubechies coefficients; multi-level analysis→synthesis is an exact
+  identity for every wavelet with Parseval energy preserved; db2 annihilates a linear ramp (2 vanishing
+  moments); the MRA bands sum back to the signal; shrinkage raises SNR on the Donoho "blocks" signal for
+  all three rules; the full packet tree and every best-basis cover reconstruct exactly; the best-basis
+  cost is ≤ both trivial bases; and the best basis adapts to a pure tone by splitting to its finest
+  level. Verified independently in two Node harnesses (20/20 DWT, 5/5 packets) and then in-app: ran the
+  CI gate (scope + conformance + lint + build ✓) and drove it in headless Chromium — all four tabs
+  render, the QMF pair crosses at π/2, MRA reconstruction error sits at ~5e-15, Doppler denoises +9 dB
+  with BayesShrink, and the best-basis tiling packs 99% of the Doppler energy into 3.7% of the
+  coefficients, zero console/runtime errors. Still zero math libraries — the wavelet filters are
+  computed, not copied.
