@@ -702,7 +702,15 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsGrayscaleMode', grayscaleMode.toString()); } catch (e) { console.error(e); } }, [grayscaleMode]);
   const getInitialCrtMode = () => { try { return window.localStorage.getItem('mathFlashcardsCrtMode') === 'true'; } catch { return false; } };
   const [crtMode, setCrtMode] = useState<boolean>(getInitialCrtMode());
+  const [highContrastMode, setHighContrastMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsHighContrast') === 'true'; } catch { return false; } });
+  const [practiceMode, setPracticeMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsPracticeMode') === 'true'; } catch { return false; } });
+  const [disableDropShadow, setDisableDropShadow] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsDisableDropShadow') === 'true'; } catch { return false; } });
+  const [autoHideKeypad, setAutoHideKeypad] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsAutoHideKeypad') === 'true'; } catch { return false; } });
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsCrtMode', crtMode.toString()); } catch (e) { console.error(e); } }, [crtMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHighContrast', highContrastMode.toString()); } catch (e) { console.error(e); } }, [highContrastMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsPracticeMode', practiceMode.toString()); } catch (e) { console.error(e); } }, [practiceMode]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDisableDropShadow', disableDropShadow.toString()); } catch (e) { console.error(e); } }, [disableDropShadow]);
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsAutoHideKeypad', autoHideKeypad.toString()); } catch (e) { console.error(e); } }, [autoHideKeypad]);
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
 
@@ -1302,6 +1310,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (autoHideKeypad && /^[0-9]$/.test(e.key) && !hideKeypad) { setHideKeypad(true); }
       if (disableKeyboardShortcuts) return;
       // Don't trigger if user is typing in the input
       if (e.target instanceof HTMLInputElement) return;
@@ -1322,7 +1331,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit, disableKeyboardShortcuts]);
+  }, [isSpeedRunActive, timeLeft, generateProblem, gameMode, questionsAnswered, questionLimit, customQuestionLimit, disableKeyboardShortcuts, autoHideKeypad, hideKeypad]);
 
 
 
@@ -1634,7 +1643,7 @@ function App() {
         setTimeout(() => setAnswerStatus(null), 500);
         setAnimationClass(enableScreenShake ? 'flash-incorrect shake-animation' : 'flash-incorrect');
         setTimeout(() => setAnimationClass(''), 500);
-        updateStreak(0); // Reset streak
+        if (!practiceMode) updateStreak(0); // Reset streak
         setUserAnswer('');
         inputRef.current?.focus();
       }
@@ -1741,7 +1750,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1802,6 +1811,10 @@ function App() {
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
         <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
         <label htmlFor="hideKeypad"><input id="hideKeypad" type="checkbox" checked={hideKeypad} onChange={(e) => setHideKeypad(e.target.checked)} /> Hide Keypad</label>
+        <label htmlFor="highContrastMode"><input id="highContrastMode" type="checkbox" checked={highContrastMode} onChange={(e) => setHighContrastMode(e.target.checked)} /> High Contrast Mode</label>
+        <label htmlFor="practiceMode"><input id="practiceMode" type="checkbox" checked={practiceMode} onChange={(e) => setPracticeMode(e.target.checked)} /> Practice Mode</label>
+        <label htmlFor="disableDropShadow"><input id="disableDropShadow" type="checkbox" checked={disableDropShadow} onChange={(e) => setDisableDropShadow(e.target.checked)} /> Disable Drop Shadow</label>
+        <label htmlFor="autoHideKeypad"><input id="autoHideKeypad" type="checkbox" checked={autoHideKeypad} onChange={(e) => setAutoHideKeypad(e.target.checked)} /> Auto-hide Keypad</label>
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
@@ -2259,7 +2272,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined}}>
 
         {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
         <div className="problem" style={{position: 'relative'}}>
