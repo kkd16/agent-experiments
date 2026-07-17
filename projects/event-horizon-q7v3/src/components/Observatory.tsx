@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { B_CRIT, M, kerrISCO } from '../state'
+import { B_CRIT, M, kerrISCO, chargeQ2, SUBEXTREMAL } from '../state'
 import {
   shadowCurve,
   shadowMetrics,
   isCaptured,
   horizons,
   photonRingRadius,
+  knPhotonRings,
+  rnCritical,
   spinA,
   type ShadowPoint,
 } from '../physics/kerr'
@@ -48,6 +50,7 @@ function useDeflectionCurve() {
 
 export default function Observatory() {
   const [spin, setSpin] = useState(0.6)
+  const [charge, setCharge] = useState(0) // dimensionless Q/M
   const [incl, setIncl] = useState(0) // elevation; 0 = edge-on
   const [tests, setTests] = useState<TestResult[] | null>(null)
 
@@ -92,7 +95,11 @@ export default function Observatory() {
   }, [])
 
   const theta = thetaOf(incl)
-  const curve: ShadowPoint[] = useMemo(() => shadowCurve(spin, theta, 480), [spin, theta])
+  // Spin and charge share the extremal budget a*² + Q*² ≤ 1; cap the charge to whatever room is left.
+  const chargeCeil = Math.sqrt(Math.max(SUBEXTREMAL * SUBEXTREMAL - spin * spin, 0))
+  const q = Math.min(charge, chargeCeil)
+  const q2 = chargeQ2(q)
+  const curve: ShadowPoint[] = useMemo(() => shadowCurve(spin, theta, 480, q2), [spin, theta, q2])
   const metrics = useMemo(() => shadowMetrics(curve), [curve])
   const a = spinA(spin)
 
@@ -128,7 +135,7 @@ export default function Observatory() {
       const be = VIEW - (2 * VIEW) * (j / (G - 1))
       for (let i = 0; i < G; i++) {
         const al = -VIEW + (2 * VIEW) * (i / (G - 1))
-        const cap = isCaptured(al, be, a, theta)
+        const cap = isCaptured(al, be, a, theta, q2)
         const idx = (j * G + i) * 4
         if (cap) {
           // The numeric shadow: a near-black silhouette (this is the "simulation" the analytic
@@ -223,7 +230,7 @@ export default function Observatory() {
     ctx.rotate(-Math.PI / 2)
     ctx.fillText('β  (rs) ↑  (spin axis)', 0, 0)
     ctx.restore()
-  }, [shadowSize, curve, metrics, a, theta])
+  }, [shadowSize, curve, metrics, a, theta, q2])
 
   // ---- draw the light-bending / photon-ring panel ---------------------------------------------
   useEffect(() => {
@@ -330,7 +337,10 @@ export default function Observatory() {
   }, [deflSize, deflection])
 
   const suite = tests ? summarize(tests) : null
-  const { rPlus } = horizons(a)
+  const { rPlus } = horizons(a, q2)
+  // Equatorial light rings: Bardeen's closed form for pure Kerr, the numeric KN roots when charged.
+  const [ringPro, ringRet] = q2 > 0 ? knPhotonRings(a, q2) : [photonRingRadius(spin, true), photonRingRadius(spin, false)]
+  const budget = Math.sqrt(spin * spin + q * q)
 
   return (
     <div className="obs">
@@ -368,6 +378,18 @@ export default function Observatory() {
             <input type="range" min={0} max={0.998} step={0.002} value={spin} onChange={(e) => setSpin(Number(e.target.value))} />
             <span className="row__value">{spin.toFixed(3)}</span>
           </label>
+          <label className="row" title="Dimensionless electric charge Q/M — a Kerr–Newman hole. Capped by spin: a*² + Q*² ≤ 1.">
+            <span className="row__label">Charge Q/M</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.005}
+              value={q}
+              onChange={(e) => setCharge(Math.min(Number(e.target.value), chargeCeil))}
+            />
+            <span className="row__value">{q.toFixed(3)}</span>
+          </label>
           <label className="row" title="Camera elevation above the disk plane (0 = edge-on)">
             <span className="row__label">Inclination</span>
             <input type="range" min={0} max={90} step={1} value={incl} onChange={(e) => setIncl(Number(e.target.value))} />
@@ -385,19 +407,28 @@ export default function Observatory() {
             </dl>
           </div>
           <div className="obs__readout">
-            <div className="obs__readout-title">Geometry at a/M = {spin.toFixed(3)}</div>
+            <div className="obs__readout-title">
+              Geometry at a/M = {spin.toFixed(3)}{q > 0.001 ? `, Q/M = ${q.toFixed(3)}` : ''}
+            </div>
             <dl>
               <div><dt>Outer horizon r₊</dt><dd>{rPlus.toFixed(3)} rs</dd></div>
-              <div><dt>Prograde light ring</dt><dd>{photonRingRadius(spin, true).toFixed(3)} rs</dd></div>
-              <div><dt>Retrograde light ring</dt><dd>{photonRingRadius(spin, false).toFixed(3)} rs</dd></div>
+              <div><dt>Prograde light ring</dt><dd>{ringPro.toFixed(3)} rs</dd></div>
+              <div><dt>Retrograde light ring</dt><dd>{ringRet.toFixed(3)} rs</dd></div>
               <div><dt>Prograde ISCO</dt><dd>{kerrISCO(spin).toFixed(3)} rs</dd></div>
+              <div>
+                <dt>Extremal budget √(a*²+Q*²)</dt>
+                <dd className={budget > 0.985 ? 'k-red' : undefined}>{budget.toFixed(3)} / 1</dd>
+              </div>
             </dl>
           </div>
           <p className="muted small">
             Spin the hole up and the cyan shadow slides sideways and flattens into the famous Kerr
-            “D”. The prograde light ring (photons swept along with the rotation) shrinks toward the
-            horizon while the retrograde one swells — the two set the shadow’s near and far edges. At
-            a = 0 the curve is an exact circle of radius <strong>{B_CRIT.toFixed(3)} rs</strong>.
+            “D”; add <strong>charge</strong> and the whole shadow <em>shrinks</em> — a Kerr–Newman
+            hole. Charge behaves like extra effective mass in the horizon function Δ = r² − 2Mr +
+            a² + <strong>Q²</strong>, pulling the light rings and the shadow inward. Spin and charge
+            share one extremal budget, <strong>a*² + Q*² ≤ 1</strong>; at a = 0 the curve is an exact
+            circle of radius <strong>{(q2 > 0 ? rnCritical(q2) : B_CRIT).toFixed(3)} rs</strong>{' '}
+            (3√3·M = {B_CRIT.toFixed(3)} rs uncharged, → 2M = 1 rs at the extremal charge).
           </p>
         </aside>
       </div>

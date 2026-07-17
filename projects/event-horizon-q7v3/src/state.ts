@@ -8,6 +8,7 @@ export const DEFAULT_PARAMS: Params = {
   freeFall: false,
 
   spin: 0.0,
+  charge: 0.0,
   ergosphere: false,
   iscoTrack: false,
 
@@ -46,21 +47,40 @@ export const PHOTON_SPHERE = 1.5 // 1.5 rs
 export const ISCO = 3.0 // 6M = 3 rs
 export const B_CRIT = 3 * Math.sqrt(3) * M // ≈ 2.598, critical impact parameter
 
-// --- Kerr helpers ----------------------------------------------------------
-// `spin` throughout the app is the dimensionless a* = a/M ∈ [0, 1). The physical spin in our
-// units is a = spin · M. These formulas are the textbook Kerr results, evaluated in rs units.
+// --- Kerr / Kerr–Newman helpers --------------------------------------------
+// `spin` throughout the app is the dimensionless a* = a/M ∈ [0, 1); `charge` is Q* = Q/M ∈ [0, 1].
+// The physical spin/charge in our units are a = spin · M and Q = charge · M. A charged, spinning
+// hole is a **Kerr–Newman** black hole; the textbook results below generalise the Kerr ones by the
+// single substitution that the "mass function" 2Mr becomes 2Mr − Q² and Δ gains a +Q² term.
 
-/** Radius of the outer event horizon r₊ = M + √(M² − a²), in rs units. */
-export function kerrHorizon(spin: number): number {
-  const s = Math.min(Math.abs(spin), 0.99999)
-  return M * (1 + Math.sqrt(1 - s * s))
+/** Largest allowed √(a*² + Q*²): a real (sub-extremal) horizon needs a*² + Q*² < 1. */
+export const SUBEXTREMAL = 0.9995
+
+/** Electric charge squared Q² in rs units, from the dimensionless Q* = Q/M. */
+export function chargeQ2(charge: number): number {
+  const q = Math.max(charge, 0) * M
+  return q * q
+}
+
+/** The largest charge Q* still leaving a real horizon at the given spin (the extremal budget). */
+export function chargeCeil(spin: number): number {
+  const s = Math.min(Math.abs(spin), SUBEXTREMAL)
+  return Math.sqrt(Math.max(SUBEXTREMAL * SUBEXTREMAL - s * s, 0))
+}
+
+/** Radius of the outer event horizon r₊ = M + √(M² − a² − Q²), in rs units. */
+export function kerrHorizon(spin: number, charge = 0): number {
+  const s = Math.min(Math.abs(spin), SUBEXTREMAL)
+  const q = Math.min(Math.abs(charge), SUBEXTREMAL)
+  return M * (1 + Math.sqrt(Math.max(1 - s * s - q * q, 0)))
 }
 
 /** Radius of the ergosphere (static limit) at polar angle θ, in rs units. */
-export function kerrErgosphere(spin: number, theta: number): number {
-  const s = Math.min(Math.abs(spin), 0.99999)
+export function kerrErgosphere(spin: number, theta: number, charge = 0): number {
+  const s = Math.min(Math.abs(spin), SUBEXTREMAL)
+  const q = Math.min(Math.abs(charge), SUBEXTREMAL)
   const c = Math.cos(theta)
-  return M * (1 + Math.sqrt(Math.max(1 - s * s * c * c, 0)))
+  return M * (1 + Math.sqrt(Math.max(1 - s * s * c * c - q * q, 0)))
 }
 
 /**
@@ -78,13 +98,18 @@ export function kerrISCO(spin: number): number {
 /** The disk inner radius actually used for a render — snaps to the ISCO when tracking is on. */
 export function effectiveDiskInner(p: Params): number {
   if (!p.iscoTrack) return p.diskInner
-  return Math.max(kerrISCO(p.spin), kerrHorizon(p.spin) + 0.05)
+  return Math.max(kerrISCO(p.spin), kerrHorizon(p.spin, p.charge) + 0.05)
 }
 
-/** Prograde equatorial orbital angular velocity Ω (coordinate) at radius r, in rs units. */
-export function kerrOmega(spin: number, r: number): number {
+/**
+ * Prograde equatorial orbital angular velocity Ω (coordinate) at radius r, in rs units. For a
+ * charged (Kerr–Newman) hole the Kepler frequency picks up the charge through Mr → Mr − Q²:
+ *   Ω = √(Mr − Q²) / (r² + a·√(Mr − Q²)),  reducing to √M/(r^{3/2}+a√M) at Q = 0.
+ */
+export function kerrOmega(spin: number, r: number, charge = 0): number {
   const a = spin * M
-  return Math.sqrt(M) / (Math.pow(r, 1.5) + a * Math.sqrt(M))
+  const root = Math.sqrt(Math.max(M * r - chargeQ2(charge), 0))
+  return root / (r * r + a * root)
 }
 
 /**
@@ -159,5 +184,20 @@ export const PRESETS: Preset[] = [
     name: 'Probe',
     blurb: 'A clean three-quarter view for the photon probe — click anywhere on the render to trace that pixel’s geodesic and read off its conserved E, L, Q.',
     params: { spin: 0.7, iscoTrack: true, cameraDistance: 13, inclination: 16, fov: 55, diskInner: 3, diskOuter: 12, diskBrightness: 1.6, exposure: 1.1 },
+  },
+  {
+    name: 'Reissner–Nordström',
+    blurb: 'A static but heavily charged hole (Q/M = 0.85, no spin). Charge shrinks the horizon and the shadow just as mass would, without the Kerr asymmetry — a clean circular shadow smaller than Schwarzschild’s.',
+    params: { spin: 0, charge: 0.85, cameraDistance: 12, inclination: 10, fov: 56, diskInner: 3, diskOuter: 12, diskBrightness: 1.7, exposure: 1.15 },
+  },
+  {
+    name: 'Kerr–Newman',
+    blurb: 'The full no-hair trifecta: spinning and charged (a/M = 0.6, Q/M = 0.6). The shadow is both displaced by frame dragging and shrunk by charge — a genuinely general stationary black hole.',
+    params: { spin: 0.6, charge: 0.6, iscoTrack: true, cameraDistance: 12, inclination: 13, fov: 56, diskOuter: 12, diskBrightness: 1.8, exposure: 1.15 },
+  },
+  {
+    name: 'Extremal charge',
+    blurb: 'Pushed to the extremal edge a*² + Q*² ≈ 1 (a/M = 0.55, Q/M = 0.83): the inner and outer horizons all but merge and the shadow is at its smallest — the smoothest, tightest ring the family allows.',
+    params: { spin: 0.55, charge: 0.83, iscoTrack: true, cameraDistance: 10, inclination: 16, fov: 60, diskInner: 2, diskOuter: 10, diskBrightness: 1.9, exposure: 1.2 },
   },
 ]

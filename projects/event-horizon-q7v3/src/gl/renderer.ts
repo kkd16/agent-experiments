@@ -1,7 +1,7 @@
 import { FRAG_SRC, VERT_SRC, BRIGHT_SRC, BLUR_SRC, DOWNSAMPLE_SRC, COMPOSITE_SRC } from './shaders'
 import type { Params } from '../types'
 import { lookBasis, orbitPosition } from '../math/vec'
-import { effectiveDiskInner } from '../state'
+import { effectiveDiskInner, chargeQ2 } from '../state'
 import { observerVelocity } from '../physics/probe'
 
 /** Thrown when WebGL2 or shader compilation is unavailable — the UI shows a friendly fallback. */
@@ -10,7 +10,7 @@ export class RendererError extends Error {}
 const SCENE_UNIFORMS = [
   'uResolution', 'uTime', 'uAspect', 'uTanHalfFov',
   'uCamPos', 'uCamRight', 'uCamUp', 'uCamForward',
-  'uSpin', 'uErgosphere',
+  'uSpin', 'uCharge2', 'uErgosphere',
   'uDiskInner', 'uDiskOuter', 'uDiskBrightness', 'uDiskTemp', 'uDiskDensity',
   'uVolumetric', 'uDiskThickness',
   'uSteps', 'uStepSize', 'uDoppler', 'uRedshift', 'uStarBrightness', 'uExposure', 'uToneMap',
@@ -197,6 +197,7 @@ export class BlackHoleRenderer {
     gl.uniform3f(u.uCamUp, up[0], up[1], up[2])
     gl.uniform3f(u.uCamForward, forward[0], forward[1], forward[2])
     gl.uniform1f(u.uSpin, params.spin)
+    gl.uniform1f(u.uCharge2, chargeQ2(params.charge))
     gl.uniform1i(u.uErgosphere, params.ergosphere ? 1 : 0)
     gl.uniform1f(u.uDiskInner, diskInner)
     gl.uniform1f(u.uDiskOuter, Math.max(params.diskOuter, diskInner + 0.5))

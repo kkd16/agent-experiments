@@ -1,4 +1,5 @@
 import type { Params } from '../types'
+import { SUBEXTREMAL } from '../state'
 
 export type NumericParamKey =
   | 'cameraDistance'
@@ -6,6 +7,7 @@ export type NumericParamKey =
   | 'azimuth'
   | 'fov'
   | 'spin'
+  | 'charge'
   | 'diskInner'
   | 'diskOuter'
   | 'diskBrightness'
@@ -87,6 +89,15 @@ export const CONTROL_GROUPS: ControlGroup[] = [
         format: (v) => v.toFixed(3),
         help: 'Dimensionless spin. 0 is a static Schwarzschild hole; near 1 is a near-extremal Kerr hole with strong frame dragging and a flattened shadow.',
       },
+      {
+        key: 'charge',
+        label: 'Charge Q/M',
+        min: 0,
+        max: 1,
+        step: 0.005,
+        format: (v) => v.toFixed(3),
+        help: 'Dimensionless electric charge. A charged, spinning hole is a Kerr–Newman black hole — the most general one there is. Charge shrinks the horizon and the shadow. Spin and charge share one budget: a*² + Q*² can’t exceed 1, so raising one caps the other.',
+      },
     ],
     toggles: [
       { key: 'ergosphere', label: 'Ergosphere', help: 'Draw the static-limit shell — inside it, frame dragging is so strong that nothing can remain at rest.' },
@@ -146,5 +157,11 @@ export function clampParams(p: Params): Params {
   for (const [key, [lo, hi]] of Object.entries(CLAMP) as [NumericParamKey, [number, number]][]) {
     out[key] = clamp(out[key], lo, hi)
   }
+  // Spin and charge share the extremal budget a*² + Q*² ≤ SUBEXTREMAL²: keep spin, cap charge to
+  // whatever room is left so the hole always has a real (sub-extremal) horizon.
+  const spin = Math.min(Math.abs(out.spin), SUBEXTREMAL)
+  out.spin = spin
+  const chargeCeil = Math.sqrt(Math.max(SUBEXTREMAL * SUBEXTREMAL - spin * spin, 0))
+  out.charge = clamp(out.charge, 0, chargeCeil)
   return out
 }

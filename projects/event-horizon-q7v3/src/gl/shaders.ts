@@ -41,6 +41,7 @@ uniform vec3  uCamUp;
 uniform vec3  uCamForward;
 
 uniform float uSpin;         // dimensionless a/M
+uniform float uCharge2;      // electric charge squared Q² in rs units (Kerr–Newman; 0 = uncharged)
 uniform bool  uErgosphere;   // draw the static-limit shell
 
 uniform float uDiskInner;
@@ -224,14 +225,15 @@ vec3 sampleDiskKerr(vec3 hit, float r, float E, float L, out float alpha) {
   diskBase(hit, r, density, kelvin, emit);
 
   float a = uSpin * MASS;
-  float sqrtM = sqrt(MASS);
-  float Om = sqrtM / (pow(r, 1.5) + a * sqrtM);               // prograde Ω (co-rotating disk)
+  float root = sqrt(max(MASS * r - uCharge2, 0.0));
+  float Om = root / (r * r + a * root);                      // prograde Kerr–Newman Ω (co-rotating)
 
-  // equatorial metric (θ = π/2 ⇒ sinθ = 1, cosθ = 0)
+  // equatorial metric (θ = π/2 ⇒ sinθ = 1, cosθ = 0); charge turns 2Mr into 2Mr − Q²
   float Sig = r * r;
-  float gtt = -(1.0 - 2.0 * MASS * r / Sig);
-  float gtp = -2.0 * MASS * r * a / Sig;
-  float gpp = (r * r + a * a + 2.0 * MASS * r * a * a / Sig);
+  float MR = 2.0 * MASS * r - uCharge2;
+  float gtt = -(1.0 - MR / Sig);
+  float gtp = -MR * a / Sig;
+  float gpp = (r * r + a * a + MR * a * a / Sig);
 
   float denom = -(gtt + 2.0 * Om * gtp + Om * Om * gpp);      // (u^t)^-2 for the orbiting emitter
   float b = L / max(abs(E), 1e-6) * sign(E);
@@ -289,13 +291,14 @@ void diskVolKerr(vec3 pos, float E, float L, out vec3 emission, out float dens) 
   dens = density * exp(-1.8 * z * z);
 
   float a = uSpin * MASS;
-  float sqrtM = sqrt(MASS);
   float rr = max(rho, uDiskInner);
-  float Om = sqrtM / (pow(rr, 1.5) + a * sqrtM);
+  float root = sqrt(max(MASS * rr - uCharge2, 0.0));
+  float Om = root / (rr * rr + a * root);
   float Sig = rr * rr;
-  float gtt = -(1.0 - 2.0 * MASS * rr / Sig);
-  float gtp = -2.0 * MASS * rr * a / Sig;
-  float gpp = (rr * rr + a * a + 2.0 * MASS * rr * a * a / Sig);
+  float MR = 2.0 * MASS * rr - uCharge2;
+  float gtt = -(1.0 - MR / Sig);
+  float gtp = -MR * a / Sig;
+  float gpp = (rr * rr + a * a + MR * a * a / Sig);
   float denom = -(gtt + 2.0 * Om * gtp + Om * Om * gpp);
   float b = L / max(abs(E), 1e-6) * sign(E);
   float g = sqrt(max(denom, 1e-6)) / max(1.0 - Om * b, 1e-3);
@@ -339,12 +342,13 @@ void kerrCov(float r, float th, out float gtt, out float gtp, out float grr, out
   float st = max(sin(th), 2.0e-2);
   float s2 = st * st;
   float Sig = r * r + a2 * ct * ct;
-  float Del = r * r - 2.0 * MASS * r + a2;
-  gtt = -(1.0 - 2.0 * MASS * r / Sig);
-  gtp = -2.0 * MASS * r * a * s2 / Sig;
+  float Del = r * r - 2.0 * MASS * r + a2 + uCharge2;   // Kerr–Newman: Δ gains +Q²
+  float MR = 2.0 * MASS * r - uCharge2;                 // mass function 2Mr → 2Mr − Q²
+  gtt = -(1.0 - MR / Sig);
+  gtp = -MR * a * s2 / Sig;
   grr = Sig / Del;
   gthth = Sig;
-  gpp = (r * r + a2 + 2.0 * MASS * r * a2 * s2 / Sig) * s2;
+  gpp = (r * r + a2 + MR * a2 * s2 / Sig) * s2;
 }
 
 // Inverse (contravariant) components, packed as (g^tt, g^tφ, g^rr, g^θθ, g^φφ).
@@ -355,10 +359,11 @@ void kerrInv(float r, float th, out float gtt, out float gtp, out float grr, out
   float st = max(sin(th), 2.0e-2);
   float s2 = st * st;
   float Sig = r * r + a2 * ct * ct;
-  float Del = r * r - 2.0 * MASS * r + a2;
+  float Del = r * r - 2.0 * MASS * r + a2 + uCharge2;   // Kerr–Newman horizon function
+  float MR = 2.0 * MASS * r - uCharge2;
   float A = (r * r + a2) * (r * r + a2) - a2 * Del * s2;
   gtt = -A / (Sig * Del);
-  gtp = -2.0 * MASS * a * r / (Sig * Del);
+  gtp = -MR * a / (Sig * Del);
   grr = Del / Sig;
   gthth = 1.0 / Sig;
   gpp = (Del - a2 * s2) / (Sig * Del * s2);
@@ -476,7 +481,7 @@ void traceSchwarzschild(vec3 pos, vec3 vel, float escapeR, out vec3 color, out f
 // =================================================================== Kerr path
 void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float transmit, out bool captured, out vec3 outDir, out float order) {
   float a = uSpin * MASS;
-  float rplus = MASS + sqrt(max(MASS * MASS - a * a, 0.0));
+  float rplus = MASS + sqrt(max(MASS * MASS - a * a - uCharge2, 0.0));
   order = 0.0;
 
   // --- initial position + covariant momenta from the camera ray ---------------
@@ -555,7 +560,7 @@ void traceKerr(vec3 camPos, vec3 dir, float escapeR, out vec3 color, out float t
     // ergosphere shell (static limit) — faint volumetric glow when enabled
     if (uErgosphere && transmit > 0.01) {
       float ct = cos(nth);
-      float rErgo = MASS + sqrt(max(MASS * MASS - a * a * ct * ct, 0.0));
+      float rErgo = MASS + sqrt(max(MASS * MASS - a * a * ct * ct - uCharge2, 0.0));
       if (nr < rErgo && nr > rplus) {
         color += transmit * dt * vec3(0.05, 0.16, 0.28) * 0.09;
       }
@@ -631,7 +636,10 @@ void main() {
   vec3 outDir;
   float order;
 
-  if (uSpin < 0.0015) {
+  // The fast reduced-Cartesian Schwarzschild loop is exact only for a static, uncharged hole. Any
+  // spin *or* charge engages the full Kerr–Newman Hamiltonian loop (which handles a = 0, Q > 0 as
+  // the Reissner–Nordström limit).
+  if (uSpin < 0.0015 && uCharge2 < 1.0e-6) {
     traceSchwarzschild(pos, dir, escapeR, color, transmit, captured, outDir, order);
   } else {
     traceKerr(pos, dir, escapeR, color, transmit, captured, outDir, order);

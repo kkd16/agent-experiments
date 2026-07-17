@@ -110,42 +110,46 @@ interface KerrInv {
   gpp: number
 }
 
-function kerrInv(r: number, th: number, a: number): KerrInv {
+// The metric is Kerr–Newman: the charge enters through Δ = r² − 2Mr + a² + Q² and by turning the
+// mass function 2Mr into 2Mr − Q² wherever it appears. `q2 = 0` recovers pure Kerr line-for-line.
+function kerrInv(r: number, th: number, a: number, q2 = 0): KerrInv {
   const a2 = a * a
   const ct = Math.cos(th)
   const st = Math.max(Math.sin(th), 2e-2)
   const s2 = st * st
   const Sig = r * r + a2 * ct * ct
-  const Del = r * r - 2 * M * r + a2
+  const Del = r * r - 2 * M * r + a2 + q2
+  const MR = 2 * M * r - q2
   const A = (r * r + a2) * (r * r + a2) - a2 * Del * s2
   return {
     gtt: -A / (Sig * Del),
-    gtp: (-2 * M * a * r) / (Sig * Del),
+    gtp: (-MR * a) / (Sig * Del),
     grr: Del / Sig,
     gthth: 1 / Sig,
     gpp: (Del - a2 * s2) / (Sig * Del * s2),
   }
 }
 
-export function kerrCov(r: number, th: number, a: number): KerrInv {
+export function kerrCov(r: number, th: number, a: number, q2 = 0): KerrInv {
   const a2 = a * a
   const ct = Math.cos(th)
   const st = Math.max(Math.sin(th), 2e-2)
   const s2 = st * st
   const Sig = r * r + a2 * ct * ct
-  const Del = r * r - 2 * M * r + a2
+  const Del = r * r - 2 * M * r + a2 + q2
+  const MR = 2 * M * r - q2
   return {
-    gtt: -(1 - (2 * M * r) / Sig),
-    gtp: (-2 * M * r * a * s2) / Sig,
+    gtt: -(1 - MR / Sig),
+    gtp: (-MR * a * s2) / Sig,
     grr: Sig / Del,
     gthth: Sig,
-    gpp: (r * r + a2 + (2 * M * r * a2 * s2) / Sig) * s2,
+    gpp: (r * r + a2 + (MR * a2 * s2) / Sig) * s2,
   }
 }
 
 /** The null Hamiltonian value 2H = gᵘᵛ p_u p_v (p_t = −E, p_φ = L). Exactly 0 on a null geodesic. */
-export function nullValue(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number): number {
-  const g = kerrInv(r, th, a)
+export function nullValue(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number, q2 = 0): number {
+  const g = kerrInv(r, th, a, q2)
   return g.gtt * E * E - 2 * g.gtp * E * L + g.grr * pr * pr + g.gthth * pth * pth + g.gpp * L * L
 }
 
@@ -164,14 +168,14 @@ interface KerrDeriv {
   dpth: number
 }
 
-export function kerrDeriv(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number): KerrDeriv {
-  const g = kerrInv(r, th, a)
+export function kerrDeriv(r: number, th: number, pr: number, pth: number, E: number, L: number, a: number, q2 = 0): KerrDeriv {
+  const g = kerrInv(r, th, a, q2)
   const dr = g.grr * pr
   const dth = g.gthth * pth
   const dphi = -g.gtp * E + g.gpp * L
   const h = 1e-3
-  const dpr = -0.25 * (nullValue(r + h, th, pr, pth, E, L, a) - nullValue(r - h, th, pr, pth, E, L, a)) / h
-  const dpth = -0.25 * (nullValue(r, th + h, pr, pth, E, L, a) - nullValue(r, th - h, pr, pth, E, L, a)) / h
+  const dpr = -0.25 * (nullValue(r + h, th, pr, pth, E, L, a, q2) - nullValue(r - h, th, pr, pth, E, L, a, q2)) / h
+  const dpth = -0.25 * (nullValue(r, th + h, pr, pth, E, L, a, q2) - nullValue(r, th - h, pr, pth, E, L, a, q2)) / h
   return { dr, dth, dphi, dpr, dpth }
 }
 
@@ -201,7 +205,7 @@ export interface KerrState {
  * velocities, lower them with the covariant metric, and solve the null condition for the
  * future-pointing p_t to read off the conserved E and L.
  */
-export function initKerrPhoton(camPos: Vec3, dir: Vec3, a: number): KerrState {
+export function initKerrPhoton(camPos: Vec3, dir: Vec3, a: number, q2 = 0): KerrState {
   const b0 = worldToBL(camPos, a)
   const eps = 1e-3
   const b1 = worldToBL([camPos[0] + eps * dir[0], camPos[1] + eps * dir[1], camPos[2] + eps * dir[2]], a)
@@ -211,7 +215,7 @@ export function initKerrPhoton(camPos: Vec3, dir: Vec3, a: number): KerrState {
   const pthCon = (b1.th - b0.th) / eps
   const pphCon = dph / eps
 
-  const c = kerrCov(b0.r, b0.th, a)
+  const c = kerrCov(b0.r, b0.th, a, q2)
   const spatial = c.grr * prCon * prCon + c.gthth * pthCon * pthCon + c.gpp * pphCon * pphCon
   const bq = 2 * c.gtp * pphCon
   const disc = Math.sqrt(Math.max(bq * bq - 4 * c.gtt * spatial, 0))
@@ -237,19 +241,20 @@ export interface KerrTrace {
 export function traceKerr3D(
   init: KerrState,
   a: number,
-  opts: { steps?: number; stepSize?: number; escapeR?: number } = {},
+  opts: { steps?: number; stepSize?: number; escapeR?: number; q2?: number } = {},
 ): KerrTrace {
   const steps = opts.steps ?? 4000
   const stepSize = opts.stepSize ?? 0.12
   const escapeR = opts.escapeR ?? 60
+  const q2 = opts.q2 ?? 0
   let { r, th, pr, pth } = init
   const { E, L } = init
-  const { rPlus } = horizons(a)
+  const { rPlus } = horizons(a, q2)
 
   const Q0 = carterConstant(th, pth, E, L, a)
   const Qmag = Math.max(Math.abs(Q0), 1e-3)
   let maxCarterDrift = 0
-  let maxNull = Math.abs(nullValue(r, th, pr, pth, E, L, a))
+  let maxNull = Math.abs(nullValue(r, th, pr, pth, E, L, a, q2))
   let captured = false
 
   for (let i = 0; i < steps; i++) {
@@ -262,10 +267,10 @@ export function traceKerr3D(
     const prox = Math.min(Math.max((r - rPlus) * 1.6, 0.12), 1)
     const dt = stepSize * (0.35 + 0.22 * r) * prox
 
-    const k1 = kerrDeriv(r, th, pr, pth, E, L, a)
-    const k2 = kerrDeriv(r + 0.5 * dt * k1.dr, th + 0.5 * dt * k1.dth, pr + 0.5 * dt * k1.dpr, pth + 0.5 * dt * k1.dpth, E, L, a)
-    const k3 = kerrDeriv(r + 0.5 * dt * k2.dr, th + 0.5 * dt * k2.dth, pr + 0.5 * dt * k2.dpr, pth + 0.5 * dt * k2.dpth, E, L, a)
-    const k4 = kerrDeriv(r + dt * k3.dr, th + dt * k3.dth, pr + dt * k3.dpr, pth + dt * k3.dpth, E, L, a)
+    const k1 = kerrDeriv(r, th, pr, pth, E, L, a, q2)
+    const k2 = kerrDeriv(r + 0.5 * dt * k1.dr, th + 0.5 * dt * k1.dth, pr + 0.5 * dt * k1.dpr, pth + 0.5 * dt * k1.dpth, E, L, a, q2)
+    const k3 = kerrDeriv(r + 0.5 * dt * k2.dr, th + 0.5 * dt * k2.dth, pr + 0.5 * dt * k2.dpr, pth + 0.5 * dt * k2.dpth, E, L, a, q2)
+    const k4 = kerrDeriv(r + dt * k3.dr, th + dt * k3.dth, pr + dt * k3.dpr, pth + dt * k3.dpth, E, L, a, q2)
 
     r += (dt / 6) * (k1.dr + 2 * k2.dr + 2 * k3.dr + k4.dr)
     th += (dt / 6) * (k1.dth + 2 * k2.dth + 2 * k3.dth + k4.dth)
@@ -283,7 +288,7 @@ export function traceKerr3D(
     }
 
     maxCarterDrift = Math.max(maxCarterDrift, Math.abs(carterConstant(th, pth, E, L, a) - Q0) / Qmag)
-    maxNull = Math.max(maxNull, Math.abs(nullValue(r, th, pr, pth, E, L, a)))
+    maxNull = Math.max(maxNull, Math.abs(nullValue(r, th, pr, pth, E, L, a, q2)))
   }
   return { captured, maxCarterDrift, maxNull }
 }
@@ -293,12 +298,12 @@ export function traceKerr3D(
 // retrograde shadow edges from real integrated geodesics — the same reduced Hamiltonian the
 // Geodesic Explorer draws, but without retaining the path.
 
-function traceEquatorialKerrCaptured(b: number, a: number): boolean {
+function traceEquatorialKerrCaptured(b: number, a: number, q2 = 0): boolean {
   const startX = -22
   const escapeR = 24
   const maxSteps = 6000
   const baseStep = 0.05
-  const rplus = M + Math.sqrt(Math.max(M * M - a * a, 0))
+  const rplus = M + Math.sqrt(Math.max(M * M - a * a - q2, 0))
 
   const w2bl = (x: number, y: number): [number, number] => [Math.sqrt(Math.max(x * x + y * y - a * a, 1e-6)), Math.atan2(y, x)]
   const bl0 = w2bl(startX, b)
@@ -313,8 +318,9 @@ function traceEquatorialKerrCaptured(b: number, a: number): boolean {
   const pphCon = dphi0 / eps
 
   const cov = (rr: number) => {
-    const D = rr * rr - 2 * M * rr + a * a
-    return { gtt: -(1 - (2 * M) / rr), gtp: (-2 * M * a) / rr, grr: (rr * rr) / D, gpp: rr * rr + a * a + (2 * M * a * a) / rr }
+    const D = rr * rr - 2 * M * rr + a * a + q2
+    const MR = 2 * M * rr - q2 // Kerr–Newman mass function
+    return { gtt: -(1 - MR / (rr * rr)), gtp: (-MR * a) / (rr * rr), grr: (rr * rr) / D, gpp: rr * rr + a * a + (MR * a * a) / (rr * rr) }
   }
   const c0 = cov(r)
   const spatial = c0.grr * prCon * prCon + c0.gpp * pphCon * pphCon
@@ -326,16 +332,17 @@ function traceEquatorialKerrCaptured(b: number, a: number): boolean {
   let pr = c0.grr * prCon
 
   const twoH = (rr: number, prr: number): number => {
-    const D = rr * rr - 2 * M * rr + a * a
+    const D = rr * rr - 2 * M * rr + a * a + q2
+    const MR = 2 * M * rr - q2
     const A = (rr * rr + a * a) ** 2 - a * a * D
     const gtt = -A / (rr * rr * D)
-    const gtp = (-2 * M * a) / (rr * D)
+    const gtp = (-MR * a) / (rr * rr * D)
     const grr = D / (rr * rr)
     const gpp = (D - a * a) / (rr * rr * D)
     return gtt * E * E - 2 * gtp * E * L + grr * prr * prr + gpp * L * L
   }
   const der = (rr: number, prr: number): [number, number] => {
-    const D = rr * rr - 2 * M * rr + a * a
+    const D = rr * rr - 2 * M * rr + a * a + q2
     const grr = D / (rr * rr)
     const h = 1e-3
     return [grr * prr, -0.5 * (twoH(rr + h, prr) - twoH(rr - h, prr)) / (2 * h)]
@@ -361,14 +368,14 @@ function traceEquatorialKerrCaptured(b: number, a: number): boolean {
  * incoming photons) from real integrated Kerr geodesics. Returned as magnitudes, ascending — to be
  * matched against the analytic |ξ| at the prograde/retrograde light rings.
  */
-export function bisectEquatorialShadowEdges(aStar: number): [number, number] {
+export function bisectEquatorialShadowEdges(aStar: number, q2 = 0): [number, number] {
   const a = Math.min(Math.max(aStar, 0), 0.9995) * M
   const edge = (sign: number): number => {
     let lo = sign * 1.0 // near the hole → captured
     let hi = sign * 6.0 // far → escapes
     for (let i = 0; i < 46; i++) {
       const mid = 0.5 * (lo + hi)
-      if (traceEquatorialKerrCaptured(mid, a)) lo = mid
+      if (traceEquatorialKerrCaptured(mid, a, q2)) lo = mid
       else hi = mid
     }
     return Math.abs(hi)

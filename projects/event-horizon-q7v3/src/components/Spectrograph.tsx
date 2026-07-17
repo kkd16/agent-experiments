@@ -17,10 +17,10 @@ export default function Spectrograph({ params }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const profile = useMemo(
-    () => computeLineProfile(params.spin, params.inclination, effectiveDiskInner(params), params.diskOuter),
+    () => computeLineProfile(params.spin, params.inclination, effectiveDiskInner(params), params.diskOuter, 96, params.charge),
     // Only the physical inputs to the line profile matter; recomputing on every param tick is wasteful.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [params.spin, params.inclination, params.diskInner, params.diskOuter, params.iscoTrack],
+    [params.spin, params.charge, params.inclination, params.diskInner, params.diskOuter, params.iscoTrack],
   )
 
   useEffect(() => {

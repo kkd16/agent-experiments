@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { traceFanKerr } from '../geodesics'
-import { B_CRIT, M, PHOTON_SPHERE, kerrHorizon, kerrErgosphere, kerrISCO, kerrPhotonOrbit } from '../state'
+import { B_CRIT, M, PHOTON_SPHERE, SUBEXTREMAL, chargeQ2, kerrHorizon, kerrErgosphere, kerrISCO, kerrPhotonOrbit } from '../state'
+import { knPhotonRings, rnPhotonSphere, rnCritical } from '../physics/kerr'
 
 const VIEW_X = 24 // half-width of the world window shown, in rs
 const VIEW_Y = 15
@@ -11,7 +12,13 @@ export default function GeodesicView() {
   const [rays, setRays] = useState(64)
   const [maxB, setMaxB] = useState(9)
   const [spin, setSpin] = useState(0.6)
+  const [charge, setCharge] = useState(0)
   const [size, setSize] = useState({ w: 800, h: 500 })
+
+  // Spin and charge share the extremal budget a*² + Q*² ≤ 1.
+  const chargeCeil = Math.sqrt(Math.max(SUBEXTREMAL * SUBEXTREMAL - spin * spin, 0))
+  const q = Math.min(charge, chargeCeil)
+  const q2 = chargeQ2(q)
 
   // Track the container size.
   useEffect(() => {
@@ -44,11 +51,12 @@ export default function GeodesicView() {
     const sx = (x: number) => cx + x * scale
     const sy = (y: number) => cy - y * scale
 
-    // Kerr geometry, expressed in equatorial world radius ρ = √(r²+a²).
+    // Kerr–Newman geometry, expressed in equatorial world radius ρ = √(r²+a²).
     const a = spin * M
-    const rplus = kerrHorizon(spin)
+    const rplus = kerrHorizon(spin, q)
     const rhoH = Math.sqrt(rplus * rplus + a * a) // horizon in world radius
-    const rhoErgo = Math.sqrt(1 + a * a) // ergosphere at the equator sits at BL r = 2M = 1 rs
+    const rErgoEq = kerrErgosphere(spin, Math.PI / 2, q) // BL equatorial static limit (2M uncharged; shrinks with charge)
+    const rhoErgo = Math.sqrt(rErgoEq * rErgoEq + a * a)
 
     // Background.
     ctx.fillStyle = '#05060b'
@@ -86,12 +94,14 @@ export default function GeodesicView() {
       ctx.fill()
     }
 
-    // Critical impact-parameter guides (Schwarzschild reference; asymmetric once spinning).
+    // Critical impact-parameter guides (static reference; asymmetric once spinning). Charge shrinks
+    // the critical impact parameter to the Reissner–Nordström value.
     if (spin < 0.02) {
+      const bcrit = q2 > 0 ? rnCritical(q2) : B_CRIT
       ctx.strokeStyle = 'rgba(255,190,120,0.35)'
       ctx.setLineDash([5, 6])
       ctx.lineWidth = 1
-      for (const yb of [B_CRIT, -B_CRIT]) {
+      for (const yb of [bcrit, -bcrit]) {
         ctx.beginPath()
         ctx.moveTo(0, sy(yb))
         ctx.lineTo(w, sy(yb))
@@ -101,7 +111,7 @@ export default function GeodesicView() {
     }
 
     // Trace and draw photons.
-    const fan = traceFanKerr(rays, maxB, spin)
+    const fan = traceFanKerr(rays, maxB, spin, q)
     ctx.lineWidth = 1.1
     for (const g of fan) {
       const captured = g.fate === 'captured'
@@ -130,15 +140,15 @@ export default function GeodesicView() {
     // the hole spins, the equatorial light ring splits into a tighter prograde and a wider
     // retrograde circular orbit (drawn here in world radius ρ = √(r²+a²)).
     if (spin < 0.02) {
+      const rPh = q2 > 0 ? rnPhotonSphere(q2) : PHOTON_SPHERE
       ctx.strokeStyle = 'rgba(255,230,150,0.7)'
       ctx.setLineDash([4, 5])
       ctx.beginPath()
-      ctx.arc(sx(0), sy(0), PHOTON_SPHERE * scale, 0, Math.PI * 2)
+      ctx.arc(sx(0), sy(0), rPh * scale, 0, Math.PI * 2)
       ctx.stroke()
       ctx.setLineDash([])
     } else {
-      const rPro = kerrPhotonOrbit(spin, true)
-      const rRet = kerrPhotonOrbit(spin, false)
+      const [rPro, rRet] = q2 > 0 ? knPhotonRings(a, q2) : [kerrPhotonOrbit(spin, true), kerrPhotonOrbit(spin, false)]
       const rhoPro = Math.sqrt(rPro * rPro + a * a)
       const rhoRet = Math.sqrt(rRet * rRet + a * a)
       ctx.setLineDash([3, 5])
@@ -162,7 +172,7 @@ export default function GeodesicView() {
     ctx.beginPath()
     ctx.arc(sx(0), sy(0), rhoH * scale, 0, Math.PI * 2)
     ctx.fill()
-  }, [rays, maxB, spin, size])
+  }, [rays, maxB, spin, q, q2, size])
 
   return (
     <div className="geo">
@@ -191,6 +201,11 @@ export default function GeodesicView() {
           <input type="range" min={0} max={0.998} step={0.002} value={spin} onChange={(e) => setSpin(Number(e.target.value))} />
           <span className="row__value">{spin.toFixed(2)}</span>
         </label>
+        <label className="row" title="Electric charge Q/M — a Kerr–Newman hole. Capped by spin: a*² + Q*² ≤ 1.">
+          <span className="row__label">Charge Q/M</span>
+          <input type="range" min={0} max={1} step={0.005} value={q} onChange={(e) => setCharge(Math.min(Number(e.target.value), chargeCeil))} />
+          <span className="row__value">{q.toFixed(2)}</span>
+        </label>
 
         <ul className="legend">
           <li>
@@ -210,23 +225,25 @@ export default function GeodesicView() {
         </ul>
 
         <div className="geo__readout" aria-live="polite">
-          <div className="geo__readout-title">Geometry at a/M = {spin.toFixed(3)}</div>
+          <div className="geo__readout-title">
+            Geometry at a/M = {spin.toFixed(3)}{q > 0.001 ? `, Q/M = ${q.toFixed(3)}` : ''}
+          </div>
           <dl>
             <div>
               <dt>Outer horizon r₊</dt>
-              <dd>{kerrHorizon(spin).toFixed(3)} rs</dd>
+              <dd>{kerrHorizon(spin, q).toFixed(3)} rs</dd>
             </div>
             <div>
               <dt>Ergosphere (equator)</dt>
-              <dd>{kerrErgosphere(spin, Math.PI / 2).toFixed(3)} rs</dd>
+              <dd>{kerrErgosphere(spin, Math.PI / 2, q).toFixed(3)} rs</dd>
             </div>
             <div>
               <dt>Prograde light ring</dt>
-              <dd>{kerrPhotonOrbit(spin, true).toFixed(3)} rs</dd>
+              <dd>{(q2 > 0 ? knPhotonRings(spin * M, q2)[0] : kerrPhotonOrbit(spin, true)).toFixed(3)} rs</dd>
             </div>
             <div>
               <dt>Retrograde light ring</dt>
-              <dd>{kerrPhotonOrbit(spin, false).toFixed(3)} rs</dd>
+              <dd>{(q2 > 0 ? knPhotonRings(spin * M, q2)[1] : kerrPhotonOrbit(spin, false)).toFixed(3)} rs</dd>
             </div>
             <div>
               <dt>Prograde ISCO</dt>
@@ -242,8 +259,15 @@ export default function GeodesicView() {
           the dragging is so strong that <em>nothing</em> can stay still, not even light.
         </p>
         <p className="muted small">
-          At zero spin this reduces exactly to Schwarzschild: a symmetric fan, the photon sphere at{' '}
-          {PHOTON_SPHERE.toFixed(1)} rs and the critical impact parameter b = 3√3·M ≈{' '}
+          Add <strong>charge</strong> and the fan tightens symmetrically: an electrically charged hole
+          (Kerr–Newman, or Reissner–Nordström with no spin) has Δ = r² − 2Mr + a² +{' '}
+          <strong>Q²</strong>, so the horizon, the photon rings and the capture cross-section all
+          shrink — charge curves spacetime much as mass does. Spin and charge share the extremal
+          budget <strong>a*² + Q*² ≤ 1</strong>.
+        </p>
+        <p className="muted small">
+          At zero spin and charge this reduces exactly to Schwarzschild: a symmetric fan, the photon
+          sphere at {PHOTON_SPHERE.toFixed(1)} rs and the critical impact parameter b = 3√3·M ≈{' '}
           {B_CRIT.toFixed(2)} rs.
         </p>
       </div>
