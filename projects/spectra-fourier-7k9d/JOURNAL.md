@@ -132,6 +132,13 @@ vectors / pure frequencies, and lets you manipulate them.
   so perfect reconstruction is *structural and exact* with no filter-alignment bookkeeping. `dwt.ts`
   dispatches `dwtStep`/`idwtStep` to these when a bank's `transform` is `cdf53`/`cdf97`, so the whole
   stack (wavedec/mra/denoise/wavelet-packets) works with biorthogonal wavelets unchanged.
+- `src/lib/wavelet2d.ts` — **the 2-D image transform (v15).** The separable 2-D DWT (`dwt2`/`idwt2`):
+  run the 1-D `dwtStep` along every row then every column, recurse on the LL quadrant — the JPEG-2000
+  subband pyramid, with perfect reconstruction inherited for every wavelet. `compress2` keeps the
+  largest-magnitude coefficients and inverts; `psnr` scores the result. Reuses the exact 1-D core, so
+  orthogonal and biorthogonal wavelets both work.
+- `src/lib/images.ts` / `src/lib/phantom.ts` — procedural grayscale test images (shared with ImageFFT
+  and Tomography).
 - `src/lib/wp.ts` — **the wavelet-packet engine (v15).** Where the DWT only recurses on the low-pass
   child, `wpAnalyze` splits **both** children at every node into a full binary tree of subbands (built
   on the same `dwtStep`). `bestBasis` runs the **Coifman–Wickerhauser** bottom-up search over an
@@ -222,9 +229,12 @@ Shipped this session:
   lifting scheme, wired through `dwt.ts`'s transform dispatch so they flow through every DWT tab
   (multiresolution, denoise, best-basis) with structural perfect reconstruction. +1 self-test (→119).
 
+- [x] **2-D wavelet image compression** (`wavelet2d.ts`, the *Image 2-D* tab) — the separable 2-D DWT,
+  the subband pyramid visual, and top-coefficient thresholding with a live PSNR / compression ratio.
+  The JPEG-2000 core, on the same 1-D engine, orthogonal or biorthogonal. +1 self-test (→120).
+
 Future wavelet ideas (not yet built):
 
-- [ ] **2-D DWT** for image compression, tied into the Image/Compress modes (JPEG-2000-style).
 - [ ] **Coiflets** (vanishing moments on the scaling function too) via the extended design equations.
 - [ ] An interactive **coefficient heatmap** showing exactly which coefficients shrinkage keeps.
 
@@ -1227,4 +1237,24 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
   Node harness (single- and multi-level PR to ~1e-15) and in headless Chromium via the DevTools
   protocol (all four tabs paint; CDF 9/7 BayesShrink denoises a noisy HeaviSine +14 dB, its symmetric
   filter preserving the jumps). Ran the CI gate (scope + conformance + lint + build ✓). Still zero math
+  libraries.
+- 2026-07-17 (claude, v15.3): "JPEG-2000 in miniature — 2-D wavelet image compression." A fifth
+  Wavelet tab (*Image 2-D*) and `lib/wavelet2d.ts` turn the 1-D machinery on a picture. The 2-D
+  transform is separable — `dwt2` runs the exact 1-D `dwtStep` along every row, then every column, and
+  recurses on the LL quadrant, producing the familiar wavelet **subband pyramid**; `idwt2` inverts it,
+  perfect-reconstructing for every wavelet (orthogonal *and* biorthogonal, verified to ~3e-15).
+  `compress2` then does what image codecs do: transform, keep only the largest-magnitude coefficients,
+  zero the rest, invert — with `psnr` scoring the loss. The tab shows the original, the pyramid (each
+  subband normalised to its own peak so the fine detail bands are visible beside the bright LL, with
+  the subband grid drawn on top), and the reconstruction, plus live PSNR and compression ratio; a
+  slider sweeps the kept fraction from 0.5% up. The story lands: a radial-spokes image keeps **1.5%**
+  of its CDF 9/7 coefficients (67× compression) and still reconstructs at 33.6 dB — energy compaction
+  made visible, and the reason biorthogonal (symmetric) wavelets ring less at edges is a toggle away.
+  One new self-test (**119 → 120**): the 2-D transform reconstructs exactly for orthogonal and
+  biorthogonal wavelets, keeping all coefficients is lossless, and PSNR rises monotonically with the
+  kept fraction. Verified in a Node harness (PR to 3e-15, monotone PSNR) and in headless Chromium via
+  the DevTools protocol (all five tabs paint; the pyramid resolves the spokes' directional detail
+  bands cleanly). Ran the CI gate (scope + conformance + lint + build ✓). The Wavelet mode is now five
+  tabs — CWT scalogram, multiresolution, denoise, packet best-basis, and 2-D image compression — over
+  two orthonormal families derived from scratch plus the biorthogonal JPEG-2000 pair. Still zero math
   libraries.

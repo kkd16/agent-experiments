@@ -21,6 +21,8 @@ import {
 } from './dwt'
 import { dwtSignal, addNoise } from './dwtSignals'
 import { wpAnalyze, bestBasis, wpReconstruct, wpLeafSignal, spectralCentroid } from './wp'
+import { dwt2, idwt2, compress2 } from './wavelet2d'
+import { proceduralImage } from './images'
 import { timeStretch, pitchTimeShift, hannPeriodic, snrDb } from './phasevocoder'
 import { dct1d, idct1d, dct2d, idct2d, compressImage } from './dct'
 import { cepstrum } from './cepstrum'
@@ -470,6 +472,26 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
       for (let i = 0; i < cD.length; i++) dcDetail = Math.max(dcDetail, Math.abs(cD[i]))
     }
     check('biorthogonal (CDF 5/3 & 9/7) lifting PR + MRA + DC-to-approx', worst < 1e-9 && mraErr < 1e-9 && dcDetail < 1e-8)
+  }
+
+  // 8l. The separable 2-D DWT (the JPEG-2000 core) reconstructs an image exactly
+  //     for orthogonal and biorthogonal wavelets alike, keeping every coefficient
+  //     is lossless, and keeping more coefficients never lowers the PSNR.
+  {
+    const n = 128
+    let worst = 0
+    for (const id of ['db4', 'sym8', 'cdf97'] as const) {
+      const bank = getBank(id)
+      const im = proceduralImage('portrait', n)
+      const rec = idwt2(dwt2(im, n, bank, 4), n, bank, 4)
+      for (let i = 0; i < im.length; i++) worst = Math.max(worst, Math.abs(rec[i] - im[i]))
+    }
+    const bank = getBank('cdf97')
+    const im = proceduralImage('text', n)
+    const p2 = compress2(im, n, bank, 4, 0.02).psnr
+    const p20 = compress2(im, n, bank, 4, 0.2).psnr
+    const pAll = compress2(im, n, bank, 4, 1).psnr
+    check('2-D wavelet PR + monotone-PSNR compression (JPEG-2000 core)', worst < 1e-9 && p2 <= p20 && p20 <= pAll && pAll > 100)
   }
 
   // 9. Phase vocoder identity: an unmodified analysis/synthesis round-trip

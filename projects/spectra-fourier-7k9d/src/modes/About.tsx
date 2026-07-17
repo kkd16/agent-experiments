@@ -89,7 +89,9 @@ export default function About() {
             shrinks the wavelet coefficients (VisuShrink / SureShrink / BayesShrink) to pull a clean
             signal out of noise. A fourth <em>best-basis</em> tab runs the full wavelet{' '}
             <strong>packet</strong> tree and picks the Coifman–Wickerhauser minimum-cost basis, drawing
-            its adaptive time-frequency tiling.
+            its adaptive time-frequency tiling. A fifth <em>image</em> tab is JPEG-2000 in miniature:
+            the separable 2-D transform, a subband pyramid, and coefficient thresholding that
+            compresses a picture — keep 2%, still recognisable.
           </li>
           <li>
             <strong>Image (2-D)</strong> — the transform is separable, so an image FFT is just
@@ -442,7 +444,10 @@ export default function About() {
           subdivide down to its finest frequency resolution around a pure tone. The{' '}
           <strong>biorthogonal</strong> CDF 5/3 and 9/7 transforms (run by the lifting scheme) are
           checked to reconstruct exactly, to have additive MRA bands, and to send a constant to the
-          approximation band alone. Open the console to see all 119 pass.
+          approximation band alone. The <strong>2-D</strong> wavelet transform behind the image tab is
+          held to the same bar — exact reconstruction for orthogonal and biorthogonal wavelets, and a
+          compression PSNR that rises monotonically as more coefficients are kept. Open the console to
+          see all 120 pass.
         </p>
         <p className="pill">Built with React + TypeScript + Canvas 2D + Web Audio</p>
       </div>

@@ -32,6 +32,8 @@ import {
   spectralCentroid,
   type CostName,
 } from '../lib/wp'
+import { compress2, dwt2 } from '../lib/wavelet2d'
+import { proceduralImage, IMAGES, type ImageName } from '../lib/images'
 import { readHashParams, shareLink, readNum, readStr } from '../lib/urlState'
 
 const FS = 500
@@ -46,12 +48,13 @@ const VIOLET = '#a78bfa'
 const ROSE = '#fb7185'
 const AMBER = '#fbbf24'
 
-type Tab = 'scalogram' | 'mra' | 'denoise' | 'packets'
+type Tab = 'scalogram' | 'mra' | 'denoise' | 'packets' | 'compress2'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'scalogram', label: 'Scalogram (CWT)' },
   { id: 'mra', label: 'Multiresolution' },
   { id: 'denoise', label: 'Denoise' },
   { id: 'packets', label: 'Best basis' },
+  { id: 'compress2', label: 'Image 2-D' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -962,6 +965,228 @@ function PacketsTab() {
 }
 
 // ===========================================================================
+// Tab 5 — 2-D wavelet image compression
+// ===========================================================================
+
+const IMG_N = 256 // power of two
+
+// Draw a square n×n scalar field as a grayscale image, scaled into the canvas.
+function drawImageGray(
+  canvas: HTMLCanvasElement | null,
+  size: CanvasSize,
+  data: Float64Array,
+  n: number,
+  opts?: { log?: boolean; lo?: number; hi?: number; smooth?: boolean },
+) {
+  const ctx = prepareContext(canvas, size)
+  if (!ctx) return
+  const off = document.createElement('canvas')
+  off.width = n
+  off.height = n
+  const octx = off.getContext('2d')
+  if (!octx) return
+  const img = octx.createImageData(n, n)
+  const vals = opts?.log ? Float64Array.from(data, (v) => Math.log(1 + Math.abs(v))) : data
+  let mn = opts?.lo ?? Infinity
+  let mx = opts?.hi ?? -Infinity
+  if (opts?.lo === undefined || opts?.hi === undefined) {
+    for (let i = 0; i < vals.length; i++) {
+      if (vals[i] < mn) mn = vals[i]
+      if (vals[i] > mx) mx = vals[i]
+    }
+  }
+  const range = mx - mn || 1
+  for (let i = 0; i < n * n; i++) {
+    let t = (vals[i] - mn) / range
+    t = t < 0 ? 0 : t > 1 ? 1 : t
+    const g = Math.round(t * 255)
+    img.data[i * 4] = g
+    img.data[i * 4 + 1] = g
+    img.data[i * 4 + 2] = g
+    img.data[i * 4 + 3] = 255
+  }
+  octx.putImageData(img, 0, 0)
+  ctx.imageSmoothingEnabled = opts?.smooth ?? true
+  ctx.drawImage(off, 0, 0, n, n, 0, 0, size.width, size.height)
+}
+
+// Draw the wavelet coefficient pyramid, normalising each subband to its own
+// magnitude so the fine detail bands are visible next to the bright LL image.
+function drawPyramid(
+  canvas: HTMLCanvasElement | null,
+  size: CanvasSize,
+  coeffs: Float64Array,
+  n: number,
+  levels: number,
+) {
+  const ctx = prepareContext(canvas, size)
+  if (!ctx) return
+  const off = document.createElement('canvas')
+  off.width = n
+  off.height = n
+  const octx = off.getContext('2d')
+  if (!octx) return
+  const img = octx.createImageData(n, n)
+  const put = (x: number, y: number, g: number) => {
+    const i = (y * n + x) * 4
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = g
+    img.data[i + 3] = 255
+  }
+  // coarsest approximation (LL) — a downscaled image, normalised to its range
+  const ll = n >> levels
+  let mn = Infinity
+  let mx = -Infinity
+  for (let y = 0; y < ll; y++)
+    for (let x = 0; x < ll; x++) {
+      const v = coeffs[y * n + x]
+      if (v < mn) mn = v
+      if (v > mx) mx = v
+    }
+  const llRange = mx - mn || 1
+  for (let y = 0; y < ll; y++)
+    for (let x = 0; x < ll; x++) put(x, y, Math.round(((coeffs[y * n + x] - mn) / llRange) * 255))
+  // detail subbands at every scale, each normalised to its own peak
+  for (let j = 1; j <= levels; j++) {
+    const bs = n >> (j - 1)
+    const half = n >> j
+    const regions = [
+      [0, half, half, bs],
+      [half, bs, 0, half],
+      [half, bs, half, bs],
+    ]
+    for (const [y0, y1, x0, x1] of regions) {
+      let peak = 1e-9
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) peak = Math.max(peak, Math.abs(coeffs[y * n + x]))
+      for (let y = y0; y < y1; y++)
+        for (let x = x0; x < x1; x++) {
+          const a = Math.abs(coeffs[y * n + x]) / peak
+          put(x, y, Math.round(Math.sqrt(a) * 255))
+        }
+    }
+  }
+  octx.putImageData(img, 0, 0)
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(off, 0, 0, n, n, 0, 0, size.width, size.height)
+  // subband boundary lines
+  ctx.strokeStyle = 'rgba(94,234,212,0.3)'
+  ctx.lineWidth = 1
+  for (let j = 1; j <= levels; j++) {
+    const p = (n >> j) / n
+    ctx.beginPath()
+    ctx.moveTo(p * size.width, 0)
+    ctx.lineTo(p * size.width, (p * 2 * size.height))
+    ctx.moveTo(0, p * size.height)
+    ctx.lineTo(p * 2 * size.width, p * size.height)
+    ctx.stroke()
+  }
+}
+
+function Compress2Tab() {
+  const sp = useMemo(() => readHashParams(), [])
+  const [image, setImage] = useState<ImageName>(() =>
+    readStr<ImageName>(sp, 'img', 'portrait', IMAGES.map((i) => i.id)),
+  )
+  const [wavelet, setWavelet] = useState(() => readStr(sp, 'w', 'cdf97', ALL_WAVELETS.map((w) => w.id)))
+  const [levels, setLevels] = useState(() => readNum(sp, 'lv', 4))
+  const [keepPct, setKeepPct] = useState(() => readNum(sp, 'k', 5))
+  const [copied, setCopied] = useState(false)
+
+  const { ref: origRef, size: origSize } = useDprCanvas()
+  const { ref: coefRef, size: coefSize } = useDprCanvas()
+  const { ref: recRef, size: recSize } = useDprCanvas()
+
+  const bank = useMemo(() => getBank(wavelet), [wavelet])
+  const img = useMemo(() => proceduralImage(image, IMG_N), [image])
+  const result = useMemo(
+    () => compress2(img, IMG_N, bank, levels, keepPct / 100),
+    [img, bank, levels, keepPct],
+  )
+  // full transform (all coefficients) for the pyramid display
+  const coeffs = useMemo(() => dwt2(img, IMG_N, bank, levels), [img, bank, levels])
+
+  useEffect(() => {
+    drawImageGray(origRef.current, origSize, img, IMG_N, { lo: 0, hi: 1 })
+  }, [img, origSize, origRef])
+  useEffect(() => {
+    drawPyramid(coefRef.current, coefSize, coeffs, IMG_N, levels)
+  }, [coeffs, coefSize, coefRef, levels])
+  useEffect(() => {
+    drawImageGray(recRef.current, recSize, result.rec, IMG_N, { lo: 0, hi: 1 })
+  }, [result, recSize, recRef])
+
+  const onShare = () => {
+    shareLink('wavelet', { tab: 'compress2', img: image, w: wavelet, lv: levels, k: keepPct }).then((ok) => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1400)
+      }
+    })
+  }
+
+  const ratio = 100 / keepPct
+
+  return (
+    <div className="mode">
+      <div className="mode-side">
+        <Panel title="Image">
+          <Field label="Test image">
+            <Select value={image} options={IMAGES} onChange={setImage} />
+          </Field>
+          <Field label="Wavelet">
+            <Select value={wavelet} options={ALL_WAVELETS} onChange={setWavelet} />
+          </Field>
+          <Field label="Pyramid levels" value={String(levels)}>
+            <Slider min={1} max={6} step={1} value={levels} onChange={(v) => setLevels(Math.round(v))} />
+          </Field>
+        </Panel>
+        <Panel title="Compression">
+          <Field label="Coefficients kept" value={`${keepPct}%`}>
+            <Slider min={0.5} max={40} step={0.5} value={keepPct} onChange={setKeepPct} />
+          </Field>
+          <Readout
+            items={[
+              { label: 'Compression', value: `${ratio.toFixed(ratio < 10 ? 1 : 0)}×` },
+              { label: 'PSNR', value: `${result.psnr.toFixed(1)} dB` },
+              { label: 'Kept', value: `${(result.keptCount / 1000).toFixed(1)}k coef` },
+            ]}
+          />
+          <p className="hint">
+            A natural image packs its energy into a few big wavelet coefficients — keep those, drop the
+            rest, and the picture survives. Symmetric <strong>biorthogonal</strong> wavelets (CDF 9/7)
+            ring less at edges than orthogonal ones — try both at a low keep %.
+          </p>
+          <div className="btn-row">
+            <Button variant="primary" onClick={onShare}>
+              {copied ? 'Link copied ✓' : 'Copy link'}
+            </Button>
+          </div>
+        </Panel>
+      </div>
+      <div className="mode-main">
+        <p className="mode-intro">
+          This is <strong>JPEG-2000 in miniature</strong>. The image is transformed by the separable
+          2-D wavelet transform into a <em>pyramid</em> of subbands (middle), then all but the largest{' '}
+          <strong>{keepPct}%</strong> of coefficients are thrown away and the image is rebuilt from
+          what's left — a <strong>{ratio.toFixed(ratio < 10 ? 1 : 0)}×</strong> compression at{' '}
+          <strong>{result.psnr.toFixed(1)} dB</strong> PSNR.
+        </p>
+        <div className="img-grid">
+          <CanvasCard title="Original" aspect={1}>
+            <canvas ref={origRef} />
+          </CanvasCard>
+          <CanvasCard title="Wavelet pyramid" note="subbands · |coefficient|" aspect={1}>
+            <canvas ref={coefRef} />
+          </CanvasCard>
+          <CanvasCard title={`Reconstructed · ${keepPct}% kept`} note={`${result.psnr.toFixed(1)} dB`} aspect={1}>
+            <canvas ref={recRef} />
+          </CanvasCard>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ===========================================================================
 
 export default function Wavelet() {
   const sp = useMemo(() => readHashParams(), [])
@@ -975,6 +1200,7 @@ export default function Wavelet() {
       {tab === 'mra' && <MraTab />}
       {tab === 'denoise' && <DenoiseTab />}
       {tab === 'packets' && <PacketsTab />}
+      {tab === 'compress2' && <Compress2Tab />}
     </div>
   )
 }
