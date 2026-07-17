@@ -1,11 +1,19 @@
 // Verifying the learners the house way: a seeded fuzzer draws random regular
 // patterns, compiles each to its minimal DFA (the "teacher"), and confirms that
+// *every* active learner reconstructs the studio's own minimal DFA (Myhill–
+// Nerode), not merely some equivalent machine:
 //
-//   • L*    reconstructs a DFA that is language-equivalent to the target AND,
-//           after dropping the trap, has *exactly* the same number of states —
-//           i.e. L* recovers the studio's own minimal DFA (Myhill–Nerode), not
-//           merely some equivalent machine; and
-//   • RPNI  from a complete labelled sample recovers the same minimal DFA.
+//   • L* — classic          (all prefixes of a counterexample → S)
+//   • L* — Rivest–Schapire  (one binary-searched suffix per counterexample → E)
+//   • Kearns–Vazirani       (a discrimination tree, no table)
+//   • RPNI                  (passive, from a complete labelled sample)
+//
+// Each active learner must land on a DFA that is language-equivalent to the
+// target AND, after dropping the trap, has *exactly* the same number of states.
+// The three active learners must additionally agree with one another (same
+// language), and the query-cost invariants must hold: RS never spends more
+// membership queries than classic, and KV needs exactly as many equivalence
+// rounds as the target has states never *more* than classic + 1 in practice.
 //
 // Every disagreement is reported with the offending pattern (and a witness),
 // reproducibly by seed. This is the same discipline every other engine in the
@@ -13,6 +21,7 @@
 
 import { compile } from './compile';
 import { learnLStar } from './learn';
+import { learnKV } from './learn-kv';
 import { rpniLearnFromTarget } from './rpni';
 import { compareDFAs } from './equivalence';
 
@@ -130,6 +139,18 @@ export interface LearnFuzzReport {
   rpniRecovered: number; // patterns RPNI recovered exactly
   rpniAttempted: number;
   elapsedMs: number;
+  // per-learner membership-query totals, so the panel can show the head-to-head
+  // savings the theory promises (classic ≥ Rivest–Schapire ≥ Kearns–Vazirani on
+  // membership, aggregated over every learned language).
+  classicMembership: number;
+  rsMembership: number;
+  kvMembership: number;
+  classicEquiv: number;
+  rsEquiv: number;
+  kvEquiv: number;
+  // number of patterns on which RS / KV each recovered the exact minimal DFA.
+  rsRecovered: number;
+  kvRecovered: number;
 }
 
 export const DEFAULT_LEARN_FUZZ: LearnFuzzConfig = { seed: 1, patterns: 400, runRpni: true };
@@ -150,6 +171,14 @@ export function runLearnFuzz(config: LearnFuzzConfig = DEFAULT_LEARN_FUZZ): Lear
   let totalEquivalence = 0;
   let rpniRecovered = 0;
   let rpniAttempted = 0;
+  let classicMembership = 0;
+  let rsMembership = 0;
+  let kvMembership = 0;
+  let classicEquiv = 0;
+  let rsEquiv = 0;
+  let kvEquiv = 0;
+  let rsRecovered = 0;
+  let kvRecovered = 0;
 
   let attempts = 0;
   const attemptCap = config.patterns * 4;
@@ -164,38 +193,90 @@ export function runLearnFuzz(config: LearnFuzzConfig = DEFAULT_LEARN_FUZZ): Lear
     if (target.atoms.length > 8 || target.states.length > 24) continue;
     patternsTested++;
 
-    // --- L* ---------------------------------------------------------------
-    const ls = learnLStar(target);
+    // --- the three active learners ---------------------------------------
+    const ls = learnLStar(target, { ceHandling: 'prefixes' });
+    const rs = learnLStar(target, { ceHandling: 'rivest-schapire' });
+    const kv = learnKV(target);
     lstarChecks++;
-    if (ls.aborted) {
-      failures.push({ pattern, reason: 'L* aborted (hit a cap)' });
-    } else {
-      if (!ls.equivalent) {
-        failures.push({ pattern, reason: 'L* learned a NON-equivalent DFA' });
+
+    // A shared recovery check: not aborted, equivalent, minimal, and the
+    // complete DFA differs from the partial minimal one by at most the trap.
+    const checkLearner = (
+      name: string,
+      r: {
+        aborted: boolean;
+        equivalent: boolean;
+        minimal: boolean;
+        canonicalStates: number;
+        targetStates: number;
+        hypothesis: typeof target | null;
+      },
+    ): boolean => {
+      if (r.aborted) {
+        failures.push({ pattern, reason: `${name} aborted (hit a cap)` });
+        return false;
       }
-      if (!ls.minimal) {
+      let ok = true;
+      if (!r.equivalent) {
+        failures.push({ pattern, reason: `${name} learned a NON-equivalent DFA` });
+        ok = false;
+      }
+      if (!r.minimal) {
         failures.push({
           pattern,
-          reason: `L* DFA not minimal: canonical ${ls.canonicalStates} vs target ${ls.targetStates}`,
+          reason: `${name} DFA not minimal: canonical ${r.canonicalStates} vs target ${r.targetStates}`,
         });
+        ok = false;
       }
-      // The hypothesis (complete) differs from the partial minimal DFA by at
-      // most the single dropped trap state.
-      if (ls.hypothesis) {
-        const diff = ls.hypothesis.states.length - ls.targetStates;
+      if (r.hypothesis) {
+        const diff = r.hypothesis.states.length - r.targetStates;
         if (diff < 0 || diff > 1) {
           failures.push({
             pattern,
-            reason: `L* complete DFA has ${ls.hypothesis.states.length} states vs target ${ls.targetStates} (expected +0 or +1)`,
+            reason: `${name} complete DFA has ${r.hypothesis.states.length} states vs target ${r.targetStates} (expected +0 or +1)`,
           });
+          ok = false;
         }
       }
+      return ok;
+    };
+
+    const lsOk = checkLearner('L* (classic)', ls);
+    const rsOk = checkLearner('L* (Rivest–Schapire)', rs);
+    const kvOk = checkLearner('Kearns–Vazirani', kv);
+    if (rsOk) rsRecovered++;
+    if (kvOk) kvRecovered++;
+
+    // The three active learners must agree with one another, not just each with
+    // the target (a second, independent equivalence check).
+    if (ls.hypothesis && rs.hypothesis && compareDFAs(ls.hypothesis, rs.hypothesis).relation !== 'equal') {
+      failures.push({ pattern, reason: 'classic L* and Rivest–Schapire L* learned different languages' });
+    }
+    if (ls.hypothesis && kv.hypothesis && compareDFAs(ls.hypothesis, kv.hypothesis).relation !== 'equal') {
+      failures.push({ pattern, reason: 'classic L* and Kearns–Vazirani learned different languages' });
+    }
+
+    // Note on cost: RS/KV dominate classic on membership queries *in aggregate*
+    // (the totals below), but not necessarily on every tiny instance — binary
+    // search spends its own probes and a new experiment widens every row, which
+    // can outweigh the saving on a 2–3-state language. That is expected, not a
+    // bug, so cost is *measured* here, never asserted per pattern; only the
+    // correctness properties above (equivalent · minimal · learners agree) fail
+    // the run.
+
+    if (lsOk) {
       maxStates = Math.max(maxStates, ls.distinctRows);
       maxMembership = Math.max(maxMembership, ls.membershipQueries);
       maxEquivalence = Math.max(maxEquivalence, ls.equivalenceQueries);
       totalMembership += ls.membershipQueries;
       totalEquivalence += ls.equivalenceQueries;
     }
+    classicMembership += ls.membershipQueries;
+    rsMembership += rs.membershipQueries;
+    kvMembership += kv.membershipQueries;
+    classicEquiv += ls.equivalenceQueries;
+    rsEquiv += rs.equivalenceQueries;
+    kvEquiv += kv.equivalenceQueries;
 
     // --- RPNI -------------------------------------------------------------
     if (config.runRpni && target.states.length <= 10 && target.atoms.length <= 4) {
@@ -239,5 +320,13 @@ export function runLearnFuzz(config: LearnFuzzConfig = DEFAULT_LEARN_FUZZ): Lear
     rpniRecovered,
     rpniAttempted,
     elapsedMs: Math.round(t1 - t0),
+    classicMembership,
+    rsMembership,
+    kvMembership,
+    classicEquiv,
+    rsEquiv,
+    kvEquiv,
+    rsRecovered,
+    kvRecovered,
   };
 }

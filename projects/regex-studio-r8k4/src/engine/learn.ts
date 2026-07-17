@@ -62,9 +62,19 @@ export interface Round {
   counterexample: string | null;
 }
 
+// How a counterexample is folded back into the table.
+//   'prefixes'        — classic Angluin: add *every* prefix of the counterexample
+//                       to S (rows grow; |S| can jump by |ce| per round).
+//   'rivest-schapire' — Rivest & Schapire (1993): binary-search the counterexample
+//                       for the *single* distinguishing suffix and add it to E
+//                       (columns grow by one; |S| grows by exactly one per round,
+//                       via re-closing). Fewer, cheaper membership queries.
+export type CeHandling = 'prefixes' | 'rivest-schapire';
+
 export interface LStarResult {
   ok: boolean; // learning completed (table closed/consistent, hypothesis accepted)
   aborted: boolean; // hit a safety cap
+  ceHandling: CeHandling;
   alphabet: Letter[];
   hypothesis: DFA | null; // the learned (complete) DFA
   equivalent: boolean; // learned ≡ target (the gold-standard check)
@@ -79,6 +89,11 @@ export interface LStarResult {
   finalS: number; // |S| at termination
   finalE: number; // |E| at termination
   distinctRows: number; // number of states in the hypothesis
+  // Rivest–Schapire instrumentation (0 under 'prefixes'): the count of suffixes
+  // added to E by binary-search counterexample analysis, and the binary-search
+  // membership probes those searches spent.
+  suffixesFromCe: number;
+  ceSearchProbes: number;
 }
 
 const DEFAULT_MAX_STATES = 120; // cap on distinct table rows (hypothesis states)
@@ -89,6 +104,7 @@ export interface LearnOptions {
   maxStates?: number;
   maxAlphabet?: number;
   maxEqRounds?: number;
+  ceHandling?: CeHandling;
 }
 
 // Build the learning alphabet from the target DFA's atoms.
@@ -120,6 +136,7 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
   const maxStates = opts.maxStates ?? DEFAULT_MAX_STATES;
   const maxAlphabet = opts.maxAlphabet ?? DEFAULT_MAX_ALPHABET;
   const maxEqRounds = opts.maxEqRounds ?? DEFAULT_MAX_EQ_ROUNDS;
+  const ceHandling: CeHandling = opts.ceHandling ?? 'prefixes';
 
   const alphabet = learnAlphabet(target);
   const A = alphabet.length;
@@ -130,6 +147,7 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
     return {
       ok: false,
       aborted: true,
+      ceHandling,
       alphabet,
       hypothesis: null,
       equivalent: false,
@@ -149,6 +167,8 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
       finalS: 0,
       finalE: 0,
       distinctRows: 0,
+      suffixesFromCe: 0,
+      ceSearchProbes: 0,
     };
   }
 
@@ -251,8 +271,10 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
     }
   };
 
-  // Read a hypothesis DFA off the (closed, consistent) table.
-  const buildHypothesis = (): DFA => {
+  // Read a hypothesis DFA off the (closed, consistent) table. Also returns the
+  // access string chosen for each state id — Rivest–Schapire needs to name the
+  // hypothesis state reached by a counterexample prefix.
+  const buildHypothesis = (): { dfa: DFA; accessById: Word[] } => {
     const keyToId = new Map<string, number>();
     const accessByKey = new Map<string, Word>();
     const order: string[] = [];
@@ -264,6 +286,7 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
         accessByKey.set(k, s);
       }
     }
+    const accessById: Word[] = order.map((k) => accessByKey.get(k)!);
     const states: DFAState[] = order.map((k, id) => ({
       id,
       nfaStates: [],
@@ -289,11 +312,14 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
       set: CharSet.union(e.sets),
     }));
     return {
-      start: keyToId.get(rowKey([]))!,
-      states,
-      transitions,
-      atoms: target.atoms,
-      table,
+      dfa: {
+        start: keyToId.get(rowKey([]))!,
+        states,
+        transitions,
+        atoms: target.atoms,
+        table,
+      },
+      accessById,
     };
   };
 
@@ -314,6 +340,56 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
     return { E: E.map((e) => wordToStr(e, alphabet)), topRows: top, bottomRows: bottom };
   };
 
+  // Rivest–Schapire counterexample analysis. Given a counterexample word `ce`
+  // over which hypothesis and target disagree, binary-search for the *single*
+  // distinguishing suffix and add it to E (instead of dumping every prefix into
+  // S). The idea: define γ(i) = member( access_H(ce[:i]) · ce[i:] ), where
+  // access_H names the hypothesis state reached by the i-letter prefix. γ(0) =
+  // member(ce) = the target's answer, and γ(m) = the hypothesis' answer — which
+  // differ, so *some* index i has γ(i) ≠ γ(i+1). At that breakpoint the suffix
+  // v = ce[i+1:] distinguishes two rows the table currently equates, so adding v
+  // to E splits them — exactly one new state per counterexample, in O(log m)
+  // probes rather than O(m). Returns the number of membership probes it spent.
+  const isE = (w: Word) => E.some((e) => keyOf(e) === keyOf(w));
+  let suffixesFromCe = 0;
+  let ceSearchProbes = 0;
+  const rivestSchapire = (ce: Word, hyp: DFA, accessById: Word[]): boolean => {
+    const m = ce.length;
+    if (m === 0) return false; // ε is never a counterexample (start agrees on ε)
+    const stateAfter = (len: number): number => {
+      let s = hyp.start;
+      for (let i = 0; i < len && s >= 0; i++) s = hyp.table[s][ce[i]];
+      return s;
+    };
+    const gamma = (i: number): boolean => {
+      const st = stateAfter(i);
+      const access = st >= 0 ? accessById[st] : []; // complete DFA: st is never -1
+      ceSearchProbes++;
+      return member(access.concat(ce.slice(i)));
+    };
+    // Binary search maintaining γ(lo) = γ(0) ≠ γ(hi).
+    let lo = 0;
+    let hi = m;
+    const gLo = gamma(0);
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (gamma(mid) === gLo) lo = mid;
+      else hi = mid;
+    }
+    const suffix = ce.slice(hi); // = ce[lo+1:]
+    if (isE(suffix)) return false; // guard: should be new by construction
+    E.push(suffix);
+    suffixesFromCe++;
+    log.push({
+      kind: 'consistent',
+      detail: `Rivest–Schapire: the split is at position ${lo} of "${wordToStr(ce, alphabet)}" — added the single suffix ${wordToStr(
+        suffix,
+        alphabet,
+      )} to E (not its ${m} prefixes to S)`,
+    });
+    return true;
+  };
+
   // --- the main learning loop --------------------------------------------
   let hypothesis: DFA | null = null;
   let aborted = false;
@@ -325,7 +401,8 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
       log.push({ kind: 'abort', detail: `table exceeded ${maxStates} states — stopping (pattern too large to learn live)` });
       break;
     }
-    hypothesis = buildHypothesis();
+    const built = buildHypothesis();
+    hypothesis = built.dfa;
     log.push({
       kind: 'conjecture',
       detail: `conjecture #${round + 1}: a ${hypothesis.states.length}-state DFA (|S|=${S.length}, |E|=${E.length})`,
@@ -350,12 +427,26 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
     const ceWord = witness.codes.map((c) => atomIndexFor(target.atoms, c));
     const ceStr = wordToStr(ceWord, alphabet);
     rounds.push({ index: round, hypStates: hypothesis.states.length, membershipSoFar: membershipQueries, counterexample: ceStr });
-    log.push({
-      kind: 'counterexample',
-      detail: `equivalence query #${equivalenceQueries}: rejected — counterexample "${ceStr}" (the two disagree here); adding its prefixes to S`,
-    });
-    // Classic Angluin: add every prefix of the counterexample to S.
-    for (let i = 1; i <= ceWord.length; i++) addToS(ceWord.slice(0, i));
+
+    let handled = false;
+    if (ceHandling === 'rivest-schapire') {
+      handled = rivestSchapire(ceWord, hypothesis, built.accessById);
+      if (handled) {
+        log.push({
+          kind: 'counterexample',
+          detail: `equivalence query #${equivalenceQueries}: rejected — counterexample "${ceStr}"; analysed by binary search`,
+        });
+      }
+    }
+    if (!handled) {
+      // Classic Angluin (also the RS fallback if the suffix was already present):
+      // add every prefix of the counterexample to S.
+      log.push({
+        kind: 'counterexample',
+        detail: `equivalence query #${equivalenceQueries}: rejected — counterexample "${ceStr}" (the two disagree here); adding its prefixes to S`,
+      });
+      for (let i = 1; i <= ceWord.length; i++) addToS(ceWord.slice(0, i));
+    }
 
     round++;
     if (round > maxEqRounds) {
@@ -380,6 +471,7 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
   return {
     ok: !aborted && equivalent,
     aborted,
+    ceHandling,
     alphabet,
     hypothesis,
     equivalent,
@@ -394,5 +486,7 @@ export function learnLStar(target: DFA, opts: LearnOptions = {}): LStarResult {
     finalS: S.length,
     finalE: E.length,
     distinctRows: hypothesis ? hypothesis.states.length : 0,
+    suffixesFromCe,
+    ceSearchProbes,
   };
 }
