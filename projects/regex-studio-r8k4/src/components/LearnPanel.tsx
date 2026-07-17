@@ -3,6 +3,7 @@ import type { DFA } from '../engine/dfa';
 import { learnLStar, type LStarResult } from '../engine/learn';
 import { learnKV, type KVResult, type DTSnapshotNode } from '../engine/learn-kv';
 import { runLearnRace, type RaceReport } from '../engine/learn-race';
+import { runScalingStudy, type ScaleStudy } from '../engine/learn-scaling';
 import { rpniLearnFromTarget } from '../engine/rpni';
 import { DEFAULT_LEARN_FUZZ, runLearnFuzz, type LearnFuzzReport } from '../engine/learn-verify';
 import { dfaToGraph } from '../engine/graphdata';
@@ -29,6 +30,7 @@ export function LearnPanel({ dfa, notice }: { dfa: DFA | null; notice: string | 
   const rs = useMemo(() => (dfa ? learnLStar(dfa, { ceHandling: 'rivest-schapire' }) : null), [dfa]);
   const kv = useMemo(() => (dfa ? learnKV(dfa) : null), [dfa]);
   const race = useMemo(() => (dfa ? runLearnRace(dfa) : null), [dfa]);
+  const scaling = useMemo(() => runScalingStudy(), []);
   const rpni = useMemo(() => (dfa ? rpniLearnFromTarget(dfa) : null), [dfa]);
 
   const shownHyp = active === 'classic' ? classic?.hypothesis : active === 'rs' ? rs?.hypothesis : kv?.hypothesis;
@@ -96,6 +98,9 @@ export function LearnPanel({ dfa, notice }: { dfa: DFA | null; notice: string | 
 
       {/* ---------------- the race ---------------- */}
       {race && <RaceBoard report={race} />}
+
+      {/* ---------------- the scaling study ---------------- */}
+      {scaling.points.length >= 2 && <ScalingSection study={scaling} />}
 
       {/* ---------------- RPNI (passive) ---------------- */}
       <h3 className="lang-h3">RPNI — passive learning from labelled data</h3>
@@ -399,6 +404,147 @@ function RaceBoard({ report }: { report: RaceReport }) {
       </p>
     </>
   );
+}
+
+// ---- the scaling study (query cost vs an exponentially-growing target) -----
+const SERIES = [
+  { key: 'classic', name: 'L* classic', color: '#f0a868' },
+  { key: 'rs', name: 'L* Rivest–Schapire', color: '#5cc8e6' },
+  { key: 'kv', name: 'Kearns–Vazirani', color: '#c084fc' },
+] as const;
+
+function ScalingSection({ study }: { study: ScaleStudy }) {
+  const pts = study.points;
+  const xLabels = pts.map((p) => String(p.targetStates));
+  const mem = SERIES.map((s) => ({
+    ...s,
+    values: pts.map((p) => (s.key === 'classic' ? p.classicMem : s.key === 'rs' ? p.rsMem : p.kvMem)),
+  }));
+  const eq = SERIES.map((s) => ({
+    ...s,
+    values: pts.map((p) => (s.key === 'classic' ? p.classicEq : s.key === 'rs' ? p.rsEq : p.kvEq)),
+  }));
+  return (
+    <>
+      <h3 className="lang-h3">Scaling — query cost as the target doubles</h3>
+      <p className="muted-note">
+        The same three learners on a family whose minimal DFA <strong>doubles</strong> at every step:{' '}
+        <code>(a|b)*a(a|b){'{k}'}</code> — the words whose <em>(k+1)-th symbol from the end</em> is an <code>a</code>,
+        with exactly <strong>2^(k+1)</strong> states. The lesson is the <strong>tradeoff</strong>, honestly: this studio's
+        teacher hands back the <em>shortest</em> counterexample, the worst case for Rivest–Schapire's binary search — so
+        here classic and RS spend nearly the same <strong>membership</strong> queries, while Kearns–Vazirani asks{' '}
+        <strong>one equivalence query per state</strong> (2^(k+1) of them) and pays a little more membership for it. That
+        is the mirror image of KV's win on typical/random languages (the aggregate table below) — <em>there is no
+        universally cheapest learner</em>; it depends on the language and on which query is the expensive one.
+      </p>
+      <div className="learn-charts">
+        <MiniLineChart title="membership queries" xLabels={xLabels} series={mem} xTitle="minimal-DFA states" />
+        <MiniLineChart title="equivalence queries" xLabels={xLabels} series={eq} xTitle="minimal-DFA states" />
+      </div>
+      <div className="learn-legend">
+        {SERIES.map((s) => (
+          <span key={s.key} className="learn-legend-item">
+            <span className="learn-legend-swatch" style={{ background: s.color }} />
+            {s.name}
+          </span>
+        ))}
+      </div>
+      {!study.ok && (
+        <p className="muted-note learn-fail-reason">A learner failed to recover the minimal DFA on this family.</p>
+      )}
+    </>
+  );
+}
+
+function MiniLineChart({
+  title,
+  xLabels,
+  series,
+  xTitle,
+}: {
+  title: string;
+  xLabels: string[];
+  series: readonly { key: string; name: string; color: string; values: number[] }[];
+  xTitle: string;
+}) {
+  const W = 340;
+  const H = 210;
+  const padL = 44;
+  const padR = 14;
+  const padT = 26;
+  const padB = 36;
+  const n = xLabels.length;
+  const maxY = Math.max(1, ...series.flatMap((s) => s.values));
+  // A rounded, human tick ceiling.
+  const niceMax = niceCeil(maxY);
+  const xAt = (i: number) => padL + (n <= 1 ? 0 : (i * (W - padL - padR)) / (n - 1));
+  const yAt = (v: number) => padT + (1 - v / niceMax) * (H - padT - padB);
+  const ticks = 4;
+  return (
+    <figure className="learn-chart">
+      <figcaption>{title}</figcaption>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${title} vs ${xTitle}`} preserveAspectRatio="xMidYMid meet">
+        {/* y gridlines + labels */}
+        {Array.from({ length: ticks + 1 }, (_, t) => {
+          const v = (niceMax * t) / ticks;
+          const y = yAt(v);
+          return (
+            <g key={t}>
+              <line x1={padL} y1={y} x2={W - padR} y2={y} className="chart-grid" />
+              <text x={padL - 6} y={y + 3} className="chart-ytick" textAnchor="end">
+                {fmt(v)}
+              </text>
+            </g>
+          );
+        })}
+        {/* x labels */}
+        {xLabels.map((lab, i) => (
+          <text key={i} x={xAt(i)} y={H - padB + 16} className="chart-xtick" textAnchor="middle">
+            {lab}
+          </text>
+        ))}
+        <text x={(padL + W - padR) / 2} y={H - 4} className="chart-axis-title" textAnchor="middle">
+          {xTitle}
+        </text>
+        {/* series */}
+        {series.map((s) => (
+          <g key={s.key}>
+            <polyline
+              fill="none"
+              stroke={s.color}
+              strokeWidth={2}
+              points={s.values.map((v, i) => `${xAt(i)},${yAt(v)}`).join(' ')}
+            />
+            {s.values.map((v, i) => (
+              <circle key={i} cx={xAt(i)} cy={yAt(v)} r={2.6} fill={s.color} />
+            ))}
+            {/* end-label */}
+            <text
+              x={xAt(n - 1) - 2}
+              y={yAt(s.values[n - 1]) - 5}
+              className="chart-endlab"
+              fill={s.color}
+              textAnchor="end"
+            >
+              {s.values[n - 1]}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </figure>
+  );
+}
+
+function niceCeil(v: number): number {
+  if (v <= 0) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const norm = v / mag;
+  const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return step * mag;
+}
+function fmt(v: number): string {
+  if (v >= 1000) return `${Math.round(v / 100) / 10}k`;
+  return String(Math.round(v));
 }
 
 function LearnedGraph({ layout, targetStates }: { layout: ReturnType<typeof layoutGraph>; targetStates: number }) {

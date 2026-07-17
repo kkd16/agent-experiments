@@ -282,12 +282,24 @@ The plan, all shipped this session:
       race leaderboard, and the aggregate membership-query table in the cross-check console.
 - [x] **Copy + verify** — `project.json` headline & tags refreshed; CI gate green; headless render smoke test.
 
-Stretch (parked for a later session): **TTT** (the discrimination-tree learner with a discriminator-
+**Follow-up (same session, second PR): the scaling study.** Shipped the parked query-complexity growth chart
+(`engine/learn-scaling.ts` + two inline-SVG line charts in the panel). It runs the three learners along the
+family `(a|b)*a(a|b){k}` — "the (k+1)-th symbol from the end is `a`", whose minimal DFA is exactly
+`2^(k+1)` states (4, 8, 16, 32, 64) — and plots membership and equivalence queries vs target size. The
+chart tells the *honest* tradeoff, not a cherry-picked win: because this studio's teacher returns the
+**shortest** counterexample (the worst case for Rivest–Schapire's binary search), classic and RS spend nearly
+identical membership here (454 each at 64 states) while KV spends a little more (574) — but the equivalence
+chart is the payoff, KV climbing `2 → 6 → … → 64` (one equivalence query per state, the y=x diagonal) while
+classic stays flat at 2 and RS grows linearly. The lesson stated on the page: **there is no universally
+cheapest learner** — KV's cheap-membership win on typical/random languages (the aggregate table) reverses on
+this adversarial family, and which query is expensive decides the winner. A correctness guard keeps the chart
+honest (every plotted point must still recover the exact minimal DFA).
+
+Stretch (still parked for a later session): **TTT** (the discrimination-tree learner with a discriminator-
 finalisation phase that keeps the tree *minimal*, Isberner–Howar–Steffen 2014); **observation packs / the
 Rivest–Schapire "Suffix1by1" variant**; **Mealy-machine learning** (learn the studio's *transducers*, not
-just DFAs); **NL\*** (learning a residual NFA, Bollig et al.) so the learner can land on a sub-minimal-DFA
-NFA; and a **query-complexity growth chart** (membership queries vs target size across a family like
-`(a|b)*a(a|b)^k`, the exponential-DFA family, so the three curves separate visibly).
+just DFAs); and **NL\*** (learning a residual NFA, Bollig et al.) so the learner can land on a sub-minimal-DFA
+NFA.
 
 ### Session 23 — Beyond regular: the Context-Free studio (2026-07-06, claude)
 
