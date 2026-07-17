@@ -21,6 +21,7 @@ import { distance, len, scale, sub, clamp } from './engine/vec3'
 import { decodeHdr, downsampleEquirect, encodeHdr } from './engine/hdr'
 import type { HdrImage } from './engine/hdr'
 import { decodePfm, encodePfm, sniffHdrFormat } from './engine/pfm'
+import { decodeExr, encodeExr } from './engine/exr'
 
 // (25.0) The largest equirectangular width kept for a loaded HDRI. Real panoramas
 // ship at 2K–8K; the importance sampler and the postMessage payload both scale
@@ -385,18 +386,26 @@ export default function App() {
     a.click()
   }
 
-  // (25.0/26.0) Decode a dropped/loaded HDR panorama — Radiance `.hdr` (RGBE) or a
-  // Portable FloatMap `.pfm` — downsample it for the sampler, stash the panorama in
-  // the ref, build a preview thumbnail, and bump the control state (which
-  // re-triggers the render). Any decode failure surfaces as a message in the panel.
+  // (25.0/26.0/27.0) Decode a dropped/loaded HDR panorama — Radiance `.hdr` (RGBE),
+  // a Portable FloatMap `.pfm`, or an OpenEXR `.exr` — downsample it for the
+  // sampler, stash the panorama in the ref, build a preview thumbnail, and bump the
+  // control state (which re-triggers the render). Any decode failure surfaces as a
+  // message in the panel.
   const loadHdri = useCallback(async (file: File) => {
     try {
       const buf = new Uint8Array(await file.arrayBuffer())
       // Sniff by magic bytes, falling back to the file extension.
       const fmt =
-        sniffHdrFormat(buf) ?? (/\.pfm$/i.test(file.name) ? 'pfm' : /\.(hdr|pic)$/i.test(file.name) ? 'hdr' : null)
-      if (!fmt) throw new Error('unrecognised format (expected a Radiance .hdr or a .pfm)')
-      const full = fmt === 'pfm' ? decodePfm(buf) : decodeHdr(buf)
+        sniffHdrFormat(buf) ??
+        (/\.pfm$/i.test(file.name)
+          ? 'pfm'
+          : /\.exr$/i.test(file.name)
+            ? 'exr'
+            : /\.(hdr|pic)$/i.test(file.name)
+              ? 'hdr'
+              : null)
+      if (!fmt) throw new Error('unrecognised format (expected a Radiance .hdr, a .pfm, or an .exr)')
+      const full = fmt === 'pfm' ? decodePfm(buf) : fmt === 'exr' ? decodeExr(buf) : decodeHdr(buf)
       const img = downsampleEquirect(full, MAX_HDRI_WIDTH)
       customHdriRef.current = { width: img.width, height: img.height, pixels: img.pixels }
       const dims =
@@ -445,6 +454,18 @@ export default function App() {
     const { pixels, width, height } = r.hdrImage()
     const bytes = encodePfm(pixels, width, height)
     downloadBytes(bytes, `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.pfm`, 'image/x-pfm')
+  }
+
+  // (27.0) Export the linear HDR frame as an OpenEXR — the film-industry standard.
+  // ZIP-compressed FLOAT: lossless (bit-exact decode) *and* compressed, the format
+  // Nuke / After Effects / Blender read natively. Built by the same from-scratch
+  // codec the suite round-trips.
+  const onSaveExr = () => {
+    const r = rendererRef.current
+    if (!r) return
+    const { pixels, width, height } = r.hdrImage()
+    const bytes = encodeExr(pixels, width, height, { compression: 'zip', channelType: 'float' })
+    downloadBytes(bytes, `lumen-${ctrl.sceneId}-${stats?.samples ?? 0}spp.exr`, 'image/x-exr')
   }
 
   // ---- Orbit camera interaction ----
@@ -537,6 +558,7 @@ export default function App() {
               onClearHdri={onClearHdri}
               onSaveHdr={onSaveHdr}
               onSavePfm={onSavePfm}
+              onSaveExr={onSaveExr}
             />
           </aside>
           <div className="viewport">
@@ -554,8 +576,10 @@ export default function App() {
                 onPointerUp={onPointerUp}
                 onWheel={onWheel}
               />
-              {showHint && <div className="hint">drag to orbit · scroll to dolly · drop an .hdr to relight</div>}
-              {hdriDragOver && <div className="drop-overlay">⤒ Drop a Radiance .hdr to light the scene</div>}
+              {showHint && (
+                <div className="hint">drag to orbit · scroll to dolly · drop an .hdr / .pfm / .exr to relight</div>
+              )}
+              {hdriDragOver && <div className="drop-overlay">⤒ Drop a .hdr / .pfm / .exr to light the scene</div>}
             </div>
             <Stats stats={stats} />
           </div>
@@ -573,7 +597,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled, drop your own .hdr / .pfm) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
+        Unidirectional, bidirectional, Metropolis (PSSMLT) & photon-mapping (SPPM) light transport · SAH BVH · smooth meshes · Preetham sky + sun NEE · HDRI image-based lighting (importance sampled, drop your own .hdr / .pfm / .exr) · GGX microfacets · MIS · À-Trous denoise — all in TypeScript on the CPU.
       </footer>
     </div>
   )

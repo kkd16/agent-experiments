@@ -118,9 +118,12 @@ export function encodePfm(pixels: Float32Array, width: number, height: number, l
 }
 
 // Sniff a file's format from its leading bytes: Radiance `.hdr` opens with the
-// `#?` magic, a PFM with `PF`/`Pf`. Returns 'hdr', 'pfm', or null (unknown).
-export function sniffHdrFormat(bytes: Uint8Array): 'hdr' | 'pfm' | null {
+// `#?` magic, a PFM with `PF`/`Pf`, an OpenEXR with the 4-byte 0x76 2f 31 01
+// magic. Returns 'hdr', 'pfm', 'exr', or null (unknown).
+export function sniffHdrFormat(bytes: Uint8Array): 'hdr' | 'pfm' | 'exr' | null {
   if (bytes.length >= 2 && bytes[0] === 0x23 && bytes[1] === 0x3f) return 'hdr' // "#?"
   if (bytes.length >= 2 && bytes[0] === 0x50 && (bytes[1] === 0x46 || bytes[1] === 0x66)) return 'pfm' // "PF"/"Pf"
+  if (bytes.length >= 4 && bytes[0] === 0x76 && bytes[1] === 0x2f && bytes[2] === 0x31 && bytes[3] === 0x01)
+    return 'exr' // OpenEXR magic
   return null
 }
