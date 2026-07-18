@@ -20,9 +20,10 @@ import ContrastiveLab from './components/contrastive/ContrastiveLab';
 import AlphaZeroLab from './components/az/AlphaZeroLab';
 import DQNLab from './components/dqn/DQNLab';
 import SnnLab from './components/snn/SnnLab';
+import NtmLab from './components/ntm/NtmLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
+type Tab = 'playground' | 'vision' | 'transformer' | 'recurrent' | 'ssm' | 'memory' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
 
 // Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #q= DQN, #p= AlphaZero, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA, #y= spiking).
 function initialTab(): Tab {
@@ -30,6 +31,7 @@ function initialTab(): Tab {
     if (/[#&]y=/.test(location.hash)) return 'spiking';
     if (/[#&]m=/.test(location.hash)) return 'morphogenesis';
     if (/[#&]x=/.test(location.hash)) return 'moe';
+    if (/[#&]b=/.test(location.hash)) return 'memory';
     if (/[#&]s=/.test(location.hash)) return 'ssm';
     if (/[#&]c=/.test(location.hash)) return 'recurrent';
     if (/[#&]t=/.test(location.hash)) return 'transformer';
@@ -81,6 +83,9 @@ export default function App() {
             </button>
             <button className={tab === 'ssm' ? 'on' : ''} onClick={() => setTab('ssm')}>
               State-Space · Mamba
+            </button>
+            <button className={tab === 'memory' ? 'on' : ''} onClick={() => setTab('memory')}>
+              Memory · NTM
             </button>
             <button className={tab === 'moe' ? 'on' : ''} onClick={() => setTab('moe')}>
               Sparse · MoE
@@ -147,6 +152,8 @@ export default function App() {
         <RnnLab />
       ) : tab === 'ssm' ? (
         <SsmLab />
+      ) : tab === 'memory' ? (
+        <NtmLab />
       ) : tab === 'moe' ? (
         <MoELab />
       ) : tab === 'generative' ? (
