@@ -877,6 +877,80 @@ redloop:
         ecall
 `;
 
+const PROFILE_DEMO = `# ── Profiler showcase ──────────────────────────────────────────────
+# A layered workload built to light up every panel of the Profiler tab:
+#
+#   main → run → { heavy  (a tight arithmetic loop = the hot self-time leaf),
+#                  tally → square (a helper called in a loop) }
+#
+# Open the **Profiler** tab and press Run: the flamegraph draws the call
+# hierarchy (heavy is a wide, hot frame; square shows up as thin repeated
+# frames under tally), the function table ranks self vs. inclusive cost, and
+# the annotated listing heat-maps the hot loop. It prints a checksum (4324).
+.text
+main:
+        addi sp, sp, -4
+        sw   ra, 0(sp)
+        call run                 # a0 = run()
+        li   a7, 1
+        ecall                    # print the checksum
+        li   a7, 10
+        ecall
+
+# run(): orchestrates the two phases and sums their results
+run:
+        addi sp, sp, -8
+        sw   ra, 0(sp)
+        sw   s0, 4(sp)
+        call heavy               # the hot arithmetic loop
+        mv   s0, a0
+        call tally               # Σ square(i)
+        add  a0, a0, s0
+        lw   ra, 0(sp)
+        lw   s0, 4(sp)
+        addi sp, sp, 8
+        ret
+
+# heavy(): a tight loop — most of the program's self-time lives here
+heavy:
+        li   t0, 0
+        li   a0, 0
+        li   t1, 3000
+hloop:
+        add  a0, a0, t0
+        xor  a0, a0, t0
+        addi t0, t0, 1
+        blt  t0, t1, hloop
+        ret
+
+# tally(): sum of square(i) for i in [0, 24)
+tally:
+        addi sp, sp, -12
+        sw   ra, 0(sp)
+        sw   s0, 4(sp)
+        sw   s1, 8(sp)
+        li   s0, 0
+        li   s1, 0
+        li   t2, 24
+tloop:
+        mv   a0, s0
+        call square              # square(i)
+        add  s1, s1, a0
+        addi s0, s0, 1
+        blt  s0, t2, tloop
+        mv   a0, s1
+        lw   ra, 0(sp)
+        lw   s0, 4(sp)
+        lw   s1, 8(sp)
+        addi sp, sp, 12
+        ret
+
+# square(x) -> x*x
+square:
+        mul  a0, a0, a0
+        ret
+`;
+
 export const EXAMPLES: readonly Example[] = [
   { id: 'hello', title: 'Hello, RISC-V', blurb: 'print_string syscall basics', focus: 'console', code: HELLO },
   { id: 'bitmanip', title: 'Bit manipulation (Zb)', blurb: 'Zba/Zbb/Zbc/Zbs: cpop, clz, rev8, ror, clmul', focus: 'console', code: BITMANIP },
@@ -885,6 +959,7 @@ export const EXAMPLES: readonly Example[] = [
   { id: 'rvc', title: 'Compressed (RV32C)', blurb: 'c.* 16-bit ops + .option rvc auto-compress', focus: 'console', code: RVC },
   { id: 'timer', title: 'Timer interrupts', blurb: 'CLINT timer + mtvec/mret machine-mode trap', focus: 'console', code: TIMER_IRQ },
   { id: 'fib', title: 'Fibonacci', blurb: 'loops, registers, print_int', focus: 'console', code: FIB },
+  { id: 'profile-demo', title: 'Profiler showcase', blurb: 'a layered call hierarchy → a nested flamegraph & hot-loop heatmap', focus: 'console', code: PROFILE_DEMO },
   { id: 'gcd', title: 'GCD (Euclid)', blurb: 'call/ret + rem (RV32M)', focus: 'console', code: GCD },
   { id: 'bubble', title: 'Bubble sort', blurb: 'arrays, loads/stores, nested loops', focus: 'console', code: BUBBLE },
   { id: 'reverse', title: 'String reverse', blurb: 'byte loads, pointers, branches', focus: 'console', code: REVERSE },
