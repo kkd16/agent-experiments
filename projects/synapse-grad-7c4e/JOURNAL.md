@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Twenty labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Twenty-one labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -165,8 +165,22 @@ gradient is hand-derived and the tape is hand-rolled). Twenty labs share the one
   raster** — the whole population firing, neurons × time — beside membrane-potential traces, a
   per-class readout race, the surrogate-gradient plot itself, and a firing-rate/sparsity **energy**
   panel (it hits ~100% held-out accuracy at ~86% sparsity — the event-driven efficiency story).
+- **Memory · NTM** — a from-scratch **Neural Turing Machine** (Graves, Wayne & Danihelka, 2014): a
+  neural **controller** (LSTM or feed-forward) coupled to an external, addressable **memory matrix**
+  through fully differentiable read/write **heads**, so the *whole machine* is one autograd graph and
+  learns an **algorithm** by gradient descent rather than a function. Addressing is the classic NTM
+  pipeline built from three new hand-derived ops — **content lookup** by cosine similarity (sharpened
+  by a key strength β), an **interpolation** gate with the previous focus, a **circular-convolution
+  location shift**, and a **sharpening** exponent γ — feeding an **erase/add write**
+  (`M ⊙ (1 − w eᵀ) + w aᵀ`) and a `wᵀM` **read**. It learns the paper's algorithmic tasks — **Copy**,
+  **Repeat-Copy**, **Associative Recall** — end-to-end from input/target bit-vectors alone, over an
+  **auto-advancing length curriculum**, and the headline is the live **head-addressing heatmap**: the
+  write head marching down the tape as the sequence arrives, then the read head retracing the exact
+  same addresses to reproduce it — with a **generalization-beyond-training-length** metric proving it
+  learned the procedure, not the length. The three addressing ops gradcheck to ~1e-11 and the whole
+  NTM end-to-end through the copy BCE to ~6e-5.
 
-The engine is **twenty labs** deep, all sharing the one hand-rolled tape. A built-in **numerical
+The engine is **twenty-one labs** deep, all sharing the one hand-rolled tape. A built-in **numerical
 gradient checker** runs finite differences against the analytic gradients
 and reports the max error, so you can *prove* the engine — convolution included — is correct,
 not just trust it.
@@ -2458,3 +2472,72 @@ whole thing live-verified in a headless browser. All work is confined to `projec
   `transformer.ts` gained a provably-exact KV-cache decoder, a real sampler, `attentionRollout`,
   and head ablation. UI: three new interpretability cards + a rewired generator + save/share. No
   new dependencies; `base: './'`, hash routing, and the fixed 12-token vocab all preserved.
+
+### Session 23 — a twenty-first lab: Memory · Neural Turing Machine (claude, 2026-07-18)
+
+Every lab so far computes a *function* — even the sequence models (RNN, Mamba, Transformer) carry
+state, but none has a **random-access external memory** it learns to *use*. The Neural Turing
+Machine (Graves, Wayne & Danihelka, 2014) is the landmark that closed that gap: a neural controller
+wired to an addressable memory matrix through **differentiable** read/write heads, so the whole
+apparatus is one autograd graph and can learn an **algorithm** — store-then-recall, repeat, index by
+content — by gradient descent from input/target pairs alone. It is a genuinely different capability
+from the rest of the framework, and it is the natural twenty-first lab. All of the machinery below is
+hand-derived on the existing tape and gradchecked, exactly like every other op in the engine.
+
+The plan (all shipped this session):
+
+- [x] **Three new hand-derived addressing ops** (`src/engine/ntm.ts`), each returning a Tensor that
+      carries its own vector-Jacobian-product closure and each gradchecked to ~1e-11 against finite
+      differences:
+  - **`cosineSim(key, mem)`** — content addressing: the cosine similarity between a `[1,M]` key and
+    every `[N,M]` memory row, VJP taken w.r.t. **both** the key and all `N·M` memory entries (the full
+    quotient-rule adjoint through the `‖k‖‖mᵢ‖` denominator).
+  - **`circularShift(w, s, offsets)`** — the location shift: `w̃_i = Σ_k s_k·w_{(i−offsetₖ) mod N}`, a
+    bilinear circular convolution, VJP w.r.t. **both** the weighting `w` and the shift distribution `s`.
+  - **`sharpen(w, γ)`** — power-normalised sharpening `w_iᵞ / Σ w_lᵞ`, VJP w.r.t. **both** `w` and the
+    scalar exponent `γ` (the `∂/∂γ = p·ln u` term included).
+- [x] **The full NTM** (`NTM` in `ntm.ts`) — an **LSTM or feed-forward controller**, `R` read heads +
+      `W` write heads, and an external `N×M` memory threaded forward on the tape across every timestep.
+      Each head runs the canonical NTM addressing (content softmax sharpened by a key strength **β** →
+      interpolation gate **g** with the previous focus → circular **shift** → **sharpen** γ); writes are
+      the **erase/add** rule `M ⊙ (1 − w eᵀ) + w aᵀ` and reads are `wᵀM`, both reducing to the engine's
+      already-proven matmul / elementwise ops. Initial focus weightings and read vectors are learned.
+      Because every memory access is smooth, `backward()` runs all the way back through **reading and
+      writing to memory across time** — proven by an **end-to-end gradcheck** of the whole machine
+      through the copy loss (~6e-5 over 1661 parameters).
+- [x] **The paper's algorithmic tasks** (`src/engine/ntmtasks.ts`) — **Copy** (store a sequence of
+      random bit-vectors, then reproduce it), **Repeat-Copy** (reproduce it R times, R fed on a control
+      channel) and **Associative Recall** (return the item that followed a content query) — generated on
+      the fly from a seeded RNG (no bundled data), scored by a masked, bit-wise **BCE-with-logits** over
+      the answer-phase steps, with bit- and full-sequence-accuracy metrics.
+- [x] **The lab UI** (`src/components/ntm/` + `useNtmTrainer`) — the signature **head-addressing
+      heatmap** (write/read weightings as location × time, so you literally watch the write head march
+      down the tape during the input phase and the read head retrace the same addresses during recall),
+      beside the final **memory matrix**, the **input / target / output bit rasters**, and the loss /
+      bit-accuracy / solve-rate curves. An **auto-advancing length curriculum** grows the training
+      length as each is solved, and a **generalization-beyond-training-length** stat proves the machine
+      learned the *procedure* (it still solves lengths longer than anything it trained on). RMSProp,
+      gradient clipping, controller/memory/head controls, and a one-click end-to-end gradient check.
+- [x] **Wired into the engine self-test** — `runSelfTest` grew **118 → 122 ops**: the three addressing
+      ops individually plus a whole LSTM-controller NTM gradchecked end-to-end through the copy BCE.
+      Overall suite max-rel-error stays `< 1e-3` (passes).
+- [x] **Verified it actually learns** — trained outside the browser first: with the default config
+      (LSTM H=100, 32×10 memory, RMSProp lr 1e-3, batch 4) the machine **solves Copy** — ~100% bit
+      accuracy and full-sequence solve rate as the curriculum climbs — and shows non-trivial
+      generalization to lengths well beyond training. The addressing/read/write data paths for all
+      three tasks (incl. multi-head) were exercised end-to-end with no shape errors.
+
+Wiring & conformance: a new `Memory · NTM` tab (hash `#b=`), all changes confined to
+`projects/synapse-grad-7c4e/`, **no new dependencies**, `base: './'` and hash routing preserved. Full
+`verify-project.mjs` gate (scope + conformance + lint + build) **green**; `pnpm build` transforms 239
+modules.
+
+Still deferred (future, building on this lab):
+
+- [ ] **A Differentiable Neural Computer (DNC)** upgrade — dynamic memory allocation (usage/free
+      gates), a temporal link matrix for order-preserving reads, and multiple read modes.
+- [ ] **Priority Sort & N-Gram** tasks from the paper, and a curriculum that also grows the bit width.
+- [ ] **Weight-in-URL save/share** (`#b=`-carried trained weights) and localStorage slots, mirroring
+      the Transformer/KAN/Flow labs.
+- [ ] **A memory-allocation / read-mode trace overlay** once the DNC lands, and a per-step scrub of the
+      memory matrix (not just the final state).

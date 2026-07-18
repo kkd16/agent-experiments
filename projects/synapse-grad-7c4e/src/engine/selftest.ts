@@ -12,6 +12,8 @@ import { GPT, attentionRollout } from './transformer';
 import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
 import { rmsNorm, causalConv1d, selectiveScan, MambaLM, defaultDtRank } from './ssm';
+import { NTM, cosineSim, circularShift, sharpen } from './ntm';
+import { makeSample, ntmLoss, inputWidth, outputWidth, type NtmTaskConfig } from './ntmtasks';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
 import {
@@ -1655,6 +1657,79 @@ export function runSelfTest(seed = 7): SelfTestReport {
     const pairs: [number, number][] = [];
     for (let i = 0; i < dsG.y.length; i++) pairs.push([post.mean[i] + 5, dsG.y[i] + 5]);
     ops.push(relCheck('gp-posterior (interpolation)', pairs));
+  }
+
+  // ---- Neural Turing Machine (external differentiable memory · Copy/Recall lab) ------
+  //
+  // The three hand-derived addressing ops the NTM's read/write heads are built from —
+  // cosine-similarity content lookup (VJP w.r.t. BOTH the key and every memory row), the
+  // circular-convolution location shift (VJP w.r.t. the weighting AND the shift distribution),
+  // and power-normalised sharpening (VJP w.r.t. the weighting AND the scalar γ). The reads and
+  // writes themselves are matmul / erase-add elementwise ops already proven above, so gradchecking
+  // these three plus a whole NTM end-to-end leaves no memory-access gradient unverified.
+  {
+    const M = 5;
+    const N = 6;
+    const key = leaf(rng, 1, M);
+    const mem = leaf(rng, N, M);
+    // Keep rows well away from the zero-norm singularity so the finite-difference window is clean.
+    for (let i = 0; i < mem.size; i++) mem.data[i] += mem.data[i] >= 0 ? 0.4 : -0.4;
+    for (let j = 0; j < M; j++) key.data[j] += key.data[j] >= 0 ? 0.4 : -0.4;
+    ops.push(checkOp('ntm-cosine (content addr)', [key, mem], () => cosineSim(key, mem), rng));
+  }
+  {
+    const N = 8;
+    const offsets = [-1, 0, 1];
+    const w = leaf(rng, 1, N, true); // a weighting (positive)
+    const s = leaf(rng, 1, offsets.length, true);
+    ops.push(checkOp('ntm-circular-shift', [w, s], () => circularShift(w, s, offsets), rng));
+  }
+  {
+    const N = 7;
+    const w = leaf(rng, 1, N, true); // positive weighting, away from the floor
+    for (let i = 0; i < w.size; i++) w.data[i] += 0.3;
+    const gamma = leaf(rng, 1, 1, true);
+    for (let i = 0; i < gamma.size; i++) gamma.data[i] += 1; // γ ≥ 1
+    ops.push(checkOp('ntm-sharpen (γ)', [w, gamma], () => sharpen(w, gamma), rng));
+  }
+  {
+    // A whole NTM — LSTM controller, one read head + one write head, external memory — gradchecked
+    // end-to-end through the bit-wise BCE of the copy task. This proves backprop flows through
+    // reading and writing to memory across every timestep.
+    const tcfg: NtmTaskConfig = {
+      kind: 'copy',
+      bitWidth: 4,
+      minLen: 2,
+      curLen: 2,
+      maxRepeats: 1,
+      itemLen: 2,
+      maxItems: 3,
+    };
+    const ntm = new NTM({
+      inputWidth: inputWidth(tcfg),
+      outputWidth: outputWidth(tcfg),
+      memLocations: 8,
+      memWidth: 5,
+      controller: 'lstm',
+      controllerSize: 12,
+      readHeads: 1,
+      writeHeads: 1,
+      shiftRange: 1,
+      seed: 5,
+    });
+    const sample = makeSample(tcfg, rngFrom(99));
+    ops.push(
+      checkOp(
+        'ntm (e2e copy, BCE)',
+        ntm.parameters(),
+        () => ntmLoss(ntm.forward(sample.inputs).logits, sample)!,
+        rng,
+        // eps 1e-4: this whole-machine check has many parameters whose true gradient on a short
+        // copy is ~0, and a finer step measures pure round-off against them; 1e-4 keeps the
+        // finite-difference truncation clean while still exercising the memory-access adjoints.
+        1e-4,
+      ),
+    );
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);

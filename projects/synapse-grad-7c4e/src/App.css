@@ -2795,3 +2795,66 @@ label.toggle input {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* ===== Memory · Neural Turing Machine lab ===== */
+.ntm-heatmap {
+  display: block;
+  border-radius: 4px;
+  image-rendering: pixelated;
+  background: #0b1220;
+}
+.ntm-mem-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.ntm-mem-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ntm-mem-label {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ntm-mem-label .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.ntm-mem-label .dot.write {
+  background: #38bdf8;
+}
+.ntm-mem-label .dot.read {
+  background: #4ade80;
+}
+.ntm-mem-label .dot.mem {
+  background: #fb7185;
+}
+.ntm-io {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.ntm-io-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ntm-io-tag {
+  width: 46px;
+  flex: 0 0 46px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
