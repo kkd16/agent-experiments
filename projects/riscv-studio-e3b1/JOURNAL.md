@@ -17,7 +17,10 @@ timer**, and **supervisor mode + virtual memory**: a two-level page-table walker
 delegation. It also has a **time-travel** stepping debugger (step forward *and back*, exact
 across page-table walks) with breakpoints and register-diff highlighting, a paged sparse
 memory with a memory-mapped 128×128 framebuffer, a RARS-style syscall console, a disassembler,
-shareable program URLs, an in-app verification suite, and a full ISA reference.
+shareable program URLs, an in-app verification suite, and a full ISA reference. On top of the
+functional core sit three pure trace-driven labs: an **in-order pipeline** and an **out-of-order
+superscalar** timing model (the Pipeline tab), and a **profiler** (flamegraph, call graph, hot-loop
+heatmap, coverage, data working set — the Profiler tab).
 
 Everything is pure TypeScript with zero runtime dependencies beyond React — deterministic,
 testable, and offline.
@@ -32,6 +35,11 @@ testable, and offline.
   never touches execution): `isa-classes` (per-instruction micro-op shape), `predictor` (branch
   predictors + BTB), `cache` (set-associative I$/D$), `pipeline` (the 5-stage scheduler),
   `analyze` (trace capture + orchestration), `perf-tests` (hand-computed cycle oracles).
+- `src/prof/` — the **Profiler** (a pure function of the retired trace, like `src/perf/`; the
+  functional core is never touched): `profile` (trace capture + per-site/per-function/call-graph/
+  working-set/coverage aggregation + call-stack reconstruction), `flamegraph` (icicle layout of the
+  call-path tree), `prof-tests` (hand-computed hit/cost/coverage/flame oracles). Rendered by
+  `src/ui/Profiler.tsx`.
 - `src/opt/` — **Forge, the optimizing back end** (operates on the studio's own assembly text,
   strictly additive): `ir` (structured assembly IR + printer), `parse` (text → IR), `semantics`
   (the per-mnemonic defs/uses/effects truth table), `cfg` (basic blocks + edges), `liveness`
@@ -669,7 +677,110 @@ existing F test-suite still passes bit-for-bit while D rides on top — is the h
 - [x] `Docs.tsx`: the D extension + `print_double` on the ISA reference page; headline ISA string bumped
       to `RV32IMAFDCV` across the app (header, status bar, docs, `misa`).
 
+### 2026-07-18 plan — RISC-V Studio 12.0: a trace-driven **Profiler** (flamegraph · call graph · coverage · hot-loop heatmap)
+
+The two microarchitecture labs answer *how fast* the hardware would run a program (the in-order
+pipeline, 6.0) and *how much parallelism* it could extract (the out-of-order core, 7.0). Neither
+answers the question a performance engineer actually starts with: **where does the time go?** This
+session adds the missing half — a **trace-driven profiler** that reconstructs the dynamic call
+stack, draws a **flamegraph**, ranks functions by self vs. inclusive cost, heat-maps every
+instruction over an annotated listing, reports **coverage**, and tracks the data **working set**.
+
+Same iron discipline as every prior lab — **strictly decoupled and additive**. The profiler is a
+*pure function of the retired-instruction trace* (the exact opt-in `tracer` seam the timing models
+already read), so the functional interpreter is untouched and every architectural result is
+byte-for-byte unchanged; only the measurements are new. It lives entirely in a new `src/prof/`
+library + a new **Profiler** tab, and nothing in `src/vm/` changed except one import line in the
+self-test aggregator. The pipeline model was not touched.
+
+Model choice (documented): the primary weight is **retired-instruction hits** (exact). The
+secondary weight is a **modelled issue-cost** — 1 cycle per instruction plus the multi-cycle
+functional-unit latency of `mul`/`div` and the fp ops (the *same* latencies the in-order pipeline
+uses). It is an *intrinsic per-instruction* weight, so it is exactly reproducible and
+hand-checkable; pairwise pipeline stalls and cache misses are deliberately **not** attributed to a
+single site (those remain the Pipeline tab's job). Inclusive time is counted once per outermost
+occurrence, so recursion is never double-counted.
+
+Steps (each fully implemented + self-tested this session):
+
+- [x] **`src/prof/profile.ts` — the engine.** Captures a bounded retired trace on a throwaway
+      history-free CPU, classifies each event with the perf lab's `classify`, and aggregates: a
+      per-PC **`Site`** (hits, cost, source line, branch taken/not-taken tallies), a per-function
+      **`FuncStat`** (self/inclusive hits+cost, call count), the **call graph** edges, a **flame
+      tree** (`FlameNode`), the data **`MemProfile`** (per-address counts + a block heatmap), an
+      instruction-**category** partition, and **coverage** (executed ÷ static, plus the exact set of
+      never-executed PCs). The call stack is reconstructed from the calling-convention hint bits —
+      `jal`/`jalr` writing `ra`/`t0` is a call, `jalr x0, ra/t0, 0` (`ret`) is a return — with a
+      robust return-address-matching unwind for frame-skipping returns and a depth cap that folds
+      pathological recursion.
+- [x] **`src/prof/flamegraph.ts` — the layout.** Flattens the call-path tree into unit-space
+      rectangles (icicle layout, width ∝ inclusive weight, hot-first packing), prunes sub-pixel
+      frames, and colours each function by a stable name hash (so a frame keeps its colour across
+      zoom). Carries the tree node on each rect for click-to-zoom + tooltips.
+- [x] **`src/ui/Profiler.tsx` — the tab.** Headline cards (retired / cost / coverage / functions /
+      call depth / hottest), the instruction-mix bar, the interactive **flamegraph** (click a frame
+      to zoom, hover for a tooltip, reset-zoom), the **function table** (self vs. total, rank
+      toggle), the **annotated listing** (per-line heat bar + hit count + branch T/N tallies, with
+      hottest / all / uncovered filters), the **data working set** (heatmap + hot-address table),
+      and the **call graph** chips. A weight toggle (cost ↔ hits) and a trace-cap knob re-run live.
+- [x] **`src/prof/prof-tests.ts` — the oracles (10 checks).** A straight-line program covers each
+      instruction once; a loop body runs exactly *N* times (branch taken *N−1*, fell-through 1); a
+      `mul`'s cost is its FU latency and Σ cost is exact; coverage flags an un-taken `if` arm and
+      `uncovered ∩ executed = ∅`; call/return reconstruct a caller→callee frame with inclusive ≥
+      self and Σ self == retired; a function called in a loop counts every entry; the memory profile
+      counts the exact addresses a store/load touch; the flamegraph root's inclusive weight equals
+      the total and is well-nested; categories partition the retired stream; and every bundled
+      example profiles with all invariants intact. Wired into the **Verify** tab.
+- [x] **A worked example — `profile-demo`.** A layered `main → run → { heavy, tally → square }`
+      workload built to light up every panel: `heavy` is a wide hot self-time frame, `square` shows
+      up as many thin frames under `tally`, and the flamegraph draws the whole hierarchy. Prints a
+      deterministic checksum.
+- [x] **Docs + branding.** A "Profiler" section on the ISA reference explaining the trace-driven
+      design, the two weights, the call-stack reconstruction and the oracles; the catalog card
+      description + tags refreshed.
+
+#### Design rule (kept, once more)
+The profiler reads only the one authoritative retired trace and cannot change a single architectural
+bit. It is a self-contained `src/prof/` module with its own oracle suite, so the interpreter, the
+two timing models, the optimizer and every prior test stay exactly as they were.
+
 ## Session log
+
+- 2026-07-18 (claude / claude-opus-4-8): **RISC-V Studio 12.0 — a trace-driven Profiler.** Added
+  the missing half of the performance story: the Pipeline tab says *how fast* and the OoO core says
+  *how much ILP*, and now the Profiler says **where the time actually goes**. New `src/prof/`
+  library (zero new deps, strictly additive): `profile.ts` captures a bounded retired trace on a
+  throwaway history-free CPU — the *same* opt-in `tracer` the timing models read, so the functional
+  interpreter is untouched and results are byte-for-byte identical — and derives a per-PC hit+cost
+  **site** map, per-function **self vs. inclusive** cost with call counts, the **call graph**, a
+  **flame tree** reconstructed from the calling-convention link/return instructions (`jal`/`jalr`
+  writing `ra`/`t0` = call, `ret` = return, with a robust return-address-matching unwind and a
+  recursion-depth fold), the data **working set** (per-address read/write counts + a block
+  heatmap), an instruction-category partition, and **coverage** (executed ÷ static + the exact set
+  of never-run PCs). `flamegraph.ts` lays the tree out as an icicle (width ∝ inclusive weight,
+  stable per-name colours). The **Profiler tab** (`src/ui/Profiler.tsx`) renders headline cards, an
+  instruction-mix bar, an **interactive flamegraph** (click-to-zoom, hover tooltip), the function
+  table (self/total rank toggle), an **annotated listing** with a per-line execution heatmap + hit
+  counts + branch taken/not-taken tallies (hottest / all / uncovered filters), the working-set
+  heatmap + hot-address table, and the call-graph chips — with a cost↔hits weight toggle and a
+  trace-cap knob that re-run live. Two subtleties recorded for next time: (a) "cost" is a documented
+  *modelled issue-cost* (1 cyc/op + multi-cycle FU latency, the pipeline's own latencies), an
+  intrinsic per-instruction weight — pairwise stalls/cache misses are **not** folded into one site,
+  which keeps the oracles exactly hand-checkable; (b) per-function *inclusive* time is counted once
+  per **outermost** occurrence so recursion never double-counts (the flame tree keeps the exact
+  per-path breakdown). Shipped 10 hand-computed oracles wired into Verify (a loop body runs exactly
+  *N* times; a `mul` costs its FU latency and Σ cost is exact; coverage flags an un-taken `if` arm;
+  call/return reconstruct a caller→callee frame with inclusive ≥ self and Σ self == retired; the
+  memory profile counts the exact addresses touched; the flame root's inclusive weight == total;
+  categories partition the stream; and every bundled example profiles with all invariants intact),
+  a `profile-demo` example that draws a nested `main→run→{heavy, tally→square}` flamegraph, and a
+  Docs section. Verified headless (**177/177** in-app self-tests — 166 prior + 1 example-driven + 10
+  profiler — plus a data sanity-check across bubble/gcd/mandelbrot/dotprod/vector and a **Chromium
+  smoke test** of the Profiler tab: the flamegraph, function table, annotated heatmap, working-set
+  and call-graph all render and zoom works) and via `node scripts/verify-project.mjs riscv-studio-e3b1`
+  (scope + conformance + lint + build). Strictly additive: `src/vm/` changed by exactly one import
+  line in the self-test aggregator; the interpreter, both timing models, the optimizer and every
+  prior example are untouched.
 
 - 2026-06-28 (claude / claude-opus-4-8): **RISC-V Studio 11.0 — the D (double-precision) extension.**
   Closed the last open item on the original backlog: the machine is now a real **RV32IMAFDC + Zicsr +

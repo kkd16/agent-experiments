@@ -17,12 +17,14 @@ import Docs from './ui/Docs';
 import CCStudio from './ui/CCStudio';
 import Optimizer from './ui/Optimizer';
 import Perf from './ui/Perf';
+import Profiler from './ui/Profiler';
 
 const TABS: { id: string; label: string }[] = [
   { id: 'registers', label: 'Registers' },
   { id: 'disasm', label: 'Disassembly' },
   { id: 'memory', label: 'Memory' },
   { id: 'pipeline', label: 'Pipeline' },
+  { id: 'profiler', label: 'Profiler' },
   { id: 'console', label: 'Console' },
   { id: 'display', label: 'Display' },
   { id: 'cc', label: 'C Compiler' },
@@ -205,6 +207,7 @@ export default function App() {
             {route === 'disasm' && <Disasm cpu={vm.cpu} assembly={vm.assembly} />}
             {route === 'memory' && <MemoryView cpu={vm.cpu} />}
             {route === 'pipeline' && <Perf assembly={vm.assembly} onReassemble={vm.assembleOnly} />}
+            {route === 'profiler' && <Profiler assembly={vm.assembly} onReassemble={vm.assembleOnly} />}
             {route === 'console' && <Console cpu={vm.cpu} />}
             {route === 'display' && <Framebuffer cpu={vm.cpu} tick={vm.tick} />}
             {route === 'examples' && <Examples onLoad={onLoadExample} activeId={activeExample} />}

@@ -489,6 +489,45 @@ export default function Docs() {
           </p>
         </section>
 
+        <section>
+          <h3>The Profiler (the Profiler tab)</h3>
+          <p className="docs-intro">
+            The Pipeline tab tells you <em>how fast</em> the hardware would run a program and{' '}
+            <em>how much parallelism</em> it could extract; the Profiler answers the other question a
+            performance engineer always asks &mdash; <strong>where does the time actually go?</strong>{' '}
+            Like the timing models, it is a <strong>pure function of the retired-instruction
+            trace</strong>: it runs the program on a throwaway CPU with the same opt-in tracer
+            attached, so the functional interpreter is never touched and results are byte-for-byte
+            unchanged &mdash; only the measurements are new.
+          </p>
+          <p className="docs-intro">
+            <strong>What it computes.</strong> A per-instruction (per-PC) <em>hit</em> count and{' '}
+            <em>cost</em>, aggregated into a hotspot heatmap over the annotated listing and a{' '}
+            <em>coverage</em> figure (which static instructions never executed &mdash; dead in this
+            run). By reading the calling-convention link/return instructions
+            (<code>jal</code>/<code>jalr</code> writing <code>ra</code>/<code>t0</code>, and{' '}
+            <code>ret</code>) it reconstructs the dynamic <strong>call stack</strong>, which yields a{' '}
+            <strong>flamegraph</strong> (each frame&rsquo;s width &prop; its inclusive weight; click to
+            zoom), a per-function table of <em>self</em> (exclusive) vs. <em>total</em> (inclusive)
+            cost with call counts, and a <strong>call graph</strong>. It also tracks the data{' '}
+            <strong>working set</strong> &mdash; per-address read/write counts and a block heatmap.
+          </p>
+          <p className="docs-intro">
+            <strong>Two weights.</strong> <em>Hits</em> is the exact retired-instruction count.{' '}
+            <em>Cost</em> is a documented <strong>modelled issue-cost</strong>: one cycle per
+            instruction plus the multi-cycle functional-unit latency of <code>mul</code>/<code>div</code>{' '}
+            and the floating-point ops (the same latencies the in-order pipeline uses). It is an{' '}
+            <em>intrinsic per-instruction</em> weight, so it is exactly reproducible and
+            hand-checkable &mdash; which is what a profiler&rsquo;s ranking needs. Pairwise pipeline
+            stalls and cache misses are <em>not</em> folded into a single site; those live in the
+            Pipeline tab. Inclusive time is counted once per outermost occurrence, so recursion is
+            never double-counted. The Verify suite pins the whole thing down with hand-computed
+            oracles &mdash; a loop body executes exactly <em>N</em> times, a called function&rsquo;s
+            inclusive time contains its callee&rsquo;s, coverage is the set of executed PCs, the flame
+            root&rsquo;s inclusive weight equals the total, and &Sigma; self == retired.
+          </p>
+        </section>
+
         {GROUPS.map((grp) => (
           <section key={grp.title}>
             <h3>{grp.title}</h3>
