@@ -15,7 +15,7 @@ import { rectPlateQ, cantileverMeshQ, nodeNearestQ } from './quadmesh'
 import type { QOrder } from './isoparam'
 import { newmarkSDOF, syntheticQuake, solveSeismic, harmonicGround } from './seismic'
 import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
-import { TopOpt, unitElementK, type TopOptSpec, PROBLEMS } from './topopt'
+import { TopOpt, unitElementK, tanhProject, tanhProjectDeriv, type TopOptSpec, PROBLEMS } from './topopt'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -991,6 +991,55 @@ export function runTopOptBenchmarks(): Check[] {
       unit: 'C',
       pass: cN < c0 && Number.isFinite(cN),
     })
+  }
+
+  // 7. Heaviside projection endpoints: with η=½ the tanh projection fixes both
+  //    ends exactly (ρ̄(0)=0, ρ̄(1)=1) for any sharpness β, and is monotone.
+  {
+    let err = 0
+    let monoOk = true
+    for (const beta of [1, 4, 16]) {
+      err = Math.max(err, Math.abs(tanhProject(0, beta, 0.5)), Math.abs(tanhProject(1, beta, 0.5) - 1))
+      for (let v = 0; v <= 1.0001; v += 0.1) if (tanhProjectDeriv(v, beta, 0.5) <= 0) monoOk = false
+    }
+    checks.push({
+      name: 'Heaviside projection endpoints',
+      detail: 'ρ̄(0)=0, ρ̄(1)=1 exactly and monotone ∀β',
+      expected: 0,
+      computed: err,
+      relError: err,
+      unit: '',
+      pass: err < 1e-12 && monoOk,
+    })
+  }
+
+  // 8. Full-chain sensitivity through filter *and* Heaviside projection: the
+  //    analytic ∂C/∂x (density-filter transpose of the projected ∂C/∂ρ_phys) must
+  //    match a central finite difference on the raw design variable x_e. This is
+  //    the strongest possible check — it validates every link of the chain rule.
+  {
+    const spec = { ...tinyMBB(12, 5, 0.5, 2.0, 'density'), heaviside: true, beta: 3, cgTol: 1e-12 } as TopOptSpec
+    const opt = new TopOpt(spec)
+    for (let e = 0; e < opt.nElem; e++) opt.x[e] = 0.5 + 0.2 * Math.sin(0.9 * e + 0.3)
+    opt.reproject()
+    opt.solveFE()
+    const { dc } = opt.filteredSensitivity()
+    // Pick the element with the largest-magnitude gradient for a clean ratio.
+    let e0 = 0
+    for (let e = 1; e < opt.nElem; e++) if (Math.abs(dc[e]) > Math.abs(dc[e0])) e0 = e
+    const analytic = dc[e0]
+    const h = 1e-3
+    const x0 = opt.x[e0]
+    opt.x[e0] = x0 + h
+    opt.reproject()
+    const cP = opt.solveFE()
+    opt.x[e0] = x0 - h
+    opt.reproject()
+    const cM = opt.solveFE()
+    opt.x[e0] = x0
+    opt.reproject()
+    const fd = (cP - cM) / (2 * h)
+    checks.push(check('Filter+Heaviside sensitivity ∂C/∂x', 'analytic chain rule vs. finite difference', fd, analytic, '', 3e-3))
   }
 
   return checks
