@@ -22,9 +22,10 @@ import DQNLab from './components/dqn/DQNLab';
 import SnnLab from './components/snn/SnnLab';
 import NtmLab from './components/ntm/NtmLab';
 import ViTLab from './components/vit/ViTLab';
+import MetaLab from './components/meta/MetaLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'vit' | 'transformer' | 'recurrent' | 'ssm' | 'memory' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
+type Tab = 'playground' | 'vision' | 'vit' | 'transformer' | 'recurrent' | 'ssm' | 'memory' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'meta' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
 
 // Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #q= DQN, #p= AlphaZero, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA, #y= spiking).
 function initialTab(): Tab {
@@ -48,6 +49,7 @@ function initialTab(): Tab {
     if (/[#&]n=/.test(location.hash)) return 'graph';
     if (/[#&]k=/.test(location.hash)) return 'kan';
     if (/[#&]o=/.test(location.hash)) return 'node';
+    if (/[#&]l=/.test(location.hash)) return 'meta';
     if (/[#&]u=/.test(location.hash)) return 'uncertainty';
     if (/[#&]j=/.test(location.hash)) return 'gp';
     return /[#&]v=/.test(location.hash) ? 'vision' : 'playground';
@@ -128,6 +130,9 @@ export default function App() {
             <button className={tab === 'node' ? 'on' : ''} onClick={() => setTab('node')}>
               Neural ODE
             </button>
+            <button className={tab === 'meta' ? 'on' : ''} onClick={() => setTab('meta')}>
+              Meta-Learning · MAML
+            </button>
             <button className={tab === 'uncertainty' ? 'on' : ''} onClick={() => setTab('uncertainty')}>
               Uncertainty · Bayes
             </button>
@@ -185,6 +190,8 @@ export default function App() {
         <KANLab />
       ) : tab === 'node' ? (
         <NodeLab />
+      ) : tab === 'meta' ? (
+        <MetaLab />
       ) : tab === 'gp' ? (
         <GPLab />
       ) : tab === 'morphogenesis' ? (

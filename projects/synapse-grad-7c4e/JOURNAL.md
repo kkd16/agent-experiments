@@ -2632,3 +2632,108 @@ Still deferred (future, building on this lab):
       place via `snapshot`/`prepareLoad`).
 - [ ] **A hybrid CNN→ViT stem** (a couple of conv layers before patchifying) to show it trains faster on
       tiny data.
+
+---
+
+## Meta-Learning · MAML — *learning to learn* (new lab, this session)
+
+**The gap.** Twenty-five labs all answer the same question — *given a task and a lot of data, learn
+it.* None answers the question one level up: **can the network learn a way of learning** so that a
+*brand-new* task is solved from a handful of examples? That is meta-learning, and it is the one
+capability none of the existing labs demonstrate. This lab adds it, built on the same first-order
+tensor autograd engine — no second-order Hessian tricks, because the two algorithms that made
+meta-learning practical (Reptile and *first-order* MAML) are provably first-order.
+
+**Why it fits the engine.** The engine accumulates gradients into `Tensor.grad` (a `Float64Array`),
+not back onto the tape — so it is a strictly first-order reverse-mode engine. That rules out the full
+second-order MAML (which differentiates through the inner SGD step) but is *exactly* what Reptile
+(Nichol, Achiam & Schulman 2018) and **FOMAML** (Finn, Abbeel & Levine 2017, §5.2, the first-order
+approximation) need: the meta-gradient is just the ordinary gradient of the query loss evaluated at
+the *adapted* fast-weights. So this lab is a faithful, honest implementation of the real algorithms,
+not a watered-down toy — and it makes the "learning to learn" story visible.
+
+**The canonical benchmark.** Sinusoid regression (the MAML paper's Figure 2): each task is a sine
+`y = A·sin(x + φ)` with a random amplitude and phase. A model trained jointly on all tasks can only
+learn the *mean* (a flat line, since the phases cancel); but a **meta-learned initialization** sits at
+a special point in weight space from which a *single* gradient step on `K` support points swings the
+whole curve onto the new task. Watching a flat meta-init snap onto an unseen sine in one step is the
+"aha" of the whole field.
+
+### Plan (this session)
+
+- [x] **`src/engine/meta.ts` — the meta-learning core.** A functional MLP (in→H→…→H→out, `tanh`
+      hidden, linear head) whose forward runs on *explicit* weight tensors, so the inner loop can build
+      **fast-weights**, adapt them with plain SGD, and read them back — all without touching the
+      persistent meta-parameters `θ`. A task distribution with three families:
+      **sinusoid** (`A·sin(x+φ)`), **sinusoid+frequency** (`A·sin(ωx+φ)`, harder), and **line**
+      (`ax+b`, the easy control). Support/query sampling with optional label noise.
+- [x] **The three algorithms**, sharing one inner-adaptation routine:
+      - **Reptile** — adapt on the task, then move `θ` a fraction ε toward the adapted weights
+        (`θ ← θ + ε·(φ − θ)`), averaged over a meta-batch. No query set needed; the magic is that this
+        simple interpolation provably approximates the MAML gradient.
+      - **FOMAML** — adapt on the support set, then take the query-loss gradient *at the adapted
+        weights* as the meta-gradient for `θ` (the first-order approximation), fed through the existing
+        `Optimizer` (SGD/Adam).
+      - **Baseline (joint pre-training)** — train `θ` on the pooled data of the whole meta-batch with
+        **no** adaptation, the control that collapses to the mean sine and can't few-shot-adapt.
+- [x] **`useMetaTrainer.ts`** — the RAF meta-training loop (one meta-step per frame-batch), live
+      pre-adaptation vs post-adaptation query-loss history (the meta-objective *and* the adaptation
+      gap), plus visualization queries: an **adaptation trace** (the model's prediction over a plotting
+      grid after each inner step, from the meta-init *and* from a random init for contrast) and a
+      **few-shot curve** (average query MSE on a batch of held-out novel tasks after 0,1,…,K adaptation
+      steps — the money chart). Save / load / URL-share via the existing `serialize.ts` plumbing.
+- [x] **`src/components/meta/` — the lab UI.** The signature **adaptation panel**: the true task
+      curve, the K support dots, and the model's prediction with an **inner-step scrubber** that
+      animates the flat meta-init snapping onto the task in one step — meta-init vs random-init drawn
+      together so the difference is undeniable. Beside it the **few-shot curve** (meta vs baseline vs
+      random), the **meta-loss history** (pre- vs post-adaptation), a **task-gallery** of sampled sine
+      tasks, and a **novel-task resampler** ("test on a task it has never seen"). A control panel for
+      algorithm, task family, K-shot, inner steps, inner/meta LR, meta-batch size, width/depth, seed and
+      speed.
+- [x] **Wire it in** — a new **Meta-Learning · MAML** tab (hash `#l=`), placed after Neural ODE in the
+      "learning dynamics" cluster; keep `base: './'`, hash routing, no new dependencies.
+- [x] **Prove it learns** — train headless first and confirm the few-shot curve drops sharply for the
+      meta-init while the baseline stays flat; then verify the production build renders in headless
+      Chromium with no console errors. Run the full `verify-project.mjs` gate (scope + conformance +
+      lint + build) green.
+
+### Shipped (2026-07-18)
+
+The **Meta-Learning · MAML** lab is live — the twenty-sixth lab and the first to demonstrate
+*learning to learn* (an initialization, not a solution). All of it runs on the existing
+first-order tensor autograd; no engine surgery, no new dependencies.
+
+- **`src/engine/meta.ts`** — a functional MLP whose forward runs on explicit weight tensors (so the
+  inner loop builds fast-weights, adapts them, and reads them back without touching θ), a three-family
+  task distribution (`sine`, `sine-freq`, `line`), the shared `adapt` / `adaptTrace` inner loop, the
+  three meta-update rules (`metaStep`: Reptile in-place interpolation, FOMAML query-grad-at-φ through
+  the shared `Optimizer`, and the joint baseline), and `fewShotCurve` for held-out evaluation.
+- **`src/hooks/useMetaTrainer.ts`** — the RAF meta-loop, pre/post-adaptation loss history, and the
+  `adaptationView` / `fewShotView` / `taskGallery` visualization queries, with save/load/URL-share on
+  `#l=` and an in-app gradient check of the learner net's autograd.
+- **`src/components/meta/`** — `MetaLab` + `MetaControls` and four bespoke canvases: the
+  inner-step-scrubbed **AdaptationPanel** (meta-init vs random init snapping onto a novel task), the
+  log-scale **FewShotChart** (meta vs random over 48 novel tasks), the pre-vs-post **MetaLossChart**,
+  and the **TaskGallery** (the fan of tasks + their mean).
+- **Wiring** — a `Meta-Learning · MAML` tab after Neural ODE; `project.json` headline + 14 new tags;
+  `base: './'` and hash routing preserved; all changes confined to `projects/synapse-grad-7c4e/`.
+
+**Proven, out-of-browser first.** On the sinusoid benchmark (2,500 meta-steps, width-40 × depth-2),
+few-shot query MSE on 64 unseen tasks: FOMAML **3.25 → 0.23**, Reptile **3.36 → 0.45**, joint baseline
+stuck at **~2.2**, random init flat at **~4.8**. (Reptile with 1 inner step ≈ joint training, as the
+theory predicts — its edge needs ≥2 inner steps; the default is 5.) **Then in headless Chromium** on
+the production build: the tab renders all four canvases, meta-training runs, every algorithm/scrubber/
+new-task/gradcheck control works with **zero runtime errors**, and the in-app gradient check reports
+**max rel err 2.4e-7**. Full `verify-project.mjs` gate (scope + conformance + lint + build) **green**;
+`pnpm build` transforms 256 modules.
+
+Future threads building on this lab:
+
+- [ ] **Second-order MAML** — would need a create-graph mode on the engine (grads as tape nodes); the
+      first-order pair (Reptile/FOMAML) is what today's engine supports honestly.
+- [ ] **Few-shot classification** — a 2-D N-way K-shot task family (the sinusoid's classification
+      cousin) with a decision-boundary adaptation view.
+- [ ] **Meta-overfitting / meta-val** — a held-out task split with a meta-validation curve, and a
+      "memorization vs adaptation" diagnostic.
+- [ ] **Learned per-parameter inner LR** (Meta-SGD, Li et al. 2017) — meta-learn the step size vector
+      alongside θ, and visualize which weights the learner chooses to move fastest.
