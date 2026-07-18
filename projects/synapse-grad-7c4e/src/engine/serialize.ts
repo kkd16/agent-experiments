@@ -101,6 +101,7 @@ export const DQN_SLOT_PREFIX = 'synapse:qslot:';
 export const SNN_SLOT_PREFIX = 'synapse:yslot:';
 export const SEQ_SLOT_PREFIX = 'synapse:tslot:';
 export const VIT_SLOT_PREFIX = 'synapse:islot:';
+export const META_SLOT_PREFIX = 'synapse:lslot:';
 
 // ---- URL hash sharing --------------------------------------------------------------
 
