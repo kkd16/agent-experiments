@@ -53,6 +53,7 @@ import { drawFrame, drawContinuum, drawQuadContinuum, type Picked } from './ui/d
 import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bounds } from './ui/viewport'
 import { CapacityCurvePlot, FrfPlot, HysteresisPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
+import { TopOptStudio } from './ui/TopOptStudio'
 import {
   addMember,
   addNode,
@@ -79,7 +80,7 @@ import {
   type Scene,
 } from './state'
 
-type Tab = 'frame' | 'continuum'
+type Tab = 'frame' | 'continuum' | 'topopt'
 type Tool = 'select' | 'node' | 'member' | 'support' | 'load' | 'delete'
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
@@ -960,6 +961,7 @@ export default function App() {
             options={[
               { value: 'frame', label: 'Trusses & Frames' },
               { value: 'continuum', label: '2-D Continuum' },
+              { value: 'topopt', label: 'Topology Optimization' },
             ]}
             value={tab}
             onChange={(v) => {
@@ -972,6 +974,10 @@ export default function App() {
       </header>
 
       <div className="body">
+        {tab === 'topopt' ? (
+          <TopOptStudio />
+        ) : (
+          <>
         {/* ---------------- left rail: presets ---------------- */}
         <aside className="rail left">
           <div className="panel">
@@ -1403,6 +1409,8 @@ export default function App() {
             <p className="hint-text">Models autosave locally and encode into the URL — copy the link to share this exact structure.</p>
           </div>
         </aside>
+          </>
+        )}
       </div>
     </div>
   )

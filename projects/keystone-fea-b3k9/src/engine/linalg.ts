@@ -113,7 +113,7 @@ export function solveCG(
   A: CSR,
   f: Vec,
   free: Uint8Array,
-  opts: { tol?: number; maxIter?: number } = {},
+  opts: { tol?: number; maxIter?: number; x0?: Vec } = {},
 ): CGResult {
   const n = A.n
   const tol = opts.tol ?? 1e-10
@@ -131,14 +131,21 @@ export function solveCG(
     invDiag[i] = free[i] && A.diag[i] !== 0 ? 1 / A.diag[i] : 0
   }
 
-  // r0 = f - A·x0, with x0 = 0, then masked to free DOFs.
+  // Optional warm start: when successive systems differ little (e.g. topology
+  // optimization's slowly-evolving stiffness) an initial guess close to the
+  // solution slashes the iteration count. r0 = f − A·x0, masked to free DOFs.
   let bnorm = 0
-  for (let i = 0; i < n; i++) {
-    r[i] = free[i] ? f[i] : 0
-    bnorm += r[i] * r[i]
-  }
+  for (let i = 0; i < n; i++) bnorm += free[i] ? f[i] * f[i] : 0
   bnorm = Math.sqrt(bnorm)
   if (bnorm === 0) return { x, iterations: 0, residual: 0, converged: true }
+
+  if (opts.x0) {
+    for (let i = 0; i < n; i++) x[i] = free[i] ? opts.x0[i] : 0
+    matVec(A, x, Ap)
+    for (let i = 0; i < n; i++) r[i] = free[i] ? f[i] - Ap[i] : 0
+  } else {
+    for (let i = 0; i < n; i++) r[i] = free[i] ? f[i] : 0
+  }
 
   for (let i = 0; i < n; i++) {
     z[i] = invDiag[i] * r[i]

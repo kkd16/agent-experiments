@@ -876,12 +876,12 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, allPass } = useMemo(
+  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, allPass } = useMemo(
     () => runAllBenchmarks(),
     [],
   )
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad]
+  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad, ...topopt]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -929,6 +929,10 @@ export function VerifyBadge() {
           <div className="check-group">Continuum — isoparametric Q4/Q8</div>
           {quad.map((c, i) => (
             <CheckRow key={`q${i}`} c={c} />
+          ))}
+          <div className="check-group">Topology optimization (SIMP + OC)</div>
+          {topopt.map((c, i) => (
+            <CheckRow key={`t${i}`} c={c} />
           ))}
         </div>
       )}
