@@ -50,7 +50,7 @@ implemented from scratch, numerically validated in-app.
 - `src/ui/TopOptStudio.tsx` — the topology-optimization tab: its own canvas + animation loop
   running the optimizer live (density raster + strain-energy load-path shading), BC glyphs, a
   log-scale compliance-history sparkline, and the full control set.
-- `src/engine/validate.ts` — analytical benchmarks that run live (61 of them): truss statics,
+- `src/engine/validate.ts` — analytical benchmarks that run live (63 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
   seismic, the inelastic hinge/hysteresis checks, and the v9 isoparametric checks (Q4/Q8 patch
   test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency). Reports
@@ -443,10 +443,17 @@ with a bisection on the volume Lagrange multiplier — run live, one iteration p
       **Michell span**, **deck bridge** (distributed load), **L-bracket** (passive void)
 - [x] Warm-started PCG (`solveCG` gains an `x0` option) — reuse the previous displacement as
       the initial guess since the design evolves slowly between OC steps
-- [x] **6 new live benchmarks** verifying the *machinery* (no closed form for the optimum):
+- [x] **Heaviside projection** (Guest/Wang/Sigmund smoothed-tanh, η=½) with automatic
+      **β-continuation** (β → 16) — collapses the density filter's grey transition band to a
+      crisp black-and-white manufacturable design; grayness Mₙd 27 % → ~5 % *and* compliance
+      drops (a fixed high β stalls, gradual continuation doesn't). Exact endpoints ρ̄(0)=0,
+      ρ̄(1)=1; the projection derivative ∂ρ̄/∂ρ̃ folds into the sensitivity chain rule
+- [x] **8 new live benchmarks** verifying the *machinery* (no closed form for the optimum):
       the FE energy balance UᵀKU=FᵀU (machine precision), the analytic compliance sensitivity
       vs. a central finite difference (2e-6), the density filter's partition-of-unity, the
-      element k⁰ row-sum (rigid-body), the OC volume constraint, and monotone descent
+      element k⁰ row-sum (rigid-body), the OC volume constraint, monotone descent, the
+      Heaviside endpoint/monotonicity identities, and — the strongest — the **full-chain
+      ∂C/∂x through filter *and* projection** against a finite difference (1.5e-7)
 - [x] `TopOptStudio.tsx` — a self-contained third tab with its own canvas + rAF loop: live
       density raster (smoothed for the organic edges), **strain-energy** shading (turbo/
       viridis) showing the load paths, support/load glyphs, a log-scale compliance-history
@@ -455,9 +462,7 @@ with a bisection on the volume Lagrange multiplier — run live, one iteration p
 - [x] Verified end-to-end in headless Chromium: the MBB reproduces the classic fanned
       interior truss, the cantilever grows its X-truss with the strain map glowing hottest at
       the fixed corners, all five cases converge with the volume constraint met and no NaN,
-      and the badge reads **61/61**
-- [ ] **Heaviside projection** (Guest/Sigmund β-continuation) to drive grey → crisp 0/1 and a
-      true black-and-white design — future
+      and the badge reads **63/63**
 - [ ] **Geometric multigrid preconditioner** for the elasticity solve so 200k-DOF grids stay
       interactive (Jacobi-PCG iteration count grows with the void contrast) — future
 - [ ] **Stress-constrained** and **compliant-mechanism** (multi-load, output-displacement)
@@ -502,8 +507,19 @@ with a bisection on the volume Lagrange multiplier — run live, one iteration p
   Verified end-to-end in headless Chromium: the MBB reproduces the classic fanned
   interior truss, the cantilever grows its X-truss with the strain field glowing
   hottest at the fixed corners and the load point, all five cases converge with the
-  volume constraint exactly met and zero NaN, and the badge reads **61/61** with no
-  runtime errors.
+  volume constraint exactly met and zero NaN, and the badge reads **63/63** with no
+  runtime errors. Also shipped in the same session: a **Heaviside projection** (the
+  smoothed-tanh ρ̄(ρ̃) with η=½) with automatic **β-continuation** driven by the studio
+  (β ramps 1 → 16 as the design settles). The density filter alone leaves a grey
+  transition band; the projection collapses it to a crisp black-and-white,
+  manufacturable design — on the MBB, grayness Mₙd drops from ~27 % to ~5 % *and*
+  compliance improves (209 → 183), because a fixed high β from a grey start stalls
+  while gradual continuation does not. The projection's derivative ∂ρ̄/∂ρ̃ folds into
+  the sensitivity chain rule, and `solveCG` gained an `x0` warm-start reused between OC
+  steps. Two more benchmarks lock it down: the Heaviside endpoint/monotonicity
+  identities (ρ̄(0)=0, ρ̄(1)=1, ρ̄′>0 ∀β) and the **full-chain ∂C/∂x through filter *and*
+  projection** matched to a finite difference (1.5e-7) — the strongest sensitivity check
+  in the whole engine.
 
 - 2026-07-17 (claude): shipped **v9 — higher-order continuum: isoparametric Q4/Q8
   elements, smooth stress recovery & continuum modal dynamics**, the chapter that

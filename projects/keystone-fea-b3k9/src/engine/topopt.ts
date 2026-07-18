@@ -66,6 +66,31 @@ export interface TopOptSpec {
   move?: number
   /** PCG relative tolerance for the inner FE solve (default 1e-8). */
   cgTol?: number
+  /** Enable the smoothed-Heaviside projection (drives grey → crisp 0/1). Density filter only. */
+  heaviside?: boolean
+  /** Heaviside sharpness β (1 ≈ soft, large = near-binary). Continuation raises it. */
+  beta?: number
+  /** Heaviside threshold η ∈ (0,1) — the density that maps to ½ (default 0.5). */
+  eta?: number
+}
+
+/**
+ * Smoothed (tanh) Heaviside projection ρ̄(ρ̃): pushes the filtered density toward
+ * 0 or 1 around the threshold η, sharper as β grows. With η=½ it fixes both
+ * endpoints exactly (ρ̄(0)=0, ρ̄(1)=1) and is volume-preserving under the OC
+ * bisection. This is what turns the density filter's grey transition band into a
+ * crisp black-and-white manufacturable design (Guest/Wang/Sigmund).
+ */
+export function tanhProject(v: number, beta: number, eta: number): number {
+  const a = Math.tanh(beta * eta)
+  return (a + Math.tanh(beta * (v - eta))) / (a + Math.tanh(beta * (1 - eta)))
+}
+
+/** ∂ρ̄/∂ρ̃ of the tanh projection — the chain-rule factor for the sensitivities. */
+export function tanhProjectDeriv(v: number, beta: number, eta: number): number {
+  const denom = Math.tanh(beta * eta) + Math.tanh(beta * (1 - eta))
+  const th = Math.tanh(beta * (v - eta))
+  return (beta * (1 - th * th)) / denom
 }
 
 export interface TopOptStep {
@@ -199,7 +224,9 @@ export class TopOpt {
   readonly nely: number
   readonly nElem: number
   readonly nDof: number
-  readonly spec: Required<Pick<TopOptSpec, 'volfrac' | 'penal' | 'rmin' | 'filter' | 'nu' | 'E0' | 'Emin' | 'move' | 'cgTol'>> &
+  readonly spec: Required<
+    Pick<TopOptSpec, 'volfrac' | 'penal' | 'rmin' | 'filter' | 'nu' | 'E0' | 'Emin' | 'move' | 'cgTol' | 'heaviside' | 'beta' | 'eta'>
+  > &
     TopOptSpec
 
   private readonly KE: number[][]
@@ -216,13 +243,17 @@ export class TopOpt {
   private readonly pattern: { n: number; rowPtr: Int32Array; col: Int32Array }
   private readonly slot: Int32Array // nElem*64 → index into val
 
-  /** Design variables (pre-filter) and the physical (filtered) densities. */
+  /** Design variables (pre-filter) and the physical (filtered/projected) densities. */
   x: Float64Array
   xPhys: Float64Array
+  /** The filtered-but-unprojected field ρ̃ = H x / Hs (Heaviside chain rule needs it). */
+  xTilde: Float64Array
   /** Last solved displacement field. */
   U: Float64Array
   /** Per-element strain-energy density uₑᵀ k⁰ uₑ from the last solve. */
   energy: Float64Array
+  /** Reusable scratch for the OC volume bisection (avoids per-iteration allocation). */
+  private readonly projBuf: Float64Array
 
   iter = 0
   compliance = 0
@@ -241,6 +272,9 @@ export class TopOpt {
       Emin: spec.Emin ?? (spec.E0 ?? 1) * 1e-9,
       move: spec.move ?? 0.2,
       cgTol: spec.cgTol ?? 1e-8,
+      heaviside: spec.heaviside ?? false,
+      beta: spec.beta ?? 1,
+      eta: spec.eta ?? 0.5,
     }
 
     this.KE = unitElementK(spec.nu)
@@ -273,6 +307,7 @@ export class TopOpt {
     if (this.passiveSolid) for (let e = 0; e < this.nElem; e++) if (this.passiveSolid[e]) this.x[e] = 1
     if (this.passiveVoid) for (let e = 0; e < this.nElem; e++) if (this.passiveVoid[e]) this.x[e] = 0
     this.xPhys = new Float64Array(this.nElem)
+    this.xTilde = new Float64Array(this.nElem)
     this.projectDensity()
     let vol = 0
     for (let e = 0; e < this.nElem; e++) vol += this.xPhys[e]
@@ -282,22 +317,48 @@ export class TopOpt {
 
     this.U = new Float64Array(this.nDof)
     this.energy = new Float64Array(this.nElem)
+    this.projBuf = new Float64Array(this.nElem)
 
     const { pattern, slot } = this.buildPattern()
     this.pattern = pattern
     this.slot = slot
   }
 
-  /** ρ_phys from ρ (identity for the sensitivity filter; density filter otherwise). */
-  private projectDensity(): void {
+  /**
+   * Map a design field `xIn` to physical densities `out` (filter → optional
+   * Heaviside projection → passive overrides). Optionally records the
+   * intermediate filtered field ρ̃ in `tilde` for the chain rule. This is the
+   * single source of truth used both to refresh the state and inside the OC
+   * volume bisection, so the constraint is enforced on exactly what the FE
+   * solve sees.
+   */
+  private computePhys(xIn: Float64Array, out: Float64Array, tilde?: Float64Array): void {
     if (this.spec.filter === 'density') {
-      applyDensityFilter(this.filter, this.x, this.xPhys)
-      // Passive overrides survive the projection.
-      if (this.passiveSolid) for (let e = 0; e < this.nElem; e++) if (this.passiveSolid[e]) this.xPhys[e] = 1
-      if (this.passiveVoid) for (let e = 0; e < this.nElem; e++) if (this.passiveVoid[e]) this.xPhys[e] = 0
+      const t = tilde ?? new Float64Array(this.nElem)
+      applyDensityFilter(this.filter, xIn, t)
+      if (this.spec.heaviside) {
+        const { beta, eta } = this.spec
+        for (let e = 0; e < this.nElem; e++) out[e] = tanhProject(t[e], beta, eta)
+      } else {
+        out.set(t)
+      }
     } else {
-      this.xPhys.set(this.x)
+      out.set(xIn)
+      if (tilde) tilde.set(xIn)
     }
+    // Passive overrides survive filtering and projection.
+    if (this.passiveSolid) for (let e = 0; e < this.nElem; e++) if (this.passiveSolid[e]) out[e] = 1
+    if (this.passiveVoid) for (let e = 0; e < this.nElem; e++) if (this.passiveVoid[e]) out[e] = 0
+  }
+
+  /** Refresh xPhys (and xTilde) from the current design variables x. */
+  private projectDensity(): void {
+    this.computePhys(this.x, this.xPhys, this.xTilde)
+  }
+
+  /** Public re-projection hook (used by the validation harness). */
+  reproject(): void {
+    this.projectDensity()
   }
 
   /** Build the constant CSR sparsity pattern and the per-element scatter slots. */
@@ -409,17 +470,16 @@ export class TopOpt {
   }
 
   /**
-   * One full optimization iteration: FE solve, sensitivity, filter, OC update.
-   * Returns the step diagnostics. Call repeatedly until `change` is small.
+   * The compliance and volume gradients with respect to the *design* variables
+   * x — i.e. the raw ∂C/∂ρ_phys and ∂V/∂ρ_phys pushed back through the Heaviside
+   * projection (∂ρ̄/∂ρ̃) and the density filter (H(·/Hs)). Assumes solveFE() ran.
+   * Exposed so the harness can check the whole chain against a finite difference.
    */
-  step(): TopOptStep {
-    this.solveFE()
-
+  filteredSensitivity(): { dc: Float64Array; dv: Float64Array } {
     const dc = new Float64Array(this.nElem)
     const dv = new Float64Array(this.nElem).fill(1)
-    this.sensitivity(dc)
+    this.sensitivity(dc) // ∂C/∂ρ_phys
 
-    // Regularize sensitivities.
     if (this.spec.filter === 'sensitivity') {
       // Sigmund's sensitivity filter: weighted average of ρ·∂C, normalized.
       const dcNew = new Float64Array(this.nElem)
@@ -430,16 +490,33 @@ export class TopOpt {
         for (let k = 0; k < ns.length; k++) s += ws[k] * this.x[ns[k]] * dc[ns[k]]
         dcNew[e] = s / (this.filter.Hs[e] * Math.max(1e-3, this.x[e]))
       }
-      dc.set(dcNew)
-    } else {
-      const dcF = new Float64Array(this.nElem)
-      const dvF = new Float64Array(this.nElem)
-      filterSensitivity(this.filter, dc, dcF)
-      filterSensitivity(this.filter, dv, dvF)
-      dc.set(dcF)
-      dv.set(dvF)
+      return { dc: dcNew, dv }
     }
 
+    // Density filter (+ optional Heaviside): apply the projection chain-rule
+    // factor ∂ρ̄/∂ρ̃ *before* the filter transpose.
+    if (this.spec.heaviside) {
+      const { beta, eta } = this.spec
+      for (let e = 0; e < this.nElem; e++) {
+        const d = tanhProjectDeriv(this.xTilde[e], beta, eta)
+        dc[e] *= d
+        dv[e] *= d
+      }
+    }
+    const dcF = new Float64Array(this.nElem)
+    const dvF = new Float64Array(this.nElem)
+    filterSensitivity(this.filter, dc, dcF)
+    filterSensitivity(this.filter, dv, dvF)
+    return { dc: dcF, dv: dvF }
+  }
+
+  /**
+   * One full optimization iteration: FE solve, sensitivity, filter, OC update.
+   * Returns the step diagnostics. Call repeatedly until `change` is small.
+   */
+  step(): TopOptStep {
+    this.solveFE()
+    const { dc, dv } = this.filteredSensitivity()
     const change = this.ocUpdate(dc, dv)
 
     // Realized volume + grayness on the physical densities.
@@ -488,19 +565,11 @@ export class TopOpt {
         if (cand < 0) cand = 0
         xnew[e] = cand
       }
-      // Realized volume after the density projection.
-      let vol: number
-      if (this.spec.filter === 'density') {
-        const proj = new Float64Array(this.nElem)
-        applyDensityFilter(this.filter, xnew, proj)
-        if (this.passiveSolid) for (let e = 0; e < this.nElem; e++) if (this.passiveSolid[e]) proj[e] = 1
-        if (this.passiveVoid) for (let e = 0; e < this.nElem; e++) if (this.passiveVoid[e]) proj[e] = 0
-        vol = 0
-        for (let e = 0; e < this.nElem; e++) vol += proj[e]
-      } else {
-        vol = 0
-        for (let e = 0; e < this.nElem; e++) vol += xnew[e]
-      }
+      // Realized volume after filtering + projection — exactly what the FE solve
+      // will see, so the constraint binds on the physical densities.
+      this.computePhys(xnew, this.projBuf)
+      let vol = 0
+      for (let e = 0; e < this.nElem; e++) vol += this.projBuf[e]
       if (vol > target) l1 = lmid
       else l2 = lmid
     }

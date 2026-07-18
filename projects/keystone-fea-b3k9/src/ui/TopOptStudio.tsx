@@ -27,7 +27,11 @@ interface Params {
   penal: number
   rmin: number
   filter: FilterKind
+  heaviside: boolean
 }
+
+const BETA_MAX = 16
+const BETA_STEP_EVERY = 20 // iterations between β increases (continuation)
 
 interface Snapshot {
   params: Params
@@ -38,6 +42,7 @@ interface Snapshot {
   colormap: Colormap
   showBC: boolean
   threshold: number
+  heaviside: boolean
 }
 
 const HIST_MAX = 400
@@ -69,11 +74,12 @@ function initialParams(): Params {
     penal: 3,
     rmin: p.defaults.rmin,
     filter: 'density',
+    heaviside: false,
   }
 }
 
 const buildKeyOf = (p: Params, nonce: number) =>
-  `${p.problemId}|${p.nelx}|${p.nely}|${p.volfrac}|${p.penal}|${p.rmin}|${p.filter}|${nonce}`
+  `${p.problemId}|${p.nelx}|${p.nely}|${p.volfrac}|${p.penal}|${p.rmin}|${p.filter}|${p.heaviside}|${nonce}`
 
 export function TopOptStudio() {
   const [params, setParams] = useState<Params>(initialParams)
@@ -85,6 +91,7 @@ export function TopOptStudio() {
   const [threshold, setThreshold] = useState(0) // 0 = continuous; >0 = 0/1 preview
   const [diag, setDiag] = useState<TopOptStep>({ iter: 0, compliance: 0, volume: params.volfrac, change: 1, grayness: 1 })
   const [converged, setConverged] = useState(false)
+  const [beta, setBeta] = useState(1)
 
   const problem = useMemo(() => problemById(params.problemId), [params.problemId])
   const buildKey = buildKeyOf(params, nonce)
@@ -106,9 +113,10 @@ export function TopOptStudio() {
     colormap,
     showBC,
     threshold,
+    heaviside: params.heaviside,
   })
   useEffect(() => {
-    snapRef.current = { params, buildKey, running, converged, shade, colormap, showBC, threshold }
+    snapRef.current = { params, buildKey, running, converged, shade, colormap, showBC, threshold, heaviside: params.heaviside }
   }, [params, buildKey, running, converged, shade, colormap, showBC, threshold])
 
   // Resize handling (device-pixel-ratio aware).
@@ -317,6 +325,7 @@ export function TopOptStudio() {
     let lastStat = 0
     let builtKey = ''
     let lastSig = ''
+    let beta = 1
     const loop = (t: number) => {
       const snap = snapRef.current
       // (Re)build the optimizer when the structural problem changes.
@@ -324,6 +333,8 @@ export function TopOptStudio() {
         const p = problemById(snap.params.problemId)
         const spec = p.build(snap.params.nelx, snap.params.nely, snap.params.volfrac, snap.params.rmin, snap.params.filter)
         spec.penal = snap.params.penal
+        spec.heaviside = snap.params.heaviside
+        spec.beta = 1
         // A loose inner solve keeps the live loop smooth; the OC update is itself
         // approximate, and a 3e-4 residual gives a design indistinguishable from a
         // tight solve (verified) at roughly half the CG iterations.
@@ -331,14 +342,26 @@ export function TopOptStudio() {
         optRef.current = new TopOpt(spec)
         histRef.current = []
         builtKey = snap.buildKey
+        beta = 1
         lastStat = t
         setConverged(false)
+        setBeta(1)
         setDiag({ iter: 0, compliance: 0, volume: snap.params.volfrac, change: 1, grayness: 1 })
       }
       const opt = optRef.current
       if (opt) {
         let stepped = false
         if (snap.running && !snap.converged) {
+          // Heaviside β-continuation: periodically sharpen the projection so the
+          // grey transition band collapses to a crisp 0/1 design. A fixed high β
+          // from a grey start stalls; raising it gradually does not.
+          const sharpening = snap.heaviside && beta < BETA_MAX
+          if (snap.heaviside && opt.iter > 0 && opt.iter % BETA_STEP_EVERY === 0 && beta < BETA_MAX) {
+            beta = Math.min(BETA_MAX, beta * 1.6)
+            opt.spec.beta = beta
+            opt.reproject()
+            setBeta(beta)
+          }
           const s = opt.step()
           stepped = true
           const hist = histRef.current
@@ -349,7 +372,8 @@ export function TopOptStudio() {
             drawSpark()
             lastStat = t
           }
-          if (s.iter > 12 && s.change < 0.01) {
+          // Don't declare convergence mid-continuation — wait until β saturates.
+          if (s.iter > 12 && s.change < 0.01 && !sharpening) {
             setDiag(s)
             drawSpark()
             setConverged(true)
@@ -381,6 +405,7 @@ export function TopOptStudio() {
       penal: 3,
       rmin: p.defaults.rmin,
       filter: prev.filter,
+      heaviside: prev.heaviside,
     }))
     setRunning(true)
   }
@@ -462,6 +487,7 @@ export function TopOptStudio() {
               <span className="chip" style={{ color: '#cfe0ff' }}>
                 {problem.name} · {params.nelx}×{params.nely}
                 {problem.symmetry ? ' (½, mirrored)' : ''} · iter {diag.iter}
+                {params.heaviside ? ` · β=${beta.toFixed(1)}` : ''}
               </span>
             </div>
           </div>
@@ -585,6 +611,20 @@ export function TopOptStudio() {
             format={(v) => (v === 0 ? 'off' : v.toFixed(2))}
           />
           <Toggle label="Show supports & load" checked={showBC} onChange={setShowBC} />
+        </div>
+
+        <div className="panel">
+          <div className="panel-title">Discreteness</div>
+          <Toggle
+            label="Heaviside projection (crisp 0/1)"
+            checked={params.heaviside}
+            onChange={(v) => patch({ heaviside: v })}
+          />
+          <p className="hint-text">
+            The density filter leaves a grey transition band. A smoothed-Heaviside projection
+            with automatic β-continuation (β → {BETA_MAX}) collapses it to a manufacturable
+            black-and-white design — usually at <em>lower</em> compliance too. Grayness Mₙd → 0.
+          </p>
         </div>
       </aside>
     </div>
