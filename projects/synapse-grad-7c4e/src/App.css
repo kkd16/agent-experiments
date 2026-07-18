@@ -2858,3 +2858,138 @@ label.toggle input {
   color: var(--muted);
   font-family: ui-monospace, monospace;
 }
+
+/* ---- Vision Transformer (ViT) lab ---------------------------------------------------- */
+.vit-attn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vit-attn-row {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.vit-fig {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+.vit-fig figcaption {
+  font-size: 11px;
+  color: var(--muted, #94a3b8);
+  text-align: center;
+}
+.vit-canvas {
+  image-rendering: pixelated;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: #0b1220;
+}
+.vit-pred {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  flex: 1;
+}
+.vit-pred-call {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.vit-probs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.vit-prob {
+  display: grid;
+  grid-template-columns: 22px 1fr 26px;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.vit-prob-l {
+  color: var(--muted, #94a3b8);
+  text-align: right;
+}
+.vit-prob-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.12);
+  overflow: hidden;
+}
+.vit-prob-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.12s ease;
+}
+.vit-prob-v {
+  color: var(--muted, #94a3b8);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.vit-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.vit-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vit-slider input[type='range'] {
+  width: 160px;
+}
+.vit-heads {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  padding-top: 10px;
+}
+.vit-heads-title {
+  margin-bottom: 2px;
+}
+.vit-head-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.vit-head-lab {
+  width: 24px;
+  color: var(--muted, #94a3b8);
+}
+.vit-mini {
+  image-rendering: pixelated;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.vit-drawpad {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vit-drawpad-main {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.vit-draw-canvases {
+  display: flex;
+  gap: 12px;
+}
+.vit-drawpad .draw-probs {
+  flex: 1;
+  min-width: 140px;
+}

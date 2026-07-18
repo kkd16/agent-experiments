@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Twenty-one labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Twenty-three labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -10,6 +10,17 @@ gradient is hand-derived and the tape is hand-rolled). Twenty-one labs share the
   image set (handwritten-style digits 0–9 and shapes, rendered from strokes — no MNIST, no
   bundled data) and **draw your own glyph** to have it classified live, with learned-filter,
   feature-map and confusion-matrix views.
+- **Vision · ViT** — the bridge between the CNN and the sequence Transformer: treat the image as a
+  **sequence of patches**. A glyph is cut into a P×P grid of non-overlapping patches, each linearly
+  projected to a token; a learnable **[CLS]** token is prepended, learnable positional embeddings are
+  added, and the sequence runs through a stack of **pre-LN bidirectional Transformer encoder blocks**
+  (multi-head self-attention + a GELU MLP — the sequence Transformer's primitives *minus* the causal
+  mask) before the [CLS] token is read off and classified. The headline is **attention rollout** (Abnar
+  & Zuidema, 2020): fold the per-layer attention (mixed with the residual identity) into one map from
+  [CLS] back to the patches — *where the classifier looks* — drawn straight over the glyph, with a
+  depth scrubber and the raw per-head maps beside it. Draw your own glyph and watch the rollout light up
+  live. The whole patch-transformer is assembled from the engine's own gradchecked ops and gradchecked
+  end-to-end.
 - **Transformer · Attention** — train a from-scratch **decoder-only Transformer** (a tiny GPT)
   on procedural algorithmic tasks (copy / reverse / sort / add two numbers) with next-token
   prediction, and **watch the causal self-attention maps** crystallise per layer and head while
@@ -2541,3 +2552,82 @@ Still deferred (future, building on this lab):
       the Transformer/KAN/Flow labs.
 - [ ] **A memory-allocation / read-mode trace overlay** once the DNC lands, and a per-step scrub of the
       memory matrix (not just the final state).
+
+### Session 24 — a twenty-third lab: Vision · ViT (patches → Transformer → attention rollout) (claude, 2026-07-18)
+
+The framework had a from-scratch **CNN** (translation-equivariant convolutions) and a from-scratch
+**Transformer** (self-attention over token sequences), but nothing that bridged them. The **Vision
+Transformer** (Dosovitskiy et al., 2021) is exactly that bridge and the natural twenty-third lab: it
+throws away convolution entirely and treats an image as a *sequence of patches*, then runs the ordinary
+Transformer encoder over it. Building it here makes a clean pedagogical trio — *convolution vs. attention
+on the very same procedural glyphs* — and, because it is assembled from the engine's already-gradchecked
+primitives (matmul, softmax, layerNorm, gelu, concatCols, stackRows), the whole classifier is one autograd
+graph that gradchecks end-to-end, in keeping with every other lab.
+
+The plan (all shipped this session):
+
+- [x] **The ViT engine** (`src/engine/vit.ts`) — a `ViT` class built purely on the shared ops:
+  - **Patch embedding** — an image is cut into a `gridSide×gridSide` grid of non-overlapping
+    `patch×patch` blocks (`patchify`, a constant tensor: no gradient flows to pixels), each flattened and
+    linearly projected (`patches · patchProj + patchBias`) to a `dModel` token.
+  - **[CLS] token + positional embeddings** — a learnable `[1,dModel]` class token is prepended with
+    `stackRows`, and learnable `[T,dModel]` positional embeddings (`T = numPatches+1`) are added, so the
+    otherwise permutation-equivariant attention knows *where* each patch is.
+  - **Pre-LN bidirectional encoder blocks** — for each layer: `LayerNorm → per-head Q/K/V matmuls →
+    scaled dot-product `QKᵀ/√dₕ` → **row-wise softmax** (no causal mask) → `·V` → `concatCols` heads →
+    output projection`, a residual add, then `LayerNorm → GELU MLP → residual`. Exactly the sequence
+    Transformer's block with the mask removed.
+  - **Class-token readout** — a cached constant `[1,T]` selector lifts row 0 out of the final
+    LayerNorm'd sequence via a matmul (keeps the readout on the tape without a bespoke slice op), then a
+    linear head → `[1,numClasses]` logits. A mini-batch is run image-by-image and glued back with
+    `stackRows` for the shared softmax-cross-entropy.
+  - `parameters()` / `exportWeights()` / `importWeights()` for the optimizer, save/load and URL sharing.
+- [x] **Attention rollout** (`attentionRollout`, `clsAttentionAt` in `vit.ts`) — the interpretability
+      headline. Following Abnar & Zuidema (2020): average the heads, add the residual identity, row-
+      normalize to a distribution, and multiply the layers together; row 0 (the [CLS] row), restricted to
+      the patch columns, is how much of the classifier's representation traces back to each patch. Returns
+      the per-depth truncations too, so the UI can **scrub attention deepening** across layers.
+- [x] **Trainer hook** (`src/hooks/useViTTrainer.ts`) — mirrors the Vision trainer: procedural-glyph
+      dataset (shapes / digits, shared with the CNN lab), train/val split, RAF training loop with an LR
+      schedule + grad clipping, live loss/accuracy history and confusion matrix, one-click end-to-end
+      gradient check, `predictImage`, and an `analyze(pixels)` that returns the class prediction **plus**
+      the folded rollout, the raw per-layer [CLS] attention, and the attention capture for the views.
+- [x] **The lab UI** (`src/components/vit/`) — the signature **attention-rollout overlay** (the warm
+      "inferno" heat of where [CLS] attends, blended over the dimmed glyph, bilinearly upsampled or shown
+      per-patch) with a **rollout-depth scrubber** and the **raw per-head attention grid** (rows = layers,
+      columns = heads) beside it; a **draw-your-own-glyph pad** that classifies live and paints its
+      rollout on every stroke; the samples gallery, training curves and confusion matrix. A ViT
+      architecture picker (patch size / width / heads / layers) shows the patch count and parameter budget
+      live.
+- [x] **Wired into the engine self-test** — `runSelfTest` grew **122 → 124 ops**: a whole small ViT
+      (`patch 4`, `d12`, 2 heads, 2 layers) gradchecked end-to-end through softmax-cross-entropy (max-rel
+      ~1.2e-4 over 2411 entries), plus a check that the rollout [CLS] row is a valid sub-distribution.
+      Overall suite max-rel-error stays `< 1e-3` (passes, 124/124 green).
+- [x] **Verified it actually learns** — trained outside the browser first: the default `small` ViT
+      (patch 4 → 16 patches, d48, 4 heads, 3 layers, ~58k params, Adam lr 6e-3) climbs from ~26% to
+      **~97%** accuracy on the 4-class shapes set in ~200 steps, and the rollout concentrates on the
+      glyph's ink. Then verified the production build in **headless Chromium**: the `Vision · ViT` tab
+      renders the rollout overlay, per-head maps, samples, curves and draw pad with **no console errors**.
+
+Wiring & conformance: a new `Vision · ViT` tab (hash `#i=`), placed between the CNN and Transformer labs
+so the convolution-vs-attention story reads left to right; all changes confined to
+`projects/synapse-grad-7c4e/`, **no new dependencies**, `base: './'` and hash routing preserved. Full
+`verify-project.mjs` gate (scope + conformance + lint + build) **green**; `pnpm build` transforms 247
+modules.
+
+Still deferred (future, building on this lab):
+
+- [ ] **CNN-vs-ViT race panel** — same glyphs, same parameter budget, both accuracy curves on one chart,
+      to make the inductive-bias trade-off (data-efficiency vs. flexibility) visible.
+- [ ] **Register / mean-pool readout** toggles as alternatives to the [CLS] token, and a **DINO-style
+      attention** view (last-layer [CLS]→patch, no rollout) side by side.
+- [ ] **Patch-embedding-as-convolution** view — show that the linear patch projection is a stride-`patch`
+      conv, tying the ViT back to the CNN lab explicitly.
+- [ ] **Positional-embedding visualization** — the learned `pos_i · pos_jᵀ` similarity grid recovering the
+      2-D patch layout, the classic ViT diagnostic.
+- [ ] **Attention-distance** plot (mean pixel distance each head attends over, per layer) — the "heads go
+      global with depth" result — and a **head-ablation** lesion like the Transformer lab has.
+- [ ] **Weight-in-URL save/share** carried on `#i=` and localStorage slots (the plumbing is already in
+      place via `snapshot`/`prepareLoad`).
+- [ ] **A hybrid CNN→ViT stem** (a couple of conv layers before patchifying) to show it trains faster on
+      tiny data.
