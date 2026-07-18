@@ -442,6 +442,44 @@ export function TopOptStudio() {
     }
   }
 
+  // Vector export: the thresholded (black-and-white) design as an SVG of unit
+  // element squares — a clean, scalable outline to hand off to CAD or a cutter.
+  const exportSVG = () => {
+    const opt = optRef.current
+    if (!opt) return
+    const nelx = opt.nelx
+    const nely = opt.nely
+    const mirror = problem.symmetry === 'left'
+    const W = mirror ? nelx * 2 : nelx
+    const H = nely
+    const thr = threshold > 0 ? threshold : 0.5
+    const rects: string[] = []
+    for (let ey = 0; ey < nely; ey++) {
+      const y = nely - 1 - ey // SVG y runs top-down; domain y runs up
+      for (let ex = 0; ex < nelx; ex++) {
+        if (opt.xPhys[ey * nelx + ex] >= thr) {
+          rects.push(`<rect x="${ex}" y="${y}" width="1" height="1"/>`)
+          if (mirror) rects.push(`<rect x="${2 * nelx - 1 - ex}" y="${y}" width="1" height="1"/>`)
+        }
+      }
+    }
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W * 8}" height="${H * 8}">` +
+      `<rect width="${W}" height="${H}" fill="#ffffff"/>` +
+      `<g fill="#111318" shape-rendering="crispEdges">${rects.join('')}</g></svg>`
+    try {
+      const blob = new Blob([svg], { type: 'image/svg+xml' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `keystone-${params.problemId}-${diag.iter}.svg`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      /* sandbox — ignore */
+    }
+  }
+
   const fmt = (v: number, d = 3) => (Number.isFinite(v) ? v.toPrecision(d) : '—')
 
   return (
@@ -475,6 +513,9 @@ export function TopOptStudio() {
           </button>
           <button className="tool" onClick={exportPNG}>
             ⬇ PNG
+          </button>
+          <button className="tool" onClick={exportSVG}>
+            ⬇ SVG
           </button>
           <div className="tool-hint">
             {converged ? 'Converged — the layout has settled.' : running ? 'Optimizing…' : 'Paused'}

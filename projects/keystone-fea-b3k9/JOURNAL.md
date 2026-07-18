@@ -467,7 +467,9 @@ with a bisection on the volume Lagrange multiplier — run live, one iteration p
       interactive (Jacobi-PCG iteration count grows with the void contrast) — future
 - [ ] **Stress-constrained** and **compliant-mechanism** (multi-load, output-displacement)
       formulations; **MMA** update in place of OC for general constraints — future
-- [ ] Export the thresholded design as an **SVG contour** / STL for CAD hand-off — future
+- [x] Export the thresholded design as a **vector SVG** (unit-square elements, mirror-aware)
+      for CAD / cutter hand-off — an "SVG" button beside the PNG export
+- [ ] Export a merged **SVG contour** (marching squares) / **STL** for CAD hand-off — future
 
 ## Session log
 
