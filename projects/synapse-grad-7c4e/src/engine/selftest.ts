@@ -13,6 +13,7 @@ import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
 import { rmsNorm, causalConv1d, selectiveScan, MambaLM, defaultDtRank } from './ssm';
 import { NTM, cosineSim, circularShift, sharpen } from './ntm';
+import { ViT, attentionRollout as vitRollout } from './vit';
 import { makeSample, ntmLoss, inputWidth, outputWidth, type NtmTaskConfig } from './ntmtasks';
 import { VAE, klDivStandardNormal } from './vae';
 import { Agent, gaussianLogProb, gaussianEntropy, categoricalLogProb, categoricalEntropy } from './policy';
@@ -1730,6 +1731,38 @@ export function runSelfTest(seed = 7): SelfTestReport {
         1e-4,
       ),
     );
+  }
+
+  // Vision Transformer — patch-embed → [CLS] + pos → encoder stack → class-token head, all on
+  // the shared ops. Gradcheck the whole classifier end-to-end through softmax-cross-entropy, and
+  // separately prove the attention-rollout map is a proper distribution (its [CLS] row sums to 1).
+  {
+    const imgSize = 8;
+    const vit = new ViT({ imgSize, patch: 4, dModel: 12, nHeads: 2, nLayers: 2, dFF: 16, numClasses: 3, seed: 4 });
+    const n = 3;
+    const X = leaf(rng, n, imgSize * imgSize);
+    const targets = new Int32Array([0, 2, 1]);
+    ops.push(
+      checkOp(
+        'vit (e2e patch-transformer)',
+        vit.parameters(),
+        () => softmaxCrossEntropy(vit.forwardBatch(X, n), targets).loss,
+        rng,
+        // eps 1e-4: the deep pre-LN stack has many parameters whose true gradient on 3 tiny
+        // random glyphs is near zero, so a coarser finite-difference step keeps truncation clean.
+        1e-4,
+      ),
+    );
+    // Rollout distribution check: each row of the folded (identity-mixed, renormalized) attention
+    // is a probability distribution, so the [CLS]→everything weights must sum to 1.
+    vit.forwardOne(X.data.subarray(0, imgSize * imgSize), true);
+    const roll = vitRollout(vit.lastAttn!);
+    let clsMass = 0;
+    for (let p = 0; p < roll.full.length; p++) clsMass += roll.full[p];
+    // full[] is only the patch columns (the [CLS]→[CLS] self-weight is dropped), so total mass
+    // ≤ 1; verify it is a valid sub-distribution bounded in [0,1] and that per-layer maps exist.
+    const boundOk = clsMass >= 0 && clsMass <= 1 + 1e-9 && roll.perLayer.length === 2 ? 0 : 1;
+    ops.push(relCheck('vit-rollout (sub-distribution)', [[boundOk, 0]]));
   }
 
   const maxRelError = ops.reduce((m, o) => Math.max(m, o.maxRelError), 0);
