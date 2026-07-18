@@ -352,6 +352,37 @@ export function clsAttentionAt(attn: ViTAttn, layer: number): Float64Array {
   return out;
 }
 
+// The classic ViT positional-embedding diagnostic. For the P² patch positions (skipping the
+// [CLS] slot at index 0), compute the cosine similarity between every pair of position
+// embeddings. Returns a numPatches×numPatches matrix; reshaped per row into P×P tiles, each
+// tile shows how similar one patch position is to all others — and a *trained* ViT recovers 2-D
+// locality (each position most similar to its spatial neighbours) with no such structure imposed.
+export function positionalSimilarity(model: ViT): { sim: Float64Array; numPatches: number; gridSide: number } {
+  const T = model.numPatches + 1;
+  const d = model.cfg.dModel;
+  const np = model.numPatches;
+  const pos = model.posEmb.data;
+  const norm = new Float64Array(np);
+  for (let i = 0; i < np; i++) {
+    let s = 0;
+    const base = (i + 1) * d; // +1 skips the [CLS] position
+    for (let k = 0; k < d; k++) s += pos[base + k] * pos[base + k];
+    norm[i] = Math.sqrt(s) + 1e-9;
+  }
+  const sim = new Float64Array(np * np);
+  for (let i = 0; i < np; i++) {
+    const bi = (i + 1) * d;
+    for (let j = 0; j < np; j++) {
+      const bj = (j + 1) * d;
+      let dot = 0;
+      for (let k = 0; k < d; k++) dot += pos[bi + k] * pos[bj + k];
+      sim[i * np + j] = dot / (norm[i] * norm[j]);
+    }
+  }
+  void T;
+  return { sim, numPatches: np, gridSide: model.gridSide };
+}
+
 export const VIT_ARCH_PRESETS: { id: string; label: string; patch: number; dModel: number; nHeads: number; nLayers: number; dFF: number }[] = [
   { id: 'tiny', label: 'Tiny · patch 4 · d24 · 2 layers', patch: 4, dModel: 24, nHeads: 3, nLayers: 2, dFF: 48 },
   { id: 'small', label: 'Small · patch 4 · d48 · 3 layers', patch: 4, dModel: 48, nHeads: 4, nLayers: 3, dFF: 96 },

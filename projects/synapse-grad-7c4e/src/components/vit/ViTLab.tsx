@@ -16,6 +16,7 @@ import {
 import ViTPanel from './ViTPanel';
 import ViTDrawPad from './ViTDrawPad';
 import AttentionView from './AttentionView';
+import PosEmbView from './PosEmbView';
 import ViTSamples from './ViTSamples';
 import ConfusionMatrix from '../vision/ConfusionMatrix';
 import LossChart from '../LossChart';
@@ -209,6 +210,14 @@ export default function ViTLab() {
             </div>
             <ConfusionMatrix confusion={confusion} labels={handle.labels} />
           </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">
+            Positional-embedding similarity
+            <span className="muted small"> — each tile: one patch position vs. all others; a trained ViT recovers the 2-D grid</span>
+          </div>
+          <PosEmbView handle={handle} tick={tick} />
         </div>
 
         <div className="card draw-card">

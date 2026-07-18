@@ -2993,3 +2993,9 @@ label.toggle input {
   flex: 1;
   min-width: 140px;
 }
+.vit-posemb {
+  display: grid;
+  gap: 3px;
+  justify-content: start;
+  padding: 4px 0;
+}
