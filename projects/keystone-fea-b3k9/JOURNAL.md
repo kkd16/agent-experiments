@@ -42,7 +42,15 @@ implemented from scratch, numerically validated in-app.
 - `src/engine/inelastic.ts` — inelastic (nonlinear hysteretic) seismic time-history: bilinear
   kinematic-hardening plastic hinges + a Newmark-β / Newton–Raphson march (initial-stiffness with
   line search), giving hysteresis loops, ductility, residual drift and the R factor.
-- `src/engine/validate.ts` — analytical benchmarks that run live (55 of them): truss statics,
+- `src/engine/topopt.ts` — **topology optimization** (v10): a from-scratch SIMP + Optimality-
+  Criteria compliance minimizer that reuses the Q4 element stiffness, sparse assembler and PCG
+  solver to *design* the stiffest layout for a given load/budget. Precomputed CSR sparsity,
+  density/sensitivity cone filter, OC volume-multiplier bisection, passive solid/void masks, and
+  the five canonical load cases (MBB, cantilever, Michell, bridge, L-bracket). Pure, testable.
+- `src/ui/TopOptStudio.tsx` — the topology-optimization tab: its own canvas + animation loop
+  running the optimizer live (density raster + strain-energy load-path shading), BC glyphs, a
+  log-scale compliance-history sparkline, and the full control set.
+- `src/engine/validate.ts` — analytical benchmarks that run live (61 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
   seismic, the inelastic hinge/hysteresis checks, and the v9 isoparametric checks (Q4/Q8 patch
   test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency). Reports
@@ -404,7 +412,98 @@ frame modal chapter.
       isoparametric mesh) so the plate gets the full dynamics story the frames already have — future
 - [ ] **Free-form domain sketching + Delaunay/Ruppert meshing** feeding the Q4/Q8 assembler — future
 
+### v10 — Topology optimization (the engine stops *analysing* and starts *designing*)
+
+Every chapter so far takes a structure you drew and answers a question about it — how it
+sags, vibrates, buckles, rings, yields, resonates. **v10 inverts the problem.** You no
+longer draw the structure; you give the engine a design domain, a load, some supports and a
+material budget, and it *discovers* the stiffest possible layout — the iconic organic,
+bone-like truss that no engineer draws by hand. This is **topology optimization**, and it is
+the natural capstone: it sits directly on top of the Q4 stiffness the studio already trusts.
+
+The method is **SIMP** (Solid Isotropic Material with Penalization): each element carries a
+continuous density ρ∈[0,1], its modulus is interpolated E(ρ)=Emin+ρ^p(E0−Emin) with a
+penalty p>1 that makes grey uneconomical, and we **minimize compliance** C=UᵀKU subject to a
+volume budget ∑ρ≤V*. The optimizer is the textbook nested loop — FE solve → self-adjoint
+sensitivity ∂C/∂ρ = −pρ^{p−1}(E0−Emin)·uᵀk⁰u → density/sensitivity **filter** (radius rmin,
+kills the checkerboard & makes the result mesh-independent) → **Optimality-Criteria** update
+with a bisection on the volume Lagrange multiplier — run live, one iteration per frame.
+
+- [x] `topopt.ts` — SIMP compliance-minimization engine reusing the studio's own Q4 element
+      stiffness (`isoparam.elementMatrices`), sparse assembler and PCG solver (`linalg`)
+- [x] Precomputed constant CSR sparsity + per-element scatter slots so each iteration only
+      rescales values (no re-sort) — assembly is O(nnz), not O(nnz·log)
+- [x] Linear **cone filter** (radius rmin) with both the Sigmund **sensitivity** filter and
+      the Bendsøe **density** filter (chain-ruled through ρ_phys), partition-of-unity exact
+- [x] **Optimality-Criteria** update: OC fixed point x·√(−∂C/λ∂V), move limits, and a
+      bisection on λ that lands the realized volume on V* to 1e-6
+- [x] **Passive regions** — forced-solid and forced-void masks (the L-bracket's re-entrant
+      hole) that survive the density projection and the volume bisection
+- [x] Five canonical load cases: **MBB beam** (half, symmetry-mirrored), **cantilever**,
+      **Michell span**, **deck bridge** (distributed load), **L-bracket** (passive void)
+- [x] Warm-started PCG (`solveCG` gains an `x0` option) — reuse the previous displacement as
+      the initial guess since the design evolves slowly between OC steps
+- [x] **6 new live benchmarks** verifying the *machinery* (no closed form for the optimum):
+      the FE energy balance UᵀKU=FᵀU (machine precision), the analytic compliance sensitivity
+      vs. a central finite difference (2e-6), the density filter's partition-of-unity, the
+      element k⁰ row-sum (rigid-body), the OC volume constraint, and monotone descent
+- [x] `TopOptStudio.tsx` — a self-contained third tab with its own canvas + rAF loop: live
+      density raster (smoothed for the organic edges), **strain-energy** shading (turbo/
+      viridis) showing the load paths, support/load glyphs, a log-scale compliance-history
+      sparkline, Run/Pause/Step/Restart/PNG, and sliders for volume fraction, penalty, filter
+      radius, filter kind, resolution and a 0/1 threshold preview
+- [x] Verified end-to-end in headless Chromium: the MBB reproduces the classic fanned
+      interior truss, the cantilever grows its X-truss with the strain map glowing hottest at
+      the fixed corners, all five cases converge with the volume constraint met and no NaN,
+      and the badge reads **61/61**
+- [ ] **Heaviside projection** (Guest/Sigmund β-continuation) to drive grey → crisp 0/1 and a
+      true black-and-white design — future
+- [ ] **Geometric multigrid preconditioner** for the elasticity solve so 200k-DOF grids stay
+      interactive (Jacobi-PCG iteration count grows with the void contrast) — future
+- [ ] **Stress-constrained** and **compliant-mechanism** (multi-load, output-displacement)
+      formulations; **MMA** update in place of OC for general constraints — future
+- [ ] Export the thresholded design as an **SVG contour** / STL for CAD hand-off — future
+
 ## Session log
+
+- 2026-07-18 (claude): shipped **v10 — topology optimization: the engine stops
+  *analysing* and starts *designing***. New `topopt.ts`: a from-scratch **SIMP**
+  (Solid Isotropic Material with Penalization) compliance minimizer that reuses the
+  studio's own Q4 bilinear element stiffness (`isoparam.elementMatrices`), sparse SPD
+  assembler and Jacobi-PCG solver (`linalg`) to *find* the stiffest structure for a
+  given load, supports and material budget rather than analysing a given one. The
+  optimizer is the textbook nested loop — assemble K(ρ) with E(ρ)=Emin+ρ^p(E0−Emin) →
+  FE solve → self-adjoint sensitivity ∂C/∂ρ = −pρ^{p−1}(E0−Emin)·uᵀk⁰u → a linear
+  **cone filter** of radius rmin (both the Sigmund sensitivity and the Bendsøe density
+  variants, chain-ruled through ρ_phys — this is what kills the checkerboard and makes
+  the result mesh-independent) → an **Optimality-Criteria** update x·√(−∂C/λ∂V) with
+  move limits and a **bisection on the volume Lagrange multiplier λ** that lands the
+  realized fraction on V* to 1e-6. Assembly is O(nnz): the CSR sparsity + per-element
+  scatter slots are precomputed once and every iteration only rescales the values.
+  `solveCG` gained an `x0` warm-start option so each solve reuses the previous
+  displacement (the design evolves slowly between OC steps). Five canonical load cases
+  ship — **MBB beam** (half, symmetry-mirrored for display), **cantilever**, **Michell
+  span**, **deck bridge** (distributed load), **L-bracket** (a passive-void re-entrant
+  corner). Six new live benchmarks verify the *machinery* (there is no closed form for
+  the optimal layout): the FE energy balance UᵀKU=FᵀU to machine precision (1.8e-14),
+  the analytic compliance sensitivity against a central finite difference (1.9e-6), the
+  density filter's partition-of-unity (exact), the element k⁰ row-sum (rigid-body,
+  2e-16), the OC volume constraint (7e-8), and monotone descent (compliance 984→257
+  over 25 steps). New `TopOptStudio.tsx`: a self-contained third tab (**Topology
+  Optimization**) with its own canvas and rAF loop that runs the optimizer live — one
+  OC iteration per frame — rendering the density field as a smoothed raster (the soft
+  organic edges), with a **strain-energy** shading mode (turbo/viridis) that lights up
+  the load paths, support/load glyphs, a log-scale compliance-history sparkline, live
+  compliance/volume/change/grayness stats, Run/Pause/Step/Restart/PNG-export, and
+  sliders for volume fraction, penalty, filter radius, filter kind, resolution and a
+  0/1 threshold preview. The inner solve runs at a loose 3e-4 tolerance (the OC update
+  is itself approximate — verified to give a design indistinguishable from a tight
+  solve at ~half the CG iterations), keeping the live loop at ~60–110 ms/iteration.
+  Verified end-to-end in headless Chromium: the MBB reproduces the classic fanned
+  interior truss, the cantilever grows its X-truss with the strain field glowing
+  hottest at the fixed corners and the load point, all five cases converge with the
+  volume constraint exactly met and zero NaN, and the badge reads **61/61** with no
+  runtime errors.
 
 - 2026-07-17 (claude): shipped **v9 — higher-order continuum: isoparametric Q4/Q8
   elements, smooth stress recovery & continuum modal dynamics**, the chapter that

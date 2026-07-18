@@ -15,6 +15,7 @@ import { rectPlateQ, cantileverMeshQ, nodeNearestQ } from './quadmesh'
 import type { QOrder } from './isoparam'
 import { newmarkSDOF, syntheticQuake, solveSeismic, harmonicGround } from './seismic'
 import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
+import { TopOpt, unitElementK, type TopOptSpec, PROBLEMS } from './topopt'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -885,6 +886,116 @@ export function runQuadBenchmarks(): Check[] {
   return checks
 }
 
+// ---------------------------------------------------------------------------
+// Topology optimization (SIMP + OC). No closed form for the optimal layout, so
+// we verify the *machinery* instead: the FE energy balance, the analytic
+// compliance sensitivity against a finite difference, the filter's
+// partition-of-unity, the OC volume constraint, and that the optimizer actually
+// descends. If these hold, the designs the studio draws are trustworthy.
+// ---------------------------------------------------------------------------
+
+/** A tiny MBB-like problem for fast, deterministic self-tests. */
+function tinyMBB(nelx: number, nely: number, volfrac: number, rmin: number, filter: 'density' | 'sensitivity'): TopOptSpec {
+  return PROBLEMS[0].build(nelx, nely, volfrac, rmin, filter)
+}
+
+export function runTopOptBenchmarks(): Check[] {
+  const checks: Check[] = []
+
+  // 1. Energy balance: for a single applied load, the compliance C = UᵀKU must
+  //    equal the external work FᵀU exactly (both are the same quadratic form).
+  {
+    const opt = new TopOpt({ ...tinyMBB(16, 6, 0.5, 1.5, 'density'), cgTol: 1e-12 })
+    opt.solveFE()
+    const { UKU, FU } = opt.energyBalance()
+    checks.push(check('Energy balance UᵀKU = FᵀU', 'compliance is the external work', FU, UKU, 'C', 1e-7))
+  }
+
+  // 2. Analytic sensitivity vs. central finite difference. Using the sensitivity
+  //    filter so ρ_phys = ρ, we can perturb a single physical density and watch
+  //    the compliance respond, then compare to ∂C/∂ρ = −p ρ^{p−1}(E0−Emin) uᵀk⁰u.
+  {
+    const spec = { ...tinyMBB(12, 5, 0.5, 1.001, 'sensitivity'), cgTol: 1e-12 } as TopOptSpec
+    const opt = new TopOpt(spec)
+    // A non-uniform, well-conditioned density field.
+    for (let e = 0; e < opt.nElem; e++) {
+      const v = 0.45 + 0.25 * Math.sin(1.3 * e + 0.7)
+      opt.x[e] = v
+      opt.xPhys[e] = v
+    }
+    opt.solveFE()
+    const p = opt.spec.penal
+    const E0 = opt.spec.E0
+    const Emin = opt.spec.Emin
+    const e0 = Math.floor(opt.nElem / 2) + 1
+    const rho = opt.xPhys[e0]
+    const analytic = -p * Math.pow(rho, p - 1) * (E0 - Emin) * opt.energy[e0]
+    const h = 1e-3
+    opt.xPhys[e0] = rho + h
+    const cPlus = opt.solveFE()
+    opt.xPhys[e0] = rho - h
+    const cMinus = opt.solveFE()
+    opt.xPhys[e0] = rho
+    const fd = (cPlus - cMinus) / (2 * h)
+    checks.push(check('Compliance sensitivity ∂C/∂ρ', 'analytic vs. central finite difference', fd, analytic, '', 2e-3))
+  }
+
+  // 3. Filter partition of unity: the density filter must preserve a constant
+  //    field exactly (∑w/Hs = 1), or it would bias the total volume.
+  {
+    const opt = new TopOpt(tinyMBB(20, 8, 0.5, 3.0, 'density'))
+    for (let e = 0; e < opt.nElem; e++) opt.x[e] = 0.5
+    // projectDensity runs in the constructor on a uniform 0.5 field already.
+    let maxDev = 0
+    for (let e = 0; e < opt.nElem; e++) maxDev = Math.max(maxDev, Math.abs(opt.xPhys[e] - 0.5))
+    checks.push(check('Density filter preserves constants', '∑ weights / Hs = 1 (partition of unity)', 0.5, 0.5 + maxDev, '', 1e-12))
+  }
+
+  // 4. Element stiffness sum-to-zero: a rigid-body translation carries no strain
+  //    energy, so every row of k⁰ must sum to zero (equilibrium of the element).
+  {
+    const KE = unitElementK(0.3)
+    let maxRow = 0
+    for (let a = 0; a < 8; a++) {
+      let s = 0
+      for (let b = 0; b < 8; b++) s += KE[a][b]
+      maxRow = Math.max(maxRow, Math.abs(s))
+    }
+    // Scale by a representative entry so the tolerance is dimensionless.
+    const scale = Math.abs(KE[0][0])
+    checks.push(check('Element k⁰ row-sum = 0', 'rigid-body translation is stress-free', 0, maxRow / scale, '', 1e-12))
+  }
+
+  // 5. OC volume constraint: one update from a uniform start must land the
+  //    realized material fraction on the target V* (the bisection enforces it).
+  {
+    const opt = new TopOpt(tinyMBB(24, 8, 0.5, 1.5, 'density'))
+    const s = opt.step()
+    checks.push(check('OC volume constraint', 'realized fraction = target after update', 0.5, s.volume, '', 2e-3))
+  }
+
+  // 6. Descent: the optimizer must reduce compliance. Compare the first solve to
+  //    the compliance after a run of OC iterations on a small MBB beam.
+  {
+    const opt = new TopOpt(tinyMBB(30, 10, 0.5, 1.5, 'density'))
+    const c0 = opt.step().compliance
+    let cN = c0
+    for (let i = 0; i < 24; i++) cN = opt.step().compliance
+    const relError = cN / c0
+    checks.push({
+      name: 'Optimizer descends',
+      detail: 'compliance after 25 OC steps < initial',
+      expected: c0,
+      computed: cN,
+      relError,
+      unit: 'C',
+      pass: cN < c0 && Number.isFinite(cN),
+    })
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -894,6 +1005,7 @@ export function runAllBenchmarks(): {
   inelastic: Check[]
   continuum: Check[]
   quad: Check[]
+  topopt: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -904,6 +1016,7 @@ export function runAllBenchmarks(): {
   const inelastic = runInelasticBenchmarks()
   const continuum = runContinuumBenchmarks()
   const quad = runQuadBenchmarks()
+  const topopt = runTopOptBenchmarks()
   const allPass = [
     ...frame,
     ...dynamics,
@@ -913,6 +1026,7 @@ export function runAllBenchmarks(): {
     ...inelastic,
     ...continuum,
     ...quad,
+    ...topopt,
   ].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, allPass }
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, allPass }
 }
