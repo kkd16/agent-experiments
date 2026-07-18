@@ -4,14 +4,16 @@ import type { FewShotView } from '../../hooks/useMetaTrainer';
 interface Props {
   view: FewShotView | null;
   trainInnerSteps: number; // where to draw the "trained horizon" marker
+  linear?: boolean; // true = accuracy 0..1 on a linear axis (classification); false = log MSE
   width: number;
   height: number;
 }
 
-// Average query MSE on a batch of held-out *novel* tasks as a function of adaptation steps, on a
-// log scale. The meta-learned init (emerald) plunges in the first step or two; the random init
-// (slate) barely moves. This is the empirical proof of "learning to learn".
-export default function FewShotChart({ view, trainInnerSteps, width, height }: Props) {
+// Average query metric on a batch of held-out *novel* tasks as a function of adaptation steps.
+// Regression: query MSE on a log scale (meta-init plunges, random barely moves). Classification:
+// query accuracy on a linear 0..1 axis (meta-init jumps to the top in a step or two). Either way
+// this is the empirical proof of "learning to learn".
+export default function FewShotChart({ view, trainInnerSteps, linear = false, width, height }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export default function FewShotChart({ view, trainInnerSteps, width, height }: P
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
-    const all = [...view.meta, ...view.random].filter((v) => Number.isFinite(v) && v > 0);
+    const all = [...view.meta, ...view.random].filter((v) => Number.isFinite(v) && (linear || v > 0));
     if (all.length === 0) return;
     const lo = Math.min(...all);
     const hi = Math.max(...all);
@@ -48,23 +50,40 @@ export default function FewShotChart({ view, trainInnerSteps, width, height }: P
 
     const n = view.steps.length;
     const sx = (i: number) => padL + (i / (n - 1)) * plotW;
-    const sy = (v: number) => {
-      const lg = Math.log10(Math.max(v, Math.pow(10, L0)));
-      return padT + (1 - (lg - L0) / (L1 - L0)) * plotH;
-    };
+    const sy = linear
+      ? (v: number) => padT + (1 - Math.max(0, Math.min(1, v))) * plotH
+      : (v: number) => {
+          const lg = Math.log10(Math.max(v, Math.pow(10, L0)));
+          return padT + (1 - (lg - L0) / (L1 - L0)) * plotH;
+        };
 
-    // log gridlines + labels
+    // gridlines + labels
     ctx.font = '10px ui-monospace, monospace';
-    for (let e = L0; e <= L1; e++) {
-      const yy = padT + (1 - (e - L0) / (L1 - L0)) * plotH;
-      ctx.strokeStyle = 'rgba(148,163,184,0.10)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padL, yy);
-      ctx.lineTo(W - padR, yy);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(148,163,184,0.55)';
-      ctx.fillText(`1e${e}`, 2, yy + 3);
+    if (linear) {
+      for (let k = 0; k <= 4; k++) {
+        const v = k / 4;
+        const yy = sy(v);
+        ctx.strokeStyle = 'rgba(148,163,184,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yy);
+        ctx.lineTo(W - padR, yy);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(148,163,184,0.55)';
+        ctx.fillText(`${(v * 100).toFixed(0)}%`, 2, yy + 3);
+      }
+    } else {
+      for (let e = L0; e <= L1; e++) {
+        const yy = padT + (1 - (e - L0) / (L1 - L0)) * plotH;
+        ctx.strokeStyle = 'rgba(148,163,184,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yy);
+        ctx.lineTo(W - padR, yy);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(148,163,184,0.55)';
+        ctx.fillText(`1e${e}`, 2, yy + 3);
+      }
     }
 
     // trained-horizon marker
@@ -115,7 +134,7 @@ export default function FewShotChart({ view, trainInnerSteps, width, height }: P
     for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 6))) {
       ctx.fillText(String(view.steps[i]), sx(i) - 3, H - 8);
     }
-  }, [view, trainInnerSteps, width, height]);
+  }, [view, trainInnerSteps, linear, width, height]);
 
   return <canvas ref={ref} style={{ width, height, display: 'block', borderRadius: 8 }} />;
 }

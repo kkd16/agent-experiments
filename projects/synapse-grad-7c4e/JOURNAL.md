@@ -2737,3 +2737,31 @@ Future threads building on this lab:
       "memorization vs adaptation" diagnostic.
 - [ ] **Learned per-parameter inner LR** (Meta-SGD, Li et al. 2017) — meta-learn the step size vector
       alongside θ, and visualize which weights the learner chooses to move fastest.
+
+### Shipped — few-shot classification track (2026-07-18)
+
+Extended the Meta-Learning lab with **MAML's other canonical demo: N-way few-shot 2-D
+classification**, selectable via a **Problem: Regression / Classification** toggle. Same engine,
+same three algorithms, same first-order autograd — now over a distribution of *classification*
+tasks.
+
+- **Engine (`meta.ts`)** — `makeLayers` / `MetaModel` generalized to arbitrary input/output dims
+  (backward-compatible defaults 1→1, so the regression track is untouched). New classification
+  surface: `sampleClfTask` (N Gaussian blobs at random plane locations), `clfBatch`, `clfLossAcc`,
+  `adaptClf` (softmax-CE inner loop), `metaStepClf` (Reptile / FOMAML / joint baseline with accuracy
+  reporting), `fewShotCurveClf` (query **accuracy** vs adaptation steps), and `clfDecisionField` /
+  `adaptClfTrace` for the decision-boundary scrubber.
+- **Hook** — a `mode` config field branches model construction (`2 → H → … → nClasses`), the
+  meta-step, the metrics (accuracy history), and the visualization queries, with guards so a mode
+  switch never runs a stale-dim model for a frame.
+- **UI** — a new **`DecisionBoundaryPanel`** (meta-init vs random-init decision regions side by
+  side, support points overlaid, scrubbed by inner step); the few-shot and meta-training charts gain
+  a linear **accuracy** axis; the problem toggle and per-class controls (N-way, K/class, blob spread)
+  in the panel.
+
+**Proven, out-of-browser then headless.** On 3-way blobs (K=5/class), few-shot query accuracy of the
+meta-init leaps to **100% after a single gradient step** while a random init needs ~4–5 and the joint
+baseline lags — the classic MAML result. In headless Chromium: entering classification mode, training
+Reptile (**25% → 100%** pre/post-adapt) and FOMAML (**21% → 100%**), scrubbing the boundary, resampling
+a novel task, and switching back to regression all run with **zero runtime errors**. Full gate green;
+`pnpm build` transforms 258 modules.
