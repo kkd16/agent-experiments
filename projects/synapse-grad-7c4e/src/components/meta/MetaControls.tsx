@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
-import type { MetaConfigUI, MetaMetrics } from '../../hooks/useMetaTrainer';
+import type { MetaConfigUI, MetaMetrics, MetaMode } from '../../hooks/useMetaTrainer';
 import type { GradCheckResult } from '../../engine/gradcheck';
 import type { MetaAlgo, TaskFamily } from '../../engine/meta';
 import SelfTestPanel from '../SelfTestPanel';
@@ -7,6 +7,7 @@ import SelfTestPanel from '../SelfTestPanel';
 interface Props {
   config: MetaConfigUI;
   setConfig: Dispatch<SetStateAction<MetaConfigUI>>;
+  onModeChange: (mode: MetaMode) => void;
   onAlgoChange: (algo: MetaAlgo) => void;
   running: boolean;
   onStart: () => void;
@@ -35,7 +36,10 @@ const FAMILIES: { id: TaskFamily; label: string }[] = [
   { id: 'sine-freq', label: 'sine +freq' },
   { id: 'line', label: 'line ax+b' },
 ];
+const NCLASSES = [2, 3, 4, 5];
+const STDS = [0.15, 0.25, 0.35, 0.5];
 const KSHOTS = [5, 10, 20, 40];
+const KSHOTS_CLF = [3, 5, 10, 20];
 const INNER_STEPS = [1, 2, 3, 5, 8];
 const INNER_LRS = [0.005, 0.01, 0.02, 0.05];
 const META_LRS = [0.001, 0.004, 0.01, 0.1, 0.3, 0.5, 1.0];
@@ -58,6 +62,7 @@ export default function MetaControls(props: Props) {
   const {
     config,
     setConfig,
+    onModeChange,
     onAlgoChange,
     running,
     onStart,
@@ -78,8 +83,27 @@ export default function MetaControls(props: Props) {
   const [slotName, setSlotName] = useState('meta-1');
   const set = <K extends keyof MetaConfigUI>(key: K, value: MetaConfigUI[K]) => setConfig((c) => ({ ...c, [key]: value }));
 
+  const clf = config.mode === 'classification';
+
   return (
     <aside className="panel">
+      <section className="group">
+        <h3>Problem</h3>
+        <div className="seg">
+          <button className={!clf ? 'on' : ''} onClick={() => onModeChange('regression')}>
+            Regression
+          </button>
+          <button className={clf ? 'on' : ''} onClick={() => onModeChange('classification')}>
+            Classification
+          </button>
+        </div>
+        <p className="muted small arch-desc">
+          {clf
+            ? 'Few-shot 2-D classification: each task is N Gaussian blobs at random places; adapt a decision boundary from K points/class.'
+            : 'Few-shot regression: each task is a function (the MAML sinusoid); fit it from K support points.'}
+        </p>
+      </section>
+
       <section className="group">
         <h3>Meta-algorithm</h3>
         <div className="seg">
@@ -94,38 +118,77 @@ export default function MetaControls(props: Props) {
 
       <section className="group">
         <h3>Task distribution</h3>
-        <label className="field">
-          <span>Family</span>
-          <select value={config.family} onChange={(e) => set('family', e.target.value as TaskFamily)}>
-            {FAMILIES.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>
-            K-shot support · {config.kShot} <span className="muted small">examples/task</span>
-          </span>
-          <div className="seg">
-            {KSHOTS.map((k) => (
-              <button key={k} className={config.kShot === k ? 'on' : ''} onClick={() => set('kShot', k)}>
-                {k}
-              </button>
-            ))}
-          </div>
-        </label>
-        <label className="field">
-          <span>Label noise · {config.noise.toFixed(2)}</span>
-          <div className="seg">
-            {NOISES.map((v) => (
-              <button key={v} className={config.noise === v ? 'on' : ''} onClick={() => set('noise', v)}>
-                {v}
-              </button>
-            ))}
-          </div>
-        </label>
+        {clf ? (
+          <>
+            <label className="field">
+              <span>Classes · {config.nClasses}-way</span>
+              <div className="seg">
+                {NCLASSES.map((k) => (
+                  <button key={k} className={config.nClasses === k ? 'on' : ''} onClick={() => set('nClasses', k)}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </label>
+            <label className="field">
+              <span>
+                K-shot support · {config.kShot} <span className="muted small">examples/class</span>
+              </span>
+              <div className="seg">
+                {KSHOTS_CLF.map((k) => (
+                  <button key={k} className={config.kShot === k ? 'on' : ''} onClick={() => set('kShot', k)}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </label>
+            <label className="field">
+              <span>Blob spread · {config.std.toFixed(2)}</span>
+              <div className="seg">
+                {STDS.map((v) => (
+                  <button key={v} className={config.std === v ? 'on' : ''} onClick={() => set('std', v)}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="field">
+              <span>Family</span>
+              <select value={config.family} onChange={(e) => set('family', e.target.value as TaskFamily)}>
+                {FAMILIES.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>
+                K-shot support · {config.kShot} <span className="muted small">examples/task</span>
+              </span>
+              <div className="seg">
+                {KSHOTS.map((k) => (
+                  <button key={k} className={config.kShot === k ? 'on' : ''} onClick={() => set('kShot', k)}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </label>
+            <label className="field">
+              <span>Label noise · {config.noise.toFixed(2)}</span>
+              <div className="seg">
+                {NOISES.map((v) => (
+                  <button key={v} className={config.noise === v ? 'on' : ''} onClick={() => set('noise', v)}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </label>
+          </>
+        )}
       </section>
 
       <section className="group">
@@ -244,17 +307,33 @@ export default function MetaControls(props: Props) {
             <span className="muted small">meta-steps</span>
             <b>{metrics.step}</b>
           </div>
-          <div className="stat">
-            <span className="muted small">pre-adapt</span>
-            <b>{Number.isFinite(metrics.preLoss) ? metrics.preLoss.toFixed(3) : '—'}</b>
-          </div>
-          <div className="stat">
-            <span className="muted small">post-adapt</span>
-            <b>{Number.isFinite(metrics.postLoss) ? metrics.postLoss.toFixed(3) : '—'}</b>
-          </div>
+          {clf ? (
+            <>
+              <div className="stat">
+                <span className="muted small">pre-adapt acc</span>
+                <b>{Number.isFinite(metrics.preAcc) ? `${(metrics.preAcc * 100).toFixed(0)}%` : '—'}</b>
+              </div>
+              <div className="stat">
+                <span className="muted small">post-adapt acc</span>
+                <b>{Number.isFinite(metrics.postAcc) ? `${(metrics.postAcc * 100).toFixed(0)}%` : '—'}</b>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="stat">
+                <span className="muted small">pre-adapt</span>
+                <b>{Number.isFinite(metrics.preLoss) ? metrics.preLoss.toFixed(3) : '—'}</b>
+              </div>
+              <div className="stat">
+                <span className="muted small">post-adapt</span>
+                <b>{Number.isFinite(metrics.postLoss) ? metrics.postLoss.toFixed(3) : '—'}</b>
+              </div>
+            </>
+          )}
         </div>
       </section>
 
+      {!clf && (
       <section className="group">
         <h3>Gradient check</h3>
         <p className="muted small">
@@ -276,6 +355,7 @@ export default function MetaControls(props: Props) {
           </div>
         )}
       </section>
+      )}
 
       <section className="group">
         <h3>Engine self-test</h3>
