@@ -2623,8 +2623,9 @@ Still deferred (future, building on this lab):
       attention** view (last-layer [CLS]→patch, no rollout) side by side.
 - [ ] **Patch-embedding-as-convolution** view — show that the linear patch projection is a stride-`patch`
       conv, tying the ViT back to the CNN lab explicitly.
-- [ ] **Positional-embedding visualization** — the learned `pos_i · pos_jᵀ` similarity grid recovering the
-      2-D patch layout, the classic ViT diagnostic.
+- [x] **Positional-embedding visualization** — the learned `pos_i · pos_jᵀ` cosine-similarity grid (a P×P
+      arrangement of P×P tiles, `positionalSimilarity` in `vit.ts` + `PosEmbView`), the classic ViT
+      diagnostic where a trained model recovers the 2-D patch layout from data alone. **Shipped.**
 - [ ] **Attention-distance** plot (mean pixel distance each head attends over, per layer) — the "heads go
       global with depth" result — and a **head-ablation** lesion like the Transformer lab has.
 - [ ] **Weight-in-URL save/share** carried on `#i=` and localStorage slots (the plumbing is already in
