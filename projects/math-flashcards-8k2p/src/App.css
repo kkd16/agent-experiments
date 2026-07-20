@@ -960,3 +960,17 @@ h1 {
 .high-contrast-mode {
   filter: contrast(1.5) saturate(1.5);
 }
+
+@keyframes pulseCorrect {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); box-shadow: 0 0 20px #2ecc71; }
+  100% { transform: scale(1); }
+}
+.pulse-correct {
+  animation: pulseCorrect 0.5s;
+}
+
+.disable-animations, .disable-animations * {
+  animation: none !important;
+  transition: none !important;
+}

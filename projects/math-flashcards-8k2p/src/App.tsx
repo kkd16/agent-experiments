@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
 type Operation = '+' | '-' | '*' | '/';
-type Difficulty = 'easy' | 'medium' | 'hard' | 'custom';
+type Difficulty = 'easy' | 'medium' | 'hard' | 'custom' | 'double-digits';
 
 
 type RunScore = {
@@ -23,6 +23,11 @@ type HistoryItem = {
 const MOTIVATIONAL_QUOTES = ["Math is power.", "Every problem has a solution.", "Practice makes perfect.", "Numbers rule the universe."];
 
 function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false, customMin: number = 1, customMax: number = 10, isBossBattle: boolean = false) {
+  if (difficulty === 'double-digits') {
+    const n1 = Math.floor(Math.random() * 90) + 10;
+    const n2 = Math.floor(Math.random() * 90) + 10;
+    return { n1, n2, selectedOp: '+' as Operation };
+  }
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
 
@@ -109,6 +114,15 @@ function getInitialHideHighScore(): boolean {
 }
 
 
+function getInitialHeaderColor(): string {
+  try {
+    return window.localStorage.getItem('mathFlashcardsHeaderColor') || '';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return '';
+  }
+}
+
 function getInitialFlashcardTextColor(): string {
   try {
     return window.localStorage.getItem('mathFlashcardsTextColor') || '';
@@ -124,6 +138,15 @@ function getInitialInputMethod(): 'numpad' | 'row' {
   } catch (e) {
     console.error("Local storage error:", e);
     return 'numpad';
+  }
+}
+
+function getInitialPulseEffect(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsPulseEffect') === 'true';
+  } catch (e) {
+    console.error("Local storage error:", e);
+    return false;
   }
 }
 
@@ -179,6 +202,14 @@ function getInitialConfettiTrigger(): number {
   } catch (e) {
     console.error("Local storage error:", e);
     return 10;
+  }
+}
+
+function getInitialDisableAnimations(): boolean {
+  try {
+    return window.localStorage.getItem('mathFlashcardsDisableAnimations') === 'true';
+  } catch {
+    return false;
   }
 }
 
@@ -715,9 +746,13 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
 
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
+  const [disableAnimations, setDisableAnimations] = useState<boolean>(getInitialDisableAnimations());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsDisableAnimations', disableAnimations.toString()); } catch (e) { console.error(e); } }, [disableAnimations]);
   const [disableConfetti, setDisableConfetti] = useState<boolean>(getInitialDisableConfetti());
   const [confettiTrigger, setConfettiTrigger] = useState<number>(getInitialConfettiTrigger());
   const [hideHighScore, setHideHighScore] = useState<boolean>(getInitialHideHighScore());
+  const [headerColor, setHeaderColor] = useState<string>(getInitialHeaderColor());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsHeaderColor', headerColor); } catch (e) { console.error(e); } }, [headerColor]);
   const [flashcardTextColor, setFlashcardTextColor] = useState<string>(getInitialFlashcardTextColor());
     const [focusMode, setFocusMode] = useState<boolean>(getInitialFocusMode());
   const [hideNightOwl, setHideNightOwl] = useState<boolean>(getInitialHideNightOwl());
@@ -739,6 +774,8 @@ function App() {
       }, 0);
     }
   }, [floatingBubbles]);
+  const [pulseEffect, setPulseEffect] = useState<boolean>(getInitialPulseEffect());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsPulseEffect', pulseEffect.toString()); } catch (e) { console.error(e); } }, [pulseEffect]);
   const [pulsingFlashcard, setPulsingFlashcard] = useState<boolean>(getInitialPulsingFlashcard());
   const [distractionMode, setDistractionMode] = useState<boolean>(getInitialDistractionMode());
   const [distractionProps, setDistractionProps] = useState({ top: '50%', left: '50%', emoji: '🚀' });
@@ -858,6 +895,7 @@ function App() {
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'targetScore'>('time');
+  const [sessionMistakes, setSessionMistakes] = useState<number>(0);
   useEffect(() => {
     if (distractionMode && isSpeedRunActive && !isPaused) {
       const interval = setInterval(() => {
@@ -917,6 +955,7 @@ function App() {
   const [questionsAnswered, setQuestionsAnswered] = useState<number>(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
+  const [zenElapsedTime, setZenElapsedTime] = useState<number>(0);
     const [timeOfDayAccuracy, setTimeOfDayAccuracy] = useState<TimeOfDayAccuracy>(getInitialTimeOfDayAccuracy());
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
   const [lifetimeSkips, setLifetimeSkips] = useState<number>(getInitialLifetimeSkips());
@@ -1242,6 +1281,10 @@ function App() {
       timerId = setInterval(() => {
         setTimeLeft(t => t - 1);
       }, 1000);
+    } else if (isSpeedRunActive && !isPaused && gameMode === 'zen') {
+      timerId = setInterval(() => {
+        setZenElapsedTime(t => t + 1);
+      }, 1000);
     } else if (isSpeedRunActive && !isPaused && (gameMode === 'time' || gameMode === 'timeAttack') && timeLeft === 0) {
       setTimeout(() => {
         setIsSpeedRunActive(false);
@@ -1413,7 +1456,7 @@ function App() {
     }
   };
 
-  const startSpeedRun = () => {
+  const startSpeedRun = (forceMode?: 'timeAttack', forceDuration?: number) => {
     setMaxComboThisRun(0);
     const hour = new Date().getHours();
     if (hour >= 0 && hour < 4 && !nightOwlUnlocked) {
@@ -1422,13 +1465,17 @@ function App() {
     }
     setScore(0);
     updateStreak(0);
-    if (gameMode === 'time' || gameMode === 'timeAttack') {
-      setTimeLeft(selectedTimerDuration === 0 ? customTimerDuration : selectedTimerDuration);
+    const currentMode = forceMode || gameMode;
+    if (currentMode === 'time' || currentMode === 'timeAttack') {
+      const duration = forceDuration !== undefined ? forceDuration : selectedTimerDuration;
+      setTimeLeft(duration === 0 ? customTimerDuration : duration);
       setStartTime(Date.now());
     } else {
       setStartTime(Date.now());
     }
     setQuestionsAnswered(0);
+    setSessionMistakes(0);
+    setZenElapsedTime(0);
     setHistory([]);
     setIsSpeedRunActive(true);
     setShowSummary(false);
@@ -1539,7 +1586,7 @@ function App() {
       if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([50, 50, 50]);
       setAnswerStatus('correct');
       setTimeout(() => setAnswerStatus(null), 500);
-      setAnimationClass('flash-correct');
+      setAnimationClass(pulseEffect ? 'flash-correct pulse-correct' : 'flash-correct');
       setTimeout(() => setAnimationClass(''), 500);
 
       let points = 1;
@@ -1613,6 +1660,7 @@ function App() {
       }
 
     } else {
+      setSessionMistakes(prev => prev + 1);
       if (isSurvivalMode && !isSuddenDeathMode && (gameMode === 'time' || gameMode === 'timeAttack')) {
         setTimeLeft(prev => Math.max(0, prev - 5));
       }
@@ -1750,7 +1798,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1764,7 +1812,7 @@ function App() {
           Offline Mode
         </div>
       )}
-      {!(isSpeedRunActive && focusMode) && (<div className="header-top">
+      {!(isSpeedRunActive && focusMode) && (<div className="header-top" style={{ backgroundColor: headerColor || undefined }}>
         <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
@@ -1794,6 +1842,7 @@ function App() {
           <label htmlFor="flashcardTextColor">Flashcard Text Color (Leave blank for default)</label>
           <input id="flashcardTextColor" type="text" placeholder="#333333 or black" value={flashcardTextColor} onChange={(e) => setFlashcardTextColor(e.target.value)} />
         </div>
+        <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Header: <input type="color" value={headerColor || '#ffffff'} onChange={(e) => setHeaderColor(e.target.value)} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Correct: <input type="color" value={correctColor} onChange={(e) => setCorrectColor(e.target.value)} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Incorrect: <input type="color" value={incorrectColor} onChange={(e) => setIncorrectColor(e.target.value)} /></label>
       </div>
@@ -1807,7 +1856,8 @@ function App() {
         <label htmlFor="grayscaleMode"><input id="grayscaleMode" type="checkbox" checked={grayscaleMode} onChange={(e) => setGrayscaleMode(e.target.checked)} /> Grayscale Mode</label>
         <label htmlFor="crtMode"><input id="crtMode" type="checkbox" checked={crtMode} onChange={(e) => setCrtMode(e.target.checked)} /> CRT Monitor Effect</label>
         <label htmlFor="strictMode"><input id="strictMode" type="checkbox" checked={strictMode} onChange={(e) => setStrictMode(e.target.checked)} disabled={isSpeedRunActive} /> Strict Mode</label>
-                <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
+                <label htmlFor="disableAnimations"><input id="disableAnimations" type="checkbox" checked={disableAnimations} onChange={(e) => setDisableAnimations(e.target.checked)} /> Disable Animations</label>
+        <label htmlFor="disableConfetti"><input id="disableConfetti" type="checkbox" checked={disableConfetti} onChange={(e) => setDisableConfetti(e.target.checked)} /> Disable Confetti</label>
         <label htmlFor="confettiTrigger">Confetti Trigger: <input id="confettiTrigger" type="number" min="1" max="100" value={confettiTrigger} onChange={(e) => setConfettiTrigger(parseInt(e.target.value, 10) || 10)} style={{ width: '50px' }} /></label>
         <label htmlFor="hideSkipButton"><input id="hideSkipButton" type="checkbox" checked={hideSkipButton} onChange={(e) => setHideSkipButton(e.target.checked)} /> Hide 'Give Up / Skip' Button</label>
         <label htmlFor="hideKeypad"><input id="hideKeypad" type="checkbox" checked={hideKeypad} onChange={(e) => setHideKeypad(e.target.checked)} /> Hide Keypad</label>
@@ -1827,6 +1877,7 @@ function App() {
         <label htmlFor="dyslexiaFriendly"><input id="dyslexiaFriendly" type="checkbox" checked={dyslexiaFriendly} onChange={(e) => setDyslexiaFriendly(e.target.checked)} /> Dyslexia Friendly Font</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="isWordMode"><input id="isWordMode" type="checkbox" checked={isWordMode} onChange={(e) => setIsWordMode(e.target.checked)} /> Word Mode</label>
+        <label htmlFor="pulseEffect"><input id="pulseEffect" type="checkbox" checked={pulseEffect} onChange={(e) => setPulseEffect(e.target.checked)} /> Correct Pulse Effect</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
         <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
         <label htmlFor="showHints"><input id="showHints" type="checkbox" checked={showHints} onChange={(e) => setShowHints(e.target.checked)} /> Show Hints</label>
@@ -1877,6 +1928,7 @@ function App() {
         {!statsCollapsed && (
         <div className="header-stats">
           <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
+          <div className="stat">Mistakes: {sessionMistakes}</div>
           <div className="stat">Session Acc: {history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : '100.0'}%</div>
           {!hideStreak && (
           <div className="stat" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -1916,13 +1968,29 @@ function App() {
           })()}
 
           <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
-          {(() => {
+{(() => {
             const missed = fullHistory.filter(h => !h.isCorrect);
             if (missed.length === 0) return null;
             const counts: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0 };
-            missed.forEach(h => {
-              if (counts[h.operation] !== undefined) counts[h.operation]++;
+            const totals: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0 };
+            fullHistory.forEach(h => {
+              if (totals[h.operation] !== undefined) {
+                totals[h.operation]++;
+                if (!h.isCorrect) counts[h.operation]++;
+              }
             });
+            let minAcc = 1.1;
+            let hardestOp = '';
+            Object.entries(totals).forEach(([op, total]) => {
+              if (total >= 5) {
+                const acc = (total - counts[op]) / total;
+                if (acc < minAcc) {
+                  minAcc = acc;
+                  hardestOp = op;
+                }
+              }
+            });
+
             let maxOp = '';
             let maxCount = -1;
             Object.entries(counts).forEach(([op, count]) => {
@@ -1931,10 +1999,13 @@ function App() {
                 maxOp = op;
               }
             });
-            if (maxCount > 0) {
-              return <div className="stat">Most Missed Operation: {maxOp} ({maxCount} times)</div>;
-            }
-            return null;
+
+            return (
+              <>
+                {maxCount > 0 && <div className="stat">Most Missed Operation: {maxOp} ({maxCount} times)</div>}
+                {hardestOp !== '' && <div className="stat">Hardest Operation: {hardestOp} ({(minAcc * 100).toFixed(1)}%)</div>}
+              </>
+            );
           })()}
           <div className="stat">Consecutive Days Played: {consecutiveDays}</div>
 
@@ -2027,6 +2098,7 @@ function App() {
             <option value="medium">Medium</option>
             <option value="hard">Hard</option>
             <option value="custom">Custom</option>
+            <option value="double-digits">Double Digits (+)</option>
           </select>
         </div>
 
@@ -2160,7 +2232,11 @@ function App() {
         <div className="speed-run-controls">
 
           {isSpeedRunActive ? (
-            gameMode !== 'zen' && (
+            gameMode === 'zen' ? (
+                <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible' }}>
+                   <div className="progress-text" style={{fontSize: '1.2rem'}}>{Math.floor(zenElapsedTime / 60)}:{zenElapsedTime % 60 < 10 ? '0' : ''}{zenElapsedTime % 60}</div>
+                </div>
+            ) : (
               (gameMode === 'time' || gameMode === 'timeAttack') ? (
                 <div className="progress-container" style={{ visibility: hideTimer ? 'hidden' : 'visible', position: 'relative' }}>
                   <div className="progress-bar" style={{ width: `${(timeLeft / selectedTimerDuration) * 100}%` }}></div>
@@ -2180,7 +2256,7 @@ function App() {
                   <div className="progress-bar" style={{ width: `${((questionsAnswered % 10) / 10) * 100}%` }}></div>
                   <div className="progress-text">{10 - (questionsAnswered % 10)} to next level</div>
                 </div>
-              ) : null
+) : null
             )
           ) : (
 
@@ -2257,7 +2333,8 @@ function App() {
                   )}
                 </>
               ) : null}
-              <button type="button" onClick={startSpeedRun} className="speed-run-button">Start {gameMode === 'zen' ? 'Zen Mode' : gameMode === 'time' || gameMode === 'timeAttack' ? 'Speed Run' : gameMode === 'questions' ? 'Challenge' : 'Endless Mode'}</button>
+              <button type="button" onClick={() => { setGameMode('timeAttack'); setSelectedTimerDuration(60); startSpeedRun('timeAttack', 60); }} className="speed-run-button" style={{marginRight: '0.5rem', backgroundColor: '#8e44ad'}}>Daily Run (1m Attack)</button>
+              <button type="button" onClick={() => startSpeedRun()} className="speed-run-button">Start {gameMode === 'zen' ? 'Zen Mode' : gameMode === 'time' || gameMode === 'timeAttack' ? 'Speed Run' : gameMode === 'questions' ? 'Challenge' : 'Endless Mode'}</button>
             </div>
           )}
         </div>
@@ -2538,7 +2615,7 @@ function App() {
                 navigator.clipboard.writeText(`Math Flashcards Run! Score: ${recentScore} on ${difficulty} difficulty.`);
                 alert('Copied to clipboard!');
               }} className="submit-button" style={{marginLeft: '1rem', backgroundColor: '#9b59b6'}}>Share to Clipboard</button>
-              <button onClick={startSpeedRun} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
+              <button onClick={() => startSpeedRun()} className="speed-run-button" style={{marginLeft: '1rem'}}>Play Again</button>
             </div>
           </div>
         </div>

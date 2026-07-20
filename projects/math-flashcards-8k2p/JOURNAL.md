@@ -412,3 +412,15 @@ live here as long as you like.
 - [ ] Add a 'Review Mode' to only show questions missed in previous runs.
 - [ ] Implement an option to limit answer length to avoid massive typo mistakes.
 - [x] Add an option to disable the flashcard drop shadow for a flatter UI.
+
+## More Jules Improvements
+- [x] Add a small "Session Mistakes" counter that increments during a run but doesn't end it.
+- [x] Add an option to toggle a "Pulse Effect" when a correct answer is given.
+- [x] Implement a "Focus Timer" that counts up instead of down to track how long a user stays in zen mode.
+- [x] Include a "Hardest Operation" stat in the lifetime statistics.
+- [ ] Add a visual "Streak Ring" around the answer input that fills up as the combo increases.
+- [x] Implement a "Daily Run" button that directly starts a 1-minute time attack.
+- [x] Add an option to change the color of the application header.
+- [ ] Create a feature that tracks the number of times a specific answer was given correctly.
+- [x] Add a toggle to disable all animations for better performance on older devices.
+- [x] Implement an option to practice "Double Digits" addition specifically.
