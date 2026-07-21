@@ -7,6 +7,17 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [x] Add an achievements system with badges
+- [x] Add support for algebraic equations (e.g. 2x = 10)
+- [ ] Implement a global multiplayer mode
+- [ ] Add voice recognition for answering questions
+- [ ] Create printable worksheets based on past mistakes
+- [ ] Add a daily challenge with unique rules
+- [ ] Support multiple user profiles on one device
+- [x] Add fun animations for correct/wrong answers
+- [ ] Build a parent/teacher dashboard to track progress
+- [x] Implement a hint system that costs points
+
 - [x] Add ability to share score on social media
 - [ ] Implement a spaced repetition algorithm
 - [ ] Add support for Roman numeral math
@@ -276,7 +287,7 @@ live here as long as you like.
 ## Next Batch of Improvements
 - [x] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
 - [ ] Add a daily goal tracking calendar to visualize activity over the month.
-- [ ] Add an achievement/trophy cabinet display screen.
+- [x] Add an achievement/trophy cabinet display screen.
 - [ ] Create a local 2-player split screen versus mode.
 - [x] Support custom difficulty scaling parameters (e.g. adjust starting digit size and increment).
 - [x] Implement a "boss battles" mode every 10 levels with harder multi-step math.
@@ -355,9 +366,9 @@ live here as long as you like.
 - [x] Implement a dynamic background color that changes based on difficulty.
 - [ ] Add a visual shake effect when the user inputs an incorrect answer.
 - [ ] Create a "sudden death" mode where one mistake ends the game.
-- [ ] Add a "hint" button that reveals the last digit of the answer.
+- [x] Add a "hint" button that reveals the last digit of the answer.
 - [ ] Support roman numerals as a specialized game mode.
-- [ ] Add a particle burst effect upon answering a question correctly.
+- [x] Add a particle burst effect upon answering a question correctly.
 - [ ] Implement a "Zen Mode" with no timer and endless questions.
 - [x] Add an option to invert the colors of the flashcard.
 - [ ] Allow users to view their past 10 game scores in a modal.
