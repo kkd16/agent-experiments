@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
-type Operation = '+' | '-' | '*' | '/';
+type Operation = '+' | '-' | '*' | '/' | 'x';
 type Difficulty = 'easy' | 'medium' | 'hard' | 'custom' | 'double-digits';
 
 
@@ -9,6 +9,7 @@ type RunScore = {
   score: number;
   date: number;
 };
+
 
 type HistoryItem = {
   num1: number;
@@ -18,6 +19,20 @@ type HistoryItem = {
   correctAnswer: number;
   isCorrect: boolean;
 };
+
+type Achievement = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+};
+
+const ACHIEVEMENTS: Achievement[] = [
+  { id: 'first_blood', name: 'First Blood', description: 'Answer your first question correctly', icon: '🩸' },
+  { id: 'streak_5', name: 'On Fire', description: 'Reach a streak of 5', icon: '🔥' },
+  { id: 'centurion', name: 'Centurion', description: 'Answer 100 questions correctly lifetime', icon: '💯' },
+  { id: 'speed_demon', name: 'Speed Demon', description: 'Answer a question in under 1 second', icon: '⚡' }
+];
 
 
 const MOTIVATIONAL_QUOTES = ["Math is power.", "Every problem has a solution.", "Practice makes perfect.", "Numbers rule the universe."];
@@ -29,10 +44,26 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
     return { n1, n2, selectedOp: '+' as Operation };
   }
   const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
+
   const selectedOp = ops[Math.floor(Math.random() * ops.length)];
+
+  if (selectedOp === 'x') {
+    // Algebra mode: solve for x. e.g. x + A = B or A * x = B
+    // Let's keep it simple: A + x = B or A * x = B
+    // For this, we can repurpose n1 as A, n2 as B. The correct answer will be x.
+    // However, the UI expects `num1 operation num2 = answer`.
+    // If operation is 'x', we can have `num1 + x = num2` (so answer is num2 - num1).
+    // Let's define the problem such that `x` is the unknown.
+    // For our data structure, if operation is 'x', num1 is A, num2 is B, correct answer is x.
+    const x = Math.floor(Math.random() * 10) + 1;
+    const n1 = Math.floor(Math.random() * 10) + 1;
+    const n2 = n1 + x; // n1 + x = n2
+    return { n1, n2, selectedOp };
+  }
 
   let maxNum = 12;
   let minNum = 1;
+
   if (difficulty === 'medium') maxNum = 50;
   if (difficulty === 'hard') maxNum = 100;
   if (difficulty === 'custom') {
@@ -660,7 +691,20 @@ const STREAK_MESSAGES = [
 function App() {
   const [customMinNumber, setCustomMinNumber] = useState<number>(getInitialCustomMin());
   const [customMaxNumber, setCustomMaxNumber] = useState<number>(getInitialCustomMax());
+
   const [favorites, setFavorites] = useState<HistoryItem[]>(getInitialFavorites());
+
+  const [unlockedAchievements, setUnlockedAchievements] = useState<string[]>(() => {
+    try {
+      const stored = window.localStorage.getItem('mathFlashcardsAchievements');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    try { window.localStorage.setItem('mathFlashcardsAchievements', JSON.stringify(unlockedAchievements)); } catch (e) { console.error(e); }
+  }, [unlockedAchievements]);
+
 
   useEffect(() => {
     try {
@@ -1253,6 +1297,7 @@ function App() {
       setNum2(n2);
       setOperation(selectedOp);
       setUserAnswer('');
+    setHintActive(false);
       setMessage('');
       setQuestionStartTime(Date.now());
     }, 0);
@@ -1310,7 +1355,7 @@ function App() {
     if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack')) {
       setTimeLeft(prev => Math.max(0, prev - 5));
     }
-    const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2);
+    const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : Math.floor(num1 / num2);
     const newHistoryItem: HistoryItem = { num1, num2, operation, userAnswer: 'Skipped', correctAnswer: correctAns, isCorrect: false };
     setHistory(prev => [newHistoryItem, ...prev].slice(0, 100));
     setStreak(0);
@@ -1507,13 +1552,16 @@ function App() {
     }
     setPreviousOperation(operation);
 
+
     let correctAnswer = 0;
     switch (operation) {
       case '+': correctAnswer = num1 + num2; break;
       case '-': correctAnswer = num1 - num2; break;
       case '*': correctAnswer = num1 * num2; break;
       case '/': correctAnswer = num1 / num2; break;
+      case 'x': correctAnswer = num2 - num1; break;
     }
+
 
 
         const isCorrect = strictMode ? userAnswer === correctAnswer.toString() : answer === correctAnswer;
@@ -1580,7 +1628,23 @@ function App() {
       console.error("Local storage error:", e);
     }
 
+
+
     if (isCorrect) {
+      const newStreak = streak + 1;
+      if (!unlockedAchievements.includes('first_blood')) {
+        setUnlockedAchievements(prev => [...prev, 'first_blood']);
+      }
+      if (newStreak >= 5 && !unlockedAchievements.includes('streak_5')) {
+        setUnlockedAchievements(prev => [...prev, 'streak_5']);
+      }
+      if (newCorrect >= 100 && !unlockedAchievements.includes('centurion')) {
+        setUnlockedAchievements(prev => [...prev, 'centurion']);
+      }
+      if (Date.now() - questionStartTime < 1000 && !unlockedAchievements.includes('speed_demon')) {
+        setUnlockedAchievements(prev => [...prev, 'speed_demon']);
+      }
+
       setMessage("Correct!");
       if (soundEnabled) playSound('correct', soundVolume);
       if (hapticEnabled && typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) window.navigator.vibrate([50, 50, 50]);
@@ -1598,7 +1662,7 @@ function App() {
       setScoreBump(true);
       setTimeout(() => setScoreBump(false), 400);
 
-      const newStreak = streak + 1; setTodayStreak(ts => ts + 1);
+      setTodayStreak(ts => ts + 1);
       updateStreak(newStreak);
 
       if (gameMode === 'targetScore' && newScore >= 1000) {
@@ -1804,8 +1868,18 @@ function App() {
           {bubbleProps.map((props, i) => (
             <div key={i} className="bubble" style={props}></div>
           ))}
+
+          {unlockedAchievements.length > 0 && (
+            <div className="achievements-bar" style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+              {unlockedAchievements.map(id => {
+                const ach = ACHIEVEMENTS.find(a => a.id === id);
+                return ach ? <span key={id} title={ach.name + ': ' + ach.description} style={{ fontSize: '1.5rem', cursor: 'help' }}>{ach.icon}</span> : null;
+              })}
+            </div>
+          )}
         </div>
       )}
+
     <div className={`app-container ${theme} ${showEasterEgg ? 'easter-egg-active' : ''} ${dyslexiaFriendly ? 'dyslexia-friendly-mode' : ''}`} style={{ fontFamily }}>
       {isOffline && (
         <div style={{ backgroundColor: '#e74c3c', color: 'white', textAlign: 'center', padding: '0.2rem', fontSize: '0.8rem', fontWeight: 'bold' }}>
@@ -1971,8 +2045,8 @@ function App() {
 {(() => {
             const missed = fullHistory.filter(h => !h.isCorrect);
             if (missed.length === 0) return null;
-            const counts: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0 };
-            const totals: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0 };
+            const counts: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0, 'x': 0 };
+            const totals: Record<string, number> = { '+': 0, '-': 0, '*': 0, '/': 0, 'x': 0 };
             fullHistory.forEach(h => {
               if (totals[h.operation] !== undefined) {
                 totals[h.operation]++;
@@ -2149,9 +2223,9 @@ function App() {
           </select>
         </div>
 
-        <div className="operations-selector">
+<div className="operations-selector">
           <span>Operations:</span>
-          {(['+', '-', '*', '/'] as Operation[]).map(op => (
+          {(['+', '-', '*', '/', 'x'] as Operation[]).map(op => (
             <label key={op} className="op-label">
               <input
                 type="checkbox"
@@ -2356,7 +2430,7 @@ function App() {
           {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
           {answerStatus && (
             <div className={`answer-feedback ${answerStatus}`} style={{ color: answerStatus === 'correct' ? correctColor : incorrectColor }}>
-              {answerStatus === 'correct' ? correctIcon : '✗'}
+              {answerStatus === 'correct' ? (correctIcon === '✓' ? '🎉' : correctIcon) : '💨'}
             </div>
           )}
           {streak >= 5 && (
@@ -2365,9 +2439,23 @@ function App() {
             </span>
           )}
 
-          <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
-          <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
-          <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
+
+          {operation === 'x' ? (
+             <>
+               <span className="number">{num1}</span>
+               <span className={"operation " + (questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{'+'}</span>
+               <span className="number" style={{fontStyle: 'italic', color: '#8e44ad'}}>x</span>
+               <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{'='}</span>
+               <span className="number">{num2}</span>
+             </>
+          ) : (
+            <>
+              <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
+              <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
+              <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
+            </>
+          )}
+
         </div>
         <form onSubmit={checkAnswer} className="answer-form">
           <input
@@ -2377,11 +2465,19 @@ function App() {
             onChange={(e) => setUserAnswer(e.target.value)}
             autoFocus
             className="answer-input"
-            placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
+            placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
             disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
           />
           <button type="submit" className="submit-button" disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}>Check</button>
         </form>
+        {showHints && !hintActive && score >= 2 && (
+          <button type="button" onClick={() => { setHintActive(true); setScore(prev => prev - 2); inputRef.current?.focus(); }} className="submit-button" style={{marginTop: '0.5rem', backgroundColor: '#e67e22', fontSize: '0.9rem', padding: '0.3rem 0.6rem'}}>Hint (-2 pts)</button>
+        )}
+        {showHints && hintActive && (
+           <div style={{marginTop: '0.5rem', color: '#e67e22', fontSize: '1rem', fontWeight: 'bold'}}>
+             Hint: The answer starts with {String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : Math.floor(num1 / num2)).charAt(0)}...
+           </div>
+        )}
 
         {!hideKeypad && (
         <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
@@ -2465,8 +2561,8 @@ function App() {
             <p>Max Combo Reached: <strong>{maxComboThisRun}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
             <p>Accuracy: <strong>{history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : 0}%</strong></p>
-            <div style={{fontSize: '0.9rem', marginBottom: '1rem', color: '#7f8c8d'}}>
-              {['+', '-', '*', '/'].map(op => {
+<div style={{fontSize: '0.9rem', marginBottom: '1rem', color: '#7f8c8d'}}>
+              {['+', '-', '*', '/', 'x'].map(op => {
                 const opHistory = history.filter(h => h.operation === op);
                 if (opHistory.length === 0) return null;
                 const correctCount = opHistory.filter(h => h.isCorrect).length;
@@ -2587,9 +2683,9 @@ function App() {
                 {history.slice().reverse().map((item, index) => {
                   const isFav = favorites.some(f => f.num1 === item.num1 && f.num2 === item.num2 && f.operation === item.operation);
                   return (
-                  <li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+<li key={index} className={item.isCorrect ? 'history-correct' : 'history-incorrect'} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                     <span>
-                      {item.num1} {item.operation} {item.num2} = {item.userAnswer || '?'}
+                      {item.operation === 'x' ? `${item.num1} + x = ${item.num2} (x=${item.userAnswer || '?'})` : `${item.num1} ${item.operation} ${item.num2} = ${item.userAnswer || '?'}`}
                       {!item.isCorrect && <span> (Correct: {item.correctAnswer})</span>}
                     </span>
                     <button onClick={() => {
