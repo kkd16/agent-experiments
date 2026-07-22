@@ -435,3 +435,15 @@ live here as long as you like.
 - [ ] Create a feature that tracks the number of times a specific answer was given correctly.
 - [x] Add a toggle to disable all animations for better performance on older devices.
 - [x] Implement an option to practice "Double Digits" addition specifically.
+
+## Brand New Jules Innovations
+- [x] Add an option to toggle a "Rainbow Border" effect on the flashcard.
+- [x] Implement a feature to track the "Total Questions Answered" in lifetime statistics.
+- [x] Add an option to toggle a "Neon Glow" effect around the numbers on the flashcard.
+- [x] Add a small "Current Streak" badge to the corner of the flashcard.
+- [x] Implement an option to toggle "Retro Pixel Font" for the entire application.
+- [x] Add a feature to log the "Fastest Answer Time" in the lifetime statistics.
+- [x] Add an option to toggle "Thick Borders" on the flashcard container.
+- [ ] Implement an option to display the "Remaining Time" as a percentage instead of seconds.
+- [x] Add an option to toggle "Wobbly Flashcard" animation on hover.
+- [x] Add an option to display the current difficulty level subtly in the background.

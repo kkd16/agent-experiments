@@ -987,3 +987,75 @@ h1 {
   animation: none !important;
   transition: none !important;
 }
+
+/* Rainbow Border */
+.rainbow-border {
+  border: 4px solid transparent;
+  border-image: linear-gradient(to right, red, orange, yellow, green, blue, indigo, violet) 1;
+}
+
+/* Neon Glow */
+.neon-glow .problem {
+  text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #e60073, 0 0 40px #e60073, 0 0 50px #e60073, 0 0 60px #e60073, 0 0 70px #e60073;
+}
+
+/* Retro Font */
+.retro-font {
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* Thick Borders */
+.thick-borders {
+  border-width: 12px !important;
+  border-style: solid;
+}
+
+/* Wobbly Flashcard */
+@keyframes wobble {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(-5deg); }
+  50% { transform: rotate(0deg); }
+  75% { transform: rotate(5deg); }
+  100% { transform: rotate(0deg); }
+}
+.wobbly-flashcard:hover {
+  animation: wobble 0.5s ease-in-out infinite;
+}
+
+/* Difficulty Watermark */
+.difficulty-watermark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 8rem;
+  color: rgba(0, 0, 0, 0.05);
+  z-index: 0;
+  pointer-events: none;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.streak-badge {
+  position: absolute;
+  top: -15px;
+  right: -15px;
+  background-color: #ff4757;
+  color: white;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: bold;
+  font-size: 1.2rem;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+  z-index: 10;
+  animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes popIn {
+  from { transform: scale(0); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
