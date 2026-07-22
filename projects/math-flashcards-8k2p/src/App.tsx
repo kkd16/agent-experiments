@@ -937,6 +937,16 @@ function App() {
 
 
   const [isSpeedRunActive, setIsSpeedRunActive] = useState<boolean>(false);
+
+  const [rainbowBorder, setRainbowBorder] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsRainbowBorder') === 'true'; } catch { return false; } });
+  const [neonGlow, setNeonGlow] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsNeonGlow') === 'true'; } catch { return false; } });
+  const [showStreakBadge, setShowStreakBadge] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsShowStreakBadge') === 'true'; } catch { return false; } });
+  const [retroFont, setRetroFont] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsRetroFont') === 'true'; } catch { return false; } });
+  const [thickBorders, setThickBorders] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsThickBorders') === 'true'; } catch { return false; } });
+  const [wobblyFlashcard, setWobblyFlashcard] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsWobblyFlashcard') === 'true'; } catch { return false; } });
+  const [bgDifficulty, setBgDifficulty] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsBgDifficulty') === 'true'; } catch { return false; } });
+  const [timeAsPercentage, setTimeAsPercentage] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsTimeAsPercentage') === 'true'; } catch { return false; } });
+
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [gameMode, setGameMode] = useState<'time' | 'questions' | 'endless' | 'timeAttack' | 'zen' | 'targetScore'>('time');
   const [sessionMistakes, setSessionMistakes] = useState<number>(0);
@@ -1002,6 +1012,7 @@ function App() {
   const [zenElapsedTime, setZenElapsedTime] = useState<number>(0);
     const [timeOfDayAccuracy, setTimeOfDayAccuracy] = useState<TimeOfDayAccuracy>(getInitialTimeOfDayAccuracy());
   const [lifetimeQuestions, setLifetimeQuestions] = useState<number>(getInitialLifetimeQuestions());
+  const [lifetimeFastestAnswer, setLifetimeFastestAnswer] = useState<number>(() => { try { const stored = window.localStorage.getItem("mathFlashcardsFastestAnswer"); return stored ? parseFloat(stored) : Infinity; } catch { return Infinity; } });
   const [lifetimeSkips, setLifetimeSkips] = useState<number>(getInitialLifetimeSkips());
     useEffect(() => { try { window.localStorage.setItem('mathFlashcardsTimeOfDay', JSON.stringify(timeOfDayAccuracy)); } catch(e) { console.error(e); } }, [timeOfDayAccuracy]);
   const [lifetimeCorrectAnswers, setLifetimeCorrectAnswers] = useState<number>(getInitialLifetimeCorrect());
@@ -1565,6 +1576,11 @@ function App() {
 
 
         const isCorrect = strictMode ? userAnswer === correctAnswer.toString() : answer === correctAnswer;
+
+    if (isCorrect && responseTime > 0 && responseTime < lifetimeFastestAnswer) {
+      setLifetimeFastestAnswer(responseTime);
+      try { window.localStorage.setItem('mathFlashcardsFastestAnswer', responseTime.toString()); } catch (e) { console.error(e); }
+    }
     setHistory(prev => [...prev, {
       num1, num2, operation, userAnswer, correctAnswer, isCorrect
     }]);
@@ -1862,7 +1878,7 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${retroFont ? 'retro-font' : ''} ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1908,7 +1924,19 @@ function App() {
 
 
       {!(isSpeedRunActive && focusMode) && (<>
-      <button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
+
+                <div className="setting-group">
+                  <label><input type="checkbox" checked={rainbowBorder} onChange={(e) => { setRainbowBorder(e.target.checked); try { window.localStorage.setItem('mathFlashcardsRainbowBorder', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Rainbow Border</label>
+                  <label><input type="checkbox" checked={neonGlow} onChange={(e) => { setNeonGlow(e.target.checked); try { window.localStorage.setItem('mathFlashcardsNeonGlow', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Neon Glow Effect</label>
+                  <label><input type="checkbox" checked={showStreakBadge} onChange={(e) => { setShowStreakBadge(e.target.checked); try { window.localStorage.setItem('mathFlashcardsShowStreakBadge', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Show Streak Badge</label>
+                  <label><input type="checkbox" checked={retroFont} onChange={(e) => { setRetroFont(e.target.checked); try { window.localStorage.setItem('mathFlashcardsRetroFont', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Retro Pixel Font</label>
+                  <label><input type="checkbox" checked={thickBorders} onChange={(e) => { setThickBorders(e.target.checked); try { window.localStorage.setItem('mathFlashcardsThickBorders', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Thick Borders</label>
+                  <label><input type="checkbox" checked={wobblyFlashcard} onChange={(e) => { setWobblyFlashcard(e.target.checked); try { window.localStorage.setItem('mathFlashcardsWobblyFlashcard', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Wobbly Flashcard (Hover)</label>
+                  <label><input type="checkbox" checked={bgDifficulty} onChange={(e) => { setBgDifficulty(e.target.checked); try { window.localStorage.setItem('mathFlashcardsBgDifficulty', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Background Difficulty Watermark</label>
+                  <label><input type="checkbox" checked={timeAsPercentage} onChange={(e) => { setTimeAsPercentage(e.target.checked); try { window.localStorage.setItem('mathFlashcardsTimeAsPercentage', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Show Time as Percentage</label>
+                </div>
+
+<button onClick={resetSettings} className="submit-button" style={{marginTop: '1rem', backgroundColor: '#e74c3c'}}>Reset Settings to Default</button>
       <button onClick={clearRecentHistoryOnly} className="submit-button" style={{marginTop: '1rem', marginLeft: '0.5rem', backgroundColor: '#f39c12'}}>Clear Recent History</button>
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>BG Image: <input type="file" accept="image/*" onChange={handleBgImageUpload} style={{width: '120px'}}/></label>
@@ -2024,7 +2052,7 @@ function App() {
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
-          <div className="stat">Total Questions: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak} | Total Time Played: {Math.floor(lifetimeTimePlayed / 3600)}h {Math.floor((lifetimeTimePlayed % 3600) / 60)}m {lifetimeTimePlayed % 60}s</div>
+          <div className="stat">Total Questions Answered: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak} | Total Time Played: {Math.floor(lifetimeTimePlayed / 3600)}h {Math.floor((lifetimeTimePlayed % 3600) / 60)}m {lifetimeTimePlayed % 60}s | Fastest Answer: {lifetimeFastestAnswer === Infinity ? "-" : (lifetimeFastestAnswer / 1000).toFixed(2) + "s"}</div>
 
           {(() => {
             let bestTime = 'N/A';
@@ -2423,7 +2451,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined}}>
 
         {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
         <div className="problem" style={{position: 'relative'}}>
