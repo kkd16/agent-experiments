@@ -28,6 +28,9 @@ const DEFAULT_PARAMS: RenderParams = {
   colorMode: 'smooth',
   featureFreq: 6.0,
   interior: false,
+  relief: false,
+  lightAngle: 0.78,
+  lightHeight: 1.2,
 }
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x)
@@ -158,6 +161,9 @@ export function useFractalEngine() {
       colorMode: COLOR_MODE_INDEX[p.colorMode],
       featureFreq: p.featureFreq,
       interior: p.interior,
+      relief: p.relief,
+      lightAngle: p.lightAngle,
+      lightHeight: p.lightHeight,
       perturbation,
       orbitLen,
     }
@@ -556,6 +562,7 @@ export function useFractalEngine() {
         colorMode: b.colorMode ?? p.colorMode,
         featureFreq: b.featureFreq ?? p.featureFreq,
         interior: b.interior ?? p.interior,
+        relief: b.relief ?? p.relief,
       }))
       // Julia bookmarks jump; Mandelbrot bookmarks get a cinematic dive.
       if (b.mode === 'julia' || paramsRef.current.mode === 'julia') {

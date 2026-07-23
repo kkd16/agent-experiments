@@ -192,8 +192,26 @@ export default function ControlPanel({
       </div>
 
       <div className="panel-section">
-        <div className="section-title">Distance estimation</div>
-        <Row label="Outline filaments">
+        <div className="section-title">Shading</div>
+        <Row label="Relief lighting">
+          <input
+            type="checkbox"
+            checked={params.relief}
+            onChange={(e) => setParam('relief', e.target.checked)}
+          />
+        </Row>
+        <Row label={`Light angle ${params.lightAngle.toFixed(2)}`}>
+          <input
+            type="range"
+            min={0}
+            max={6.28}
+            step={0.05}
+            value={params.lightAngle}
+            disabled={!params.relief}
+            onChange={(e) => setParam('lightAngle', Number(e.target.value))}
+          />
+        </Row>
+        <Row label="Outline filaments (DE)">
           <input
             type="checkbox"
             checked={params.de}

@@ -46,6 +46,9 @@ export type RenderParams = {
   colorMode: ColorMode
   featureFreq: number // stripe density / orbit-trap scale
   interior: boolean // paint the set's interior instead of leaving it black
+  relief: boolean // normal-map (Lambert) relief lighting
+  lightAngle: number // light azimuth in radians
+  lightHeight: number // light elevation
 }
 
 export type HudInfo = {
@@ -74,6 +77,7 @@ export type Bookmark = {
   colorMode?: ColorMode
   featureFreq?: number
   interior?: boolean
+  relief?: boolean
 }
 
 export const HOME: Viewport = { cx: hpFromNumber(-0.5), cy: hpFromNumber(0), span: 3.4 }

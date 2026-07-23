@@ -26,6 +26,8 @@ export function encodeView(vp: Viewport, p: RenderParams): string {
     `cm=${COLOR_MODES.indexOf(p.colorMode)}`,
     `ff=${p.featureFreq}`,
     `in=${p.interior ? 1 : 0}`,
+    `rl=${p.relief ? 1 : 0}`,
+    `la=${p.lightAngle.toFixed(3)}`,
   ]
   if (p.mode === 'julia') {
     parts.push(`jx=${p.juliaX}`, `jy=${p.juliaY}`)
@@ -86,6 +88,10 @@ export function decodeView(hash: string): Decoded | null {
   if (Number.isFinite(ff) && ff > 0) params.featureFreq = ff
   if (map.get('in') === '1') params.interior = true
   else if (map.get('in') === '0') params.interior = false
+  if (map.get('rl') === '1') params.relief = true
+  else if (map.get('rl') === '0') params.relief = false
+  const la = Number(map.get('la'))
+  if (Number.isFinite(la)) params.lightAngle = la
 
   const jx = Number(map.get('jx'))
   if (Number.isFinite(jx)) params.juliaX = jx

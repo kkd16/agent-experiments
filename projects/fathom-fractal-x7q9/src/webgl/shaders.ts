@@ -87,9 +87,26 @@ uniform float u_deStrength;  // px multiplier for the DE falloff
 uniform int   u_colorMode;   // 0 smooth, 1 stripe, 2 trap-point, 3 trap-cross
 uniform float u_featureFreq; // stripe density / orbit-trap scale
 uniform int   u_interior;    // 1 = shade the interior instead of flat black
+uniform int   u_relief;      // 1 = normal-map relief (Lambert) lighting
+uniform float u_lightAngle;  // light azimuth, radians
+uniform float u_lightHeight; // light elevation (higher = flatter shading)
 
 vec3 paletteColor(float t) {
   return texture(u_palette, vec2(fract(t), 0.5)).rgb;
+}
+
+// Normal-map relief: treat u = z / (dz/dc) as a surface normal in the plane and
+// light it with a Lambert term. This is the classic embossed / pseudo-3D fractal
+// look. z is the escape value; der is the escape derivative dz/dc.
+float reliefShade(vec2 z, vec2 der) {
+  float d2 = dot(der, der);
+  if (d2 < 1e-30) return 1.0;
+  // complex division z / der
+  vec2 u = vec2(z.x * der.x + z.y * der.y, z.y * der.x - z.x * der.y) / d2;
+  u = normalize(u);
+  vec2 light = vec2(cos(u_lightAngle), sin(u_lightAngle));
+  float t = (u.x * light.x + u.y * light.y + u_lightHeight) / (1.0 + u_lightHeight);
+  return clamp(t, 0.0, 1.0);
 }
 
 // Smooth (fractional) iteration count from |z|^2 at escape.
@@ -123,7 +140,7 @@ void accumStats(vec2 z, int k, inout float sSum, inout float sPrev,
 // dist is the exterior distance estimate in world units; pxScale is world units
 // per pixel; mag2/sIter describe the escape.
 vec3 finalColor(bool escaped, float mag2, float sIter, float dist, float pxScale,
-                float sSum, float sPrev, float trap, int cnt) {
+                float sSum, float sPrev, float trap, int cnt, vec2 zEnd, vec2 der) {
   if (!escaped && u_interior == 0) return vec3(0.0);
 
   float pc;
@@ -142,6 +159,10 @@ vec3 finalColor(bool escaped, float mag2, float sIter, float dist, float pxScale
     float pxDist = dist / max(pxScale, 1e-38);
     // tanh gives a soft, resolution-independent glow around the boundary.
     base *= tanh(pxDist * u_deStrength);
+  }
+  if (escaped && u_relief == 1) {
+    // Keep some ambient so lit faces read as colour, not pure black.
+    base *= 0.28 + 0.72 * reliefShade(zEnd, der);
   }
   return base;
 }`
@@ -192,7 +213,7 @@ vec3 sampleAt(vec2 fragPx) {
     m = mag.x;
     accumStats(vec2(zx.x, zy.x), k, sSum, sPrev, trap, cnt);
     if (m > BAILOUT2) { escaped = true; iter = k; break; }
-    if (u_de == 1) {
+    if (u_de == 1 || u_relief == 1) {
       vec2 zc = vec2(zx.x, zy.x);
       vec2 t = vec2(zc.x * dp.x - zc.y * dp.y, zc.x * dp.y + zc.y * dp.x);
       dp = 2.0 * t + vec2(1.0, 0.0);
@@ -208,7 +229,8 @@ vec3 sampleAt(vec2 fragPx) {
     float zmag = sqrt(m);
     dist = zmag * log(zmag) / max(length(dp), 1e-30);
   }
-  return finalColor(escaped, m, s, dist, u_scale.x, sSum, sPrev, trap, cnt);
+  return finalColor(escaped, m, s, dist, u_scale.x, sSum, sPrev, trap, cnt,
+                    vec2(zx.x, zy.x), dp);
 }
 
 void main() {
@@ -274,10 +296,11 @@ vec3 sampleAt(vec2 fragPx) {
   float mag2 = 0.0;
   float sSum = 0.0, sPrev = 0.0, trap = 1e20; // colour-statistic accumulators
   int cnt = 0;
+  vec2 zEnd = vec2(0.0);
 
   for (int k = 0; k < u_maxIter; k++) {
     vec2 Z = orbitAt(m);
-    if (u_de == 1) {
+    if (u_de == 1 || u_relief == 1) {
       vec2 zc = Z + dz;           // true value z_n
       vec2 t = vec2(zc.x * dv.x - zc.y * dv.y, zc.x * dv.y + zc.y * dv.x);
       dv = 2.0 * t + vec2(1.0, 0.0);
@@ -291,6 +314,7 @@ vec3 sampleAt(vec2 fragPx) {
     Z = orbitAt(m);
     vec2 z = Z + dz;               // true value at iteration n
     mag2 = dot(z, z);
+    zEnd = z;
     accumStats(z, n, sSum, sPrev, trap, cnt);
     if (mag2 > BAILOUT2) { escaped = true; break; }
     float dd = dot(dz, dz);
@@ -306,7 +330,8 @@ vec3 sampleAt(vec2 fragPx) {
     float zmag = sqrt(mag2);
     dist = zmag * log(zmag) / max(length(dv), 1e-30);
   }
-  return finalColor(escaped, mag2, s, dist, u_pixelScale, sSum, sPrev, trap, cnt);
+  return finalColor(escaped, mag2, s, dist, u_pixelScale, sSum, sPrev, trap, cnt,
+                    zEnd, dv);
 }
 
 void main() {

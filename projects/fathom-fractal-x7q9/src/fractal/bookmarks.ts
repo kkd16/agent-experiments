@@ -124,6 +124,16 @@ export const BOOKMARKS: Bookmark[] = [
     interior: true,
   },
   {
+    name: 'Relief · Scepter',
+    blurb: 'Normal-map lighting embosses the scepter valley into carved metal.',
+    mode: 'mandelbrot',
+    centerX: '-1.36022',
+    centerY: '0.0518',
+    span: 0.02,
+    paletteId: 'magma',
+    relief: true,
+  },
+  {
     name: 'Julia · Dendrite',
     blurb: 'c = -0.8 + 0.156i, a lightning-branch Julia set.',
     mode: 'julia',
