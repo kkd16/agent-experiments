@@ -995,6 +995,26 @@ input[type='text'] {
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* ---- Kademlia XOR binary trie ---- */
+.kad-tree {
+  display: block;
+  background: radial-gradient(circle at 50% 30%, rgba(124, 156, 255, 0.06), rgba(0, 0, 0, 0) 62%);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  padding: 4px;
+}
+.kad-tree text {
+  user-select: none;
+  pointer-events: none;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.kad-leaf circle {
+  transition: stroke 0.15s ease;
+}
+.kad-leaf:hover circle {
+  stroke: #9db4ff;
+}
+
 /* ---- HotStuff block-chain view ---- */
 .chainview {
   margin: 10px 0 4px;

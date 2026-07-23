@@ -11,6 +11,7 @@ import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { StreamletLab } from './StreamletLab';
 import { ChordLab } from './ChordLab';
+import { KademliaLab } from './KademliaLab';
 import { DynamoLab } from './DynamoLab';
 import { CrdtLab } from './CrdtLab';
 import { CoeditLab } from './CoeditLab';
@@ -241,6 +242,15 @@ export const LABS: LabDef[] = [
     icon: '◌',
     tag: 'p2p · routing',
     Component: ChordLab,
+  },
+  {
+    id: 'kademlia',
+    title: 'Kademlia DHT',
+    blurb:
+      "The XOR-metric DHT behind BitTorrent's Mainline, IPFS, Ethereum discv5 and Storj. Node ids and keys share one space and closeness is XOR distance — so every node files contacts into one k-bucket per bit and the routing table *is* the binary trie of the id space. Watch a lookup run the other way from Chord: not recursive but iterative and parallel, the initiator itself driving α probes down the tree toward the target until the frontier closes on the true k-closest. Shrink k to force real multi-hop lookups, PUT and GET values, crash nodes and watch bucket-refresh heal the tables — with 'the lookup finds the exact k-nearest' proven live by an offline replay of the α-parallel search.",
+    icon: '⋔',
+    tag: 'p2p · routing',
+    Component: KademliaLab,
   },
   {
     id: 'linz',

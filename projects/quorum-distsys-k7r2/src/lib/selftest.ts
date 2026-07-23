@@ -31,6 +31,11 @@ import { createChord } from '../protocols/chord/chord';
 import { chordInvariants } from '../protocols/chord/invariants';
 import { DEFAULT_CHORD_CONFIG, type ChordCmd, type ChordState } from '../protocols/chord/types';
 import { ownerOf, hashId } from '../protocols/chord/ring';
+import { createKademlia } from '../protocols/kademlia/kademlia';
+import { kademliaInvariants, offlineClosest } from '../protocols/kademlia/invariants';
+import { DEFAULT_KADEMLIA_CONFIG, type KademliaCmd, type KademliaState, type RoutingTable } from '../protocols/kademlia/types';
+import { kClosest as kadClosest, hashId as kadHashId, bucketIndex as kadBucketIndex, xorDist as kadXor } from '../protocols/kademlia/xor';
+import { makeTable as kadMakeTable, tableInsert as kadInsert, markSeen as kadMarkSeen, evict as kadEvict, closest as kadTableClosest } from '../protocols/kademlia/routing';
 import { createPbft } from '../protocols/pbft/pbft';
 import { pbftInvariants } from '../protocols/pbft/invariants';
 import {
@@ -965,6 +970,231 @@ export function runSelfTests(): TestResult[] {
     const hashed = hashId('A', M);
     const ok = distinct && converged && typeof hashed === 'number';
     return [ok, ok ? `5 distinct ids, ring converged` : `distinct=${distinct} converged=${converged}`];
+  });
+
+  // ---- Kademlia DHT ----
+  const KAD_IDS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+  const kadKernel = (seed: number, ids: string[], k = DEFAULT_KADEMLIA_CONFIG.k) =>
+    new Kernel<KademliaState, KademliaCmd>({
+      seed,
+      protocol: createKademlia({ ...DEFAULT_KADEMLIA_CONFIG, k }),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: 0 },
+    });
+  const kadLiveIds = (k: Kernel<KademliaState, KademliaCmd>) =>
+    k.views().filter((v) => v.up && v.state.joined).map((v) => v.state.id);
+  const kadConverged = (k: Kernel<KademliaState, KademliaCmd>) => kademliaInvariants(k.views()).every((iv) => iv.ok);
+  const KM = DEFAULT_KADEMLIA_CONFIG.m;
+
+  t('Kademlia', 'XOR metric: symmetry, identity and the bucket-index law', () => {
+    let ok = true;
+    let detail = '';
+    for (let a = 0; a < 256 && ok; a += 7) {
+      if (kadXor(a, a) !== 0) { ok = false; detail = `xor(${a},${a})≠0`; break; }
+      for (let b = 0; b < 256; b += 11) {
+        if (kadXor(a, b) !== kadXor(b, a)) { ok = false; detail = `asymmetric at ${a},${b}`; break; }
+        if (a !== b) {
+          const bi = kadBucketIndex(a, b);
+          // the bucket index is the highest differing bit ⇒ 2^bi ≤ xor < 2^(bi+1)
+          const d = kadXor(a, b);
+          if (!(d >= (1 << bi) && d < (1 << (bi + 1)))) { ok = false; detail = `bucket law broke at ${a},${b}`; break; }
+        }
+      }
+    }
+    return [ok, ok ? 'XOR is symmetric with x⊕x=0, and bucket(a,b) brackets the distance' : detail];
+  });
+
+  t('Kademlia', 'k-bucket LRU: full bucket pings the head, evicts only if it dies', () => {
+    // Craft ids that all fall into the SAME bucket of `self=0` (share the top
+    // differing bit) so we can overflow a single k=2 bucket deterministically.
+    const rt: RoutingTable = kadMakeTable(0, KM, 2);
+    // ids in [64,128) all have highest set bit at position 6 ⇒ bucket 6 for self=0.
+    const c1 = 64, c2 = 96, c3 = 100;
+    const r1 = kadInsert(rt, c1); // added
+    const r2 = kadInsert(rt, c2); // added (bucket now full: [c1,c2])
+    const r3 = kadInsert(rt, c3); // full ⇒ head (c1) offered for eviction
+    const bucketFull = r1.status === 'added' && r2.status === 'added' && r3.status === 'full' && r3.lru === c1;
+    // Case A: the head answers ⇒ move it to tail, drop the challenger.
+    const rtA: RoutingTable = JSON.parse(JSON.stringify(rt));
+    kadMarkSeen(rtA, c1);
+    const keptOld = rtA.buckets[6].length === 2 && rtA.buckets[6].indexOf(c1) === 1 && !rtA.buckets[6].includes(c3);
+    // Case B: the head is dead ⇒ evict it, admit the challenger.
+    const rtB: RoutingTable = JSON.parse(JSON.stringify(rt));
+    kadEvict(rtB, c1, c3);
+    const evicted = !rtB.buckets[6].includes(c1) && rtB.buckets[6].includes(c3) && rtB.buckets[6].length === 2;
+    const ok = bucketFull && keptOld && evicted && kadBucketIndex(0, c1) === 6;
+    return [ok, ok ? 'full bucket offers its LRU head; live head is kept, dead head is replaced' : `full=${bucketFull} keepOld=${keptOld} evict=${evicted}`];
+  });
+
+  t('Kademlia', 'closest() returns ids in true XOR-distance order', () => {
+    const rt = kadMakeTable(0, KM, 8);
+    const ids = [3, 200, 17, 130, 64, 255, 9];
+    for (const id of ids) kadInsert(rt, id);
+    const target = 20;
+    const got = kadTableClosest(rt, target, ids.length);
+    const want = kadClosest(target, ids, ids.length);
+    const ok = got.length === want.length && got.every((x, i) => x === want[i]);
+    return [ok, ok ? `sorted by ⊕${target}: ${got.join(',')}` : `got ${got.join(',')} want ${want.join(',')}`];
+  });
+
+  t('Kademlia', 'Network of 8 converges (well-formed buckets, tables cover, lookups exact)', () => {
+    const k = kadKernel(1, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    const inv = kademliaInvariants(k.views());
+    const ok = inv.every((iv) => iv.ok);
+    return [ok, ok ? 'all three invariants green — routing converged' : inv.filter((iv) => !iv.ok).map((iv) => iv.detail).join('; ')];
+  });
+
+  t('Kademlia', 'Live iterative lookups resolve to the true k-closest (k=4)', () => {
+    const k = kadKernel(2, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    const ids = kadLiveIds(k);
+    let ok = true;
+    let detail = 'every probed target resolved to its exact XOR-nearest k';
+    for (let target = 0; target < (1 << KM); target += 19) {
+      k.command('A', { type: 'lookup', target });
+      for (let i = 0; i < 45; i++) k.advance(20);
+      const res = k.views().find((v) => v.id === 'A')!.state.lastResult;
+      const want = kadClosest(target, ids, DEFAULT_KADEMLIA_CONFIG.k);
+      if (!res || res.closest.length !== want.length || !res.closest.every((x, i) => x === want[i])) {
+        ok = false;
+        detail = `target ${target}: got {${res?.closest.join(',')}}, want {${want.join(',')}}`;
+        break;
+      }
+    }
+    return [ok, detail];
+  });
+
+  t('Kademlia', 'Small k=2 buckets force real multi-hop lookups yet stay exact', () => {
+    // With only 2 contacts per bucket and 8 nodes, tables are partial — the
+    // iterative lookup must drill down through several hops. The XOR guarantee
+    // says it still finds the true k-closest, and some lookup must exceed 1 probe.
+    const k = kadKernel(4, KAD_IDS, 2);
+    for (let i = 0; i < 500; i++) k.advance(25);
+    if (!kadConverged(k)) return [false, 'did not converge with k=2'];
+    const ids = kadLiveIds(k);
+    let exact = true;
+    let maxProbes = 0;
+    for (let target = 0; target < (1 << KM); target += 23) {
+      k.command('A', { type: 'lookup', target });
+      for (let i = 0; i < 60; i++) k.advance(20);
+      const res = k.views().find((v) => v.id === 'A')!.state.lastResult;
+      const want = kadClosest(target, ids, 2);
+      if (res) maxProbes = Math.max(maxProbes, res.rounds);
+      if (!res || res.closest.length !== want.length || !res.closest.every((x, i) => x === want[i])) {
+        exact = false;
+        break;
+      }
+    }
+    const ok = exact && maxProbes >= 2;
+    return [ok, ok ? `all lookups exact; deepest search used ${maxProbes} probes (genuine multi-hop)` : exact ? `all exact but max probes was only ${maxProbes}` : 'a k=2 lookup returned the wrong set'];
+  });
+
+  t('Kademlia', 'offline lookup replay matches the true k-closest from every node', () => {
+    const k = kadKernel(6, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    const live = k.views().filter((v) => v.up && v.state.joined);
+    const tables = new Map<number, RoutingTable>();
+    for (const v of live) tables.set(v.state.id, v.state.rt);
+    const ids = live.map((v) => v.state.id);
+    let ok = true;
+    let detail = '';
+    for (const v of live) {
+      for (const target of ids) {
+        const got = offlineClosest(tables, v.state.id, target, DEFAULT_KADEMLIA_CONFIG.k, DEFAULT_KADEMLIA_CONFIG.alpha);
+        const want = kadClosest(target, ids, DEFAULT_KADEMLIA_CONFIG.k);
+        if (got.length !== want.length || !got.every((x, i) => x === want[i])) { ok = false; detail = `${v.state.id}→${target}`; break; }
+      }
+      if (!ok) break;
+    }
+    return [ok, ok ? `all ${ids.length}×${ids.length} offline replays exact` : `mismatch at ${detail}`];
+  });
+
+  t('Kademlia', 'PUT then GET: a value is retrievable from every node', () => {
+    const k = kadKernel(7, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    const key = kadHashId('file:hello', KM);
+    k.command('C', { type: 'put', key, value: 'HELLO-DHT' });
+    for (let i = 0; i < 70; i++) k.advance(20);
+    let ok = true;
+    let detail = 'every node retrieved the stored value';
+    for (const n of ['A', 'E', 'H', 'B', 'G']) {
+      k.command(n, { type: 'get', key });
+      for (let i = 0; i < 70; i++) k.advance(20);
+      const res = k.views().find((v) => v.id === n)!.state.lastResult;
+      if (!res || !res.found || res.value !== 'HELLO-DHT') { ok = false; detail = `GET from ${n} failed (found=${res?.found}, val=${res?.value})`; break; }
+    }
+    return [ok, detail];
+  });
+
+  t('Kademlia', 'GET of an absent key reports not-found (no false positive)', () => {
+    const k = kadKernel(9, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    k.command('A', { type: 'get', key: 123 });
+    for (let i = 0; i < 70; i++) k.advance(20);
+    const res = k.views().find((v) => v.id === 'A')!.state.lastResult;
+    const ok = !!res && res.kind === 'value' && !res.found && res.value === null;
+    return [ok, ok ? 'a never-stored key correctly resolves to not-found' : `found=${res?.found} value=${res?.value}`];
+  });
+
+  t('Kademlia', 'Tables heal after two nodes crash (re-converge + correct lookups)', () => {
+    const k = kadKernel(3, KAD_IDS);
+    for (let i = 0; i < 400; i++) k.advance(25);
+    if (!kadConverged(k)) return [false, 'did not converge before the crash'];
+    k.crash('D');
+    k.crash('F');
+    for (let i = 0; i < 700; i++) k.advance(25); // let bucket-refresh repair
+    const inv = kademliaInvariants(k.views());
+    const reconverged = inv.every((iv) => iv.ok);
+    const ids = kadLiveIds(k);
+    k.command('A', { type: 'lookup', target: 210 });
+    for (let i = 0; i < 50; i++) k.advance(20);
+    const res = k.views().find((v) => v.id === 'A')!.state.lastResult;
+    const want = kadClosest(210, ids, DEFAULT_KADEMLIA_CONFIG.k);
+    const lookupOk = !!res && res.closest.length === want.length && res.closest.every((x, i) => x === want[i]);
+    const ok = reconverged && lookupOk;
+    return [ok, ok ? 'tables re-converged without D and F; lookups stayed exact' : reconverged ? 'lookup wrong after heal' : inv.filter((iv) => !iv.ok).map((iv) => iv.detail).join('; ')];
+  });
+
+  t('Kademlia', 'A crashed node restarts and rejoins the DHT', () => {
+    const k = kadKernel(5, KAD_IDS);
+    for (let i = 0; i < 350; i++) k.advance(25);
+    k.crash('E');
+    for (let i = 0; i < 200; i++) k.advance(25);
+    k.restart('E');
+    for (let i = 0; i < 500; i++) k.advance(25);
+    const eView = k.views().find((v) => v.id === 'E')!;
+    const inv = kademliaInvariants(k.views());
+    const ok = eView.up && eView.state.joined && inv.every((iv) => iv.ok);
+    return [ok, ok ? 'E rejoined via a self-lookup and the network re-converged' : `up=${eView.up} joined=${eView.state.joined} conv=${inv.every((iv) => iv.ok)}`];
+  });
+
+  t('Kademlia', 'Routing tables still converge under 15% message loss', () => {
+    // A dropped reply must not evict a live contact — only a failed *liveness
+    // ping* does — so bucket-refresh out-runs the loss and the tables heal.
+    let converged = 0;
+    for (const seed of [1, 2, 3, 4]) {
+      const k = new Kernel<KademliaState, KademliaCmd>({
+        seed,
+        protocol: createKademlia(DEFAULT_KADEMLIA_CONFIG),
+        nodeIds: KAD_IDS,
+        network: { minLatency: 20, maxLatency: 60, dropRate: 0.15 },
+      });
+      for (let i = 0; i < 900; i++) k.advance(25);
+      if (kademliaInvariants(k.views()).every((iv) => iv.ok)) converged++;
+    }
+    const ok = converged === 4;
+    return [ok, ok ? 'all 4 lossy runs re-converged to correct, well-formed tables' : `${converged}/4 lossy runs converged`];
+  });
+
+  t('Kademlia', 'Determinism: same seed ⇒ identical routing tables', () => {
+    const run = () => {
+      const k = kadKernel(11, KAD_IDS);
+      for (let i = 0; i < 300; i++) k.advance(25);
+      return JSON.stringify(k.views().map((v) => [v.state.id, v.state.rt.buckets]));
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two runs produced byte-identical routing state' : 'runs diverged'];
   });
 
   // ---- PBFT (Byzantine fault tolerance) ----

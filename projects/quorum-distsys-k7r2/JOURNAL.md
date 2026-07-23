@@ -406,6 +406,70 @@ design — implemented for real on the same kernel, with a purpose-built ring vi
       to the true owner for a sweep of keys; lookups stay short (≤ m hops); the ring heals after a node
       crashes (re-converges + lookups stay correct); collision-free id placement.
 
+### Kademlia DHT lab (XOR-metric routing) — NEW
+The *other* canonical DHT beside Chord, and the one that actually runs the internet — BitTorrent's
+Mainline DHT, IPFS, Ethereum's discv5, Storj. The Maymounkov & Mazières (2002) design, implemented
+for real on the same kernel with a bespoke **binary-trie** visualisation. The whole point is the
+contrast with Chord: a *tree* not a ring, an **XOR metric** not clockwise distance, and an
+**iterative, parallel** lookup driven by the initiator not a recursive forward.
+
+- [x] **XOR metric** (`protocols/kademlia/xor.ts`) — distance(a,b)=a⊕b; symmetric, unidirectional,
+      obeys the triangle inequality. `bucketIndex` = the most-significant differing bit (the law
+      2^i ≤ a⊕b < 2^(i+1) is asserted in a self-test); `kClosest`, `compareDist`, `toBits`, and the
+      same FNV id hashing Chord uses (so a key lands at the same id in either lab).
+- [x] **k-buckets** (`protocols/kademlia/routing.ts`) — one bucket per bit, each holding up to k
+      contacts ordered least-recently-seen → most-recently-seen. The real insertion rule: present ⇒
+      move-to-tail; room ⇒ append; **full ⇒ ping the LRU head and evict it only if it fails to
+      answer** (the "prefer old, live contacts" bias that resists churn and eclipse attacks). Pure
+      data + functions so the kernel can snapshot it; unit-tested in isolation for placement, LRU
+      order, the full-bucket offer, and both eviction outcomes.
+- [x] **Iterative α-parallel lookup** (`protocols/kademlia/kademlia.ts`) — the initiator seeds a
+      shortlist from its own buckets, keeps **α=3** `FIND_NODE` probes in flight to the closest
+      unqueried contacts, folds every reply back into the shortlist, and stops when the k closest it
+      has heard of have all answered and no unqueried node is any closer. Each hop moves ≥1 bit closer
+      ⇒ O(log N) rounds. Contrast Chord's recursive forward — spelled out in the lab intro.
+- [x] **FIND_VALUE / STORE** — `PUT` runs a node lookup for the key then STOREs the pair on the
+      resulting k closest; `GET` runs the same search but any node holding the key **short-circuits**
+      it by returning the value. A local hit answers with zero probes.
+- [x] **Contact learning + maintenance** — a node learns a contact from *any* message it exchanges;
+      periodic **bucket refresh** (a self-lookup + a random-target lookup) keeps tables fresh, and
+      **republish** re-STOREs originated keys. A dropped lookup reply does **not** evict a contact —
+      only a failed liveness ping does — which is what makes the α-parallel lookup loss-tolerant.
+- [x] **Crash / restart** — routing state is volatile (rebuilt by re-joining via a self-lookup);
+      stored key/value pairs persist across a crash.
+- [x] **Invariants** (`protocols/kademlia/invariants.ts`) — **k-bucket well-formedness** (always-on
+      safety: every contact filed by its high differing bit, no overflow/self/dupes); **tables cover
+      the network** and **iterative lookup finds the true k-closest** (eventual gauges). The headline
+      check re-runs the α-parallel search **offline** over the frozen tables from every node to every
+      target and demands the exact XOR-nearest k — a correctness oracle independent of the live run.
+- [x] **Binary-trie UI** (`ui/KademliaTree.tsx`, `labs/KademliaLab.tsx`) — the canonical Figure-1
+      picture: live ids as leaves of a compressed binary trie, and for the selected node its **k-buckets
+      drawn as the shaded subtrees hanging off its root-to-leaf path** (labelled "bucket i · known/total"),
+      contacts gold-ringed, the lookup target dropped in along its bit-path, probed nodes and the
+      resulting k-closest highlighted. A bucket inspector (with XOR distances), a stored-pairs view, a
+      key-placement table, a **k slider** (shrink k to force real multi-hop lookups), node/count controls
+      and deep links. Verified live in headless Chromium: 8-node network converges, all three invariants
+      green (26/26 buckets, 64/64 lookups exact), the trie renders the buckets-as-subtrees correctly.
+- [x] **Self-tests (13)** — XOR laws; k-bucket LRU/eviction; `closest()` ordering; 8-node convergence;
+      live lookups exact at k=4; **k=2 forces genuine multi-hop yet stays exact**; offline replay matches
+      truth from every node; PUT→GET retrievable from every node; absent-key not-found; heal after two
+      crashes; restart-rejoin; **tables converge under 15% message loss**; determinism.
+
+- [ ] **Backlog / next steps** (many, for a future session — all inside this one project folder):
+  - [ ] **Bucket splitting** — the full-tree variant where the bucket covering the node's own id splits
+        on overflow instead of using one fixed bucket per bit, so the table adapts its resolution to the
+        local id density; visualise the split in the trie.
+  - [ ] **Sybil / eclipse attack demo** — flood ids clustered around a victim's neighbourhood and show
+        how the LRU "prefer old contacts" rule and id-based bucket structure blunt it; a toggle + invariant.
+  - [ ] **discv5-style parameters** — expose α, the k-bucket count, and a per-lookup retry budget; chart
+        lookup latency / hop-count vs. network size to make the O(log N) scaling visible.
+  - [ ] **Value expiry & re-publication** — TTLs on stored pairs and the caching of a value at the closest
+        node that missed on the lookup path (Kademlia's read-through cache), shown decaying over time.
+  - [ ] **Intra-lookup RPC retransmit** — retry a timed-out probe once before dropping it, so single async
+        lookups stay exact under loss too (not just the eventual tables); measure the exactness gain.
+  - [ ] **Routing-table refresh scheduling** — per-bucket last-touched timers (refresh only stale buckets)
+        instead of a blanket periodic sweep, matching the paper; show refresh traffic drop.
+
 ### PBFT lab (Byzantine fault tolerance) — NEW
 The first lab to drop the crash-fault assumption: up to **f** replicas can be *Byzantine* (silent,
 two-faced, or actively lying) and a cluster of **N = 3f+1** still agrees on one total order. Three
@@ -1047,6 +1111,46 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
       (split vote, leader crash, snapshot catch-up, partition heal) in a single click
 
 ## Session log
+
+- 2026-07-23 (claude / claude-opus-4-8[1m]): **New lab — Kademlia, the XOR-metric DHT that actually
+  runs the internet (BitTorrent Mainline, IPFS, Ethereum discv5, Storj).** The simulator had Chord but
+  not the *other* canonical DHT — and the two make a perfect pair: Chord routes clockwise around a
+  **ring** with a **recursive** lookup; Kademlia routes down a **binary tree** by **XOR distance** with
+  an **iterative, α-parallel** lookup the initiator drives itself. Built the whole Maymounkov–Mazières
+  (2002) design from scratch on the shared kernel across five modules — `protocols/kademlia/{xor,
+  routing,types,kademlia,invariants}.ts` — plus a bespoke binary-trie visualiser (`ui/KademliaTree.tsx`)
+  and `labs/KademliaLab.tsx`, wired into the p2p family (registry). **The XOR metric is the whole trick**:
+  distance(a,b)=a⊕b is symmetric and self-routing, so each node files contacts into **one k-bucket per
+  bit** (bucket i = the subtree branching off its path at that bit), and the routing table literally *is*
+  the binary trie of the id space. Implemented for real: k-buckets with the **prefer-old-live-contacts**
+  LRU rule (a full bucket pings its least-recently-seen head and evicts it only if it fails to answer —
+  the anti-churn/anti-eclipse bias); the **iterative parallel lookup** (seed a shortlist, keep α=3 probes
+  in flight to the closest unqueried contacts, fold replies back, stop when the frontier closes on the
+  true k-nearest — each hop ≥1 bit closer ⇒ O(log N) rounds); **FIND_VALUE/STORE** for a real PUT/GET
+  key-value store (a node holding the key short-circuits the search); contact-learning from every message,
+  **bucket-refresh** + **republish** maintenance, and crash/restart (volatile routing rebuilt by a
+  self-lookup; stored pairs durable). Three live invariants: **k-bucket well-formedness** (always-on
+  safety) plus two eventual gauges — **tables cover the network** and the headline **iterative lookup
+  finds the true k-closest**, checked by *re-running the α-parallel search offline* over the frozen
+  tables from every node to every target and demanding the exact XOR-nearest k. The **KademliaTree** draws
+  the canonical paper Figure-1: live ids as leaves of a compressed binary trie, the selected node's
+  k-buckets as **shaded subtrees hanging off its root-to-leaf path** ("bucket i · known/total"), its
+  contacts gold-ringed, the lookup target dropped in along its bit-path and the resulting k-closest
+  ringed — with a **k slider** (shrink k to 2 to force genuine multi-hop lookups), a bucket inspector
+  showing XOR distances, a stored-pairs view, a key-placement table and deep links. **13 self-tests** —
+  XOR laws (incl. the bucket-index bracketing law); k-bucket LRU ping-then-evict (both outcomes);
+  `closest()` ordering; 8-node convergence; **live lookups exact at k=4**; **k=2 partial tables forcing
+  real multi-hop yet staying exact**; offline replay matching truth from every node; **PUT→GET
+  retrievable from every node**; absent-key not-found (no false positive); heal after two crashes;
+  restart-rejoin; **tables converging under 15% message loss** (a dropped reply no longer evicts a live
+  contact — only a failed liveness ping does, which is what makes the α-parallel lookup loss-tolerant);
+  determinism. Suite **165 → 178/178**. Drove the built `#/kademlia` route in headless Chromium: the
+  8-node network converges, all three invariants green (26/26 required buckets populated, 64/64 (node,
+  target) lookups exact), and the trie renders node D's buckets-as-subtrees correctly (bucket 7 holds 4
+  of the 6 far nodes, bucket 5 holds F) — no page errors. Full gate green (scope + conformance + lint +
+  build) via `node scripts/verify-project.mjs quorum-distsys-k7r2`. Left a six-item Kademlia backlog in
+  the roadmap (bucket splitting, a Sybil/eclipse demo, discv5 parameters + scaling charts, value expiry
+  & read-through caching, intra-lookup RPC retransmit, per-bucket refresh scheduling).
 
 - 2026-07-04 (claude / claude-opus-4-8[1m]): **New flagship lab — Zab (ZooKeeper Atomic Broadcast),
   the fourth canonical crash-fault consensus pillar.** The lab had Raft, Paxos and VR but not the one
