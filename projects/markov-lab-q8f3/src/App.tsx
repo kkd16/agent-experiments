@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
+import About from './components/About'
 import Controls from './components/Controls'
 import Stats from './components/Stats'
 import { Simulation } from './engine/simulation'
@@ -45,6 +46,8 @@ export default function App() {
   const [showField, setShowField] = useState(true)
   const [showTrail, setShowTrail] = useState(true)
   const [showTrajectory, setShowTrajectory] = useState(true)
+  const [showCloud, setShowCloud] = useState(true)
+  const [showAbout, setShowAbout] = useState(false)
   const [stats, setStats] = useState<LiveStats>(EMPTY_STATS)
 
   // Mutable engine state that must survive re-renders.
@@ -56,6 +59,11 @@ export default function App() {
   const mainWrapRef = useRef<HTMLDivElement | null>(null)
   const mainCtxRef = useRef<CanvasRenderingContext2D | null>(null)
 
+  // "Long-exposure" accumulation of every sample the chain has visited.
+  const cloudRef = useRef<HTMLCanvasElement | null>(null)
+  const cloudCtxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const splatCursorRef = useRef(0)
+
   const traceXRef = useRef<HTMLCanvasElement | null>(null)
   const traceYRef = useRef<HTMLCanvasElement | null>(null)
   const histXRef = useRef<HTMLCanvasElement | null>(null)
@@ -66,13 +74,15 @@ export default function App() {
   const runningRef = useRef(running)
   const speedRef = useRef(speed)
   const showFieldRef = useRef(showField)
+  const showCloudRef = useRef(showCloud)
   const sceneOptsRef = useRef({ showField, showTrail, showTrajectory })
   useEffect(() => {
     runningRef.current = running
     speedRef.current = speed
     showFieldRef.current = showField
+    showCloudRef.current = showCloud
     sceneOptsRef.current = { showField, showTrail, showTrajectory }
-  }, [running, speed, showField, showTrail, showTrajectory])
+  }, [running, speed, showField, showCloud, showTrail, showTrajectory])
 
   // ── (re)build the simulation whenever the configuration changes ─────
   const rebuild = useCallback(() => {
@@ -82,6 +92,11 @@ export default function App() {
 
   useEffect(() => {
     rebuild()
+    // fresh chain → wipe the accumulated cloud and re-splat from the start
+    const ctx = cloudCtxRef.current
+    const c = cloudRef.current
+    if (ctx && c) ctx.clearRect(0, 0, c.width, c.height)
+    splatCursorRef.current = 0
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetId, samplerId, JSON.stringify(params), seed])
 
@@ -108,6 +123,12 @@ export default function App() {
       mainCtxRef.current = prepCanvas(canvas, side, side)
       const t = TARGETS.find((x) => x.id === targetId)!
       tfRef.current = makeTransform(t.view, side, side)
+
+      // Accumulation canvas mirrors the main canvas; resizing clears it, so we
+      // skip past already-seen samples rather than re-splatting the whole chain.
+      if (!cloudRef.current) cloudRef.current = document.createElement('canvas')
+      cloudCtxRef.current = prepCanvas(cloudRef.current, side, side)
+      splatCursorRef.current = simRef.current ? simRef.current.xs.length : 0
     }
     for (const ref of [traceXRef, traceYRef, histXRef, histYRef, acfRef]) {
       const c = ref.current
@@ -160,7 +181,28 @@ export default function App() {
       const tf = tfRef.current
       if (sim && ctx && tf) {
         if (runningRef.current) sim.step(speedRef.current)
-        drawScene(ctx, sim, tf, showFieldRef.current ? fieldRef.current : null, sceneOptsRef.current)
+        // Splat any newly-visited states onto the long-exposure cloud.
+        const cctx = cloudCtxRef.current
+        if (cctx) {
+          cctx.globalCompositeOperation = 'lighter'
+          cctx.fillStyle = 'rgba(120,180,255,0.05)'
+          const from = Math.min(splatCursorRef.current, sim.xs.length)
+          for (let i = from; i < sim.xs.length; i++) {
+            const [px, py] = tf.toPx(sim.xs[i], sim.ys[i])
+            cctx.beginPath()
+            cctx.arc(px, py, 1.4, 0, Math.PI * 2)
+            cctx.fill()
+          }
+          splatCursorRef.current = sim.xs.length
+        }
+        drawScene(
+          ctx,
+          sim,
+          tf,
+          showFieldRef.current ? fieldRef.current : null,
+          showCloudRef.current ? cloudRef.current : null,
+          sceneOptsRef.current,
+        )
         const now = performance.now()
         if (now - lastStats > 220) {
           lastStats = now
@@ -189,11 +231,30 @@ export default function App() {
       drawPlots(simRef.current)
     }
   }
-  const onToggle = (k: 'showField' | 'showTrail' | 'showTrajectory') => {
+  const onToggle = (k: 'showField' | 'showTrail' | 'showTrajectory' | 'showCloud') => {
     if (k === 'showField') setShowField((v) => !v)
     if (k === 'showTrail') setShowTrail((v) => !v)
     if (k === 'showTrajectory') setShowTrajectory((v) => !v)
+    if (k === 'showCloud') setShowCloud((v) => !v)
   }
+
+  // keyboard shortcuts: space = run/pause, s = step, r = reset
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        setRunning((v) => !v)
+      } else if (e.key === 's') {
+        onStep()
+      } else if (e.key === 'r') {
+        rebuild()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rebuild])
 
   const target = TARGETS.find((t) => t.id === targetId)!
 
@@ -212,6 +273,7 @@ export default function App() {
         showField={showField}
         showTrail={showTrail}
         showTrajectory={showTrajectory}
+        showCloud={showCloud}
         onTarget={setTargetId}
         onSampler={onSampler}
         onParam={onParam}
@@ -228,6 +290,9 @@ export default function App() {
         <div className="stage-head">
           <h2>{target.name}</h2>
           <span className="stage-sampler">{samplerById(samplerId).name}</span>
+          <button className="about-btn" onClick={() => setShowAbout(true)}>
+            ? the math
+          </button>
         </div>
         <div className="canvas-wrap" ref={mainWrapRef}>
           <canvas ref={mainRef} className="main-canvas" />
@@ -253,6 +318,8 @@ export default function App() {
           <canvas ref={acfRef} className="diag-canvas" />
         </DiagCard>
       </section>
+
+      {showAbout && <About onClose={() => setShowAbout(false)} />}
     </div>
   )
 }

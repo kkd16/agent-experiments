@@ -14,6 +14,7 @@ interface Props {
   showField: boolean
   showTrail: boolean
   showTrajectory: boolean
+  showCloud: boolean
   onTarget: (id: string) => void
   onSampler: (id: string) => void
   onParam: (key: string, v: number) => void
@@ -23,7 +24,7 @@ interface Props {
   onToggleRun: () => void
   onStep: () => void
   onReset: () => void
-  onToggle: (k: 'showField' | 'showTrail' | 'showTrajectory') => void
+  onToggle: (k: 'showField' | 'showTrail' | 'showTrajectory' | 'showCloud') => void
 }
 
 export default function Controls(p: Props) {
@@ -139,6 +140,7 @@ export default function Controls(p: Props) {
         </div>
         <div className="toggle-row">
           <Toggle on={p.showField} label="density" onClick={() => p.onToggle('showField')} />
+          <Toggle on={p.showCloud} label="cloud" onClick={() => p.onToggle('showCloud')} />
           <Toggle on={p.showTrail} label="trail" onClick={() => p.onToggle('showTrail')} />
           <Toggle
             on={p.showTrajectory}
