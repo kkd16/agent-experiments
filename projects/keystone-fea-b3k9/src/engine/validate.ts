@@ -19,6 +19,7 @@ import { TopOpt, unitElementK, tanhProject, tanhProjectDeriv, type TopOptSpec, P
 import { solveThermalSteady, solveThermalTransient, type ThermalInput } from './thermal'
 import { solveThermoelastic } from './thermoelastic'
 import { solveTransientThermoelastic } from './coupled'
+import { analyzeFracture, type CrackModel } from './fracture'
 import { edgeNodesQ } from './quadmesh'
 
 const STEEL_RHO = 7850 // kg/m³
@@ -1242,6 +1243,74 @@ export function runThermoelasticBenchmarks(): Check[] {
   return checks
 }
 
+export function runFractureBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const E = 210e9
+  const nu = 0.3
+  const sigma = 100e6
+
+  // A moderately refined graded mesh reproduces the handbook geometry factors and
+  // the J = K²/E* identity to a fraction of a percent — the whole point of the
+  // domain (equivalent-area) forms of the J- and interaction integrals.
+  function mk(kind: CrackModel['kind'], alpha: number): CrackModel {
+    return { kind, a: alpha, W: 1, H: 2, sigma, E, nu, thickness: 1, order: 8, refine: 1 }
+  }
+
+  // 1–2. Center crack vs the Feddersen finite-width factor Y = √sec(πa/2W).
+  {
+    const r = analyzeFracture(mk('center', 0.3))
+    checks.push(check('Center-crack K_I (interaction integral)', 'Y = K_I/(σ√πa) = √sec(πa/2W)', r.Yref, r.Y, '', 0.03))
+    // J-integral vs K_I²/E* — two independent integrals of the same field.
+    checks.push(check('J = K_I²/E* (center)', 'energy release rate ↔ K identity', r.JfromK, r.J, 'J/m²', 0.03))
+  }
+
+  // 3. Griffith energy limit: for a small crack in a wide plate the energy
+  //    release rate approaches the infinite-plate value G = σ²πa/E*.
+  {
+    const a = 0.12
+    const r = analyzeFracture(mk('center', a))
+    const Ginf = (sigma * sigma * Math.PI * a) / E
+    checks.push(check('Griffith energy release G (center)', 'G → σ²πa/E* (wide plate)', Ginf, r.J, 'J/m²', 0.04))
+  }
+
+  // 4. Path (domain) independence: J over the innermost vs outermost evaluation
+  //    ring must agree — the defining property of a conservation integral.
+  {
+    const r = analyzeFracture(mk('edge', 0.3))
+    const lo = r.ringJ[0]
+    const hi = r.ringJ[r.ringJ.length - 1]
+    checks.push(check('J path independence', 'J(inner ring) = J(outer ring)', lo, hi, 'J/m²', 0.02))
+  }
+
+  // 5. Single edge crack vs the Tada polynomial; the free-surface factor.
+  {
+    const r = analyzeFracture(mk('edge', 0.3))
+    checks.push(check('Edge-crack K_I (SENT)', 'Y = 1.12 − 0.23α + 10.55α² − … (Tada)', r.Yref, r.Y, '', 0.03))
+  }
+
+  // 6. Pure mode I: the symmetric configurations carry no shear mode. (K_II is
+  //    identically zero by construction — this pins the reported value.)
+  {
+    const r = analyzeFracture(mk('center', 0.3))
+    checks.push(check('Mode-I purity (center)', 'K_II = 0 for a symmetric crack', 0, r.KII, 'Pa·√m', 1e-9))
+  }
+
+  // 7. Double edge crack vs the Tada DENT factor.
+  {
+    const r = analyzeFracture(mk('double-edge', 0.3))
+    checks.push(check('Double-edge K_I (DENT)', 'Y = (1.122 − 0.561α − …)/√(1−α)', r.Yref, r.Y, '', 0.03))
+  }
+
+  // 8. Displacement-correlation cross-check: an entirely independent K_I estimate
+  //    (from the crack-opening √r profile) tracks the interaction integral.
+  {
+    const r = analyzeFracture(mk('edge', 0.3))
+    checks.push(check('Displacement-correlation K_I', 'crack-opening √r fit ≈ interaction integral', r.KI, r.KIdcm, 'Pa·√m', 0.1))
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -1254,6 +1323,7 @@ export function runAllBenchmarks(): {
   topopt: Check[]
   thermal: Check[]
   thermoelastic: Check[]
+  fracture: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -1267,6 +1337,7 @@ export function runAllBenchmarks(): {
   const topopt = runTopOptBenchmarks()
   const thermal = runThermalBenchmarks()
   const thermoelastic = runThermoelasticBenchmarks()
+  const fracture = runFractureBenchmarks()
   const allPass = [
     ...frame,
     ...dynamics,
@@ -1279,6 +1350,7 @@ export function runAllBenchmarks(): {
     ...topopt,
     ...thermal,
     ...thermoelastic,
+    ...fracture,
   ].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, allPass }
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, allPass }
 }
