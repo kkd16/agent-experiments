@@ -4,7 +4,7 @@ import type { FrameState } from '../webgl/renderer'
 import { computeReferenceOrbit } from './refOrbit'
 import { hpAddNumber, hpFromNumber, hpFromString, hpMul, hpToNumber, hpToString, type HP } from './hp'
 import type { Bookmark, Engine, HudInfo, RenderParams, Viewport } from './types'
-import { HOME, INITIAL_SPAN, JULIA_HOME } from './types'
+import { COLOR_MODE_INDEX, HOME, INITIAL_SPAN, JULIA_HOME } from './types'
 import { decodeView, encodeView } from './share'
 
 const DF64_MIN_SCALE = 1e-14 // world units per pixel — the df64 precision floor
@@ -25,6 +25,9 @@ const DEFAULT_PARAMS: RenderParams = {
   aa: 1,
   de: false,
   deStrength: 4.0,
+  colorMode: 'smooth',
+  featureFreq: 6.0,
+  interior: false,
 }
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x)
@@ -88,6 +91,7 @@ export function useFractalEngine() {
     mode: 'mandelbrot',
     fps: 60,
     engine: 'df64',
+    colorMode: DEFAULT_PARAMS.colorMode,
   })
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
@@ -139,6 +143,9 @@ export function useFractalEngine() {
       paletteId: p.paletteId,
       de: p.de,
       deStrength: p.deStrength,
+      colorMode: COLOR_MODE_INDEX[p.colorMode],
+      featureFreq: p.featureFreq,
+      interior: p.interior,
       perturbation,
       orbitLen,
     }
@@ -177,6 +184,7 @@ export function useFractalEngine() {
       mode: p.mode,
       fps: fpsRef.current,
       engine: engineFor(vp.span, p.mode),
+      colorMode: p.colorMode,
     })
   }, [engineFor])
 
@@ -492,6 +500,9 @@ export function useFractalEngine() {
         juliaY: b.juliaY ?? p.juliaY,
         paletteId: b.paletteId ?? p.paletteId,
         de: b.de ?? p.de,
+        colorMode: b.colorMode ?? p.colorMode,
+        featureFreq: b.featureFreq ?? p.featureFreq,
+        interior: b.interior ?? p.interior,
       }))
       // Julia bookmarks jump; Mandelbrot bookmarks get a cinematic dive.
       if (b.mode === 'julia' || paramsRef.current.mode === 'julia') {

@@ -17,6 +17,9 @@ export type FrameState = {
   paletteId: string
   de: boolean
   deStrength: number
+  colorMode: number // 0 smooth, 1 stripe, 2 trap-point, 3 trap-cross
+  featureFreq: number // stripe density / orbit-trap scale
+  interior: boolean // paint the interior instead of flat black
   perturbation: boolean // use the reference-orbit deep engine
   orbitLen: number // highest valid reference index (perturbation mode)
 }
@@ -199,6 +202,9 @@ export class FractalRenderer {
       gl.uniform1f(u.u_colorOffset, state.colorOffset)
       gl.uniform1i(u.u_de, state.de ? 1 : 0)
       gl.uniform1f(u.u_deStrength, state.deStrength)
+      gl.uniform1i(u.u_colorMode, state.colorMode)
+      gl.uniform1f(u.u_featureFreq, state.featureFreq)
+      gl.uniform1i(u.u_interior, state.interior ? 1 : 0)
     } else {
       const u = this.directU
       gl.useProgram(this.direct)
@@ -216,6 +222,9 @@ export class FractalRenderer {
       gl.uniform1f(u.u_colorOffset, state.colorOffset)
       gl.uniform1i(u.u_de, state.de ? 1 : 0)
       gl.uniform1f(u.u_deStrength, state.deStrength)
+      gl.uniform1i(u.u_colorMode, state.colorMode)
+      gl.uniform1f(u.u_featureFreq, state.featureFreq)
+      gl.uniform1i(u.u_interior, state.interior ? 1 : 0)
     }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)

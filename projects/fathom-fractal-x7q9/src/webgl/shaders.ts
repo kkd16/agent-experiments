@@ -65,13 +65,28 @@ vec2 ds_mul(vec2 a, vec2 b) {
   return vec2(hi, lo);
 }`
 
-// Shared colouring helpers: palette lookup, smooth iteration count, DE shade.
+// Shared colouring helpers: palette lookup, smooth iteration count, the per-orbit
+// statistic accumulators (stripe average / orbit trap), and the final shade.
+//
+// Colouring modes (u_colorMode):
+//   0  smooth   — classic smooth escape-time bands (the historical look)
+//   1  stripe   — Stripe Average Colouring: the running mean of
+//                 0.5+0.5·sin(f·arg z) along the orbit, mixed between its last
+//                 two values by the smooth fractional escape so it stays crisp
+//   2  trapPt   — orbit trap: min |z| over the orbit (glowing filaments)
+//   3  trapCr   — orbit trap: min distance to the real/imaginary axes (a weave)
+//
+// With u_interior = 1 the set's interior is painted by the same statistic
+// instead of flat black. Every mode still supports the optional DE outline.
 const COLOR_COMMON = `
 uniform sampler2D u_palette;
 uniform float u_colorScale;
 uniform float u_colorOffset;
 uniform int   u_de;          // 1 = distance-estimation outline shading
 uniform float u_deStrength;  // px multiplier for the DE falloff
+uniform int   u_colorMode;   // 0 smooth, 1 stripe, 2 trap-point, 3 trap-cross
+uniform float u_featureFreq; // stripe density / orbit-trap scale
+uniform int   u_interior;    // 1 = shade the interior instead of flat black
 
 vec3 paletteColor(float t) {
   return texture(u_palette, vec2(fract(t), 0.5)).rgb;
@@ -84,15 +99,49 @@ float smoothIter(float mag2, float iter) {
   return iter + 1.0 - nu;
 }
 
-// Combine smooth-iteration colour with an optional DE outline. dist is the
-// exterior distance estimate in world units; pxScale is world units per pixel.
-vec3 shade(float sIter, float dist, float pxScale) {
-  vec3 base = paletteColor(sIter * u_colorScale + u_colorOffset);
-  if (u_de == 1) {
+// Fold the current orbit point z_k into the running colour statistics. k is the
+// orbit index; k==0 (z=0 for the Mandelbrot set) is skipped because arg(0) is
+// undefined. The stripe mean keeps its previous value too, so the caller can mix
+// the last two by the smooth fractional escape and avoid visible banding.
+void accumStats(vec2 z, int k, inout float sSum, inout float sPrev,
+                inout float trap, inout int cnt) {
+  if (k == 0) return;
+  if (u_colorMode == 1) {
+    float s = 0.5 + 0.5 * sin(u_featureFreq * atan(z.y, z.x));
+    sPrev = sSum;
+    sSum += s;
+    cnt++;
+  } else if (u_colorMode == 2) {
+    trap = min(trap, length(z));
+  } else if (u_colorMode == 3) {
+    trap = min(trap, min(abs(z.x), abs(z.y)));
+  }
+}
+
+// Resolve one pixel to a colour from the accumulated statistics. Interior points
+// (escaped == false) are black unless u_interior asks for them to be painted.
+// dist is the exterior distance estimate in world units; pxScale is world units
+// per pixel; mag2/sIter describe the escape.
+vec3 finalColor(bool escaped, float mag2, float sIter, float dist, float pxScale,
+                float sSum, float sPrev, float trap, int cnt) {
+  if (!escaped && u_interior == 0) return vec3(0.0);
+
+  float pc;
+  if (u_colorMode == 1) {
+    float avg  = cnt > 0 ? sSum / float(cnt) : 0.0;
+    float avgP = cnt > 1 ? sPrev / float(cnt - 1) : avg;
+    pc = escaped ? mix(avgP, avg, fract(sIter)) : avg;
+  } else if (u_colorMode == 2 || u_colorMode == 3) {
+    pc = sqrt(max(trap, 0.0)) * u_featureFreq;
+  } else {
+    pc = escaped ? sIter * u_colorScale : sqrt(mag2) * u_featureFreq * 0.5;
+  }
+
+  vec3 base = paletteColor(pc + u_colorOffset);
+  if (escaped && u_de == 1) {
     float pxDist = dist / max(pxScale, 1e-38);
     // tanh gives a soft, resolution-independent glow around the boundary.
-    float g = tanh(pxDist * u_deStrength);
-    base *= g;
+    base *= tanh(pxDist * u_deStrength);
   }
   return base;
 }`
@@ -134,11 +183,14 @@ vec3 sampleAt(vec2 fragPx) {
   bool escaped = false;
   int iter = 0;
   float m = 0.0;
+  float sSum = 0.0, sPrev = 0.0, trap = 1e20; // colour-statistic accumulators
+  int cnt = 0;
   for (int k = 0; k < u_maxIter; k++) {
     vec2 zx2 = ds_mul(zx, zx);
     vec2 zy2 = ds_mul(zy, zy);
     vec2 mag = ds_add(zx2, zy2);
     m = mag.x;
+    accumStats(vec2(zx.x, zy.x), k, sSum, sPrev, trap, cnt);
     if (m > BAILOUT2) { escaped = true; iter = k; break; }
     if (u_de == 1) {
       vec2 zc = vec2(zx.x, zy.x);
@@ -150,15 +202,13 @@ vec3 sampleAt(vec2 fragPx) {
     zx = ds_add(ds_sub(zx2, zy2), cx);    // zx^2 - zy^2 + cx
   }
 
-  if (!escaped) return vec3(0.0); // interior of the set
-
-  float s = smoothIter(m, float(iter));
+  float s = escaped ? smoothIter(m, float(iter)) : 0.0;
   float dist = 0.0;
-  if (u_de == 1) {
+  if (escaped && u_de == 1) {
     float zmag = sqrt(m);
     dist = zmag * log(zmag) / max(length(dp), 1e-30);
   }
-  return shade(s, dist, u_scale.x);
+  return finalColor(escaped, m, s, dist, u_scale.x, sSum, sPrev, trap, cnt);
 }
 
 void main() {
@@ -222,6 +272,8 @@ vec3 sampleAt(vec2 fragPx) {
   int n = 0;
   bool escaped = false;
   float mag2 = 0.0;
+  float sSum = 0.0, sPrev = 0.0, trap = 1e20; // colour-statistic accumulators
+  int cnt = 0;
 
   for (int k = 0; k < u_maxIter; k++) {
     vec2 Z = orbitAt(m);
@@ -239,6 +291,7 @@ vec3 sampleAt(vec2 fragPx) {
     Z = orbitAt(m);
     vec2 z = Z + dz;               // true value at iteration n
     mag2 = dot(z, z);
+    accumStats(z, n, sSum, sPrev, trap, cnt);
     if (mag2 > BAILOUT2) { escaped = true; break; }
     float dd = dot(dz, dz);
     if (mag2 < dd || m >= u_orbitLen) {
@@ -247,15 +300,13 @@ vec3 sampleAt(vec2 fragPx) {
     }
   }
 
-  if (!escaped) return vec3(0.0);
-
-  float s = smoothIter(mag2, float(n));
+  float s = escaped ? smoothIter(mag2, float(n)) : 0.0;
   float dist = 0.0;
-  if (u_de == 1) {
+  if (escaped && u_de == 1) {
     float zmag = sqrt(mag2);
     dist = zmag * log(zmag) / max(length(dv), 1e-30);
   }
-  return shade(s, dist, u_pixelScale);
+  return finalColor(escaped, mag2, s, dist, u_pixelScale, sSum, sPrev, trap, cnt);
 }
 
 void main() {

@@ -240,6 +240,32 @@
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.mode-btn {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--glass-brd);
+  color: var(--muted);
+  padding: 7px 4px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.mode-btn:hover {
+  color: var(--text);
+}
+.mode-btn.active {
+  color: #071018;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
 .palette-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
