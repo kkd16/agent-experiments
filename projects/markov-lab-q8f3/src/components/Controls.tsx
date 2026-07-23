@@ -24,6 +24,7 @@ interface Props {
   onToggleRun: () => void
   onStep: () => void
   onReset: () => void
+  onExport: () => void
   onToggle: (k: 'showField' | 'showTrail' | 'showTrajectory' | 'showCloud') => void
 }
 
@@ -136,6 +137,11 @@ export default function Controls(p: Props) {
           </button>
           <button className="btn" onClick={p.onSeed}>
             ⚄ Reseed ({p.seed % 1000})
+          </button>
+        </div>
+        <div className="btn-row">
+          <button className="btn" onClick={p.onExport} title="download the chain as CSV">
+            ⭳ Export chain (CSV)
           </button>
         </div>
         <div className="toggle-row">

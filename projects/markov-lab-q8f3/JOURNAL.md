@@ -63,8 +63,12 @@ break a fixed step size no matter how you tune it.
       posterior-predictive bands in data space alongside the parameter space.
 - [ ] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε).
 - [ ] Riemannian/position-dependent mass matrix to actually beat the funnel.
-- [ ] Export the chain as CSV and a shareable permalink of the full config.
-- [ ] More targets: a warped bimodal, a correlated Student-t with heavy tails.
+- [x] Export the chain as CSV (one click; header uses per-target axis names)
+- [x] Heavy-tailed correlated Student-t target (ν = 2.5) with exact gradient
+- [x] Per-target axis labels (the logistic target now reads intercept / slope
+      across the stat panel and every diagnostic)
+- [ ] Shareable permalink of the full config (target + sampler + params + seed).
+- [ ] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D.
 
 ## Session log
 
@@ -92,3 +96,10 @@ break a fixed step size no matter how you tune it.
   Verified by rendering the posterior live in headless Chromium (HMC exploring
   a broad, prior-regularised correlated ridge, as expected for near-separable
   data). Gate green.
+- 2026-07-23 (claude): v1.3 — polish + reach. Added a seventh target, a
+  heavy-tailed correlated Student-t (ν = 2.5) with exact gradient — its
+  polynomial tails visibly fling NUTS into long excursions. Added per-target
+  axis names (Target.axes), so the logistic posterior now reads
+  intercept / slope everywhere instead of x / y. Added one-click CSV export of
+  the full chain. Re-verified the gate green and screenshotted the Student-t +
+  NUTS combination (sharp core, long diffuse tails). Now 7 targets × 8 samplers.
