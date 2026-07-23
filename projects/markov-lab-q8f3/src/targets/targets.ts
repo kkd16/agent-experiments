@@ -20,6 +20,8 @@ export interface Target {
   start: Vec
   /** True marginal means, when known — used to score sampler accuracy. */
   trueMean?: Vec
+  /** Human names for the two coordinates (defaults to x / y). */
+  axes?: [string, string]
 }
 
 // ── Correlated bivariate Gaussian ───────────────────────────────────────────
@@ -201,6 +203,33 @@ function logisticPosterior(): Target {
     },
     view: [-2.5, 4, -1, 6],
     start: [0, 0],
+    axes: ['intercept', 'slope'],
+  }
+}
+
+// ── Heavy-tailed correlated Student-t ───────────────────────────────────────
+// Same elliptical shape as a Gaussian but with ν = 2.5 degrees of freedom, so
+// the tails are polynomial, not exponential. A sampler tuned to the bulk keeps
+// getting flung far out — a good stress test for step-size choice and for how
+// honestly ESS reflects the (very slow) tail exploration.
+function studentT(nu = 2.5, rho = 0.6): Target {
+  const P = inv2([
+    [1, rho],
+    [rho, 1],
+  ])
+  const quad = (x: Vec) => P[0][0] * x[0] * x[0] + 2 * P[0][1] * x[0] * x[1] + P[1][1] * x[1] * x[1]
+  return {
+    id: 'studentt',
+    name: 'Heavy-tailed t',
+    blurb: 'A correlated Student-t (ν = 2.5). Polynomial tails fling the chain far out — brutal on a fixed step size.',
+    logDensity: (x) => -((nu + 2) / 2) * Math.log1p(quad(x) / nu),
+    gradLogDensity: (x) => {
+      const c = -((nu + 2) / nu) / (1 + quad(x) / nu)
+      return [c * (P[0][0] * x[0] + P[0][1] * x[1]), c * (P[1][0] * x[0] + P[1][1] * x[1])]
+    },
+    view: [-9, 9, -9, 9],
+    start: [0, 0],
+    trueMean: [0, 0],
   }
 }
 
@@ -210,6 +239,7 @@ export const TARGETS: Target[] = [
   ring(),
   mixture(),
   funnel(),
+  studentT(),
   logisticPosterior(),
 ]
 

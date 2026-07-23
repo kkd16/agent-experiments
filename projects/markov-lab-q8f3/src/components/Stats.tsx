@@ -13,7 +13,8 @@ function rhatClass(v: number): string {
   return 'bad'
 }
 
-export default function Stats({ s }: { s: LiveStats }) {
+export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [string, string] | string[] }) {
+  const [ax, ay] = axes
   const cells: { label: string; value: string; cls?: string; hint: string }[] = [
     { label: 'iterations', value: s.iters.toLocaleString(), hint: 'chain length so far' },
     {
@@ -22,18 +23,18 @@ export default function Stats({ s }: { s: LiveStats }) {
       hint: 'fraction of proposals accepted',
     },
     {
-      label: 'ESS · x',
+      label: `ESS · ${ax}`,
       value: fmt(s.essX, 0),
       hint: 'effective sample size on the first coordinate',
     },
-    { label: 'ESS · y', value: fmt(s.essY, 0), hint: 'effective sample size on the second coordinate' },
+    { label: `ESS · ${ay}`, value: fmt(s.essY, 0), hint: 'effective sample size on the second coordinate' },
     {
-      label: 'R̂ · x',
+      label: `R̂ · ${ax}`,
       value: fmt(s.rhatX, 3),
       cls: rhatClass(s.rhatX),
       hint: 'split-R̂; ≈1 means converged, >1.1 is a warning',
     },
-    { label: 'τ · x', value: fmt(s.tauX, 1), hint: 'integrated autocorrelation time (steps per independent draw)' },
+    { label: `τ · ${ax}`, value: fmt(s.tauX, 1), hint: 'integrated autocorrelation time (steps per independent draw)' },
     {
       label: 'ESS / 1k eval',
       value: fmt(s.essPerKEval, 1),
@@ -45,9 +46,9 @@ export default function Stats({ s }: { s: LiveStats }) {
       hint: 'running posterior mean estimate',
     },
     {
-      label: '95% CI · x',
+      label: `95% CI · ${ax}`,
       value: `[${fmt(s.ci[0])}, ${fmt(s.ci[1])}]`,
-      hint: 'central 95% credible interval for x',
+      hint: `central 95% credible interval for ${ax}`,
     },
     {
       label: 'evals',

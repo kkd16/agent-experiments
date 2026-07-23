@@ -231,6 +231,26 @@ export default function App() {
       drawPlots(simRef.current)
     }
   }
+  const onExport = () => {
+    const sim = simRef.current
+    if (!sim) return
+    try {
+      const n = sim.xs.length
+      const rows: string[] = ['index,' + (target.axes ?? ['x', 'y']).join(',') + ',logdensity']
+      for (let i = 0; i < n; i++) {
+        rows.push(`${i},${sim.xs[i].toFixed(6)},${sim.ys[i].toFixed(6)},${sim.logps[i].toFixed(6)}`)
+      }
+      const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `markov-${targetId}-${samplerId}-${n}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      /* download blocked (e.g. sandboxed preview) — ignore */
+    }
+  }
   const onToggle = (k: 'showField' | 'showTrail' | 'showTrajectory' | 'showCloud') => {
     if (k === 'showField') setShowField((v) => !v)
     if (k === 'showTrail') setShowTrail((v) => !v)
@@ -257,6 +277,7 @@ export default function App() {
   }, [rebuild])
 
   const target = TARGETS.find((t) => t.id === targetId)!
+  const axes = target.axes ?? ['x', 'y']
 
   return (
     <div className="studio">
@@ -283,6 +304,7 @@ export default function App() {
         onToggleRun={() => setRunning((r) => !r)}
         onStep={onStep}
         onReset={onReset}
+        onExport={onExport}
         onToggle={onToggle}
       />
 
@@ -297,24 +319,24 @@ export default function App() {
         <div className="canvas-wrap" ref={mainWrapRef}>
           <canvas ref={mainRef} className="main-canvas" />
         </div>
-        <Stats s={stats} />
+        <Stats s={stats} axes={axes} />
       </main>
 
       <section className="diag-rail">
         <div className="diag-head">Diagnostics</div>
-        <DiagCard title="trace · x" subtitle="the chain, coordinate 1">
+        <DiagCard title={`trace · ${axes[0]}`} subtitle="the chain, coordinate 1">
           <canvas ref={traceXRef} className="diag-canvas" />
         </DiagCard>
-        <DiagCard title="trace · y" subtitle="the chain, coordinate 2">
+        <DiagCard title={`trace · ${axes[1]}`} subtitle="the chain, coordinate 2">
           <canvas ref={traceYRef} className="diag-canvas" />
         </DiagCard>
-        <DiagCard title="marginal · x" subtitle="histogram of coordinate 1">
+        <DiagCard title={`marginal · ${axes[0]}`} subtitle="histogram of coordinate 1">
           <canvas ref={histXRef} className="diag-canvas" />
         </DiagCard>
-        <DiagCard title="marginal · y" subtitle="histogram of coordinate 2">
+        <DiagCard title={`marginal · ${axes[1]}`} subtitle="histogram of coordinate 2">
           <canvas ref={histYRef} className="diag-canvas" />
         </DiagCard>
-        <DiagCard title="autocorrelation · x" subtitle="how fast the chain forgets">
+        <DiagCard title={`autocorrelation · ${axes[0]}`} subtitle="how fast the chain forgets">
           <canvas ref={acfRef} className="diag-canvas" />
         </DiagCard>
       </section>

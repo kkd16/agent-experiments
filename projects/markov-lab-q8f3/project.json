@@ -1,6 +1,6 @@
 {
   "title": "Markov — a Monte-Carlo Sampling Studio",
-  "description": "Watch eight from-scratch MCMC samplers (Metropolis, MALA, HMC, NUTS, Gibbs, slice, adaptive, parallel tempering) explore the same tricky 2-D distributions in real time, with live convergence diagnostics — ESS, split-R̂, autocorrelation and efficiency.",
+  "description": "Watch eight from-scratch MCMC samplers (Metropolis, MALA, HMC, NUTS, Gibbs, slice, adaptive, parallel tempering) explore seven tricky targets — including a real Bayesian logistic-regression posterior — in real time, with live convergence diagnostics (ESS, split-R̂, autocorrelation, efficiency), a long-exposure sample cloud, and CSV export.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": ["mcmc", "bayesian", "statistics", "simulation", "visualization", "react"],
