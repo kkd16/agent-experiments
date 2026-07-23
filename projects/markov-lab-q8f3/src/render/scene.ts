@@ -16,6 +16,7 @@ export function drawScene(
   sim: Simulation,
   tf: Transform,
   field: HTMLCanvasElement | null,
+  cloud: HTMLCanvasElement | null,
   opts: SceneOpts,
 ) {
   const { w, h } = tf
@@ -28,6 +29,13 @@ export function drawScene(
   } else {
     ctx.fillStyle = '#0a0c16'
     ctx.fillRect(0, 0, w, h)
+  }
+
+  // ── accumulated "long-exposure" sample cloud (additive) ───────────
+  if (cloud) {
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.drawImage(cloud, 0, 0, w, h)
+    ctx.globalCompositeOperation = 'source-over'
   }
 
   // ── chain trail (recent states, fading with age) ──────────────────

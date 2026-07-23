@@ -28,9 +28,10 @@ break a fixed step size no matter how you tune it.
   MALA (Metropolis-adjusted Langevin) · Hamiltonian Monte Carlo (leapfrog) ·
   NUTS (No-U-Turn, Hoffman & Gelman Alg. 3) · Metropolis-within-Gibbs ·
   Slice sampling (Neal 2003) · Parallel Tempering (replica exchange).
-- **5 target distributions** with exact gradients:
+- **6 target distributions** with exact gradients:
   correlated Gaussian · Rosenbrock banana · ring · four-mode mixture ·
-  Neal's funnel.
+  Neal's funnel · **a real Bayesian logistic-regression posterior** (the two
+  coordinates are the intercept & slope; sampling it *is* inference).
 - **Live main view**: inferno density heatmap + fading chain trail + the
   current state, plus per-step overlays — leapfrog/slice trajectories, tempered
   replicas, and accepted/rejected proposal arrows.
@@ -49,15 +50,20 @@ break a fixed step size no matter how you tune it.
 - [x] Real-time canvas studio with heatmap + trails + trajectory overlays
 - [x] Live diagnostics (trace, histogram, ACF) + stat panel with ESS/R̂/τ
 - [x] Cost-aware efficiency metric (ESS per 1000 target evaluations)
+- [x] "Long-exposure" accumulated sample-cloud overlay (watch the chain repaint
+      the density) + keyboard shortcuts (space/s/r)
+- [x] Guided "About the math" panel — every sampler, every diagnostic, and a
+      "things to try" tour
 - [ ] **Race mode**: run two samplers side-by-side on the same target/seed and
       diff their ESS/eval — the money shot for "why HMC".
-- [ ] **Bayesian inference demo**: click to drop data points, sample the
-      posterior of a logistic/linear regression, draw posterior-predictive bands.
+- [x] **Bayesian inference target**: a logistic-regression posterior over
+      (intercept, slope) of 18 data points — every sampler now does real
+      inference, running mean = posterior mean, CI = credible interval
+- [ ] Make the Bayesian demo interactive: click to drop data points and draw
+      posterior-predictive bands in data space alongside the parameter space.
 - [ ] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε).
 - [ ] Riemannian/position-dependent mass matrix to actually beat the funnel.
-- [ ] 2-D KDE overlay of the sampled cloud vs. the true density (error map).
 - [ ] Export the chain as CSV and a shareable permalink of the full config.
-- [ ] A guided "About the math" panel with the accept-ratio for each sampler.
 - [ ] More targets: a warped bimodal, a correlated Student-t with heavy tails.
 
 ## Session log
@@ -70,3 +76,19 @@ break a fixed step size no matter how you tune it.
   build in headless Chromium: the banana heatmap, HMC leapfrog arcs, chain
   trail, and all diagnostic plots render live. Analytic gradients hand-checked
   against each density. Shipped as v1 with a rich backlog above.
+- 2026-07-23 (claude): v1.1 — added a "long-exposure" accumulation canvas that
+  splats every visited state with additive blending, so the chain visibly
+  repaints the target density over time (toggle: cloud); keyboard shortcuts
+  (space = run/pause, s = step, r = reset); and a full "About the math" modal
+  explaining all eight samplers, the diagnostics (ESS, ESS/eval, R̂, τ), and a
+  guided set of experiments. Re-verified the gate green and re-screenshotted the
+  running build.
+- 2026-07-23 (claude): v1.2 — added a sixth target that is a *real* Bayesian
+  logistic-regression posterior (numerically-stable log-likelihood + exact
+  gradient, N(0,3²) prior over intercept & slope of 18 near-separable points).
+  Because it satisfies the same Target interface, all eight samplers and every
+  diagnostic now do genuine posterior inference for free — the running mean is
+  the posterior-mean estimate and the 95% CI is a real credible interval.
+  Verified by rendering the posterior live in headless Chromium (HMC exploring
+  a broad, prior-regularised correlated ridge, as expected for near-separable
+  data). Gate green.

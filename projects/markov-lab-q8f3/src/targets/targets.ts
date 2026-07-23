@@ -154,12 +154,63 @@ function funnel(): Target {
   }
 }
 
+// ── Bayesian logistic-regression posterior ──────────────────────────────────
+// This one isn't a toy shape — it's a *real* posterior. A fixed, partly
+// overlapping 1-D dataset {(xᵢ, yᵢ)} with yᵢ ∈ {0,1}; the two coordinates the
+// sampler explores are the intercept a and slope b of  p(y=1) = σ(a + b·x).
+// With a N(0, 3²) prior the posterior is a correlated, gently banana-ish ridge
+// — so exploring it IS Bayesian inference, and the chain's running mean is the
+// posterior-mean parameter estimate.
+function logisticPosterior(): Target {
+  // Deterministic, mostly-separable data with a few boundary flips.
+  const N = 18
+  const data: { x: number; y: number }[] = []
+  for (let i = 0; i < N; i++) {
+    const x = -2.2 + (4.4 * i) / (N - 1)
+    const score = 0.6 + 1.8 * x + 0.95 * Math.sin(3.3 * i + 1) // fixed pseudo-noise
+    data.push({ x, y: score > 0 ? 1 : 0 })
+  }
+  const tau2 = 9 // prior variance (σ = 3)
+  const sig = (z: number) => 1 / (1 + Math.exp(-z))
+  return {
+    id: 'logistic',
+    name: 'Logistic Posterior',
+    blurb:
+      'A real Bayesian posterior over the (intercept, slope) of a logistic fit to 18 data points. The running mean is your parameter estimate.',
+    logDensity: (theta) => {
+      const [a, b] = theta
+      let ll = 0
+      for (const d of data) {
+        const z = a + b * d.x
+        // numerically-stable log-likelihood: y·z − log(1+e^z)
+        ll += d.y * z - (z > 0 ? z + Math.log1p(Math.exp(-z)) : Math.log1p(Math.exp(z)))
+      }
+      const lp = -(a * a + b * b) / (2 * tau2)
+      return ll + lp
+    },
+    gradLogDensity: (theta) => {
+      const [a, b] = theta
+      let ga = -a / tau2
+      let gb = -b / tau2
+      for (const d of data) {
+        const r = d.y - sig(a + b * d.x)
+        ga += r
+        gb += r * d.x
+      }
+      return [ga, gb]
+    },
+    view: [-2.5, 4, -1, 6],
+    start: [0, 0],
+  }
+}
+
 export const TARGETS: Target[] = [
   gaussian(0.85),
   banana(),
   ring(),
   mixture(),
   funnel(),
+  logisticPosterior(),
 ]
 
 export const targetById = (id: string): Target =>
