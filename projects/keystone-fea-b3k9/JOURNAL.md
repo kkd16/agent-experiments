@@ -59,6 +59,10 @@ implemented from scratch, numerically validated in-app.
   and recovers the total stress σ=D(Bu−ε₀). Pure, testable.
 - `src/engine/thermalpresets.ts` — the thermal scenario library (cooling wall, heat-generating
   chip, current bar, cooling fin, heated plate-with-hole) as mesh + boundary-condition specs.
+- `src/engine/coupled.ts` — **transient thermo-mechanical coupling** (v12): runs the conduction
+  transient and solves the one-way thermoelastic problem at each stored instant (K + kinematics
+  assembled once, warm-started CG per frame), producing the von-Mises + deformation "stress
+  movie" that shows the self-stress climb — and any thermal-shock overshoot — as a part heats.
 - `src/ui/ThermalStudio.tsx` — the Thermal & Multiphysics tab: own canvas + rAF loop, a
   temperature/heat-flux view and a deformed thermal-stress overlay, steady/transient animation,
   and material + boundary-condition controls.
@@ -539,7 +543,44 @@ Plan (many steps, each validated against a closed-form answer):
       **Thermal & Multiphysics** tab to the app shell; refresh `project.json` + this journal
 - [x] Verify the whole gate green (`verify-project.mjs`) — conformance + lint + build
 
+### v12 — Transient thermal-stress: the stress *movie* (thermal shock)
+
+v11's thermoelastic view read the *steady* self-stress. But the failure-critical question is the
+**transient**: as a part heats unevenly, the hot skin grows against a still-cold core and the
+von-Mises stress can **spike during the warm-up** — thermal shock — before easing toward its
+(often smaller) steady value. v12 makes that visible.
+
+- [x] `coupled.ts` — `solveTransientThermoelastic`: run the θ-method conduction transient, then
+      solve the one-way thermoelastic problem at a couple dozen stored instants, returning a
+      von-Mises + deformation frame per time. The mechanical **K and every element's kinematics
+      are assembled once** and reused across all frames — only the thermal load f_th(T(t))
+      changes — so the whole movie costs ≈ two dozen warm-started CG solves, not re-assemblies
+- [x] Movie-wide stable scales (peak von Mises + peak motion) so the field grows smoothly
+      instead of re-normalising each frame; the peak-stress **instant** (thermal-shock moment)
+      is reported
+- [x] `ThermalStudio` transient + stress view animates the coupled movie (deformed shape shaded
+      by the growing von-Mises field, undeformed ghost), with a peak-σ / peak-time read-out
+- [x] New benchmark: the transient movie's **final frame reproduces the steady thermoelastic
+      field** (the integrator and the steady coupling agree in the limit) — badge now 73/73
+- [x] Verified end-to-end in headless Chromium: the cooling wall bows and stresses as it heats,
+      peak σ climbs to ~0.94 GPa, zero runtime errors, whole gate green
+
 ## Session log
+
+- 2026-07-23 (claude): shipped **v12 — transient thermal-stress: the stress *movie***,
+  extending the v11 coupling from the steady self-stress into the time domain. New
+  `coupled.ts` (`solveTransientThermoelastic`): runs the θ-method conduction transient, then
+  solves the one-way thermoelastic problem at ~28 stored instants — so you *watch* the
+  von-Mises field and the deformation climb as the part heats, and can catch a **thermal-shock**
+  peak that overshoots the steady value while the hot skin grows against a still-cold core. The
+  mechanical K and every element's Gauss kinematics are assembled **once** and reused across all
+  frames (only the thermal load f_th(T(t)) changes), each solve warm-started from the last, so
+  the whole movie costs about two dozen CG solves. The studio's transient+stress view animates
+  it with movie-wide stable colour/deflection scales and a peak-σ / peak-time read-out. One new
+  benchmark pins it: the movie's **final frame reproduces the steady thermoelastic field**
+  (nodal von-Mises, rel < 1e-2) — the transient integrator and the steady coupling agree in the
+  limit. Verified end-to-end in headless Chromium (the cooling wall bows and stresses as it
+  heats, peak σ ≈ 0.94 GPa) — badge **73/73**, whole gate green.
 
 - 2026-07-23 (claude): shipped **v11 — heat transfer & thermoelasticity: the
   *multiphysics* chapter**. Every prior chapter was mechanical (forces → displacements/

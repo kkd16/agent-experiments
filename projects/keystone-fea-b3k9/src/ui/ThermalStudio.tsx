@@ -22,6 +22,7 @@ import {
   type ThermalTransientResult,
 } from '../engine/thermal'
 import { solveThermoelastic, type ThermoelasticResult } from '../engine/thermoelastic'
+import { solveTransientThermoelastic, type TransientTeResult, type TeFrame } from '../engine/coupled'
 import {
   THERMAL_SCENARIOS,
   thermalScenarioById,
@@ -68,6 +69,7 @@ interface Solved {
   steady: ThermalResult | null
   transient: ThermalTransientResult | null
   te: ThermoelasticResult | null
+  teTransient: TransientTeResult | null
 }
 
 interface Snapshot {
@@ -114,6 +116,7 @@ export function ThermalStudio() {
     let steady: ThermalResult | null
     let transient: ThermalTransientResult | null = null
     let te: ThermoelasticResult | null = null
+    let teTransient: TransientTeResult | null = null
     try {
       steady = solveThermalSteady(input)
     } catch {
@@ -126,23 +129,29 @@ export function ThermalStudio() {
         transient = null
       }
     }
+    const mech = {
+      E: params.E,
+      nu: 0.3,
+      alpha: params.alpha,
+      thickness: input.thickness,
+      Tref: params.Tref,
+      fix: teFix,
+    }
     if (view === 'stress' && steady) {
       try {
-        te = solveThermoelastic({
-          mesh: input.mesh,
-          E: params.E,
-          nu: 0.3,
-          alpha: params.alpha,
-          thickness: input.thickness,
-          T: steady.T,
-          Tref: params.Tref,
-          fix: teFix,
-        })
+        te = solveThermoelastic({ mesh: input.mesh, T: steady.T, ...mech })
       } catch {
         te = null
       }
+      if (mode === 'transient') {
+        try {
+          teTransient = solveTransientThermoelastic(input, mech, { stressFrames: 28 })
+        } catch {
+          teTransient = null
+        }
+      }
     }
-    return { input, teFix, steady, transient, te }
+    return { input, teFix, steady, transient, te, teTransient }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildKey, mode, view, params.E, params.alpha, params.Tref, scenario])
 
@@ -152,6 +161,18 @@ export function ThermalStudio() {
     const hi = Math.max(params.T0, s?.maxT ?? params.Thot)
     return [lo, hi === lo ? lo + 1 : hi]
   }, [solved.steady, params.T0, params.Tinf, params.Tcold, params.Thot])
+
+  // Von-Mises colour/legend scale for the stress view: the whole-movie peak for a
+  // transient, else the steady field's own nodal maximum.
+  const stressMax = useMemo(() => {
+    if (mode === 'transient' && solved.teTransient?.ok) return solved.teTransient.maxVonMisesOverall
+    if (solved.te) {
+      let m = 0
+      for (const v of solved.te.nodalVonMises) if (v > m) m = v
+      return m
+    }
+    return 0
+  }, [mode, solved.teTransient, solved.te])
 
   // --- snapshot for the rAF loop ------------------------------------------
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -200,25 +221,40 @@ export function ThermalStudio() {
           }
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-          // Advance the transient clock.
+          // Advance the transient clock — either the temperature warm-up or the
+          // coupled thermal-stress "movie", depending on the active view.
           const tr = snap.solved.transient
+          const tt = snap.solved.teTransient
+          const stressMovie = snap.mode === 'transient' && snap.view === 'stress' && !!tt?.ok
+          const tempMovie = snap.mode === 'transient' && snap.view === 'temperature' && !!tr && tr.frames.length > 0
           let frameT: Float64Array | null = null
+          let teFrame: TeFrame | null = null
           let tNow = 0
           let dur = 1
-          if (snap.mode === 'transient' && tr && tr.frames.length > 0) {
-            dur = tr.times[tr.times.length - 1] || 1
+          if (stressMovie) {
+            const frames = tt!.frames
+            dur = frames[frames.length - 1].t || 1
+            if (snap.playing) {
+              tClock += dt * (dur / 6)
+              if (tClock > dur) tClock = 0
+            }
+            tNow = tClock
+            let idx = 0
+            for (let i = 0; i < frames.length; i++) if (frames[i].t <= tNow) idx = i
+            teFrame = frames[idx]
+          } else if (tempMovie) {
+            dur = tr!.times[tr!.times.length - 1] || 1
             if (snap.playing) {
               // Play the whole record in ~6 s of wall time, then loop.
               tClock += dt * (dur / 6)
               if (tClock > dur) tClock = 0
             }
             tNow = tClock
-            // nearest stored frame
             let idx = 0
-            for (let i = 0; i < tr.times.length; i++) if (tr.times[i] <= tNow) idx = i
-            frameT = tr.frames[idx]
+            for (let i = 0; i < tr!.times.length; i++) if (tr!.times[i] <= tNow) idx = i
+            frameT = tr!.frames[idx]
           }
-          drawThermal(ctx, cw, ch, snap, frameT)
+          drawThermal(ctx, cw, ch, snap, frameT, teFrame)
           if (ts - lastReadout > 120) {
             lastReadout = ts
             setClock({ t: tNow, dur })
@@ -298,7 +334,11 @@ export function ThermalStudio() {
           </button>
           <div className="tool-hint">
             {mode === 'transient'
-              ? `warm-up · t = ${clock.t.toFixed(0)} / ${clock.dur.toFixed(0)} s`
+              ? view === 'stress'
+                ? `stress movie · t = ${clock.t.toFixed(0)} / ${clock.dur.toFixed(0)} s${
+                    solved.teTransient?.ok ? ` · peak σ at ${solved.teTransient.peakTime.toFixed(0)} s` : ''
+                  }`
+                : `warm-up · t = ${clock.t.toFixed(0)} / ${clock.dur.toFixed(0)} s`
               : view === 'stress'
                 ? 'stress induced by the steady temperature field — no external load'
                 : 'steady-state conduction'}
@@ -310,8 +350,8 @@ export function ThermalStudio() {
             {view === 'temperature' ? (
               <Legend colormap={colormap} min={tRange[0]} max={tRange[1]} unit="°C" label="temperature" />
             ) : (
-              te && (
-                <Legend colormap={colormap} min={0} max={te.maxVonMises} unit="Pa" label="von Mises (thermal)" />
+              stressMax > 0 && (
+                <Legend colormap={colormap} min={0} max={stressMax} unit="Pa" label="von Mises (thermal)" />
               )
             )}
           </div>
@@ -333,8 +373,24 @@ export function ThermalStudio() {
             />
             {view === 'stress' && (
               <>
-                <StatTile label="Max σ (VM)" value={te ? fmtEng(te.maxVonMises, 'Pa') : '—'} sub="thermal stress" />
-                <StatTile label="Max motion" value={te ? fmtEng(te.maxDisp, 'm') : '—'} sub="thermal growth" />
+                <StatTile
+                  label={mode === 'transient' ? 'Peak σ (VM)' : 'Max σ (VM)'}
+                  value={stressMax > 0 ? fmtEng(stressMax, 'Pa') : '—'}
+                  sub={mode === 'transient' ? 'over the warm-up' : 'thermal stress'}
+                />
+                <StatTile
+                  label="Max motion"
+                  value={
+                    mode === 'transient'
+                      ? solved.teTransient?.ok
+                        ? fmtEng(solved.teTransient.maxDispOverall, 'm')
+                        : '—'
+                      : te
+                        ? fmtEng(te.maxDisp, 'm')
+                        : '—'
+                  }
+                  sub="thermal growth"
+                />
               </>
             )}
           </div>
@@ -404,7 +460,9 @@ export function ThermalStudio() {
               ? mode === 'transient'
                 ? 'C·Ṫ + K_c·T = Q marched by the unconditionally-stable θ-method (Crank–Nicolson) — the part warming from ambient toward its steady field.'
                 : '(K_c + H)·T = Q: conductivity ∫(∇N)ᵀκ(∇N), edge convection ∫Nᵀh N, and loads from generation q‴, edge flux and ambient h·T∞. Flux q = −κ∇T.'
-              : 'Thermoelastic coupling: the thwarted thermal strain ε₀ = αΔT enters elasticity as a load f_th = ∫Bᵀ D ε₀, and σ = D(Bu − ε₀). The part stresses itself with no external load — bright bands are where expansion is most restrained.'}
+              : mode === 'transient'
+                ? 'Transient thermal stress: a thermoelastic solve at each conduction time-step, so you watch the self-stress build as the part heats. Because the hot skin grows against a still-cold core, the von-Mises peak can spike *during* the warm-up (thermal shock) before easing toward its steady value.'
+                : 'Thermoelastic coupling: the thwarted thermal strain ε₀ = αΔT enters elasticity as a load f_th = ∫Bᵀ D ε₀, and σ = D(Bu − ε₀). The part stresses itself with no external load — bright bands are where expansion is most restrained.'}
           </p>
         </div>
       </aside>
@@ -420,6 +478,7 @@ function drawThermal(
   ch: number,
   snap: Snapshot,
   frameT: Float64Array | null,
+  teFrame: TeFrame | null,
 ) {
   ctx.clearRect(0, 0, cw, ch)
   ctx.fillStyle = '#0d0f14'
@@ -430,22 +489,36 @@ function drawThermal(
   const te = solved.te
   if (!steady) return
 
-  const stress = view === 'stress' && !!te
-  // Field values + colour range.
-  const field = stress ? te!.nodalVonMises : frameT ?? steady.T
+  // Stress source: a transient movie frame if present, else the steady coupling.
+  const teField = teFrame
+    ? { nodalVonMises: teFrame.nodalVonMises, dispX: teFrame.dispX, dispY: teFrame.dispY }
+    : te
+      ? { nodalVonMises: te.nodalVonMises, dispX: te.dispX, dispY: te.dispY }
+      : null
+  const stress = view === 'stress' && !!teField
+  const field = stress ? teField!.nodalVonMises : frameT ?? steady.T
   let lo = tRange[0]
   let hi = tRange[1]
   if (stress) {
     lo = 0
-    hi = te!.maxVonMises || 1
+    // Stable nodal scale: the whole-movie peak for a transient, else this
+    // field's own nodal maximum (so the concentration doesn't clip).
+    if (teFrame) hi = solved.teTransient?.maxVonMisesOverall || 1
+    else {
+      let m = 0
+      for (let i = 0; i < field.length; i++) if (field[i] > m) m = field[i]
+      hi = m || 1
+    }
   }
   const span = hi - lo || 1
 
-  // Deformation for the stress view (auto-scaled to ~10% of the diagonal).
+  // Deformation for the stress view (auto-scaled to ~10% of the diagonal, using
+  // the movie-wide peak so the shape grows smoothly instead of re-normalising).
   let def = 0
-  if (stress && te!.maxDisp > 0) {
+  const dispBasis = teFrame ? solved.teTransient?.maxDispOverall ?? 0 : te?.maxDisp ?? 0
+  if (stress && dispBasis > 0) {
     const diag = Math.hypot(mesh.maxX - mesh.minX, mesh.maxY - mesh.minY)
-    def = (0.1 * diag) / te!.maxDisp
+    def = (0.1 * diag) / dispBasis
   }
 
   const tf = fit(mesh, cw, ch)
@@ -454,9 +527,9 @@ function drawThermal(
   for (let i = 0; i < mesh.nodeCount; i++) {
     let x = mesh.x[i]
     let y = mesh.y[i]
-    if (stress && te) {
-      x += te.dispX[i] * def
-      y += te.dispY[i] * def
+    if (stress && teField) {
+      x += teField.dispX[i] * def
+      y += teField.dispY[i] * def
     }
     nx[i] = tf.toX(x)
     ny[i] = tf.toY(y)
