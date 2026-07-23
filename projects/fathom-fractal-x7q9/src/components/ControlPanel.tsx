@@ -28,6 +28,8 @@ type Props = {
   onShare: () => void
   shareLabel: string
   onSetMode: (mode: 'mandelbrot' | 'julia') => void
+  onDive: () => void
+  diving: boolean
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -49,6 +51,8 @@ export default function ControlPanel({
   onShare,
   shareLabel,
   onSetMode,
+  onDive,
+  diving,
 }: Props) {
   const effectiveIter = params.autoIter ? recommendedIter(span) : params.maxIter
 
@@ -210,6 +214,9 @@ export default function ControlPanel({
       </div>
 
       <div className="panel-section actions">
+        <button className={diving ? 'btn active' : 'btn'} onClick={onDive}>
+          {diving ? 'Stop dive' : 'Auto dive ▾'}
+        </button>
         {params.mode === 'mandelbrot' && (
           <button className="btn" onClick={onSeedJulia}>
             Julia from centre

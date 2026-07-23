@@ -57,6 +57,7 @@ type EngineActions = {
   zoomAtCenter: (factor: number) => void
   exportPng: () => void
   share: () => Promise<boolean>
+  toggleDive: () => void
 }
 
 export function useFractalEngine() {
@@ -79,6 +80,8 @@ export function useFractalEngine() {
   // after you let go. `beginInteractRef` is wired up in the setup effect below.
   const beginInteractRef = useRef<(() => void) | null>(null)
   const markInteract = useCallback(() => beginInteractRef.current?.(), [])
+  const diveRef = useRef(0)
+  const stopDiveRef = useRef<(() => void) | null>(null)
 
   const [params, setParams] = useState<RenderParams>(() => {
     const decoded = decodeView(window.location.hash)
@@ -103,6 +106,7 @@ export function useFractalEngine() {
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [refining, setRefining] = useState(false)
+  const [diving, setDiving] = useState(false)
 
   const currentScale = useCallback(() => {
     const canvas = canvasRef.current
@@ -231,6 +235,7 @@ export function useFractalEngine() {
     (clientX: number, clientY: number, factor: number) => {
       const canvas = canvasRef.current
       if (!canvas) return
+      stopDiveRef.current?.()
       cancelAnim()
       markInteract()
       const { px, py } = pixelOffset(clientX, clientY)
@@ -384,6 +389,7 @@ export function useFractalEngine() {
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== 'touch' && e.button !== 0) return
+      stopDiveRef.current?.()
       active.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (active.size === 2) {
         // begin pinch
@@ -488,6 +494,7 @@ export function useFractalEngine() {
       canvas.removeEventListener('dblclick', onDoubleClick)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (animRef.current) cancelAnimationFrame(animRef.current)
+      if (diveRef.current) cancelAnimationFrame(diveRef.current)
       rendererRef.current = null
       renderer.dispose()
     }
@@ -630,6 +637,46 @@ export function useFractalEngine() {
     }
   }, [])
 
+  const stopDive = useCallback(() => {
+    if (diveRef.current) {
+      cancelAnimationFrame(diveRef.current)
+      diveRef.current = 0
+    }
+    setDiving(false)
+  }, [])
+  useEffect(() => {
+    stopDiveRef.current = stopDive
+  }, [stopDive])
+
+  // Continuous cinematic zoom into the current centre, until stopped or the
+  // engine's precision floor is reached. Renders at draft resolution for a
+  // smooth dive, then settles crisp when it stops.
+  const toggleDive = useCallback(() => {
+    if (diveRef.current) {
+      stopDive()
+      return
+    }
+    cancelAnim()
+    setDiving(true)
+    const tick = () => {
+      const canvas = canvasRef.current
+      const vp = viewportRef.current
+      const minSpan = minScale() * (canvas?.width ?? 1)
+      if (vp.span <= minSpan * 1.02) {
+        stopDive()
+        renderNow()
+        return
+      }
+      vp.span = Math.max(minSpan, vp.span * 0.985)
+      markInteract()
+      publishHud()
+      renderNow()
+      syncUrl()
+      diveRef.current = requestAnimationFrame(tick)
+    }
+    diveRef.current = requestAnimationFrame(tick)
+  }, [stopDive, cancelAnim, minScale, markInteract, publishHud, renderNow, syncUrl])
+
   const actions: EngineActions = useMemo(
     () => ({
       reset,
@@ -639,13 +686,69 @@ export function useFractalEngine() {
       zoomAtCenter,
       exportPng,
       share,
+      toggleDive,
     }),
-    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share],
+    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share, toggleDive],
   )
 
   const setParam = useCallback(<K extends keyof RenderParams>(key: K, value: RenderParams[K]) => {
     setParams((p) => ({ ...p, [key]: value }))
   }, [])
 
-  return { canvasRef, params, setParam, hud, error, ready, refining, actions }
+  // Nudge the view by a fraction of the current span (keyboard panning).
+  const panByFraction = useCallback(
+    (fx: number, fy: number) => {
+      const vp = viewportRef.current
+      markInteract()
+      vp.cx = hpAddNumber(vp.cx, fx * vp.span)
+      vp.cy = hpAddNumber(vp.cy, fy * vp.span)
+      publishHud()
+      schedule()
+      syncUrl()
+    },
+    [markInteract, publishHud, schedule, syncUrl],
+  )
+
+  // Keyboard navigation: arrows pan, +/- zoom, r resets. Ignored while typing.
+  useEffect(() => {
+    if (!ready) return
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      const step = e.shiftKey ? 0.3 : 0.12
+      switch (e.key) {
+        case 'ArrowLeft':
+          panByFraction(-step, 0)
+          break
+        case 'ArrowRight':
+          panByFraction(step, 0)
+          break
+        case 'ArrowUp':
+          panByFraction(0, step)
+          break
+        case 'ArrowDown':
+          panByFraction(0, -step)
+          break
+        case '+':
+        case '=':
+          zoomAtCenter(0.5)
+          break
+        case '-':
+        case '_':
+          zoomAtCenter(2)
+          break
+        case 'r':
+        case 'R':
+          reset()
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ready, panByFraction, zoomAtCenter, reset])
+
+  return { canvasRef, params, setParam, hud, error, ready, refining, diving, actions }
 }
