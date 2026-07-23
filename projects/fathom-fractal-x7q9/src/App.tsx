@@ -6,7 +6,7 @@ import Hud from './components/Hud'
 import BookmarkBar from './components/BookmarkBar'
 
 export default function App() {
-  const { canvasRef, params, setParam, hud, error, actions } = useFractalEngine()
+  const { canvasRef, params, setParam, hud, error, refining, actions } = useFractalEngine()
   const [panelOpen, setPanelOpen] = useState(true)
   const [showHelp, setShowHelp] = useState(true)
   const [shareLabel, setShareLabel] = useState('Copy share link')
@@ -45,6 +45,8 @@ export default function App() {
           </div>
 
           <Hud hud={hud} />
+
+          {refining && <div className="refining">refining…</div>}
 
           <BookmarkBar onPick={actions.applyBookmark} inset={panelOpen} />
 
