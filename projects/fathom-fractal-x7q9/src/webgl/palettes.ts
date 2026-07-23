@@ -118,6 +118,56 @@ export const PALETTES: Palette[] = [
       ],
     },
   },
+  {
+    id: 'aurora',
+    name: 'Aurora',
+    spec: {
+      kind: 'cosine',
+      a: [0.5, 0.5, 0.5],
+      b: [0.5, 0.5, 0.5],
+      c: [1.0, 1.0, 1.0],
+      d: [0.3, 0.55, 0.75],
+    },
+  },
+  {
+    id: 'magma',
+    name: 'Magma',
+    spec: {
+      kind: 'stops',
+      stops: [
+        { pos: 0.0, color: [0, 0, 4] },
+        { pos: 0.25, color: [81, 18, 124] },
+        { pos: 0.5, color: [183, 55, 121] },
+        { pos: 0.75, color: [252, 137, 97] },
+        { pos: 1.0, color: [252, 253, 191] },
+      ],
+    },
+  },
+  {
+    id: 'candy',
+    name: 'Candy',
+    spec: {
+      kind: 'cosine',
+      a: [0.6, 0.5, 0.6],
+      b: [0.4, 0.45, 0.4],
+      c: [1.0, 1.0, 1.0],
+      d: [0.9, 0.55, 0.25],
+    },
+  },
+  {
+    id: 'deepsea',
+    name: 'Deep Sea',
+    spec: {
+      kind: 'stops',
+      stops: [
+        { pos: 0.0, color: [2, 4, 24] },
+        { pos: 0.3, color: [6, 44, 84] },
+        { pos: 0.55, color: [12, 108, 128] },
+        { pos: 0.78, color: [86, 196, 177] },
+        { pos: 1.0, color: [224, 247, 233] },
+      ],
+    },
+  },
 ]
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)

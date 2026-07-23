@@ -88,10 +88,66 @@ deltas — noted below.
 - [x] **Smooth animated fly-in** when jumping to a Mandelbrot bookmark
 - [x] **Live engine badge** in the HUD (df64 ⟷ perturbation)
 - [ ] floatexp (mantissa + int exponent) deltas to push perturbation past ~1e-35
-- [ ] Series approximation (skip early iterations) to speed the deepest zooms
-- [ ] Interior stripe / orbit-trap shading
-- [ ] Perturbation for Julia sets (perturb z₀ instead of c)
-- [ ] Progressive / tiled rendering so ultra-deep frames stay interactive
+
+### Session 3 — "Depth, speed, and beauty"
+
+**A. Advanced colouring engine (flagship)** — shipped. The set had always been
+rendered by escape-time alone; this adds the colouring algorithms that make
+deep-zoom art look the way it does in the galleries.
+
+- [x] A colouring **mode** selector shared by *both* engines: Smooth (current),
+      **Stripe Average Colouring** (Jussi Härkönen's `0.5+0.5·sin(f·arg z)` running
+      mean, mixed by the smooth fractional escape), **Orbit trap · point** (min |z|
+      over the orbit), **Orbit trap · cross** (min distance to the axes).
+- [x] An **interior shading** toggle — colour the set's interior by the same
+      mode's statistic instead of flat black.
+- [x] A **feature frequency** control (stripe density / trap scale), auto-labelled
+      per mode, wired through the control panel and the HUD.
+- [x] **Normal-map relief lighting** — Lambert shading of `u = z/(dz/dc)` as a
+      surface normal, the classic embossed pseudo-3D look, across every mode.
+- [x] Encode colouring + relief in the **share link** so deep-zoom art round-trips.
+- [x] Validate every shader variant compiles in a real headless WebGL2 context
+      (Chromium/SwiftShader harness) and that rendered frames are non-degenerate,
+      including a full end-to-end app smoke test.
+
+**D. Progressive rendering** — shipped.
+
+- [x] Render at reduced internal resolution while the camera moves
+      (drag / wheel / pinch / fly / auto-dive), full-quality pass once it settles.
+- [x] A subtle "refining…" HUD hint; export always renders at full quality.
+
+**E. Polish** — shipped.
+
+- [x] Keyboard navigation (arrows pan, +/- zoom, `r` reset; `w` wallpaper mode).
+- [x] Four new palettes (Aurora, Magma, Candy, Deep Sea) + colouring/relief
+      showcase bookmarks; HUD colouring badge; refreshed help copy.
+- [x] A cinematic **auto-dive** (continuous zoom to the precision floor) and a
+      **wallpaper** mode that hides all UI. Gate green throughout.
+
+**B. Perturbation for Julia sets** — researched, **deferred** (would ship glitches).
+A Julia reference orbit + exact delta iteration (`δz_{n+1}=2·Z_n·δz_n+δz_n²`) was
+validated in Node against a BigInt ground truth. It's clean for escaping/short
+reference orbits, but **near Siegel-disk / interior-adjacent regions (long bounded
+references) it glitches**: Zhuoran rebasing to index 0 assumes `Z_0=0` (true for
+the Mandelbrot critical orbit, false for a Julia centre), and rebasing to the
+reference's closest approach to the origin didn't fix it either (100+ escape-count
+mismatches at 1e-14). Glitch-free deep Julia needs multiple reference orbits — out
+of scope for now. Julia stays on the proven df64 engine (crisp to ~1e13).
+
+- [ ] Deep-zoom Julia via **multi-reference** perturbation (the real fix).
+
+**C. Series approximation** — researched, **deferred** (mainly a speed win, not
+provably glitch-free here). The `A,B,C` series (`δz ≈ A·δc + B·δc² + C·δc³`) and a
+corner-probe skip selector were built and checked in Node with emulated-float32
+arithmetic vs a BigInt ground truth. The conservative skip criterion correctly
+*declines to skip* in boundary-rich frames (adding zero error there), but proving a
+useful positive skip stays glitch-free across all deep frames — separate from the
+inherent escape-count sensitivity at the boundary — needs a stronger validation
+than this session's escape-count metric supports. Held back rather than risk
+occasional wrong-coloured regions.
+
+- [ ] Series approximation with a rigorously-validated skip (revisit with a
+      perturbation-domain error metric, not raw escape counts).
 
 ## Session log
 
@@ -109,3 +165,20 @@ deltas — noted below.
   bookmark dive series. Validated the perturbation math against a BigInt ground
   truth (0 escape-count mismatches at 1e-20…1e-36) and confirmed both shaders
   compile + render in headless WebGL2 before shipping. Gate green.
+- 2026-07-23 (claude), session 3 — **the colouring + interactivity release.** Fathom
+  had only ever rendered escape-time bands; this session adds the colouring maths
+  that make deep-zoom art. New shared colouring engine across *both* GPU engines:
+  **Stripe Average Colouring**, **orbit traps** (point + cross), an **interior
+  shading** toggle, and **normal-map relief lighting** (Lambert shading of the
+  escape derivative — the embossed pseudo-3D look). Added **progressive rendering**
+  (draft resolution while the camera moves, crisp on settle) so ultra-deep frames
+  stay interactive, a cinematic **auto-dive**, **keyboard navigation**, a **wallpaper**
+  mode, four palettes (Aurora/Magma/Candy/Deep Sea), showcase bookmarks, a HUD
+  colouring badge, and colouring/relief in the share link. Built a **headless
+  WebGL2 harness** (Chromium/SwiftShader via Playwright) that compiles every shader
+  variant, renders each colouring mode, and runs a full end-to-end app smoke test —
+  all green. Also *researched and deferred*, honestly: **deep-Julia perturbation**
+  (validated as glitchy near Siegel-disk regions — Zhuoran rebasing assumes Z₀=0,
+  which Julia centres break) and **series approximation** (a speed win that this
+  session's escape-count metric couldn't prove glitch-free). Both are documented
+  above with their validation results rather than shipped half-working. Gate green.

@@ -15,6 +15,20 @@ export type Viewport = {
 // Which rendering engine produced the current frame.
 export type Engine = 'df64' | 'perturb'
 
+// How a pixel's colour is derived from its orbit.
+//   smooth    — classic smooth escape-time bands
+//   stripe    — Stripe Average Colouring (running sin-of-argument mean)
+//   trapPoint — orbit trap: min |z| over the orbit
+//   trapCross — orbit trap: min distance to the coordinate axes
+export type ColorMode = 'smooth' | 'stripe' | 'trapPoint' | 'trapCross'
+
+export const COLOR_MODE_INDEX: Record<ColorMode, number> = {
+  smooth: 0,
+  stripe: 1,
+  trapPoint: 2,
+  trapCross: 3,
+}
+
 // Everything the user tweaks that isn't the camera itself.
 export type RenderParams = {
   maxIter: number
@@ -29,6 +43,12 @@ export type RenderParams = {
   aa: number
   de: boolean // distance-estimation outline shading
   deStrength: number
+  colorMode: ColorMode
+  featureFreq: number // stripe density / orbit-trap scale
+  interior: boolean // paint the set's interior instead of leaving it black
+  relief: boolean // normal-map (Lambert) relief lighting
+  lightAngle: number // light azimuth in radians
+  lightHeight: number // light elevation
 }
 
 export type HudInfo = {
@@ -40,6 +60,7 @@ export type HudInfo = {
   mode: FractalMode
   fps: number
   engine: Engine
+  colorMode: ColorMode
 }
 
 export type Bookmark = {
@@ -53,6 +74,10 @@ export type Bookmark = {
   juliaY?: number
   paletteId?: string
   de?: boolean
+  colorMode?: ColorMode
+  featureFreq?: number
+  interior?: boolean
+  relief?: boolean
 }
 
 export const HOME: Viewport = { cx: hpFromNumber(-0.5), cy: hpFromNumber(0), span: 3.4 }

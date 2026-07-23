@@ -1,5 +1,7 @@
 import { hpFromString, hpToString } from './hp'
-import type { RenderParams, Viewport } from './types'
+import type { ColorMode, RenderParams, Viewport } from './types'
+
+const COLOR_MODES: ColorMode[] = ['smooth', 'stripe', 'trapPoint', 'trapCross']
 
 // Shareable deep links. The whole view — including a 40-digit centre that a
 // double could never hold — is packed into the URL hash, so a link drops the
@@ -21,6 +23,11 @@ export function encodeView(vp: Viewport, p: RenderParams): string {
     `o=${p.colorOffset}`,
     `i=${p.autoIter ? 'auto' : p.maxIter}`,
     `d=${p.de ? 1 : 0}`,
+    `cm=${COLOR_MODES.indexOf(p.colorMode)}`,
+    `ff=${p.featureFreq}`,
+    `in=${p.interior ? 1 : 0}`,
+    `rl=${p.relief ? 1 : 0}`,
+    `la=${p.lightAngle.toFixed(3)}`,
   ]
   if (p.mode === 'julia') {
     parts.push(`jx=${p.juliaX}`, `jy=${p.juliaY}`)
@@ -74,6 +81,17 @@ export function decodeView(hash: string): Decoded | null {
 
   if (map.get('d') === '1') params.de = true
   else if (map.get('d') === '0') params.de = false
+
+  const cm = Number(map.get('cm'))
+  if (Number.isInteger(cm) && cm >= 0 && cm < COLOR_MODES.length) params.colorMode = COLOR_MODES[cm]
+  const ff = Number(map.get('ff'))
+  if (Number.isFinite(ff) && ff > 0) params.featureFreq = ff
+  if (map.get('in') === '1') params.interior = true
+  else if (map.get('in') === '0') params.interior = false
+  if (map.get('rl') === '1') params.relief = true
+  else if (map.get('rl') === '0') params.relief = false
+  const la = Number(map.get('la'))
+  if (Number.isFinite(la)) params.lightAngle = la
 
   const jx = Number(map.get('jx'))
   if (Number.isFinite(jx)) params.juliaX = jx

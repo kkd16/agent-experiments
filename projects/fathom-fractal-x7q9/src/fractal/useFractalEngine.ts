@@ -4,7 +4,7 @@ import type { FrameState } from '../webgl/renderer'
 import { computeReferenceOrbit } from './refOrbit'
 import { hpAddNumber, hpFromNumber, hpFromString, hpMul, hpToNumber, hpToString, type HP } from './hp'
 import type { Bookmark, Engine, HudInfo, RenderParams, Viewport } from './types'
-import { HOME, INITIAL_SPAN, JULIA_HOME } from './types'
+import { COLOR_MODE_INDEX, HOME, INITIAL_SPAN, JULIA_HOME } from './types'
 import { decodeView, encodeView } from './share'
 
 const DF64_MIN_SCALE = 1e-14 // world units per pixel — the df64 precision floor
@@ -25,6 +25,12 @@ const DEFAULT_PARAMS: RenderParams = {
   aa: 1,
   de: false,
   deStrength: 4.0,
+  colorMode: 'smooth',
+  featureFreq: 6.0,
+  interior: false,
+  relief: false,
+  lightAngle: 0.78,
+  lightHeight: 1.2,
 }
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x)
@@ -54,6 +60,7 @@ type EngineActions = {
   zoomAtCenter: (factor: number) => void
   exportPng: () => void
   share: () => Promise<boolean>
+  toggleDive: () => void
 }
 
 export function useFractalEngine() {
@@ -69,6 +76,15 @@ export function useFractalEngine() {
   // when nothing that affects it has changed.
   const orbitKeyRef = useRef<{ cx: HP; cy: HP; maxIter: number; len: number } | null>(null)
   const urlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Progressive rendering: while the camera is moving we render at reduced
+  // internal resolution (cheap), then re-render at full quality once it settles.
+  // On a deep-zoom frame each pixel loops thousands of iterations, so cutting the
+  // pixel count keeps drags and zooms interactive; the crisp frame lands ~1 tick
+  // after you let go. `beginInteractRef` is wired up in the setup effect below.
+  const beginInteractRef = useRef<(() => void) | null>(null)
+  const markInteract = useCallback(() => beginInteractRef.current?.(), [])
+  const diveRef = useRef(0)
+  const stopDiveRef = useRef<(() => void) | null>(null)
 
   const [params, setParams] = useState<RenderParams>(() => {
     const decoded = decodeView(window.location.hash)
@@ -88,9 +104,12 @@ export function useFractalEngine() {
     mode: 'mandelbrot',
     fps: 60,
     engine: 'df64',
+    colorMode: DEFAULT_PARAMS.colorMode,
   })
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+  const [refining, setRefining] = useState(false)
+  const [diving, setDiving] = useState(false)
 
   const currentScale = useCallback(() => {
     const canvas = canvasRef.current
@@ -139,6 +158,12 @@ export function useFractalEngine() {
       paletteId: p.paletteId,
       de: p.de,
       deStrength: p.deStrength,
+      colorMode: COLOR_MODE_INDEX[p.colorMode],
+      featureFreq: p.featureFreq,
+      interior: p.interior,
+      relief: p.relief,
+      lightAngle: p.lightAngle,
+      lightHeight: p.lightHeight,
       perturbation,
       orbitLen,
     }
@@ -177,6 +202,7 @@ export function useFractalEngine() {
       mode: p.mode,
       fps: fpsRef.current,
       engine: engineFor(vp.span, p.mode),
+      colorMode: p.colorMode,
     })
   }, [engineFor])
 
@@ -215,7 +241,9 @@ export function useFractalEngine() {
     (clientX: number, clientY: number, factor: number) => {
       const canvas = canvasRef.current
       if (!canvas) return
+      stopDiveRef.current?.()
       cancelAnim()
+      markInteract()
       const { px, py } = pixelOffset(clientX, clientY)
       const vp = viewportRef.current
       const scale = vp.span / canvas.width
@@ -232,7 +260,7 @@ export function useFractalEngine() {
       schedule()
       syncUrl()
     },
-    [pixelOffset, publishHud, schedule, syncUrl, cancelAnim, minScale],
+    [pixelOffset, publishHud, schedule, syncUrl, cancelAnim, minScale, markInteract],
   )
 
   const zoomAtCenter = useCallback(
@@ -254,9 +282,11 @@ export function useFractalEngine() {
       const logEnd = Math.log(target.span)
       const dur = 1050
       const t0 = performance.now()
+      markInteract()
       const step = (now: number) => {
         const raw = Math.min(1, (now - t0) / dur)
         const u = easeInOut(raw)
+        markInteract()
         const vp = viewportRef.current
         vp.cx = lerpHP(start.cx, target.cx, u)
         vp.cy = lerpHP(start.cy, target.cy, u)
@@ -275,7 +305,7 @@ export function useFractalEngine() {
       }
       animRef.current = requestAnimationFrame(step)
     },
-    [publishHud, renderNow, syncUrl, cancelAnim],
+    [publishHud, renderNow, syncUrl, cancelAnim, markInteract],
   )
 
   // --- one-time setup: renderer, resize observer, pointer + wheel handlers ---
@@ -298,17 +328,49 @@ export function useFractalEngine() {
     if (decoded) viewportRef.current = decoded.viewport
 
     const dpr = () => Math.min(window.devicePixelRatio || 1, 2)
-    const resize = () => {
-      const w = Math.max(1, Math.floor(canvas.clientWidth * dpr()))
-      const h = Math.max(1, Math.floor(canvas.clientHeight * dpr()))
+    // Progressive rendering: DRAFT_SCALE shrinks the backing store while the
+    // camera moves (quarter the pixels at 0.5), then we snap back to full.
+    const DRAFT_SCALE = 0.5
+    const SETTLE_MS = 170
+    let renderScale = 1
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+    const applyBacking = (scale: number) => {
+      const w = Math.max(1, Math.floor(canvas.clientWidth * dpr() * scale))
+      const h = Math.max(1, Math.floor(canvas.clientHeight * dpr() * scale))
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w
         canvas.height = h
         renderer.resize(w, h)
       }
+    }
+    const resize = () => {
+      applyBacking(renderScale)
       publishHud()
       renderNow()
     }
+    const settle = () => {
+      settleTimer = null
+      if (renderScale !== 1) {
+        renderScale = 1
+        applyBacking(1)
+      }
+      setRefining(false)
+      renderNow()
+    }
+    // Called by every camera-moving interaction: drop to draft resolution now,
+    // and (re)arm the timer that restores full quality once motion stops.
+    const beginInteract = () => {
+      if (renderScale !== DRAFT_SCALE) {
+        renderScale = DRAFT_SCALE
+        applyBacking(DRAFT_SCALE)
+        setRefining(true)
+      }
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = setTimeout(settle, SETTLE_MS)
+    }
+    beginInteractRef.current = beginInteract
+
     const kickoff = requestAnimationFrame(() => {
       resize()
       setReady(true)
@@ -333,6 +395,7 @@ export function useFractalEngine() {
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== 'touch' && e.button !== 0) return
+      stopDiveRef.current?.()
       active.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (active.size === 2) {
         // begin pinch
@@ -389,6 +452,7 @@ export function useFractalEngine() {
         return
       }
       if (!dragging) return
+      beginInteract()
       const scale = currentScale()
       const dprX = canvas.width / canvas.clientWidth
       const dprY = canvas.height / canvas.clientHeight
@@ -425,6 +489,8 @@ export function useFractalEngine() {
 
     return () => {
       cancelAnimationFrame(kickoff)
+      if (settleTimer) clearTimeout(settleTimer)
+      beginInteractRef.current = null
       ro.disconnect()
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('pointerdown', onPointerDown)
@@ -434,6 +500,7 @@ export function useFractalEngine() {
       canvas.removeEventListener('dblclick', onDoubleClick)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (animRef.current) cancelAnimationFrame(animRef.current)
+      if (diveRef.current) cancelAnimationFrame(diveRef.current)
       rendererRef.current = null
       renderer.dispose()
     }
@@ -492,6 +559,10 @@ export function useFractalEngine() {
         juliaY: b.juliaY ?? p.juliaY,
         paletteId: b.paletteId ?? p.paletteId,
         de: b.de ?? p.de,
+        colorMode: b.colorMode ?? p.colorMode,
+        featureFreq: b.featureFreq ?? p.featureFreq,
+        interior: b.interior ?? p.interior,
+        relief: b.relief ?? p.relief,
       }))
       // Julia bookmarks jump; Mandelbrot bookmarks get a cinematic dive.
       if (b.mode === 'julia' || paramsRef.current.mode === 'julia') {
@@ -573,6 +644,46 @@ export function useFractalEngine() {
     }
   }, [])
 
+  const stopDive = useCallback(() => {
+    if (diveRef.current) {
+      cancelAnimationFrame(diveRef.current)
+      diveRef.current = 0
+    }
+    setDiving(false)
+  }, [])
+  useEffect(() => {
+    stopDiveRef.current = stopDive
+  }, [stopDive])
+
+  // Continuous cinematic zoom into the current centre, until stopped or the
+  // engine's precision floor is reached. Renders at draft resolution for a
+  // smooth dive, then settles crisp when it stops.
+  const toggleDive = useCallback(() => {
+    if (diveRef.current) {
+      stopDive()
+      return
+    }
+    cancelAnim()
+    setDiving(true)
+    const tick = () => {
+      const canvas = canvasRef.current
+      const vp = viewportRef.current
+      const minSpan = minScale() * (canvas?.width ?? 1)
+      if (vp.span <= minSpan * 1.02) {
+        stopDive()
+        renderNow()
+        return
+      }
+      vp.span = Math.max(minSpan, vp.span * 0.985)
+      markInteract()
+      publishHud()
+      renderNow()
+      syncUrl()
+      diveRef.current = requestAnimationFrame(tick)
+    }
+    diveRef.current = requestAnimationFrame(tick)
+  }, [stopDive, cancelAnim, minScale, markInteract, publishHud, renderNow, syncUrl])
+
   const actions: EngineActions = useMemo(
     () => ({
       reset,
@@ -582,13 +693,69 @@ export function useFractalEngine() {
       zoomAtCenter,
       exportPng,
       share,
+      toggleDive,
     }),
-    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share],
+    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share, toggleDive],
   )
 
   const setParam = useCallback(<K extends keyof RenderParams>(key: K, value: RenderParams[K]) => {
     setParams((p) => ({ ...p, [key]: value }))
   }, [])
 
-  return { canvasRef, params, setParam, hud, error, ready, actions }
+  // Nudge the view by a fraction of the current span (keyboard panning).
+  const panByFraction = useCallback(
+    (fx: number, fy: number) => {
+      const vp = viewportRef.current
+      markInteract()
+      vp.cx = hpAddNumber(vp.cx, fx * vp.span)
+      vp.cy = hpAddNumber(vp.cy, fy * vp.span)
+      publishHud()
+      schedule()
+      syncUrl()
+    },
+    [markInteract, publishHud, schedule, syncUrl],
+  )
+
+  // Keyboard navigation: arrows pan, +/- zoom, r resets. Ignored while typing.
+  useEffect(() => {
+    if (!ready) return
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      const step = e.shiftKey ? 0.3 : 0.12
+      switch (e.key) {
+        case 'ArrowLeft':
+          panByFraction(-step, 0)
+          break
+        case 'ArrowRight':
+          panByFraction(step, 0)
+          break
+        case 'ArrowUp':
+          panByFraction(0, step)
+          break
+        case 'ArrowDown':
+          panByFraction(0, -step)
+          break
+        case '+':
+        case '=':
+          zoomAtCenter(0.5)
+          break
+        case '-':
+        case '_':
+          zoomAtCenter(2)
+          break
+        case 'r':
+        case 'R':
+          reset()
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ready, panByFraction, zoomAtCenter, reset])
+
+  return { canvasRef, params, setParam, hud, error, ready, refining, diving, actions }
 }

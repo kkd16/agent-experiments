@@ -1,4 +1,11 @@
-import type { HudInfo } from '../fractal/types'
+import type { ColorMode, HudInfo } from '../fractal/types'
+
+const COLOR_LABEL: Record<ColorMode, string> = {
+  smooth: 'smooth',
+  stripe: 'stripe',
+  trapPoint: 'orbit trap',
+  trapCross: 'trap cross',
+}
 
 function formatMag(m: number): string {
   if (m < 1000) return `${m.toFixed(1)}×`
@@ -38,6 +45,12 @@ export default function Hud({ hud }: { hud: HudInfo }) {
           {deep ? 'perturbation' : 'df64'}
         </span>
       </div>
+      {hud.colorMode !== 'smooth' && (
+        <div className="hud-row">
+          <span className="hud-key">colour</span>
+          <span className="hud-val">{COLOR_LABEL[hud.colorMode]}</span>
+        </div>
+      )}
       <div className="hud-row">
         <span className="hud-key">fps</span>
         <span className="hud-val">{hud.fps.toFixed(0)}</span>

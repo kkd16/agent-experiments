@@ -77,8 +77,53 @@
   border-color: var(--accent);
   background: rgba(24, 30, 44, 0.85);
 }
+.top-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.wallpaper-exit {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 6;
+  background: var(--glass);
+  border: 1px solid var(--glass-brd);
+  color: var(--muted);
+  border-radius: 9px;
+  padding: 7px 13px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.25;
+  backdrop-filter: blur(10px);
+  transition: opacity 0.2s, border-color 0.15s;
+}
+.wallpaper-exit:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
 
 /* ---------- HUD ---------- */
+.refining {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  background: var(--glass);
+  border: 1px solid var(--glass-brd);
+  border-radius: 999px;
+  padding: 5px 14px;
+  backdrop-filter: blur(12px);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  pointer-events: none;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.4);
+}
+
 .hud {
   position: absolute;
   left: 18px;
@@ -240,6 +285,32 @@
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.mode-btn {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--glass-brd);
+  color: var(--muted);
+  padding: 7px 4px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.mode-btn:hover {
+  color: var(--text);
+}
+.mode-btn.active {
+  color: #071018;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
 .palette-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -331,6 +402,11 @@
 .btn.subtle:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.09);
+}
+.btn.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: #071018;
 }
 
 /* ---------- help + fallback ---------- */
