@@ -683,6 +683,9 @@
 .swatch.a {
   background: #c792ea;
 }
+.swatch.j {
+  background: #ff8a65;
+}
 .motionPlot {
   display: block;
   width: 100%;
@@ -703,4 +706,73 @@
 .plotLegend .muted {
   margin-left: auto;
   opacity: 0.7;
+}
+.plotLegend .swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+/* ---------- Dynamics panel ---------- */
+.dynSlider {
+  display: block;
+  margin-top: 8px;
+}
+.dynSliderLabel {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.dynSliderLabel em {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+}
+.dynSlider input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.energyPlaceholder {
+  margin-top: 10px;
+  padding: 18px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #0b1017;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- Hodograph ---------- */
+.hodoRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  align-items: flex-start;
+}
+.hodograph {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b1017;
+}
+.hodoInfo {
+  flex: 1;
+  min-width: 0;
+}
+.hodoTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.hodoInfo .hint {
+  margin: 2px 0 6px;
 }

@@ -10,6 +10,10 @@ import { autoConstrain } from '../model/autoConstrain'
 import { toJSONString, fromJSONString, encodeHash, decodeHash } from '../model/persist'
 import { EXAMPLES } from '../model/examples'
 import { computeKinematics, directionalDerivatives } from './kinematics'
+import { evalDynamics, lumpedMasses, stepDynamics } from './dynamics'
+import type { DynParams } from './dynamics'
+import { sketchToSVG, sketchToDXF, motionProfileToCSV } from '../model/export'
+import { computeMotionProfile, computeJerk } from './kinematics'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
 
@@ -648,6 +652,238 @@ export function runSelfTests(): TestResult[] {
     }
     const ok = worstCrank < 1e-4 && worstPerp < 1e-4 && worstSlider < 1e-3
     check('slider-crank = closed-form kinematics', ok, `|v_A|−r ${worstCrank.toExponential(1)}, ⟂ ${worstPerp.toExponential(1)}, slider ${worstSlider.toExponential(1)}`)
+  }
+
+  // --- Session 6: time-domain dynamics ------------------------------------
+  //
+  // A rigid crank (fixed pivot at the origin, reference line along +x, tip point B
+  // at distance L) driven by the ground→crank angle. With ONLY the tip carrying mass
+  // (density 0, every point's base mass = m; the two fixed points contribute nothing
+  // to the free motion) this is the textbook simple pendulum: I = m L², V = m g L sinθ,
+  // so the Eksergian EOM must reproduce the closed form θ̈ = −(g/L) cosθ exactly. The
+  // same rig then validates I'(θ), energy conservation of the free swing, static
+  // equilibrium and monotone damped decay.
+  const DEG = Math.PI / 180
+  const buildPendulum = (L: number) => {
+    const s = new Sketch()
+    const A = s.addPoint(0, 0, { fixed: true }) // pivot
+    const G = s.addPoint(1, 0, { fixed: true }) // ground reference
+    const B = s.addPoint(L, 0) // crank tip (the pendulum bob)
+    const ground = s.addLine(A.id, G.id, true)
+    const crank = s.addLine(A.id, B.id)
+    s.addConstraint('distance', [A.id, B.id], L)
+    const drv = s.addConstraint('angle', [ground.id, crank.id], 0, true)
+    return { s, drv: drv.id, bob: B.id, L }
+  }
+  const solveAt = (s: Sketch) => void solve(s, { maxIterations: 200 })
+
+  // 33. The Eksergian θ̈ reproduces the closed-form simple pendulum at every angle.
+  {
+    const L = 80
+    const g = 500
+    const { s, drv, L: len } = buildPendulum(L)
+    const p: DynParams = { gravity: g, density: 0, baseMass: 1, damping: 0, torque: 0 }
+    const mass = lumpedMasses(s, p)
+    let worst = 0
+    for (const deg of [10, 55, 90, 140, 205, 300, 350]) {
+      const th = deg * DEG
+      const ev = evalDynamics(s, drv, mass, { theta: th, omega: 0 }, p, 'rad', solveAt)
+      const closed = -(g / len) * Math.cos(th) // θ̈ = −(g/L) cosθ
+      worst = Math.max(worst, Math.abs(ev.thetaddot - closed))
+    }
+    check('dynamics EOM = closed-form pendulum θ̈', worst < 1e-3, `worst |Δθ̈| ${worst.toExponential(1)}`)
+  }
+
+  // 34. I'(θ) equals a central finite difference of the generalized inertia I(θ).
+  {
+    const { s, drv } = buildPendulum(90)
+    // A denser rig so the inertia genuinely varies with θ: give the rod mass too.
+    const p: DynParams = { gravity: 300, density: 0.02, baseMass: 0.5, damping: 0, torque: 0 }
+    const mass = lumpedMasses(s, p)
+    const Iat = (th: number) => evalDynamics(s, drv, mass, { theta: th, omega: 0 }, p, 'rad', solveAt).I
+    let worst = 0
+    for (const deg of [25, 70, 130, 250]) {
+      const th = deg * DEG
+      const analytic = evalDynamics(s, drv, mass, { theta: th, omega: 0 }, p, 'rad', solveAt).dIdtheta
+      const h = 1e-4
+      const fd = (Iat(th + h) - Iat(th - h)) / (2 * h)
+      worst = Math.max(worst, Math.abs(analytic - fd))
+    }
+    check("dynamics I'(θ) = finite-diff of I(θ)", worst < 1e-3, `worst |ΔI'| ${worst.toExponential(1)}`)
+  }
+
+  // 35. The free (τ=c=0) swing conserves total mechanical energy along the RK4 march.
+  {
+    const L = 80
+    const g = 500
+    const m = 1
+    const { s, drv } = buildPendulum(L)
+    const p: DynParams = { gravity: g, density: 0, baseMass: m, damping: 0, torque: 0 }
+    const mass = lumpedMasses(s, p)
+    const scale = m * g * L // energy scale of the swing
+    let st = { theta: 0, omega: 0 } // released from horizontal, at rest
+    const E0 = evalDynamics(s, drv, mass, st, p, 'rad', solveAt).E
+    let worst = 0
+    for (let i = 0; i < 220; i++) {
+      const r = stepDynamics(s, drv, mass, st, p, 'rad', 0.005, solveAt, 4)
+      st = r.state
+      worst = Math.max(worst, Math.abs(r.ev.E - E0))
+    }
+    check('dynamics free swing conserves energy', worst / scale < 1e-3, `max |ΔE|/mgL ${(worst / scale).toExponential(1)}`)
+  }
+
+  // 36. At the potential-energy minimum (bob straight down) with zero rate, θ̈ = 0.
+  {
+    const { s, drv, L } = buildPendulum(80)
+    const p: DynParams = { gravity: 500, density: 0, baseMass: 1, damping: 0, torque: 0 }
+    const mass = lumpedMasses(s, p)
+    // Bottom of the swing: B at angle −90° (straight down), a V-stationary point.
+    const ev = evalDynamics(s, drv, mass, { theta: -Math.PI / 2, omega: 0 }, p, 'rad', solveAt)
+    check('dynamics static equilibrium (θ̈=0 at V-min)', Math.abs(ev.thetaddot) < 1e-4 && L === 80, `θ̈ ${ev.thetaddot.toExponential(1)}`)
+  }
+
+  // 37. Under pure damping (τ=0, c>0) the total energy is monotonically non-increasing
+  //     and strictly lower at the end — the dissipation the −c θ̇ term must produce.
+  {
+    const L = 80
+    const { s, drv } = buildPendulum(L)
+    const p: DynParams = { gravity: 500, density: 0, baseMass: 1, damping: 0.4, torque: 0 }
+    const mass = lumpedMasses(s, p)
+    let st = { theta: 0, omega: 0 }
+    let prev = evalDynamics(s, drv, mass, st, p, 'rad', solveAt).E
+    const E0 = prev
+    let monotone = true
+    for (let i = 0; i < 300; i++) {
+      const r = stepDynamics(s, drv, mass, st, p, 'rad', 0.005, solveAt, 4)
+      st = r.state
+      if (r.ev.E > prev + 1e-6 * Math.max(1, Math.abs(prev))) monotone = false
+      prev = r.ev.E
+    }
+    check('dynamics damping dissipates energy monotonically', monotone && prev < E0 - 1e-6, `E: ${E0.toFixed(1)} → ${prev.toFixed(1)}`)
+  }
+
+  // --- Session 6: jerk (third-order kinematic coefficient) ----------------
+  //
+  // The analytic jerk field x'''(θ) (cubic-dual + polarised mixed term) must equal a
+  // central finite difference of the exact acceleration field x''(θ) w.r.t. θ — an
+  // independent reference that exercises ad3.ts end to end (atan2 to third order
+  // included, since the driver is an angle constraint).
+  {
+    const built = EXAMPLES.find((e) => e.id === 'four-bar')!.build()
+    const drv = built.driver!
+    const tracer = built.tracePoints![0]
+    const h = 1e-3 // radians
+    let worst = 0
+    let scale = 0
+    for (const deg of [40, 95, 160, 250, 320]) {
+      built.sketch.constraints.find((c) => c.id === drv.constraintId)!.value = deg
+      solve(built.sketch, { maxIterations: 200 })
+      const jk = computeJerk(built.sketch, drv.constraintId)
+      const jm = jk.points.find((p) => p.id === tracer)!
+      // Central finite difference of the acceleration coefficient over a ±h radian
+      // step (converted to the driver's stored degrees).
+      const accAt = (dth: number) => {
+        const cl = built.sketch.clone()
+        cl.constraints.find((c) => c.id === drv.constraintId)!.value = deg + (dth * 180) / Math.PI
+        solve(cl, { maxIterations: 200 })
+        const p = computeKinematics(cl, drv.constraintId).points.find((q) => q.id === tracer)!
+        return { ax: p.ax, ay: p.ay }
+      }
+      const ap = accAt(h)
+      const am = accAt(-h)
+      const fdx = (ap.ax - am.ax) / (2 * h)
+      const fdy = (ap.ay - am.ay) / (2 * h)
+      worst = Math.max(worst, Math.hypot(jm.jx - fdx, jm.jy - fdy))
+      scale = Math.max(scale, Math.hypot(jm.jx, jm.jy))
+    }
+    check('jerk x‴(θ) = finite-diff of acceleration', worst / (1 + scale) < 5e-3, `worst |Δx‴| ${worst.toExponential(1)}, |x‴|~${scale.toFixed(1)}`)
+  }
+
+  // --- Session 6: export fidelity -----------------------------------------
+  //
+  // A mixed sketch (line + circle + arc + spline) exercises every export branch.
+  const buildMixed = () => {
+    const s = new Sketch()
+    const a = s.addPoint(0, 0)
+    const b = s.addPoint(60, 0)
+    s.addLine(a.id, b.id)
+    const cc = s.addPoint(0, 40)
+    s.addCircle(cc.id, 15)
+    const ac = s.addPoint(40, 40) // arc center
+    const a1 = s.addPoint(60, 40) // start (angle 0)
+    const a2 = s.addPoint(40, 60) // end (angle 90°)
+    const arc = s.addArc(ac.id, a1.id, a2.id, 20)
+    const p0 = s.addPoint(-40, -20)
+    const h0 = s.addPoint(-30, 10)
+    const h1 = s.addPoint(0, 10)
+    const p1 = s.addPoint(10, -20)
+    s.addSpline(p0.id, h0.id, h1.id, p1.id)
+    return { s, arc: arc.id }
+  }
+
+  // 38. SVG export is well-formed: an <svg> root, the expected primitive count, and
+  //     no NaN / infinity / exponent-form numbers leaking into the markup.
+  {
+    const { s } = buildMixed()
+    const svg = sketchToSVG(s)
+    const lines = (svg.match(/<line /g) || []).length // 1 solid line
+    const circles = (svg.match(/<circle /g) || []).length // 1 circle + point dots
+    const paths = (svg.match(/<path /g) || []).length // arc + spline
+    const clean = !/NaN|Infinity|[0-9]e[-+]?[0-9]/i.test(svg)
+    const ok = svg.startsWith('<svg') && svg.includes('</svg>') && lines >= 1 && circles >= 1 && paths === 2 && clean
+    check('export SVG well-formed', ok, `lines ${lines}, circles ${circles}, paths ${paths}, clean ${clean}`)
+  }
+
+  // 39. DXF export round-trips the arc: parse the group codes and confirm one LINE,
+  //     one CIRCLE, one ARC (with start/end angles matching arcGeom) and one
+  //     LWPOLYLINE (the sampled spline).
+  {
+    const { s, arc } = buildMixed()
+    const dxf = sketchToDXF(s)
+    const rows = dxf.split('\n')
+    const count = (name: string) => rows.filter((_, i) => rows[i - 1] === '0' && rows[i] === name).length
+    const nLine = count('LINE')
+    const nCircle = count('CIRCLE')
+    const nArc = count('ARC')
+    const nPoly = count('LWPOLYLINE')
+    // Pull the ARC's 50/51 angles back out and compare to arcGeom.
+    const arcStart = rows.findIndex((r, i) => rows[i - 1] === '0' && r === 'ARC')
+    let a0 = NaN
+    let a1 = NaN
+    for (let i = arcStart; i < rows.length - 1; i++) {
+      if (rows[i] === '50') a0 = parseFloat(rows[i + 1])
+      if (rows[i] === '51') a1 = parseFloat(rows[i + 1])
+    }
+    const g = s.arcGeom(s.arc(arc))
+    const wantA0 = ((g.a0 * 180) / Math.PI + 360) % 360
+    const gotA0 = (a0 + 360) % 360
+    const okAng = approx(gotA0, wantA0, 1e-3) && approx((a1 - a0 + 360) % 360, (g.sweep * 180) / Math.PI, 1e-2)
+    const ok = dxf.includes('AC1015') && dxf.trimEnd().endsWith('EOF') && nLine === 1 && nCircle === 1 && nArc === 1 && nPoly === 1 && okAng
+    check('export DXF entities + arc angles', ok, `L${nLine} C${nCircle} A${nArc} P${nPoly}, arc ∠${gotA0.toFixed(1)}° (want ${wantA0.toFixed(1)})`)
+  }
+
+  // 40. CSV export of the motion profile: a header plus exactly steps+1 data rows,
+  //     every field finite.
+  {
+    const built = EXAMPLES.find((e) => e.id === 'four-bar')!.build()
+    const drv = built.driver!
+    const tracer = built.tracePoints![0]
+    solve(built.sketch)
+    const profile = computeMotionProfile(
+      built.sketch,
+      drv.constraintId,
+      tracer,
+      { min: drv.min, max: drv.max },
+      (deg) => (deg * Math.PI) / 180,
+      (s) => void solve(s, { maxIterations: 120 }),
+      24,
+    )
+    const csv = motionProfileToCSV(profile)
+    const rows = csv.trimEnd().split('\n')
+    const header = rows[0].split(',').length === 5
+    const dataRows = rows.length - 1
+    const allFinite = rows.slice(1).every((r) => r.split(',').every((v) => Number.isFinite(parseFloat(v))))
+    check('export CSV rows + finite', header && dataRows === 25 && allFinite, `header ${header}, rows ${dataRows} (want 25), finite ${allFinite}`)
   }
 
   return out

@@ -5,6 +5,8 @@ import { residualCount, arcResidualCount } from './residuals'
 import { pushArcResidualsG, pushResidualsG } from './residualsCore'
 import { AD2, h_konst, h_seed } from './ad2'
 import type { HyperDual } from './ad2'
+import { AD3, h3_konst, h3_seed } from './ad3'
+import type { CubicDual } from './ad3'
 import { solveLinear } from './linalg'
 
 // ---------------------------------------------------------------------------
@@ -235,16 +237,123 @@ export function computeKinematics(sketch: Sketch, driverId: EntityId): Kinematic
 }
 
 // ---------------------------------------------------------------------------
+// Jerk: the third-order kinematic coefficient x'''(θ) = d³x/dθ³, the rate of change
+// of acceleration a cam/follower designer reads for smoothness (bounded jerk ⇒ no
+// snap). Differentiating the constraint identity a third time (the driver enters
+// linearly, so its θ-parametrisation drops out beyond first order) gives
+//
+//     J x''' = −( 3 · x'ᵀ Hᵢ x''  +  x'ᵀ Tᵢ x' x' )         per residual i,
+//
+// where Hᵢ is residual i's Hessian and Tᵢ its third-derivative tensor. The pure
+// third directional derivative x'ᵀTᵢx'x' comes straight from ONE cubic-dual pass
+// (ad3.ts) seeded with the velocity field x'. The mixed term x'ᵀHᵢx'' is recovered
+// from three hyper-dual passes by polarisation:
+//     x'ᵀHᵢx'' = ½[ (x'+x'')ᵀHᵢ(x'+x'') − x'ᵀHᵢx' − x''ᵀHᵢx'' ].
+// Everything reuses the velocity/acceleration fields computeKinematics already
+// solves; the result is validated against a finite difference of the acceleration
+// field in the self-tests.
+// ---------------------------------------------------------------------------
+
+export type PointJerk = { id: EntityId; jx: number; jy: number }
+export type Jerk = { ok: boolean; points: PointJerk[]; peak: number }
+
+// Cubic-dual coordinate accessors seeded with a motion direction (the velocity
+// field): mirrors seededVars but one AD order deeper.
+function seededVars3(sketch: Sketch, col: Map<string, number>, seed: Float64Array) {
+  const read = (id: EntityId, key: 'x' | 'y' | 'r', value: number): CubicDual => {
+    const c = col.get(id + ':' + key)
+    return c === undefined ? h3_konst(value) : h3_seed(value, seed[c])
+  }
+  return {
+    px: (id: EntityId) => read(id, 'x', sketch.point(id).x),
+    py: (id: EntityId) => read(id, 'y', sketch.point(id).y),
+    cr: (id: EntityId) => read(id, 'r', sketch.radiusOf(id)),
+  }
+}
+
+// Third directional derivatives Tᵢ(seed,seed,seed) of every residual, in Jacobian row
+// order, from one cubic-dual pass.
+function thirdDirectional(sketch: Sketch, constraints: Constraint[], col: Map<string, number>, seed: Float64Array): number[] {
+  const vars = seededVars3(sketch, col, seed)
+  const cds: CubicDual[] = []
+  for (const e of sketch.entities) if (e.kind === 'arc') pushArcResidualsG(AD3, vars, e, cds)
+  for (const c of constraints) pushResidualsG(sketch, AD3, vars, c, cds)
+  return cds.map((h) => h.d3)
+}
+
+// Compute the exact jerk field x'''(θ) of the mechanism driven by `driverId` at its
+// current (assumed solved) configuration. Independent of computeKinematics's scatter,
+// it redoes the velocity/acceleration solve so the two functions never share mutable
+// state.
+export function computeJerk(sketch: Sketch, driverId: EntityId): Jerk {
+  const constraints = sketch.constraints
+  const refs = sketch.freeParams()
+  const n = refs.length
+  if (n === 0) return { ok: false, points: [], peak: 0 }
+  const { J, m } = residualsAndJacobian(sketch, constraints, refs)
+  const row = driverResidualRow(sketch, constraints, driverId)
+  if (row < 0 || row >= m) return { ok: false, points: [], peak: 0 }
+
+  const eDriver = new Array<number>(m).fill(0)
+  eDriver[row] = 1
+  const vel = pseudoSolve(J, eDriver, m, n)
+  if (!vel) return { ok: false, points: [], peak: 0 }
+
+  const col = new Map<string, number>()
+  for (let i = 0; i < n; i++) col.set(refs[i].owner.id + ':' + refs[i].key, i)
+
+  const b2vel = secondDirectional(sketch, constraints, col, vel) // x'ᵀHx'
+  const acc = pseudoSolve(J, b2vel.map((x) => -x), m, n) ?? new Float64Array(n)
+
+  // Mixed term x'ᵀHx'' by polarisation of the hyper-dual quadratic form.
+  const sum = new Float64Array(n)
+  for (let i = 0; i < n; i++) sum[i] = vel[i] + acc[i]
+  const b2acc = secondDirectional(sketch, constraints, col, acc) // x''ᵀHx''
+  const b2sum = secondDirectional(sketch, constraints, col, sum) // (x'+x'')ᵀH(x'+x'')
+  const third = thirdDirectional(sketch, constraints, col, vel) // x'ᵀTx'x'
+
+  const rhs = new Array<number>(m)
+  for (let i = 0; i < m; i++) {
+    const mixed = 0.5 * (b2sum[i] - b2vel[i] - b2acc[i])
+    rhs[i] = -(3 * mixed + third[i])
+  }
+  const jerk = pseudoSolve(J, rhs, m, n) ?? new Float64Array(n)
+
+  const jIdx = new Map<EntityId, { jx?: number; jy?: number }>()
+  for (let i = 0; i < n; i++) {
+    const ref = refs[i]
+    if (ref.key === 'r') continue
+    const slot = jIdx.get(ref.owner.id) ?? {}
+    if (ref.key === 'x') slot.jx = jerk[i]
+    else slot.jy = jerk[i]
+    jIdx.set(ref.owner.id, slot)
+  }
+  const points: PointJerk[] = []
+  let peak = 0
+  for (const e of sketch.entities) {
+    if (e.kind !== 'point') continue
+    const slot = jIdx.get(e.id)
+    const jx = slot?.jx ?? 0
+    const jy = slot?.jy ?? 0
+    points.push({ id: e.id, jx, jy })
+    peak = Math.max(peak, Math.hypot(jx, jy))
+  }
+  return { ok: true, points, peak }
+}
+
+// ---------------------------------------------------------------------------
 // Motion profile: sweep the driver across its full range and record the speed and
 // acceleration magnitude of a chosen tracer point at every step — the data behind
 // the v(θ) / a(θ) plot. Runs on a private clone so it never disturbs the live model.
 // ---------------------------------------------------------------------------
 
-export type MotionSample = { theta: number; speed: number; accel: number }
+export type MotionSample = { theta: number; speed: number; accel: number; jerk: number; vx: number; vy: number }
 export type MotionProfile = {
   samples: MotionSample[]
   maxSpeed: number
   maxAccel: number
+  maxJerk: number
+  minSpeed: number
   unit: 'rad' | 'len'
 }
 
@@ -265,6 +374,8 @@ export function computeMotionProfile(
   const samples: MotionSample[] = []
   let maxSpeed = 0
   let maxAccel = 0
+  let maxJerk = 0
+  let minSpeed = Infinity
   if (drv && unit && clone.get(tracer)?.kind === 'point') {
     for (let i = 0; i <= steps; i++) {
       const value = range.min + ((range.max - range.min) * i) / steps
@@ -272,14 +383,23 @@ export function computeMotionProfile(
       solveAt(clone)
       const k = computeKinematics(clone, driverId)
       const pm = k.points.find((p) => p.id === tracer)
-      const speed = pm ? Math.hypot(pm.vx, pm.vy) : 0
+      const vx = pm ? pm.vx : 0
+      const vy = pm ? pm.vy : 0
+      const speed = Math.hypot(vx, vy)
       const accel = pm ? Math.hypot(pm.ax, pm.ay) : 0
+      const jk = computeJerk(clone, driverId)
+      const jm = jk.points.find((p) => p.id === tracer)
+      const jerk = jm ? Math.hypot(jm.jx, jm.jy) : 0
       // θ on the plot axis is the driver's own quantity (radians for an angle driver).
       const theta = unit === 'rad' ? toRadians(value) : value
-      samples.push({ theta, speed, accel })
-      if (Number.isFinite(speed)) maxSpeed = Math.max(maxSpeed, speed)
+      samples.push({ theta, speed, accel, jerk, vx, vy })
+      if (Number.isFinite(speed)) {
+        maxSpeed = Math.max(maxSpeed, speed)
+        minSpeed = Math.min(minSpeed, speed)
+      }
       if (Number.isFinite(accel)) maxAccel = Math.max(maxAccel, accel)
+      if (Number.isFinite(jerk)) maxJerk = Math.max(maxJerk, jerk)
     }
   }
-  return { samples, maxSpeed, maxAccel, unit: unit ?? 'rad' }
+  return { samples, maxSpeed, maxAccel, maxJerk, minSpeed: Number.isFinite(minSpeed) ? minSpeed : 0, unit: unit ?? 'rad' }
 }

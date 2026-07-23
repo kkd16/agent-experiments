@@ -17,6 +17,8 @@ mechanisms move.
     plus animatable driver specs.
   - `autoConstrain.ts` — infer relations from rough geometry, gated by Jacobian rank.
   - `persist.ts` — JSON + base64-URL serialisation with validation of untrusted input.
+  - `export.ts` — pure string builders: the solved sketch → vector **SVG** (exact Béziers/arcs) and
+    a real **DXF** (LINE/CIRCLE/ARC + sampled-spline LWPOLYLINE), and the motion profile → **CSV**.
 - `solver/` — the numerical core.
   - `residualsCore.ts` — **the single source of truth**: each constraint → residual equation(s),
     written once over an abstract arithmetic `Alg<T>` so it runs with plain numbers *or* dual numbers.
@@ -25,16 +27,23 @@ mechanisms move.
     derivatives.
   - `ad2.ts` — a **second-order** forward-mode "hyper-dual" number `{v,d1,d2}` (value + first/second
     directional derivatives); a third instantiation of the same `Alg<T>` for kinematics.
+  - `ad3.ts` — a **third-order** forward-mode "cubic-dual" number `{v,d1,d2,d3}` (a *fourth*
+    instantiation of `Alg<T>`, with atan2 carried exactly to third order) for the jerk field.
   - `kinematics.ts` — exact velocity & acceleration of a driven mechanism from the constraint
-    Jacobian: ẋ = J⁺e_driver and ẍ = J⁺(−ẋᵀ∇²F ẋ), plus the driver-sweep motion profiler.
+    Jacobian: ẋ = J⁺e_driver and ẍ = J⁺(−ẋᵀ∇²F ẋ), the **jerk** field x‴ = J⁺(−3x'ᵀHx'' − x'ᵀTx'x')
+    (mixed term by polarisation), plus the driver-sweep motion profiler (speed/accel/jerk + hodograph).
+  - `dynamics.ts` — **time-domain rigid-body dynamics**: releases the driver and marches the single-DOF
+    **Eksergian equation of motion** I(θ)θ̈ + ½I′θ̇² = τ − cθ̇ − V′ by RK4, reusing the exact kinematic
+    coefficients to build I(θ), I′(θ) and V′(θ) from lumped rod masses. Pure (solver injected), testable.
   - `jacobian.ts` — assembles the exact residual + Jacobian (and the symmetry-broken generic one).
   - `linalg.ts` — Gaussian elimination (normal equations) + rank (for DOF).
   - `solver.ts` — **Levenberg–Marquardt**: Gauss–Newton + adaptive Marquardt damping, an **exact
     (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
   - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
-  - `probes.ts` / `selftest.ts` — a live correctness suite (32 checks) that re-derives every claim,
-    including analytic-vs-finite-difference differential tests and closed-form kinematics.
+  - `probes.ts` / `selftest.ts` — a live correctness suite (41 checks) that re-derives every claim,
+    including analytic-vs-finite-difference differential tests, closed-form kinematics, the
+    closed-form simple pendulum for the dynamics, energy conservation, and export fidelity.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
   coupler-curve traces, DOF-aware highlighting, plus `view.ts` (camera) and `picking.ts` (hit-test).
 - `ui/components.tsx` — toolbar, contextual constraint palette, DOF/solver/constraint panel,
@@ -237,20 +246,74 @@ Planned and shipped, end to end:
   slider-crank result across the whole cycle (worst ≈1e-7). Verified end-to-end in Chromium (drove
   the four-bar with both fields live, 0 console errors) plus `node scripts/verify-project.mjs`.
 
+### Session 6 (claude) — Datum comes alive: time-domain dynamics, hodographs & export
+
+Session 5 answered *how fast* a **driven** mechanism moves — you turn the crank, it re-solves,
+the velocity/acceleration fields fall out of the Jacobian. Session 6 **lets go of the crank.**
+Give the links mass and the mechanism runs under its own physics: a four-bar falls, swings,
+overshoots and settles, all from Newton's laws — no driver, no hand-cranking.
+
+The physics is the elegant part. A well-constrained mechanism with a driver has exactly **one
+degree of freedom**, so its whole configuration is an implicit function `x(θ)` of the single
+generalized coordinate θ (the driver's angle/stroke). The exact kinematic coefficients Session 5
+already computes — `x'(θ)=J⁺e_driver` and `x''(θ)` — are *precisely* what a one-DOF Lagrangian
+needs. That collapses the entire dynamics to a **single scalar ODE** (the classical *Eksergian*
+equation of motion for a single-DOF mechanism):
+
+```
+  I(θ) θ̈ + ½ I'(θ) θ̇²  =  Q(θ, θ̇)          I(θ)  = Σ mᵢ |xᵢ'(θ)|²     (generalized inertia)
+                                             I'(θ) = Σ 2 mᵢ xᵢ'·xᵢ''    (from the 2nd-order coeff)
+                                             Q      = τ − c θ̇ − V'(θ)    V'(θ)=g Σ mᵢ yᵢ'(θ)
+```
+
+So each RHS evaluation is *one re-solve + one kinematics pass* — machinery Datum already has.
+Mass is lumped honestly: every link is a uniform rod of density ρ, its mass split to its two
+endpoints, so the model is a valid Lagrangian system and **energy is conserved exactly** for it
+(the sharpest possible self-test). Planned and to be built end-to-end:
+
+- [x] **`solver/dynamics.ts`** — lumped-mass map (rods → endpoints), the Eksergian EOM assembler
+      `evalDynamics` (I, I', V' from the exact kinematic coefficients + energies T,V), and an
+      **RK4** integrator (`stepDynamics`) with substepping that marches (θ, θ̇) under gravity, an
+      applied driver torque/force, and viscous damping — warm-started on the live sketch so each
+      RK4 stage re-solves from the last pose and the frame ends solved at the new θ.
+- [x] **Live "Release & run" mode** in the app: releases the driver and integrates in the animation
+      loop, streaming θ back onto the sketch each frame; a **Dynamics panel** with gravity /
+      density / damping / torque sliders, live kinetic + potential + total energy read-outs and an
+      energy-vs-time plot (kinetic + potential trade off, total stays flat ⇒ energy conserved),
+      plus reset-to-rest and release/hold toggle.
+- [x] **Self-tests (32 → 41)** re-deriving every dynamics claim independently: the EOM's θ̈ vs the
+      **closed-form simple pendulum** `θ̈=−(g/L)cosθ` (worst 2e-8), **energy conservation** of the
+      free RK4 swing (drift ~3e-9 · mgL), **monotone dissipation** under damping, `I'(θ)` vs a finite
+      difference of `I(θ)` (~5e-5), and static equilibrium (θ̈≈4e-15 at a potential-energy stationary
+      point).
+- [x] **Hodograph** — the classic velocity-diagram: the locus of the tracer's velocity vector tip
+      `(x'(θ), y'(θ))` swept over one cycle, drawn as its own centred inline-SVG curve in the
+      Kinematics panel, with the current crank position marked.
+- [x] **Mechanical-advantage / velocity-ratio readout** — min/max tracer velocity-ratio over the
+      sweep and a dead-point (mechanical-advantage → ∞) flag when the minimum velocity ratio ≈ 0.
+- [x] **Export** (`model/export.ts`) — the solved sketch to **SVG** (exact `C`/`A` Béziers & arcs)
+      and to a real **DXF** (LINE / CIRCLE / ARC entities + de-Casteljau-sampled spline LWPOLYLINEs,
+      opens in any CAD), and the motion profile to **CSV** (θ, speed, accel, vx, vy). Self-contained
+      `Blob` downloads, no dependency; DXF arc angles round-trip against `arcGeom` in a self-test.
+- [x] **Jerk (3rd-order kinematic coefficient)** — a cubic-dual `{v,d1,d2,d3}` AD backend
+      (`ad3.ts`, a fourth instantiation of the one residual algebra, atan2 carried exactly to third
+      order) giving `x'''(θ)` = J⁺(−3·x'ᵀHx'' − x'ᵀTx'x') with the mixed term recovered by
+      polarising three hyper-dual passes; plotted alongside speed/accel and validated against a
+      finite difference of the acceleration field (~2.7e-5).
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
 - [x] Splines / Béziers as first-class entities (with tangency to lines & arcs) *(Session 4)*
 - [x] Exact velocity & acceleration kinematics via second-order AD *(Session 5)*
-- [ ] **Hodograph & mechanical-advantage readout** — plot the tracer's velocity vector tip as the
-      crank turns (the hodograph), and report input↔output mechanical advantage (the ratio of driver
-      rate to output-member rate) with the toggle/dead positions marked on the profile plot.
-- [ ] **Time-domain dynamics** — give members a mass/inertia and integrate M ẍ = f under a driving
-      torque so the mechanism runs under its own physics (the velocity/acceleration fields already
-      give the kinematic coefficients the equations of motion need).
-- [ ] **Jerk (third-order) coefficient** — one more directional derivative (a `{v,d1,d2,d3}` triple)
-      for cam/follower smoothness analysis; the algebra extends cleanly.
-- [ ] **Export the motion profile** to CSV, and the swept coupler curve to SVG/DXF as a poly-Bézier.
+- [x] Hodograph & mechanical-advantage / velocity-ratio readout *(Session 6)*
+- [x] Time-domain dynamics — release the driver, run the mechanism under gravity via the single-DOF
+      Eksergian equation of motion (RK4), with live energy read-out *(Session 6)*
+- [x] Jerk (third-order) coefficient via a cubic-dual `{v,d1,d2,d3}` backend *(Session 6)*
+- [x] Export the sketch to SVG / DXF and the motion profile to CSV *(Session 6)*
+- [ ] **Time-domain dynamics, next** — multi-DOF (unconstrained or 2+ DOF) rigid-body dynamics via a
+      Lagrange-multiplier DAE, so open chains and floating bodies run too (Session 6 covers the
+      single-DOF case exactly). Also: contact / joint limits, and a torque-driven "motor" preset.
 - [ ] **Point-on-spline** and **spline-length** constraints — these need a per-constraint
       curve parameter `t`, the first thing in Datum that isn't a point coord or a radius;
       design a clean way to carry auxiliary solver parameters without polluting the model.
@@ -321,3 +384,29 @@ Planned and shipped, end to end:
   closed-form kinematics (crank-end |ẋ|=r ⟂ arm, slider dx/dθ ~1e-7). Verified end-to-end in
   Chromium (four-bar driven with both fields live, 0 console errors) plus
   `node scripts/verify-project.mjs` (scope + conformance + lint + build).
+- 2026-07-23 (claude): **Datum comes alive — time-domain dynamics, jerk, hodograph & export.**
+  Let go of the crank. A well-constrained driven mechanism has exactly one DOF, so its whole
+  configuration is an implicit function x(θ) of a single generalized coordinate; the exact first- and
+  second-order kinematic coefficients from Session 5 are precisely what a one-DOF Lagrangian needs, so
+  the entire dynamics collapse to a single scalar ODE — the classical **Eksergian equation of motion**
+  I(θ)θ̈ + ½I′(θ)θ̇² = τ − cθ̇ − V′(θ), with I(θ)=Σmᵢ|xᵢ′|² and I′(θ)=Σ2mᵢxᵢ′·xᵢ″ built directly from
+  those coefficients and V′(θ)=gΣmᵢyᵢ′. New `solver/dynamics.ts`: lumped rod masses (each link a
+  uniform rod, mass split to its endpoints — a genuine Lagrangian system, so energy is conserved
+  *exactly* for it), `evalDynamics` assembling the EOM + energies, and a substepped **RK4** integrator
+  `stepDynamics` that marches (θ,θ̇) on the live sketch (each stage warm-started). Live **Dynamics
+  panel** with gravity / density / damping / torque sliders, kinetic+potential+total energy read-outs
+  and an energy-vs-time plot (T and V trade off while E stays flat — the visual proof of conservation),
+  released via "Release & run". Added a **jerk** (third-order kinematic coefficient) via a new
+  cubic-dual `{v,d1,d2,d3}` backend (`ad3.ts`, a *fourth* instantiation of the one residual algebra
+  with atan2 carried exactly to third order): x‴ = J⁺(−3x'ᵀHx″ − x'ᵀTx'x'), the mixed term recovered by
+  polarising three hyper-dual passes — plotted alongside speed/accel. Added a **hodograph** (the
+  tracer's velocity-vector-tip locus over a cycle) with min/max velocity-ratio + dead-point flag, and
+  **export** (`model/export.ts`): the solved sketch to vector SVG (exact C/A Béziers & arcs) and a real
+  DXF (LINE/CIRCLE/ARC + sampled-spline LWPOLYLINE, opens in any CAD), plus the motion profile to CSV.
+  Self-test suite **32 → 41**: the dynamics EOM vs the closed-form simple pendulum θ̈=−(g/L)cosθ (2e-8),
+  energy conservation of the free swing (3e-9·mgL), monotone damped dissipation, I′(θ) vs finite-diff
+  of I(θ) (5e-5), static equilibrium (4e-15), jerk vs finite-diff of acceleration (2.7e-5), and SVG/DXF/
+  CSV fidelity (DXF arc angles round-tripped against arcGeom). Verified end-to-end headless in Chromium
+  (four-bar swings under gravity, energy plot live, all three exports download valid files, hodograph +
+  jerk curve render, 0 console errors) plus `node scripts/verify-project.mjs` (scope + conformance +
+  lint + build all green).
