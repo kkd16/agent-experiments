@@ -55,6 +55,7 @@ import { CapacityCurvePlot, FrfPlot, HysteresisPlot, Legend, Segmented, Slider, 
 import { fmtEng } from './ui/format'
 import { TopOptStudio } from './ui/TopOptStudio'
 import { ThermalStudio } from './ui/ThermalStudio'
+import { FractureStudio } from './ui/FractureStudio'
 import {
   addMember,
   addNode,
@@ -81,7 +82,7 @@ import {
   type Scene,
 } from './state'
 
-type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal'
+type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture'
 type Tool = 'select' | 'node' | 'member' | 'support' | 'load' | 'delete'
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
@@ -964,6 +965,7 @@ export default function App() {
               { value: 'continuum', label: '2-D Continuum' },
               { value: 'topopt', label: 'Topology Optimization' },
               { value: 'thermal', label: 'Thermal & Multiphysics' },
+              { value: 'fracture', label: 'Fracture Mechanics' },
             ]}
             value={tab}
             onChange={(v) => {
@@ -980,6 +982,8 @@ export default function App() {
           <TopOptStudio />
         ) : tab === 'thermal' ? (
           <ThermalStudio />
+        ) : tab === 'fracture' ? (
+          <FractureStudio />
         ) : (
           <>
         {/* ---------------- left rail: presets ---------------- */}

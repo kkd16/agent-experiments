@@ -66,11 +66,23 @@ implemented from scratch, numerically validated in-app.
 - `src/ui/ThermalStudio.tsx` — the Thermal & Multiphysics tab: own canvas + rAF loop, a
   temperature/heat-flux view and a deformed thermal-stress overlay, steady/transient animation,
   and material + boundary-condition controls.
-- `src/engine/validate.ts` — analytical benchmarks that run live (63 of them): truss statics,
+- `src/engine/fracture.ts` — **linear elastic fracture mechanics** (v13): a graded cracked-plate
+  Q4/Q8 mesher (tip-clustered, crack on the y = 0 symmetry plane), a compact assemble → PCG solve,
+  and the crack-tip **stress-intensity factor** K_I by the **domain J-integral** and the
+  **interaction (M-) integral** with unit-K **Williams auxiliary fields**, plus a displacement-
+  correlation cross-check and the Feddersen/Tada handbook geometry factors. Pure, testable.
+- `src/engine/fracturepresets.ts` — the crack-scenario library (center / single-edge / double-edge)
+  and a material toughness table (E, ν, K_Ic, σ_y) for steel, aluminium, titanium, PMMA, alumina,
+  glass, with the studio→`CrackModel` builder.
+- `src/ui/FractureStudio.tsx` — the Fracture Mechanics tab: own canvas + rAF loop, the singular
+  crack-tip stress field with the opening crack faces and the J-integral evaluation ring, a live
+  K(a/W) sweep vs the handbook curve, the full SIF read-out and the K_Ic fracture verdict.
+- `src/engine/validate.ts` — analytical benchmarks that run live (81 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
-  seismic, the inelastic hinge/hysteresis checks, and the v9 isoparametric checks (Q4/Q8 patch
-  test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency). Reports
-  rel. error.
+  seismic, the inelastic hinge/hysteresis checks, the v9 isoparametric checks (Q4/Q8 patch
+  test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency), and the
+  v13 fracture checks (Feddersen/Tada geometry factors, J = K²/E*, Griffith, J path independence).
+  Reports rel. error.
 - `src/engine/presets.ts` — Warren/Pratt bridges, transmission tower, portal frame, cantilever,
   plate-with-hole, L-bracket, plastic-collapse frames, and seismic/inelastic moment frames.
 - `src/ui/` — React + canvas. Pan/zoom viewport, interactive editing, results & reactions
@@ -565,7 +577,122 @@ von-Mises stress can **spike during the warm-up** — thermal shock — before e
 - [x] Verified end-to-end in headless Chromium: the cooling wall bows and stresses as it heats,
       peak σ climbs to ~0.94 GPa, zero runtime errors, whole gate green
 
+### v13 — Linear Elastic Fracture Mechanics: stress-intensity factors (the *crack* chapter)
+
+Every chapter so far measured **stress** and asked "is σ below yield?" Fracture asks a different,
+harder question. At a sharp crack tip the elastic stress field is **singular** — it blows up like
+1/√r — so the peak stress is *infinite* and "σ < σ_yield" is meaningless. What actually governs
+whether a crack **runs** is the *strength* of that singularity, the **stress-intensity factor** K,
+defined by the near-tip Williams expansion
+
+    σ_ij(r,θ) → K_I/√(2πr)·f^I_ij(θ) + K_II/√(2πr)·f^II_ij(θ) + …
+
+K carries the strange unit Pa·√m and, once known, *everything* local follows. The crack propagates
+when K_I reaches the material's fracture toughness **K_Ic** — the Griffith criterion. This is the
+whole basis of damage-tolerant design, and it is the one piece of solid mechanics the studio was
+missing: a stress-*concentration* (the plate-with-hole K_t ≈ 3) is finite, but a *crack* is not.
+
+We never resolve the infinity. K is extracted by two **energy-based, mesh-insensitive** methods
+built on the studio's own Q4/Q8 isoparametric machinery:
+
+- the **J-integral** (Rice) in its robust *equivalent-domain* (area) form — the energy released per
+  unit crack advance, J = (K_I²+K_II²)/E* — integrated over a ring of elements around the tip;
+- the **interaction (M-) integral** — superpose the computed field with a *known* auxiliary Williams
+  field of unit K and the cross-term isolates K_I (the only clean way to pull the singularity
+  coefficient out of a finite-element field).
+
+Each cracked plate is meshed by **symmetry about the crack plane** (we model the y ≥ 0 half) with a
+mesh **graded toward the tip**, and the domain integrals are doubled to recover the whole-plate value.
+Three canonical configurations ship — **center crack** (Feddersen √sec finite-width factor), **single
+edge crack / SENT** (the famous 1.12 free-surface factor, Tada polynomial) and **double edge crack /
+DENT** (modeled as the reflected quarter of the specimen) — and a live **a/W sweep** traces the
+computed geometry factor Y = K_I/(σ√πa) straight onto the closed-form handbook curve. Then K_I becomes
+an **engineering verdict** against a material's K_Ic: safety factor, critical stress, critical flaw
+size, and the small-scale-yielding plastic-zone check, across steel, aluminium, titanium, PMMA,
+ceramic and glass.
+
+- [x] `fracture.ts` — the whole chapter, pure/deterministic. A graded structured Q4/Q8 cracked-plate
+      mesher (tip clustered, crack on the y = 0 symmetry plane), a compact assemble → PCG solve reusing
+      `isoparam` + `linalg`, and the **domain J-integral** + **interaction integral** with the
+      **Williams auxiliary fields** (unit-K near-tip displacement/stress; the aux displacement gradient
+      by central finite difference, robust since the ring excludes the tip)
+- [x] Unify all three configs on a single "tip at x = a, crack grows +x" layout that differs *only* in
+      the vertical boundary condition (centre-symmetry u_x = 0, free SENT surface + far pin, or the
+      reflected-DENT centre plane) — the physically-correct way the three cases actually differ
+- [x] Handbook geometry factors: Feddersen √sec(πa/2W) (center), Tada 1.12−0.231α+10.55α²−… (SENT),
+      Tada (1.122−0.561α−…)/√(1−α) (DENT); `sweepGeometryFactor` for the live FE-vs-handbook curve
+- [x] `dcmKI` — an independent **displacement-correlation** K_I from a least-squares √r fit of the
+      crack-opening profile, as a second cross-check on the interaction integral
+- [x] `fracturepresets.ts` — the three crack scenarios + a material library (E, ν, K_Ic, σ_y) for
+      steel / Al 7075 / Ti-6Al-4V / PMMA / alumina / soda-lime glass, and the studio→CrackModel builder
+- [x] `FractureStudio.tsx` — a fifth self-contained studio tab (own canvas + rAF loop, snapshot-ref
+      discipline): the singular von-Mises/σyy field blooming at the tip while the crack opens under a
+      breathing load, the J-integral evaluation ring drawn, the deformed crack faces, a **K(a/W) sweep**
+      view (FE dots on the handbook line), the full SIF read-out (K_I, J, Y vs handbook, DCM, J-from-K)
+      and the **fracture verdict** panel (K_Ic, safety factor, critical σ / a, plastic zone)
+- [x] **8 new closed-form benchmarks** (badge **73 → 81**, all green): center-crack Y vs Feddersen
+      (0.2 %), **J = K_I²/E\*** self-consistency (0.4 %), the **Griffith** limit G → σ²πa/E* (0.2 %),
+      **J path independence** across evaluation rings (0.1 %), SENT Y vs Tada (0.6 %), **mode-I purity**
+      K_II = 0 for a symmetric crack, DENT Y vs Tada (1.5 %), and the displacement-correlation
+      cross-check ≈ interaction integral (2 %)
+- [x] Verified end-to-end in headless Chromium: all five studio tabs render; the center-crack tip
+      blooms the 1/√r singularity, K_I = 102.6 MPa√m with Y matching the handbook to −0.2 %, the a/W
+      sweep points land on the curve, the steel verdict flips to *FRACTURES* (K_I > K_Ic), and the badge
+      reads **81/81** with zero runtime errors, the whole gate green
+
+**v14 backlog — where the crack chapter goes next:**
+
+- [ ] **Mixed-mode (inclined / embedded crack)** — model a full plate with the crack as a discrete
+      slit (duplicated coincident crack-face nodes) so the crack need not lie on a symmetry plane;
+      rotate the J/interaction integrals into the crack-local frame to split **K_I and K_II** properly
+      (the half-model forces K_II = 0). Validate against the inclined-crack σ√(πa) sin²β / sinβcosβ.
+- [ ] **Quarter-point singular elements** — collapse the tip Q8 ring and slide the mid-side nodes to
+      the ¼ point to embed the √r displacement / 1/√r stress *exactly*, and compare the J-integral K
+      against the direct singular-element extraction.
+- [ ] **Superconvergent Patch Recovery (Zienkiewicz–Zhu)** + the **ZZ error estimator** ‖σ*−σ_h‖ to
+      drive **adaptive tip refinement** (long promised in the v9 backlog) — refine where the error
+      indicator is largest and watch K converge.
+- [ ] **Fatigue crack growth** — a Paris-law dc/dN = C·ΔK^m integrator that marches a crack forward
+      cycle-by-cycle under a stress range, drawing the a-vs-N life curve to failure (K = K_Ic).
+- [ ] **T-stress and crack-path stability** — extract the second Williams term (the non-singular
+      T-stress) from a modified interaction integral; it decides whether a crack runs straight or kinks.
+- [ ] **Plane-strain toggle** — E* = E/(1−ν²) and κ = 3−4ν, so K_Ic (a plane-strain property) is
+      compared on its own footing; contrast the plane-stress vs plane-strain plastic-zone size.
+
 ## Session log
+
+- 2026-07-23 (claude): shipped **v13 — Linear Elastic Fracture Mechanics: stress-intensity
+  factors**, the chapter that takes the studio from *stress concentration* (finite K_t) to *fracture*
+  (a singular crack, characterised by K). New `fracture.ts`: a from-scratch LEFM engine on Keystone's
+  own Q4/Q8 isoparametric machinery. A cracked plate is meshed by **symmetry about the crack plane**
+  (the y ≥ 0 half) with the mesh **graded toward the tip**; a compact assemble → BC-aware PCG solve
+  (reusing `isoparam` + `linalg`) gives the field, and K_I is then extracted two ways that never touch
+  the 1/√r infinity: the **interaction (M-) integral** — superposing a unit-K **Williams auxiliary
+  field** so the cross-term isolates the singularity coefficient (aux displacement gradient by robust
+  central finite difference; the ring excludes the tip so r is bounded away from 0) — and the
+  **J-integral** in equivalent-domain (area) form, the energy release rate J = K_I²/E*. Because only
+  the half-plane is modeled, each domain integral is **doubled** to recover the whole-plate value (the
+  mode-I field is symmetric, so K_II ≡ 0 by construction — a genuine mixed-mode split is v14). All
+  three canonical configs are unified on one "tip at x = a, crack grows +x" layout that differs *only*
+  in the vertical BC — centre symmetry (center crack), free surface + far pin (SENT), or the reflected
+  centre plane (DENT) — which is exactly how the three cases physically differ; the DENT reflection
+  trick avoids a crack-local frame rotation entirely. `fracturepresets.ts` adds the three scenarios + a
+  material library (E, ν, K_Ic, σ_y for steel / Al / Ti / PMMA / alumina / glass). `FractureStudio.tsx`
+  is a **fifth self-contained studio tab** (own canvas + rAF, snapshot-ref discipline like Thermal /
+  TopOpt): the singular von-Mises field **blooming at the tip** while the crack opens under a breathing
+  load, the J-integral evaluation ring drawn around the tip, the deformed crack lips, a **K(a/W) sweep**
+  view tracing the FE geometry factor straight onto the closed-form handbook curve, a full SIF read-out
+  (K_I, J, Y computed vs handbook, the DCM √r-opening cross-check, J-from-K), and a **fracture verdict**
+  panel that turns K_I into engineering (safety factor K_Ic/K_I, critical stress, critical flaw size at
+  the Griffith criterion, and the small-scale-yielding plastic-zone check). **8 new closed-form
+  benchmarks** pin it (badge **73 → 81**, all green): center-crack Y vs **Feddersen** (0.2 %), the
+  **J = K_I²/E\*** identity between two independent integrals of the same field (0.4 %), the **Griffith**
+  energy limit G → σ²πa/E* (0.2 %), **J path independence** across rings (0.1 %), SENT Y vs **Tada**
+  (0.6 %), **mode-I purity** (K_II = 0), DENT Y vs Tada (1.5 %), and the **displacement-correlation**
+  cross-check (2 %). Verified end-to-end in headless Chromium — all five tabs render, the tip blooms
+  the 1/√r singularity, K_I = 102.6 MPa√m matching the handbook to −0.2 %, the a/W sweep points sit on
+  the curve, the steel verdict flips to *FRACTURES*, and the badge reads **81/81** with zero runtime
+  errors, the whole verify gate (conformance + lint + build) green.
 
 - 2026-07-23 (claude): shipped **v12 — transient thermal-stress: the stress *movie***,
   extending the v11 coupling from the steady self-stress into the time domain. New
