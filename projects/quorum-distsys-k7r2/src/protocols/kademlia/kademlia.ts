@@ -124,6 +124,7 @@ export function createKademlia(config: KademliaConfig = DEFAULT_KADEMLIA_CONFIG)
       kind,
       shortlist: seed,
       status: status as Lookup['status'],
+      retries: {},
       inflight: 0,
       rounds: 0,
       value: null,
@@ -344,11 +345,23 @@ export function createKademlia(config: KademliaConfig = DEFAULT_KADEMLIA_CONFIG)
         const lk = s.lookups[lid];
         if (!lk) return;
         if (lk.status[pid] === 'pending') {
-          // The probe timed out *for this lookup* — try the next-closest contact.
-          // We do NOT evict the peer from the routing table on a single missed
-          // reply (a dropped packet ≠ a dead node); k-bucket eviction only ever
-          // happens after a direct liveness ping fails during a full-bucket
-          // replacement. This is what makes the α-parallel lookup loss-tolerant.
+          // Retransmit the probe up to `lookupRetries` times before giving up —
+          // Kademlia retransmits RPCs, so a single dropped packet doesn't cost
+          // the lookup its answer. Only after the retries are exhausted do we
+          // treat the peer as dead *for this lookup* (still WITHOUT evicting it
+          // from the routing table — a dropped packet ≠ a dead node; k-bucket
+          // eviction happens only when a direct liveness ping fails). This is
+          // what keeps even a single async lookup exact under packet loss.
+          const used = lk.retries[pid] ?? 0;
+          if (used < config.lookupRetries) {
+            lk.retries[pid] = used + 1;
+            const nm = nameOf(s, pid);
+            if (nm !== null) {
+              ctx.send(nm, 'KFind', { lid: lk.id, target: lk.target, kind: lk.kind, src: s.id } as FindReq);
+              ctx.setTimer(`find:${lk.id}:${pid}`, config.rpcTimeout);
+              return; // stay pending, one more probe in flight
+            }
+          }
           lk.status[pid] = 'dead';
           lk.inflight = Math.max(0, lk.inflight - 1);
           pump(ctx, s, lk);

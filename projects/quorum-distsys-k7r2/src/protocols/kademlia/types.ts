@@ -17,6 +17,10 @@ export interface KademliaConfig {
   alpha: number;
   /** How long to wait for an RPC reply before declaring a contact dead. */
   rpcTimeout: number;
+  /** How many times a single lookup probe is retransmitted before it is given
+   *  up (Kademlia retransmits RPCs) — this keeps a lookup exact under packet
+   *  loss, not just the eventually-refreshed routing tables. */
+  lookupRetries: number;
   /** Period of the background bucket-refresh lookup that keeps tables fresh. */
   refreshInterval: number;
   /** Period at which a node re-publishes (STOREs) the keys it originated. */
@@ -28,6 +32,7 @@ export const DEFAULT_KADEMLIA_CONFIG: KademliaConfig = {
   k: 4,
   alpha: 3,
   rpcTimeout: 260,
+  lookupRetries: 1,
   refreshInterval: 900,
   republishInterval: 1600,
 };
@@ -56,6 +61,8 @@ export interface Lookup {
   /** Every candidate id we have heard of for this lookup (incl. self). */
   shortlist: number[];
   status: Record<number, CandStatus>;
+  /** per-peer retransmit count for the in-flight probe (loss tolerance). */
+  retries: Record<number, number>;
   inflight: number;
   rounds: number;
   /** For value lookups: the value once some node returns it. */
