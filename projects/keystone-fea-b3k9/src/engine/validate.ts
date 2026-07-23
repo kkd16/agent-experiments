@@ -18,6 +18,7 @@ import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
 import { TopOpt, unitElementK, tanhProject, tanhProjectDeriv, type TopOptSpec, PROBLEMS } from './topopt'
 import { solveThermalSteady, solveThermalTransient, type ThermalInput } from './thermal'
 import { solveThermoelastic } from './thermoelastic'
+import { solveTransientThermoelastic } from './coupled'
 import { edgeNodesQ } from './quadmesh'
 
 const STEEL_RHO = 7850 // kg/m³
@@ -1207,6 +1208,35 @@ export function runThermoelasticBenchmarks(): Check[] {
     checks.push(check('Free thermal expansion', 'tip growth = α·ΔT·L', alpha * dT * L, ux, 'm'))
     // Residual stress relative to the restrained-bar scale E·α·ΔT — should vanish.
     checks.push(check('Free expansion is stress-free', 'σ/(E·α·ΔT) → 0 when unrestrained', 0, r.maxVonMises / (E * alpha * dT), '', 1e-6))
+  }
+
+  // 3. Transient thermal-stress consistency: the coupled warm-up "stress movie"
+  //    (a thermoelastic solve at each conduction time-step) must land, at its
+  //    final frame, on the steady thermoelastic field — the transient integrator
+  //    and the steady coupling agree in the limit.
+  {
+    const mesh = rectPlateQ(4, 0.2, 0.2, 12, 12)
+    const input: ThermalInput = {
+      mesh, k: 45, rhoc: 3.6e6, thickness: 0.02,
+      bcs: { left: { kind: 'temp', value: 220 }, right: { kind: 'temp', value: 20 }, top: { kind: 'insulated' }, bottom: { kind: 'insulated' } },
+      T0: 20,
+    }
+    const fix = [{ edge: 'left' as const, dofs: ['x', 'y'] as ('x' | 'y')[] }]
+    const tr = solveTransientThermoelastic(
+      input,
+      { E, nu, alpha, thickness: 0.02, Tref: 20, fix },
+      { stressFrames: 14, totalTime: 40000 },
+    )
+    const steadyT = solveThermalSteady(input)
+    const ste = solveThermoelastic({ mesh, E, nu, alpha, thickness: 0.02, T: steadyT.T, Tref: 20, fix })
+    const last = tr.frames[tr.frames.length - 1]
+    let md = 0
+    let ms = 1e-30
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      md = Math.max(md, Math.abs(last.nodalVonMises[n] - ste.nodalVonMises[n]))
+      ms = Math.max(ms, Math.abs(ste.nodalVonMises[n]))
+    }
+    checks.push(check('Transient thermal-stress → steady', 'coupled warm-up final frame = steady coupling', 0, md / ms, '', 1e-2))
   }
 
   return checks
