@@ -8,6 +8,7 @@ import { applicableConstraints, findDuplicate } from './model/constraintRules'
 import type { ConstraintOption, ValueKind } from './model/constraintRules'
 import { autoConstrain } from './model/autoConstrain'
 import { toJSONString, fromJSONString, encodeHash, decodeHash } from './model/persist'
+import { sketchToSVG, sketchToDXF, motionProfileToCSV } from './model/export'
 import { solve } from './solver/solver'
 import type { SolveResult } from './solver/solver'
 import { analyzeDof } from './solver/dof'
@@ -15,9 +16,11 @@ import { analyzeConflicts } from './solver/conflicts'
 import { runSelfTests } from './solver/selftest'
 import type { TestResult } from './solver/selftest'
 import { computeKinematics, computeMotionProfile } from './solver/kinematics'
+import { stepDynamics, evalDynamics, lumpedMasses, driverParamUnit, DEFAULT_DYN } from './solver/dynamics'
+import type { DynState, DynParams } from './solver/dynamics'
 import { render } from './render/renderer'
 import type { RenderState, TracePath, MotionOverlay } from './render/renderer'
-import type { MotionData } from './ui/components'
+import type { MotionData, DynView, DynSample } from './ui/components'
 import { pickEntity } from './render/picking'
 import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
@@ -48,6 +51,13 @@ export default function App() {
   const driverRef = useRef<{ spec: DriverSpec; constraint: Constraint } | null>(null)
   const driverValueRef = useRef(0)
   const driverDirRef = useRef(1) // sweep direction for ping-pong (non-wrapping) drivers
+  // --- dynamics (time-domain physics) ------------------------------------
+  const dynOnRef = useRef(false)
+  const dynStateRef = useRef<DynState>({ theta: 0, omega: 0 })
+  const dynParamsRef = useRef<DynParams>({ ...DEFAULT_DYN })
+  const dynMassRef = useRef<Map<EntityId, number> | null>(null)
+  const dynUnitRef = useRef<'rad' | 'len'>('rad')
+  const dynEnergyHistRef = useRef<DynSample[]>([])
   const tracesRef = useRef<Map<EntityId, [number, number][]>>(new Map())
   const traceTargetsRef = useRef<EntityId[]>([])
   const redundantRef = useRef<Set<EntityId>>(new Set())
@@ -80,6 +90,9 @@ export default function App() {
   const [showAccel, setShowAccel] = useState(false)
   const [driverValue, setDriverValue] = useState(0)
   const [driver, setDriver] = useState<DriverSpec | null>(null)
+  const [dynOn, setDynOn] = useState(false)
+  const [dynParams, setDynParams] = useState<DynParams>({ ...DEFAULT_DYN })
+  const [dynReadout, setDynReadout] = useState<{ T: number; V: number; E: number; I: number; omega: number; history: DynSample[] } | null>(null)
   const [valuePrompt, setValuePrompt] = useState<ConstraintOption | null>(null)
   const [editDim, setEditDim] = useState<{ constraintId: EntityId; option: ConstraintOption } | null>(null)
   const [solveInfo, setSolveInfo] = useState<SolveResult | null>(null)
@@ -99,6 +112,69 @@ export default function App() {
   useEffect(() => void (showAccelRef.current = showAccel), [showAccel])
   useEffect(() => void (showConstraintsRef.current = showConstraints), [showConstraints])
   useEffect(() => void (showGridRef.current = showGrid), [showGrid])
+  useEffect(() => void (dynOnRef.current = dynOn), [dynOn])
+
+  // Loading a new sketch (or switching examples) leaves any running physics behind
+  // so the freshly-loaded mechanism starts at rest. Called from the load paths.
+  const stopDynamics = useCallback(() => {
+    dynOnRef.current = false
+    setDynOn(false)
+    dynEnergyHistRef.current = []
+    setDynReadout(null)
+  }, [])
+
+  // --- dynamics controls ---------------------------------------------------
+  // Release the driver: seed the dynamical state from the current configuration
+  // (at rest) and let the animation loop integrate the equation of motion.
+  const enterDynamics = useCallback(() => {
+    const drv = driverRef.current
+    if (!drv) return
+    const unit = driverParamUnit(sketchRef.current, drv.constraint.id)
+    if (!unit) {
+      setMessage('Dynamics needs an angle or distance driver.')
+      return
+    }
+    dynUnitRef.current = unit
+    dynMassRef.current = lumpedMasses(sketchRef.current, dynParamsRef.current)
+    const theta = unit === 'rad' ? (driverValueRef.current * Math.PI) / 180 : driverValueRef.current
+    dynStateRef.current = { theta, omega: 0 }
+    dynEnergyHistRef.current = []
+    const ev = evalDynamics(sketchRef.current, drv.constraint.id, dynMassRef.current, dynStateRef.current, dynParamsRef.current, unit, (s) => void solve(s, { maxIterations: 160 }))
+    setDynReadout({ T: ev.T, V: ev.V, E: ev.E, I: ev.I, omega: 0, history: [] })
+    dynOnRef.current = true
+    setDynOn(true)
+    setPlaying(true)
+    setMessage('Released — the mechanism now runs under gravity. Tune gravity / mass / damping / torque live.')
+  }, [])
+
+  const exitDynamics = useCallback(() => {
+    dynOnRef.current = false
+    setDynOn(false)
+    setPlaying(false)
+    setMessage('Physics paused — the mechanism is held at its current pose.')
+  }, [])
+
+  const toggleDynamics = useCallback(() => {
+    if (dynOnRef.current) exitDynamics()
+    else enterDynamics()
+  }, [enterDynamics, exitDynamics])
+
+  // Bring the mechanism to rest at its current pose (zero θ̇) and clear the trace.
+  const resetDynamics = useCallback(() => {
+    dynStateRef.current = { theta: dynStateRef.current.theta, omega: 0 }
+    dynEnergyHistRef.current = []
+    setDynReadout((prev) => (prev ? { ...prev, T: 0, omega: 0, E: prev.V, history: [] } : prev))
+  }, [])
+
+  const updateDynParams = useCallback((patch: Partial<DynParams>) => {
+    const next = { ...dynParamsRef.current, ...patch }
+    dynParamsRef.current = next
+    setDynParams(next)
+    // Mass depends only on the density / base-mass sliders; recompute when they move.
+    if (dynOnRef.current && (patch.density !== undefined || patch.baseMass !== undefined)) {
+      dynMassRef.current = lumpedMasses(sketchRef.current, next)
+    }
+  }, [])
 
   // --- solving -------------------------------------------------------------
   const solveNow = useCallback((extraFixed?: Set<EntityId>) => {
@@ -200,6 +276,7 @@ export default function App() {
       }
       setPlaying(false)
       playingRef.current = false
+      stopDynamics()
       solve(built.sketch, {})
       const { w, h } = sizeRef.current
       viewRef.current = frameBounds(built.sketch.boundingBox(), w, h)
@@ -208,7 +285,7 @@ export default function App() {
       resetHistory()
       bump()
     },
-    [bump, resetHistory],
+    [bump, resetHistory, stopDynamics],
   )
 
   // --- persistence: new / open / save / share -----------------------------
@@ -239,6 +316,7 @@ export default function App() {
       }
       setPlaying(false)
       playingRef.current = false
+      stopDynamics()
       solveNow()
       const { w, h } = sizeRef.current
       viewRef.current = frameBounds(sketch.boundingBox(), w, h)
@@ -247,7 +325,7 @@ export default function App() {
       resetHistory()
       bump()
     },
-    [bump, resetHistory, solveNow],
+    [bump, resetHistory, solveNow, stopDynamics],
   )
 
   const newSketch = useCallback(() => adoptSketch(new Sketch(), 'New blank sketch.'), [adoptSketch])
@@ -422,7 +500,45 @@ export default function App() {
       lastTsRef.current = ts
 
       const driver = driverRef.current
-      if (playingRef.current && driver) {
+      const appendTraces = () => {
+        if (!showTraceRef.current) return
+        for (const id of traceTargetsRef.current) {
+          const p = sketchRef.current.point(id)
+          let arr = tracesRef.current.get(id)
+          if (!arr) tracesRef.current.set(id, (arr = []))
+          const last = arr[arr.length - 1]
+          if (!last || Math.hypot(last[0] - p.x, last[1] - p.y) > 0.4) arr.push([p.x, p.y])
+          if (arr.length > 4000) arr.shift()
+        }
+      }
+      if (playingRef.current && driver && dynOnRef.current && dynMassRef.current) {
+        // Time-domain physics: integrate the Eksergian equation of motion. stepDynamics
+        // marches (θ, θ̇) on the LIVE sketch (each RK4 stage warm-starts from the last
+        // pose), leaving it solved at the new θ — exactly what we then draw.
+        const unit = dynUnitRef.current
+        const stepDt = Math.min(dt, 0.033)
+        const r = stepDynamics(
+          sketchRef.current,
+          driver.constraint.id,
+          dynMassRef.current,
+          dynStateRef.current,
+          dynParamsRef.current,
+          unit,
+          stepDt,
+          (s) => void solve(s, { maxIterations: 120 }),
+          4,
+        )
+        dynStateRef.current = r.state
+        const val = unit === 'rad' ? (r.state.theta * 180) / Math.PI : r.state.theta
+        driverValueRef.current = val
+        const disp = unit === 'rad' ? ((val % 360) + 360) % 360 : val
+        const hist = dynEnergyHistRef.current
+        hist.push({ T: r.ev.T, V: r.ev.V, E: r.ev.E })
+        if (hist.length > 240) hist.shift()
+        setDriverValue(disp)
+        setDynReadout({ T: r.ev.T, V: r.ev.V, E: r.ev.E, I: r.ev.I, omega: r.state.omega, history: hist.slice() })
+        appendTraces()
+      } else if (playingRef.current && driver) {
         const { spec } = driver
         const speed = ((spec.max - spec.min) / spec.period) * dt
         let val = driverValueRef.current + driverDirRef.current * speed
@@ -445,16 +561,7 @@ export default function App() {
         const res = solve(sketchRef.current, {})
         setDriverValue(val)
         setSolveInfo(res)
-        if (showTraceRef.current) {
-          for (const id of traceTargetsRef.current) {
-            const p = sketchRef.current.point(id)
-            let arr = tracesRef.current.get(id)
-            if (!arr) tracesRef.current.set(id, (arr = []))
-            const last = arr[arr.length - 1]
-            if (!last || Math.hypot(last[0] - p.x, last[1] - p.y) > 0.4) arr.push([p.x, p.y])
-            if (arr.length > 4000) arr.shift()
-          }
-        }
+        appendTraces()
       }
       draw()
       raf = requestAnimationFrame(frame)
@@ -794,6 +901,55 @@ export default function App() {
   }, [rev, driver, driverValue, showVelocity, showAccel, motionProfile])
   /* eslint-enable react-hooks/exhaustive-deps */
 
+  // The Dynamics panel view-model. Only meaningful when a driver exists.
+  const dynView = useMemo<DynView | null>(() => {
+    if (!driver) return null
+    const unit = driverParamUnit(sketchRef.current, driver.constraintId) ?? 'rad'
+    return {
+      on: dynOn,
+      unit,
+      params: dynParams,
+      readout: dynReadout,
+      onToggle: toggleDynamics,
+      onReset: resetDynamics,
+      onChange: updateDynParams,
+    }
+  }, [driver, dynOn, dynParams, dynReadout, toggleDynamics, resetDynamics, updateDynParams])
+
+  // --- export --------------------------------------------------------------
+  const downloadText = useCallback((filename: string, text: string, mime: string) => {
+    const blob = new Blob([text], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, [])
+
+  const onExport = useCallback(
+    (fmt: 'svg' | 'dxf' | 'csv') => {
+      const s = sketchRef.current
+      if (fmt === 'svg') {
+        downloadText('datum-sketch.svg', sketchToSVG(s), 'image/svg+xml')
+        setMessage('Exported the sketch as SVG.')
+      } else if (fmt === 'dxf') {
+        downloadText('datum-sketch.dxf', sketchToDXF(s), 'application/dxf')
+        setMessage('Exported the sketch as DXF (LINE / CIRCLE / ARC).')
+      } else if (fmt === 'csv') {
+        if (!motionProfile) {
+          setMessage('Drive a mechanism first — the CSV is its motion profile.')
+          return
+        }
+        downloadText('datum-motion.csv', motionProfileToCSV(motionProfile), 'text/csv')
+        setMessage('Exported the motion profile as CSV.')
+      }
+    },
+    [downloadText, motionProfile],
+  )
+
   // --- constraint actions --------------------------------------------------
   const applyOption = useCallback(
     (opt: ConstraintOption) => {
@@ -1034,6 +1190,9 @@ export default function App() {
           constraints={constraintList}
           redundant={conflicts.redundant}
           motion={motionData}
+          dynamics={dynView}
+          canExportCsv={!!motionProfile}
+          onExport={onExport}
           onRemoveConstraint={removeConstraint}
           onHoverConstraint={setHoverConstraint}
         />

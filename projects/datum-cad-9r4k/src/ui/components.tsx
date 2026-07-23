@@ -233,6 +233,40 @@ function fmt(x: number): string {
   return x.toFixed(a < 1 ? 3 : a < 10 ? 2 : 1)
 }
 
+// The hodograph: the locus of the tracer's velocity vector *tip* (x'(θ), y'(θ)) as
+// the crank turns one full cycle — the classical velocity diagram of a mechanism.
+// Its distance from the origin is the velocity ratio at that instant; a cusp/loop
+// through the origin marks a dead point. Drawn in its own centred, aspect-true frame
+// with the current crank position highlighted. Pure inline SVG.
+function Hodograph({ profile, currentFrac }: { profile: MotionProfile; currentFrac: number }) {
+  const S = 120
+  const n = profile.samples.length
+  if (n < 2 || profile.maxSpeed <= 1e-9) return null
+  const R = profile.maxSpeed * 1.08
+  const map = (vx: number, vy: number): [number, number] => [
+    S / 2 + (vx / R) * (S / 2 - 6),
+    S / 2 - (vy / R) * (S / 2 - 6), // flip y to world-up
+  ]
+  const d = profile.samples
+    .map((s, i) => {
+      const [x, y] = map(s.vx, s.vy)
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
+  const idx = Math.min(n - 1, Math.max(0, Math.round(currentFrac * (n - 1))))
+  const cur = map(profile.samples[idx].vx, profile.samples[idx].vy)
+  return (
+    <svg className="hodograph" viewBox={`0 0 ${S} ${S}`} width={S} height={S}>
+      <rect x="0" y="0" width={S} height={S} fill="#0b1017" />
+      <line x1={S / 2} y1="0" x2={S / 2} y2={S} stroke="#26313f" strokeWidth="1" />
+      <line x1="0" y1={S / 2} x2={S} y2={S / 2} stroke="#26313f" strokeWidth="1" />
+      <path d={d + 'Z'} fill="none" stroke="#57e6c9" strokeWidth="1.4" />
+      <circle cx={cur[0]} cy={cur[1]} r="3" fill="#ffd166" />
+      <line x1={S / 2} y1={S / 2} x2={cur[0]} y2={cur[1]} stroke="#ffd166" strokeWidth="1" strokeOpacity="0.6" />
+    </svg>
+  )
+}
+
 // A tiny two-curve plot of the tracer's speed (cyan) and acceleration magnitude
 // (orange) across one full driver sweep, each normalised to its own peak, with a
 // marker at the current driver position. Pure inline SVG — no chart dependency.
@@ -242,7 +276,7 @@ function MotionPlot({ profile, currentFrac }: { profile: MotionProfile; currentF
   const pad = 4
   const n = profile.samples.length
   if (n < 2) return null
-  const path = (pick: (s: { speed: number; accel: number }) => number, max: number) => {
+  const path = (pick: (s: MotionSampleView) => number, max: number) => {
     if (max <= 1e-12) return ''
     return profile.samples
       .map((s, i) => {
@@ -257,11 +291,14 @@ function MotionPlot({ profile, currentFrac }: { profile: MotionProfile; currentF
     <svg className="motionPlot" viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="none">
       <rect x="0" y="0" width={W} height={H} fill="#0b1017" />
       <line x1={mx} y1="0" x2={mx} y2={H} stroke="#ffffff" strokeWidth="1" strokeOpacity="0.5" />
+      <path d={path((s) => s.jerk, profile.maxJerk)} fill="none" stroke="#ff8a65" strokeWidth="1.2" strokeOpacity="0.85" />
       <path d={path((s) => s.accel, profile.maxAccel)} fill="none" stroke="#c792ea" strokeWidth="1.4" />
       <path d={path((s) => s.speed, profile.maxSpeed)} fill="none" stroke="#57e6c9" strokeWidth="1.4" />
     </svg>
   )
 }
+
+type MotionSampleView = { speed: number; accel: number; jerk: number }
 
 function MotionSection(props: { motion: MotionData }) {
   const m = props.motion
@@ -296,10 +333,139 @@ function MotionSection(props: { motion: MotionData }) {
           <div className="plotLegend">
             <span><span className="swatch v" /> speed</span>
             <span><span className="swatch a" /> |accel|</span>
+            <span><span className="swatch j" /> |jerk|</span>
             <span className="muted">over one full sweep</span>
+          </div>
+          <div className="hodoRow">
+            <Hodograph profile={m.profile} currentFrac={m.currentFrac} />
+            <div className="hodoInfo">
+              <div className="hodoTitle">Hodograph</div>
+              <p className="hint">Locus of the tracer's velocity-vector tip over one cycle; its radius is the velocity ratio.</p>
+              <div className="statGrid">
+                <Stat label={`vel ratio max (u/${av})`} value={fmt(m.profile.maxSpeed)} />
+                <Stat label={`vel ratio min (u/${av})`} value={fmt(m.profile.minSpeed)} good={m.profile.minSpeed > 1e-3} />
+              </div>
+              <p className="hint">
+                {m.profile.minSpeed < 1e-3
+                  ? 'Mechanical advantage → ∞ at a toggle (the tracer stalls, minimum velocity ratio ≈ 0).'
+                  : `Mechanical advantage ranges ${fmt(1 / Math.max(m.profile.maxSpeed, 1e-9))}–${fmt(1 / Math.max(m.profile.minSpeed, 1e-9))} (input rate ÷ tracer rate).`}
+              </p>
+            </div>
           </div>
         </>
       )}
+    </section>
+  )
+}
+
+// --- Dynamics (time-domain physics) -------------------------------------------
+
+export type DynSample = { T: number; V: number; E: number }
+
+export type DynParamsView = { gravity: number; density: number; baseMass: number; damping: number; torque: number }
+
+export type DynView = {
+  on: boolean
+  unit: 'rad' | 'len'
+  params: DynParamsView
+  readout: { T: number; V: number; E: number; I: number; omega: number; history: DynSample[] } | null
+  onToggle: () => void
+  onReset: () => void
+  onChange: (patch: Partial<DynParamsView>) => void
+}
+
+// The energy trace: kinetic (cyan) and potential (violet) trade off while total
+// (white) stays flat — the visual proof the integrator conserves energy. Each curve
+// is normalised to the common min/max of all three across the window, so their
+// relative levels read truthfully. Pure inline SVG.
+function EnergyPlot({ history }: { history: DynSample[] }) {
+  const W = 232
+  const H = 72
+  const pad = 4
+  const n = history.length
+  if (n < 2) return <div className="energyPlaceholder">Run the simulation to see the energy exchange.</div>
+  let lo = Infinity
+  let hi = -Infinity
+  for (const s of history) {
+    lo = Math.min(lo, s.T, s.V, s.E)
+    hi = Math.max(hi, s.T, s.V, s.E)
+  }
+  const span = hi - lo || 1
+  const path = (pick: (s: DynSample) => number) =>
+    history
+      .map((s, i) => {
+        const x = pad + ((W - 2 * pad) * i) / (n - 1)
+        const y = H - pad - ((H - 2 * pad) * (pick(s) - lo)) / span
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+      })
+      .join(' ')
+  return (
+    <svg className="motionPlot" viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="none">
+      <rect x="0" y="0" width={W} height={H} fill="#0b1017" />
+      <path d={path((s) => s.V)} fill="none" stroke="#c792ea" strokeWidth="1.3" />
+      <path d={path((s) => s.T)} fill="none" stroke="#57e6c9" strokeWidth="1.3" />
+      <path d={path((s) => s.E)} fill="none" stroke="#ffffff" strokeWidth="1.6" strokeOpacity="0.9" />
+    </svg>
+  )
+}
+
+function DynSlider(props: { label: string; value: number; min: number; max: number; step: number; suffix?: string; onChange: (v: number) => void }) {
+  return (
+    <label className="dynSlider">
+      <span className="dynSliderLabel">
+        {props.label}
+        <em>
+          {props.value.toFixed(props.step < 0.01 ? 3 : props.step < 1 ? 2 : 0)}
+          {props.suffix ?? ''}
+        </em>
+      </span>
+      <input
+        type="range"
+        min={props.min}
+        max={props.max}
+        step={props.step}
+        value={props.value}
+        onChange={(e) => props.onChange(parseFloat(e.target.value))}
+      />
+    </label>
+  )
+}
+
+function DynamicsSection({ dyn }: { dyn: DynView }) {
+  const r = dyn.readout
+  const rate = dyn.unit === 'rad' ? 'rad/s' : 'u/s'
+  return (
+    <section className="pSection">
+      <h3>Dynamics</h3>
+      <div className="chipRow">
+        <button className={`chip ${dyn.on ? 'on' : ''}`} onClick={dyn.onToggle}>
+          {dyn.on ? '■ Release ▸ held' : '▸ Release & run'}
+        </button>
+        <button className="chip" onClick={dyn.onReset} disabled={!dyn.on}>
+          Reset motion
+        </button>
+      </div>
+      <p className="hint">
+        Let go of the driver and give the links mass: the mechanism runs under its own physics. One-DOF Lagrangian
+        (Eksergian) equation of motion, marched by RK4 — <strong>I(θ)θ̈ + ½I′θ̇² = τ − cθ̇ − V′</strong>, with the
+        generalized inertia I(θ)=Σmᵢ|xᵢ′|² built from the exact kinematic coefficients.
+      </p>
+      <DynSlider label="Gravity g" value={dyn.params.gravity} min={0} max={800} step={10} onChange={(v) => dyn.onChange({ gravity: v })} />
+      <DynSlider label="Link density ρ" value={dyn.params.density} min={0} max={0.06} step={0.002} onChange={(v) => dyn.onChange({ density: v })} />
+      <DynSlider label="Damping c" value={dyn.params.damping} min={0} max={0.6} step={0.01} onChange={(v) => dyn.onChange({ damping: v })} />
+      <DynSlider label="Drive torque τ" value={dyn.params.torque} min={-400} max={400} step={10} onChange={(v) => dyn.onChange({ torque: v })} />
+      <div className="statGrid">
+        <Stat label="kinetic T" value={r ? fmt(r.T) : '—'} />
+        <Stat label="potential V" value={r ? fmt(r.V) : '—'} />
+        <Stat label="total E" value={r ? fmt(r.E) : '—'} />
+        <Stat label={`rate θ̇ (${rate})`} value={r ? fmt(r.omega) : '—'} />
+      </div>
+      <EnergyPlot history={r?.history ?? []} />
+      <div className="plotLegend">
+        <span><span className="swatch v" /> kinetic</span>
+        <span><span className="swatch a" /> potential</span>
+        <span className="muted">total (white) stays flat ⇒ energy conserved</span>
+      </div>
     </section>
   )
 }
@@ -311,6 +477,9 @@ export function InfoPanel(props: {
   constraints: Constraint[]
   redundant: Set<number>
   motion?: MotionData | null
+  dynamics?: DynView | null
+  canExportCsv?: boolean
+  onExport?: (fmt: 'svg' | 'dxf' | 'csv') => void
   onRemoveConstraint: (id: number) => void
   onHoverConstraint: (id: number | null) => void
 }) {
@@ -326,6 +495,7 @@ export function InfoPanel(props: {
 
   return (
     <aside className="panel">
+      {props.dynamics && <DynamicsSection dyn={props.dynamics} />}
       {props.motion && <MotionSection motion={props.motion} />}
       <section className="pSection">
         <h3>Degrees of Freedom</h3>
@@ -360,6 +530,28 @@ export function InfoPanel(props: {
           <p className="hint">Solve results appear here.</p>
         )}
       </section>
+
+      {props.onExport && (
+        <section className="pSection">
+          <h3>Export</h3>
+          <div className="chipRow">
+            <button className="chip" onClick={() => props.onExport!('svg')}>
+              SVG
+            </button>
+            <button className="chip" onClick={() => props.onExport!('dxf')}>
+              DXF
+            </button>
+            <button className="chip" onClick={() => props.onExport!('csv')} disabled={!props.canExportCsv} title={props.canExportCsv ? 'Motion profile as CSV' : 'Drive a mechanism first'}>
+              CSV
+            </button>
+          </div>
+          <p className="hint">
+            The solved sketch as vector <strong>SVG</strong> (exact Béziers &amp; arcs) or a real{' '}
+            <strong>DXF</strong> (LINE / CIRCLE / ARC, opens in any CAD); the driven mechanism's velocity/acceleration
+            profile as <strong>CSV</strong>.
+          </p>
+        </section>
+      )}
 
       <section className="pSection grow">
         <h3>
