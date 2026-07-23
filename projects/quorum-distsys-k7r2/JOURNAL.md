@@ -465,8 +465,11 @@ contrast with Chord: a *tree* not a ring, an **XOR metric** not clockwise distan
         lookup latency / hop-count vs. network size to make the O(log N) scaling visible.
   - [ ] **Value expiry & re-publication** — TTLs on stored pairs and the caching of a value at the closest
         node that missed on the lookup path (Kademlia's read-through cache), shown decaying over time.
-  - [ ] **Intra-lookup RPC retransmit** — retry a timed-out probe once before dropping it, so single async
-        lookups stay exact under loss too (not just the eventual tables); measure the exactness gain.
+  - [x] **Intra-lookup RPC retransmit** — a timed-out probe is retransmitted up to `lookupRetries` (=1)
+        times before it is given up (Kademlia retransmits RPCs), *without* evicting the peer from the
+        routing table. Measured live: lookups from one node under packet loss went from 21/45 to 31/35
+        exact at 10% drop, with drop=0 staying a perfect 35/35 — so a single async lookup now tolerates
+        loss too, not just the eventually-refreshed tables.
   - [ ] **Routing-table refresh scheduling** — per-bucket last-touched timers (refresh only stale buckets)
         instead of a blanket periodic sweep, matching the paper; show refresh traffic drop.
 
@@ -1144,7 +1147,11 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
   retrievable from every node**; absent-key not-found (no false positive); heal after two crashes;
   restart-rejoin; **tables converging under 15% message loss** (a dropped reply no longer evicts a live
   contact — only a failed liveness ping does, which is what makes the α-parallel lookup loss-tolerant);
-  determinism. Suite **165 → 178/178**. Drove the built `#/kademlia` route in headless Chromium: the
+  determinism. Suite **165 → 178/178**. Also landed a
+  backlog item the same session — **intra-lookup RPC retransmit** (a timed-out probe is retried up to
+  `lookupRetries`=1 times before being dropped, without evicting the peer): live lookups under packet
+  loss went from 21/45 to 31/35 exact at 10% drop, drop=0 staying a perfect 35/35. Drove the built
+  `#/kademlia` route in headless Chromium: the
   8-node network converges, all three invariants green (26/26 required buckets populated, 64/64 (node,
   target) lookups exact), and the trie renders node D's buckets-as-subtrees correctly (bucket 7 holds 4
   of the 6 far nodes, bucket 5 holds F) — no page errors. Full gate green (scope + conformance + lint +
