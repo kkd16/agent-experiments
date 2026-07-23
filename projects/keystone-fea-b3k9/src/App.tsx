@@ -54,6 +54,7 @@ import { fitView, screenToWorld, worldToScreen, zoomAt, pan, type View, type Bou
 import { CapacityCurvePlot, FrfPlot, HysteresisPlot, Legend, Segmented, Slider, SpectrumPlot, StatTile, TimeSeriesPlot, Toggle, VerifyBadge } from './ui/components'
 import { fmtEng } from './ui/format'
 import { TopOptStudio } from './ui/TopOptStudio'
+import { ThermalStudio } from './ui/ThermalStudio'
 import {
   addMember,
   addNode,
@@ -80,7 +81,7 @@ import {
   type Scene,
 } from './state'
 
-type Tab = 'frame' | 'continuum' | 'topopt'
+type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal'
 type Tool = 'select' | 'node' | 'member' | 'support' | 'load' | 'delete'
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
@@ -962,6 +963,7 @@ export default function App() {
               { value: 'frame', label: 'Trusses & Frames' },
               { value: 'continuum', label: '2-D Continuum' },
               { value: 'topopt', label: 'Topology Optimization' },
+              { value: 'thermal', label: 'Thermal & Multiphysics' },
             ]}
             value={tab}
             onChange={(v) => {
@@ -976,6 +978,8 @@ export default function App() {
       <div className="body">
         {tab === 'topopt' ? (
           <TopOptStudio />
+        ) : tab === 'thermal' ? (
+          <ThermalStudio />
         ) : (
           <>
         {/* ---------------- left rail: presets ---------------- */}

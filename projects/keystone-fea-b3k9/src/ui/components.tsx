@@ -876,12 +876,12 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, allPass } = useMemo(
+  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, allPass } = useMemo(
     () => runAllBenchmarks(),
     [],
   )
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad, ...topopt]
+  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad, ...topopt, ...thermal, ...thermoelastic]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -933,6 +933,14 @@ export function VerifyBadge() {
           <div className="check-group">Topology optimization (SIMP + OC)</div>
           {topopt.map((c, i) => (
             <CheckRow key={`t${i}`} c={c} />
+          ))}
+          <div className="check-group">Heat conduction (steady / transient)</div>
+          {thermal.map((c, i) => (
+            <CheckRow key={`th${i}`} c={c} />
+          ))}
+          <div className="check-group">Thermoelasticity (thermal stress)</div>
+          {thermoelastic.map((c, i) => (
+            <CheckRow key={`te${i}`} c={c} />
           ))}
         </div>
       )}
