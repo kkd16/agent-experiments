@@ -1,0 +1,176 @@
+// The stateful core that lives across React renders: it owns the active
+// sampler, accumulates the chain, and derives the live statistics. The UI
+// treats it as a black box it steps and reads.
+
+import {
+  effectiveSampleSize,
+  iact,
+  mean,
+  quantile,
+  splitRHat,
+  std,
+} from '../diagnostics/diagnostics'
+import { RNG } from '../math/rng'
+import type { Vec } from '../math/linalg'
+import { samplerById } from '../samplers/samplers'
+import type { Sampler, StepResult } from '../samplers/types'
+import { targetById } from '../targets/targets'
+import type { Target } from '../targets/targets'
+
+const MAX_HISTORY = 400_000 // cap RAM; oldest samples are dropped in blocks
+const TRAIL_LEN = 1400 // recent states drawn as the glowing trail
+const STAT_WINDOW = 60_000 // most-recent samples the diagnostics run over
+
+export interface SimConfig {
+  targetId: string
+  samplerId: string
+  params: Record<string, number>
+  seed: number
+  burnInFrac: number
+}
+
+export interface LiveStats {
+  iters: number
+  acceptRate: number
+  essX: number
+  essY: number
+  rhatX: number
+  rhatY: number
+  tauX: number
+  meanX: number
+  meanY: number
+  sdX: number
+  sdY: number
+  ci: [number, number] // 95% CI for x0
+  densityEvals: number
+  gradEvals: number
+  essPerKEval: number // effective samples per 1000 target evaluations
+  usedForStats: number
+}
+
+export class Simulation {
+  readonly target: Target
+  readonly config: SimConfig
+  private sampler: Sampler
+  private rng: RNG
+
+  xs: number[] = []
+  ys: number[] = []
+  logps: number[] = []
+  iters = 0
+  accepts = 0
+
+  // Recent state positions for the trail (ring-ish; we just slice the tails).
+  trailX: number[] = []
+  trailY: number[] = []
+  trailAcc: boolean[] = []
+
+  last: StepResult | null = null
+
+  constructor(config: SimConfig) {
+    this.config = config
+    this.target = targetById(config.targetId)
+    this.rng = new RNG(config.seed)
+    const def = samplerById(config.samplerId)
+    this.sampler = def.create(this.target, this.rng, config.params)
+    // seed history with the starting point
+    this.pushState(this.sampler.x, this.sampler.logp, true)
+  }
+
+  private pushState(x: Vec, logp: number, acc: boolean) {
+    this.xs.push(x[0])
+    this.ys.push(x[1])
+    this.logps.push(logp)
+    this.trailX.push(x[0])
+    this.trailY.push(x[1])
+    this.trailAcc.push(acc)
+    if (this.trailX.length > TRAIL_LEN) {
+      this.trailX.shift()
+      this.trailY.shift()
+      this.trailAcc.shift()
+    }
+    if (this.xs.length > MAX_HISTORY) {
+      const drop = MAX_HISTORY / 4
+      this.xs.splice(0, drop)
+      this.ys.splice(0, drop)
+      this.logps.splice(0, drop)
+    }
+  }
+
+  step(n: number) {
+    for (let i = 0; i < n; i++) {
+      const r = this.sampler.step()
+      this.iters++
+      if (r.accepted) this.accepts++
+      this.last = r
+      this.pushState(r.x, r.logp, r.accepted)
+    }
+  }
+
+  get lastTrajectory(): Vec[] | null {
+    return this.last?.trajectory ?? null
+  }
+  get lastChains(): Vec[] | null {
+    return this.last?.chains ?? null
+  }
+  get lastProposal(): Vec | null {
+    return this.last?.proposal ?? null
+  }
+
+  /**
+   * Post-burn-in slice used for statistics, capped to the most recent
+   * STAT_WINDOW samples so the O(N·lag) diagnostics stay real-time on very
+   * long chains. Everything downstream is computed on this same window.
+   */
+  private statSlice(arr: number[]): number[] {
+    const burn = Math.floor(this.iters * this.config.burnInFrac)
+    // burn is in *iteration* units; history may have been trimmed, so clamp.
+    let start = Math.max(0, arr.length - (this.iters - burn))
+    start = Math.max(start, arr.length - STAT_WINDOW)
+    return arr.slice(start)
+  }
+
+  stats(): LiveStats {
+    const sx = this.statSlice(this.xs)
+    const sy = this.statSlice(this.ys)
+    const n = sx.length
+    if (n < 4) {
+      return {
+        iters: this.iters,
+        acceptRate: this.iters ? this.accepts / this.iters : 0,
+        essX: 0, essY: 0, rhatX: NaN, rhatY: NaN, tauX: NaN,
+        meanX: mean(sx || [0]), meanY: mean(sy || [0]),
+        sdX: 0, sdY: 0, ci: [NaN, NaN],
+        densityEvals: this.sampler.densityEvals,
+        gradEvals: this.sampler.gradEvals,
+        essPerKEval: 0, usedForStats: n,
+      }
+    }
+    const essX = effectiveSampleSize(sx)
+    const essY = effectiveSampleSize(sy)
+    const totalEval = this.sampler.densityEvals + this.sampler.gradEvals
+    return {
+      iters: this.iters,
+      acceptRate: this.accepts / this.iters,
+      essX,
+      essY,
+      rhatX: splitRHat(sx),
+      rhatY: splitRHat(sy),
+      tauX: iact(sx),
+      meanX: mean(sx),
+      meanY: mean(sy),
+      sdX: std(sx),
+      sdY: std(sy),
+      ci: [quantile(sx, 0.025), quantile(sx, 0.975)],
+      densityEvals: this.sampler.densityEvals,
+      gradEvals: this.sampler.gradEvals,
+      essPerKEval: totalEval ? (1000 * Math.min(essX, essY)) / totalEval : 0,
+      usedForStats: n,
+    }
+  }
+
+  /** Column of post-burn-in samples for a given dimension. */
+  column(dim: 0 | 1): number[] {
+    return this.statSlice(dim === 0 ? this.xs : this.ys)
+  }
+}
