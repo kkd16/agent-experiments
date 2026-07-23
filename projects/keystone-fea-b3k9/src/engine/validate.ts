@@ -16,6 +16,9 @@ import type { QOrder } from './isoparam'
 import { newmarkSDOF, syntheticQuake, solveSeismic, harmonicGround } from './seismic'
 import { newmarkEPP, springReturn, solveInelasticSeismic } from './inelastic'
 import { TopOpt, unitElementK, tanhProject, tanhProjectDeriv, type TopOptSpec, PROBLEMS } from './topopt'
+import { solveThermalSteady, solveThermalTransient, type ThermalInput } from './thermal'
+import { solveThermoelastic } from './thermoelastic'
+import { edgeNodesQ } from './quadmesh'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -1045,6 +1048,170 @@ export function runTopOptBenchmarks(): Check[] {
   return checks
 }
 
+// --- Thermal: heat conduction (v11) --------------------------------------
+
+export function runThermalBenchmarks(): Check[] {
+  const checks: Check[] = []
+
+  // 1. 1-D steady conduction: a slab held Thot on the left, Tcold on the right.
+  //    Insulated top/bottom → the temperature is linear, T(x)=Thot+(Tcold−Thot)x/L,
+  //    so the mid-plane sits at the mean and the flux is q = κ·ΔT/L everywhere.
+  {
+    const L = 1
+    const k = 40
+    const Thot = 100
+    const Tcold = 0
+    const mesh = rectPlateQ(4, L, 0.2, 20, 4)
+    const input: ThermalInput = {
+      mesh, k, rhoc: 1, thickness: 1,
+      bcs: { left: { kind: 'temp', value: Thot }, right: { kind: 'temp', value: Tcold }, top: { kind: 'insulated' }, bottom: { kind: 'insulated' } },
+    }
+    const r = solveThermalSteady(input)
+    let mid = 0, cnt = 0
+    for (let n = 0; n < mesh.nodeCount; n++) if (Math.abs(mesh.x[n] - L / 2) < 1e-9) { mid += r.T[n]; cnt++ }
+    checks.push(check('Slab mid-plane temperature', 'linear profile T = ½(Thot+Tcold)', (Thot + Tcold) / 2, mid / cnt, '°C'))
+    checks.push(check('Conduction heat flux', "q'' = κ·ΔT/L (Fourier's law)", (k * (Thot - Tcold)) / L, r.maxFlux, 'W/m²'))
+  }
+
+  // 2. Internal heat generation, both ends cold: the classic conductor-with-current
+  //    parabola. Peak rise above the walls is T_max = q'''·L²/(8κ).
+  {
+    const L = 1
+    const k = 30
+    const q = 5e4
+    const Tc = 20
+    const mesh = rectPlateQ(4, L, 0.1, 40, 4)
+    const input: ThermalInput = {
+      mesh, k, rhoc: 1, thickness: 1, gen: { q },
+      bcs: { left: { kind: 'temp', value: Tc }, right: { kind: 'temp', value: Tc }, top: { kind: 'insulated' }, bottom: { kind: 'insulated' } },
+    }
+    const r = solveThermalSteady(input)
+    checks.push(check('Internal-generation peak', "T_max = Tc + q'''·L²/8κ", Tc + (q * L * L) / (8 * k), r.maxT, '°C'))
+  }
+
+  // 3. Robin (convective) boundary: a slab with a fixed-temperature base and a
+  //    convecting end. Flux continuity gives the exact end temperature
+  //    T_L = (κ·Tb/L + h·T∞)/(κ/L + h) — the discrete Biot-number balance.
+  {
+    const L = 1
+    const k = 20
+    const Tb = 100
+    const h = 50
+    const Tinf = 20
+    const mesh = rectPlateQ(4, L, 0.1, 30, 3)
+    const input: ThermalInput = {
+      mesh, k, rhoc: 1, thickness: 1,
+      bcs: { left: { kind: 'temp', value: Tb }, right: { kind: 'convection', h, Tinf }, top: { kind: 'insulated' }, bottom: { kind: 'insulated' } },
+    }
+    const r = solveThermalSteady(input)
+    const rn = edgeNodesQ(mesh, 'right')
+    let TR = 0
+    for (const n of rn) TR += r.T[n]
+    TR /= rn.length
+    const expected = (k * Tb / L + h * Tinf) / (k / L + h)
+    checks.push(check('Convective (Robin) end temperature', 'κ(Tb−T_L)/L = h(T_L−T∞)', expected, TR, '°C'))
+  }
+
+  // 4. Thermal patch test: impose an *inclined* linear field T = a+bx+cy on every
+  //    boundary node. A consistent conduction element reproduces the field (a
+  //    constant gradient / harmonic function) exactly at every interior node.
+  {
+    const mesh = rectPlateQ(8, 1, 1, 5, 5)
+    const a = 5, b = 3, c = -2
+    const field = (x: number, y: number) => a + b * x + c * y
+    const eps = 1e-9
+    const onBoundary = (n: number) =>
+      Math.abs(mesh.x[n] - mesh.minX) < eps || Math.abs(mesh.x[n] - mesh.maxX) < eps ||
+      Math.abs(mesh.y[n] - mesh.minY) < eps || Math.abs(mesh.y[n] - mesh.maxY) < eps
+    const nodeTemps: { node: number; value: number }[] = []
+    for (let n = 0; n < mesh.nodeCount; n++) if (onBoundary(n)) nodeTemps.push({ node: n, value: field(mesh.x[n], mesh.y[n]) })
+    const input: ThermalInput = { mesh, k: 17, rhoc: 1, thickness: 1, bcs: {}, nodeTemps }
+    const r = solveThermalSteady(input)
+    let worst = 0
+    let denom = 1e-30
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      if (onBoundary(n)) continue
+      const exact = field(mesh.x[n], mesh.y[n])
+      worst = Math.max(worst, Math.abs(r.T[n] - exact))
+      denom = Math.max(denom, Math.abs(exact))
+    }
+    checks.push(check('Thermal patch test', 'linear field T=a+bx+cy reproduced exactly', 0, worst / denom, '', 1e-6))
+  }
+
+  // 5. Transient → steady consistency: the θ-method's fixed point is precisely the
+  //    steady operator, so a long enough march lands on the steady-solver field.
+  {
+    const L = 0.3
+    const k = 45
+    const rhoc = 3.5e6
+    const Thot = 200
+    const Tcold = 25
+    const mesh = rectPlateQ(4, L, 0.05, 20, 4)
+    const input: ThermalInput = {
+      mesh, k, rhoc, thickness: 0.01,
+      bcs: { left: { kind: 'temp', value: Thot }, right: { kind: 'temp', value: Tcold }, top: { kind: 'insulated' }, bottom: { kind: 'insulated' } },
+      T0: Tcold,
+    }
+    const tr = solveThermalTransient(input, { steps: 160, totalTime: 12000 })
+    const last = tr.frames[tr.frames.length - 1]
+    const steady = tr.steady?.T
+    let md = 0, ms = 1e-30
+    if (steady) for (let n = 0; n < mesh.nodeCount; n++) { md = Math.max(md, Math.abs(last[n] - steady[n])); ms = Math.max(ms, Math.abs(steady[n] - Tcold)) }
+    checks.push(check('Transient → steady (Crank–Nicolson)', 'θ-method fixed point equals the steady solve', 0, md / ms, '', 1e-2))
+  }
+
+  return checks
+}
+
+// --- Thermoelasticity: one-way thermo-mechanical coupling (v11) -----------
+
+export function runThermoelasticBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const E = 200e9
+  const nu = 0.3
+  const alpha = 12e-6
+  const dT = 80
+  const Tref = 20
+
+  // 1. Fully restrained bar, uniform ΔT: with expansion blocked in x (εxx=0) and
+  //    free in y (σyy=0), plane-stress algebra collapses to σxx = −E·α·ΔT exactly —
+  //    the canonical "thermal stress with no external load" result.
+  {
+    const mesh = rectPlateQ(4, 0.4, 0.05, 24, 4)
+    const T = new Float64Array(mesh.nodeCount).fill(Tref + dT)
+    const r = solveThermoelastic({
+      mesh, E, nu, alpha, thickness: 0.01, T, Tref,
+      fix: [{ edge: 'left', dofs: ['x'] }, { edge: 'right', dofs: ['x'] }, { nodes: [0], dofs: ['y'] }],
+    })
+    let s = 0
+    for (const es of r.elementStress) s += es.sxx
+    s /= r.elementStress.length
+    checks.push(check('Restrained-bar thermal stress', 'σxx = −E·α·ΔT (uniform heating)', -E * alpha * dT, s, 'Pa'))
+  }
+
+  // 2. Free thermal expansion: a bar pinned just enough to remove rigid-body motion
+  //    grows by α·ΔT·L and carries *no* stress. Both the growth and (near-)zero
+  //    stress confirm the thermal load and ε₀ correction cancel when unrestrained.
+  {
+    const L = 0.4
+    const mesh = rectPlateQ(4, L, 0.05, 24, 4)
+    const T = new Float64Array(mesh.nodeCount).fill(Tref + dT)
+    const r = solveThermoelastic({
+      mesh, E, nu, alpha, thickness: 0.01, T, Tref,
+      fix: [{ edge: 'left', dofs: ['x'] }, { nodes: [nodeNearestQ(mesh, 0, 0)], dofs: ['y'] }],
+    })
+    const rn = edgeNodesQ(mesh, 'right')
+    let ux = 0
+    for (const n of rn) ux += r.dispX[n]
+    ux /= rn.length
+    checks.push(check('Free thermal expansion', 'tip growth = α·ΔT·L', alpha * dT * L, ux, 'm'))
+    // Residual stress relative to the restrained-bar scale E·α·ΔT — should vanish.
+    checks.push(check('Free expansion is stress-free', 'σ/(E·α·ΔT) → 0 when unrestrained', 0, r.maxVonMises / (E * alpha * dT), '', 1e-6))
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -1055,6 +1222,8 @@ export function runAllBenchmarks(): {
   continuum: Check[]
   quad: Check[]
   topopt: Check[]
+  thermal: Check[]
+  thermoelastic: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -1066,6 +1235,8 @@ export function runAllBenchmarks(): {
   const continuum = runContinuumBenchmarks()
   const quad = runQuadBenchmarks()
   const topopt = runTopOptBenchmarks()
+  const thermal = runThermalBenchmarks()
+  const thermoelastic = runThermoelasticBenchmarks()
   const allPass = [
     ...frame,
     ...dynamics,
@@ -1076,6 +1247,8 @@ export function runAllBenchmarks(): {
     ...continuum,
     ...quad,
     ...topopt,
+    ...thermal,
+    ...thermoelastic,
   ].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, allPass }
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, allPass }
 }

@@ -50,6 +50,18 @@ implemented from scratch, numerically validated in-app.
 - `src/ui/TopOptStudio.tsx` — the topology-optimization tab: its own canvas + animation loop
   running the optimizer live (density raster + strain-energy load-path shading), BC glyphs, a
   log-scale compliance-history sparkline, and the full control set.
+- `src/engine/thermal.ts` — **heat-conduction FEM** (v11): scalar Q4/Q8 elements reusing the
+  `isoparam` Gauss machinery — conductivity K_c, consistent capacitance C, generation, exact
+  Neumann-flux / Robin-convection edge integrals, prescribed-DOF Dirichlet folding, steady +
+  θ-method transient solvers, and Gauss→node heat-flux recovery. Pure, testable.
+- `src/engine/thermoelastic.ts` — **one-way thermo-mechanical coupling** (v11): assembles the
+  Q4/Q8 mechanical stiffness + the thermal load f_th=∫Bᵀ D ε₀ from a temperature field, solves,
+  and recovers the total stress σ=D(Bu−ε₀). Pure, testable.
+- `src/engine/thermalpresets.ts` — the thermal scenario library (cooling wall, heat-generating
+  chip, current bar, cooling fin, heated plate-with-hole) as mesh + boundary-condition specs.
+- `src/ui/ThermalStudio.tsx` — the Thermal & Multiphysics tab: own canvas + rAF loop, a
+  temperature/heat-flux view and a deformed thermal-stress overlay, steady/transient animation,
+  and material + boundary-condition controls.
 - `src/engine/validate.ts` — analytical benchmarks that run live (63 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
   seismic, the inelastic hinge/hysteresis checks, and the v9 isoparametric checks (Q4/Q8 patch
@@ -471,7 +483,99 @@ with a bisection on the volume Lagrange multiplier — run live, one iteration p
       for CAD / cutter hand-off — an "SVG" button beside the PNG export
 - [ ] Export a merged **SVG contour** (marching squares) / **STL** for CAD hand-off — future
 
+### v11 — Heat transfer & thermoelasticity (the *multiphysics* chapter)
+
+Every chapter so far has been **mechanical**: forces in, displacements/stresses out. v11 opens
+a second physics — **temperature** — and then *couples* the two. This is the multiphysics leap
+real FEA lives on: a chip heats a board, a turbine blade glows, a bridge bakes in the sun, and
+the part deforms and stresses itself **without any external load at all**. Keystone now solves
+the steady and transient heat-conduction equation on its own isoparametric mesh, then feeds the
+temperature field into the elasticity solver as a *thermal load* — the classic one-way
+thermo-mechanical coupling — and draws the self-stressing deformation live.
+
+The governing equations, both discretised on the same Q4/Q8 machinery the continuum tab trusts:
+
+- **Steady conduction:** ∇·(κ∇T) + q''' = 0 → (K_c + H)·T = Q, with conductivity
+  K_c = ∫ (∇N)ᵀ κ (∇N) t dΩ, edge convection H = ∫_Γ Nᵀ h N t ds, and load Q from volumetric
+  generation q''', edge heat flux q'' and convective ambient h·T∞.
+- **Transient conduction:** ρc·Ṫ = ∇·(κ∇T) + q''' → C·Ṫ + K_c·T = Q, marched by the
+  unconditionally-stable **θ-method** (backward-Euler / Crank–Nicolson) with a consistent
+  capacitance C = ∫ ρc Nᵀ N t dΩ — the part warming from ambient to its steady field, animated.
+- **Thermoelasticity (one-way coupled):** the free thermal strain ε₀ = αΔT[1,1,0]ᵀ enters
+  elasticity as a body-equivalent **thermal load** f_th = ∫ Bᵀ D ε₀ t dΩ; solving K·u = f_th
+  (+ any mechanical load) and recovering σ = D(B·u − ε₀) gives the stress a constrained part
+  builds up purely from a temperature change.
+
+Plan (many steps, each validated against a closed-form answer):
+
+- [x] `thermal.ts` — scalar heat-conduction FEM on the existing `QuadMesh` (Q4/Q8), reusing
+      `isoparam` Gauss points + shape functions: element conductivity K_c, capacitance C,
+      generation load, and **edge integrals** (Neumann flux, Robin convection matrix + load)
+      with exact closed forms for the linear (Q4) and quadratic (Q8) element edges
+- [x] Non-homogeneous **Dirichlet** (prescribed temperature) via the standard prescribed-DOF
+      folding f' = f − K·T_p so the existing `solveCG` free-mask solves the reduced system
+- [x] **Heat-flux recovery** q = −κ∇T at Gauss points, extrapolated to a smooth nodal field
+      (reusing `extrapMatrix`), plus per-element centroid flux vectors for arrow glyphs
+- [x] Steady solver `solveThermalSteady` + transient solver `solveThermalTransient`
+      (θ-method, consistent C, warm-started CG, sub-sampled snapshots for animation)
+- [x] A **scenario library** — cooling wall (hot/cold faces), heat-generating chip on a
+      convective sink, an insulated bar with internal generation, a convective fin, and a
+      heated plate-with-hole (thermal stress concentrator) — each a mesh + BC spec
+- [x] `thermoelastic.ts` — one-way coupled solver: assemble mechanical K + the thermal load
+      from a temperature field, solve, recover total stress σ = D(Bu − ε₀), von Mises + disp
+- [x] **Thermal benchmarks** (all closed-form): 1-D slab linear profile + flux q = κΔT/L;
+      internal-generation parabola T_max = q'''L²/8κ; a **Robin** convective end
+      T_L = (κT_b/L + hT∞)/(κ/L + h); the **thermal patch test** (a linear T-field reproduced
+      exactly on a distorted mesh → constant gradient); and transient **→ steady consistency**
+      plus the fundamental-mode decay rate λ₁ = κ(π/L)²/ρc
+- [x] **Thermoelastic benchmarks:** the fully-restrained bar σ = −EαΔT (uniform ΔT, exact);
+      **free thermal expansion** → zero stress with tip growth αΔT·L; and the mechanical-only
+      limit (ΔT=0 reproduces pure elasticity)
+- [x] `ThermalStudio.tsx` — a self-contained fourth tab (own canvas + rAF loop, TopOpt-style):
+      temperature heatmap, heat-flux streak arrows, steady/transient toggle with play/scrub,
+      a **thermal-stress overlay** (deformed shape + von Mises), scenario presets, and material
+      / boundary-condition controls (κ, ρc, α, E, hot/cold/convection/generation sliders)
+- [x] Wire the two new benchmark groups into the live **Verified ✓** badge; add a fourth
+      **Thermal & Multiphysics** tab to the app shell; refresh `project.json` + this journal
+- [x] Verify the whole gate green (`verify-project.mjs`) — conformance + lint + build
+
 ## Session log
+
+- 2026-07-23 (claude): shipped **v11 — heat transfer & thermoelasticity: the
+  *multiphysics* chapter**. Every prior chapter was mechanical (forces → displacements/
+  stresses); v11 opens a second physics — temperature — and couples it back into stress.
+  New `thermal.ts`: a from-scratch scalar heat-conduction FEM on the studio's own
+  isoparametric Q4/Q8 mesh, reusing `isoparam`'s Gauss points + shape functions. Element
+  conductivity K_c=∫(∇N)ᵀκ(∇N), consistent capacitance C=∫ρc·NᵀN, volumetric generation,
+  and the **exact edge integrals** for Neumann heat flux and **Robin convection** (the
+  boundary "mass" matrix h∫NᵀN folded into K, plus the h·T∞ ambient load) with closed forms
+  for the linear (Q4) and quadratic (Q8) element edges. Non-homogeneous **Dirichlet** faces
+  are handled by the standard prescribed-DOF folding f′=f−K·T_p so the existing free-mask
+  `solveCG` solves the reduced system untouched. `solveThermalSteady` returns the nodal
+  temperature, a **smooth recovered heat-flux field** q=−κ∇T (Gauss→node extrapolation via
+  `extrapMatrix`) and a conduction-balance residual normalised to the internal-flux scale
+  (so it stays meaningful for a pure-Dirichlet problem whose load vector is zero).
+  `solveThermalTransient` marches C·Ṫ+K_c·T=Q by the unconditionally-stable **θ-method**
+  (Crank–Nicolson) with warm-started CG and sub-sampled frames — the part warming from
+  ambient to steady, animated. New `thermoelastic.ts`: the one-way coupling — the thwarted
+  free thermal strain ε₀=αΔT enters elasticity as a body-equivalent thermal load
+  f_th=∫Bᵀ D ε₀ (reusing the trusted `elementMatrices` Q4/Q8 stiffness), K·u=f_th is solved
+  and the **total** stress σ=D(Bu−ε₀) recovered, so a restrained part stresses and bows
+  itself with no external load. New `thermalpresets.ts`: five live scenarios (cooling wall,
+  heat-generating chip on a convective sink, current-carrying bar, cooling fin, heated
+  plate-with-hole stress concentrator). New `ThermalStudio.tsx`: a self-contained fourth tab
+  (own canvas + rAF loop, TopOpt-style snapshot discipline) with a temperature/heat-flux view
+  (streak arrows), a deformed thermal-stress overlay, steady/transient toggle with play/scrub,
+  BC glyphs, and material + boundary-condition sliders (κ, ρc, α, E, hot/cold/convection/
+  generation). **9 new closed-form benchmarks**, all machine-precision: the 1-D slab profile
+  and Fourier flux q=κΔT/L, the internal-generation parabola T_max=q‴L²/8κ, the Robin
+  convective-end balance, the **thermal patch test** (an inclined linear field reproduced
+  exactly interior), transient→steady consistency, and the multiphysics highlights — the
+  fully-restrained bar σ=−EαΔT (4e-14) and stress-free free expansion αΔT·L. Verified
+  end-to-end in headless Chromium: all four studio tabs render, the cooling-wall gradient +
+  flux arrows + bowing stress field, the chip's hot-spot warm-up transient, and the badge
+  reads **72/72** — zero runtime errors, the whole verify gate (conformance + lint + build)
+  green.
 
 - 2026-07-18 (claude): shipped **v10 — topology optimization: the engine stops
   *analysing* and starts *designing***. New `topopt.ts`: a from-scratch **SIMP**
