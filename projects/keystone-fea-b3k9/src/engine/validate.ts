@@ -21,6 +21,7 @@ import { solveThermoelastic } from './thermoelastic'
 import { solveTransientThermoelastic } from './coupled'
 import { analyzeFracture, type CrackModel } from './fracture'
 import { edgeNodesQ } from './quadmesh'
+import { solveBuckling as solveContinuumBuckling, eulerLoad, type BucklingInput } from './buckling'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -1311,6 +1312,69 @@ export function runFractureBenchmarks(): Check[] {
   return checks
 }
 
+/**
+ * Continuum linear-buckling benchmarks (v14). Each solves the plane-stress
+ * eigenproblem (K + λK_g)φ = 0 for a slender Q8 column and compares the FE
+ * critical load against the exact Euler value P_cr = π²EI/(KL)². The mode ladder
+ * (1 : 9 : 25 for a fixed–free column) checks the higher eigenpairs too.
+ */
+export function runBucklingBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const E = STEEL_E
+  const nu = 0.3
+  const t = 0.01
+  const b = 0.02
+  const L = 1.0
+  const I = (t * b * b * b) / 12
+  const Pref = b * t // unit compressive traction × loaded-edge area
+
+  // Fixed–free cantilever column (K = 2): the flagpole. Q8 kills shear locking.
+  {
+    const mesh = rectPlateQ(8, b, L, 2, 40)
+    const input: BucklingInput = {
+      mesh,
+      E,
+      nu,
+      thickness: t,
+      fix: [{ edge: 'bottom', dofs: ['x', 'y'] }],
+      traction: { edge: 'top', tx: 0, ty: -1 },
+      nModes: 3,
+    }
+    const res = solveContinuumBuckling(input)
+    const Pcr = (res.modes[0]?.loadFactor ?? 0) * Pref
+    const Peuler = eulerLoad(E, I, L, 2.0)
+    checks.push(check('Euler column (fixed–free)', 'P_cr = π²EI/(2L)²', Peuler, Pcr, 'N', 1e-2))
+    // Mode ladder: the second cantilever buckling load is 9× the first (3²/1²).
+    if (res.modes.length >= 2) {
+      const ratio = res.modes[1].loadFactor / res.modes[0].loadFactor
+      checks.push(check('Cantilever mode ratio', 'λ₂/λ₁ = 3²/1² = 9', 9, ratio, '', 3e-2))
+    }
+  }
+
+  // Fixed–pinned strut (K ≈ 0.6992): base clamped, top laterally braced.
+  {
+    const mesh = rectPlateQ(8, b, L, 2, 40)
+    const input: BucklingInput = {
+      mesh,
+      E,
+      nu,
+      thickness: t,
+      fix: [
+        { edge: 'bottom', dofs: ['x', 'y'] },
+        { edge: 'top', dofs: ['x'] },
+      ],
+      traction: { edge: 'top', tx: 0, ty: -1 },
+      nModes: 2,
+    }
+    const res = solveContinuumBuckling(input)
+    const Pcr = (res.modes[0]?.loadFactor ?? 0) * Pref
+    const Peuler = eulerLoad(E, I, L, 0.6992)
+    checks.push(check('Euler column (fixed–pinned)', 'P_cr = π²EI/(0.699L)²', Peuler, Pcr, 'N', 2e-2))
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -1324,6 +1388,7 @@ export function runAllBenchmarks(): {
   thermal: Check[]
   thermoelastic: Check[]
   fracture: Check[]
+  buckling: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -1338,6 +1403,7 @@ export function runAllBenchmarks(): {
   const thermal = runThermalBenchmarks()
   const thermoelastic = runThermoelasticBenchmarks()
   const fracture = runFractureBenchmarks()
+  const buckling = runBucklingBenchmarks()
   const allPass = [
     ...frame,
     ...dynamics,
@@ -1351,6 +1417,7 @@ export function runAllBenchmarks(): {
     ...thermal,
     ...thermoelastic,
     ...fracture,
+    ...buckling,
   ].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, allPass }
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, buckling, allPass }
 }

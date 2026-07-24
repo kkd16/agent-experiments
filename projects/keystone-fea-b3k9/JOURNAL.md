@@ -77,11 +77,25 @@ implemented from scratch, numerically validated in-app.
 - `src/ui/FractureStudio.tsx` — the Fracture Mechanics tab: own canvas + rAF loop, the singular
   crack-tip stress field with the opening crack faces and the J-integral evaluation ring, a live
   K(a/W) sweep vs the handbook curve, the full SIF read-out and the K_Ic fracture verdict.
-- `src/engine/validate.ts` — analytical benchmarks that run live (81 of them): truss statics,
+- `src/engine/buckling.ts` — **continuum linear (Euler) buckling** (v14): assembles the geometric
+  (initial-stress) stiffness K_g = ∫GᵀτG from a reference plane-stress field on the Q4/Q8
+  isoparametric machinery, and solves the generalized eigenproblem (K + λK_g)φ = 0 for the lowest
+  critical load factors + buckled mode shapes by a **K-orthonormal subspace iteration** on
+  A = K⁻¹(−K_g) — a standard-symmetric Rayleigh–Ritz reduction with relative rank-revealing deflation
+  that never trips on the indefinite stress stiffness. Plus `eulerLoad` = π²EI/(KL)². Pure, testable.
+- `src/engine/bucklingpresets.ts` — the buckling scenario library (fixed–free flagpole K=2,
+  fixed–pinned braced strut K≈0.699, compression panel) + a material table with yield stress, and the
+  builder that returns section properties (I, r, Euler load, slenderness KL/r) for the analytical curve.
+- `src/ui/BucklingStudio.tsx` — the Buckling & Stability tab: own canvas + rAF loop, the buckled shape
+  animated as a breathing lateral bow over the axial load-path shading, and the Euler **column curve**
+  (σ_cr = π²E/λ² with the yield cut-off + the FE design point), a mode-pill selector and a Q8/Q4
+  shear-locking toggle.
+- `src/engine/validate.ts` — analytical benchmarks that run live (84 of them): truss statics,
   cantilever PL³/3EI, 5wL⁴/384EI, patch test, modal/buckling, harmonic/FRF, plastic collapse,
   seismic, the inelastic hinge/hysteresis checks, the v9 isoparametric checks (Q4/Q8 patch
-  test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency), and the
-  v13 fracture checks (Feddersen/Tada geometry factors, J = K²/E*, Griffith, J path independence).
+  test, Q8 Euler & Timoshenko cantilever, Q4 refinement, continuum bending frequency), the
+  v13 fracture checks (Feddersen/Tada geometry factors, J = K²/E*, Griffith, J path independence),
+  and the v14 continuum-buckling checks (fixed–free & fixed–pinned Euler columns, the 1:9 mode ladder).
   Reports rel. error.
 - `src/engine/presets.ts` — Warren/Pratt bridges, transmission tower, portal frame, cantilever,
   plate-with-hole, L-bracket, plastic-collapse frames, and seismic/inelastic moment frames.
@@ -659,7 +673,124 @@ ceramic and glass.
 - [ ] **Plane-strain toggle** — E* = E/(1−ν²) and κ = 3−4ν, so K_Ic (a plane-strain property) is
       compared on its own footing; contrast the plane-stress vs plane-strain plastic-zone size.
 
+### v14 — Continuum linear buckling & stability (the *column* chapter)
+
+The frame solver has answered "when does it go unstable?" since v2 — Euler buckling of beam-columns
+via a geometric stiffness built from the axial force in each member. But the **continuum** — the Q4/Q8
+plane-stress world where v9–v13 live — could only ever answer "how much does it sag?" A slender 2-D
+part under compression has a second, non-negotiable failure mode the static solver is blind to: it
+**buckles**, snapping sideways at a load *far* below the stress that would yield it. That is a
+stiffness collapse, not a strength one, and it is exactly the question a plate, a web, a wall or a
+strut modeled as a continuum has to answer.
+
+The physics is a generalized eigenproblem. Under a reference in-plane stress field σ₀ (from a unit
+reference load) each element gains a **geometric (initial-stress) stiffness**
+
+    K_g = ∫ Gᵀ τ G dΩ ,   τ = [[σxx, σxy], [σxy, σyy]]  (block-diagonal in the u/v gradients)
+
+where G gathers the displacement gradients ∇u, ∇v. The structure loses stability when the tangent
+stiffness first goes singular:
+
+    (K + λ K_g) φ = 0   ⇔   K φ = λ (−K_g) φ ,
+
+i.e. the smallest positive load multiplier λ_cr that admits a non-trivial mode φ. λ_cr × (reference
+load) is the buckling load; φ is the buckled shape. Everything reuses the studio's own isoparametric
+kinematics (`isoparam`), sparse assembler + BC-aware PCG (`linalg`) and the dense reduced eigensolver
+(`eigen`) — no new linear-algebra primitives.
+
+The eigenproblem is indefinite (K_g is not sign-definite) so the v9 modal subspace machinery, which
+assumes an SPD mass, cannot be reused verbatim. Instead the solver runs a **K-orthonormal subspace
+iteration** on the operator A = K⁻¹(−K_g): it is self-adjoint in the K-inner-product ⟨a,b⟩_K = aᵀK b,
+so each pass solves a handful of sparse systems, K-orthonormalises the iterate block with a
+**rank-revealing (relative) deflation** that drops the rigid / zero-stress directions, and reads the
+dominant Ritz pairs from a *standard* symmetric reduced problem Hᵣ = Qᵀ(−K_g)Q — which, unlike a
+Cholesky-based generalized reduction, never trips on the indefinite stress stiffness. The dominant
+eigenvalues of A are the smallest |λ|: exactly the modes that buckle first.
+
+- [x] `buckling.ts` — the whole chapter, pure/deterministic. Assemble K, run the reference static
+      solve for the pre-buckling stress field, recover Gauss-point stresses, assemble the **stress
+      stiffness** S = −K_g (block-diagonal identical u/v blocks, from the B-matrix gradients), and solve
+      (K + λK_g)φ = 0 by the K-orthonormal subspace iteration above
+- [x] Robustness: the reduced problem is a **standard** symmetric eigenproblem (`jacobiEig`), not a
+      Cholesky generalized one, so the indefinite/rank-deficient S never breaks it; deflation is
+      **relative** (residual K-norm ÷ original), because in SI units the working K-norms are ~1e-11 and
+      an absolute floor wrongly deflates everything (the bug that made the first cut return no modes)
+- [x] `eulerLoad(E,I,L,K)` = π²EI/(KL)² — the closed-form reference the studio and benchmarks compare to
+- [x] `bucklingpresets.ts` — a material table (steel / Al 6061 / Ti-6Al-4V, each with σ_y), three
+      scenarios (fixed–free **flagpole** K=2, fixed–pinned **braced strut** K≈0.699, a **compression
+      panel** with no 1-D analogue) and a builder that also returns the section properties (I, r, Euler
+      load, slenderness KL/r) so the studio can draw the analytical column
+- [x] `BucklingStudio.tsx` — a sixth self-contained studio tab (own canvas + rAF loop, snapshot-ref
+      discipline). Two views share one solve: the **buckled shape** (the pre-buckling straight part
+      shaded by its axial load path, the eigenmode animated as a breathing lateral bow, base hatching +
+      load arrows) and the **column curve** (the FE critical stress dropped onto the Euler hyperbola
+      σ_cr=π²E/λ² with its yield cut-off and transition slenderness — read buckling-vs-squash at a
+      glance). Mode-pill selector, a Q8/Q4 toggle that *shows shear locking*, a debounced slenderness
+      slider, and a full FE-vs-Euler read-out
+- [x] **3 new closed-form benchmarks** (badge **81 → 84**, all green): the **fixed–free Euler column**
+      P_cr = π²EI/(2L)² to **0.05 %**, the **fixed–pinned** column P_cr = π²EI/(0.699L)² to **0.5 %**,
+      and the **mode ladder** λ₂/λ₁ = 3²/1² = 9 to 0.25 % — the odd-quarter-wave signature of a
+      cantilever column
+- [x] Q8 vs Q4: the benchmark uses Q8 deliberately — fully-integrated Q4 **shear-locks** in bending and
+      overstiffens the buckling load by ~16 % at the same mesh, so the studio defaults to Q8 and offers
+      Q4 as a live "watch it lock" toggle
+- [x] Performance: the panel's clustered eigenvalues made the first cut take 56 s; capped subspace
+      iterations, loosened the inner-CG tolerance (the Ritz step recovers the eigenvalue accuracy) and
+      coarsened the meshes to keep every solve interactive, with the slenderness slider debounced so a
+      drag re-solves once, on release
+- [x] Verified end-to-end in headless Chromium: all six studio tabs render; the flagpole bows into its
+      first mode with FE-vs-Euler **0.08 %** and the 1 : 8.97 : 24.79 ladder, the braced strut shows the
+      fixed–pinned half-wave at 0.63 %, the panel buckles into a 2-D bulge flagged as *squash*, the
+      column curve seats the design point on the Euler hyperbola, and the badge reads **84/84** with the
+      whole gate (scope + conformance + lint + build) green and zero runtime errors
+
+**v15 backlog — where the stability chapter goes next:**
+
+- [ ] **True pinned–pinned continuum column** — a clean Euler K=1 case needs the base free to *rotate*
+      (only the centre point pinned in y), which makes the reference stress field non-uniform; resolve it
+      with a St-Venant load-introduction block or a prescribed uniform prestress so the classic 1:4:9
+      ladder validates too.
+- [ ] **Nonlinear (geometric) buckling** — replace the eigenvalue estimate with an arc-length /
+      Newton path that follows the load–deflection curve *through* the bifurcation, capturing
+      post-buckling stiffening and imperfection sensitivity (the knock-down real shells suffer).
+- [ ] **Classic plate-buckling coefficients** — a properly simply-supported rectangular panel under
+      uniaxial / biaxial / shear load, validated against the handbook k in σ_cr = k·π²E/(12(1−ν²))·(t/b)²
+      and its half-wave count vs aspect ratio.
+- [ ] **Lateral–torsional & local buckling of the real AISC sections** (marry v4's section library to
+      the geometric stiffness) so a wide-flange beam's LTB capacity falls out.
+- [ ] **Buckling-constrained topology optimization** — feed λ_cr back as a constraint in the v10 SIMP
+      loop so the generated layout is stiff *and* stable, not just compliant-optimal.
+
 ## Session log
+
+- 2026-07-24 (claude): shipped **v14 — continuum linear buckling & stability**, the chapter that gives
+  the Q4/Q8 continuum the second failure mode the static solver is blind to: elastic instability. New
+  `buckling.ts` assembles the **geometric (initial-stress) stiffness** K_g = ∫GᵀτG from the
+  pre-buckling stress field (a reference static solve on the studio's own isoparametric machinery),
+  recovers the Gauss-point stresses, and solves the generalized eigenproblem (K + λK_g)φ = 0 for the
+  lowest **critical load factors** and their buckled mode shapes. Because K_g is indefinite, the v9
+  SPD-mass subspace solver can't be reused; instead a **K-orthonormal subspace iteration** on the
+  operator A = K⁻¹(−K_g) — self-adjoint in the K-inner-product — projects onto a *standard* symmetric
+  reduced problem Hᵣ = Qᵀ(−K_g)Q solved by cyclic Jacobi, with **relative** rank-revealing deflation of
+  the rigid directions (an absolute deflation floor was the first-cut bug: SI-unit K-norms sit at ~1e-11
+  and everything got wrongly dropped, returning no modes). `bucklingpresets.ts` adds a material table
+  (steel / Al 6061 / Ti-6Al-4V, with σ_y), three scenarios — fixed–free **flagpole** (K=2), fixed–pinned
+  **braced strut** (K≈0.699) and a **compression panel** — and returns the section properties so the
+  studio can draw the analytical column. `BucklingStudio.tsx` is a sixth studio tab: a **buckled-shape**
+  view (the straight part shaded by its axial load path, the eigenmode animated as a breathing lateral
+  bow, base hatching + load arrows) and a **column-curve** view that drops the FE critical stress onto
+  the Euler hyperbola σ_cr = π²E/λ² with its yield cut-off, so buckling-vs-squash reads at a glance —
+  plus a mode-pill selector, a debounced slenderness slider, and a **Q8/Q4 toggle that visibly shows
+  shear locking** (fully-integrated Q4 overstiffens the buckling load ~16 %, so Q8 is the default).
+  Three new closed-form benchmarks pin it (badge **81 → 84**, all green): the fixed–free Euler column
+  P_cr = π²EI/(2L)² to **0.05 %**, the fixed–pinned column (K≈0.699) to 0.5 %, and the cantilever mode
+  ladder λ₂/λ₁ = 9 (3²/1²) to 0.25 %. Verified end-to-end in headless Chromium — all six tabs render,
+  the flagpole reproduces Euler to 0.08 % and the 1:8.97:24.79 ladder, the braced strut shows the
+  fixed–pinned half-wave, the panel buckles into a 2-D bulge, the column curve seats the design point on
+  the hyperbola — and the whole gate (scope + conformance + lint + build) is green with **84/84**
+  benchmarks and zero runtime errors. First cut had the panel taking 56 s (clustered eigenvalues) and
+  the eigensolver returning nothing (absolute-deflation bug); both fixed — every solve is now
+  interactive and the math is validated to a fraction of a percent against Euler.
 
 - 2026-07-23 (claude): shipped **v13 — Linear Elastic Fracture Mechanics: stress-intensity
   factors**, the chapter that takes the studio from *stress concentration* (finite K_t) to *fracture*

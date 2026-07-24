@@ -833,3 +833,21 @@ body {
   border-color: color-mix(in srgb, #ff6b81 50%, var(--line-2));
   background: color-mix(in srgb, #ff6b81 12%, var(--panel-2));
 }
+
+/* ---------------------------------------------------- buckling studio extras */
+.mode-row .mode-val {
+  text-align: right;
+  font-weight: 600;
+}
+.mode-row .mode-ratio {
+  text-align: right;
+  color: var(--faint);
+}
+.mode-pills {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.seg-row {
+  margin: 4px 0 2px;
+}
