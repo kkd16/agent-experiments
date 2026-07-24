@@ -14,8 +14,19 @@ export type PrimitiveKind =
   | 'cone'
   | 'octahedron'
   | 'plane'
+  | 'ellipsoid'
+  | 'hexPrism'
+  | 'pyramid'
+  | 'link'
+  | 'roundCone'
 
 export type BooleanOp = 'union' | 'subtract' | 'intersect'
+
+/** Domain warp applied to a node's local space before its distance is evaluated. */
+export type DomainMod = 'none' | 'repeat' | 'mirror' | 'twist' | 'bend'
+
+/** Procedural surface pattern that modulates a material's albedo. */
+export type TextureKind = 'none' | 'checker' | 'noise' | 'marble' | 'wood' | 'grid'
 
 export interface Transform {
   position: Vec3
@@ -32,6 +43,50 @@ export interface Material {
   roughness: number
   reflectivity: number
   emission: number
+  /** Procedural pattern woven into the albedo. */
+  texture: TextureKind
+  /** Feature frequency of the texture (world units). */
+  texScale: number
+  /** How strongly the texture modulates the base colour, 0..1. */
+  texStrength: number
+}
+
+/**
+ * A per-node domain warp + post-distance shaping. Which `domain` is chosen (and
+ * whether `shellOn`) changes the generated GLSL; every numeric value below is a
+ * uniform, so dragging a slider never triggers a recompile.
+ */
+export interface Modifier {
+  domain: DomainMod
+  /** repeat: cell spacing per axis (0 on an axis = no tiling there). */
+  repeat: Vec3
+  /** repeat: 0 = infinite, N = mirror-limited to ±N cells. */
+  repeatLimit: number
+  /** mirror: per-axis 0/1 flags folding the domain about each plane. */
+  mirror: Vec3
+  /** twist: radians of rotation per unit of height. */
+  twist: number
+  /** bend: curvature applied along X. */
+  bend: number
+  /** round: inflates the surface, rounding every edge (post-distance). */
+  round: number
+  /** shell/onion: hollow the shape into a shell of this thickness. */
+  shellOn: boolean
+  shell: number
+}
+
+/** Time-driven animation for a node's transform, evaluated on the render loop. */
+export interface Anim {
+  enabled: boolean
+  /** Position sine amplitude per axis. */
+  posAmp: Vec3
+  /** Position sine speed per axis (Hz-ish). */
+  posSpeed: Vec3
+  /** Continuous spin in degrees/second per axis, added to the base rotation. */
+  spin: Vec3
+  /** Scale pulse amplitude (fraction) and speed. */
+  scalePulse: number
+  scaleSpeed: number
 }
 
 export interface Combine {
@@ -52,6 +107,10 @@ export interface SdfNode {
   material: Material
   /** How this node folds into the accumulated field before it. */
   combine: Combine
+  /** Domain + distance shaping applied to this node only. */
+  modifier: Modifier
+  /** Optional time-driven motion. */
+  anim: Anim
 }
 
 export interface Camera {
@@ -98,6 +157,8 @@ export interface Quality {
   shadowStrength: number
   aoStrength: number
   reflections: boolean
+  /** 2×2 supersampled anti-aliasing (HDR-correct, ~4× cost). */
+  antialias: boolean
   /** Internal render buffer scale, 0.25..1. */
   resolutionScale: number
 }
@@ -117,6 +178,8 @@ export interface Scene {
   ground: Ground
   quality: Quality
   post: Post
+  /** Master switch for per-node time animation. */
+  animate: boolean
 }
 
 /** The primitive metadata that drives the inspector and codegen. */

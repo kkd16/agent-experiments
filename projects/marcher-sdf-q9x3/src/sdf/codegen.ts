@@ -31,6 +31,33 @@ function primitiveExpr(kind: PrimitiveKind, i: number): string {
       return `sdOctahedron(pl, ${p}.x)`
     case 'plane':
       return `sdPlane(pl)`
+    case 'ellipsoid':
+      return `sdEllipsoid(pl, ${p}.xyz)`
+    case 'hexPrism':
+      return `sdHexPrism(pl, vec2(${p}.x, ${p}.y))`
+    case 'pyramid':
+      return `sdPyramid(pl, ${p}.x)`
+    case 'link':
+      return `sdLink(pl, ${p}.x, ${p}.y, ${p}.z)`
+    case 'roundCone':
+      return `sdRoundCone(pl, ${p}.x, ${p}.y, ${p}.z)`
+  }
+}
+
+/** Domain warp emitted before the primitive is evaluated (operates on `pl`). */
+function domainLines(node: SdfNode, i: number): string[] {
+  const a = `uModA[${i}]`
+  switch (node.modifier.domain) {
+    case 'repeat':
+      return [`  pl = opRepeat(pl, ${a}.xyz, ${a}.w);`]
+    case 'mirror':
+      return [`  pl = opMirror(pl, ${a}.xyz);`]
+    case 'twist':
+      return [`  pl = opTwist(pl, ${a}.x);`]
+    case 'bend':
+      return [`  pl = opBend(pl, ${a}.x);`]
+    default:
+      return []
   }
 }
 
@@ -60,10 +87,18 @@ export function generateMap(scene: Scene): GeneratedMap {
 
   scene.nodes.forEach((node, i) => {
     if (!node.visible) return
+    const mod = node.modifier
+    const twistBend = mod.domain === 'twist' || mod.domain === 'bend'
     lines.push(`  // ${node.name}`)
     lines.push(`  pl = uRot[${i}] * (p - uPos[${i}]);`)
     lines.push(`  pl /= uScale[${i}];`)
-    lines.push(`  d = (${primitiveExpr(node.kind, i)}) * uScale[${i}];`)
+    for (const l of domainLines(node, i)) lines.push(l)
+    lines.push(`  d = ${primitiveExpr(node.kind, i)};`)
+    // Post-distance shaping: round every edge, then optionally hollow to a shell.
+    lines.push(`  d -= uModB[${i}].x;`)
+    if (mod.shellOn) lines.push(`  d = abs(d) - uModB[${i}].y;`)
+    // Twist/bend break the metric; shrink the step to keep sphere-tracing safe.
+    lines.push(`  d *= ${twistBend ? '0.6 * ' : ''}uScale[${i}];`)
     lines.push(`  if (!started){ acc = vec2(d, ${i}.0); started = true; }`)
     lines.push(`  else acc = ${foldExpr(node, i)};`)
   })
@@ -84,7 +119,9 @@ export function generateMap(scene: Scene): GeneratedMap {
  */
 export function structuralKey(scene: Scene): string {
   const parts = scene.nodes.map(
-    (n) => `${n.visible ? 1 : 0}${n.kind}:${n.combine.op}${n.combine.smooth ? 's' : 'h'}`,
+    (n) =>
+      `${n.visible ? 1 : 0}${n.kind}:${n.combine.op}${n.combine.smooth ? 's' : 'h'}` +
+      `:${n.modifier.domain}${n.modifier.shellOn ? 'S' : ''}`,
   )
   parts.push(`g${scene.ground.enabled ? 1 : 0}`)
   parts.push(`n${scene.nodes.length}`)

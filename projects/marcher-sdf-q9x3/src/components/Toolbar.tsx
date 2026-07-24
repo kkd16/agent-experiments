@@ -8,10 +8,20 @@ interface ToolbarProps {
   onReset: () => void
   onShowGlsl: () => void
   onShowHelp: () => void
+  onExport: () => void
+  onCapture: () => void
   saved: boolean
 }
 
-export default function Toolbar({ onLoadPreset, onReset, onShowGlsl, onShowHelp, saved }: ToolbarProps) {
+export default function Toolbar({
+  onLoadPreset,
+  onReset,
+  onShowGlsl,
+  onShowHelp,
+  onExport,
+  onCapture,
+  saved,
+}: ToolbarProps) {
   return (
     <header className="toolbar">
       <div className="brand">
@@ -33,6 +43,12 @@ export default function Toolbar({ onLoadPreset, onReset, onShowGlsl, onShowHelp,
         <span className={`save-dot ${saved ? 'ok' : ''}`} title={saved ? 'Autosaved' : 'Saving…'}>
           {saved ? 'saved' : 'saving…'}
         </span>
+        <button type="button" onClick={onCapture} title="Save the current frame as a PNG (P)">
+          PNG
+        </button>
+        <button type="button" onClick={onExport} title="Download a standalone HTML shader toy (E)">
+          Export
+        </button>
         <button type="button" onClick={onShowGlsl}>
           GLSL
         </button>

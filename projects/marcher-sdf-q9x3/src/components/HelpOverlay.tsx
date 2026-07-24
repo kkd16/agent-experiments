@@ -25,6 +25,33 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           <li>Give each node a transform and a material (colour, metallic, roughness, emission).</li>
         </ul>
 
+        <h3>Going further</h3>
+        <ul>
+          <li>
+            <strong>Modifiers</strong> warp a node's own space: infinite/limited <em>repeat</em>
+            (tilings), <em>mirror</em> symmetry, <em>twist</em> and <em>bend</em> — plus rounding
+            and hollow shells.
+          </li>
+          <li>
+            <strong>Textures</strong> weave procedural checker / noise / marble / wood / grid into a
+            material's colour.
+          </li>
+          <li>
+            <strong>Animation</strong> channels spin, bob and pulse a node over time (flip the
+            master switch in the World tab).
+          </li>
+          <li>
+            Reflective materials cast <strong>real second-bounce reflections</strong> of the actual
+            scene. Turn on <strong>anti-alias</strong> before capturing a still.
+          </li>
+        </ul>
+
+        <h3>Exporting</h3>
+        <ul>
+          <li><strong>Export</strong> bakes the whole scene into one standalone, dependency-free HTML file.</li>
+          <li><strong>PNG</strong> saves the current frame straight from the canvas.</li>
+        </ul>
+
         <h3>Camera</h3>
         <ul>
           <li><strong>Drag</strong> to orbit · <strong>Shift-drag</strong> (or right-drag) to pan · <strong>Scroll</strong> to zoom.</li>
@@ -36,7 +63,8 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           <li><kbd>A</kbd> add a sphere</li>
           <li><kbd>D</kbd> duplicate selected · <kbd>Delete</kbd> remove selected</li>
           <li><kbd>R</kbd> toggle auto-rotate · <kbd>G</kbd> view GLSL</li>
-          <li><kbd>1</kbd>–<kbd>5</kbd> load a preset</li>
+          <li><kbd>P</kbd> capture PNG · <kbd>E</kbd> export HTML</li>
+          <li><kbd>1</kbd>–<kbd>9</kbd> load a preset</li>
         </ul>
 
         <p className="help-foot">

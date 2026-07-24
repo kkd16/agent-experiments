@@ -5,6 +5,8 @@ import { PRESETS, defaultScene } from './scene/presets'
 import { reducer } from './state/reducer'
 import { clearPersisted, cloneScene, initState, persist } from './state/store'
 import { useRenderer } from './hooks/useRenderer'
+import { buildStandaloneHtml } from './export/standalone'
+import { downloadDataUrl, downloadText } from './export/download'
 import Toolbar from './components/Toolbar'
 import Canvas from './components/Canvas'
 import SceneTree from './components/SceneTree'
@@ -19,7 +21,7 @@ type Overlay = 'none' | 'glsl' | 'help'
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initState)
   const { scene, selectedId } = state
-  const { canvasRef, fps, error, getGlsl } = useRenderer(scene)
+  const { canvasRef, fps, error, getGlsl, capturePng } = useRenderer(scene)
 
   const [tab, setTab] = useState<RightTab>('node')
   const [overlay, setOverlay] = useState<Overlay>('none')
@@ -61,6 +63,14 @@ export default function App() {
     setOverlay('glsl')
   }, [getGlsl])
 
+  const exportHtml = useCallback(() => {
+    downloadText(buildStandaloneHtml(scene), 'marcher-scene.html')
+  }, [scene])
+
+  const capture = useCallback(() => {
+    downloadDataUrl(capturePng(), 'marcher.png')
+  }, [capturePng])
+
   // Keyboard shortcuts (ignored while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -75,6 +85,8 @@ export default function App() {
       else if (k === 'r')
         dispatch({ type: 'patchCamera', patch: { autoRotate: !scene.camera.autoRotate } })
       else if (k === 'g') showGlsl()
+      else if (k === 'p') capture()
+      else if (k === 'e') exportHtml()
       else if (k === '?' || (k === '/' && e.shiftKey)) setOverlay('help')
       else if (k >= '1' && k <= '9') {
         const idx = Number(k) - 1
@@ -83,7 +95,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, scene.camera.autoRotate, showGlsl, loadPreset])
+  }, [selectedId, scene.camera.autoRotate, showGlsl, loadPreset, capture, exportHtml])
 
   return (
     <div className="app">
@@ -92,6 +104,8 @@ export default function App() {
         onReset={reset}
         onShowGlsl={showGlsl}
         onShowHelp={() => setOverlay('help')}
+        onExport={exportHtml}
+        onCapture={capture}
         saved={saved}
       />
 
