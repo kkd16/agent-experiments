@@ -56,6 +56,7 @@ import { fmtEng } from './ui/format'
 import { TopOptStudio } from './ui/TopOptStudio'
 import { ThermalStudio } from './ui/ThermalStudio'
 import { FractureStudio } from './ui/FractureStudio'
+import { BucklingStudio } from './ui/BucklingStudio'
 import {
   addMember,
   addNode,
@@ -82,7 +83,7 @@ import {
   type Scene,
 } from './state'
 
-type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture'
+type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture' | 'buckling'
 type Tool = 'select' | 'node' | 'member' | 'support' | 'load' | 'delete'
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
@@ -966,6 +967,7 @@ export default function App() {
               { value: 'topopt', label: 'Topology Optimization' },
               { value: 'thermal', label: 'Thermal & Multiphysics' },
               { value: 'fracture', label: 'Fracture Mechanics' },
+              { value: 'buckling', label: 'Buckling & Stability' },
             ]}
             value={tab}
             onChange={(v) => {
@@ -984,6 +986,8 @@ export default function App() {
           <ThermalStudio />
         ) : tab === 'fracture' ? (
           <FractureStudio />
+        ) : tab === 'buckling' ? (
+          <BucklingStudio />
         ) : (
           <>
         {/* ---------------- left rail: presets ---------------- */}

@@ -876,12 +876,12 @@ function CheckRow({ c }: { c: Check }) {
 }
 
 export function VerifyBadge() {
-  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, allPass } = useMemo(
+  const { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, buckling, allPass } = useMemo(
     () => runAllBenchmarks(),
     [],
   )
   const [open, setOpen] = useState(false)
-  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad, ...topopt, ...thermal, ...thermoelastic, ...fracture]
+  const all = [...frame, ...dynamics, ...harmonic, ...seismic, ...plastic, ...inelastic, ...continuum, ...quad, ...topopt, ...thermal, ...thermoelastic, ...fracture, ...buckling]
   const passCount = all.filter((c) => c.pass).length
   return (
     <div className={`verify ${allPass ? 'ok' : 'bad'}`}>
@@ -945,6 +945,10 @@ export function VerifyBadge() {
           <div className="check-group">Fracture — stress-intensity factors</div>
           {fracture.map((c, i) => (
             <CheckRow key={`fr${i}`} c={c} />
+          ))}
+          <div className="check-group">Buckling — Euler critical loads</div>
+          {buckling.map((c, i) => (
+            <CheckRow key={`bk${i}`} c={c} />
           ))}
         </div>
       )}
