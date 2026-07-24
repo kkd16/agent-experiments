@@ -81,6 +81,17 @@ export default function Race({
     { label: 'accept', a: A.acceptRate * 100, b: B.acceptRate * 100, digits: 1, moreIsBetter: true, neutral: true, hint: 'acceptance rate (context, not a winner)' },
     { label: 'iterations', a: A.iters, b: B.iters, digits: 0, moreIsBetter: true, neutral: true, hint: 'chain length (both step in lockstep)' },
   ]
+  // Only meaningful when the target's true mean is known analytically.
+  if (A.meanErr !== undefined && B.meanErr !== undefined) {
+    rows.splice(3, 0, {
+      label: 'mean err',
+      a: A.meanErr,
+      b: B.meanErr,
+      digits: 3,
+      moreIsBetter: false,
+      hint: 'distance of the running mean from the known true mean — actual accuracy; lower is better',
+    })
+  }
 
   // Headline: efficiency ratio, the one number that settles the race.
   const ea = A.essPerKEval

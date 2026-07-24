@@ -68,6 +68,9 @@ function banana(a = 1, b = 5): Target {
     },
     view: [-3.5, 4.5, -2, 12],
     start: [0, 0],
+    // u-marginal is N(1, 10) (the v integral is constant), and v|u ~ N(u², ·),
+    // so E[u] = 1 and E[v] = E[u²] = Var(u) + E[u]² = 10 + 1 = 11.
+    trueMean: [1, 11],
   }
 }
 

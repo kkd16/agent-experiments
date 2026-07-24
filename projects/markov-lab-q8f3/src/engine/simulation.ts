@@ -48,6 +48,8 @@ export interface LiveStats {
   usedForStats: number
   /** Smoothed sampler internals (adapted ε, mean NUTS depth, accept-prob). */
   info?: Record<string, number>
+  /** ‖running mean − true mean‖ when the target's mean is known analytically. */
+  meanErr?: number
 }
 
 export class Simulation {
@@ -193,7 +195,15 @@ export class Simulation {
       essPerKEval: totalEval ? (1000 * Math.min(essX, essY)) / totalEval : 0,
       usedForStats: n,
       info: this.liveInfo(),
+      meanErr: this.meanError(mean(sx), mean(sy)),
     }
+  }
+
+  /** Distance of the running mean estimate from the target's known true mean. */
+  private meanError(mx: number, my: number): number | undefined {
+    const tm = this.target.trueMean
+    if (!tm) return undefined
+    return Math.hypot(mx - tm[0], my - tm[1])
   }
 
   /** Column of post-burn-in samples for a given dimension. */
