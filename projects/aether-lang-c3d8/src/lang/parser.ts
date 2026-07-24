@@ -284,6 +284,14 @@ class Parser {
       const close = this.next()
       return { kind: 'unit', span: this.spanFrom(open.span, close.span) }
     }
+    // operator sections and the bare-operator function — all pure sugar for a
+    // lambda, so nothing downstream ever sees them:
+    //   (+)        the binary operator as a first-class function
+    //   (+ 1)      a right section:  fn x -> x + 1
+    //   (.field)   a field accessor: fn r -> r.field   (chains: (.a.b))
+    const section = this.tryOperatorSection(open)
+    if (section) return section
+
     const first = this.parseExpr(0)
     if (this.at('punc', ',')) {
       const elements = [first]
@@ -369,6 +377,70 @@ class Parser {
       acc = { kind: 'app', fn: acc, arg: a, span }
     }
     return acc
+  }
+
+  // Try to read an operator section or a field accessor immediately after `(`.
+  // Returns the desugared lambda, or null if the parens hold an ordinary
+  // expression. Left sections (`(x +)`) are deliberately not offered — they read
+  // ambiguously against a partial application — so the common point-free shapes
+  // are `(op)`, `(op e)` and `(.field)`.
+  private tryOperatorSection(open: Token): Expr | null {
+    const t = this.peek()
+
+    // field accessor: (.field), or a chain (.a.b) — one lambda projecting through.
+    if (t.kind === 'punc' && t.value === '.' && this.toks[this.pos + 1]?.kind === 'ident') {
+      const labels: string[] = []
+      while (this.at('punc', '.')) {
+        this.next()
+        if (!this.at('ident')) {
+          throw new ParseError('expected a field name after "." in a section', this.peek().span)
+        }
+        labels.push(this.next().value)
+      }
+      const close = this.expect('punc', ')')
+      const span = this.spanFrom(open.span, close.span)
+      const p = this.freshName()
+      let body: Expr = { kind: 'var', name: p, span }
+      for (const label of labels) body = { kind: 'field', record: body, label, span }
+      return { kind: 'lambda', param: p, body, span }
+    }
+
+    // operator section — only for an infix operator (never `;`, the sequencer).
+    if (t.kind === 'op' && t.value in INFIX_BP && t.value !== ';') {
+      const op = t.value
+      const after = this.toks[this.pos + 1]
+      // the bare operator as a function: (op)
+      if (after && after.kind === 'punc' && after.value === ')') {
+        this.next() // op
+        const close = this.next() // )
+        const span = this.spanFrom(open.span, close.span)
+        const l = this.freshName()
+        const r = this.freshName()
+        const body = this.applyInfix(op, { kind: 'var', name: l, span }, { kind: 'var', name: r, span }, span)
+        return { kind: 'lambda', param: l, body: { kind: 'lambda', param: r, body, span }, span }
+      }
+      // right section: (op e) ⇒ fn x -> x op e. A leading `-` (or `!`) is unary
+      // negation/not, not a section, so let it fall through to the normal parse
+      // — `(- 1)` is negative one; write `(subtract 1)` for the subtract section.
+      if (op !== '-' && op !== '!') {
+        this.next() // op
+        const e = this.parseExpr(0)
+        const close = this.expect('punc', ')')
+        const span = this.spanFrom(open.span, close.span)
+        const x = this.freshName()
+        const body = this.applyInfix(op, { kind: 'var', name: x, span }, e, span)
+        return { kind: 'lambda', param: x, body, span }
+      }
+    }
+    return null
+  }
+
+  // Build the node an infix operator denotes — mirroring the Pratt loop, so a
+  // section means exactly what the operator means inline: `|>` is reverse
+  // application, everything else is an ordinary `binop`.
+  private applyInfix(op: string, left: Expr, right: Expr, span: Span): Expr {
+    if (op === '|>') return { kind: 'app', fn: right, arg: left, span }
+    return { kind: 'binop', op: op as BinaryOp, left, right, span }
   }
 
   // comprehension qualifiers: a `,`-separated list of generators (`pat <- xs`),

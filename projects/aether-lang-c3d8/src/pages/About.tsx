@@ -7,7 +7,7 @@ const STAGES = [
   {
     n: 2,
     title: 'Parser',
-    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas; list comprehensions [ e | q… ] desugar to concat / map / if / let / match — a qualifier is a generator pat <- xs (a refutable pattern drops the non-matches via a wildcard arm, the list-monad fail), a let pat = e binding, or a boolean guard — while range literals [a .. b] and [a, s .. b] desugar to the enumFromTo / enumFromThenTo prelude functions; and monadic do { x <- e; … } desugars to bind e (fn x -> …). Each is typed and compiled like any other core expression, so the type checker and all three backends never see the sugar.',
+    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas; list comprehensions [ e | q… ] desugar to concat / map / if / let / match — a qualifier is a generator pat <- xs (a refutable pattern drops the non-matches via a wildcard arm, the list-monad fail), a let pat = e binding, or a boolean guard — while range literals [a .. b] and [a, s .. b] desugar to the enumFromTo / enumFromThenTo prelude functions; operator sections ((+ 1), (op), (.field)) desugar to lambdas; and monadic do { x <- e; … } desugars to bind e (fn x -> …). Each is typed and compiled like any other core expression, so the type checker and all three backends never see the sugar.',
   },
   {
     n: 3,
@@ -197,6 +197,14 @@ export default function About() {
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
+          </li>
+          <li>
+            <strong>Operator sections.</strong> Point-free style: <code>(+ 1)</code> and{' '}
+            <code>(&gt; 0)</code> are right sections, <code>(+)</code> / <code>(::)</code> the bare
+            operator as a function, <code>(.field)</code> a field accessor (chaining as{' '}
+            <code>(.a.b)</code>). All desugar to a lambda, so nothing downstream sees them.{' '}
+            <code>(*)</code> is carved out of the <code>(* … *)</code> block-comment syntax; a{' '}
+            <code>*</code> right section takes a space, <code>( * 2)</code>.
           </li>
           <li>
             <strong>List comprehensions &amp; ranges.</strong>{' '}

@@ -7,6 +7,8 @@ import { runOptimizerFuzz, runSpecConstrFuzz, runSroaFuzz } from '../lang/optFuz
 import type { OptFuzzResult, SpecConstrFuzzResult, SroaFuzzResult } from '../lang/optFuzz.ts'
 import { runComprehensionFuzz } from '../lang/comprehensionFuzz.ts'
 import type { ComprehensionFuzzResult } from '../lang/comprehensionFuzz.ts'
+import { runSectionFuzz } from '../lang/sectionFuzz.ts'
+import type { SectionFuzzResult } from '../lang/sectionFuzz.ts'
 import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
 import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
@@ -17,6 +19,7 @@ export default function Tests() {
   const [scFuzz, setScFuzz] = useState<SpecConstrFuzzResult | null>(null)
   const [sroaFuzz, setSroaFuzz] = useState<SroaFuzzResult | null>(null)
   const [compFuzz, setCompFuzz] = useState<ComprehensionFuzzResult | null>(null)
+  const [secFuzz, setSecFuzz] = useState<SectionFuzzResult | null>(null)
   const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
@@ -30,6 +33,7 @@ export default function Tests() {
       setScFuzz(runSpecConstrFuzz())
       setSroaFuzz(runSroaFuzz())
       setCompFuzz(runComprehensionFuzz())
+      setSecFuzz(runSectionFuzz())
       setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
@@ -316,6 +320,46 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {compFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {secFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Section fuzz — operator-section desugaring soundness{' '}
+              <span className={`tests-group-count ${secFuzz.passed === secFuzz.total ? '' : 'bad'}`}>
+                {secFuzz.passed}/{secFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {secFuzz.total} <em>randomly generated</em> point-free pipelines built out of{' '}
+              <strong>operator sections</strong> — <code>map (+ n)</code>, <code>map ( * n)</code>,{' '}
+              <code>map (subtract n)</code>, <code>filter (&gt; n)</code>, and the bare{' '}
+              <code>foldl (+) 0</code> — chained with <code>|&gt;</code> ({secFuzz.folded} folded to a
+              scalar). Each is proved sound two ways: the compiled program's{' '}
+              <strong>VM result equals an independent reference</strong> (the same pipeline evaluated in
+              TypeScript, never touching the desugaring) and that value{' '}
+              <strong>re-appears on the JavaScript backend</strong> (VM ≡ JS — the check that guards
+              the fn-in-call-position parenthesisation a bare <code>(op) x y</code> needs).
+              Deterministic, so this badge is stable.
+            </p>
+            {secFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {secFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">

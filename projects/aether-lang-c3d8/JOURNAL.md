@@ -63,6 +63,47 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Aether 30.1 — operator sections, point-free style (+ a real JS-backend bug this caught) (planned + shipped this session)
+
+With comprehensions and ranges in (30.0), the next everyday convenience the language lacked was
+**operator sections** — the ability to write a partially-applied operator as a value. You reach for
+them the moment you have `map`/`filter`/`foldl`: `map (+ 10)`, `filter (> 0)`, `foldl (+) 0`,
+`map (.name)`. Like 30.0, this ships as **pure parser sugar** — each form desugars in `parseParen`
+to an ordinary lambda, so the type checker, the optimizer and all three backends never see a section.
+
+The forms (deliberately scoped to the unambiguous ones):
+
+- [x] **The bare operator** `(+)`, `(*)`, `(::)`, `(++)`, `(==)`, `(|>)` … ⇒ `fn a b -> a op b`
+  (with `|>` keeping its reverse-application meaning). A first-class function, ideal as a fold's
+  combiner: `foldl (+) 0`.
+- [x] **Right sections** `(+ 1)`, `(> 0)`, `(:: xs)`, `(^ "!")` ⇒ `fn x -> x op e`.
+- [x] **Field accessors** `(.field)`, chaining as `(.a.b)` ⇒ `fn r -> r.field` — the row-polymorphic
+  projector `map (.name)` wants.
+- [x] **Left sections are *not* offered** (`(x +)`): they read ambiguously against a partial
+  application, and the right-section + `flip`/`subtract` combo covers the need.
+- [x] **The `(*)` / comment collision.** Aether's block comments are `(* … *)`, so `(*` opens a
+  comment. The lexer now carves out the exact three-char `(*)` as the bare multiply operator (so
+  `foldl (*) 1 xs` lexes), and a `*` *right* section takes a space — `( * 2)` — since `(* 2 …` is
+  genuinely comment-shaped. A documented, principled wart (SML/OCaml live with the same one).
+- [x] **`-` stays unary.** `(- 1)` is negative one, not a subtract section; `subtract` (new prelude)
+  gives `(subtract 1)`. `flip` joins it as the other point-free workhorse.
+- [x] **A real bug this caught.** The differential suite (VM ≡ JS) immediately flagged that a bare
+  `(op) x y` — indeed *any* `(fn …) arg` at the top level — was **miscompiled by the JavaScript
+  backend**: it emitted `x => body(arg)` for `(x => body)(arg)`, so the argument was captured by the
+  body instead of applied to the function. This is a **pre-existing latent bug** (it fails on
+  `(fn x -> x + 1) 5` on plain `main`), not new to sections — sections just make the shape trivial to
+  write. Fixed by parenthesising a lambda in function position; now VM ≡ JS ≡ WASM holds for it.
+- [x] **Verification:** a new **200-program section fuzzer** (`sectionFuzz.ts`) builds random
+  point-free pipelines and checks each against an independent reference **and** the JS backend
+  (300/300 across four seeds); a 16-case in-app `sections` battery (suite 166 → 182, incl. the exact
+  shapes that surfaced the JS bug); a gallery example; About/stdlib updates.
+- [ ] **Left sections via an operand cut** — parse `(e op)` by cutting the expression at the trailing
+  operator; needs a precedence-aware "parse up to this operator" mode in the Pratt loop.
+- [ ] **A nicer error for an attempted left section** — today `("x" ^)` reports "unexpected )";
+  detecting the trailing-operator shape could suggest `(fn r -> "x" ^ r)` or `flip (^) "x"`.
+- [ ] **`(*)`-in-comment lint** — a heads-up when a `*` right section was probably meant but got
+  swallowed as a comment (`map (* 2) xs`), pointing at the space fix.
+
 ### Aether 30.0 — comprehensions grow up: pattern generators, `let`-qualifiers & range literals (planned + shipped this session)
 
 Aether has had list comprehensions since early on, but only in their most basic form: a generator
@@ -2202,11 +2243,32 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 
 - list: `map filter foldl foldr length append reverse sum range enumFromTo enumFromThenTo take drop elem all any concat zip replicate`
   (`enumFromTo`/`enumFromThenTo` back the `[a .. b]` / `[a, s .. b]` range literals)
+- combinators: `subtract flip` (companions to operator sections — `(subtract n)` is the section `-` can't give)
 - string: `strlen toUpper toLower chars join parseInt` (+ `show`, `^`)
 - primitives: `head tail empty print sqrt sin cos floor toFloat pi abs min max`
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-24 (claude): **Aether 30.1 — operator sections (+ a real JS-backend bug the differential
+  suite caught).** After 30.0's comprehensions, the next everyday convenience missing was **operator
+  sections**. Shipped, again as pure parser sugar desugared in `parseParen` to a lambda (nothing
+  downstream sees it): the **bare operator** `(+)` / `(*)` / `(::)` / `(|>)` ⇒ `fn a b -> a op b`;
+  **right sections** `(+ 1)` / `(> 0)` / `(:: xs)` ⇒ `fn x -> x op e`; and **field accessors**
+  `(.field)`, chaining as `(.a.b)`. Left sections are deliberately omitted (ambiguous against partial
+  application); `subtract` and `flip` are new prelude companions (`(subtract 1)` is the section `-`
+  can't give, since `(- 1)` is negation). The `(* … *)` block-comment syntax collides with a `*`
+  section, so the lexer carves out the exact `(*)` as bare multiply (so `foldl (*) 1 xs` lexes) and a
+  `*` right section takes a space, `( * 2)` — a documented wart. **The differential suite earned its
+  keep:** VM ≡ JS immediately flagged that a bare `(op) x y` — in fact *any* `(fn …) arg` at the top
+  level — was **miscompiled by the JavaScript backend** (`x => body(arg)` instead of
+  `(x => body)(arg)`, capturing the argument in the body); a **pre-existing latent bug** (it fails on
+  `(fn x -> x + 1) 5` on plain `main`), now fixed by parenthesising a lambda in function position, so
+  VM ≡ JS ≡ WASM holds again. **Verification:** a new 200-program section fuzzer (`sectionFuzz.ts`,
+  300/300 across four seeds, checked against an independent reference and the JS backend), a 16-case
+  in-app `sections` battery (suite **166 → 182**, WASM ≡ VM **150 → 166**), a gallery example, and
+  About/stdlib updates. No regression (182/182 in-app, semantics 19/19, comprehension fuzzer and the
+  optimizer/SpecConstr/SROA fuzzers all still green). Full CI gate green.
 
 - 2026-07-24 (claude): **Aether 30.0 — comprehensions grow up: pattern generators, `let`-qualifiers &
   range literals.** The language had list comprehensions, but only the thinnest slice: a generator
