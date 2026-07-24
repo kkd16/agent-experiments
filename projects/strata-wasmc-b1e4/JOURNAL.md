@@ -740,6 +740,8 @@ precondition is unmet — so the oracle (interp = wasm = VM, -O0…-O3) proves t
       pass visibly fires in the Optimizer tab (click the pass row to see the IR diff).
 - [x] Both passes appear automatically in the Optimizer tab with their per-pass change count and
       clickable IR snapshot diff (the pass manager surfaces every `record(...)` step).
+- [x] A "memory:" summary row in the Optimizer lab aggregating forwards/RLE/intra-DSE + cross-block
+      dead stores + loop-invariant loads hoisted, so the memory wins read as one headline.
 
 ### Proof
 
@@ -762,9 +764,10 @@ precondition is unmet — so the oracle (interp = wasm = VM, -O0…-O3) proves t
       paths but live on others, sink it into only the arms that read it (the dual of code sinking) —
       inserting on the lacking edges and removing the original. The backward liveness this pass
       already computes is exactly the anticipability information PDSE needs.
-- [ ] **A memory-traffic metric in the Optimizer lab.** Surface "stores eliminated / loads hoisted /
-      loads forwarded" as a headline number next to the reduction %, aggregated across memopt + DSE
-      + Load-LICM, so the memory wins are legible without reading the pass table.
+- [x] **A memory-traffic metric in the Optimizer lab.** **Shipped 2026-07-24:** a "memory:" pill row
+      under the reduction bar aggregates, across every round, the mem-opt forwards/RLE/intra-DSE, the
+      cross-block dead stores, and the loop-invariant loads hoisted — so the memory wins are legible
+      without scanning the pass table (`OptPanel` in `src/ui/Panels.tsx`).
 - [ ] **Load-LICM past a disjoint store.** Today any may-aliasing store in the body blocks a hoist;
       with the offset model already in hand, a load can still hoist past stores *proven disjoint*
       even when other (aliasing) stores exist — track per-location, not a whole-loop bail.
