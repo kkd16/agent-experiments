@@ -9,6 +9,7 @@ import { dropout, layerNorm, batchNorm, makeBatchNormState, embedding, concatCol
 import { conv2d, maxPool2d, avgPool2d } from './conv';
 import { softmaxCrossEntropy, maskedCrossEntropy, bceWithLogits, mse } from './losses';
 import { GPT, attentionRollout } from './transformer';
+import { buildDataset, applyOp, grokTargets, fourierSpectrum, grokConfig, GROK_KEEP } from './grok';
 import { RecurrentLM, type CellKind } from './recurrent';
 import { MoEGPT, scaleRows, selectCol } from './moe';
 import { rmsNorm, causalConv1d, selectiveScan, MambaLM, defaultDtRank } from './ssm';
@@ -414,6 +415,33 @@ export function runSelfTest(seed = 7): SelfTestReport {
         rng,
       ),
     );
+  }
+
+  // Grokking (modular-arithmetic) lab: the same GPT fed a 3-token "a b =" and read out at the
+  // '=' position. Gradcheck the answer-only masked loss end-to-end, and prove two invariants the
+  // interpretability views rely on: (a) the DFT power spectrum of the embedding table is a
+  // normalized distribution (Σ_k power = 1), and (b) the dataset builder computes the group
+  // operation exactly (a spot-check of a ∘ b against the '=' target the loss trains toward).
+  {
+    const cfg = grokConfig(7, 8, 2, 12, 5);
+    const gpt = new GPT(cfg);
+    const ds = buildDataset(7, 'add', 0.5, 5);
+    const ex = ds.all[3];
+    ops.push(
+      checkOp(
+        'grok · mod-add (e2e)',
+        gpt.parameters(),
+        () => maskedCrossEntropy(gpt.forward(ex.ids), grokTargets(ex, ds.eqToken), GROK_KEEP).loss,
+        rng,
+      ),
+    );
+    const spec = fourierSpectrum(gpt, 7);
+    let sum = 0;
+    for (let k = 1; k < spec.power.length; k++) sum += spec.power[k];
+    const opPairs: [number, number][] = [];
+    for (const e of ds.all) opPairs.push([e.c, applyOp('add', e.a, e.b, 7)]);
+    opPairs.push([sum, 1]); // spectrum normalization
+    ops.push(relCheck('grok · DFT norm + group law', opPairs));
   }
 
   // The KV-cache incremental decode is a tape-free numeric mirror of `forward`. It must be

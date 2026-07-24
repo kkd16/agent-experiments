@@ -2,7 +2,7 @@
 
 A tiny **deep-learning framework that runs in your browser**, built from scratch on a real
 reverse-mode **tensor autograd engine** (no TensorFlow.js, no ONNX, no WebGL math libs — every
-gradient is hand-derived and the tape is hand-rolled). Twenty-three labs share the one engine:
+gradient is hand-derived and the tape is hand-rolled). Twenty-four labs share the one engine:
 
 - **2-D Playground** — pick a dataset, sketch an MLP, and watch it learn in real time:
   decision boundary, per-neuron feature maps, loss/accuracy curves, and a live computation graph.
@@ -30,6 +30,16 @@ gradient is hand-derived and the tape is hand-rolled). Twenty-three labs share t
   transpose, a scaled dot-product, an additive causal mask, a row-wise softmax, a concat) and the
   whole network — every head's Q/K/V, the output projection, both LayerNorms, the GELU MLP — is
   gradchecked end-to-end to ~1e-7.
+- **Grokking · Generalization** — the same decoder Transformer, fed 3-token `a b =` sequences,
+  learning **(a ∘ b) mod p** from only a *fraction* of the multiplication table. Watch the famous
+  delayed-generalization phenomenon (Power et al., 2022) live: the network **memorizes** the shown
+  pairs almost immediately while held-out accuracy sits at chance for thousands of steps, then —
+  driven by weight decay — **groks**, its test accuracy leaping to 100% in a sharp transition on a
+  log-step curve. The mechanism is shown alongside (Nanda et al., 2023): the number embeddings snap
+  onto a **circle** (n becomes an angle, addition becomes rotation) and the **DFT of the embedding
+  table** collapses from a flat hedge onto a few sparse **key frequencies**; a live **Cayley table**
+  fills in its held-out cells at the moment of grokking. Set weight decay to 0 and it memorizes
+  forever — the toggle *is* the lesson.
 - **Recurrent · RNN/LSTM** — train from-scratch **RNN / GRU / LSTM** cells, unrolled over a
   sequence and learning by **back-propagation through time**, on temporal tasks (long-range
   **recall**, streaming **parity**, delayed **copy**, a char-level **language model** you sample
@@ -2765,3 +2775,109 @@ baseline lags — the classic MAML result. In headless Chromium: entering classi
 Reptile (**25% → 100%** pre/post-adapt) and FOMAML (**21% → 100%**), scrubbing the boundary, resampling
 a novel task, and switching back to regression all run with **zero runtime errors**. Full gate green;
 `pnpm build` transforms 258 modules.
+
+## Grokking · Generalization — *when networks suddenly understand* (new lab, 2026-07-24, claude)
+
+The twenty-fourth lab, and the one I'm proudest of: **grokking**. Train a network on part of a
+modular-arithmetic table and it first *memorizes* — perfect on the pairs it has seen, useless on
+the rest — and then, thousands of steps later and long after the training loss has flatlined, it
+**abruptly generalizes** to 100% held-out accuracy. Power et al. (2022) discovered it; Nanda et al.
+(2023) reverse-engineered the algorithm the network finds. This lab shows *both* — the phenomenon
+and its mechanism — on Synapse's own autograd, with **no new network code**: it reuses the exact
+decoder-only `GPT` from the Attention lab, fed the 3-token sequence `a b =` and read out at the `=`
+position. The whole story is produced by the engine's existing weight-decayed AdamW.
+
+### Why this belongs here
+
+Every other lab shows a network *learning*. This one shows a network **understanding** — the moment
+a memorized lookup table reorganizes into a genuine algorithm — and lets you watch the internal
+representation that makes it happen form in real time. It's the cleanest live demonstration of
+mechanistic interpretability I could build in a browser, and it turns three of the field's most
+striking results (the delayed-generalization curve, the embedding circle, the sparse Fourier
+spectrum) into things you can *drive with a slider*.
+
+### Engine (`engine/grok.ts`)
+
+- [x] **The task.** `buildDataset(p, op, trainFrac, seed)` enumerates the full p×p table for one of
+  four operations — **addition, subtraction, multiplication, sum-of-squares** on ℤ/pℤ — and splits
+  it into a train fraction and a held-out set by a seeded Fisher–Yates shuffle (deterministic in the
+  seed; whether a pair is *seen* is the entire game). Vocabulary is `{0,…,p−1, '='}`, so the `=`
+  token id is exactly `p` and the vocab is `p+1`.
+- [x] **The loss path.** `grokTargets` + `GROK_KEEP = [0,0,1]` score `maskedCrossEntropy` at the
+  `=` position only — the model reads the whole context but is graded and back-propagated solely on
+  the answer it emits — reusing the Attention lab's masked-CE machinery verbatim.
+- [x] **`evalSet`** — exact-match accuracy + mean cross-entropy over any index list (train or test),
+  argmax at the `=` row.
+- [x] **Interpretability probe 1 — the circle.** `numberEmbeddings` extracts the centered embedding
+  rows for the p number tokens; the UI flattens them to 2-D with the engine's own PCA and colours by
+  n. A grokked table lies on a ring.
+- [x] **Interpretability probe 2 — the Fourier spectrum.** `fourierSpectrum` takes the DFT of the
+  embedding table over the token index (real cos/sin correlations per embedding dimension, power
+  summed over dims), normalized to a distribution over frequencies. Reports the **key frequencies**
+  (those above 1.5× uniform) and a **participation-ratio sparsity** in [0,1]. A memorizing net is
+  ~uniform (sparsity ≈ 0); a grokked net spikes onto a handful of frequencies (sparsity → 1).
+
+### Trainer hook (`hooks/useGrokTrainer.ts`)
+
+- [x] Full-batch **or** minibatch AdamW over the *fixed* train set (reshuffled each epoch), on the
+  same rAF loop as the other labs; live lr / weight-decay knobs without a rebuild (so you can turn
+  weight decay on mid-plateau and watch it trigger the transition).
+- [x] Per-step trajectory logging stamped with the optimization step, for a **log-x** history:
+  train/test accuracy, train/test loss, weight norm ‖θ‖, and DFT sparsity — capped to 1200 points.
+- [x] Detects and records the **grok step** (held-out accuracy first crossing 95%).
+- [x] Save / load / share the trained model in the URL hash (`#w=…`) and localStorage slots, and a
+  one-example end-to-end **gradient-check** button.
+
+### UI (`components/grok/`)
+
+- [x] **`GrokCurve`** — the headline: train vs held-out accuracy on a logarithmic step axis with
+  decade gridlines, the "memorized-but-not-understood" gap shaded, and the grok step marked.
+- [x] **`CayleyTable`** — the operation's table, live: every cell (a,b) coloured green/rose by
+  whether the model's answer is right; trained cells outlined, held-out cells filled. Watch the
+  held-out field flip green in a sweep at grokking. (Refreshes every few steps to stay cheap.)
+- [x] **`MechanismChart`** — *why* it happens: ‖weights‖ (normalized) falling as weight decay bites,
+  and DFT sparsity rising, both on the same log-step axis, with the crossover aligned to the jump.
+- [x] **`EmbeddingCircle`** — the number embeddings in their top-2 PCs, coloured 0→p−1 and connected
+  in numeric order; a shapeless blob before grokking, a clean ring after.
+- [x] **`FourierSpectrum`** — the DFT power bars with key frequencies highlighted; watch it collapse
+  from a flat hedge to a few spikes.
+- [x] A **phase banner** that reads the live state — Learning → Memorizing → **Grokking!** →
+  Generalized — pulsing during the transition, and an About card citing both papers.
+
+### Rigor (`engine/selftest.ts`)
+
+- [x] Added two checks to the one-click self-test: a full **end-to-end gradient-check** of the
+  answer-only masked loss through a tiny grok Transformer (every parameter finite-difference
+  verified), and a value check that the DFT spectrum is a normalized distribution (Σ power = 1) and
+  that the dataset builder reproduces the group law `a ∘ b` exactly across the whole table.
+
+### Verified
+
+- **Grokking reproduces on the default config**, verified out-of-browser through the *real*
+  `grok.ts` path (`tsx` over the engine, so the dataset builder, masked-loss path and Fourier probe
+  are all exercised): p=13 modular addition, 60% of pairs shown, a 1-layer 4-head d=24 Transformer
+  (7,584 params), full-batch AdamW lr 2e-3 **weight decay 2.5**. Train accuracy hits 100% by ~step
+  200 while held-out sits at the plateau, then **groks** — held-out leaps to 100% around **step
+  ~800** and stays generalized (oscillating in the ~85–100% band) out to step 4000, while the DFT
+  keeps *sharpening*: it develops **key frequencies k = 1, 3** and its sparsity climbs from ~0.03 to
+  ~0.47 as the embedding circle tightens. (Grokking is genuine but
+  seed/weight-decay sensitive: too little decay never groks, too much groks fast but then drifts —
+  the default sits in the stable window, and both extremes are one dropdown away in the UI so the
+  sensitivity is itself a teaching surface.) A slower, even cleaner variant (p=17, wd 2) groks around
+  step ~2800. Also validated live in **headless Chromium** against the production build: the tab
+  renders all five canvases, the phase banner advances, the self-test (including the two new grok
+  checks) passes, and ~40 training steps run with **zero console errors**. Full CI gate (scope +
+  conformance + lint + build) green; `vite build` transforms 267 modules.
+
+### Open / next-time ideas
+
+- [ ] **Restricted-loss / effective-dimension probes** — plot the excluded-loss curves (Nanda's
+  "restricted loss") that fall *before* test accuracy moves, the earliest predictor of grokking.
+- [ ] **Slingshots & double descent** — expose the late-training loss spikes ("slingshot mechanism")
+  and an epoch-wise double-descent view as the train fraction is swept.
+- [ ] **A grokking phase diagram** — sweep (train fraction × weight decay) and colour each cell by
+  whether/when it groks, the canonical Power et al. figure, computed in a worker.
+- [ ] **Off-thread training in a Web Worker** so large p (29, 31) never touches the UI budget, plus
+  a "fast-forward N steps" batch mode for the long plateau.
+- [ ] **Direct logit attribution** through the single attention layer + MLP, tying the key
+  frequencies back to the `cos(2πk(a+b−c)/p)` argmax the network actually computes.

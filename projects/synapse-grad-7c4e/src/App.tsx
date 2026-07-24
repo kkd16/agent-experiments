@@ -23,9 +23,10 @@ import SnnLab from './components/snn/SnnLab';
 import NtmLab from './components/ntm/NtmLab';
 import ViTLab from './components/vit/ViTLab';
 import MetaLab from './components/meta/MetaLab';
+import GrokLab from './components/grok/GrokLab';
 import './App.css';
 
-type Tab = 'playground' | 'vision' | 'vit' | 'transformer' | 'recurrent' | 'ssm' | 'memory' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'meta' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
+type Tab = 'playground' | 'vision' | 'vit' | 'transformer' | 'grokking' | 'recurrent' | 'ssm' | 'memory' | 'generative' | 'diffusion' | 'flows' | 'adversarial' | 'contrastive' | 'control' | 'value' | 'alphazero' | 'graph' | 'kan' | 'node' | 'meta' | 'uncertainty' | 'gp' | 'moe' | 'morphogenesis' | 'spiking';
 
 // Open the lab a shared link points at (#v= vision, #t= transformer, #c= recurrent, #s= state-space/Mamba, #g= generative, #d= diffusion, #f= flows, #a= GAN, #z= contrastive, #r= RL, #q= DQN, #p= AlphaZero, #n= graph, #k= KAN, #o= Neural ODE, #u= uncertainty, #x= MoE, #m= NCA, #y= spiking).
 function initialTab(): Tab {
@@ -35,6 +36,7 @@ function initialTab(): Tab {
     if (/[#&]x=/.test(location.hash)) return 'moe';
     if (/[#&]b=/.test(location.hash)) return 'memory';
     if (/[#&]i=/.test(location.hash)) return 'vit';
+    if (/[#&]w=/.test(location.hash)) return 'grokking';
     if (/[#&]s=/.test(location.hash)) return 'ssm';
     if (/[#&]c=/.test(location.hash)) return 'recurrent';
     if (/[#&]t=/.test(location.hash)) return 'transformer';
@@ -84,6 +86,9 @@ export default function App() {
             </button>
             <button className={tab === 'transformer' ? 'on' : ''} onClick={() => setTab('transformer')}>
               Transformer · Attention
+            </button>
+            <button className={tab === 'grokking' ? 'on' : ''} onClick={() => setTab('grokking')}>
+              Grokking · Generalization
             </button>
             <button className={tab === 'recurrent' ? 'on' : ''} onClick={() => setTab('recurrent')}>
               Recurrent · RNN/LSTM
@@ -160,6 +165,8 @@ export default function App() {
         <ViTLab />
       ) : tab === 'transformer' ? (
         <SeqLab />
+      ) : tab === 'grokking' ? (
+        <GrokLab />
       ) : tab === 'recurrent' ? (
         <RnnLab />
       ) : tab === 'ssm' ? (
