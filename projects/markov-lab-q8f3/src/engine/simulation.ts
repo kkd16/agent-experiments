@@ -75,6 +75,16 @@ export class Simulation {
   lastInfo: Record<string, number> | null = null
   private infoEma: Record<string, number> = {}
 
+  // Downsampled convergence history: the whole-chain running mean of each
+  // coordinate, snapshotted as the chain grows (the classic Monte-Carlo
+  // convergence curve — the estimate settling toward its target value).
+  histIter: number[] = []
+  histMeanX: number[] = []
+  histMeanY: number[] = []
+  private cumX = 0
+  private cumY = 0
+  private hStride = 20 // iterations between snapshots (doubles as history fills)
+
   constructor(config: SimConfig) {
     this.config = config
     this.target = targetById(config.targetId)
@@ -118,7 +128,24 @@ export class Simulation {
           this.infoEma[k] = prev === undefined ? r.info[k] : 0.02 * r.info[k] + 0.98 * prev
         }
       }
+      this.cumX += r.x[0]
+      this.cumY += r.x[1]
       this.pushState(r.x, r.logp, r.accepted)
+      if (this.iters % this.hStride === 0) this.snapshot()
+    }
+  }
+
+  /** Record the current whole-chain running mean; thin the history as it grows. */
+  private snapshot() {
+    this.histIter.push(this.iters)
+    this.histMeanX.push(this.cumX / this.iters)
+    this.histMeanY.push(this.cumY / this.iters)
+    if (this.histIter.length > 1000) {
+      const keep = (a: number[]) => a.filter((_, i) => i % 2 === 0)
+      this.histIter = keep(this.histIter)
+      this.histMeanX = keep(this.histMeanX)
+      this.histMeanY = keep(this.histMeanY)
+      this.hStride *= 2 // snapshot half as often from here on
     }
   }
 

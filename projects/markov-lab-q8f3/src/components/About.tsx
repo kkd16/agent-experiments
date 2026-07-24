@@ -78,6 +78,10 @@ const DIAG_ROWS: Row[] = [
     name: 'mean err — accuracy vs. ground truth',
     text: 'For the targets whose mean is known analytically, this is the plain distance between the chain’s running-mean estimate and the true mean — the one number ESS and R̂ are ultimately proxies for. Watch a chain that looks busy but is trapped in one mode: its R̂ climbs and its mean err stays large, because a confident-looking sampler can still be flatly wrong. In Race mode it becomes the tie-breaker: not just who mixes faster, but who is actually closer to the right answer.',
   },
+  {
+    name: 'convergence — the estimate settling in',
+    text: 'The bottom plot tracks the whole-chain running mean of the first coordinate as the chain grows (iterations on a log axis). When the target’s mean is known it is drawn as a dashed line, and you watch the estimate walk onto it — the picture of Monte-Carlo consistency. In Race mode both curves are overlaid, so “which sampler converges first” stops being an abstraction and becomes a footrace you can watch.',
+  },
 ]
 
 export default function About({ onClose }: { onClose: () => void }) {

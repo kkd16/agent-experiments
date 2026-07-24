@@ -216,6 +216,67 @@ export function drawAcfMulti(
   ctx.globalAlpha = 1
 }
 
+/**
+ * Running-mean convergence: each chain's whole-chain mean estimate vs. the
+ * number of iterations, with a dashed line at the true value when known. The
+ * curves should settle onto that line — and in Race mode you see which sampler
+ * gets there first. The x-axis is log-scaled so early progress stays legible.
+ */
+export function drawConvergence(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  iters: number[][],
+  vals: number[][],
+  colors: string[],
+  truth?: number,
+) {
+  clear(ctx, w, h)
+  // Combined ranges across every lane (and the truth line).
+  let vlo = Infinity
+  let vhi = -Infinity
+  let imax = 0
+  for (const s of vals) for (const v of s) {
+    if (v < vlo) vlo = v
+    if (v > vhi) vhi = v
+  }
+  for (const s of iters) if (s.length) imax = Math.max(imax, s[s.length - 1])
+  if (!isFinite(vlo) || !isFinite(vhi) || imax < 2) return
+  if (truth !== undefined) {
+    vlo = Math.min(vlo, truth)
+    vhi = Math.max(vhi, truth)
+  }
+  const pad = (vhi - vlo) * 0.12 || 1
+  vlo -= pad
+  vhi += pad
+  const pl = 4
+  const logMax = Math.log10(Math.max(10, imax))
+  const toX = (it: number) => pl + (Math.log10(Math.max(1, it)) / logMax) * (w - 2 * pl)
+  const toY = (v: number) => h - 4 - ((v - vlo) / (vhi - vlo || 1)) * (h - 8)
+
+  if (truth !== undefined) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)'
+    ctx.setLineDash([4, 3])
+    ctx.beginPath()
+    ctx.moveTo(pl, toY(truth))
+    ctx.lineTo(w - pl, toY(truth))
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+  vals.forEach((series, k) => {
+    const it = iters[k]
+    if (!series || series.length < 2) return
+    ctx.strokeStyle = colors[k]
+    ctx.globalAlpha = 0.9
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    ctx.moveTo(toX(it[0]), toY(series[0]))
+    for (let i = 1; i < series.length; i++) ctx.lineTo(toX(it[i]), toY(series[i]))
+    ctx.stroke()
+  })
+  ctx.globalAlpha = 1
+}
+
 /** Autocorrelation function — how fast the chain forgets where it was. */
 export function drawAcf(
   ctx: CanvasRenderingContext2D,
