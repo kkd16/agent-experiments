@@ -21,9 +21,15 @@ import type { Span, Token } from './lexer.ts'
 import { tokenize } from './lexer.ts'
 import { DERIVABLE, deriveInstances, isDerivable } from './deriving.ts'
 
-// A list-comprehension qualifier: a generator `name <- src` or a boolean guard.
+// A list-comprehension qualifier. Three forms, mirroring Haskell:
+//   • a generator `pat <- src` — draw elements from a list, keeping only the
+//     ones that match `pat` (a refutable pattern silently drops non-matches, the
+//     list-monad `fail`);
+//   • a `let pat = rhs` binding, in scope for every qualifier to its right;
+//   • a boolean guard — any expression, filtering the elements seen so far.
 type Qualifier =
-  | { kind: 'gen'; name: string; src: Expr }
+  | { kind: 'gen'; pat: Pattern; src: Expr }
+  | { kind: 'let'; pat: Pattern; rhs: Expr }
   | { kind: 'guard'; test: Expr }
 
 export class ParseError extends Error {
@@ -327,28 +333,63 @@ class Parser {
       const span = this.spanFrom(open.span, close.span)
       return this.desugarComprehension(first, quals, 0, span)
     }
-    // ordinary list literal
+    // range literal `[ a .. b ]` — the inclusive Int enumeration a, a+1, …, b.
+    if (this.at('op', '..')) {
+      this.next()
+      const to = this.parseExpr(0)
+      const close = this.expect('punc', ']')
+      const span = this.spanFrom(open.span, close.span)
+      return this.enumApp('enumFromTo', [first, to], span)
+    }
+    // ordinary list literal — or a stepped range `[ a, s .. b ]`.
     const elements: Expr[] = [first]
     while (this.at('punc', ',')) {
       this.next()
-      elements.push(this.parseExpr(0))
+      const next = this.parseExpr(0)
+      // stepped range: `[ a, s .. b ]` enumerates a, s, s+(s-a), …, ≤ b (or ≥ b
+      // when the step is negative). Only the *second* element may precede `..`.
+      if (elements.length === 1 && this.at('op', '..')) {
+        this.next()
+        const to = this.parseExpr(0)
+        const close = this.expect('punc', ']')
+        const span = this.spanFrom(open.span, close.span)
+        return this.enumApp('enumFromThenTo', [first, next, to], span)
+      }
+      elements.push(next)
     }
     const close = this.expect('punc', ']')
     return { kind: 'list', elements, span: this.spanFrom(open.span, close.span) }
   }
 
-  // comprehension qualifiers: a `,`-separated list of generators (`x <- xs`)
-  // and boolean guards (any expression).
+  // Build the saturated application of a prelude enumeration helper to its
+  // range bounds, e.g. `enumFromTo a b` ⇒ ((enumFromTo a) b).
+  private enumApp(fn: string, args: Expr[], span: Span): Expr {
+    let acc: Expr = { kind: 'var', name: fn, span }
+    for (const a of args) {
+      acc = { kind: 'app', fn: acc, arg: a, span }
+    }
+    return acc
+  }
+
+  // comprehension qualifiers: a `,`-separated list of generators (`pat <- xs`),
+  // `let pat = rhs` bindings and boolean guards (any expression).
   private parseQualifiers(): Qualifier[] {
     const quals: Qualifier[] = []
     for (;;) {
-      const t = this.peek()
-      const ahead = this.toks[this.pos + 1]
-      if (t.kind === 'ident' && ahead && ahead.kind === 'op' && ahead.value === '<-') {
-        const name = this.next().value
-        this.next() // '<-'
+      if (this.at('keyword', 'let')) {
+        // `let pat = rhs` — a binding scoped over the qualifiers to its right.
+        this.next()
+        const pat = this.parsePattern()
+        this.expect('op', '=')
+        const rhs = this.parseExpr(0)
+        quals.push({ kind: 'let', pat, rhs })
+      } else if (this.generatorAhead()) {
+        // `pat <- src` — a generator. `pat` may be any pattern; refutable
+        // patterns drop the elements that don't match.
+        const pat = this.parsePattern()
+        this.expect('op', '<-')
         const src = this.parseExpr(0)
-        quals.push({ kind: 'gen', name, src })
+        quals.push({ kind: 'gen', pat, src })
       } else {
         quals.push({ kind: 'guard', test: this.parseExpr(0) })
       }
@@ -361,10 +402,38 @@ class Parser {
     return quals
   }
 
-  // Desugar `[ e | q0, q1, … ]` into core AST using `concat`, `map` and `if`:
-  //   [ e | ]            ⇒  [e]
-  //   [ e | b, Q ]       ⇒  if b then [ e | Q ] else []
-  //   [ e | x <- xs, Q ] ⇒  concat (map (fn x -> [ e | Q ]) xs)
+  // Is the next qualifier a generator? True iff a top-level `<-` appears before
+  // the qualifier ends (a `,` at depth 0, or the closing `]`). Scanning at
+  // bracket depth lets an arbitrary pattern precede the arrow without a parse
+  // attempt — `(a, b) <- ps`, `Just x <- opts`, `h :: t <- rows` all qualify,
+  // while a plain guard such as `a * a == c * c` has no depth-0 `<-` and falls
+  // through to the guard branch.
+  private generatorAhead(): boolean {
+    let depth = 0
+    for (let j = this.pos; j < this.toks.length; j++) {
+      const t = this.toks[j]
+      if (t.kind === 'eof') return false
+      if (t.kind === 'punc') {
+        if (t.value === '(' || t.value === '[' || t.value === '{') depth++
+        else if (t.value === ')' || t.value === '}') depth--
+        else if (t.value === ']') {
+          if (depth === 0) return false
+          depth--
+        } else if (t.value === ',' && depth === 0) return false
+      } else if (t.kind === 'op' && t.value === '<-' && depth === 0) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Desugar `[ e | q0, q1, … ]` into core AST using `concat`, `map`, `if`, `let`
+  // and (for refutable patterns) `match`:
+  //   [ e | ]              ⇒  [e]
+  //   [ e | b, Q ]         ⇒  if b then [ e | Q ] else []
+  //   [ e | let p = r, Q ] ⇒  let p = r in [ e | Q ]            (via `match` if p isn't a name)
+  //   [ e | x <- xs, Q ]   ⇒  concat (map (fn x -> [ e | Q ]) xs)
+  //   [ e | p <- xs, Q ]   ⇒  concat (map (fn v -> match v with p -> [e|Q] | _ -> []) xs)
   private desugarComprehension(
     elem: Expr,
     quals: Qualifier[],
@@ -380,7 +449,23 @@ class Parser {
       const empty: Expr = { kind: 'list', elements: [], span }
       return { kind: 'if', cond: q.test, then: rest, else: empty, span }
     }
-    const lambda: Expr = { kind: 'lambda', param: q.name, body: rest, span }
+    if (q.kind === 'let') {
+      // an irrefutable `let`: bind a name directly, or destructure via a
+      // single-arm `match` (products stay exhaustive, so no spurious warning).
+      if (q.pat.kind === 'pvar') {
+        return { kind: 'let', name: q.pat.name, value: q.rhs, body: rest, recursive: false, span }
+      }
+      return {
+        kind: 'match',
+        scrutinee: q.rhs,
+        cases: [{ pattern: q.pat, body: rest }],
+        span,
+      }
+    }
+    // a generator. A plain-name (or wildcard) pattern is irrefutable, so we can
+    // map a bare lambda over the source; any other pattern needs a `match` whose
+    // wildcard arm drops the elements that don't fit.
+    const lambda = this.generatorLambda(q.pat, rest, span)
     const mapVar: Expr = { kind: 'var', name: 'map', span }
     const concatVar: Expr = { kind: 'var', name: 'concat', span }
     const mapped: Expr = {
@@ -390,6 +475,29 @@ class Parser {
       span,
     }
     return { kind: 'app', fn: concatVar, arg: mapped, span }
+  }
+
+  // Build the per-element lambda for a generator over pattern `pat` producing
+  // `rest` (already the [e|Q] tail). Irrefutable binders skip the `match`.
+  private generatorLambda(pat: Pattern, rest: Expr, span: Span): Expr {
+    if (pat.kind === 'pvar') {
+      return { kind: 'lambda', param: pat.name, body: rest, span }
+    }
+    if (pat.kind === 'pwild') {
+      return { kind: 'lambda', param: this.freshName(), body: rest, span }
+    }
+    const v = this.freshName()
+    const empty: Expr = { kind: 'list', elements: [], span }
+    const body: Expr = {
+      kind: 'match',
+      scrutinee: { kind: 'var', name: v, span },
+      cases: [
+        { pattern: pat, body: rest },
+        { pattern: { kind: 'pwild', span }, body: empty },
+      ],
+      span,
+    }
+    return { kind: 'lambda', param: v, body, span }
   }
 
   private parseLambda(): Expr {
