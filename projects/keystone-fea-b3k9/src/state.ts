@@ -48,7 +48,7 @@ export type ElemOrder = 'cst' | 'q4' | 'q8'
 
 export interface Scene {
   version: 1
-  tab: 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture' | 'buckling'
+  tab: 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture' | 'buckling' | 'plate'
   frame: FrameModel
   continuum: { presetId: string; density: number; elemOrder?: ElemOrder }
   display: Display

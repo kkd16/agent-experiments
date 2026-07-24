@@ -57,6 +57,7 @@ import { TopOptStudio } from './ui/TopOptStudio'
 import { ThermalStudio } from './ui/ThermalStudio'
 import { FractureStudio } from './ui/FractureStudio'
 import { BucklingStudio } from './ui/BucklingStudio'
+import { PlateStudio } from './ui/PlateStudio'
 import {
   addMember,
   addNode,
@@ -83,7 +84,7 @@ import {
   type Scene,
 } from './state'
 
-type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture' | 'buckling'
+type Tab = 'frame' | 'continuum' | 'topopt' | 'thermal' | 'fracture' | 'buckling' | 'plate'
 type Tool = 'select' | 'node' | 'member' | 'support' | 'load' | 'delete'
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
@@ -968,6 +969,7 @@ export default function App() {
               { value: 'thermal', label: 'Thermal & Multiphysics' },
               { value: 'fracture', label: 'Fracture Mechanics' },
               { value: 'buckling', label: 'Buckling & Stability' },
+              { value: 'plate', label: 'Plate Bending' },
             ]}
             value={tab}
             onChange={(v) => {
@@ -988,6 +990,8 @@ export default function App() {
           <FractureStudio />
         ) : tab === 'buckling' ? (
           <BucklingStudio />
+        ) : tab === 'plate' ? (
+          <PlateStudio />
         ) : (
           <>
         {/* ---------------- left rail: presets ---------------- */}

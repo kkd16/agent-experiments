@@ -1156,3 +1156,92 @@ eigenvalues of A are the smallest |λ|: exactly the modes that buckle first.
   the resonator shows 16.2× at resonance under force, the rotor run-up under unbalance,
   and TR = 26 at resonance dropping through the √2 crossover into isolation under base
   motion. 29/29 benchmark badge green, zero runtime errors.
+
+---
+
+## v15 — Plate & Shell Bending (out-of-plane FEM): the MITC4 Reissner–Mindlin element
+
+Everything in Keystone up to now bends **in its own plane** — trusses, frames, and
+plane-stress membranes. A floor slab, a bridge deck, a pressure-vessel wall, a manhole
+cover, a silicon die: these bend **out of plane**. The load pushes them transversely and
+they resist by *bending and twisting moments*. That is a whole new element family (3 DOF
+per node: a transverse deflection `w` and two normal rotations `θx, θy`) and a whole new
+chapter for the studio. v15 builds it from scratch.
+
+### Why MITC4
+
+The naive 4-node Reissner–Mindlin plate **shear-locks**: as the plate gets thin, spurious
+transverse-shear stiffness swamps the bending energy and the plate comes out orders of
+magnitude too stiff. The **MITC4** element (Dvorkin & Bathe, 1984) fixes this by replacing
+the directly-differentiated transverse shear with an **assumed covariant shear field** tied
+at the four edge midpoints — locking-free in the thin limit, still valid for thick plates.
+It is the workhorse plate/shell element in real FE codes, and it is what Keystone now runs.
+
+### What shipped
+
+- [x] `engine/plate.ts` — the **MITC4 Reissner–Mindlin element** from scratch: Q4 bilinear
+  shape functions & Jacobian; the bending B-matrix (κ = [∂θx/∂x, ∂θy/∂y, ∂θx/∂y+∂θy/∂x]);
+  the **assumed transverse-shear B-matrix** tied at the edge midpoints A/B/C/D and mapped to
+  Cartesian by J⁻¹ (the anti-locking heart); the bending `D_b = Et³/12(1−ν²)·[…]` and shear
+  `D_s = (5/6)Gt·I` constitutive matrices; the 12×12 element stiffness (2×2 Gauss on both
+  bending and the assumed shear), the consistent mass (translational ρt + rotary ρt³/12),
+  the uniform-pressure consistent load, and the Gauss-point moment recovery + principal
+  moments. Pure and deterministic.
+- [x] `engine/platemesh.ts` — a structured rectangular plate mesher (nx×ny Q4 cells, 3
+  DOF/node), edge-node sets for boundary conditions, and centre/nearest-node helpers.
+- [x] `engine/platesolve.ts` — global assembly (reusing the sparse `Assembler`/CSR + PCG),
+  per-edge boundary conditions (**free / simply-supported / clamped**) plus point/corner
+  supports, the static solve under **uniform pressure, a central point load, or a
+  hydrostatic (depth-varying) load**, a **smooth nodal moment field** (Gauss-point moments
+  extrapolated to nodes and averaged, matching the app's Q4/Q8 stress-recovery style), and
+  **free-vibration modal analysis** K φ = ω² M φ by the same scalable subspace (Bathe)
+  iteration the continuum modal solver uses.
+- [x] `engine/platepresets.ts` — eight canonical scenarios (simply-supported slab, clamped
+  cover plate, 2:1 rectangular panel, point-loaded SS & clamped squares, corner-supported
+  flat slab, cantilever plate, hydrostatic tank wall), five materials (steel, aluminium,
+  concrete, glass, silicon), and the **closed-form Timoshenko coefficients** for the cases
+  that have them.
+- [x] `ui/PlateStudio.tsx` — a new **Plate Bending** studio tab: an **orbitable 3-D
+  deflected surface** (flat-shaded with a directional light on the true deflected normal,
+  painter-sorted, draggable azimuth/elevation, scroll-zoom) draped with any field —
+  deflection or the `Mx / My / Mxy / M₁` moment fields — plus a top-down **contour** view, a
+  **mode-shape animation** with a mode pill selector, a live **FE-vs-Timoshenko** validation
+  read-out, and geometry/thickness/load/material/mesh controls (debounced so each heavy
+  solve fires once the drag settles).
+- [x] `engine/validate.ts` — four new closed-form benchmarks wired into the live badge:
+  the **simply-supported square** (w_c = 0.004062 q a⁴/D), the **clamped square**
+  (0.00126 q a⁴/D), the **SS square under a central point load** (0.01160 P a²/D), and the
+  **SS square fundamental frequency** (f₁ = π²(2/a²)√(D/ρt)/2π). All pass; the badge is now
+  **88/88**. Verified end-to-end in headless Chromium: the SS slab renders as a smooth 3-D
+  sag matching theory to 0.74% at the default mesh (0.27% at the benchmark's 28×28), the
+  verify badge reads green, and there are no runtime errors.
+
+### Backlog (future plate/shell chapters)
+
+- [ ] **Full flat-shell element** — superpose the MITC4 plate on the existing membrane
+  (drilling-DOF stabilised) so folded plates, box girders and stiffened panels can be built.
+- [ ] **Plate buckling** — reuse the geometric-stiffness machinery for `(K + λK_g)φ = 0`
+  under in-plane pre-load, and drop the FE result onto the classical plate-buckling
+  coefficient `k` (simply-supported panel k = 4).
+- [ ] **Transverse-shear force field `Qx, Qy`** and a Kirchhoff-shear/edge-reaction view,
+  plus the twisting-moment corner reactions that soft simple supports imply.
+- [ ] **Yield-line / limit analysis** for slabs (the plate analogue of the frame pushover).
+- [ ] **Superconvergent patch recovery (ZZ)** for the moment field + an error estimator.
+- [ ] **Free-form (Delaunay) plate meshing** so L-shaped and holed slabs are possible.
+- [ ] **Hard vs soft simple support** toggle (constrain the tangential rotation) and the
+  associated corner-force study.
+
+- 2026-07-24 (claude): shipped **v15 — plate & shell bending**, Keystone's first
+  *out-of-plane* analysis. Built the **MITC4 Reissner–Mindlin plate element** from scratch
+  (assumed-natural-strain transverse shear tied at the edge midpoints — the locking cure),
+  a rectangular plate mesher, a solver (static under uniform / point / hydrostatic load with
+  free/SS/clamped edges + corner supports, smooth recovered moment fields, and subspace-
+  iteration free-vibration modes), eight canonical scenarios with five materials, and a new
+  **Plate Bending** studio: an orbitable, flat-shaded 3-D deflected surface draped with the
+  deflection or Mx/My/Mxy/M₁ fields, a contour view, animated mode shapes, and a live
+  FE-vs-Timoshenko check. Pinned by four new closed-form benchmarks (SS & clamped square
+  under UDL, SS square point load, SS fundamental frequency) — all green, badge now
+  **88/88** — and each verified independently against Timoshenko & Woinowsky-Krieger:
+  0.004062 q a⁴/D (0.27%), 0.00126 q a⁴/D (0.53%), 0.01160 P a²/D (0.31%), and the mode-1
+  frequency (0.09%). Verified rendering end-to-end in headless Chromium: the simply-
+  supported slab sags into a clean 3-D bowl, the numbers match theory, zero runtime errors.
