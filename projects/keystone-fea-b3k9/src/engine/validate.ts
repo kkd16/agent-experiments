@@ -22,6 +22,9 @@ import { solveTransientThermoelastic } from './coupled'
 import { analyzeFracture, type CrackModel } from './fracture'
 import { edgeNodesQ } from './quadmesh'
 import { solveBuckling as solveContinuumBuckling, eulerLoad, type BucklingInput } from './buckling'
+import { solvePlateStatic, solvePlateModal, type PlateInput, type PlateEdges } from './platesolve'
+import { makePlateMesh } from './platemesh'
+import { flexuralRigidity } from './plate'
 
 const STEEL_RHO = 7850 // kg/m³
 
@@ -1375,6 +1378,64 @@ export function runBucklingBenchmarks(): Check[] {
   return checks
 }
 
+export function runPlateBenchmarks(): Check[] {
+  const checks: Check[] = []
+  const E = 200e9
+  const nu = 0.3
+  const a = 1.0
+  const t = 0.01
+  const mat = { E, nu, rho: STEEL_RHO }
+  const D = flexuralRigidity(mat, t)
+  function allEdges(bc: 'ss' | 'clamped'): PlateEdges {
+    return { left: bc, right: bc, bottom: bc, top: bc }
+  }
+
+  // 1. Simply-supported square, uniform pressure — the Navier double-sine series
+  //    gives w_c = 0.004062 q a⁴/D. MITC4 reproduces it without shear locking.
+  {
+    const q = 1000
+    const mesh = makePlateMesh(a, a, 28, 28)
+    const input: PlateInput = { mesh, material: mat, thickness: t, edges: allEdges('ss'), load: { type: 'uniform', q } }
+    const r = solvePlateStatic(input)
+    const expected = (0.004062 * q * a ** 4) / D
+    checks.push(check('SS square plate (UDL)', 'w_c = 0.004062 q a⁴/D', expected, Math.abs(r.wCenter), 'm', 1e-2))
+  }
+
+  // 2. Clamped square, uniform pressure: w_c = 0.00126 q a⁴/D (≈3.2× stiffer).
+  {
+    const q = 1000
+    const mesh = makePlateMesh(a, a, 28, 28)
+    const input: PlateInput = { mesh, material: mat, thickness: t, edges: allEdges('clamped'), load: { type: 'uniform', q } }
+    const r = solvePlateStatic(input)
+    const expected = (0.00126 * q * a ** 4) / D
+    checks.push(check('Clamped square plate (UDL)', 'w_c = 0.00126 q a⁴/D', expected, Math.abs(r.wCenter), 'm', 1.5e-2))
+  }
+
+  // 3. Simply-supported square, central point load: w_c = 0.01160 P a²/D.
+  {
+    const P = 1000
+    const mesh = makePlateMesh(a, a, 28, 28)
+    const input: PlateInput = { mesh, material: mat, thickness: t, edges: allEdges('ss'), load: { type: 'point', P } }
+    const r = solvePlateStatic(input)
+    const expected = (0.0116 * P * a * a) / D
+    checks.push(check('SS square plate (point load)', 'w_c = 0.01160 P a²/D', expected, Math.abs(r.wCenter), 'm', 1.5e-2))
+  }
+
+  // 4. Free-vibration fundamental of the SS square plate:
+  //    ω₁₁ = π²(1/a² + 1/a²)√(D/ρt), f = ω/2π.
+  {
+    const mesh = makePlateMesh(a, a, 22, 22)
+    const input: PlateInput = { mesh, material: mat, thickness: t, edges: allEdges('ss'), load: { type: 'uniform', q: 0 } }
+    const modal = solvePlateModal(input, 3)
+    const f1 = modal.modes[0]?.frequency ?? 0
+    const omega = Math.PI * Math.PI * (2 / (a * a)) * Math.sqrt(D / (mat.rho * t))
+    const expected = omega / (2 * Math.PI)
+    checks.push(check('SS square plate mode 1', 'f₁ = π²·(2/a²)·√(D/ρt)/2π', expected, f1, 'Hz', 2e-2))
+  }
+
+  return checks
+}
+
 export function runAllBenchmarks(): {
   frame: Check[]
   dynamics: Check[]
@@ -1389,6 +1450,7 @@ export function runAllBenchmarks(): {
   thermoelastic: Check[]
   fracture: Check[]
   buckling: Check[]
+  plate: Check[]
   allPass: boolean
 } {
   const frame = runFrameBenchmarks()
@@ -1404,6 +1466,7 @@ export function runAllBenchmarks(): {
   const thermoelastic = runThermoelasticBenchmarks()
   const fracture = runFractureBenchmarks()
   const buckling = runBucklingBenchmarks()
+  const plate = runPlateBenchmarks()
   const allPass = [
     ...frame,
     ...dynamics,
@@ -1418,6 +1481,7 @@ export function runAllBenchmarks(): {
     ...thermoelastic,
     ...fracture,
     ...buckling,
+    ...plate,
   ].every((c) => c.pass)
-  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, buckling, allPass }
+  return { frame, dynamics, harmonic, seismic, plastic, inelastic, continuum, quad, topopt, thermal, thermoelastic, fracture, buckling, plate, allPass }
 }
