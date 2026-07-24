@@ -7,6 +7,17 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [x] Implement support for fraction problems
+- [x] Implement support for decimal math problems
+- [x] Add a daily goal progress bar
+- [x] Create a "focus mode" that hides UI elements
+- [ ] Implement practice mode for specific numbers (e.g. only 7s times tables)
+- [x] Add a "pause" button for timed modes
+- [ ] Support custom timer durations
+- [x] Add history of average answer time per difficulty
+- [ ] Show a confetti animation for new high scores
+- [ ] Implement a "wrong answers only" review mode
+
 - [x] Add an achievements system with badges
 - [x] Add support for algebraic equations (e.g. 2x = 10)
 - [ ] Implement a global multiplayer mode

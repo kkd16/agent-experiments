@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
-type Operation = '+' | '-' | '*' | '/' | 'x';
+type Operation = '+' | '-' | '*' | '/' | 'x' | 'frac' | 'dec';
 type Difficulty = 'easy' | 'medium' | 'hard' | 'custom' | 'double-digits';
 
 
@@ -38,14 +38,29 @@ const ACHIEVEMENTS: Achievement[] = [
 const MOTIVATIONAL_QUOTES = ["Math is power.", "Every problem has a solution.", "Practice makes perfect.", "Numbers rule the universe."];
 
 function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false, customMin: number = 1, customMax: number = 10, isBossBattle: boolean = false) {
+  const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
+  const selectedOp = ops[Math.floor(Math.random() * ops.length)];
+
+  if (selectedOp === 'frac') {
+    // Generate fraction problem: 1/num1 of num2
+    const n1 = Math.floor(Math.random() * 9) + 2; // Denominator 2 to 10
+    const answer = Math.floor(Math.random() * 10) + 1; // Answer 1 to 10
+    const n2 = n1 * answer; // Total number
+    return { n1, n2, selectedOp };
+  }
+
+  if (selectedOp === 'dec') {
+    // Decimal addition
+    const n1 = parseFloat(((Math.random() * 9) + 1).toFixed(1));
+    const n2 = parseFloat(((Math.random() * 9) + 1).toFixed(1));
+    return { n1, n2, selectedOp };
+  }
+
   if (difficulty === 'double-digits') {
     const n1 = Math.floor(Math.random() * 90) + 10;
     const n2 = Math.floor(Math.random() * 90) + 10;
     return { n1, n2, selectedOp: '+' as Operation };
   }
-  const ops = allowedOps.length > 0 ? allowedOps : ['+'] as Operation[];
-
-  const selectedOp = ops[Math.floor(Math.random() * ops.length)];
 
   if (selectedOp === 'x') {
     // Algebra mode: solve for x. e.g. x + A = B or A * x = B
@@ -1022,6 +1037,23 @@ function App() {
   const [animationClass, setAnimationClass] = useState<string>('');
   const [streakMessage, setStreakMessage] = useState<string>('');
   const [avgTimePerDigit, setAvgTimePerDigit] = useState<number>(getInitialAvgTimePerDigit());
+  const [avgTimePerDifficulty, setAvgTimePerDifficulty] = useState<Record<string, { totalTime: number, count: number }>>(() => {
+    try {
+      const stored = window.localStorage.getItem('mathFlashcardsAvgTimePerDifficulty');
+      if (stored) return JSON.parse(stored);
+      return { 'easy': {totalTime: 0, count: 0}, 'medium': {totalTime: 0, count: 0}, 'hard': {totalTime: 0, count: 0}, 'custom': {totalTime: 0, count: 0}, 'double-digits': {totalTime: 0, count: 0} };
+    } catch {
+      return { 'easy': {totalTime: 0, count: 0}, 'medium': {totalTime: 0, count: 0}, 'hard': {totalTime: 0, count: 0}, 'custom': {totalTime: 0, count: 0}, 'double-digits': {totalTime: 0, count: 0} };
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mathFlashcardsAvgTimePerDifficulty', JSON.stringify(avgTimePerDifficulty));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [avgTimePerDifficulty]);
   const [totalDigitsAnswered, setTotalDigitsAnswered] = useState<number>(getInitialTotalDigitsAnswered());
   const [sessionStartTime, setSessionStartTime] = useState<number>(0);
   useEffect(() => {
@@ -1363,10 +1395,11 @@ function App() {
 
   const handleGiveUp = () => {
     setLifetimeSkips(prev => prev + 1);
+    setDailyQuestions(prev => { const today = new Date().toDateString(); if (prev.date === today) return { ...prev, count: prev.count + 1 }; return { date: today, count: 1 }; });
     if (isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack')) {
       setTimeLeft(prev => Math.max(0, prev - 5));
     }
-    const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : Math.floor(num1 / num2);
+    const correctAns = operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : operation === 'frac' ? num2 / num1 : operation === 'dec' ? parseFloat((num1 + num2).toFixed(1)) : Math.floor(num1 / num2);
     const newHistoryItem: HistoryItem = { num1, num2, operation, userAnswer: 'Skipped', correctAnswer: correctAns, isCorrect: false };
     setHistory(prev => [newHistoryItem, ...prev].slice(0, 100));
     setStreak(0);
@@ -1561,6 +1594,17 @@ function App() {
       setTotalDigitsAnswered(newTotalDigits);
       setAvgTimePerDigit(newAvgTime);
     }
+
+    setAvgTimePerDifficulty(prev => {
+      const current = prev[difficulty] || { totalTime: 0, count: 0 };
+      return {
+        ...prev,
+        [difficulty]: {
+          totalTime: current.totalTime + (responseTime / 1000),
+          count: current.count + 1
+        }
+      };
+    });
     setPreviousOperation(operation);
 
 
@@ -1571,11 +1615,18 @@ function App() {
       case '*': correctAnswer = num1 * num2; break;
       case '/': correctAnswer = num1 / num2; break;
       case 'x': correctAnswer = num2 - num1; break;
+      case 'frac': correctAnswer = num2 / num1; break;
+      case 'dec': correctAnswer = parseFloat((num1 + num2).toFixed(1)); break;
     }
 
 
 
-        const isCorrect = strictMode ? userAnswer === correctAnswer.toString() : answer === correctAnswer;
+        let isCorrect = false;
+        if (operation === 'dec') {
+          isCorrect = strictMode ? userAnswer === correctAnswer.toString() : parseFloat(userAnswer) === correctAnswer;
+        } else {
+          isCorrect = strictMode ? userAnswer === correctAnswer.toString() : answer === correctAnswer;
+        }
 
     if (isCorrect && responseTime > 0 && responseTime < lifetimeFastestAnswer) {
       setLifetimeFastestAnswer(responseTime);
@@ -1723,6 +1774,7 @@ function App() {
 
       updateHighScore(newScore);
       const newQuestionsAnswered = questionsAnswered + 1;
+      setDailyQuestions(prev => { const today = new Date().toDateString(); if (prev.date === today) return { ...prev, count: prev.count + 1 }; return { date: today, count: 1 }; });
       setQuestionsAnswered(newQuestionsAnswered);
 
       if (isSpeedRunActive && gameMode === 'questions' && newQuestionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit)) {
@@ -1903,7 +1955,13 @@ function App() {
         </div>
       )}
       {!(isSpeedRunActive && focusMode) && (<div className="header-top" style={{ backgroundColor: headerColor || undefined }}>
-        <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
+        <div style={{display: 'flex', flexDirection: 'column'}}>
+          <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
+          <div className="daily-goal-progress" style={{display: 'flex', flexDirection: 'column', marginTop: '0.2rem'}}>
+            <span style={{fontSize: '0.7rem', color: theme === 'dark' ? '#aaa' : '#666'}}>Daily Goal: {dailyQuestions.count}/{dailyGoal}</span>
+            <progress value={dailyQuestions.count} max={dailyGoal} style={{width: '100px', height: '6px'}} title="Daily Goal Progress"></progress>
+          </div>
+        </div>
         <div>
           <button onClick={toggleTheme} className="theme-toggle" style={{ marginRight: '0.5rem' }} disabled={autoDarkMode}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -2070,6 +2128,17 @@ function App() {
           })()}
 
           <div className="stat">Avg Time / Digit: {avgTimePerDigit > 0 ? avgTimePerDigit.toFixed(2) + 's' : 'N/A'} | Avg Time / Question: {(avgTimePerDigit > 0 && lifetimeQuestions > 0) ? (avgTimePerDigit * (totalDigitsAnswered / lifetimeQuestions)).toFixed(2) + 's' : 'N/A'}</div>
+
+          <div className="stat" style={{marginTop: '0.5rem', marginBottom: '0.5rem'}}>
+             <strong>Avg Time per Difficulty:</strong>
+             <ul style={{listStyleType: 'none', padding: 0, margin: '0.2rem 0', fontSize: '0.9rem', color: theme === 'dark' ? '#ccc' : '#555'}}>
+               {['easy', 'medium', 'hard'].map(d => {
+                 const stat = avgTimePerDifficulty[d];
+                 const avg = stat && stat.count > 0 ? (stat.totalTime / stat.count).toFixed(2) : 'N/A';
+                 return <li key={d}>{d.charAt(0).toUpperCase() + d.slice(1)}: {avg}{avg !== 'N/A' ? 's' : ''} ({stat?.count || 0} answers)</li>
+               })}
+             </ul>
+          </div>
 {(() => {
             const missed = fullHistory.filter(h => !h.isCorrect);
             if (missed.length === 0) return null;
@@ -2189,6 +2258,17 @@ function App() {
         </div>
 
         <div className="difficulty-selector">
+          <label htmlFor="dailyGoal">Daily Goal:</label>
+          <input
+            id="dailyGoal"
+            type="number"
+            min="1"
+            value={dailyGoal}
+            onChange={(e) => setDailyGoal(Math.max(1, parseInt(e.target.value) || 50))}
+            style={{ width: '80px' }}
+          />
+        </div>
+        <div className="difficulty-selector">
           <label htmlFor="difficulty">Difficulty:</label>
           <select
             id="difficulty"
@@ -2253,7 +2333,7 @@ function App() {
 
 <div className="operations-selector">
           <span>Operations:</span>
-          {(['+', '-', '*', '/', 'x'] as Operation[]).map(op => (
+          {(['+', '-', '*', '/', 'x', 'frac', 'dec'] as Operation[]).map(op => (
             <label key={op} className="op-label">
               <input
                 type="checkbox"
@@ -2267,7 +2347,7 @@ function App() {
                   }
                 }}
               />
-              {op}
+              {op === 'frac' ? 'frac' : op === 'dec' ? 'dec' : op}
             </label>
           ))}
           <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginTop: '0.5rem'}}>
@@ -2407,6 +2487,7 @@ function App() {
                   {selectedTimerDuration === 0 && (
                     <input
                       type="number"
+            step="0.1"
                       value={customTimerDuration}
                       onChange={(e) => setCustomTimerDuration(parseInt(e.target.value, 10) || 0)}
                       className="timer-select"
@@ -2468,7 +2549,13 @@ function App() {
           )}
 
 
-          {operation === 'x' ? (
+          {operation === 'frac' ? (
+             <>
+               <span className="number">1/{num1}</span>
+               <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>of</span>
+               <span className="number">{num2}</span>
+             </>
+          ) : operation === 'x' ? (
              <>
                <span className="number">{num1}</span>
                <span className={"operation " + (questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{'+'}</span>
@@ -2479,7 +2566,7 @@ function App() {
           ) : (
             <>
               <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
-              <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation}</span>
+              <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation === 'dec' ? '+' : operation === '*' ? '×' : operation === '/' ? '÷' : operation}</span>
               <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
             </>
           )}
