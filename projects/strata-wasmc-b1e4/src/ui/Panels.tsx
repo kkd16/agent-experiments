@@ -332,6 +332,15 @@ export function OptPanel({ comp }: { comp: Compilation }) {
     : null;
   const changedLines = diff ? diff.filter((d) => d.t !== ' ').length : 0;
 
+  // Aggregate the memory-optimization wins from the pass log, so the loads/stores
+  // eliminated across every round read as one headline instead of scattered rows.
+  const sumPasses = (prefix: string): number =>
+    comp.optLog!.filter((p) => p.name.startsWith(prefix)).reduce((s, p) => s + p.changed, 0);
+  const memForwarded = sumPasses('mem-opt');
+  const storesDead = sumPasses('dead-store-global');
+  const loadsHoisted = sumPasses('load-licm');
+  const memTotal = memForwarded + storesDead + loadsHoisted;
+
   return (
     <div className="panel-scroll opt-panel">
       <div className="opt-bars">
@@ -345,6 +354,15 @@ export function OptPanel({ comp }: { comp: Compilation }) {
         </div>
         <div className="opt-reduction">{reductionPct}% fewer IR instructions</div>
       </div>
+
+      {comp.level > 0 && memTotal > 0 && (
+        <div className="prelog">
+          <span className="prelog-label">memory:</span>
+          {memForwarded > 0 && <span className="prelog-pill">forwarded / RLE / intra-DSE <b>×{memForwarded}</b></span>}
+          {storesDead > 0 && <span className="prelog-pill">cross-block dead stores <b>×{storesDead}</b></span>}
+          {loadsHoisted > 0 && <span className="prelog-pill">loop-invariant loads hoisted <b>×{loadsHoisted}</b></span>}
+        </div>
+      )}
 
       {preLog.length > 0 && (
         <div className="prelog">
