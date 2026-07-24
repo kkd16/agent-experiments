@@ -312,8 +312,16 @@ class JsGen {
         const j = this.fresh(e.param)
         return `(${j}) => ${this.expr(e.body, extend(env, e.param, j))}`
       }
-      case 'app':
-        return `${this.expr(e.fn, env)}(${this.expr(e.arg, env)})`
+      case 'app': {
+        // A lambda in function position must be parenthesised: `(x => body)(arg)`,
+        // otherwise `x => body(arg)` parses as `x => (body(arg))` and the argument
+        // is captured by the body instead of applied to the function. (Every other
+        // fn-position form — a name, a call chain, an `if`'s ternary, a block IIFE
+        // — is already a callable primary.)
+        const fn = this.expr(e.fn, env)
+        const fnCode = e.fn.kind === 'lambda' ? `(${fn})` : fn
+        return `${fnCode}(${this.expr(e.arg, env)})`
+      }
       case 'let':
       case 'letrec':
       case 'typedecl':

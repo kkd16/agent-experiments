@@ -1653,6 +1653,37 @@ let primesUpTo = fn hi ->
 primesUpTo 60`,
   },
   {
+    id: 'sections',
+    title: 'Operator sections',
+    blurb: 'Point-free style: (+1), (* 2), (> 0), (.field) and the bare (op) — all sugar for a lambda.',
+    visual: false,
+    code: `// Aether 30.1 — operator sections. Each is pure parser sugar for a lambda,
+// so the type checker and all three backends see only an ordinary function.
+
+// A right section fixes the operator's right operand:
+let addTen  = map (+ 10) in            // fn x -> x + 10, over a list
+let doubles = map ( * 2) in            // '*' needs a space after '(' — '(*' opens a comment
+let bigs    = filter (> 3) in          // fn x -> x > 3
+
+// The bare operator is a first-class function — perfect as a fold's combiner:
+let total   = foldl (+) 0 in           // sum
+let product = foldl (*) 1 in           // (*) works bare: '(*)' is carved out of comments
+
+// A field accessor projects by name (and chains):
+let names = map (.name) in
+
+// Compose them with the pipe. '(subtract 1)' is the section '-' can't give,
+// since '(- 1)' already means negative one.
+let people = [ { name = "Ada", age = 36 }, { name = "Alan", age = 41 }, { name = "Grace", age = 44 } ] in
+
+( [1, 2, 3] |> addTen
+, [1, 2, 3, 4, 5] |> filter (> 2) |> map ( * 10) |> total
+, product [1, 2, 3, 4]
+, names people
+, map (subtract 1) [10, 20, 30]
+)`,
+  },
+  {
     id: 'comprehension-garden',
     title: 'Comprehension garden',
     blurb: 'A stepped range drives a comprehension of angles; a fold walks the turtle into a burst.',

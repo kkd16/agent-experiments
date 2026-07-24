@@ -153,8 +153,11 @@ export function tokenize(src: string): Token[] {
       continue
     }
 
-    // block comment: (* ... *) with nesting
-    if (ch === '(' && src[i + 1] === '*') {
+    // block comment: (* ... *) with nesting. Exception: the exact three-char
+    // sequence `(*)` is the bare multiply operator (an operator section), not the
+    // start of a comment — so `foldl (*) 1 xs` lexes as `( * )`. (A `*` right
+    // section still needs a space, `( * 2)`, since `(* 2 …` is comment-shaped.)
+    if (ch === '(' && src[i + 1] === '*' && src[i + 2] !== ')') {
       advance()
       advance()
       let depth = 1

@@ -1383,6 +1383,104 @@ in qsort [3, 1, 4, 1, 5, 9, 2, 6]`,
     code: 'sum [ 1 | _ <- [10, 20, 30, 40] ]',
     expected: '4',
   },
+
+  // ---- operator sections (Aether 30.1) ----
+  {
+    group: 'sections',
+    name: 'bare operator as a function: (+)',
+    code: 'foldl (+) 0 [1, 2, 3, 4, 5]',
+    expected: '15',
+  },
+  {
+    group: 'sections',
+    name: 'bare multiply (*) — the (*) comment carve-out',
+    code: 'foldl (*) 1 [1, 2, 3, 4]',
+    expected: '24',
+  },
+  {
+    group: 'sections',
+    name: 'bare cons (::) rebuilds a list under foldr',
+    code: 'foldr (::) [] [1, 2, 3]',
+    expected: '[1, 2, 3]',
+  },
+  {
+    group: 'sections',
+    name: 'right section (+ n)',
+    code: 'map (+ 10) [1, 2, 3]',
+    expected: '[11, 12, 13]',
+  },
+  {
+    group: 'sections',
+    name: 'right section ( * n) with a space (star needs it)',
+    code: 'map ( * 3) [1, 2, 3]',
+    expected: '[3, 6, 9]',
+  },
+  {
+    group: 'sections',
+    name: 'right section (> n) as a predicate',
+    code: 'filter (> 2) [1, 2, 3, 4, 5]',
+    expected: '[3, 4, 5]',
+  },
+  {
+    group: 'sections',
+    name: 'right section (== n)',
+    code: 'length (filter (== 3) [1, 3, 3, 2, 3])',
+    expected: '3',
+  },
+  {
+    group: 'sections',
+    name: 'string-concat section (^ s)',
+    code: 'map (^ "!") ["a", "b", "c"]',
+    expected: '["a!", "b!", "c!"]',
+  },
+  {
+    group: 'sections',
+    name: 'cons section (:: xs)',
+    code: '(:: [2, 3]) 1',
+    expected: '[1, 2, 3]',
+  },
+  {
+    group: 'sections',
+    name: 'field accessor (.field)',
+    code: 'map (.x) [{ x = 1, y = 9 }, { x = 2, y = 8 }, { x = 3, y = 7 }]',
+    expected: '[1, 2, 3]',
+  },
+  {
+    group: 'sections',
+    name: 'chained field accessor (.a.b)',
+    code: '(.a.b) { a = { b = 42, c = 0 } }',
+    expected: '42',
+  },
+  {
+    group: 'sections',
+    name: 'reverse-pipe operator as a function (|>)',
+    code: '(|>) 5 (fn x -> x * x)',
+    expected: '25',
+  },
+  {
+    group: 'sections',
+    name: 'subtract section (the one - cannot give)',
+    code: 'map (subtract 1) [10, 20, 30]',
+    expected: '[9, 19, 29]',
+  },
+  {
+    group: 'sections',
+    name: '(- 1) is negation, not a section',
+    code: 'map (fn x -> x + (- 1)) [10, 20]',
+    expected: '[9, 19]',
+  },
+  {
+    group: 'sections',
+    name: 'sections compose in a pipeline',
+    code: '[1, 2, 3, 4, 5, 6] |> filter (> 2) |> map (+ 100) |> foldl (+) 0',
+    expected: '418',
+  },
+  {
+    group: 'sections',
+    name: 'flip swaps a function’s arguments',
+    code: 'flip (fn a b -> a - b) 3 10',
+    expected: '7',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

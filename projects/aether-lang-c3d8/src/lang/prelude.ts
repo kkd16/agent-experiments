@@ -256,6 +256,18 @@ export const PRELUDE_DEFS: PreludeDef[] = [
     src: 'fn a b -> if a >= b then [] else a :: range (a + 1) b',
   },
   {
+    name: 'subtract',
+    recursive: false,
+    doc: 'subtract n x — x − n (the section `-` can’t give, since `(- n)` is negation)',
+    src: 'fn n x -> x - n',
+  },
+  {
+    name: 'flip',
+    recursive: false,
+    doc: 'flip f x y — call f with its two arguments swapped',
+    src: 'fn f x y -> f y x',
+  },
+  {
     name: 'enumFromTo',
     recursive: true,
     doc: 'enumFromTo a b — the inclusive ints a, a+1, …, b (the `[a .. b]` literal)',
