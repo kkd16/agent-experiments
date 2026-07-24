@@ -879,3 +879,95 @@ code {
   border-radius: 3px;
   font-weight: 700;
 }
+
+/* ---------- Polar mode ---------- */
+.mode-note {
+  color: var(--ink-dim);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.poly-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.poly-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 7px;
+  background: rgba(8, 12, 26, 0.5);
+}
+
+.poly-row.strong {
+  border-color: rgba(94, 234, 212, 0.4);
+  background: rgba(94, 234, 212, 0.06);
+}
+
+.poly-name {
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.poly-status {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.poly-survivors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px 14px;
+}
+
+.poly-surv-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+
+.poly-surv-rank {
+  width: 26px;
+  color: var(--ink-faint);
+}
+
+.poly-surv-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(120, 140, 220, 0.12);
+  overflow: hidden;
+}
+
+.poly-surv-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.poly-surv-pm {
+  width: 74px;
+  text-align: right;
+}
+
+.poly-surv-crc {
+  width: 48px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.poly-surv-star {
+  width: 14px;
+  color: #fbbf24;
+  text-align: center;
+}

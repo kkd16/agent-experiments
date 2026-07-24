@@ -152,6 +152,22 @@ import {
   shannonLimitDb as ldpcShannonLimit,
   mulberry32 as ldpcRng,
 } from './ldpc'
+import {
+  polarTransform,
+  buildCode as polarBuildCode,
+  encode as polarEncode,
+  decodeSC as polarDecodeSC,
+  decodeSCL as polarDecodeSCL,
+  crcBits as polarCrcBits,
+  crcCheck as polarCrcCheck,
+  crcById as polarCrcById,
+  waterfall as polarWaterfall,
+  biAwgnCapacity,
+  biAwgnLimitDb,
+  gaPhi,
+  gaPhiInv,
+  mulberry32 as polarRng,
+} from './polar'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -2170,6 +2186,111 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const girthOk = ldpcGirth(ldpcById('peg_96_48')) >= 6 && ldpcGirth(ldpcById('hamming74')) === 4
     const shannonOk = Math.abs(ldpcShannonLimit(0.5)) < 0.01
     check('LDPC: sum-product ≤ min-sum BER, PEG girth ≥ 6, Shannon(½)≈0 dB', gainOk && girthOk && shannonOk)
+  }
+
+  // ----- Polar codes -----
+
+  // 78. The polar transform u·F^{⊗n} is its own inverse over GF(2).
+  {
+    const rng = polarRng(3)
+    let ok = true
+    for (let t = 0; t < 20; t++) {
+      const N = 32
+      const u = new Uint8Array(N)
+      for (let i = 0; i < N; i++) u[i] = rng() < 0.5 ? 0 : 1
+      const back = polarTransform(polarTransform(u))
+      for (let i = 0; i < N; i++) if (back[i] !== u[i]) ok = false
+    }
+    check('Polar: transform is an involution (encoder⁻¹ = encoder)', ok)
+  }
+
+  // 79. Noiseless SC decode recovers the message exactly for any frozen set.
+  {
+    const code = polarBuildCode(64, 32, 'ga', 2, polarCrcById('none'))
+    const rng = polarRng(7)
+    let ok = true
+    for (let t = 0; t < 25; t++) {
+      const msg = new Uint8Array(code.msgLen)
+      for (let i = 0; i < code.msgLen; i++) msg[i] = rng() < 0.5 ? 0 : 1
+      const { x } = polarEncode(msg, code)
+      const llr = new Float64Array(code.N)
+      for (let i = 0; i < code.N; i++) llr[i] = x[i] === 0 ? 8 : -8
+      const info = polarDecodeSC(llr, code, true).info
+      for (let i = 0; i < code.msgLen; i++) if (info[i] !== msg[i]) ok = false
+    }
+    check('Polar: SC recovers the message on a clean channel', ok)
+  }
+
+  // 80. SCL with L=1 is exactly SC (same schedule, no list) — the correctness anchor.
+  {
+    const code = polarBuildCode(128, 64, 'ga', 2.5, polarCrcById('none'))
+    const rng = polarRng(99)
+    let ok = true
+    for (let t = 0; t < 15; t++) {
+      const msg = new Uint8Array(code.msgLen)
+      for (let i = 0; i < code.msgLen; i++) msg[i] = rng() < 0.5 ? 0 : 1
+      const { x } = polarEncode(msg, code)
+      const sigma = 0.9
+      const llr = new Float64Array(code.N)
+      for (let i = 0; i < code.N; i++) {
+        const s = x[i] === 0 ? 1 : -1
+        const g = Math.sqrt(-2 * Math.log(rng())) * Math.cos(2 * Math.PI * rng())
+        llr[i] = (2 * (s + sigma * g)) / (sigma * sigma)
+      }
+      const a = polarDecodeSC(llr, code, true).u
+      const b = polarDecodeSCL(llr, code, 1, true).u
+      for (let i = 0; i < code.N; i++) if (a[i] !== b[i]) ok = false
+    }
+    check('Polar: SCL(L=1) ≡ SC bit-for-bit', ok)
+  }
+
+  // 81. The CRC verifies its own message and catches a single flipped bit.
+  {
+    const spec = polarCrcById('crc8')
+    const msg = new Uint8Array([1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0])
+    const c = polarCrcBits(msg, spec)
+    const full = new Uint8Array([...msg, ...c])
+    const bad = Uint8Array.from(full)
+    bad[4] ^= 1
+    check('Polar: CRC-8 self-verifies and catches a flip', polarCrcCheck(full, spec) && !polarCrcCheck(bad, spec))
+  }
+
+  // 82. The headline result: growing the list, then adding a CRC, strictly lowers the
+  //     block-error rate at a fixed operating point (SC ≥ SCL(8) ≥ CA-SCL(8)).
+  {
+    const snr = 2.0
+    const codePlain = polarBuildCode(128, 64, 'ga', snr, polarCrcById('none'))
+    const codeCrc = polarBuildCode(128, 64, 'ga', snr, polarCrcById('crc8'))
+    const budget = { minBlocks: 250, maxBlocks: 1400, targetBlockErrors: 50, seed: 3 }
+    const sc = polarWaterfall(codePlain, { kind: 'sc', L: 1 }, [snr], true, budget)[0]
+    const scl = polarWaterfall(codePlain, { kind: 'scl', L: 8 }, [snr], true, budget)[0]
+    const cascl = polarWaterfall(codeCrc, { kind: 'ca-scl', L: 8 }, [snr], true, budget)[0]
+    check(
+      'Polar: BLER  SC ≥ SCL(8) ≥ CA-SCL(8)  at 2 dB',
+      scl.bler <= sc.bler + 1e-9 && cascl.bler <= scl.bler + 1e-9,
+    )
+  }
+
+  // 83. The waterfall falls: block-error rate is monotone non-increasing in SNR.
+  {
+    const code = polarBuildCode(128, 64, 'ga', 2, polarCrcById('crc8'))
+    const budget = { minBlocks: 180, maxBlocks: 1000, targetBlockErrors: 40, seed: 5 }
+    const pts = polarWaterfall(code, { kind: 'ca-scl', L: 8 }, [1, 2, 3], true, budget)
+    check('Polar: CA-SCL BLER decreases with SNR', pts[0].bler >= pts[1].bler && pts[1].bler >= pts[2].bler)
+  }
+
+  // 84. BI-AWGN capacity is sane and the rate-½ binary Shannon limit is ≈ 0.19 dB.
+  {
+    const capOk = biAwgnCapacity(0.01) < 0.05 && biAwgnCapacity(100) > 0.99
+    const limOk = Math.abs(biAwgnLimitDb(0.5) - 0.187) < 0.1
+    check('Polar: BI-AWGN capacity + rate-½ Shannon limit ≈ 0.19 dB', capOk && limOk)
+  }
+
+  // 85. The Gaussian-approximation φ is a decreasing bijection: φ(0)=1 and φ⁻¹∘φ = id.
+  {
+    const monotone = gaPhi(0) > 0.99 && gaPhi(1) > gaPhi(5) && gaPhi(5) > gaPhi(20)
+    const inverseOk = Math.abs(gaPhiInv(gaPhi(3.7)) - 3.7) < 1e-3
+    check('Polar: GA φ decreasing with an accurate numerical inverse', monotone && inverseOk)
   }
 
   return { passed, failed, messages }

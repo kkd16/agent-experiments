@@ -111,6 +111,14 @@ vectors / pure frequencies, and lets you manipulate them.
   **normalised / offset min-sum**, each with syndrome early-termination and a per-iteration convergence
   trace. Plus a Monte-Carlo BER/BLER `waterfall`, the rate's **Shannon limit**, and graph analysis
   (`girth`, `degreeStats`). No coding library.
+- `src/lib/polar.ts` — **the polar-codes engine (v16).** Arıkan's channel polarization from scratch:
+  the `u·F^⊗n` transform as an in-place GF(2) butterfly (its own inverse), two frozen-set constructions —
+  the **Bhattacharyya** recursion on the BEC (`z⁻=2z−z²`, `z⁺=z²`) and the **Gaussian approximation** of
+  density evolution on BI-AWGN (mean-LLR through the Chung–RU **φ-function** and a bisection inverse) —
+  the recursive **successive-cancellation** decoder (exact box-plus *or* min-sum), the **SC-list** decoder
+  (Tal–Vardy) carrying the L best paths through one f/g schedule via a survivor-remap, its **CRC-aided**
+  variant (bit-wise CRC-6/8/11), a BPSK/AWGN Monte-Carlo `waterfall` (SC · SCL · CA-SCL), and the
+  **BI-AWGN capacity** + binary Shannon limit by adaptive Simpson integration. No coding library.
 - `src/lib/wavelet.ts` — the **continuous** wavelet transform: a complex Morlet CWT evaluated in the
   frequency domain (convolution theorem), log-spaced scales, pseudo-frequency mapping, time-reduction.
 - `src/lib/dwt.ts` — **the discrete wavelet engine (v15).** Orthonormal filter banks **derived from
@@ -184,8 +192,68 @@ vectors / pure frequencies, and lets you manipulate them.
    least-squares (Wiener) solution while colour in the input cripples plain LMS. A fifth scenario is
    a genuine 2-state **Kalman** tracker — the same predict/update recursion as RLS, applied to a
    physical state, with its own shrinking ±2σ uncertainty band and a white innovation sequence.
+9. **Polar** — *reaching Shannon with an explicit code.* Arıkan's **channel polarization**: recursively
+   combine and split a channel and its synthetic bit-channels split toward perfect or useless, so you send
+   information only on the good ones and **freeze** the rest to 0. Four tabs — the **polarization
+   staircase** and the self-similar frozen set (two from-scratch constructions: Bhattacharyya/BEC and the
+   Gaussian approximation of density evolution); the **F^⊗n encoder** butterfly; a **decode** race across
+   greedy **SC**, the **SC-list** (Tal–Vardy, keep the L best paths by an LLR metric) and the **CRC-aided
+   list** (the 5G decoder, an outer CRC picks the surviving path that checks); and a Monte-Carlo
+   **waterfall** landing a short code within ~1 dB of the binary Shannon limit.
 
 ## Ideas / backlog
+
+### v16 plan — the **Polar codes** mode (channel polarization) — this session
+
+The coding pillar had the two great decoding paradigms — the trellis search (Coding/Viterbi, v12) and
+belief propagation (LDPC, v14) — but was missing the third and most recent: **polar codes** (Arıkan,
+2009), the first family *proven* to achieve the symmetric capacity of any binary-input channel with an
+explicit, low-complexity construction, and the code that carries the 5G-NR control channels. v16 adds
+the whole pillar as a **twentieth mode**, from scratch, and — like the rest of the lab — proves every
+claim in front of the user (the transform is its own inverse; SCL(L=1) reproduces SC bit-for-bit; the
+CRC catches flips; and growing the list then adding the CRC strictly lowers the measured BLER). All
+hold — self-tests 78–85, **127/127 green** in the browser, and every Polar tab renders in headless
+Chromium with zero console errors.
+
+Shipped this session:
+
+- [x] **The polar engine** (`polar.ts`, ~640 lines) — the `u·F^⊗n` transform as an in-place GF(2)
+  butterfly (self-inverse), snapshotting `transformStages` for the encoder animation.
+- [x] **Two channel constructions** — the **Bhattacharyya** BEC recursion and the **Gaussian
+  approximation** of density evolution (Chung–Richardson–Urbanke φ-function + a bisection inverse),
+  each ranking the N synthetic channels so `buildCode` freezes the worst N−K. A `channelCapacities`
+  helper maps both onto one [0,1] capacity axis (BEC → 1−Z, GA → a Simpson integral of the mean-LLR).
+- [x] **The SC decoder** — the recursive f (exact stable box-plus *or* min-sum) / g message schedule,
+  each recursion returning its subtree's re-encoded partial sums for the parent's g-node.
+- [x] **The SC-list decoder** (Tal–Vardy) — the L most-likely paths carried through the *same* f/g
+  recursion; each information bit forks every path 0/1, ranks by the LLR **path metric**
+  `PM += softplus(−(1−2û)·L)`, and prunes to L. Implemented by a survivor-map (`newPath→parent`) that
+  each recursion frame applies to remap its own LLR/bit state, so the whole list shares one schedule.
+- [x] **CRC-aided SC-list** (the 5G decoder) — a bit-wise CRC-6/8/11; the returned path is the
+  lowest-metric survivor whose info bits satisfy the CRC (else the metric-best).
+- [x] **The yardsticks** — BI-AWGN capacity and the binary Shannon limit by adaptive Simpson +
+  bisection; a BPSK/AWGN Monte-Carlo `waterfall` with an adaptive block budget.
+- [x] **Four-tab Polar UI** (`modes/Polar.tsx`) — *Polarization* (the capacity staircase + the
+  self-similar frozen-set map, with Σcapacity ≈ N·C shown conserved), *Encoder* (the F^⊗n XOR
+  butterfly network with a live message flowing through the stages), *Decode* (one noisy word decoded
+  three ways — SC vs best-metric SCL vs CA-SCL — with the ranked survivor list and CRC flags), and
+  *Waterfall* (SC · SCL L=2/8 · CA-SCL L=8 vs uncoded BPSK and the Shannon line). All deep-linkable.
+- [x] **Eight new self-tests (119 → 127)** covering the guarantees above.
+
+Future polar ideas (not yet built):
+
+- [ ] **Simplified SC (SSC/Fast-SSC)** — prune Rate-0/Rate-1/REP/SPC subtrees for a step-through of the
+  decode tree that skips the trivial nodes, the throughput trick real decoders use.
+- [ ] **The 5G-NR reliability sequence** (the standardised Q-sequence) as a third construction, with
+  rate-matching (puncturing / shortening / repetition) to arbitrary (N,K), not just powers of two.
+- [ ] **CRC-aided *systematic* polar encoding** (Arıkan's systematic transform) for the lower BER the
+  systematic form gives at the same BLER.
+- [ ] **A polarization-vs-n animation** — sweep the block length and watch the capacity histogram
+  split, plus the exact mutual-information conservation drawn as a running total.
+- [ ] **Wire the Modem's 16-/64-QAM soft LLRs into the polar decoder** so the whole TX→channel→FEC
+  chain runs on one shared constellation, as with the LDPC backlog.
+- [ ] **List-size sweep** — BLER vs L at a fixed SNR, showing the diminishing returns and where CA-SCL
+  overtakes an ML lower bound.
 
 ### v15 plan — the **discrete wavelet transform** pillar (Wavelet mode) — this session
 
@@ -906,6 +974,40 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
 
 ## Session log
 
+- 2026-07-24 (claude, v16): "Polarizing the channel — polar codes, SC-list & the CRC-aided 5G decoder."
+  Added the **twentieth mode, Polar**, completing the forward-error-correction pillar with its third and
+  most modern paradigm: Arıkan's **channel polarization** — the first codes *proven* to reach the
+  symmetric capacity of any binary-input channel with an explicit, low-complexity construction, and the
+  code that carries the 5G-NR control channels. A new from-scratch `lib/polar.ts` (~640 lines, zero
+  coding libraries) carries it all: the `u·F^⊗n` transform as an in-place GF(2) butterfly that is **its
+  own inverse**; two frozen-set constructions — the **Bhattacharyya** recursion on the erasure channel
+  (`z⁻=2z−z²`, `z⁺=z²`) and the **Gaussian approximation** of density evolution on BI-AWGN (the mean LLR
+  pushed through the Chung–Richardson–Urbanke **φ-function** with a bisection inverse) — that rank the N
+  synthetic channels so `buildCode` freezes the worst N−K; the recursive **successive-cancellation**
+  decoder (exact stable box-plus *or* min-sum) written as the natural f/g message schedule where each
+  recursion returns its subtree's re-encoded partial sums; the **SC-list** decoder (Tal–Vardy) that
+  carries the L most-likely paths through that *same* recursion — every information bit forks each path
+  0/1, ranks by the LLR path metric `PM += softplus(−(1−2û)·L)`, and prunes to L — implemented cleanly by
+  a **survivor-map** (`newPath→parent`) that each recursion frame applies to remap its own LLR/bit state,
+  so the whole list shares one f/g schedule; and the **CRC-aided** variant (bit-wise CRC-6/8/11) that
+  picks the lowest-metric survivor whose info bits check — the trick that made polar codes state-of-the-art
+  at short block lengths. Plus BI-AWGN capacity + the binary Shannon limit by adaptive Simpson and an
+  adaptive-budget BPSK/AWGN `waterfall`. `modes/Polar.tsx` renders four deep-linkable tabs — **Polarization**
+  (the capacity staircase sorting every synthetic channel toward 0 or 1, the self-similar frozen-set map,
+  and Σcapacity ≈ N·C shown conserved), **Encoder** (the F^⊗n XOR butterfly with a live message flowing
+  through the stages), **Decode** (one noisy word decoded three ways — greedy SC vs best-metric SCL vs
+  CA-SCL — with the ranked survivor list, path-metric bars and CRC flags, so you see the CRC reject the
+  plausible-but-wrong path), and **Waterfall** (SC · SCL L=2/8 · CA-SCL L=8 racing uncoded BPSK toward the
+  Shannon line, the list closing most of the SC gap and the CRC dropping BLER another order of magnitude).
+  Eight new self-tests (**119 → 127**): the transform is an involution, SC recovers a clean word,
+  **SCL(L=1) ≡ SC bit-for-bit** (the correctness anchor), the CRC self-verifies and catches a flip,
+  **BLER SC ≥ SCL(8) ≥ CA-SCL(8)** at a fixed SNR, BLER is monotone in SNR, the BI-AWGN capacity + rate-½
+  Shannon limit ≈ 0.19 dB, and the GA φ is a decreasing bijection. Verified the engine in a Node bundle
+  (17 standalone assertions, e.g. N=128 K=64 @2 dB BLER: SC=0.128 → SCL8=0.059 → CA-SCL8=0.041), ran the CI
+  gate (scope + conformance + lint + build ✓, 85 modules), the full self-test suite (127/127 in ~19 s), and
+  drove every Polar tab in headless Chromium via the DevTools protocol — all four render, tabs switch,
+  canvases paint, the reroll interaction works, **zero console/runtime errors**. Twenty modes, still zero
+  math libraries.
 - 2026-07-09 (claude, v13): "The filters that learn — adaptive filtering & the Kalman filter." Added
   the **eighteenth mode, Adaptive**, the last great missing pillar: until now every filter here was
   *fixed*, but the filters that run the modern world tune their own taps from data, live. A new
