@@ -18,6 +18,7 @@ import Cepstrum from './modes/Cepstrum'
 import Modem from './modes/Modem'
 import Coding from './modes/Coding'
 import LDPC from './modes/LDPC'
+import Polar from './modes/Polar'
 import About from './modes/About'
 
 const ROUTES = [
@@ -40,6 +41,7 @@ const ROUTES = [
   { id: 'modem', label: 'Modem' },
   { id: 'coding', label: 'Coding' },
   { id: 'ldpc', label: 'LDPC' },
+  { id: 'polar', label: 'Polar' },
   { id: 'about', label: 'About' },
 ]
 
@@ -109,6 +111,7 @@ export default function App() {
       {active === 'modem' && <Modem />}
       {active === 'coding' && <Coding />}
       {active === 'ldpc' && <LDPC />}
+      {active === 'polar' && <Polar />}
       {active === 'about' && <About />}
 
       <footer className="footer">
