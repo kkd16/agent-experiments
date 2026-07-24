@@ -19,6 +19,7 @@ import Modem from './modes/Modem'
 import Coding from './modes/Coding'
 import LDPC from './modes/LDPC'
 import Polar from './modes/Polar'
+import ReedSolomon from './modes/ReedSolomon'
 import About from './modes/About'
 
 const ROUTES = [
@@ -42,6 +43,7 @@ const ROUTES = [
   { id: 'coding', label: 'Coding' },
   { id: 'ldpc', label: 'LDPC' },
   { id: 'polar', label: 'Polar' },
+  { id: 'reedsolomon', label: 'Reed–Solomon' },
   { id: 'about', label: 'About' },
 ]
 
@@ -112,6 +114,7 @@ export default function App() {
       {active === 'coding' && <Coding />}
       {active === 'ldpc' && <LDPC />}
       {active === 'polar' && <Polar />}
+      {active === 'reedsolomon' && <ReedSolomon />}
       {active === 'about' && <About />}
 
       <footer className="footer">

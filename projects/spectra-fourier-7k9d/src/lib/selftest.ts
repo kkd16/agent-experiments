@@ -168,6 +168,24 @@ import {
   gaPhiInv,
   mulberry32 as polarRng,
 } from './polar'
+import {
+  fieldOf,
+  gfMul,
+  gfInv,
+  gfAdd,
+  RS_CODES as RS_CATALOGUE,
+  rsById,
+  rsGenerator,
+  rsEncode,
+  rsDecode,
+  rsSyndromes,
+  rsBlockErrorProb,
+  rsOutputSymbolErrorProb,
+  rsRng,
+  randomMessage as rsRandomMessage,
+  gfPow as rsGfPow,
+  polyEval as rsPolyEval,
+} from './rs'
 
 function approxEqual(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) <= eps
@@ -2291,6 +2309,155 @@ export function runSelfTests(): { passed: number; failed: number; messages: stri
     const monotone = gaPhi(0) > 0.99 && gaPhi(1) > gaPhi(5) && gaPhi(5) > gaPhi(20)
     const inverseOk = Math.abs(gaPhiInv(gaPhi(3.7)) - 3.7) < 1e-3
     check('Polar: GA φ decreasing with an accurate numerical inverse', monotone && inverseOk)
+  }
+
+  // 86. GF(2^m) is a field: α is primitive (a full multiplicative cycle), every
+  //     nonzero element has a multiplicative inverse, and multiplication distributes.
+  {
+    let ok = true
+    for (const m of [3, 4, 8]) {
+      const f = fieldOf(m)
+      const seen = new Set<number>()
+      for (let i = 0; i < f.order; i++) seen.add(f.exp[i])
+      if (seen.size !== f.order || seen.has(0)) ok = false
+      for (let a = 1; a < f.size; a++) if (gfMul(f, a, gfInv(f, a)) !== 1) ok = false
+      // distributivity on a small sample
+      const s = f.size
+      for (let a = 0; a < s; a += a < 8 ? 1 : 37)
+        for (let b = 0; b < s; b += b < 8 ? 1 : 41)
+          for (let c = 0; c < s; c += c < 8 ? 1 : 43)
+            if (gfMul(f, a, gfAdd(b, c)) !== gfAdd(gfMul(f, a, b), gfMul(f, a, c))) ok = false
+    }
+    check('Reed–Solomon: GF(2^m) is a field with a primitive α', ok)
+  }
+
+  // 87. Systematic encoding: the data half is preserved verbatim and the whole
+  //     codeword is a zero of every one of the 2t check roots (H·c = 0 by design).
+  {
+    let ok = true
+    for (const code of RS_CATALOGUE) {
+      const g = rsGenerator(code)
+      if (g.length - 1 !== code.nsym || g[0] !== 1) ok = false
+      const rng = rsRng(7 + code.n)
+      for (let trial = 0; trial < 8; trial++) {
+        const msg = rsRandomMessage(code, rng)
+        const cw = rsEncode(code, msg)
+        for (let i = 0; i < code.k; i++) if (cw[i] !== msg[i]) ok = false
+        for (let j = 0; j < code.nsym; j++)
+          if (rsPolyEval(code.field, cw, rsGfPow(code.field, 2, code.fcr + j)) !== 0) ok = false
+      }
+    }
+    check('Reed–Solomon: systematic encode preserves data and zeroes every check root', ok)
+  }
+
+  // 88. The decoder corrects any t symbol errors exactly, across the whole catalogue.
+  {
+    let ok = true
+    for (const code of RS_CATALOGUE) {
+      const rng = rsRng(101 + code.n)
+      const trials = code.n > 100 ? 6 : 30
+      for (let trial = 0; trial < trials; trial++) {
+        const msg = rsRandomMessage(code, rng)
+        const cw = rsEncode(code, msg)
+        const r = cw.slice()
+        const pos = new Set<number>()
+        while (pos.size < code.t) pos.add(Math.floor(rng() * code.n))
+        for (const p of pos) {
+          let e = 0
+          while (e === 0) e = Math.floor(rng() * code.field.size)
+          r[p] ^= e
+        }
+        const dec = rsDecode(code, r)
+        if (!dec.ok || dec.corrected.some((v, i) => v !== cw[i])) ok = false
+      }
+    }
+    check('Reed–Solomon: Berlekamp–Massey + Chien + Forney corrects t errors', ok)
+  }
+
+  // 89. Errors AND erasures together: correct e errors + f erasures whenever
+  //     2e + f ≤ 2t, including the boundary and the pure-erasure (f = 2t) extreme.
+  {
+    let ok = true
+    for (const code of RS_CATALOGUE) {
+      const rng = rsRng(555 + code.n)
+      const trials = code.n > 100 ? 6 : 24
+      for (let trial = 0; trial < trials; trial++) {
+        const msg = rsRandomMessage(code, rng)
+        const cw = rsEncode(code, msg)
+        const e = Math.floor(code.t / 2)
+        const fCount = code.nsym - 2 * e // 2e + f = nsym exactly
+        const r = cw.slice()
+        const used = new Set<number>()
+        while (used.size < e + fCount) used.add(Math.floor(rng() * code.n))
+        const all = [...used]
+        const erasePos: number[] = []
+        for (let i = 0; i < all.length; i++) {
+          let ev = 0
+          while (ev === 0) ev = Math.floor(rng() * code.field.size)
+          r[all[i]] ^= ev
+          if (i >= e) erasePos.push(all[i])
+        }
+        const dec = rsDecode(code, r, erasePos)
+        if (!dec.ok || dec.corrected.some((v, i) => v !== cw[i])) ok = false
+      }
+    }
+    check('Reed–Solomon: corrects e errors + f erasures at the 2e+f = 2t boundary', ok)
+  }
+
+  // 90. A syndrome-clean word decodes to itself (no phantom corrections), and any
+  //     block the decoder declares "ok" really is a valid codeword (zero syndromes).
+  {
+    let ok = true
+    const code = rsById('rs15_11')
+    const rng = rsRng(31337)
+    for (let trial = 0; trial < 60; trial++) {
+      const cw = rsEncode(code, rsRandomMessage(code, rng))
+      const clean = rsDecode(code, cw)
+      if (!clean.ok || clean.errPositions.length !== 0) ok = false
+      // overwhelm it with t+2 errors and confirm any "ok" is still a real codeword
+      const r = cw.slice()
+      const pos = new Set<number>()
+      while (pos.size < code.t + 2) pos.add(Math.floor(rng() * code.n))
+      for (const p of pos) {
+        let ev = 0
+        while (ev === 0) ev = Math.floor(rng() * code.field.size)
+        r[p] ^= ev
+      }
+      const dec = rsDecode(code, r)
+      if (dec.ok && !rsSyndromes(code, dec.corrected).every((s) => s === 0)) ok = false
+    }
+    check('Reed–Solomon: clean word is a no-op; a claimed decode is always a valid codeword', ok)
+  }
+
+  // 91. The closed-form block-error curve is monotone in the channel symbol-error
+  //     rate, dominates the output-symbol rate, and matches a Monte-Carlo run.
+  {
+    const code = rsById('rs15_11')
+    const monotone = rsBlockErrorProb(code, 0.15) > rsBlockErrorProb(code, 0.05)
+    const dominates = rsBlockErrorProb(code, 0.1) >= rsOutputSymbolErrorProb(code, 0.1)
+    const ps = 0.12
+    const rng = rsRng(24601)
+    let errs = 0
+    const N = 2500
+    for (let trial = 0; trial < N; trial++) {
+      const cw = rsEncode(code, rsRandomMessage(code, rng))
+      const r = cw.slice()
+      for (let i = 0; i < code.n; i++) {
+        if (rng() < ps) {
+          let e = 0
+          while (e === 0) e = Math.floor(rng() * code.field.size)
+          r[i] ^= e
+        }
+      }
+      const dec = rsDecode(code, r)
+      if (!dec.ok || dec.corrected.some((v, i) => v !== cw[i])) errs++
+    }
+    const emp = errs / N
+    const theo = rsBlockErrorProb(code, ps)
+    check(
+      'Reed–Solomon: Monte-Carlo block error matches the closed-form curve',
+      monotone && dominates && Math.abs(emp - theo) < 0.3 * theo + 0.02,
+    )
   }
 
   return { passed, failed, messages }
