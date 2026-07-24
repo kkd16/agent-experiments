@@ -17,6 +17,8 @@ import { partialUnroll } from './partial-unroll';
 import { divRemByConst } from './divrem';
 import { vectorize } from './vectorize';
 import { memOpt } from './memopt';
+import { globalDSE } from './dse';
+import { hoistInvariantLoads } from './loadlicm';
 import { sroa } from './sroa';
 import { osr } from './osr';
 import { pre } from './pre';
@@ -960,6 +962,12 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('div-by-const' + suffix, divRemByConst);
     record('sroa' + suffix, sroa);
     record('mem-opt' + suffix, memOpt);
+    // Global dead-store elimination is mem-opt's backward dual: mem-opt forwards
+    // loads and drops *intra-block* dead stores; this removes a store whose bytes
+    // are overwritten on every path to exit before any read — the cross-block case
+    // mem-opt cannot see. Runs right after it so the two memory passes are adjacent
+    // and the round's DCE sweeps the now-unused address/value computations it frees.
+    record('dead-store-global' + suffix, globalDSE);
     if (level >= 2) record('reassociate' + suffix, reassociate);
     if (level >= 2) record('gvn/cse' + suffix, (fn) => gvn(fn, eff.pure));
     // Partial-redundancy elimination (GVN-PRE): GVN has just removed the fully
@@ -993,6 +1001,12 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, (fn) => licm(fn, eff.pureNoTrap));
+    // Load-LICM hoists a loop-invariant *load* (memopt forwards from a dominating
+    // store, and scalar LICM hoists pure values, but neither lifts a memory read
+    // out of a loop). Runs right after scalar LICM so the invariant address
+    // computation it needs (`base + off`) has already been hoisted into the
+    // preheader, exposing the load's address as invariant.
+    if (level >= 2) record('load-licm' + suffix, hoistInvariantLoads);
     // Sinking is the dual of LICM: push a pure value used on only one arm of a
     // branch down into that arm, so the other path never computes it. Runs after
     // LICM (which has pulled the loop-invariant work the other way) and before DCE.
@@ -1024,11 +1038,13 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     record('copy-propagation (post-unroll)', copyProp);
     record('sccp (post-unroll)', sccp);
     record('mem-opt (post-unroll)', memOpt);
+    record('dead-store-global (post-unroll)', globalDSE);
     record('reassociate (post-unroll)', reassociate);
     const effPost = analyzeEffects(out);
     record('gvn/cse (post-unroll)', (fn) => gvn(fn, effPost.pure));
     record('strength-reduce-iv (post-unroll)', osr);
     record('licm (post-unroll)', (fn) => licm(fn, effPost.pureNoTrap));
+    record('load-licm (post-unroll)', hoistInvariantLoads);
     record('algebraic-simplify (post-unroll)', algebraic);
     record('cross-jump (post-unroll)', crossJump);
     record('dead-code-elim (post-unroll)', (fn) => dce(fn, effPost.pureNoTrap));

@@ -1788,6 +1788,74 @@ fn main() {
 }
 `,
   },
+  {
+    id: 'dead-store',
+    title: 'Global dead-store elimination',
+    blurb: 'A memory write overwritten on every path before it is read is removed — the cross-block case memopt’s intra-block DSE can’t reach. Watch the "dead-store-global ×4" row in the Optimizer tab and click it to see the sentinel writes vanish.',
+    source: `// Global dead-store elimination (opt/dse.ts) is mem-opt's backward dual: a proper
+// liveness-of-memory dataflow that removes a store whose bytes are overwritten on
+// *every* path to the function's exit before they are ever read. mem-opt only sees
+// the case where the dead store and its killer sit in the *same* basic block; this
+// pass sees across the whole control-flow graph.
+//
+// Open the Optimizer tab: the "dead-store-global" row fires, and clicking it shows
+// the four sentinel writes deleted from the IR. The differential Verify tab proves
+// the compiled wasm still matches the reference interpreter at every -O level.
+
+fn render(mode: int, n: int) -> int {
+  let buf = int_array(4);
+  // A "clear to sentinel" that the code below always overwrites before reading —
+  // a classic dead initialization. Each of these four writes is dead because both
+  // branches re-store buf[0..3] at constant indices with no read in between.
+  buf[0] = -1; buf[1] = -1; buf[2] = -1; buf[3] = -1;
+  if (mode == 0) {
+    buf[0] = n; buf[1] = n + 1; buf[2] = n + 2; buf[3] = n + 3;
+  } else {
+    buf[0] = n * 2; buf[1] = n; buf[2] = 0; buf[3] = 0 - n;
+  }
+  return buf[0] + buf[1] + buf[2] + buf[3];
+}
+
+fn main() {
+  print(render(0, 5));   // 5 + 6 + 7 + 8      = 26
+  print(render(1, 5));   // 10 + 5 + 0 + (-5)  = 10
+}
+`,
+  },
+  {
+    id: 'load-licm',
+    title: 'Loop-invariant load hoisting',
+    blurb: 'A memory read whose address is loop-invariant and whose bytes no iteration writes is lifted out of the loop — read once in the preheader instead of every iteration. Scalar LICM can’t (it’s a memory read); mem-opt can’t (the back-edge meet drops the fact). Watch the "load-licm" row in the Optimizer tab.',
+    source: `// Load-LICM (opt/loadlicm.ts) hoists a loop-invariant *load* out of a loop. Here
+// the pivot a[0] is read on every iteration but the loop never writes a, so the
+// read yields the same bytes each time — it belongs in the preheader, executed
+// once. The scalar LICM in optimize.ts only lifts pure SSA computations (a load
+// reads mutable memory); mem-opt's forward available-memory analysis can't hoist
+// it either, because the meet over the loop's back edge drops the fact at the
+// header. That gap is exactly what Load-LICM fills.
+//
+// Open the Optimizer tab and watch the "load-licm" row fire; the "if" keeps the
+// loop out of the auto-vectorizer and the runtime trip count keeps it whole, so
+// the invariant load is really there to hoist. Verify proves the compiled wasm
+// still matches the interpreter at every -O level.
+
+fn countAbovePivot(a: int[], n: int) -> int {
+  let cnt = 0;
+  for (let i = 1; i < n; i = i + 1) {
+    if (a[i] > a[0]) { cnt = cnt + 1; }   // a[0] — same every iteration
+  }
+  return cnt;
+}
+
+fn main() {
+  let n = 200;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = (i * 37 + 11) % 100; }
+  print(a[0]);                   // the pivot: 11
+  print(countAbovePivot(a, n));  // how many of the 200 values exceed it
+}
+`,
+  },
 ];
 
 export const TEST_PROGRAMS: { name: string; source: string }[] = EXAMPLES.map((e) => ({ name: e.id, source: e.source }));

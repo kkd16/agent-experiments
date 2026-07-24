@@ -35,7 +35,13 @@ reference interpreter at every optimization level.
   above the loop → two branch-free clones, see `opt/unswitch.ts`), **devirtualization**,
   **full loop unrolling**,
   **if-conversion** (control-flow diamond → branchless `select`), **strength reduction**,
-  **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**,
+  **SROA** (escape analysis + scalar replacement of aggregates), **memory optimization**
+  (store→load forwarding, redundant-load elimination + intra-block dead-store elimination, see
+  `opt/memopt.ts`), **global dead-store elimination** (a *backward* liveness-of-memory dataflow
+  that removes a store overwritten on every path to exit before any read — the cross-block dual of
+  mem-opt's intra-block DSE, see `opt/dse.ts`), **loop-invariant load hoisting** (lift a load whose
+  address is invariant and whose bytes no iteration writes to the preheader — read once, not per
+  iteration, see `opt/loadlicm.ts`),
   **reassociation** (canonicalize integer affine trees → `Σ cᵢ·xᵢ + K`, and bitwise monoids),
   dominator-scoped **GVN/CSE**, **correlated-branch folding** (decide a branch whose condition a
   dominating branch already tested — the same SSA value, post-GVN — see `opt/correlate.ts`),
@@ -655,6 +661,130 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-07-24 — plan + shipped: two memory optimizations — global (cross-block) dead-store elimination + loop-invariant load hoisting (claude / claude-opus-4-8[1m])
+
+**The gap.** The mid-end's memory story ran through one pass, `opt/memopt.ts` — a *forward*
+available-memory dataflow doing store→load forwarding, redundant-load elimination, and, as a
+bonus, dead-store elimination **but only within a single basic block**. Two classic memory
+optimizations sat outside it, both long noted as next steps:
+
+1. **Cross-block dead stores.** `arr[0] = 999` followed by a branch that never reads `arr[0]`
+   and then a merge that re-stores `arr[0] = 1` leaves the first write provably dead — but the
+   dead store and its killer live in *different* blocks, so memopt's intra-block scan can't see
+   it. This is the "cross-block / partial dead-store elimination" open item.
+2. **Loop-invariant loads.** A `load [A]` whose address is loop-invariant and whose bytes no
+   iteration writes yields the *same value every iteration*, yet it re-reads memory every time.
+   The scalar LICM in `optimize.ts` hoists loop-invariant *pure SSA values* but not memory reads;
+   memopt can't hoist it either, because the meet over the loop's back edge drops the availability
+   fact at the header (the preheader has no prior load to make the value available). So every
+   read-only inner loop paid a load per iteration.
+
+Both are shipped, each as its own pass, each proven by the three-engine differential oracle
+(interp = wasm = hand-written VM) at every -O level.
+
+### `opt/dse.ts` — global dead-store elimination (backward liveness of memory)
+
+The exact backward dual of memopt's forward analysis. A **may-live** dataflow over the finite set
+of store locations (`(base, byte-offset, width)` triples): meet is **union** over successors, so a
+location is dead at a store only when it is dead on *every* path. A read (`load`, or any
+may-read-anything op — `call`/`callind`/`print`/`vload`/`vstore`) **gens** the locations it may
+alias; an exact overwrite **kills** its location; a function exit seeds **all** locations live
+(memory can escape to the caller through a returned handle — the conservatism that keeps escaping
+records safe). A store whose location is not live immediately after it is unobservable and removed;
+the round's DCE then sweeps the now-unused address/value computations.
+
+- **Alias model** is byte-identical to memopt's: two addresses are disjoint only when they share a
+  base SSA value with non-overlapping ranges, or root at two distinct `alloc`s (each `alloc` is a
+  fresh region). A killer must *exactly* cover the candidate — a partial or merely-may-aliasing
+  store neither kills nor reads, so a half-covered store stays live. Because the dead store and its
+  killer target the identical address, any trap the dead store would raise the killer raises too,
+  so removal preserves behaviour for the non-trapping programs the oracle pins.
+
+### `opt/loadlicm.ts` — loop-invariant load hoisting (Load-LICM)
+
+For each natural loop (shared loop forest, same "what is a loop" as LICM/the unroller), a load is
+hoisted to the preheader iff its address operand is loop-invariant, no store in the body may-alias
+it, and its result is used only inside the loop (so a zero-trip execution — where the preheader
+load now runs but the original never did — changes nothing observable; the extra read is in-bounds
+for non-trapping programs and its value unused). The pass bails on any *opaque* writer in the body
+(`call`/`callind`/`vstore`/`vload`), and dedupes identical invariant loads to a single hoisted one
+(folding in redundant-load elimination). It runs right after scalar LICM, which first hoists the
+invariant `base + off` address computation, exposing the load's address as invariant.
+
+### Soundness — why each is a semantics-preserving rewrite
+
+- **DSE:** the removed store's bytes are overwritten on every path before any read, so no execution
+  observes them. The union meet is the safe direction (live-on-any-path ⇒ kept); exit-is-all-live
+  covers caller-visible escaping memory; exact-cover-to-kill covers partial overwrites; the
+  identical-address property covers traps.
+- **Load-LICM:** an invariant address + no aliasing write ⇒ the load returns the same bytes every
+  iteration, so one preheader read is equivalent to n; the used-only-in-loop guard covers the
+  zero-trip case; the opaque-writer bail covers everything the alias model can't place.
+
+Neither invents or erases a trap for a non-trapping program, and both decline the moment a
+precondition is unmet — so the oracle (interp = wasm = VM, -O0…-O3) proves they never change output.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/dse.ts`: backward may-live memory dataflow to a fixpoint; exact-cover kill, may-alias
+      gen, exit/​call/​print/​vmem conservatism; wire into the pass manager after `mem-opt` (main
+      rounds + post-unroll) as `dead-store-global`.
+- [x] `opt/loadlicm.ts`: per-loop invariant-load hoist with the store-aliasing guard, opaque-writer
+      bail, used-only-in-loop guard, and identical-load dedupe; wire in after `licm` (main rounds +
+      post-unroll) as `load-licm`.
+- [x] Five DSE differential tests (cross-block hit; read-on-one-arm survives; print blocks removal;
+      escape-via-return survives; neighbour-offset alias precision) + two Load-LICM tests (invariant
+      element hoisted; written-in-loop declined). All non-trapping, deterministic, oracle-pinned.
+- [x] Two showcase examples in the editor menu — `dead-store` and `load-licm` — each written so the
+      pass visibly fires in the Optimizer tab (click the pass row to see the IR diff).
+- [x] Both passes appear automatically in the Optimizer tab with their per-pass change count and
+      clickable IR snapshot diff (the pass manager surfaces every `record(...)` step).
+
+### Proof
+
+- **Battery green:** 306 programs × 4 levels = **1224/1224** differential checks pass (interp = wasm
+  = VM), up from 1196 (added 7 targeted memory tests). `pnpm lint` + `pnpm build` clean.
+- **They fire, measurably:** across the 304-program corpus at -O2, **Load-LICM hoists 215 loads on
+  50 programs**; global DSE removes **7 cross-block stores on 3 programs** (plus its dedicated
+  tests/example). Verified with a headless harness that bundles the compiler and runs the full
+  three-engine oracle in Node.
+
+### Backlog — where these two go next (deliberately deferred, all clean)
+
+- [ ] **Escape-refined DSE exit liveness.** At a function exit, seed live only the locations rooted
+      at an *escaping* allocation (returned, passed to a call, stored as a value, or put in a
+      global) plus non-alloc roots — a non-escaping local scratch buffer's cells are dead after
+      return, so a last write never read afterward becomes removable. Needs a small pointer-flow
+      escape analysis (the SROA one, generalized past constant offsets); keep `vload`/`vstore`
+      conservatively reading all candidates.
+- [ ] **Partial dead-store elimination (store sinking).** When a store is dead on *some* successor
+      paths but live on others, sink it into only the arms that read it (the dual of code sinking) —
+      inserting on the lacking edges and removing the original. The backward liveness this pass
+      already computes is exactly the anticipability information PDSE needs.
+- [ ] **A memory-traffic metric in the Optimizer lab.** Surface "stores eliminated / loads hoisted /
+      loads forwarded" as a headline number next to the reduction %, aggregated across memopt + DSE
+      + Load-LICM, so the memory wins are legible without reading the pass table.
+- [ ] **Load-LICM past a disjoint store.** Today any may-aliasing store in the body blocks a hoist;
+      with the offset model already in hand, a load can still hoist past stores *proven disjoint*
+      even when other (aliasing) stores exist — track per-location, not a whole-loop bail.
+- [ ] **Hoist an invariant load whose result escapes the loop** via a proper preheader-φ repair
+      (drop the used-only-in-loop restriction), so a loop that reads an invariant cell and returns
+      it also benefits.
+- [ ] **Cross-iteration store-to-load forwarding (loop-carried RLE).** A value stored to `[A]` in
+      one iteration and loaded from `[A]` early in the next (no aliasing write between) can forward
+      across the back edge — the loop-carried case memopt's meet drops.
+- [ ] **Sink a loop-invariant store out of a loop (store-LICM).** The dual of Load-LICM: a store to
+      an invariant address whose value is invariant and which no path reads inside the loop can move
+      to the loop's exit (one write instead of n), under the same anticipability guard.
+- [ ] **Two distinct heap allocations proven disjoint end-to-end** so DSE and Load-LICM reason
+      across records, not just within a same-base access — the full allocation-site alias oracle the
+      conservative same-base test approximates.
+- [ ] **Fold DSE's location universe with memopt's** so a single alias/numbering pass drives
+      forwarding, RLE, intra- and inter-block DSE, and Load-LICM from one shared analysis.
+- [ ] **Linear Function Test Replacement (LFTR)** — after OSR reduces a derived IV `j = a·i + b` to
+      an add, rewrite the loop's exit test in terms of `j` so the base counter `i` dies. The most-
+      requested loop capstone; deferred this session because it couples to OSR's IV bookkeeping.
 
 ## 2026-07-11 — plan + shipped: 64-bit lane auto-vectorization — `i64x2` / `f64x2` (claude / claude-opus-4-8)
 
@@ -2460,11 +2590,13 @@ and a value re-stored in only one arm of an `if` is not forwarded past the merge
       **Shipped 2026-06-19 (plan III):** `opt/sroa.ts` does full Cytron SSA
       construction (dominance-frontier phi insertion + renaming) over the fields of
       every non-escaping `alloc`, including the loop-carried (header-phi) case.
-- [ ] **Cross-block / partial dead-store elimination** (a store dead because the
+- [x] **Cross-block / partial dead-store elimination** (a store dead because the
       object is never read again on any path) — needs a backward memory-liveness
-      dataflow; the intra-block case ships here. (For *non-escaping* records this is
-      now moot — SROA deletes their stores outright — but it would still help records
-      that escape.)
+      dataflow; the intra-block case ships here. **Shipped 2026-07-24:** `opt/dse.ts`
+      is exactly that backward may-live dataflow (union meet over successors,
+      exit-is-all-live for escaping memory), removing the cross-block dead stores the
+      intra-block scan can't. The *partial* (some-paths-dead) variant — store sinking —
+      remains open and is now scoped in the 2026-07-24 backlog.
 
 ## 2026-06-19 — plan (III): SROA — escape analysis + scalar replacement of aggregates (claude / claude-opus-4-8)
 
