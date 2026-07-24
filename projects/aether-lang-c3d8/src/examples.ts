@@ -1684,6 +1684,31 @@ let people = [ { name = "Ada", age = 36 }, { name = "Alan", age = 41 }, { name =
 )`,
   },
   {
+    id: 'stdlib-tour',
+    title: 'Standard-library tour',
+    blurb: 'sort, partition, span, scanl, zipWith, takeWhile — the 30.2 list toolkit, point-free.',
+    visual: false,
+    code: `// Aether 30.2 — a real list library, all written in Aether itself, and all
+// happy to be driven by sections and comprehensions.
+
+let xs = [ 5, 3, 8, 1, 9, 2, 7, 4, 6 ] in
+
+// running sums, the sorted list, and a split into evens / odds
+let sums   = scanl (+) 0 xs in
+let sorted = sort xs in
+let evens  = partition (fn x -> x % 2 == 0) xs in
+
+// combine two lists element-wise; keep a prefix; grab the extremes
+let dots   = zipWith ( * ) [1, 2, 3] [10, 20, 30] in
+let small  = takeWhile (< 9) sorted in
+let bounds = (minimum xs, maximum xs) in
+
+// it all composes: reflect [1..4] through zero, then sort the 8 points
+let mirror = sort (concatMap (fn x -> [x, 0 - x]) [1 .. 4]) in
+
+(sums, sorted, evens, dots, small, bounds, mirror)`,
+  },
+  {
     id: 'comprehension-garden',
     title: 'Comprehension garden',
     blurb: 'A stepped range drives a comprehension of angles; a fold walks the turtle into a burst.',

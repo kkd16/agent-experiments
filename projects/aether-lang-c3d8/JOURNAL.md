@@ -63,6 +63,34 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Aether 30.2 — a standard library worth the name (planned + shipped this session)
+
+30.0 and 30.1 made Aether *pleasant to write* (comprehensions, ranges, sections); this makes it
+*productive* to write, by giving it the list vocabulary every functional programmer expects. All
+fifteen functions are written **in Aether itself** on top of the existing primitives — so they cost
+the type checker and the three backends nothing new, and the differential suite covers them exactly
+like user code. They pair directly with what just shipped: `sort (concatMap (fn x -> [x, 0 - x]) [1 .. n])`,
+`partition (> 0)`, `takeWhile (< limit)`, `zipWith (+)`.
+
+- [x] **Transformers:** `zipWith f xs ys`, `concatMap f xs` (the list-monad bind), `scanl f z xs`
+  (foldl keeping every running accumulator), `iterate n f x` (a bounded orbit `[x, f x, f (f x), …]`).
+- [x] **Splitters:** `takeWhile p`, `dropWhile p`, `span p` (their pair), `partition p` (order
+  preserved in both halves).
+- [x] **Ordering:** `insert x xs` (into a sorted list) and `sort` (ascending insertion sort) — both
+  polymorphic on the structural `≤`, so `sort ["pear", "apple"]` works as readily as on ints.
+- [x] **Reducers:** `product`, `maximum`, `minimum` (partial on `[]`, like `head`), `last`, `init`.
+- [x] **Verification:** a new 200-program **stdlib fuzzer** (`stdlibFuzz.ts`) generating random calls
+  across all eleven order-sensitive combinators, each checked against an **independent TypeScript
+  reference** *and* the JS backend (300/300 across four seeds); a 15-case in-app `stdlib` battery
+  (suite 182 → 197, WASM ≡ VM 166 → 181); a gallery example; About/stdlib updates. Every existing
+  suite (property suite, optimizer/SpecConstr/SROA/comprehension/section fuzzers) stays green.
+- [ ] **A `Maybe`/`Option` in the prelude** would unlock the total reducers (`headOpt`, `find`,
+  `lookup`, `mapMaybe`) — it needs a prelude *type* declaration, not just `let` defs, so it's a small
+  extension to how `PRELUDE_DEFS` are wired.
+- [ ] **`sortBy` / `groupBy` / `nub`** once a comparator/eq-callback convention is settled, and a
+  merge sort behind `sort` for the log-linear guarantee on long lists.
+- [ ] **`foldr1`/`foldl1`/`scanr`** to round out the fold family.
+
 ### Aether 30.1 — operator sections, point-free style (+ a real JS-backend bug this caught) (planned + shipped this session)
 
 With comprehensions and ranges in (30.0), the next everyday convenience the language lacked was
@@ -2243,12 +2271,28 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 
 - list: `map filter foldl foldr length append reverse sum range enumFromTo enumFromThenTo take drop elem all any concat zip replicate`
   (`enumFromTo`/`enumFromThenTo` back the `[a .. b]` / `[a, s .. b]` range literals)
+- list (30.2): `zipWith concatMap takeWhile dropWhile span partition scanl insert sort product maximum minimum last init iterate`
 - combinators: `subtract flip` (companions to operator sections — `(subtract n)` is the section `-` can't give)
 - string: `strlen toUpper toLower chars join parseInt` (+ `show`, `^`)
 - primitives: `head tail empty print sqrt sin cos floor toFloat pi abs min max`
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-24 (claude): **Aether 30.2 — a standard library worth the name.** After making Aether
+  pleasant to write (30.0 comprehensions/ranges, 30.1 sections), this makes it productive by adding
+  the list vocabulary every functional programmer expects — **fifteen** combinators, all written **in
+  Aether itself** so they cost the type checker and the three backends nothing new: transformers
+  (`zipWith`, `concatMap`, `scanl`, `iterate`), splitters (`takeWhile`, `dropWhile`, `span`,
+  `partition`), ordering (`insert`, `sort` — polymorphic on structural `≤`, so `sort ["pear","apple"]`
+  works), and reducers (`product`, `maximum`, `minimum`, `last`, `init`). They compose directly with
+  the new syntax: `sort (concatMap (fn x -> [x, 0 - x]) [1 .. n])`, `partition (> 0)`,
+  `zipWith (+)`. **Verification:** a new 200-program **stdlib fuzzer** (`stdlibFuzz.ts`) generating
+  random calls across all eleven order-sensitive combinators, each checked against an **independent
+  TypeScript reference** *and* the JS backend (300/300 across four seeds); a 15-case in-app `stdlib`
+  battery (suite **182 → 197**, WASM ≡ VM **166 → 181**); a gallery example; About/stdlib updates. No
+  regression — the property suite (12/12), the optimizer/SpecConstr/SROA fuzzers, and the
+  comprehension/section fuzzers all stay green. Full CI gate green.
 
 - 2026-07-24 (claude): **Aether 30.1 — operator sections (+ a real JS-backend bug the differential
   suite caught).** After 30.0's comprehensions, the next everyday convenience missing was **operator

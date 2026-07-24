@@ -331,4 +331,96 @@ export const PRELUDE_DEFS: PreludeDef[] = [
     doc: 'replicate n x — a list of n copies of x',
     src: 'fn n x -> if n <= 0 then [] else x :: replicate (n - 1) x',
   },
+
+  // ---- Aether 30.2 — a richer list toolkit (all written in Aether itself) ----
+  {
+    name: 'zipWith',
+    recursive: true,
+    doc: 'zipWith f xs ys — combine two lists element-wise with f',
+    src: 'fn f xs ys -> if empty xs then [] else if empty ys then [] else f (head xs) (head ys) :: zipWith f (tail xs) (tail ys)',
+  },
+  {
+    name: 'concatMap',
+    recursive: true,
+    doc: 'concatMap f xs — map f then flatten (the list-monad bind)',
+    src: 'fn f xs -> if empty xs then [] else append (f (head xs)) (concatMap f (tail xs))',
+  },
+  {
+    name: 'takeWhile',
+    recursive: true,
+    doc: 'takeWhile p xs — the longest prefix whose elements all satisfy p',
+    src: 'fn p xs -> if empty xs then [] else if p (head xs) then head xs :: takeWhile p (tail xs) else []',
+  },
+  {
+    name: 'dropWhile',
+    recursive: true,
+    doc: 'dropWhile p xs — drop the longest prefix satisfying p, keep the rest',
+    src: 'fn p xs -> if empty xs then [] else if p (head xs) then dropWhile p (tail xs) else xs',
+  },
+  {
+    name: 'span',
+    recursive: false,
+    doc: 'span p xs — (takeWhile p xs, dropWhile p xs)',
+    src: 'fn p xs -> (takeWhile p xs, dropWhile p xs)',
+  },
+  {
+    name: 'partition',
+    recursive: true,
+    doc: 'partition p xs — (elements where p holds, elements where it doesn’t), order preserved',
+    src: 'fn p xs -> if empty xs then ([], []) else match partition p (tail xs) with (yes, no) -> if p (head xs) then (head xs :: yes, no) else (yes, head xs :: no)',
+  },
+  {
+    name: 'scanl',
+    recursive: true,
+    doc: 'scanl f z xs — like foldl, but keeping every intermediate accumulator (starts with z)',
+    src: 'fn f z xs -> z :: (if empty xs then [] else scanl f (f z (head xs)) (tail xs))',
+  },
+  {
+    name: 'insert',
+    recursive: true,
+    doc: 'insert x xs — insert x into an already-sorted list, keeping it sorted',
+    src: 'fn x xs -> if empty xs then [x] else if x <= head xs then x :: xs else head xs :: insert x (tail xs)',
+  },
+  {
+    name: 'sort',
+    recursive: false,
+    doc: 'sort xs — ascending insertion sort (works on any comparable element)',
+    src: 'foldr insert []',
+  },
+  {
+    name: 'product',
+    recursive: false,
+    doc: 'product xs — the product of an Int list',
+    src: 'foldl (fn a x -> a * x) 1',
+  },
+  {
+    name: 'maximum',
+    recursive: false,
+    doc: 'maximum xs — the largest element (partial: undefined on [])',
+    src: 'fn xs -> foldl max (head xs) (tail xs)',
+  },
+  {
+    name: 'minimum',
+    recursive: false,
+    doc: 'minimum xs — the smallest element (partial: undefined on [])',
+    src: 'fn xs -> foldl min (head xs) (tail xs)',
+  },
+  {
+    name: 'last',
+    recursive: true,
+    doc: 'last xs — the final element (partial: undefined on [])',
+    src: 'fn xs -> if empty (tail xs) then head xs else last (tail xs)',
+  },
+  {
+    name: 'init',
+    recursive: true,
+    doc: 'init xs — every element but the last (partial: undefined on [])',
+    src: 'fn xs -> if empty (tail xs) then [] else head xs :: init (tail xs)',
+  },
+  {
+    name: 'iterate',
+    recursive: true,
+    doc: 'iterate n f x — the n-element list [x, f x, f (f x), …]',
+    src: 'fn n f x -> if n <= 0 then [] else x :: iterate (n - 1) f (f x)',
+  },
 ]

@@ -199,6 +199,15 @@ export default function About() {
             pattern, and unreachable clauses are flagged.
           </li>
           <li>
+            <strong>A real list library.</strong> Beyond <code>map</code>/<code>filter</code>/
+            <code>fold</code>, the prelude carries <code>zipWith</code>, <code>concatMap</code>,{' '}
+            <code>scanl</code>, <code>takeWhile</code>/<code>dropWhile</code>, <code>span</code>,{' '}
+            <code>partition</code>, <code>insert</code>, a polymorphic <code>sort</code>,{' '}
+            <code>product</code>/<code>maximum</code>/<code>minimum</code>, <code>last</code>/
+            <code>init</code> and <code>iterate</code> — all written in Aether itself, so they type-check
+            and run on all three backends like any other code.
+          </li>
+          <li>
             <strong>Operator sections.</strong> Point-free style: <code>(+ 1)</code> and{' '}
             <code>(&gt; 0)</code> are right sections, <code>(+)</code> / <code>(::)</code> the bare
             operator as a function, <code>(.field)</code> a field accessor (chaining as{' '}
