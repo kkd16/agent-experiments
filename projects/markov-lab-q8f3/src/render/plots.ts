@@ -90,6 +90,132 @@ export function drawHistogram(
   }
 }
 
+/** Overlaid traces of several chains — the head-to-head "who mixes faster". */
+export function drawTraceMulti(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  seriesList: number[][],
+  colors: string[],
+) {
+  clear(ctx, w, h)
+  const win = 1200
+  const windows = seriesList.map((s) => s.slice(Math.max(0, s.length - win)))
+  let lo = Infinity
+  let hi = -Infinity
+  for (const data of windows)
+    for (const v of data) {
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+  if (!isFinite(lo) || !isFinite(hi)) return
+  const pad = (hi - lo) * 0.08 || 1
+  lo -= pad
+  hi += pad
+  const pl = 4
+  windows.forEach((data, k) => {
+    if (data.length < 2) return
+    const n = data.length
+    const toX = (i: number) => pl + (i / (n - 1)) * (w - 2 * pl)
+    const toY = (v: number) => h - 4 - ((v - lo) / (hi - lo || 1)) * (h - 8)
+    ctx.strokeStyle = colors[k]
+    ctx.globalAlpha = 0.85
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(toX(0), toY(data[0]))
+    for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(data[i]))
+    ctx.stroke()
+  })
+  ctx.globalAlpha = 1
+}
+
+/** Overlaid marginal histograms drawn as stroked outlines so neither hides. */
+export function drawHistMulti(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  seriesList: number[][],
+  colors: string[],
+) {
+  clear(ctx, w, h)
+  const usable = seriesList.filter((s) => s.length >= 4)
+  if (!usable.length) return
+  // Shared range across all chains so the bins line up.
+  let lo = Infinity
+  let hi = -Infinity
+  for (const s of usable) {
+    lo = Math.min(lo, quantile(s, 0.005))
+    hi = Math.max(hi, quantile(s, 0.995))
+  }
+  const bins = 44
+  const width = hi - lo || 1
+  const hist = (s: number[]) => {
+    const counts = new Array<number>(bins).fill(0)
+    for (const v of s) {
+      let b = Math.floor(((v - lo) / width) * bins)
+      if (b < 0) b = 0
+      if (b >= bins) b = bins - 1
+      counts[b]++
+    }
+    const maxC = Math.max(...counts) || 1
+    return counts.map((c) => c / maxC) // normalise each to its own peak
+  }
+  const bw = (w - 8) / bins
+  seriesList.forEach((s, k) => {
+    if (s.length < 4) return
+    const norm = hist(s)
+    ctx.strokeStyle = colors[k]
+    ctx.globalAlpha = 0.9
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    for (let i = 0; i < bins; i++) {
+      const x = 4 + (i + 0.5) * bw
+      const y = h - 4 - norm[i] * (h - 8)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  })
+  ctx.globalAlpha = 1
+}
+
+/** Overlaid autocorrelation functions as lines — a direct mixing comparison. */
+export function drawAcfMulti(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  seriesList: number[][],
+  colors: string[],
+  maxLag = 48,
+) {
+  clear(ctx, w, h)
+  const pl = 4
+  const zeroY = h * 0.5
+  ctx.strokeStyle = AXIS
+  ctx.beginPath()
+  ctx.moveTo(pl, zeroY)
+  ctx.lineTo(w - pl, zeroY)
+  ctx.stroke()
+  seriesList.forEach((series, k) => {
+    if (series.length < 8) return
+    const lag = Math.min(maxLag, series.length - 1)
+    const rho = autocorr(series, lag)
+    const bw = (w - 2 * pl) / (lag + 1)
+    ctx.strokeStyle = colors[k]
+    ctx.globalAlpha = 0.9
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    for (let i = 0; i <= lag; i++) {
+      const x = pl + i * bw
+      const y = zeroY - rho[i] * (h * 0.5 - 4)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  })
+  ctx.globalAlpha = 1
+}
+
 /** Autocorrelation function — how fast the chain forgets where it was. */
 export function drawAcf(
   ctx: CanvasRenderingContext2D,

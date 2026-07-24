@@ -233,6 +233,84 @@ function studentT(nu = 2.5, rho = 0.6): Target {
   }
 }
 
+// ── Squiggle — a sinusoidally sheared Gaussian ──────────────────────────────
+// A Gaussian whose ridge is bent into an S: the conditional mean of y follows
+// b·sin(w·x). The mass sits on a thin, non-monotone curve, so any axis-aligned
+// or isotropic proposal keeps stepping off the ridge — but the geometry is
+// smooth, so a gradient sampler can trace the S cleanly. A gentler cousin of
+// the banana that curves *both* ways.
+function squiggle(b = 2, w = 1.2, sx = 1.5, sy = 0.45): Target {
+  const sx2 = sx * sx
+  const sy2 = sy * sy
+  return {
+    id: 'squiggle',
+    name: 'Squiggle',
+    blurb: 'A Gaussian bent into an S — mass on a thin sinusoidal ridge. Punishes isotropic proposals, rewards gradients.',
+    logDensity: (x) => {
+      const [u, v] = x
+      const m = b * Math.sin(w * u)
+      return -(u * u) / (2 * sx2) - (v - m) ** 2 / (2 * sy2)
+    },
+    gradLogDensity: (x) => {
+      const [u, v] = x
+      const m = b * Math.sin(w * u)
+      const mp = b * w * Math.cos(w * u) // dm/du
+      const du = -u / sx2 + ((v - m) * mp) / sy2
+      const dv = -(v - m) / sy2
+      return [du, dv]
+    },
+    view: [-4.5, 4.5, -4, 4],
+    start: [0, 0],
+    trueMean: [0, 0],
+  }
+}
+
+// ── Twin Craters — two facing bananas (curved *and* bimodal) ────────────────
+// A log-sum-exp of two crescent ridges, one opening up and one opening down,
+// offset above and below the origin. It fuses the two hardest features in the
+// gallery: each mode is a curved Rosenbrock-style valley (so isotropic
+// proposals crawl), *and* the two modes are separated by a real barrier (so a
+// single chain gets marooned in one crater — the case for tempering). HMC
+// follows one valley beautifully but still can't cross; parallel tempering can.
+function twinCraters(): Target {
+  const kx = 0.125 // horizontal confinement
+  const kr = 2.0 // ridge tightness
+  // A crescent whose ridge is v = cx·u² + off; returns [f, ∂f/∂u, ∂f/∂v].
+  const crescent = (u: number, v: number, cx: number, off: number): [number, number, number] => {
+    const m = cx * u * u + off
+    const mp = 2 * cx * u
+    const f = -kx * u * u - kr * (v - m) ** 2
+    const df_du = -2 * kx * u + 2 * kr * (v - m) * mp
+    const df_dv = -2 * kr * (v - m)
+    return [f, df_du, df_dv]
+  }
+  return {
+    id: 'twin',
+    name: 'Twin Craters',
+    blurb: 'Two facing bananas: curved valleys *and* isolated modes at once. The gallery’s hardest — needs geometry and mode-hopping together.',
+    logDensity: (x) => {
+      const [u, v] = x
+      const [f1] = crescent(u, v, 0.4, -2)
+      const [f2] = crescent(u, v, -0.4, 2)
+      const M = Math.max(f1, f2)
+      return M + Math.log(Math.exp(f1 - M) + Math.exp(f2 - M))
+    },
+    gradLogDensity: (x) => {
+      const [u, v] = x
+      const [f1, g1u, g1v] = crescent(u, v, 0.4, -2)
+      const [f2, g2u, g2v] = crescent(u, v, -0.4, 2)
+      const M = Math.max(f1, f2)
+      const w1 = Math.exp(f1 - M)
+      const w2 = Math.exp(f2 - M)
+      const z = w1 + w2
+      return [(w1 * g1u + w2 * g2u) / z, (w1 * g1v + w2 * g2v) / z]
+    },
+    view: [-4.5, 4.5, -5, 5],
+    start: [0, 0],
+    trueMean: [0, 0],
+  }
+}
+
 export const TARGETS: Target[] = [
   gaussian(0.85),
   banana(),
@@ -240,6 +318,8 @@ export const TARGETS: Target[] = [
   mixture(),
   funnel(),
   studentT(),
+  squiggle(),
+  twinCraters(),
   logisticPosterior(),
 ]
 

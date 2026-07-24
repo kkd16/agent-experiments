@@ -9,6 +9,8 @@ export interface SceneOpts {
   showField: boolean
   showTrail: boolean
   showTrajectory: boolean
+  /** Trail tint [r,g,b]; defaults to the studio blue. Lets race lanes differ. */
+  trailRGB?: [number, number, number]
 }
 
 export function drawScene(
@@ -41,12 +43,13 @@ export function drawScene(
   // ── chain trail (recent states, fading with age) ──────────────────
   if (opts.showTrail && sim.trailX.length > 1) {
     const n = sim.trailX.length
+    const [tr, tg, tb] = opts.trailRGB ?? [150, 190, 255]
     ctx.lineWidth = 1
     for (let i = 1; i < n; i++) {
       const age = i / n // 0 = oldest, 1 = newest
       const [x0, y0] = tf.toPx(sim.trailX[i - 1], sim.trailY[i - 1])
       const [x1, y1] = tf.toPx(sim.trailX[i], sim.trailY[i])
-      ctx.strokeStyle = `rgba(150,190,255,${(0.06 + 0.5 * age).toFixed(3)})`
+      ctx.strokeStyle = `rgba(${tr},${tg},${tb},${(0.06 + 0.5 * age).toFixed(3)})`
       ctx.beginPath()
       ctx.moveTo(x0, y0)
       ctx.lineTo(x1, y1)

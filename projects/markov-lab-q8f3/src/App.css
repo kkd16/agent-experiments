@@ -511,6 +511,186 @@ input[type='range']::-moz-range-thumb {
   background: rgba(0, 0, 0, 0.25);
 }
 
+/* ── mode / lane segmented controls ──────────────────────────────── */
+.seg {
+  display: flex;
+  gap: 6px;
+}
+.seg-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--stroke);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.seg-btn:hover {
+  color: var(--ink);
+  border-color: var(--stroke-2);
+}
+.seg-on {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, rgba(110, 168, 255, 0.85), rgba(110, 130, 255, 0.7));
+  box-shadow: 0 4px 14px rgba(80, 120, 255, 0.28);
+}
+.lane-seg {
+  margin-bottom: 10px;
+}
+.lane-seg .seg-btn {
+  font-size: 11.5px;
+  padding: 7px 8px;
+}
+.lane-seg .seg-on {
+  background: var(--panel-2);
+  box-shadow: none;
+}
+.lane-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.param-toggle {
+  flex: 1;
+  justify-content: flex-start;
+}
+.btn-ok {
+  background: linear-gradient(135deg, var(--good), #3fbf85);
+  border-color: transparent;
+  color: #06231a;
+}
+
+/* ── race lanes (two side-by-side arenas) ────────────────────────── */
+.lane-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.lane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.lane-name {
+  letter-spacing: -0.01em;
+}
+
+/* ── compare bar (head-to-head metrics) ──────────────────────────── */
+.compare {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.cmp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.cmp-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.cmp-verdict {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-legend {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.cmp-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.cmp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.cmp-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.cmp-row {
+  display: grid;
+  grid-template-columns: 92px 54px 1fr 54px;
+  align-items: center;
+  gap: 8px;
+  cursor: help;
+}
+.cmp-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmp-num {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  color: var(--muted);
+}
+.cmp-num.a {
+  text-align: right;
+}
+.cmp-num.b {
+  text-align: left;
+}
+.cmp-num.win {
+  color: var(--ink);
+  font-weight: 700;
+}
+.cmp-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+.cmp-fill {
+  height: 100%;
+  transition: width 0.25s ease;
+}
+.cmp-fill.a {
+  opacity: 0.85;
+}
+.cmp-fill.b {
+  opacity: 0.85;
+}
+
 /* ── responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
   .studio {
@@ -542,5 +722,8 @@ input[type='range']::-moz-range-thumb {
   }
   .stat-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .lane-grid {
+    grid-template-columns: 1fr;
   }
 }

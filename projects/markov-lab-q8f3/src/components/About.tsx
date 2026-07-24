@@ -42,6 +42,21 @@ const SAMPLER_ROWS: Row[] = [
   },
 ]
 
+const TUNING_ROWS: Row[] = [
+  {
+    name: 'Dual-averaging step-size adaptation (HMC / NUTS)',
+    text: 'Flip “adapt ε” on and the gradient samplers tune their own leapfrog step size instead of making you guess it. During a short warmup window a Nesterov dual-averaging scheme (Hoffman & Gelman 2014) drives the average Metropolis acceptance toward the target δ — 0.8 is the NUTS sweet spot, ~0.65 is optimal for plain HMC — then freezes ε at the dual-averaged estimate so the chain becomes a proper, time-homogeneous Markov chain again. The stat panel shows the live ε and, for NUTS, the mean tree depth. (Adaptation makes the warmup samples non-stationary, so keep a little burn-in.)',
+  },
+  {
+    name: 'Race mode',
+    text: 'Run two samplers in lockstep on the *same* target and *same* seed, each in its own arena, and let the compare bar diff them live. The headline is the efficiency ratio; the bars show ESS, cost-aware ESS/1000-eval, autocorrelation time τ and acceptance. Watch how ESS and ESS/eval can disagree: HMC can carry 20× the effective samples of Random-Walk Metropolis yet tie on ESS/eval, because each HMC draw costs a leapfrog trajectory of gradient evaluations. That tension — raw mixing vs. cost — is the whole engineering story of MCMC in one panel.',
+  },
+  {
+    name: 'Shareable links',
+    text: 'The entire configuration — mode, target, seed, burn-in, and every lane’s sampler and parameters — lives in the URL. Hit “Copy link” to grab a permalink that reconstructs the exact experiment for anyone who opens it.',
+  },
+]
+
 const DIAG_ROWS: Row[] = [
   {
     name: 'ESS — effective sample size',
@@ -91,6 +106,14 @@ export default function About({ onClose }: { onClose: () => void }) {
             </div>
           ))}
 
+          <h3>Tuning &amp; comparison</h3>
+          {TUNING_ROWS.map((r) => (
+            <div className="about-row" key={r.name}>
+              <div className="about-row-name">{r.name}</div>
+              <div className="about-row-text">{r.text}</div>
+            </div>
+          ))}
+
           <h3>Reading the diagnostics</h3>
           {DIAG_ROWS.map((r) => (
             <div className="about-row" key={r.name}>
@@ -101,6 +124,30 @@ export default function About({ onClose }: { onClose: () => void }) {
 
           <h3>Things to try</h3>
           <ul className="about-list">
+            <li>
+              Switch to <b>Race mode</b> with <b>HMC</b> vs <b>Random-Walk Metropolis</b> on the{' '}
+              <b>Rosenbrock banana</b>: HMC carries an order of magnitude more ESS, yet the two nearly
+              tie on <b>ESS / 1000 eval</b> — watch the compare bar make the cost of gradients explicit.
+            </li>
+            <li>
+              On <b>Neal’s funnel</b>, turn on <b>adapt ε</b> for NUTS and push <b>target δ</b> toward
+              0.95: the auto-tuned step shrinks to survive the neck, and the mean tree depth climbs to
+              pay for it. No hand-tuning required.
+            </li>
+            <li>
+              Open <b>Twin Craters</b> — two facing bananas — and give a single <b>HMC</b> chain a small
+              step: it traces one curved crater but can’t cross to the other (R̂ climbs). Race it against{' '}
+              <b>Parallel Tempering</b> and watch tempering visit both.
+            </li>
+            <li>
+              Try the <b>Squiggle</b> with <b>Metropolis-within-Gibbs</b>: the axis-aligned sweeps keep
+              stepping off the sinusoidal ridge. Switch to <b>MALA</b> or <b>HMC</b> and the gradient
+              traces the S cleanly.
+            </li>
+            <li>
+              Configure any experiment and hit <b>Copy link</b> — the URL rebuilds it exactly for whoever
+              you send it to.
+            </li>
             <li>
               Put <b>Random-Walk Metropolis</b> and then <b>HMC</b> on the <b>Rosenbrock banana</b>{' '}
               and compare ESS / 1000 eval — the whole case for gradients in one number.

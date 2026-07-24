@@ -54,21 +54,54 @@ break a fixed step size no matter how you tune it.
       the density) + keyboard shortcuts (space/s/r)
 - [x] Guided "About the math" panel — every sampler, every diagnostic, and a
       "things to try" tour
-- [ ] **Race mode**: run two samplers side-by-side on the same target/seed and
-      diff their ESS/eval — the money shot for "why HMC".
+- [x] **Race mode**: run two samplers side-by-side on the same target/seed and
+      diff their ESS/eval — the money shot for "why HMC". *(session 2)*
 - [x] **Bayesian inference target**: a logistic-regression posterior over
       (intercept, slope) of 18 data points — every sampler now does real
       inference, running mean = posterior mean, CI = credible interval
 - [ ] Make the Bayesian demo interactive: click to drop data points and draw
       posterior-predictive bands in data space alongside the parameter space.
-- [ ] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε).
+- [x] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε). *(session 2)*
 - [ ] Riemannian/position-dependent mass matrix to actually beat the funnel.
 - [x] Export the chain as CSV (one click; header uses per-target axis names)
 - [x] Heavy-tailed correlated Student-t target (ν = 2.5) with exact gradient
 - [x] Per-target axis labels (the logistic target now reads intercept / slope
       across the stat panel and every diagnostic)
-- [ ] Shareable permalink of the full config (target + sampler + params + seed).
-- [ ] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D.
+- [x] Shareable permalink of the full config (target + sampler + params + seed). *(session 2)*
+- [x] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D. *(session 2 — added Squiggle + Twin-Crater bimodal-banana)*
+
+### Session 2 plan (this session) — "compare, adapt, share"
+
+The through-line of session 2 is turning a single-chain visualiser into a
+*comparative laboratory*: put two algorithms in the same arena on the same
+problem, let the good ones tune themselves, and make any experiment a URL you
+can send someone.
+
+- [x] **Sampler `info` channel.** Extend `StepResult` with an optional
+      `info` record so a sampler can report per-step internals (adapted ε, NUTS
+      tree depth, the Metropolis accept-probability). The engine keeps the live
+      value plus a smoothed average; the stat panel surfaces them.
+- [x] **Dual-averaging (Nesterov) step-size adaptation** for HMC & NUTS —
+      Hoffman & Gelman (2014) Alg. 5. A warmup window auto-tunes ε to hit a
+      target acceptance δ, then freezes ε at the dual-averaged running estimate.
+      New per-sampler knobs: *adapt δ* (target accept) and *warmup*. The live
+      ε and mean tree depth show in the stat panel while it tunes.
+- [x] **Two new targets.** A **Squiggle** (sinusoidally sheared Gaussian — an
+      S-shaped ridge that punishes axis-aligned proposals) and **Twin Craters**
+      (a genuinely *bimodal* pair of facing bananas — curved valleys *and*
+      isolated modes at once, the hardest case in the gallery). Both carry
+      exact analytic gradients.
+- [x] **Race mode** *(flagship)*. A mode toggle runs **two samplers in
+      lockstep** on the same target and seed, each in its own panel sharing one
+      density field, with independent trails / clouds / trajectories. A live
+      **compare bar** diffs ESS, ESS/1k-eval, accept-rate and iterations and
+      crowns an efficiency winner — the "why HMC" money shot as a single glance.
+      The engine was refactored around N independent *lanes*.
+- [x] **Shareable permalink.** The whole config (mode, target, seed, burn-in,
+      and every lane's sampler + params) round-trips through the URL hash; a
+      "Copy link" button and on-load restore make any run reproducible by link.
+- [x] **About panel + polish.** Documented dual averaging, race mode, and the
+      two new targets; added new "things to try"; wired the new stat cells.
 
 ## Session log
 
@@ -103,3 +136,36 @@ break a fixed step size no matter how you tune it.
   intercept / slope everywhere instead of x / y. Added one-click CSV export of
   the full chain. Re-verified the gate green and screenshotted the Student-t +
   NUTS combination (sharp core, long diffuse tails). Now 7 targets × 8 samplers.
+- 2026-07-24 (claude): v2.0 — "compare, adapt, share". A big session that turns
+  the single-chain visualiser into a comparative laboratory. Five things landed,
+  all with the CI gate green (scope + conformance + lint + build) and all
+  smoke-tested live in headless Chromium:
+  1. **Dual-averaging step-size adaptation** (`samplers/adapt.ts`): Nesterov
+     primal-dual scheme (Hoffman & Gelman 2014, Alg. 5) wired into HMC and NUTS
+     behind an "adapt ε" toggle + "target δ" knob. A 400-iteration warmup drives
+     the average Metropolis acceptance to δ, then freezes ε at the dual-averaged
+     estimate. NUTS accumulates the per-tree acceptance stat (Σ min(1,e^ΔH)/n) to
+     feed it. Verified in isolation: on a monotone test the scheme converges ε to
+     the analytic optimum (0.2163 vs 0.2154; achieved accept 0.649 vs target 0.65).
+  2. **Sampler `info` channel**: `StepResult.info` reports internals; the engine
+     keeps the live ε (current) and an EMA of the NUTS tree depth, surfaced as new
+     stat cells.
+  3. **Two new targets** (now 9): a **Squiggle** (sinusoidally-sheared Gaussian,
+     an S-ridge) and **Twin Craters** (log-sum-exp of two facing crescents —
+     curved valleys *and* two separated modes; the bimodal marginal is visible in
+     the histogram). Both gradients checked against finite differences to ~1e-9.
+  4. **Race mode** (flagship): the engine was refactored around an opaque `Lane`
+     class (`engine/lane.ts`) so the rAF loop drives N lanes uniformly — and so
+     every canvas/cloud mutation stays inside a method boundary, satisfying the
+     compiler-based react-hooks immutability rules. Two lanes step in lockstep on
+     one target+seed, share one density field, keep independent trails/clouds
+     (tinted per lane), and feed a `Race` compare bar that diffs ESS, cost-aware
+     ESS/eval, τ and accept and crowns an efficiency winner. The diagnostics rail
+     overlays both chains. Confirmed the money shot live: HMC vs RWM on the banana
+     shows a huge ESS lead but a near-tie on ESS/eval (the honest cost of
+     gradients); PT beats Slice 5.2× on Twin Craters by visiting both craters.
+  5. **Shareable permalink** (`engine/permalink.ts`): the whole config
+     round-trips through a base64url URL hash; "Copy link" + on-load restore.
+     Verified a fresh page load rebuilds target + mode + both lanes exactly.
+  Also documented all of it in the About modal (new "Tuning & comparison" section
+  + new "things to try") and refreshed the card + page metadata.
