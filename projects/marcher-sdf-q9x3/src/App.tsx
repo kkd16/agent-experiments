@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import './App.css'
 import type { Scene } from './scene/types'
 import { PRESETS, defaultScene } from './scene/presets'
 import { reducer } from './state/reducer'
-import { clearPersisted, cloneScene, initState, persist } from './state/store'
+import { clearPersisted, cloneScene, initState, persist, sanitizeScene } from './state/store'
 import { useRenderer } from './hooks/useRenderer'
 import { buildStandaloneHtml } from './export/standalone'
 import { downloadDataUrl, downloadText } from './export/download'
@@ -71,6 +72,27 @@ export default function App() {
     downloadDataUrl(capturePng(), 'marcher.png')
   }, [capturePng])
 
+  const saveJson = useCallback(() => {
+    downloadText(JSON.stringify(scene, null, 2), 'marcher-scene.json', 'application/json')
+  }, [scene])
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const openJson = useCallback(() => fileInputRef.current?.click(), [])
+  const onFilePicked = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking the same file
+    if (!file) return
+    file
+      .text()
+      .then((text) => {
+        const parsed = sanitizeScene(JSON.parse(text))
+        if (parsed) dispatch({ type: 'loadScene', scene: parsed })
+      })
+      .catch(() => {
+        /* malformed file — ignore, keep the current scene */
+      })
+  }, [])
+
   // Keyboard shortcuts (ignored while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,7 +128,16 @@ export default function App() {
         onShowHelp={() => setOverlay('help')}
         onExport={exportHtml}
         onCapture={capture}
+        onSaveJson={saveJson}
+        onOpenJson={openJson}
         saved={saved}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        style={{ display: 'none' }}
+        onChange={onFilePicked}
       />
 
       <div className="workspace">

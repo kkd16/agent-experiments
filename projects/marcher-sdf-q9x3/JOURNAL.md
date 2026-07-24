@@ -70,7 +70,7 @@ Shipping a large, coherent upgrade that clears the whole original backlog and gr
 - [ ] Depth-of-field (accumulate a thin-lens jitter over frames)
 - [ ] Per-node "elongation" and "symmetry-plane" modifiers
 - [ ] Temporal accumulation / progressive refinement for path-traced soft shadows
-- [ ] Import/export scene JSON to a file (not just localStorage)
+- [x] Import/export scene JSON to a file (not just localStorage) — Open/Save in the toolbar
 - [ ] Node groups / sub-trees with their own local blend
 - [ ] Emissive objects that actually light the scene (area lights)
 

@@ -31,6 +31,15 @@ function sanitizeNode(raw: unknown): SdfNode {
   return { ...(n as SdfNode), material, modifier, anim }
 }
 
+/**
+ * Coerce an arbitrary parsed value into a valid Scene, filling in any fields a
+ * save predates. Returns null when the input isn't scene-shaped. Exported so the
+ * file-import path can reuse the exact same hardening the autosave path uses.
+ */
+export function sanitizeScene(raw: unknown): Scene | null {
+  return sanitize(raw)
+}
+
 /** Fill in any missing global blocks so old/partial saves don't crash the renderer. */
 function sanitize(raw: unknown): Scene | null {
   if (!raw || typeof raw !== 'object') return null

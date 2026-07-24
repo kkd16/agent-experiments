@@ -10,6 +10,8 @@ interface ToolbarProps {
   onShowHelp: () => void
   onExport: () => void
   onCapture: () => void
+  onSaveJson: () => void
+  onOpenJson: () => void
   saved: boolean
 }
 
@@ -20,6 +22,8 @@ export default function Toolbar({
   onShowHelp,
   onExport,
   onCapture,
+  onSaveJson,
+  onOpenJson,
   saved,
 }: ToolbarProps) {
   return (
@@ -43,6 +47,12 @@ export default function Toolbar({
         <span className={`save-dot ${saved ? 'ok' : ''}`} title={saved ? 'Autosaved' : 'Saving…'}>
           {saved ? 'saved' : 'saving…'}
         </span>
+        <button type="button" onClick={onOpenJson} title="Open a scene .json file">
+          Open
+        </button>
+        <button type="button" onClick={onSaveJson} title="Save the scene as a .json file">
+          Save
+        </button>
         <button type="button" onClick={onCapture} title="Save the current frame as a PNG (P)">
           PNG
         </button>
