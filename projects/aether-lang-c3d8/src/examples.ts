@@ -1589,6 +1589,92 @@ let rec ramp = fn n -> fn acc ->
 (ramp 50 0, tag 7, tag 42, tag 99)
 `,
   },
+  {
+    id: 'comprehensions',
+    title: 'List comprehensions & ranges',
+    blurb: 'Generators, guards, let-bindings, pattern generators and range literals — Aether 30.0.',
+    visual: false,
+    code: `// Aether 30.0 — comprehensions & ranges. All pure sugar: the parser lowers
+// each form to the existing core, so the type checker and all three backends
+// (VM · JavaScript · WebAssembly) see only ordinary map/filter/concat/match.
+// (Open the AST panel to watch a comprehension turn into its desugaring.)
+
+// Range literals: inclusive [a .. b] and stepped [a, s .. b].
+let counting  = [1 .. 10] in                 // [1, …, 10]
+let evens     = [0, 2 .. 20] in              // step 2
+let countdown = [10, 8 .. 0] in              // a descending step
+
+// Generators + guards. Multiple generators nest (a cartesian product);
+// a guard filters the tuples seen so far.
+let pyth = [ (a, b, c)
+           | c <- [1 .. 20], b <- [1 .. c], a <- [1 .. b]
+           , a * a + b * b == c * c ] in
+
+// A 'let'-qualifier names an intermediate; it's in scope to its right.
+let scaled = [ y | x <- [1 .. 6], let y = x * x, y > 4 ] in
+
+// Pattern generators bind by destructuring — and a *refutable* one silently
+// drops the elements that don't match (the list-monad 'fail').
+type Opt = Non | Som Int in
+let justs = [ x * 10 | Som x <- [Som 1, Non, Som 2, Non, Som 3] ] in
+
+(counting, evens, countdown, pyth, scaled, justs)`,
+  },
+  {
+    id: 'quicksort',
+    title: 'Quicksort in two lines',
+    blurb: 'The classic comprehension quicksort — partition with two comprehensions, recurse.',
+    visual: false,
+    code: `// Quicksort reads like its own specification when you have comprehensions:
+// everything below the pivot, then the pivot, then everything at-or-above.
+let rec qsort xs = match xs with
+  | [] -> []
+  | p :: rest ->
+      append (qsort [ y | y <- rest, y < p ])
+             (p :: qsort [ y | y <- rest, y >= p ]) in
+
+qsort [3, 8, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]`,
+  },
+  {
+    id: 'sieve',
+    title: 'Primes by comprehension',
+    blurb: 'A trial-division sieve: keep n whose divisor-comprehension is empty.',
+    visual: false,
+    code: `// A number is prime when it has no divisor strictly between 1 and itself —
+// so keep the n whose "divisors" comprehension comes back empty.
+let rec divides d n =
+  if n < d then false
+  else if n == d then true
+  else divides d (n - d) in
+
+let primesUpTo = fn hi ->
+  [ n | n <- [2 .. hi], length [ d | d <- [2 .. n - 1], divides d n ] == 0 ] in
+
+primesUpTo 60`,
+  },
+  {
+    id: 'comprehension-garden',
+    title: 'Comprehension garden',
+    blurb: 'A stepped range drives a comprehension of angles; a fold walks the turtle into a burst.',
+    visual: true,
+    code: `// A stepped range [0, 9 .. 351] enumerates the spoke angles; a comprehension
+// turns them to floats (dropping every fifth for a little rhythm), and a fold
+// walks the turtle through the list — one petal per angle.
+let spokes = [ toFloat a | a <- [0, 9 .. 351], a % 5 != 0 ] in
+
+let petal = fn ang -> (
+  push ();
+    color (120 + floor (ang *. 0.35)) 200 (210 - floor (ang *. 0.45));
+    turn ang;
+    forward (72.0 +. ang *. 0.26);
+    turn 40.0;
+    forward 24.0;
+  pop ();
+  ()
+) in
+
+foldl (fn _ ang -> petal ang) () spokes`,
+  },
 ]
 
 export const DEFAULT_CODE = EXAMPLES[0].code

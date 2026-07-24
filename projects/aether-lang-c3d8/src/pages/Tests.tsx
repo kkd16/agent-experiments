@@ -5,6 +5,8 @@ import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
 import { runOptimizerFuzz, runSpecConstrFuzz, runSroaFuzz } from '../lang/optFuzz.ts'
 import type { OptFuzzResult, SpecConstrFuzzResult, SroaFuzzResult } from '../lang/optFuzz.ts'
+import { runComprehensionFuzz } from '../lang/comprehensionFuzz.ts'
+import type { ComprehensionFuzzResult } from '../lang/comprehensionFuzz.ts'
 import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
 import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
@@ -14,6 +16,7 @@ export default function Tests() {
   const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
   const [scFuzz, setScFuzz] = useState<SpecConstrFuzzResult | null>(null)
   const [sroaFuzz, setSroaFuzz] = useState<SroaFuzzResult | null>(null)
+  const [compFuzz, setCompFuzz] = useState<ComprehensionFuzzResult | null>(null)
   const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
@@ -26,6 +29,7 @@ export default function Tests() {
       setOptFuzz(runOptimizerFuzz())
       setScFuzz(runSpecConstrFuzz())
       setSroaFuzz(runSroaFuzz())
+      setCompFuzz(runComprehensionFuzz())
       setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
@@ -270,6 +274,48 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {sroaFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {compFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Comprehension fuzz — list-comprehension &amp; range desugaring soundness{' '}
+              <span className={`tests-group-count ${compFuzz.passed === compFuzz.total ? '' : 'bad'}`}>
+                {compFuzz.passed}/{compFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {compFuzz.total} <em>randomly generated</em> list comprehensions — nested generators,{' '}
+              inclusive and stepped <strong>ranges</strong> (<code>[a .. b]</code>,{' '}
+              <code>[a, s .. b]</code>), boolean guards, <code>let</code>-qualifiers and{' '}
+              <strong>pattern generators</strong> (tuple, <code>Som x</code>, <code>h :: _</code>).{' '}
+              {compFuzz.patterned} used a pattern generator and {compFuzz.refutable} a{' '}
+              <em>refutable</em> one that must <strong>drop</strong> the non-matching elements (the
+              list-monad <code>fail</code>). Each is proved sound two ways: the compiled program's{' '}
+              <strong>VM result equals an independent reference</strong> — the same comprehension
+              evaluated by nested iteration in TypeScript, never touching the parser's desugaring —
+              and that value <strong>re-appears on the JavaScript backend</strong> (VM ≡ JS). Across
+              the batch it produced <strong>{compFuzz.elements.toLocaleString()} list elements</strong>.
+              Deterministic, so this badge is stable.
+            </p>
+            {compFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {compFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">

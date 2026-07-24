@@ -63,6 +63,61 @@ compile the same optimized core — and the equivalence checks prove it preserve
 
 ## Ideas / backlog
 
+### Aether 30.0 — comprehensions grow up: pattern generators, `let`-qualifiers & range literals (planned + shipped this session)
+
+Aether has had list comprehensions since early on, but only in their most basic form: a generator
+could bind a **plain name** (`x <- xs`) and a qualifier could be a boolean **guard** — nothing else.
+That leaves out the three things every working programmer reaches for the moment they have
+comprehensions at all, and it left the language without the one piece of list sugar every ML/Haskell
+descendant ships: **range literals**. 30.0 closes that gap, and does it the way the language is proud
+of — as **pure front-end sugar**. Every new form is desugared *in the parser* into the existing core
+(`concat`/`map`/`if`/`let`/`match`, plus two tiny new prelude functions), so the type checker, the
+optimizing middle-end and all **three backends** (bytecode VM · JavaScript · WebAssembly) never see a
+comprehension or a range at all. That makes the whole release **strictly additive**: an old program
+takes the exact pre-30.0 path, and the risk surface is confined to a few hundred lines of the parser.
+
+The plan, step by step:
+
+- [x] **A `..` token.** Add `..` to the lexer's operator table (longest-match, so `1..10` lexes as
+  `1 · .. · 10` while `r.field` keeps its single-`.` field access and floats like `1.5` are
+  unaffected — the number scanner only treats a `.` as a decimal point when a digit follows).
+- [x] **Range literals.** `[a .. b]` is the **inclusive** integer enumeration `a, a+1, …, b`;
+  `[a, s .. b]` is the arithmetic sequence with the step read off the first two elements
+  (`a, s, s+(s−a), …`), ascending or descending, bounded by `b`. They desugar to two new prelude
+  functions, `enumFromTo` and `enumFromThenTo`, written in Aether itself (a zero step terminates as
+  the empty list rather than diverging — a deliberate, total choice for a strict language). Only the
+  *second* element may precede `..`, so `[1, 2, 3 .. 9]` is a clean parse error, not a silent guess.
+- [x] **Pattern generators.** A generator's binder becomes any **pattern**, not just a name:
+  `(a, b) <- pairs`, `Som x <- opts`, `h :: _ <- rows`. An **irrefutable** binder (a variable or
+  wildcard) keeps the old clean `map`-a-bare-lambda desugaring; any other pattern maps a
+  `fn v -> match v with pat -> [e|Q] | _ -> []` — the wildcard arm **drops** the elements that don't
+  match, exactly the list-monad `fail`, so `[ x | Som x <- xs ]` keeps only the `Som`s. Detecting a
+  generator now means scanning for a top-level `<-` at bracket depth 0 before the qualifier ends,
+  which lets an arbitrary pattern precede the arrow with no speculative parse.
+- [x] **`let`-qualifiers.** `[ e | x <- xs, let y = f x, y > 0 ]` binds `y` for every qualifier to its
+  right; it desugars to a `let` (or a single-arm `match` for a destructuring pattern, which stays
+  exhaustive for products so no spurious warning fires).
+- [x] **Multiple generators & guards** keep composing as before (a cartesian product, with guards
+  pruning early) — now over ranges and patterns.
+- [x] **A differential fuzzer** (`comprehensionFuzz.ts`): 200 random comprehensions per run — nested
+  generators, inclusive/stepped ranges, guards, `let`-qualifiers and tuple/`Som`/cons pattern
+  generators — each proved sound two ways: the compiled program's **VM result equals an independent
+  reference** (the same comprehension evaluated by nested iteration in TypeScript, never touching the
+  parser's desugaring), and that value **re-appears on the JavaScript backend**. A badge on the Tests
+  page; deterministic, so it's stable.
+- [x] **An in-app battery** (19 cases in a new `comprehensions` group) + gallery examples
+  (comprehensions tour, quicksort, a prime sieve, and a turtle **"comprehension garden"** driven by a
+  stepped range) + About/parser-note updates + two new stdlib entries.
+- [ ] **Float / `Char` / generic `Enum` ranges** — today `[a .. b]` is `Int`-only (the desugaring
+  targets the `Int` prelude helpers). A `class Enum a` with `enumFromTo`/`enumFromThenTo` methods would
+  let `['a' .. 'z']` and `[1.0, 1.5 .. 3.0]` share the syntax, resolved by the dictionary machinery.
+- [ ] **Comprehension-aware fusion** — a range generator immediately consumed (`sum [ f x | x <- [1..n] ]`)
+  still builds the intermediate list; teaching short-cut fusion the `enumFromTo`/`concat`/`map` shape
+  the desugarer emits would let it collapse to a single loop, as the hand-written combinator form
+  already does.
+- [ ] **Parallel comprehensions** (the GHC `| … | …` zip extension) and a **`then`/group** clause —
+  more exotic, but they'd exercise the qualifier grammar further.
+
 ### Aether 29.0 — the type system grows a spine: signatures, ascription & GADTs (planned + shipped this session)
 
 Until now Aether inferred *everything* with zero annotations — a point of pride, but also a
@@ -2145,12 +2200,42 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 
 ## Standard library
 
-- list: `map filter foldl foldr length append reverse sum range take drop elem all any concat zip replicate`
+- list: `map filter foldl foldr length append reverse sum range enumFromTo enumFromThenTo take drop elem all any concat zip replicate`
+  (`enumFromTo`/`enumFromThenTo` back the `[a .. b]` / `[a, s .. b]` range literals)
 - string: `strlen toUpper toLower chars join parseInt` (+ `show`, `^`)
 - primitives: `head tail empty print sqrt sin cos floor toFloat pi abs min max`
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-24 (claude): **Aether 30.0 — comprehensions grow up: pattern generators, `let`-qualifiers &
+  range literals.** The language had list comprehensions, but only the thinnest slice: a generator
+  bound a **plain name** and a qualifier was a boolean **guard** — and there were no **range
+  literals** at all, the one piece of list sugar every ML/Haskell descendant ships. 30.0 closes the
+  gap as **pure front-end sugar**, desugared *in the parser* into the existing core, so the type
+  checker, the optimizing middle-end and all three backends (VM · JS · WASM) never see a comprehension
+  or a range — making the whole release **strictly additive** (an old program takes the exact pre-30.0
+  path). New: a `..` lexer token (longest-match, so `1..10` splits cleanly while `r.field` and floats
+  are untouched); **range literals** `[a .. b]` (inclusive) and `[a, s .. b]` (stepped, ascending or
+  descending, a zero step terminating as `[]`), backed by two new prelude functions `enumFromTo` /
+  `enumFromThenTo` written in Aether itself; **pattern generators** `(a,b) <- ps`, `Som x <- opts`,
+  `h :: _ <- rows` where an irrefutable binder keeps the bare-`map` desugaring and any other pattern
+  maps a `match … | _ -> []` whose wildcard arm **drops** the non-matches (the list-monad `fail`); and
+  **`let`-qualifiers** `let y = f x` scoped over the qualifiers to their right. Generator detection now
+  scans for a top-level `<-` at bracket depth 0, so an arbitrary pattern can precede the arrow with no
+  speculative parse. **Verification:** a new **200-program differential fuzzer** (`comprehensionFuzz.ts`)
+  generates random comprehensions — nested generators, inclusive/stepped ranges, guards,
+  `let`-qualifiers and tuple/`Som`/cons pattern generators — and proves each sound two ways: the
+  compiled program's **VM result equals an independent TypeScript reference** (the comprehension
+  re-evaluated by nested iteration, never touching the desugaring) **and** the value **re-appears on
+  the JavaScript backend** (VM ≡ JS); it holds at **200/200** here and across seven seeds × 300 runs
+  (2,100 programs, ~12k list elements, zero failures), with a stable badge on the Tests page. A new
+  19-case in-app `comprehensions` battery (VM + JS ≡ VM, all green; the head-less harness also re-runs
+  each on WASM) grows the suite **147 → 166**, four new gallery examples (a comprehensions tour,
+  two-line quicksort, a prime sieve, and a turtle **"comprehension garden"** driven by a stepped
+  range), plus About/parser-note and stdlib updates. The existing suites are unchanged (166/166
+  in-app, WASM ≡ VM 150/150, semantics 19/19, and the optimizer/SpecConstr/SROA fuzzers still pass — no
+  regression). Full CI gate (scope + conformance + lint + tsc + build) green.
 
 - 2026-07-04 (claude): **Aether 28.0 — the synthesizer learns to recurse (+ Auto-CEGIS).** The
   `Synthesize` engine could write straight-line code, the four combinators with synthesized lambdas,

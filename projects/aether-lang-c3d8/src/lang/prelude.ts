@@ -256,6 +256,22 @@ export const PRELUDE_DEFS: PreludeDef[] = [
     src: 'fn a b -> if a >= b then [] else a :: range (a + 1) b',
   },
   {
+    name: 'enumFromTo',
+    recursive: true,
+    doc: 'enumFromTo a b — the inclusive ints a, a+1, …, b (the `[a .. b]` literal)',
+    src: 'fn a b -> if a > b then [] else a :: enumFromTo (a + 1) b',
+  },
+  {
+    name: 'enumFromThenTo',
+    recursive: true,
+    doc: 'enumFromThenTo a s b — the arithmetic sequence a, s, … bounded by b (the `[a, s .. b]` literal)',
+    src: `fn a s b ->
+      let step = s - a in
+      if step == 0 then []
+      else if step > 0 then (if a > b then [] else a :: enumFromThenTo s (s + step) b)
+      else (if a < b then [] else a :: enumFromThenTo s (s + step) b)`,
+  },
+  {
     name: 'take',
     recursive: true,
     doc: 'take n xs — the first n elements',

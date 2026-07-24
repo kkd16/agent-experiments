@@ -1261,6 +1261,128 @@ let f = fn e -> match e with | ILit n -> n | BLit b -> b in 0`,
     expected: null,
     expectError: true,
   },
+
+  // ---- comprehensions & ranges (Aether 30.0) ----
+  // Every case runs on the VM and is re-checked against the JavaScript backend
+  // (JS ≡ VM); the headless differential harness also re-runs them on WASM.
+  {
+    group: 'comprehensions',
+    name: 'range literal [a .. b] is inclusive',
+    code: '[1 .. 5]',
+    expected: '[1, 2, 3, 4, 5]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'a backwards range is empty',
+    code: '[5 .. 1]',
+    expected: '[]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'single-point range',
+    code: '[7 .. 7]',
+    expected: '[7]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'stepped range [a, s .. b]',
+    code: '[1, 3 .. 11]',
+    expected: '[1, 3, 5, 7, 9, 11]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'descending stepped range',
+    code: '[10, 8 .. 0]',
+    expected: '[10, 8, 6, 4, 2, 0]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'a zero-step range terminates (empty)',
+    code: '[1, 1 .. 9]',
+    expected: '[]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'range drives a comprehension',
+    code: '[ x * x | x <- [1 .. 6] ]',
+    expected: '[1, 4, 9, 16, 25, 36]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'tuple-pattern generator',
+    code: 'let ps = [(1, 10), (2, 20), (3, 30)] in [ a + b | (a, b) <- ps ]',
+    expected: '[11, 22, 33]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'refutable generator drops non-matches (list-monad fail)',
+    code: 'type Opt = Non | Som Int in [ x * x | Som x <- [Som 2, Non, Som 4, Non] ]',
+    expected: '[4, 16]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'cons-pattern generator over a list of lists',
+    code: '[ h | h :: _ <- [[1, 2], [], [3, 4], [5]] ]',
+    expected: '[1, 3, 5]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'let-qualifier binds for the qualifiers to its right',
+    code: '[ y | x <- [1 .. 5], let y = x * x, y > 4 ]',
+    expected: '[9, 16, 25]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'let-qualifier with a tuple pattern',
+    code: '[ s | x <- [1 .. 3], let (lo, hi) = (x, x * 10), let s = lo + hi ]',
+    expected: '[11, 22, 33]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'multiple generators form a cartesian product',
+    code: '[ (x, y) | x <- [1 .. 2], y <- [1 .. 3] ]',
+    expected: '[(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'guard between generators prunes early',
+    code: '[ (a, b) | a <- [1 .. 3], a != 2, b <- [1 .. 2] ]',
+    expected: '[(1, 1), (1, 2), (3, 1), (3, 2)]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'Pythagorean triples',
+    code: '[ (a, b, c) | c <- [1 .. 15], b <- [1 .. c], a <- [1 .. b], a * a + b * b == c * c ]',
+    expected: '[(3, 4, 5), (6, 8, 10), (5, 12, 13), (9, 12, 15)]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'quicksort via two comprehensions',
+    code: `let rec qsort xs = match xs with
+  | [] -> []
+  | p :: rest -> append (qsort [ y | y <- rest, y < p ]) (p :: qsort [ y | y <- rest, y >= p ])
+in qsort [3, 1, 4, 1, 5, 9, 2, 6]`,
+    expected: '[1, 1, 2, 3, 4, 5, 6, 9]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'primes by trial division inside a comprehension',
+    code: `let rec divides d n = if n < d then false else if n == d then true else divides d (n - d) in
+[ n | n <- [2 .. 20], length [ d | d <- [2 .. n - 1], divides d n ] == 0 ]`,
+    expected: '[2, 3, 5, 7, 11, 13, 17, 19]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'nested comprehension builds a multiplication table',
+    code: '[ [ r * c | c <- [1 .. 3] ] | r <- [1 .. 3] ]',
+    expected: '[[1, 2, 3], [2, 4, 6], [3, 6, 9]]',
+  },
+  {
+    group: 'comprehensions',
+    name: 'wildcard generator counts elements',
+    code: 'sum [ 1 | _ <- [10, 20, 30, 40] ]',
+    expected: '4',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {

@@ -7,7 +7,7 @@ const STAGES = [
   {
     n: 2,
     title: 'Parser',
-    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas, list comprehensions [ e | x <- xs, guard ] desugar to concat / map / if, and monadic do { x <- e; … } desugars to bind e (fn x -> …) — so each is typed and compiled like any other core expression.',
+    body: 'A Pratt (precedence-climbing) parser builds the AST. Function application is juxtaposition and binds tighter than every operator; let / fn / if are prefix forms. Multi-argument functions desugar to curried lambdas; list comprehensions [ e | q… ] desugar to concat / map / if / let / match — a qualifier is a generator pat <- xs (a refutable pattern drops the non-matches via a wildcard arm, the list-monad fail), a let pat = e binding, or a boolean guard — while range literals [a .. b] and [a, s .. b] desugar to the enumFromTo / enumFromThenTo prelude functions; and monadic do { x <- e; … } desugars to bind e (fn x -> …). Each is typed and compiled like any other core expression, so the type checker and all three backends never see the sugar.',
   },
   {
     n: 3,
@@ -197,6 +197,17 @@ export default function About() {
             <code>match</code> is checked for exhaustiveness and redundancy using Maranget's
             usefulness algorithm — non-exhaustive matches are reported with a concrete witness
             pattern, and unreachable clauses are flagged.
+          </li>
+          <li>
+            <strong>List comprehensions &amp; ranges.</strong>{' '}
+            <code>[ e | q… ]</code> supports generators (<code>pat &lt;- xs</code>, where a{' '}
+            <em>refutable</em> pattern like <code>Som x</code> silently drops the non-matches),{' '}
+            <code>let</code>-qualifiers and boolean guards; range literals write an enumeration as{' '}
+            <code>[a .. b]</code> or, with a step, <code>[a, s .. b]</code>. All of it is pure
+            parser sugar — it lowers to <code>concat</code>/<code>map</code>/<code>match</code> and
+            the <code>enumFromTo</code> prelude — so the type checker and all three backends see only
+            ordinary core, and a 200-program differential fuzzer checks each comprehension against an
+            independent reference evaluator.
           </li>
           <li>
             <strong>Aether Check</strong> is from-scratch property-based testing (QuickCheck)
