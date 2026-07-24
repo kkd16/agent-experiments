@@ -9,6 +9,8 @@ import { runComprehensionFuzz } from '../lang/comprehensionFuzz.ts'
 import type { ComprehensionFuzzResult } from '../lang/comprehensionFuzz.ts'
 import { runSectionFuzz } from '../lang/sectionFuzz.ts'
 import type { SectionFuzzResult } from '../lang/sectionFuzz.ts'
+import { runStdlibFuzz } from '../lang/stdlibFuzz.ts'
+import type { StdlibFuzzResult } from '../lang/stdlibFuzz.ts'
 import { runSemanticsSelfCheck } from '../lang/semanticsSelfCheck.ts'
 import type { SemSelfResult } from '../lang/semanticsSelfCheck.ts'
 
@@ -20,6 +22,7 @@ export default function Tests() {
   const [sroaFuzz, setSroaFuzz] = useState<SroaFuzzResult | null>(null)
   const [compFuzz, setCompFuzz] = useState<ComprehensionFuzzResult | null>(null)
   const [secFuzz, setSecFuzz] = useState<SectionFuzzResult | null>(null)
+  const [libFuzz, setLibFuzz] = useState<StdlibFuzzResult | null>(null)
   const [semResults, setSemResults] = useState<SemSelfResult[] | null>(null)
   const [running, setRunning] = useState(false)
 
@@ -34,6 +37,7 @@ export default function Tests() {
       setSroaFuzz(runSroaFuzz())
       setCompFuzz(runComprehensionFuzz())
       setSecFuzz(runSectionFuzz())
+      setLibFuzz(runStdlibFuzz())
       setSemResults(runSemanticsSelfCheck())
       setRunning(false)
     }, 10)
@@ -360,6 +364,45 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {secFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {libFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Stdlib fuzz — 30.2 list-combinator soundness{' '}
+              <span className={`tests-group-count ${libFuzz.passed === libFuzz.total ? '' : 'bad'}`}>
+                {libFuzz.passed}/{libFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {libFuzz.total} <em>randomly generated</em> calls across {libFuzz.covered} new
+              combinators — <code>sort</code>, <code>insert</code>, <code>partition</code>,{' '}
+              <code>span</code>, <code>takeWhile</code>/<code>dropWhile</code>, <code>scanl</code>,{' '}
+              <code>zipWith</code>, <code>product</code>, <code>maximum</code>/<code>minimum</code> —
+              each proved sound two ways: the compiled program's{' '}
+              <strong>VM result equals an independent reference</strong> (a second implementation of
+              the operation, in TypeScript) and that value{' '}
+              <strong>re-appears on the JavaScript backend</strong> (VM ≡ JS). Deterministic, so this
+              badge is stable.
+            </p>
+            {libFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {libFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">

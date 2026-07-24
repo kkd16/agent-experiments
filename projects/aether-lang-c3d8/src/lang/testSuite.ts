@@ -1481,6 +1481,98 @@ in qsort [3, 1, 4, 1, 5, 9, 2, 6]`,
     code: 'flip (fn a b -> a - b) 3 10',
     expected: '7',
   },
+
+  // ---- standard library (Aether 30.2) ----
+  {
+    group: 'stdlib',
+    name: 'zipWith combines two lists',
+    code: 'zipWith (+) [1, 2, 3] [10, 20, 30]',
+    expected: '[11, 22, 33]',
+  },
+  {
+    group: 'stdlib',
+    name: 'zipWith stops at the shorter list',
+    code: 'zipWith ( * ) [1, 2, 3, 4] [10, 20]',
+    expected: '[10, 40]',
+  },
+  {
+    group: 'stdlib',
+    name: 'concatMap maps then flattens',
+    code: 'concatMap (fn x -> [x, x * 10]) [1, 2, 3]',
+    expected: '[1, 10, 2, 20, 3, 30]',
+  },
+  {
+    group: 'stdlib',
+    name: 'takeWhile / dropWhile split at the first failure',
+    code: '(takeWhile (< 3) [1, 2, 3, 4, 1], dropWhile (< 3) [1, 2, 3, 4, 1])',
+    expected: '([1, 2], [3, 4, 1])',
+  },
+  {
+    group: 'stdlib',
+    name: 'span is takeWhile paired with dropWhile',
+    code: 'span (fn x -> x != 0) [3, 2, 0, 4, 5]',
+    expected: '([3, 2], [0, 4, 5])',
+  },
+  {
+    group: 'stdlib',
+    name: 'partition keeps order in both halves',
+    code: 'partition (fn x -> x % 2 == 0) [1, 2, 3, 4, 5, 6]',
+    expected: '([2, 4, 6], [1, 3, 5])',
+  },
+  {
+    group: 'stdlib',
+    name: 'scanl keeps every running accumulator',
+    code: 'scanl (+) 0 [1, 2, 3, 4]',
+    expected: '[0, 1, 3, 6, 10]',
+  },
+  {
+    group: 'stdlib',
+    name: 'sort orders an Int list',
+    code: 'sort [3, 1, 4, 1, 5, 9, 2, 6]',
+    expected: '[1, 1, 2, 3, 4, 5, 6, 9]',
+  },
+  {
+    group: 'stdlib',
+    name: 'sort is polymorphic (strings, structural ≤)',
+    code: 'sort ["pear", "apple", "fig", "date"]',
+    expected: '["apple", "date", "fig", "pear"]',
+  },
+  {
+    group: 'stdlib',
+    name: 'insert keeps a sorted list sorted',
+    code: 'insert 4 [1, 3, 5, 7]',
+    expected: '[1, 3, 4, 5, 7]',
+  },
+  {
+    group: 'stdlib',
+    name: 'product multiplies an Int list',
+    code: 'product [1, 2, 3, 4, 5]',
+    expected: '120',
+  },
+  {
+    group: 'stdlib',
+    name: 'maximum / minimum',
+    code: '(maximum [3, 7, 2, 9, 4], minimum [3, 7, 2, 9, 4])',
+    expected: '(9, 2)',
+  },
+  {
+    group: 'stdlib',
+    name: 'last / init decompose from the right',
+    code: '(last [1, 2, 3, 4], init [1, 2, 3, 4])',
+    expected: '(4, [1, 2, 3])',
+  },
+  {
+    group: 'stdlib',
+    name: 'iterate builds a bounded orbit',
+    code: 'iterate 6 ( * 2) 1',
+    expected: '[1, 2, 4, 8, 16, 32]',
+  },
+  {
+    group: 'stdlib',
+    name: 'the toolkit composes with sections & comprehensions',
+    code: 'sort (concatMap (fn x -> [x, 0 - x]) [ n | n <- [1 .. 3] ])',
+    expected: '[-3, -2, -1, 1, 2, 3]',
+  },
 ]
 
 export function runCase(tc: TestCase): TestResult {
