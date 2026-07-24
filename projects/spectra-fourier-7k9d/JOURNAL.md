@@ -200,8 +200,79 @@ vectors / pure frequencies, and lets you manipulate them.
    greedy **SC**, the **SC-list** (Tal–Vardy, keep the L best paths by an LLR metric) and the **CRC-aided
    list** (the 5G decoder, an outer CRC picks the surviving path that checks); and a Monte-Carlo
    **waterfall** landing a short code within ~1 dB of the binary Shannon limit.
+10. **Reed–Solomon** — *the algebra that fixes bursts.* The coding family's fourth decoding paradigm,
+    and the only **algebraic** one: no trellis search, no message passing — pure finite-field algebra.
+    From-scratch **GF(2^m)** arithmetic (log/antilog tables walked from a primitive polynomial, m = 3…8),
+    a **systematic encoder** (every codeword a multiple of g, hence a zero of all 2t check roots), and
+    the full **syndrome → Berlekamp–Massey → Chien → Forney** decoder that locates and repairs any e
+    errors + f **erasures** with 2e + f ≤ 2t. Four tabs: a **Decode** pipeline you corrupt by clicking
+    symbols and watch rebuilt algebraically; a **Burst & interleave** frame showing how
+    cross-interleaving (the compact-disc trick) chops a scratch into per-codeword crumbs; a
+    **Waterfall** whose Monte-Carlo dots land exactly on the closed-form combinatorial error curve; and
+    a **Deep space** tab that concatenates RS(255,223) over the Voyager convolutional inner code
+    (`fec.ts`) with a symbol interleaver — the exact CCSDS chain that carried the outer-planet images
+    home.
 
 ## Ideas / backlog
+
+### v17 plan — the **Reed–Solomon** mode (algebraic block codes) — this session
+
+The coding pillar held the three great *iterative / search* decoders — the trellis (Coding/Viterbi,
+v12), belief propagation (LDPC, v14) and successive cancellation (Polar, v16) — but was missing the
+oldest and most widely deployed idea of all: **Reed–Solomon**, the *algebraic* block code on every CD,
+DVD, QR code, hard-disk sector and deep-space link since Voyager. Unlike the others it does not search
+or iterate; it *solves* for the error. v17 adds the whole pillar as a **twenty-first mode**, from
+scratch (no coding or finite-field library), and — like the rest of the lab — proves every claim in
+front of the user: the encoder makes every codeword a zero of all 2t check roots; the decoder corrects
+any e errors + f erasures with 2e + f ≤ 2t and *refuses to guess* past that; and the measured
+Monte-Carlo error rate lands exactly on the closed-form combinatorial curve. The best part: it plugs
+straight into the existing `fec.ts` convolutional code to build the **real CCSDS deep-space chain**.
+
+Shipped this session:
+
+- [x] **The finite field** (`rs.ts`) — `GF(2^m)` for m = 3…8 built by walking the multiplicative group
+  from a primitive polynomial with α = 2 (log/antilog tables, a doubled exp table so multiply is a
+  single index), plus `gfMul/gfDiv/gfInv/gfPow` and a full polynomial algebra (add/scale/mul/Horner
+  eval/synthetic division), all index-0-high.
+- [x] **The systematic encoder** — the monic generator g(x) = ∏(x − α^{fcr+i}) and a synthetic-division
+  encode (data · x^{2t} + remainder) so H·c = 0 holds by construction. A seven-code catalogue from
+  RS(7,3)/GF(8) up to RS(255,223)/GF(256) (the CCSDS/Voyager code).
+- [x] **The algebraic decoder** — syndromes S_j = r(α^{fcr+j}); **Berlekamp–Massey** for the error
+  locator Λ(x) (a clean index-0-low recursion); **Chien search** for its roots (the positions); and
+  **Forney** (Ω = SΛ mod x^{2t}, y = Ω/Λ′, with the general-fcr correction) for the magnitudes — plus
+  **errors-and-erasures** via an erasure locator + Forney-syndrome fold, so 2e + f ≤ 2t is the budget.
+  Decode failure past the budget is *detected* (Chien ≠ deg Λ, or non-zero residual syndromes).
+- [x] **The closed-form theory** — P_block = Σ_{i>t} C(n,i) p^i (1−p)^{n−i} and the output-symbol-error
+  estimate, with log-gamma binomials so n = 255 never overflows.
+- [x] **The concatenated chain** (`rschain.ts`) — RS(255,223) **outer** ⊗ the K=7 (171,133)
+  convolutional **inner** code (reusing `fec.ts`), a depth-I symbol interleaver, BPSK/AWGN and soft
+  Viterbi, and a single-frame runner + a uncoded/inner-only/concatenated waterfall.
+- [x] **Four-tab Reed–Solomon UI** (`modes/ReedSolomon.tsx`) — *Decode* (click symbols to inject
+  errors/erasures; watch the syndromes light, Λ(x) form, Chien locate and Forney repair, with a live
+  2e+f ≤ 2t verdict), *Burst & interleave* (a per-codeword frame grid with a draggable scratch and a
+  cross-interleave toggle — a burst broke one codeword un-interleaved, all recover interleaved),
+  *Waterfall* (Monte-Carlo dots on the exact theory curves, log–log), and *Deep space* (the CCSDS chain
+  — the Viterbi burst errors scattered across I codewords, RS mopping them up, plus the runnable
+  waterfall). All deep-linkable.
+- [x] **Six new self-tests (127 → 133)** — the field axioms + primitive α; systematic encode zeroes
+  every check root; t-error correction across the catalogue; the errors-and-erasures 2e+f = 2t
+  boundary and the pure-erasure extreme; the clean-word no-op + "any accepted decode is a real
+  codeword"; and the Monte-Carlo-vs-closed-form block-error match.
+
+Future Reed–Solomon ideas (not yet built):
+
+- [ ] **BCH codes** — the binary sibling: the same GF(2^m) syndrome/BM/Chien machinery, but a binary
+  code with a conjugate-root generator, so a single Chien search fixes bit errors (great next to RS).
+- [ ] **A Euclidean-algorithm decoder** as a second engine, run beside Berlekamp–Massey to show the two
+  classic solvers agree on Λ(x)·Ω(x).
+- [ ] **Singleton / MDS made visible** — draw the (n, k, d = n−k+1) trade-off and prove the code meets
+  the Singleton bound with equality (every RS code is MDS).
+- [ ] **A real QR-code panel** — encode a short string into an actual RS-protected QR symbol, then let
+  the user paint damage on it and watch it still scan (RS is the reason QR survives a logo in the middle).
+- [ ] **Reed–Solomon *erasure* coding for storage** — the RAID-6 / fountain framing: k data + m parity
+  shards, lose any m, reconstruct — the same decoder, told the lost shard indices as erasures.
+- [ ] **Interleaved/product codes** — a full 2-D RS × RS product code (the DVD/Blu-ray structure) with
+  row-then-column iterative decoding.
 
 ### v16 plan — the **Polar codes** mode (channel polarization) — this session
 
@@ -974,6 +1045,35 @@ attenuation is never negative. This is what modern cone-beam and low-dose scanne
 
 ## Session log
 
+- 2026-07-24 (claude, v17): "The algebra that fixes bursts — Reed–Solomon, from the finite field up."
+  Added the **twenty-first mode, Reed–Solomon**, the coding family's fourth and oldest decoding paradigm
+  and the only *algebraic* one — no trellis search, no message passing, just finite-field algebra that
+  *solves* for the error. Built entirely from scratch with no coding or finite-field library:
+  `lib/rs.ts` carries `GF(2^m)` (m = 3…8, log/antilog tables walked from a primitive polynomial with
+  α = 2), a full index-0-high polynomial algebra, the monic generator g(x) = ∏(x − α^{fcr+i}), a
+  systematic **synthetic-division encoder** (every codeword a multiple of g, hence a zero of all 2t
+  check roots), and the complete **syndrome → Berlekamp–Massey → Chien → Forney** decoder with
+  **errors *and* erasures** (an erasure locator + Forney-syndrome fold, so 2e + f ≤ 2t is the budget and
+  anything past it is *detected*, never silently miscorrected). A seven-code catalogue runs RS(7,3)/GF(8)
+  up to RS(255,223)/GF(256). `lib/rschain.ts` then concatenates RS(255,223) **outer** over the existing
+  K=7 (171,133) convolutional **inner** code (`fec.ts`) through a depth-I symbol interleaver — the exact
+  **CCSDS deep-space chain** that carried Voyager. The four-tab UI (`modes/ReedSolomon.tsx`): *Decode*
+  (click symbols to inject errors/erasures and watch the syndromes light, Λ(x) form, Chien locate and
+  Forney repair, with a live 2e+f ≤ 2t verdict), *Burst & interleave* (a per-codeword frame grid where a
+  scratch breaks one codeword un-interleaved but scatters to recoverable crumbs interleaved — the
+  compact-disc trick), *Waterfall* (Monte-Carlo dots landing exactly on the closed-form combinatorial
+  P_block curve, log–log), and *Deep space* (the Viterbi burst errors scattered across I codewords, RS
+  mopping them up, plus a runnable uncoded/inner-only/concatenated waterfall). Six new self-tests
+  (**127 → 133**): the field axioms + primitive α; systematic encode zeroes every check root; t-error
+  correction across the whole catalogue; the errors-and-erasures 2e+f = 2t boundary and the pure-erasure
+  extreme; the clean-word no-op plus "any accepted decode is a real codeword"; and the
+  Monte-Carlo-vs-closed-form block-error match. Verified independently in two Node harnesses (69/69 RS
+  field/encode/decode + 7/7 concatenated chain), then the full in-app suite (**133/133**), and finally in
+  headless Chromium — all four tabs render with zero console errors, the waterfall's measured dots sit on
+  the theory curve, an un-interleaved burst of 8 breaks exactly one codeword while the interleaved frame
+  recovers all, and the 1.8 dB deep-space frame scatters 45 Viterbi byte-errors across 5 codewords (each
+  ≤ t = 16) that RS erases completely. Ran the CI gate (scope + conformance + lint + build ✓). Still zero
+  math or coding libraries — the field, the codes and the decoders are all computed here.
 - 2026-07-24 (claude, v16): "Polarizing the channel — polar codes, SC-list & the CRC-aided 5G decoder."
   Added the **twentieth mode, Polar**, completing the forward-error-correction pillar with its third and
   most modern paradigm: Arıkan's **channel polarization** — the first codes *proven* to reach the

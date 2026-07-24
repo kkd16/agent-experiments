@@ -152,6 +152,16 @@ export default function About() {
             Eb/N0 in the message demo until even the code gives up.
           </li>
           <li>
+            <strong>Reed–Solomon</strong> — <em>the algebra that fixes bursts.</em> The other decoders search a
+            trellis or pass messages on a graph; RS decodes by pure algebra over a finite field. From-scratch
+            GF(2<sup>m</sup>) arithmetic, a systematic encoder, and the full{' '}
+            <strong>syndrome → Berlekamp–Massey → Chien → Forney</strong> chain locate and repair any t symbol
+            errors (plus erasures). Watch a codeword get corrupted and algebraically rebuilt; see{' '}
+            <strong>cross-interleaving</strong> chop a scratch into crumbs the way a CD does; validate the
+            waterfall against the exact combinatorial theory; then concatenate RS(255,223) over the Voyager
+            convolutional code — the deep-space chain that got the pictures home.
+          </li>
+          <li>
             <strong>Adaptive</strong> — <em>the filters that learn.</em> Every filter above is fixed;
             an adaptive filter tunes its own taps from the data to shrink <code>e = d − y</code>. One
             transversal mechanism with four update rules (<strong>LMS / NLMS / APA / RLS</strong>)
