@@ -3780,4 +3780,114 @@ fn main() {
   print(y[0]); print(y[7]); print(y[m - 1]);
 }`,
   },
+  // ----- global (cross-block) dead-store elimination (opt/dse.ts) -----
+  {
+    // The flagship case: `a[0] = 999` is overwritten by `a[0] = 1` on *every*
+    // path to the read, with no intervening load — a store the intra-block DSE in
+    // memopt cannot see (the two stores live in different blocks). The neighbouring
+    // `a[1]` writes are a *different*, non-overlapping location, so they don't keep
+    // `a[0]` live. The differential oracle pins that removing the dead store leaves
+    // output unchanged.
+    name: 'dse-cross-block',
+    source: `fn f(c: bool) -> int {
+  let a = int_array(2);
+  a[0] = 999;
+  if (c) { a[1] = 7; } else { a[1] = 8; }
+  a[0] = 1;
+  return a[0] + a[1];
+}
+fn main(){ print(f(true)); print(f(false)); }`,
+  },
+  {
+    // Adversarial: the first store MUST survive because the `true` arm *reads*
+    // `a[0]` before it is overwritten. If DSE wrongly removed it, `f(true)` would
+    // print the array's zero fill instead of 5 — so the oracle catches an unsound
+    // liveness meet. (The zero-fill stores memopt/DSE *do* prove dead are fine.)
+    name: 'dse-must-survive-read-on-arm',
+    source: `fn g(c: bool) -> int {
+  let a = int_array(2);
+  a[0] = 5;
+  if (c) { return a[0]; }
+  a[0] = 9;
+  return a[0];
+}
+fn main(){ print(g(true)); print(g(false)); }`,
+  },
+  {
+    // A `print` reads linear memory to format its argument, so it must keep the
+    // store it prints live. `a[0] = 3` is NOT dead here even though `a[0] = 4`
+    // overwrites it later — the print between them observes the 3.
+    name: 'dse-print-blocks-removal',
+    source: `fn h() -> int {
+  let a = int_array(1);
+  a[0] = 3;
+  print(a[0]);
+  a[0] = 4;
+  return a[0];
+}
+fn main(){ print(h()); }`,
+  },
+  {
+    // Escape safety: `mk` returns the freshly built record, so its final field
+    // store is observed by the *caller*. At the function exit all memory is
+    // conservatively live, so `b.v = x` must survive — if the exit boundary were
+    // treated as dead, `main` would print 0 instead of 7.
+    name: 'dse-escape-via-return',
+    source: `struct Box { v: int; }
+fn mk(x: int) -> Box { let b = Box(0); b.v = x; return b; }
+fn main(){ let b = mk(7); print(b.v); }`,
+  },
+  {
+    // Alias precision: three neighbouring elements. Only `a[0]` is re-stored after
+    // the branch; the branch rewrites `a[1]` (a disjoint offset) and never touches
+    // `a[2]`. DSE must kill exactly the dead `a[0] = 100` and leave `a[1]`/`a[2]`
+    // intact — the range-disjointness test is what makes that sound.
+    name: 'dse-alias-neighbor-offsets',
+    source: `fn f(c: bool) -> int {
+  let a = int_array(3);
+  a[0] = 100; a[1] = 200; a[2] = 300;
+  if (c) { a[1] = 20; } else { a[1] = 21; }
+  a[0] = 10;
+  return a[0] + a[1] + a[2];
+}
+fn main(){ print(f(true)); print(f(false)); }`,
+  },
+  // ----- loop-invariant load hoisting (opt/loadlicm.ts) -----
+  {
+    // `a[0]` is read every iteration but the loop never writes `a`, so it is
+    // loop-invariant: Load-LICM lifts it to the preheader (one read instead of n).
+    // The `if` keeps the loop out of the auto-vectorizer and the 100-trip count
+    // keeps it out of the full unroller, so the invariant load actually survives to
+    // this pass. The differential oracle pins that hoisting the read is behaviour-
+    // preserving (the value is the same every iteration).
+    name: 'loadlicm-invariant-element',
+    source: `fn scan(a: int[], n: int) -> int {
+  let cnt = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    if (a[i] > a[0]) { cnt = cnt + 1; }
+  }
+  return cnt;
+}
+fn main(){
+  let n = 100; let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = (i * 31 + 7) % 50; }
+  print(scan(a, n));
+}`,
+  },
+  {
+    // Adversarial: `a[0]` is read *and written* in the loop, so it is NOT
+    // invariant — Load-LICM must decline (its store-aliasing guard sees the write).
+    // If it wrongly hoisted the read, every iteration would use the stale initial
+    // value and the count would be wrong, which the oracle would catch.
+    name: 'loadlicm-must-not-hoist-written',
+    source: `fn f(a: int[], n: int) -> int {
+  let s = 0;
+  for (let i = 0; i < n; i = i + 1) {
+    a[0] = a[0] + 1;
+    s = s + a[0];
+  }
+  return s;
+}
+fn main(){ let a = int_array(1); a[0] = 100; print(f(a, 5)); }`,
+  },
 ];
