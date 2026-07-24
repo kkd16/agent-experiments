@@ -136,3 +136,36 @@ can send someone.
   intercept / slope everywhere instead of x / y. Added one-click CSV export of
   the full chain. Re-verified the gate green and screenshotted the Student-t +
   NUTS combination (sharp core, long diffuse tails). Now 7 targets × 8 samplers.
+- 2026-07-24 (claude): v2.0 — "compare, adapt, share". A big session that turns
+  the single-chain visualiser into a comparative laboratory. Five things landed,
+  all with the CI gate green (scope + conformance + lint + build) and all
+  smoke-tested live in headless Chromium:
+  1. **Dual-averaging step-size adaptation** (`samplers/adapt.ts`): Nesterov
+     primal-dual scheme (Hoffman & Gelman 2014, Alg. 5) wired into HMC and NUTS
+     behind an "adapt ε" toggle + "target δ" knob. A 400-iteration warmup drives
+     the average Metropolis acceptance to δ, then freezes ε at the dual-averaged
+     estimate. NUTS accumulates the per-tree acceptance stat (Σ min(1,e^ΔH)/n) to
+     feed it. Verified in isolation: on a monotone test the scheme converges ε to
+     the analytic optimum (0.2163 vs 0.2154; achieved accept 0.649 vs target 0.65).
+  2. **Sampler `info` channel**: `StepResult.info` reports internals; the engine
+     keeps the live ε (current) and an EMA of the NUTS tree depth, surfaced as new
+     stat cells.
+  3. **Two new targets** (now 9): a **Squiggle** (sinusoidally-sheared Gaussian,
+     an S-ridge) and **Twin Craters** (log-sum-exp of two facing crescents —
+     curved valleys *and* two separated modes; the bimodal marginal is visible in
+     the histogram). Both gradients checked against finite differences to ~1e-9.
+  4. **Race mode** (flagship): the engine was refactored around an opaque `Lane`
+     class (`engine/lane.ts`) so the rAF loop drives N lanes uniformly — and so
+     every canvas/cloud mutation stays inside a method boundary, satisfying the
+     compiler-based react-hooks immutability rules. Two lanes step in lockstep on
+     one target+seed, share one density field, keep independent trails/clouds
+     (tinted per lane), and feed a `Race` compare bar that diffs ESS, cost-aware
+     ESS/eval, τ and accept and crowns an efficiency winner. The diagnostics rail
+     overlays both chains. Confirmed the money shot live: HMC vs RWM on the banana
+     shows a huge ESS lead but a near-tie on ESS/eval (the honest cost of
+     gradients); PT beats Slice 5.2× on Twin Craters by visiting both craters.
+  5. **Shareable permalink** (`engine/permalink.ts`): the whole config
+     round-trips through a base64url URL hash; "Copy link" + on-load restore.
+     Verified a fresh page load rebuilds target + mode + both lanes exactly.
+  Also documented all of it in the About modal (new "Tuning & comparison" section
+  + new "things to try") and refreshed the card + page metadata.

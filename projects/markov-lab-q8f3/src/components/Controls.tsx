@@ -1,3 +1,4 @@
+import type { Mode } from '../engine/permalink'
 import type { SamplerDef } from '../samplers/types'
 import type { Target } from '../targets/targets'
 
@@ -11,10 +12,16 @@ interface Props {
   burnInFrac: number
   speed: number
   running: boolean
+  mode: Mode
+  selLane: number
+  laneColors: string[]
+  laneNames: [string, string]
   showField: boolean
   showTrail: boolean
   showTrajectory: boolean
   showCloud: boolean
+  onMode: (m: Mode) => void
+  onSelLane: (i: number) => void
   onTarget: (id: string) => void
   onSampler: (id: string) => void
   onParam: (key: string, v: number) => void
@@ -25,6 +32,8 @@ interface Props {
   onStep: () => void
   onReset: () => void
   onExport: () => void
+  onCopyLink: () => void
+  copied: boolean
   onToggle: (k: 'showField' | 'showTrail' | 'showTrajectory' | 'showCloud') => void
 }
 
@@ -43,6 +52,31 @@ export default function Controls(p: Props) {
       </div>
 
       <section className="panel">
+        <div className="panel-head">Mode</div>
+        <div className="seg">
+          <button
+            className={`seg-btn ${p.mode === 'single' ? 'seg-on' : ''}`}
+            onClick={() => p.onMode('single')}
+          >
+            Single
+          </button>
+          <button
+            className={`seg-btn ${p.mode === 'race' ? 'seg-on' : ''}`}
+            onClick={() => p.onMode('race')}
+            title="Run two samplers side-by-side on the same target & seed"
+          >
+            Race ⚔
+          </button>
+        </div>
+        {p.mode === 'race' && (
+          <p className="blurb">
+            Two samplers, one target, one seed — the compare bar under the arena diffs their ESS,
+            efficiency and mixing live. Pick which lane to edit below.
+          </p>
+        )}
+      </section>
+
+      <section className="panel">
         <div className="panel-head">Target distribution</div>
         <div className="chip-grid">
           {p.targets.map((t) => (
@@ -59,7 +93,24 @@ export default function Controls(p: Props) {
       </section>
 
       <section className="panel">
-        <div className="panel-head">Sampler</div>
+        <div className="panel-head">
+          {p.mode === 'race' ? `Sampler · editing lane ${p.selLane === 0 ? 'A' : 'B'}` : 'Sampler'}
+        </div>
+        {p.mode === 'race' && (
+          <div className="seg lane-seg">
+            {[0, 1].map((i) => (
+              <button
+                key={i}
+                className={`seg-btn ${p.selLane === i ? 'seg-on' : ''}`}
+                style={p.selLane === i ? { borderColor: p.laneColors[i], color: p.laneColors[i] } : undefined}
+                onClick={() => p.onSelLane(i)}
+              >
+                <span className="lane-dot" style={{ background: p.laneColors[i] }} />
+                {i === 0 ? 'A' : 'B'} · {p.laneNames[i]}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="chip-grid">
           {p.samplers.map((s) => (
             <button
@@ -157,7 +208,14 @@ export default function Controls(p: Props) {
         </div>
         <div className="btn-row">
           <button className="btn" onClick={p.onExport} title="download the chain as CSV">
-            ⭳ Export chain (CSV)
+            ⭳ Export {p.mode === 'race' ? `lane ${p.selLane === 0 ? 'A' : 'B'} ` : ''}CSV
+          </button>
+          <button
+            className={`btn ${p.copied ? 'btn-ok' : ''}`}
+            onClick={p.onCopyLink}
+            title="copy a shareable link that restores this exact configuration"
+          >
+            {p.copied ? '✓ Copied' : '🔗 Copy link'}
           </button>
         </div>
         <div className="toggle-row">
