@@ -13,6 +13,7 @@ import { renderField } from './render/field'
 import {
   drawAcf,
   drawAcfMulti,
+  drawConvergence,
   drawHistMulti,
   drawHistogram,
   drawTrace,
@@ -94,6 +95,7 @@ export default function App() {
   const histXRef = useRef<HTMLCanvasElement | null>(null)
   const histYRef = useRef<HTMLCanvasElement | null>(null)
   const acfRef = useRef<HTMLCanvasElement | null>(null)
+  const convRef = useRef<HTMLCanvasElement | null>(null)
 
   // Loop-facing mirrors of reactive state (so the rAF loop never restarts).
   const runningRef = useRef(running)
@@ -174,7 +176,7 @@ export default function App() {
     const t = TARGETS.find((x) => x.id === targetId)!
     const rt = laneRef.current
     for (let i = 0; i < laneCount; i++) rt[i].resize(t.view)
-    for (const ref of [traceXRef, traceYRef, histXRef, histYRef, acfRef]) {
+    for (const ref of [traceXRef, traceYRef, histXRef, histYRef, acfRef, convRef]) {
       const c = ref.current
       if (c) sizeDiag(c)
     }
@@ -204,25 +206,33 @@ export default function App() {
       const r = c.getBoundingClientRect()
       fn(ctx, r.width, r.height)
     }
+    const truthX = TARGETS.find((t) => t.id === targetId)?.trueMean?.[0]
     if (laneCount === 2) {
       // Head-to-head: overlay both chains in their lane colours.
       const cx = [rt[0].column(0), rt[1].column(0)]
       const cy = [rt[0].column(1), rt[1].column(1)]
+      const h0 = rt[0].history(0)
+      const h1 = rt[1].history(0)
       draw(traceXRef, (ctx, w, h) => drawTraceMulti(ctx, w, h, cx, LANE_COLORS))
       draw(traceYRef, (ctx, w, h) => drawTraceMulti(ctx, w, h, cy, LANE_COLORS))
       draw(histXRef, (ctx, w, h) => drawHistMulti(ctx, w, h, cx, LANE_COLORS))
       draw(histYRef, (ctx, w, h) => drawHistMulti(ctx, w, h, cy, LANE_COLORS))
       draw(acfRef, (ctx, w, h) => drawAcfMulti(ctx, w, h, cx, LANE_COLORS))
+      draw(convRef, (ctx, w, h) =>
+        drawConvergence(ctx, w, h, [h0.iter, h1.iter], [h0.val, h1.val], LANE_COLORS, truthX),
+      )
     } else {
       const cx = rt[0].column(0)
       const cy = rt[0].column(1)
+      const h0 = rt[0].history(0)
       draw(traceXRef, (ctx, w, h) => drawTrace(ctx, w, h, cx, '#6ea8ff'))
       draw(traceYRef, (ctx, w, h) => drawTrace(ctx, w, h, cy, '#ff9f6e'))
       draw(histXRef, (ctx, w, h) => drawHistogram(ctx, w, h, cx, '#6ea8ff'))
       draw(histYRef, (ctx, w, h) => drawHistogram(ctx, w, h, cy, '#ff9f6e'))
       draw(acfRef, (ctx, w, h) => drawAcf(ctx, w, h, cx))
+      draw(convRef, (ctx, w, h) => drawConvergence(ctx, w, h, [h0.iter], [h0.val], ['#6ea8ff'], truthX))
     }
-  }, [laneCount])
+  }, [laneCount, targetId])
 
   // ── the single animation loop (mounted once) ────────────────────────
   useEffect(() => {
@@ -432,6 +442,12 @@ export default function App() {
         </DiagCard>
         <DiagCard title={`autocorrelation · ${axes[0]}`} subtitle="how fast the chain forgets">
           <canvas ref={acfRef} className="diag-canvas" />
+        </DiagCard>
+        <DiagCard
+          title={`convergence · ${axes[0]}`}
+          subtitle={target.trueMean ? 'running mean → true value' : 'running mean vs iterations'}
+        >
+          <canvas ref={convRef} className="diag-canvas" />
         </DiagCard>
       </section>
 

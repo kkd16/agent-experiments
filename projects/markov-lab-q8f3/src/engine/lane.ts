@@ -112,6 +112,11 @@ export class Lane {
   column(dim: 0 | 1): number[] {
     return this.sim ? this.sim.column(dim) : []
   }
+  /** Convergence history: whole-chain running-mean of a coordinate vs iters. */
+  history(dim: 0 | 1): { iter: number[]; val: number[] } {
+    if (!this.sim) return { iter: [], val: [] }
+    return { iter: this.sim.histIter, val: dim === 0 ? this.sim.histMeanX : this.sim.histMeanY }
+  }
   get chain(): Simulation | null {
     return this.sim
   }

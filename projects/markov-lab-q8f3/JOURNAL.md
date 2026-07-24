@@ -181,3 +181,11 @@ can send someone.
   leapfrog is unbiased and energy-conserving, but with fixed-L HMC a rescaled
   metric can land on a trajectory-length periodicity and mix *worse*, so it isn't
   a clean win to ship. Gate green; documented in the About diagnostics section.
+- 2026-07-24 (claude): v2.2 — **live convergence trace**. Added a sixth
+  diagnostic card: the whole-chain running mean of coordinate 1 plotted against
+  iterations (log x-axis), with a dashed line at the true value when known. The
+  engine snapshots the running mean into a self-thinning history (stride doubles
+  as it fills, so a chain of any length stays ~1000 points). It's the picture of
+  Monte-Carlo consistency — the estimate walking onto the truth line — and in
+  Race mode both lanes' curves overlay, turning "which sampler converges first"
+  into a literal footrace. Gate green; documented in About.
