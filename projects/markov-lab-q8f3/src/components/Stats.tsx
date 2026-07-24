@@ -56,6 +56,21 @@ export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [
       hint: 'target density and gradient evaluations',
     },
   ]
+  // Sampler internals, shown only when the active sampler reports them.
+  if (s.info?.eps !== undefined) {
+    cells.push({
+      label: 'ε (step)',
+      value: fmt(s.info.eps, 3),
+      hint: 'current leapfrog step size — auto-tuned by dual averaging when "adapt ε" is on',
+    })
+  }
+  if (s.info?.depth !== undefined) {
+    cells.push({
+      label: 'NUTS depth',
+      value: fmt(s.info.depth, 1),
+      hint: 'mean tree depth (~log₂ of the leapfrog steps NUTS takes per sample)',
+    })
+  }
   return (
     <div className="stat-grid">
       {cells.map((c) => (

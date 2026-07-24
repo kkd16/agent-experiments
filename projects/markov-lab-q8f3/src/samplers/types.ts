@@ -14,6 +14,8 @@ export interface ParamSpec {
   log?: boolean
   /** Integer-valued knob (leapfrog steps, chain count …). */
   integer?: boolean
+  /** Render as an on/off switch instead of a slider (0/1 valued). */
+  toggle?: boolean
 }
 
 /** What a single MCMC iteration produced — enough to draw it. */
@@ -27,6 +29,12 @@ export interface StepResult {
   trajectory?: Vec[] | null
   /** All tempered-chain positions, for parallel tempering. */
   chains?: Vec[] | null
+  /**
+   * Per-step internals a sampler chooses to report — e.g. the adapted step
+   * size `eps`, the NUTS `depth`, or the Metropolis accept-probability `acc`.
+   * The engine keeps the latest value and a smoothed average for the UI.
+   */
+  info?: Record<string, number>
 }
 
 export interface Sampler {

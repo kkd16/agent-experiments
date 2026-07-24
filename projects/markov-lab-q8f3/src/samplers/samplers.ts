@@ -6,7 +6,11 @@ import type { Vec } from '../math/linalg'
 import { add, cholesky, dot, matVec, scale, sub } from '../math/linalg'
 import type { RNG } from '../math/rng'
 import type { Target } from '../targets/targets'
+import { DualAveraging } from './adapt'
 import type { Sampler, SamplerDef, StepResult } from './types'
+
+/** How many iterations HMC/NUTS spend auto-tuning ε before freezing it. */
+const WARMUP = 400
 
 // ── Random-Walk Metropolis ──────────────────────────────────────────────────
 function makeRWM(target: Target, rng: RNG, p: Record<string, number>): Sampler {
@@ -127,8 +131,9 @@ function makeMALA(target: Target, rng: RNG, p: Record<string, number>): Sampler 
 // ball along the level sets with a leapfrog integrator. Long, low-rejection
 // jumps that follow the geometry instead of fighting it.
 function makeHMC(target: Target, rng: RNG, p: Record<string, number>): Sampler {
-  const eps = p.step
   const L = Math.max(1, Math.round(p.leapfrog))
+  const da = p.adapt > 0.5 ? new DualAveraging(p.step, p.targetAccept, WARMUP) : null
+  let eps = da ? da.eps : p.step
 
   const s: Sampler = {
     x: target.start.slice(),
@@ -157,12 +162,19 @@ function makeHMC(target: Target, rng: RNG, p: Record<string, number>): Sampler {
       // H = U + K = −log π + ½|p|².  Accept on the energy difference.
       const H0 = -this.logp + 0.5 * dot(mom0, mom0)
       const H1 = -lpNew + 0.5 * dot(mom, mom)
-      const accept = Math.log(rng.next()) < H0 - H1
+      const dH = H0 - H1
+      const accProb = Number.isFinite(dH) ? Math.min(1, Math.exp(dH)) : 0
+      const accept = Math.log(rng.next()) < dH
       if (accept) {
         this.x = x
         this.logp = lpNew
       }
-      return { x: this.x, logp: this.logp, accepted: accept, trajectory: traj }
+      // Dual-averaging warmup tunes ε toward the target acceptance δ.
+      if (da) eps = da.update(accProb)
+      return {
+        x: this.x, logp: this.logp, accepted: accept, trajectory: traj,
+        info: { eps, acc: accProb },
+      }
     },
   }
   return s
@@ -174,8 +186,9 @@ function makeHMC(target: Target, rng: RNG, p: Record<string, number>): Sampler {
 // state from the whole tree. Simplified (slice-variable, fixed step) version
 // of Hoffman & Gelman (2014), Algorithm 3.
 function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler {
-  const eps = p.step
   const MAX_DEPTH = 9
+  const da = p.adapt > 0.5 ? new DualAveraging(p.step, p.targetAccept, WARMUP) : null
+  let eps = da ? da.eps : p.step
 
   const s: Sampler = {
     x: target.start.slice(),
@@ -185,8 +198,8 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
     step: (): StepResult => {
       const d = s.x.length
       const r0 = rng.normalVec(d)
-      const jointLog = s.logp - 0.5 * dot(r0, r0)
-      const logu = jointLog + Math.log(rng.next() + 1e-300) // slice level
+      const joint0 = s.logp - 0.5 * dot(r0, r0) // initial Hamiltonian (negated)
+      const logu = joint0 + Math.log(rng.next() + 1e-300) // slice level
 
       const traj: Vec[] = []
 
@@ -208,6 +221,7 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
         xPlus: Vec; rPlus: Vec
         xProp: Vec; lpProp: number
         nValid: number; keepGoing: boolean
+        aSum: number; nA: number // for dual-averaging: Σ min(1,e^{ΔH}) and count
       }
 
       const uTurn = (xm: Vec, xp: Vec, rm: Vec, rp: Vec): boolean => {
@@ -221,10 +235,12 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
           const joint = lp1 - 0.5 * dot(r1, r1)
           const nValid = logu <= joint ? 1 : 0
           const keepGoing = joint > logu - 1000 // energy sanity (no divergence)
+          const dH = joint - joint0
+          const aSum = Number.isFinite(dH) ? Math.min(1, Math.exp(dH)) : 0
           traj.push(x1.slice())
           return {
             xMinus: x1, rMinus: r1, xPlus: x1, rPlus: r1,
-            xProp: x1, lpProp: lp1, nValid, keepGoing,
+            xProp: x1, lpProp: lp1, nValid, keepGoing, aSum, nA: 1,
           }
         }
         const t = build(x, r, lp, dir, depth - 1)
@@ -251,6 +267,7 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
         return {
           xMinus: t2.xMinus, rMinus: t2.rMinus, xPlus: t2.xPlus, rPlus: t2.rPlus,
           xProp, lpProp, nValid: total, keepGoing,
+          aSum: t.aSum + t2.aSum, nA: t.nA + t2.nA,
         }
       }
 
@@ -264,6 +281,8 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
       let depth = 0
       let go = true
       let accepted = false
+      let aSumTot = 0
+      let nATot = 0
 
       while (go && depth < MAX_DEPTH) {
         const dir = rng.next() < 0.5 ? -1 : 1
@@ -282,6 +301,8 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
           lpSample = t.lpProp
           accepted = true
         }
+        aSumTot += t.aSum
+        nATot += t.nA
         n += t.nValid
         go = t.keepGoing && uTurn(xMinus, xPlus, rMinus, rPlus)
         depth++
@@ -289,7 +310,13 @@ function makeNUTS(target: Target, rng: RNG, p: Record<string, number>): Sampler 
 
       s.x = xSample
       s.logp = lpSample
-      return { x: s.x, logp: s.logp, accepted, trajectory: traj }
+      // Average Metropolis acceptance over the whole tree drives adaptation.
+      const accProb = nATot > 0 ? aSumTot / nATot : 0
+      if (da) eps = da.update(accProb)
+      return {
+        x: s.x, logp: s.logp, accepted, trajectory: traj,
+        info: { eps, depth, acc: accProb },
+      }
     },
   }
   return s
@@ -456,6 +483,8 @@ export const SAMPLERS: SamplerDef[] = [
     params: [
       { key: 'step', label: 'step ε', min: 0.02, max: 0.6, step: 0.005, default: 0.14, log: true },
       { key: 'leapfrog', label: 'leapfrog L', min: 3, max: 60, step: 1, default: 22, integer: true },
+      { key: 'adapt', label: 'adapt ε', min: 0, max: 1, step: 1, default: 0, integer: true, toggle: true },
+      { key: 'targetAccept', label: 'target δ', min: 0.5, max: 0.95, step: 0.01, default: 0.65 },
     ],
     create: makeHMC,
   },
@@ -464,7 +493,11 @@ export const SAMPLERS: SamplerDef[] = [
     name: 'NUTS',
     blurb: 'HMC that stops itself at the U-turn — no path length to tune. Stan’s workhorse.',
     usesGradient: true,
-    params: [{ key: 'step', label: 'step ε', min: 0.02, max: 0.6, step: 0.005, default: 0.18, log: true }],
+    params: [
+      { key: 'step', label: 'step ε', min: 0.02, max: 0.6, step: 0.005, default: 0.18, log: true },
+      { key: 'adapt', label: 'adapt ε', min: 0, max: 1, step: 1, default: 0, integer: true, toggle: true },
+      { key: 'targetAccept', label: 'target δ', min: 0.5, max: 0.95, step: 0.01, default: 0.8 },
+    ],
     create: makeNUTS,
   },
   {

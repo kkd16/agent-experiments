@@ -46,6 +46,8 @@ export interface LiveStats {
   gradEvals: number
   essPerKEval: number // effective samples per 1000 target evaluations
   usedForStats: number
+  /** Smoothed sampler internals (adapted ε, mean NUTS depth, accept-prob). */
+  info?: Record<string, number>
 }
 
 export class Simulation {
@@ -66,6 +68,10 @@ export class Simulation {
   trailAcc: boolean[] = []
 
   last: StepResult | null = null
+
+  // Sampler-reported internals: the latest raw values plus an EMA for display.
+  lastInfo: Record<string, number> | null = null
+  private infoEma: Record<string, number> = {}
 
   constructor(config: SimConfig) {
     this.config = config
@@ -103,6 +109,13 @@ export class Simulation {
       this.iters++
       if (r.accepted) this.accepts++
       this.last = r
+      if (r.info) {
+        this.lastInfo = r.info
+        for (const k in r.info) {
+          const prev = this.infoEma[k]
+          this.infoEma[k] = prev === undefined ? r.info[k] : 0.02 * r.info[k] + 0.98 * prev
+        }
+      }
       this.pushState(r.x, r.logp, r.accepted)
     }
   }
@@ -130,6 +143,18 @@ export class Simulation {
     return arr.slice(start)
   }
 
+  /**
+   * Sampler internals for the UI: smoothed (EMA) values for noisy quantities
+   * like the NUTS tree depth, but the *current* step size ε (it converges, and
+   * you want to see where it settled, not a lagging average).
+   */
+  private liveInfo(): Record<string, number> | undefined {
+    if (!this.lastInfo) return undefined
+    const out = { ...this.infoEma }
+    if (this.lastInfo.eps !== undefined) out.eps = this.lastInfo.eps
+    return out
+  }
+
   stats(): LiveStats {
     const sx = this.statSlice(this.xs)
     const sy = this.statSlice(this.ys)
@@ -144,6 +169,7 @@ export class Simulation {
         densityEvals: this.sampler.densityEvals,
         gradEvals: this.sampler.gradEvals,
         essPerKEval: 0, usedForStats: n,
+        info: this.liveInfo(),
       }
     }
     const essX = effectiveSampleSize(sx)
@@ -166,6 +192,7 @@ export class Simulation {
       gradEvals: this.sampler.gradEvals,
       essPerKEval: totalEval ? (1000 * Math.min(essX, essY)) / totalEval : 0,
       usedForStats: n,
+      info: this.liveInfo(),
     }
   }
 

@@ -80,6 +80,22 @@ export default function Controls(p: Props) {
         <div className="panel-head">Parameters</div>
         {sampler.params.map((spec) => {
           const val = p.params[spec.key] ?? spec.default
+          if (spec.toggle) {
+            const on = val > 0.5
+            return (
+              <label className="slider-row" key={spec.key}>
+                <span className="slider-label">{spec.label}</span>
+                <button
+                  className={`toggle param-toggle ${on ? 'toggle-on' : ''}`}
+                  onClick={() => p.onParam(spec.key, on ? 0 : 1)}
+                >
+                  <span className="toggle-dot" />
+                  {on ? 'on' : 'off'}
+                </button>
+                <span className="slider-val">{on ? '✓' : '—'}</span>
+              </label>
+            )
+          }
           const display = spec.integer ? val.toFixed(0) : val.toFixed(spec.log ? 3 : 2)
           return (
             <label className="slider-row" key={spec.key}>

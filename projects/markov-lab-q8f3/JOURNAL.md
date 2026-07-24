@@ -54,21 +54,54 @@ break a fixed step size no matter how you tune it.
       the density) + keyboard shortcuts (space/s/r)
 - [x] Guided "About the math" panel — every sampler, every diagnostic, and a
       "things to try" tour
-- [ ] **Race mode**: run two samplers side-by-side on the same target/seed and
-      diff their ESS/eval — the money shot for "why HMC".
+- [x] **Race mode**: run two samplers side-by-side on the same target/seed and
+      diff their ESS/eval — the money shot for "why HMC". *(session 2)*
 - [x] **Bayesian inference target**: a logistic-regression posterior over
       (intercept, slope) of 18 data points — every sampler now does real
       inference, running mean = posterior mean, CI = credible interval
 - [ ] Make the Bayesian demo interactive: click to drop data points and draw
       posterior-predictive bands in data space alongside the parameter space.
-- [ ] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε).
+- [x] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε). *(session 2)*
 - [ ] Riemannian/position-dependent mass matrix to actually beat the funnel.
 - [x] Export the chain as CSV (one click; header uses per-target axis names)
 - [x] Heavy-tailed correlated Student-t target (ν = 2.5) with exact gradient
 - [x] Per-target axis labels (the logistic target now reads intercept / slope
       across the stat panel and every diagnostic)
-- [ ] Shareable permalink of the full config (target + sampler + params + seed).
-- [ ] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D.
+- [x] Shareable permalink of the full config (target + sampler + params + seed). *(session 2)*
+- [x] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D. *(session 2 — added Squiggle + Twin-Crater bimodal-banana)*
+
+### Session 2 plan (this session) — "compare, adapt, share"
+
+The through-line of session 2 is turning a single-chain visualiser into a
+*comparative laboratory*: put two algorithms in the same arena on the same
+problem, let the good ones tune themselves, and make any experiment a URL you
+can send someone.
+
+- [x] **Sampler `info` channel.** Extend `StepResult` with an optional
+      `info` record so a sampler can report per-step internals (adapted ε, NUTS
+      tree depth, the Metropolis accept-probability). The engine keeps the live
+      value plus a smoothed average; the stat panel surfaces them.
+- [x] **Dual-averaging (Nesterov) step-size adaptation** for HMC & NUTS —
+      Hoffman & Gelman (2014) Alg. 5. A warmup window auto-tunes ε to hit a
+      target acceptance δ, then freezes ε at the dual-averaged running estimate.
+      New per-sampler knobs: *adapt δ* (target accept) and *warmup*. The live
+      ε and mean tree depth show in the stat panel while it tunes.
+- [x] **Two new targets.** A **Squiggle** (sinusoidally sheared Gaussian — an
+      S-shaped ridge that punishes axis-aligned proposals) and **Twin Craters**
+      (a genuinely *bimodal* pair of facing bananas — curved valleys *and*
+      isolated modes at once, the hardest case in the gallery). Both carry
+      exact analytic gradients.
+- [x] **Race mode** *(flagship)*. A mode toggle runs **two samplers in
+      lockstep** on the same target and seed, each in its own panel sharing one
+      density field, with independent trails / clouds / trajectories. A live
+      **compare bar** diffs ESS, ESS/1k-eval, accept-rate and iterations and
+      crowns an efficiency winner — the "why HMC" money shot as a single glance.
+      The engine was refactored around N independent *lanes*.
+- [x] **Shareable permalink.** The whole config (mode, target, seed, burn-in,
+      and every lane's sampler + params) round-trips through the URL hash; a
+      "Copy link" button and on-load restore make any run reproducible by link.
+- [x] **About panel + polish.** Documented dual averaging, race mode, and the
+      two new targets; added new "things to try"; wired the new stat cells.
 
 ## Session log
 
