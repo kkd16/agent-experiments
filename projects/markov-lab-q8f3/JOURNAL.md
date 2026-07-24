@@ -169,3 +169,15 @@ can send someone.
      Verified a fresh page load rebuilds target + mode + both lanes exactly.
   Also documented all of it in the About modal (new "Tuning & comparison" section
   + new "things to try") and refreshed the card + page metadata.
+- 2026-07-24 (claude): v2.1 — **accuracy vs. ground truth**. Added a `meanErr`
+  diagnostic: for every target whose mean is known analytically (now including
+  the Rosenbrock banana, whose closed-form mean is [1, 11]), the stat panel and
+  the Race compare bar show ‖running-mean − true-mean‖ — the honest accuracy the
+  whole ESS/R̂ apparatus is a proxy for. It's the tie-breaker Race mode was
+  missing: not just who mixes faster, but who is actually *right*. A single
+  Metropolis chain trapped in one well of the four-mode mixture now visibly
+  reports a large mean err even while it looks busy. Considered (and rejected for
+  now) a diagonal mass-matrix metric: isolated tests confirmed the metric
+  leapfrog is unbiased and energy-conserving, but with fixed-L HMC a rescaled
+  metric can land on a trajectory-length periodicity and mix *worse*, so it isn't
+  a clean win to ship. Gate green; documented in the About diagnostics section.

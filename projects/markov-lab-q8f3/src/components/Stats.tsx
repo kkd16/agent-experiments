@@ -71,6 +71,14 @@ export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [
       hint: 'mean tree depth (~log₂ of the leapfrog steps NUTS takes per sample)',
     })
   }
+  if (s.meanErr !== undefined) {
+    cells.push({
+      label: 'mean err',
+      value: fmt(s.meanErr, 3),
+      cls: s.meanErr < 0.15 ? 'good' : s.meanErr < 0.5 ? 'warn' : 'bad',
+      hint: 'distance of the running mean from the target’s known true mean — the honest accuracy of the estimate (lower is better)',
+    })
+  }
   return (
     <div className="stat-grid">
       {cells.map((c) => (

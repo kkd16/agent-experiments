@@ -74,6 +74,10 @@ const DIAG_ROWS: Row[] = [
     name: 'τ — autocorrelation time',
     text: 'The number of steps the chain takes to forget where it was (τ = N / ESS). The autocorrelation plot shows this directly: bars that fall to zero fast mean quick mixing; a slow decay means neighbouring samples are nearly duplicates.',
   },
+  {
+    name: 'mean err — accuracy vs. ground truth',
+    text: 'For the targets whose mean is known analytically, this is the plain distance between the chain’s running-mean estimate and the true mean — the one number ESS and R̂ are ultimately proxies for. Watch a chain that looks busy but is trapped in one mode: its R̂ climbs and its mean err stays large, because a confident-looking sampler can still be flatly wrong. In Race mode it becomes the tie-breaker: not just who mixes faster, but who is actually closer to the right answer.',
+  },
 ]
 
 export default function About({ onClose }: { onClose: () => void }) {
