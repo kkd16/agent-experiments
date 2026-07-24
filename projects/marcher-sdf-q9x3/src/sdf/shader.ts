@@ -6,7 +6,7 @@
 
 import type { Scene } from '../scene/types'
 import { generateMap } from './codegen'
-import { SDF_OPS, SDF_PRIMITIVES } from './library'
+import { SDF_DOMAIN, SDF_OPS, SDF_PRIMITIVES, SDF_TEXTURE } from './library'
 
 export const VERTEX_SHADER = `#version 300 es
 // Fullscreen triangle generated from gl_VertexID — no vertex buffers needed.
@@ -52,6 +52,7 @@ uniform float uShadowSoft;
 uniform float uShadowStr;
 uniform float uAoStr;
 uniform int uReflect;
+uniform int uAA;
 
 uniform float uExposure;
 uniform float uGamma;
@@ -65,6 +66,9 @@ uniform vec4 uParam[NODE_COUNT];
 uniform float uBlend[NODE_COUNT];
 uniform vec3 uMatColor[NODE_COUNT];
 uniform vec4 uMatPBR[NODE_COUNT];
+uniform vec4 uModA[NODE_COUNT];
+uniform vec4 uModB[NODE_COUNT];
+uniform vec4 uMatTex[NODE_COUNT];
 `
 
 const RENDER_CODE = /* glsl */ `
@@ -126,7 +130,7 @@ float calcAO(vec3 pos, vec3 nor){
   return clamp(1.0 - 2.6 * occ, 0.0, 1.0);
 }
 
-void getMaterial(float id, vec3 pos, out vec3 albedo, out float metallic,
+void getMaterial(float id, vec3 pos, vec3 nor, out vec3 albedo, out float metallic,
                  out float rough, out float refl, out float emis){
   if (id < -0.5){
     albedo = uGroundCol1;
@@ -146,14 +150,20 @@ void getMaterial(float id, vec3 pos, out vec3 albedo, out float metallic,
     rough = pbr.y;
     refl = pbr.z;
     emis = pbr.w;
+    vec4 tex = uMatTex[i];
+    int tk = int(tex.x + 0.5);
+    if (tk > 0){
+      float pat = clamp(texPattern(tk, pos, nor, max(tex.y, 0.001)), 0.0, 1.0);
+      vec3 tinted = albedo * mix(0.32, 1.18, pat);
+      albedo = mix(albedo, tinted, clamp(tex.z, 0.0, 1.0));
+    }
   }
 }
 
-vec3 shade(vec3 pos, vec3 rd, float matId){
-  vec3 nor = calcNormal(pos);
-  vec3 albedo; float metallic, rough, refl, emis;
-  getMaterial(matId, pos, albedo, metallic, rough, refl, emis);
-
+// Local (single-bounce) shading: sun + soft shadow + hemispheric ambient + a
+// Blinn-Phong highlight + emission. No reflection or fog — the caller adds those.
+vec3 localShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, float metallic,
+                float rough, float emis){
   vec3 L = uSunDir;
   float shadow = softShadow(pos + nor * 0.02, L, 0.02, 14.0, uShadowSoft);
   shadow = mix(1.0, shadow, uShadowStr);
@@ -170,41 +180,79 @@ vec3 shade(vec3 pos, vec3 rd, float matId){
 
   vec3 col = albedo * (amb * ao + direct);
   col += specCol * spec * direct * (0.6 + 0.5 * metallic);
+  col += albedo * emis * 2.5;
+  return col;
+}
+
+// Full primary shade: local shading, then one real reflection bounce that mirrors
+// the actual scene (or the sky), Fresnel-weighted and roughness-attenuated, then fog.
+vec3 shade(vec3 pos, vec3 rd, float matId){
+  vec3 nor = calcNormal(pos);
+  vec3 albedo; float metallic, rough, refl, emis;
+  getMaterial(matId, pos, nor, albedo, metallic, rough, refl, emis);
+  vec3 col = localShade(pos, nor, rd, albedo, metallic, rough, emis);
 
   if (uReflect == 1){
     float fres = pow(clamp(1.0 - max(dot(nor, -rd), 0.0), 0.0, 1.0), 5.0);
-    vec3 rr = reflect(rd, nor);
-    vec3 rc = skyColor(rr);
-    col += rc * (refl + fres * 0.35) * mix(1.0, 0.5, rough);
+    float amount = clamp(refl + fres * 0.4, 0.0, 1.0) * mix(1.0, 0.22, rough);
+    if (amount > 0.01){
+      vec3 tint = mix(vec3(1.0), albedo, metallic);
+      vec3 rr = reflect(rd, nor);
+      vec3 rro = pos + nor * 0.03;
+      vec2 r2 = raymarch(rro, rr);
+      vec3 rcol;
+      if (r2.y < -1.5){
+        rcol = skyColor(rr);
+      } else {
+        vec3 rp = rro + rr * r2.x;
+        vec3 rn = calcNormal(rp);
+        vec3 ra; float rmet, rrg, rrf, rem;
+        getMaterial(r2.y, rp, rn, ra, rmet, rrg, rrf, rem);
+        rcol = localShade(rp, rn, rr, ra, rmet, rrg, rem);
+      }
+      col = mix(col, rcol * tint, amount);
+    }
   }
-
-  col += albedo * emis * 2.5;
 
   float fog = 1.0 - exp(-uFogDensity * length(pos - uCamPos));
   col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
   return col;
 }
 
-void main(){
-  vec2 frag = gl_FragCoord.xy;
-  vec2 uv = (2.0 * frag - uResolution) / uResolution.y;
-
-  vec3 ro = uCamPos;
+vec3 rayDir(vec2 uv, out vec3 ro){
+  ro = uCamPos;
   vec3 fwd = normalize(uCamTarget - ro);
   vec3 rt = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)));
   vec3 up = cross(rt, fwd);
   float f = 1.0 / tan(radians(uFov) * 0.5);
-  vec3 rd = normalize(uv.x * rt + uv.y * up + f * fwd);
+  return normalize(uv.x * rt + uv.y * up + f * fwd);
+}
 
+vec3 renderPixel(vec2 frag){
+  vec2 uv = (2.0 * frag - uResolution) / uResolution.y;
+  vec3 ro;
+  vec3 rd = rayDir(uv, ro);
   vec2 res = raymarch(ro, rd);
-  vec3 col;
   if (res.y < -1.5){
-    col = skyColor(rd);
+    vec3 sky = skyColor(rd);
     float fog = 1.0 - exp(-uFogDensity * min(res.x, uMaxDist));
-    col = mix(col, uFogColor, clamp(fog * 0.4, 0.0, 1.0));
-  } else {
-    col = shade(ro + rd * res.x, rd, res.y);
+    return mix(sky, uFogColor, clamp(fog * 0.4, 0.0, 1.0));
   }
+  return shade(ro + rd * res.x, rd, res.y);
+}
+
+void main(){
+  vec2 frag = gl_FragCoord.xy;
+  vec3 col = vec3(0.0);
+  int aa = uAA;
+  for (int m = 0; m < 2; m++){
+    for (int n = 0; n < 2; n++){
+      if (m >= aa || n >= aa) continue;
+      vec2 off = (aa == 1) ? vec2(0.0) : (vec2(float(m), float(n)) * 0.5 - 0.25);
+      col += renderPixel(frag + off);
+    }
+  }
+  col /= float(aa * aa);
 
   col *= uExposure;
   col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
@@ -237,7 +285,9 @@ export function buildShader(scene: Scene): BuiltShader {
     `#define NODE_COUNT ${map.slots}`,
     UNIFORM_BLOCK,
     SDF_PRIMITIVES,
+    SDF_DOMAIN,
     SDF_OPS,
+    SDF_TEXTURE,
     map.glsl,
     RENDER_CODE,
   ].join('\n')

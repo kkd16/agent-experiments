@@ -2,11 +2,13 @@
 // ever sees whole, immutable Scene snapshots.
 
 import type {
+  Anim,
   Camera,
   Combine,
   Environment,
   Ground,
   Material,
+  Modifier,
   Post,
   PrimitiveKind,
   Quality,
@@ -34,6 +36,9 @@ export type Action =
   | { type: 'patchTransform'; id: string; patch: Partial<Transform> }
   | { type: 'patchMaterial'; id: string; patch: Partial<Material> }
   | { type: 'patchCombine'; id: string; patch: Partial<Combine> }
+  | { type: 'patchModifier'; id: string; patch: Partial<Modifier> }
+  | { type: 'patchAnim'; id: string; patch: Partial<Anim> }
+  | { type: 'setAnimate'; value: boolean }
   | { type: 'patchCamera'; patch: Partial<Camera> }
   | { type: 'patchSun'; patch: Partial<Sun> }
   | { type: 'patchEnv'; patch: Partial<Environment> }
@@ -155,6 +160,27 @@ export function reducer(state: EditorState, action: Action): EditorState {
           combine: { ...n.combine, ...action.patch },
         })),
       }
+
+    case 'patchModifier':
+      return {
+        ...state,
+        scene: mapNode(scene, action.id, (n) => ({
+          ...n,
+          modifier: { ...n.modifier, ...action.patch },
+        })),
+      }
+
+    case 'patchAnim':
+      return {
+        ...state,
+        scene: mapNode(scene, action.id, (n) => ({
+          ...n,
+          anim: { ...n.anim, ...action.patch },
+        })),
+      }
+
+    case 'setAnimate':
+      return { ...state, scene: { ...scene, animate: action.value } }
 
     case 'patchCamera':
       return { ...state, scene: { ...scene, camera: { ...scene.camera, ...action.patch } } }

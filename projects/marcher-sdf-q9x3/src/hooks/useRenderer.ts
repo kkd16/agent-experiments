@@ -12,6 +12,7 @@ export interface RendererHandle {
   fps: number
   error: string | null
   getGlsl: () => string
+  capturePng: () => string
 }
 
 export function useRenderer(scene: Scene): RendererHandle {
@@ -57,6 +58,7 @@ export function useRenderer(scene: Scene): RendererHandle {
   }, [scene])
 
   const getGlsl = useCallback(() => rendererRef.current?.generatedGlsl ?? '', [])
+  const capturePng = useCallback(() => rendererRef.current?.captureDataURL() ?? '', [])
 
-  return { canvasRef, fps, error, getGlsl }
+  return { canvasRef, fps, error, getGlsl, capturePng }
 }

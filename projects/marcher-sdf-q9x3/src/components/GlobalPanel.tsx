@@ -16,6 +16,15 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
 
   return (
     <div className="global-panel">
+      <Section title="Motion">
+        <Toggle
+          label="Animate scene"
+          value={scene.animate}
+          onChange={(value) => dispatch({ type: 'setAnimate', value })}
+        />
+        <p className="hint">Master switch for per-node animation channels (set them in the Node tab).</p>
+      </Section>
+
       <Section title="Camera">
         <Vec3Field
           label="Target"
@@ -216,6 +225,11 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
           label="Reflections"
           value={quality.reflections}
           onChange={(reflections) => dispatch({ type: 'patchQuality', patch: { reflections } })}
+        />
+        <Toggle
+          label="Anti-alias (2×2)"
+          value={quality.antialias}
+          onChange={(antialias) => dispatch({ type: 'patchQuality', patch: { antialias } })}
         />
         <Slider
           label="Resolution"

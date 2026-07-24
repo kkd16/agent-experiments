@@ -2,9 +2,18 @@
 // primitive kind, CSG combine op, primitive params, transform and material.
 
 import type { Dispatch } from 'react'
-import type { PrimitiveKind, SdfNode } from '../scene/types'
+import type { DomainMod, PrimitiveKind, SdfNode, TextureKind } from '../scene/types'
 import type { Action } from '../state/reducer'
-import { OP_LABELS, OP_LIST, PRIMITIVES, PRIMITIVE_LIST } from '../scene/primitives'
+import {
+  DOMAIN_LABELS,
+  DOMAIN_LIST,
+  OP_LABELS,
+  OP_LIST,
+  PRIMITIVES,
+  PRIMITIVE_LIST,
+  TEXTURE_LABELS,
+  TEXTURE_LIST,
+} from '../scene/primitives'
 import { ColorField, Section, Segmented, Slider, Toggle, Vec3Field } from './controls'
 
 interface InspectorProps {
@@ -150,7 +159,196 @@ export default function Inspector({ node, isBase, dispatch }: InspectorProps) {
           step={0.01}
           onChange={(emission) => dispatch({ type: 'patchMaterial', id, patch: { emission } })}
         />
+        <Segmented<TextureKind>
+          label="Texture"
+          value={node.material.texture}
+          options={TEXTURE_LIST.map((t) => ({ value: t, label: TEXTURE_LABELS[t] }))}
+          onChange={(texture) => dispatch({ type: 'patchMaterial', id, patch: { texture } })}
+        />
+        {node.material.texture !== 'none' ? (
+          <>
+            <Slider
+              label="Texture scale"
+              value={node.material.texScale}
+              min={0.2}
+              max={12}
+              step={0.1}
+              onChange={(texScale) => dispatch({ type: 'patchMaterial', id, patch: { texScale } })}
+            />
+            <Slider
+              label="Texture strength"
+              value={node.material.texStrength}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(texStrength) => dispatch({ type: 'patchMaterial', id, patch: { texStrength } })}
+            />
+          </>
+        ) : null}
       </Section>
+
+      <ModifierSection node={node} dispatch={dispatch} />
+      <AnimationSection node={node} dispatch={dispatch} />
     </div>
+  )
+}
+
+interface SubProps {
+  node: SdfNode
+  dispatch: Dispatch<Action>
+}
+
+function ModifierSection({ node, dispatch }: SubProps) {
+  const id = node.id
+  const m = node.modifier
+  return (
+    <Section title="Modifier">
+      <Segmented<DomainMod>
+        label="Domain warp"
+        value={m.domain}
+        options={DOMAIN_LIST.map((d) => ({ value: d, label: DOMAIN_LABELS[d] }))}
+        onChange={(domain) => dispatch({ type: 'patchModifier', id, patch: { domain } })}
+      />
+
+      {m.domain === 'repeat' ? (
+        <>
+          <Vec3Field
+            label="Cell spacing (0 = off)"
+            value={m.repeat}
+            min={0}
+            max={6}
+            step={0.05}
+            onChange={(repeat) => dispatch({ type: 'patchModifier', id, patch: { repeat } })}
+          />
+          <Slider
+            label="Cell limit (0 = ∞)"
+            value={m.repeatLimit}
+            min={0}
+            max={8}
+            step={1}
+            format={(v) => (v === 0 ? '∞' : v.toFixed(0))}
+            onChange={(repeatLimit) => dispatch({ type: 'patchModifier', id, patch: { repeatLimit } })}
+          />
+        </>
+      ) : null}
+
+      {m.domain === 'mirror' ? (
+        <Vec3Field
+          label="Fold axes (0/1)"
+          value={m.mirror}
+          min={0}
+          max={1}
+          step={1}
+          onChange={(mirror) => dispatch({ type: 'patchModifier', id, patch: { mirror } })}
+        />
+      ) : null}
+
+      {m.domain === 'twist' ? (
+        <Slider
+          label="Twist / height"
+          value={m.twist}
+          min={-4}
+          max={4}
+          step={0.05}
+          onChange={(twist) => dispatch({ type: 'patchModifier', id, patch: { twist } })}
+        />
+      ) : null}
+
+      {m.domain === 'bend' ? (
+        <Slider
+          label="Bend"
+          value={m.bend}
+          min={-2}
+          max={2}
+          step={0.02}
+          onChange={(bend) => dispatch({ type: 'patchModifier', id, patch: { bend } })}
+        />
+      ) : null}
+
+      <Slider
+        label="Round edges"
+        value={m.round}
+        min={0}
+        max={0.6}
+        step={0.005}
+        format={(v) => v.toFixed(3)}
+        onChange={(round) => dispatch({ type: 'patchModifier', id, patch: { round } })}
+      />
+      <Toggle
+        label="Hollow shell"
+        value={m.shellOn}
+        onChange={(shellOn) => dispatch({ type: 'patchModifier', id, patch: { shellOn } })}
+      />
+      {m.shellOn ? (
+        <Slider
+          label="Shell thickness"
+          value={m.shell}
+          min={0.01}
+          max={0.4}
+          step={0.005}
+          format={(v) => v.toFixed(3)}
+          onChange={(shell) => dispatch({ type: 'patchModifier', id, patch: { shell } })}
+        />
+      ) : null}
+    </Section>
+  )
+}
+
+function AnimationSection({ node, dispatch }: SubProps) {
+  const id = node.id
+  const a = node.anim
+  return (
+    <Section title="Animation">
+      <Toggle
+        label="Animate this node"
+        value={a.enabled}
+        onChange={(enabled) => dispatch({ type: 'patchAnim', id, patch: { enabled } })}
+      />
+      {a.enabled ? (
+        <>
+          <Vec3Field
+            label="Spin °/s"
+            value={a.spin}
+            min={-180}
+            max={180}
+            step={1}
+            onChange={(spin) => dispatch({ type: 'patchAnim', id, patch: { spin } })}
+          />
+          <Vec3Field
+            label="Bob amplitude"
+            value={a.posAmp}
+            min={0}
+            max={3}
+            step={0.05}
+            onChange={(posAmp) => dispatch({ type: 'patchAnim', id, patch: { posAmp } })}
+          />
+          <Vec3Field
+            label="Bob speed"
+            value={a.posSpeed}
+            min={0}
+            max={6}
+            step={0.05}
+            onChange={(posSpeed) => dispatch({ type: 'patchAnim', id, patch: { posSpeed } })}
+          />
+          <Slider
+            label="Scale pulse"
+            value={a.scalePulse}
+            min={0}
+            max={0.6}
+            step={0.01}
+            onChange={(scalePulse) => dispatch({ type: 'patchAnim', id, patch: { scalePulse } })}
+          />
+          <Slider
+            label="Pulse speed"
+            value={a.scaleSpeed}
+            min={0}
+            max={6}
+            step={0.05}
+            onChange={(scaleSpeed) => dispatch({ type: 'patchAnim', id, patch: { scaleSpeed } })}
+          />
+          <p className="hint">Needs the global Animate switch (World tab) on.</p>
+        </>
+      ) : null}
+    </Section>
   )
 }

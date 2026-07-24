@@ -3,8 +3,10 @@
 // there is a single source of truth for "what knobs does a sphere have".
 
 import type {
+  Anim,
   BooleanOp,
   Material,
+  Modifier,
   PrimitiveKind,
   PrimitiveSpec,
   SdfNode,
@@ -87,6 +89,51 @@ export const PRIMITIVES: Record<PrimitiveKind, PrimitiveSpec> = {
     defaults: [0, 0, 0, 0],
     params: [],
   },
+  ellipsoid: {
+    kind: 'ellipsoid',
+    label: 'Ellipsoid',
+    defaults: [0.7, 0.95, 0.55, 0],
+    params: [
+      { key: 'rx', label: 'Radius X', min: 0.05, max: 3, step: 0.01, slot: 0 },
+      { key: 'ry', label: 'Radius Y', min: 0.05, max: 3, step: 0.01, slot: 1 },
+      { key: 'rz', label: 'Radius Z', min: 0.05, max: 3, step: 0.01, slot: 2 },
+    ],
+  },
+  hexPrism: {
+    kind: 'hexPrism',
+    label: 'Hex Prism',
+    defaults: [0.7, 0.5, 0, 0],
+    params: [
+      { key: 'radius', label: 'Radius', min: 0.05, max: 2, step: 0.01, slot: 0 },
+      { key: 'height', label: 'Half Depth', min: 0.05, max: 3, step: 0.01, slot: 1 },
+    ],
+  },
+  pyramid: {
+    kind: 'pyramid',
+    label: 'Pyramid',
+    defaults: [1.3, 0, 0, 0],
+    params: [{ key: 'height', label: 'Height', min: 0.2, max: 4, step: 0.01, slot: 0 }],
+  },
+  link: {
+    kind: 'link',
+    label: 'Link',
+    defaults: [0.35, 0.5, 0.18, 0],
+    params: [
+      { key: 'len', label: 'Length', min: 0, max: 1.5, step: 0.01, slot: 0 },
+      { key: 'r1', label: 'Ring R', min: 0.1, max: 2, step: 0.01, slot: 1 },
+      { key: 'r2', label: 'Tube R', min: 0.02, max: 0.6, step: 0.01, slot: 2 },
+    ],
+  },
+  roundCone: {
+    kind: 'roundCone',
+    label: 'Round Cone',
+    defaults: [0.6, 0.22, 1.2, 0],
+    params: [
+      { key: 'r1', label: 'Base R', min: 0.05, max: 2, step: 0.01, slot: 0 },
+      { key: 'r2', label: 'Top R', min: 0.02, max: 2, step: 0.01, slot: 1 },
+      { key: 'h', label: 'Height', min: 0.1, max: 3, step: 0.01, slot: 2 },
+    ],
+  },
 }
 
 export const PRIMITIVE_LIST: PrimitiveKind[] = [
@@ -98,6 +145,11 @@ export const PRIMITIVE_LIST: PrimitiveKind[] = [
   'cylinder',
   'cone',
   'octahedron',
+  'ellipsoid',
+  'hexPrism',
+  'pyramid',
+  'link',
+  'roundCone',
   'plane',
 ]
 
@@ -143,6 +195,34 @@ export function defaultMaterial(index = 0): Material {
     roughness: 0.4,
     reflectivity: 0.1,
     emission: 0.0,
+    texture: 'none',
+    texScale: 3,
+    texStrength: 0.6,
+  }
+}
+
+export function defaultModifier(): Modifier {
+  return {
+    domain: 'none',
+    repeat: [2, 0, 2],
+    repeatLimit: 0,
+    mirror: [0, 0, 0],
+    twist: 1.2,
+    bend: 0.4,
+    round: 0,
+    shellOn: false,
+    shell: 0.06,
+  }
+}
+
+export function defaultAnim(): Anim {
+  return {
+    enabled: false,
+    posAmp: [0, 0.4, 0],
+    posSpeed: [1, 1, 1],
+    spin: [0, 45, 0],
+    scalePulse: 0,
+    scaleSpeed: 1,
   }
 }
 
@@ -157,5 +237,46 @@ export function makeNode(kind: PrimitiveKind, index = 0): SdfNode {
     transform: defaultTransform(),
     material: defaultMaterial(index),
     combine: { op: 'union', smooth: true, radius: 0.3 },
+    modifier: defaultModifier(),
+    anim: defaultAnim(),
   }
+}
+
+/** Ordered list of domain modifiers for the modifier picker. */
+export const DOMAIN_LABELS: Record<Modifier['domain'], string> = {
+  none: 'None',
+  repeat: 'Repeat',
+  mirror: 'Mirror',
+  twist: 'Twist',
+  bend: 'Bend',
+}
+
+export const DOMAIN_LIST: Array<Modifier['domain']> = ['none', 'repeat', 'mirror', 'twist', 'bend']
+
+export const TEXTURE_LABELS: Record<Material['texture'], string> = {
+  none: 'None',
+  checker: 'Checker',
+  noise: 'Noise',
+  marble: 'Marble',
+  wood: 'Wood',
+  grid: 'Grid',
+}
+
+export const TEXTURE_LIST: Array<Material['texture']> = [
+  'none',
+  'checker',
+  'noise',
+  'marble',
+  'wood',
+  'grid',
+]
+
+/** Stable numeric index for a texture kind (matches the GLSL switch in the shader). */
+export const TEXTURE_INDEX: Record<Material['texture'], number> = {
+  none: 0,
+  checker: 1,
+  noise: 2,
+  marble: 3,
+  wood: 4,
+  grid: 5,
 }

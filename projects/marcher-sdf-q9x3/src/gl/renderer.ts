@@ -3,7 +3,8 @@
 // loop. The scene itself lives in React; the renderer just reads the latest copy
 // handed to it via setScene() and paints it.
 
-import type { Scene } from '../scene/types'
+import type { Scene, SdfNode } from '../scene/types'
+import { TEXTURE_INDEX } from '../scene/primitives'
 import { buildShader } from '../sdf/shader'
 import { structuralKey } from '../sdf/codegen'
 import { orbitPosition, sunDirection, worldToObjectMat3 } from './math'
@@ -49,7 +50,11 @@ export class Renderer {
   private blendArr = new Float32Array(1)
   private matColArr = new Float32Array(3)
   private matPbrArr = new Float32Array(4)
+  private modAArr = new Float32Array(4)
+  private modBArr = new Float32Array(4)
+  private matTexArr = new Float32Array(4)
   private rotTmp = new Float32Array(9)
+  private rotScratch: [number, number, number] = [0, 0, 0]
 
   constructor(canvas: HTMLCanvasElement, scene: Scene, cb: RendererCallbacks = {}) {
     const gl = canvas.getContext('webgl2', {
@@ -84,6 +89,9 @@ export class Renderer {
     this.blendArr = new Float32Array(slots)
     this.matColArr = new Float32Array(slots * 3)
     this.matPbrArr = new Float32Array(slots * 4)
+    this.modAArr = new Float32Array(slots * 4)
+    this.modBArr = new Float32Array(slots * 4)
+    this.matTexArr = new Float32Array(slots * 4)
   }
 
   private rebuild(scene: Scene): void {
@@ -189,22 +197,51 @@ export class Renderer {
     u1f('uShadowStr', s.quality.shadowStrength)
     u1f('uAoStr', s.quality.aoStrength)
     u1i('uReflect', s.quality.reflections ? 1 : 0)
+    u1i('uAA', s.quality.antialias ? 2 : 1)
 
     u1f('uExposure', s.post.exposure)
     u1f('uGamma', s.post.gamma)
     u1f('uVignette', s.post.vignette)
     u1f('uSaturation', s.post.saturation)
 
-    // Per-node arrays.
+    // Per-node arrays. When animation is on, position/rotation/scale are evolved
+    // from `time` here on the upload path — no React state churns per frame.
+    const time = this.fpsAccum
+    const animate = s.animate
     const n = s.nodes.length
     for (let i = 0; i < n; i++) {
       const node = s.nodes[i]
-      this.posArr[i * 3] = node.transform.position[0]
-      this.posArr[i * 3 + 1] = node.transform.position[1]
-      this.posArr[i * 3 + 2] = node.transform.position[2]
-      worldToObjectMat3(node.transform.rotation, this.rotTmp)
+      const t = node.transform
+      const live = animate && node.anim.enabled
+      const a = node.anim
+
+      let px = t.position[0]
+      let py = t.position[1]
+      let pz = t.position[2]
+      let rx = t.rotation[0]
+      let ry = t.rotation[1]
+      let rz = t.rotation[2]
+      let sc = t.scale
+      if (live) {
+        px += a.posAmp[0] * Math.sin(time * a.posSpeed[0])
+        py += a.posAmp[1] * Math.sin(time * a.posSpeed[1])
+        pz += a.posAmp[2] * Math.sin(time * a.posSpeed[2])
+        rx += a.spin[0] * time
+        ry += a.spin[1] * time
+        rz += a.spin[2] * time
+        sc *= 1 + a.scalePulse * Math.sin(time * a.scaleSpeed)
+      }
+
+      this.posArr[i * 3] = px
+      this.posArr[i * 3 + 1] = py
+      this.posArr[i * 3 + 2] = pz
+      this.rotScratch[0] = rx
+      this.rotScratch[1] = ry
+      this.rotScratch[2] = rz
+      worldToObjectMat3(this.rotScratch, this.rotTmp)
       this.rotArr.set(this.rotTmp, i * 9)
-      this.scaleArr[i] = Math.max(node.transform.scale, 1e-3)
+      this.scaleArr[i] = Math.max(sc, 1e-3)
+
       this.paramArr[i * 4] = node.params[0] ?? 0
       this.paramArr[i * 4 + 1] = node.params[1] ?? 0
       this.paramArr[i * 4 + 2] = node.params[2] ?? 0
@@ -217,6 +254,13 @@ export class Renderer {
       this.matPbrArr[i * 4 + 1] = node.material.roughness
       this.matPbrArr[i * 4 + 2] = node.material.reflectivity
       this.matPbrArr[i * 4 + 3] = node.material.emission
+
+      this.packModifier(node, i)
+
+      this.matTexArr[i * 4] = TEXTURE_INDEX[node.material.texture] ?? 0
+      this.matTexArr[i * 4 + 1] = node.material.texScale
+      this.matTexArr[i * 4 + 2] = node.material.texStrength
+      this.matTexArr[i * 4 + 3] = 0
     }
     const setV3 = (name: string, arr: Float32Array) => {
       const l = this.loc(name)
@@ -238,6 +282,54 @@ export class Renderer {
     set1('uBlend', this.blendArr)
     setV3('uMatColor', this.matColArr)
     setV4('uMatPBR', this.matPbrArr)
+    setV4('uModA', this.modAArr)
+    setV4('uModB', this.modBArr)
+    setV4('uMatTex', this.matTexArr)
+  }
+
+  /** Pack a node's domain modifier into the uModA/uModB vec4 slots. */
+  private packModifier(node: SdfNode, i: number): void {
+    const m = node.modifier
+    let a0 = 0
+    let a1 = 0
+    let a2 = 0
+    let a3 = 0
+    switch (m.domain) {
+      case 'repeat':
+        a0 = m.repeat[0]
+        a1 = m.repeat[1]
+        a2 = m.repeat[2]
+        a3 = m.repeatLimit
+        break
+      case 'mirror':
+        a0 = m.mirror[0]
+        a1 = m.mirror[1]
+        a2 = m.mirror[2]
+        break
+      case 'twist':
+        a0 = m.twist
+        break
+      case 'bend':
+        a0 = m.bend
+        break
+    }
+    this.modAArr[i * 4] = a0
+    this.modAArr[i * 4 + 1] = a1
+    this.modAArr[i * 4 + 2] = a2
+    this.modAArr[i * 4 + 3] = a3
+    this.modBArr[i * 4] = m.round
+    this.modBArr[i * 4 + 1] = m.shellOn ? m.shell : 0
+    this.modBArr[i * 4 + 2] = 0
+    this.modBArr[i * 4 + 3] = 0
+  }
+
+  /** Grab the current frame as a PNG data URL (preserveDrawingBuffer is on). */
+  captureDataURL(): string {
+    try {
+      return this.canvas.toDataURL('image/png')
+    } catch {
+      return ''
+    }
   }
 
   private frame = (t: number): void => {
