@@ -784,8 +784,81 @@ last big idea the lab was missing, **linear prediction** — plus the integer-co
 - [ ] **Stereo LPC / long-term prediction** — a pitch-lag predictor for the periodic part, the idea
       behind Shorten's and MPEG-4 ALS's long-term prediction.
 
+## Entropy Forge v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the Unix tool)
+
+The lab has carried a `bzip-lite` toy for a long time (BWT → MTF → RLE → arithmetic) and *every*
+part of the real bzip2 as an isolated primitive — the suffix-sorted BWT, move-to-front, RLE, the
+package-merge length-limited Huffman, and (as of this session) the bzip2 CRC — but it never had the
+one thing that makes those parts *matter in the world*: the actual, standardised **`.bz2` container**
+that the `bzip2`/`bunzip2` tools millions of people use read and write. v14 is that format, built to
+spec, end to end, and proven **byte-compatible in both directions**.
+
+### Plan (this session) — all shipped
+
+- [x] **bzip2 CRC-32** (`crc32.ts`): bzip2's checksum is the *non-reflected* CRC-32 (MSB-first, poly
+      `0x04C11DB7`), a different beast from the gzip/PNG reflected variant already here. Added
+      `crc32Bzip2`, verified against the standard `"123456789" → 0xFC891918` check value.
+- [x] **The codec** (`bzip2.ts`), a from-scratch, spec-faithful pipeline, per block:
+      **RLE1** (runs ≥4 → 4 literals + a 0..251 count byte, bounding the sort's worst case) →
+      a full **rotation BWT** keeping bzip2's `origPtr` (prefix-doubling suffix sort, O(n·log²n),
+      differentially checked against the lab's reference `bwtEncode`) →
+      **move-to-front** over the block's used-byte alphabet (clusters → zeros) →
+      **RLE2** bijective RUNA/RUNB base-2 zero-run codes →
+      bzip2's **multi-table Huffman**: 2–6 canonical tables (length-limited to 20 bits by
+      package-merge), refined over 4 passes so each 50-symbol group picks the cheapest table, the
+      choices sent as MTF-coded selectors.
+- [x] **The exact bit-stream**: `BZh<level>` header, the π (`0x314159265359`) block magic and √π
+      (`0x177245385090`) footer magic, the sparse 16×16 symbol map, 24-bit `origPtr`, delta-coded
+      code lengths, per-block CRC + the rotate-left-XOR combined stream CRC.
+- [x] **Decoder** reads real `.bz2` — the bzip2 `hbCreateDecodeTables` limit/base/perm machinery,
+      selector/MTF inverse, RUNA/RUNB run accumulation, LF-mapping inverse BWT (reusing `bwt.ts`),
+      RLE1 inverse, and a per-block CRC check that *rejects* corruption.
+- [x] **Interop proof** (mirrors the gzip/PNG/JPEG badges): our decoder reads a real stream written
+      by the Unix `bzip2 -9` tool (embedded, decoded live in the browser); our encoder's output is
+      accepted and round-tripped by `bunzip2`. Validated in dev across a **300-case fuzz** (every
+      content class × every bzip2 level 1–9) and multi-block streams — zero mismatches.
+- [x] **Lab page** (`Bzip2.tsx`): the surviving-symbol counts through each stage, the BWT last column
+      with its manufactured runs, the MTF/RLE2 stream coloured by RUNA/RUNB/value/EOB, the per-table
+      code-length spans + selector histogram, the sparse alphabet, live block/stream CRCs, a one-click
+      `.bz2` download, and the live interop badges.
+- [x] **Wired in**: registered as a real codec (`bzip2 (real .bz2)`) in the Benchmark, and a new
+      Self-test group (differential BWT-vs-oracle + full encode→decode round-trips with CRC checks)
+      lifting the in-browser suite **810 → 855** checks, all green.
+
+### bzip2 roadmap (honest next steps — not yet built)
+
+- [ ] **Byte-exact encoder match** with the reference tool — replicate bzip2's exact `hbMakeCodeLengths`
+      weight-bumping and its precise table-init tie-breaks so our stream is *identical* to `bzip2 -9`,
+      not merely a valid one it accepts. (Today the encoder is spec-valid and well-compressing but does
+      not reproduce the reference bytes.)
+- [ ] **Randomised-block decoding** — the deprecated `0.9.0` de-randomisation table, so we can read
+      truly ancient `.bz2` files (modern bzip2 never sets the flag; we currently reject it cleanly).
+- [ ] **A size race vs the tool** on the Benchmark — plot our `.bz2` size against real `bzip2 -9` for
+      each corpus (a frozen table of reference sizes), showing how close the from-scratch encoder lands.
+- [ ] **Step-through of the BWT sort** — animate the rotation matrix collapsing to sorted order, the
+      way the Suffix Array page animates SA-IS.
+
 ## Session log
 
+- 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
+  The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an
+  isolated primitive — the suffix-sorted BWT, MTF, RLE, package-merge Huffman — but never the *format*: the
+  standardised `.bz2` container the `bzip2`/`bunzip2` tools read and write. v14 builds it to spec, end to
+  end. First `crc32Bzip2` (bzip2's *non-reflected* CRC, poly `0x04C11DB7`, verified on the standard
+  `0xFC891918` check). Then `bzip2.ts`: per block, **RLE1 → rotation-BWT-with-origPtr (prefix-doubling suffix
+  sort, differentially checked vs the reference BWT) → MTF → RLE2's RUNA/RUNB zero-runs → bzip2's multi-table
+  Huffman** (2–6 canonical ≤20-bit tables refined over 4 passes, each 50-symbol group choosing the cheapest
+  via MTF-coded selectors), wrapped in the exact bit-stream (`BZh` header, π/√π magics, sparse 16×16 symbol
+  map, 24-bit origPtr, delta-coded lengths, per-block + combined CRCs). The decoder reads *real* `.bz2` via
+  the bzip2 limit/base/perm decode tables and rejects any block whose CRC fails. The headline, mirroring the
+  gzip/PNG/JPEG interop proofs: **our decoder reads a stream written by the Unix `bzip2 -9` tool** (embedded,
+  decoded live in-browser) and **`bunzip2` accepts and round-trips our encoder's output** — validated in dev
+  across a 300-case fuzz (every content class × every level 1–9) and multi-block streams, zero mismatches.
+  New `Bzip2.tsx` lab page opens the pipeline stage by stage (surviving-symbol counts, the BWT column's
+  manufactured runs, the RUNA/RUNB-coloured MTF stream, per-table code-length spans + selector histogram, the
+  sparse alphabet, live CRCs, a `.bz2` download, interop badges). Registered as a real Benchmark codec and a
+  new Self-test group (differential BWT-vs-oracle + full `.bz2` round-trips with CRC checks): **810 → 855**
+  in-browser checks, all green. Zero new dependencies.
 - 2026-07-16 (claude): **v13 — FLAC & the integer codes: a whole new modality (audio).** The lab had
   coded symbols, text and images but never a *time series*, and it was missing the one big idea audio
   turns on — **linear prediction**. v13 adds it, bottom-up. First the substrate: `intcodes.ts`, the

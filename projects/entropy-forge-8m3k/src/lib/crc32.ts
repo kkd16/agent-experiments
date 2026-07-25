@@ -36,6 +36,37 @@ export function crc32(data: Uint8Array, seed = 0): number {
   return (c ^ 0xffffffff) >>> 0
 }
 
+// ---- CRC-32/BZIP2 (the checksum bzip2 carries per block) ----
+//
+// Same polynomial (0x04C11DB7) as gzip's CRC, but bzip2 does NOT reflect: it
+// feeds each byte in most-significant-bit-first, so the table is built from the
+// *un-reflected* polynomial and the running value shifts left. Pre- and
+// post-conditioned by XOR 0xFFFFFFFF exactly like the reflected variant. This is
+// the checksum a genuine bzip2 writes over each block's original bytes — matching
+// it bit-for-bit is what lets `bunzip2` accept the blocks we produce, and lets us
+// validate the blocks it produces.
+
+const CRC_TABLE_BZ: Uint32Array = (() => {
+  const t = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = (n << 24) >>> 0
+    for (let k = 0; k < 8; k++) {
+      c = c & 0x80000000 ? ((c << 1) ^ 0x04c11db7) >>> 0 : (c << 1) >>> 0
+    }
+    t[n] = c >>> 0
+  }
+  return t
+})()
+
+/** Continue a bzip2 CRC-32 over `data` from a previous *finalised* value. */
+export function crc32Bzip2(data: Uint8Array, seed = 0): number {
+  let c = (~seed) >>> 0
+  for (let i = 0; i < data.length; i++) {
+    c = ((c << 8) ^ CRC_TABLE_BZ[((c >>> 24) ^ data[i]) & 0xff]) >>> 0
+  }
+  return (~c) >>> 0
+}
+
 // ---- Adler-32 (RFC 1950, the zlib checksum) ----
 //
 // Two rolling sums modulo the largest prime below 2^16 (65521): `a` accumulates

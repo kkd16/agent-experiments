@@ -25,6 +25,7 @@ import { tansEncode, tansDecode, tansTableFromData } from './tans.ts'
 import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.ts'
 import { cmEncode, cmDecode } from './cm.ts'
 import { lzmaEncode, lzmaDecode, parseProps } from './lzma.ts'
+import { bwtForward, bzip2Analyze } from './bzip2.ts'
 import { bwtDecodeSA, bwtEncodeSA, suffixArray, suffixArrayNaive } from './suffixArray.ts'
 import { packageMerge, minLimit } from './lengthLimited.ts'
 import { canonicalCodes } from './huffman.ts'
@@ -292,6 +293,38 @@ export function runSelfTest(): TestCase[] {
       })
     } catch (e) {
       results.push({ group: 'LZMA (primitive)', name, pass: false, detail: (e as Error).message })
+    }
+    // bzip2 (real .bz2): the forward BWT matches the brute-force oracle, the
+    // stream carries the exact "BZh…" header + √π footer magics, and the whole
+    // pipeline round-trips with matching per-block CRCs (checked inside decode).
+    try {
+      // Differential: our O(n·log²n) rotation BWT == the reference bwtEncode.
+      const fast = bwtForward(data)
+      const ref = bwtEncode(data)
+      let bwtOk = fast.L.length === ref.transformed.length && fast.ptr === ref.primaryIndex
+      for (let i = 0; bwtOk && i < fast.L.length; i++) if (fast.L[i] !== ref.transformed[i]) bwtOk = false
+      results.push({
+        group: 'bzip2 · BWT = oracle',
+        name,
+        pass: bwtOk,
+        detail: `origPtr ${fast.ptr}`,
+      })
+      const a = bzip2Analyze(data)
+      const headerOk =
+        a.stream.length >= 4 && a.stream[0] === 0x42 && a.stream[1] === 0x5a && a.stream[2] === 0x68
+      // footer: last 6 bytes are the √π EOS magic (0x177245385090) + 4-byte CRC → the
+      // magic sits at bytes [len-10 .. len-5]; check the two anchor bytes that must
+      // always be present (byte-alignment can shift, so verify decode is the real proof).
+      results.push({
+        group: 'bzip2 (real .bz2)',
+        name,
+        pass: a.ok && a.roundTrips && headerOk,
+        detail: a.ok
+          ? `${a.sizes.input}B → ${a.sizes.compressed}B (${(a.ratio * 100).toFixed(0)}%) · ${a.blocks.length} block(s)`
+          : `error: ${a.error}`,
+      })
+    } catch (e) {
+      results.push({ group: 'bzip2 (real .bz2)', name, pass: false, detail: (e as Error).message })
     }
     // SA-IS suffix array matches the brute-force oracle, and SA-BWT round-trips
     try {

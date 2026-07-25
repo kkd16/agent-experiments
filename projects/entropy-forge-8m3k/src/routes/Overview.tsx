@@ -20,6 +20,7 @@ const MODULES = [
   { route: 'burrows', name: 'Burrows–Wheeler', desc: 'The reversible permutation at the heart of bzip2.' },
   { route: 'suffix', name: 'Suffix Array', desc: 'Linear-time SA-IS that makes the BWT scale to kilobytes.' },
   { route: 'deflate', name: 'DEFLATE & gzip', desc: 'The real RFC 1951/1952 codec — its output round-trips through the browser’s own gunzip.' },
+  { route: 'bzip2', name: 'bzip2 · real .bz2', desc: 'The genuine Burrows–Wheeler container — byte-compatible with the Unix bzip2/bunzip2 tools, both directions proven.' },
   { route: 'jpeg', name: 'JPEG · Rate–Distortion', desc: 'The lossy pillar — Shannon’s third theorem. DCT + quantisation, and the browser decodes our .jpg.' },
   { route: 'flac', name: 'FLAC · lossless audio', desc: 'A new modality — lossless audio by linear prediction + partitioned Rice coding. A real fLaC stream that round-trips bit-exactly and plays in the browser.' },
   { route: 'ratedistortion', name: 'Rate–Distortion · Quantisation', desc: 'The limits themselves — Blahut–Arimoto computes any channel’s capacity and any source’s R(D); Lloyd–Max & LBG build the optimal quantisers.' },

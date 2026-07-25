@@ -35,6 +35,7 @@ import { adaptiveHuffmanDecode, adaptiveHuffmanEncode } from './adaptiveHuffman.
 import { gzipEncode, gzipDecode } from './gzip.ts'
 import { cmEncode, cmDecode } from './cm.ts'
 import { lzmaEncode, lzmaDecode } from './lzma.ts'
+import { bzip2Encode, bzip2Decode } from './bzip2.ts'
 
 export interface Codec {
   id: string
@@ -517,5 +518,14 @@ export const CODECS: Codec[] = [
     blurb: 'Burrows–Wheeler → move-to-front → RLE → arithmetic, the bzip2 stack.',
     encode: bzipEncode,
     decode: bzipDecode,
+  },
+  {
+    id: 'bzip2',
+    name: 'bzip2 (real .bz2)',
+    family: 'transform',
+    blurb:
+      'The genuine bzip2 container: RLE1 → BWT (origPtr) → MTF → RUNA/RUNB zero-runs → 2..6 Huffman tables chosen per 50-symbol group, with per-block bzip2 CRC-32. Byte-compatible — bunzip2 decompresses what this writes, and it reads real .bz2 files.',
+    encode: (data) => bzip2Encode(data),
+    decode: (comp) => bzip2Decode(comp),
   },
 ]
