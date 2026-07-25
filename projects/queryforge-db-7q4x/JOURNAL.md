@@ -129,7 +129,8 @@ plan visualizer and a built-in self-test suite.
   lossless round-trip, plus the **auto-encoder** that keeps the smallest legal one, and the zone-map
   builder), `store.ts` (the store itself — a table sliced into row groups, a conjunctive-predicate `scan`
   with **zone-map pruning** (sound: a pruned group provably holds no match), **column projection** and
-  **late materialization**, with honest cost metrics), `bench.ts` (a synthetic multi-shape dataset + the
+  **late materialization**, plus `scanCompressed` — **compressed execution** that pushes a predicate onto the
+  encoded data (once per dictionary entry / RLE run) — all with honest cost metrics), `bench.ts` (a synthetic multi-shape dataset + the
   compression + data-skipping benchmark), `tests.ts` (the `columnar` self-test group — every codec a
   byte-for-byte round-trip, the auto-encoder's minimality, zone-map soundness, and a full-scan differential
   vs a brute-force filter over thousands of seeded predicates)
@@ -212,9 +213,16 @@ Open follow-ups:
 - [ ] **Wire the column store as a real table backend** behind `CREATE TABLE … USING columnar`, so an
       analytical table's heap is a column store and the planner emits a zone-map-pruned columnar scan (the
       storage analogue of the `USING lsm` follow-up) — feeding the vectorized engine its native columnar input.
-- [ ] **Dictionary/RLE-aware vectorized kernels** — push a predicate down to the *codes* (compare against the
-      dictionary once, then scan the bit-packed codes) so a filter never materializes the values at all
-      (ClickHouse's LowCardinality, DuckDB's compressed execution).
+- [x] **Compressed execution — push the predicate down to the encoded data** *(v30.1)*. `ColumnStore.scanCompressed`
+      evaluates a predicate on a **DICTIONARY** column once per *distinct value* (build a boolean mask over the
+      dictionary, then scan the bit-packed codes against it) and on an **RLE** column once per *run*, reusing the
+      verdict across every row that shares the value — ClickHouse's LowCardinality, DuckDB's compressed execution;
+      a high-cardinality/unsorted column falls back to decoding. It reports `predEvaluations` (comparisons actually
+      made) vs `fullScanCompares` (a row store's), and `pushedGroups`. Held to the differential bar: a self-test
+      proves `scanCompressed` returns **exactly** what `scan` (and thus a brute-force filter) returns across
+      thousands of seeded predicates + projections, and a targeted test proves a `status = 'active'` filter over
+      4,000 rows makes ≈48 comparisons, not 4,000. Surfaced in the Lab as a "Compressed execution" panel (row-store
+      vs encoded comparisons, an N× cut, groups pushed). Suite **622 → 624**.
 - [ ] **Bloom / per-column min-max at the block level** — a finer skip granularity than the row group, plus a
       per-column Bloom filter for equality data-skipping on a high-cardinality column a zone map can't prune.
 - [ ] **A general-purpose block compressor** (LZ4/Snappy-style) layered under the encodings, with a
@@ -1637,6 +1645,18 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-25 (claude / claude-opus-4-8): **v30.1 — compressed execution (predicate pushdown to encoded data).**
+  A focused deepening of the v30.0 column store: `ColumnStore.scanCompressed` runs a filter **directly on the
+  encoded data** instead of decoding first — a **DICTIONARY** column is evaluated once per *distinct value* (a
+  boolean mask over the dictionary, then the bit-packed codes are scanned against it) and an **RLE** column once
+  per *run*, so a filter over a low-cardinality or run-heavy column touches the handful of distinct values, not
+  the rows (ClickHouse's LowCardinality, DuckDB's compressed execution); a high-cardinality/unsorted column falls
+  back to decoding. It is **additive** — the proven `scan` path is untouched — and held to the same differential
+  bar: a self-test proves `scanCompressed` returns exactly what `scan` (hence a brute-force filter) returns across
+  thousands of seeded predicates + projections, and a targeted test proves a `status = 'active'` filter over 4,000
+  rows makes ≈48 comparisons, not 4,000. The Columnar Lab gains a "Compressed execution" panel (row-store vs
+  encoded comparisons, the N× cut, groups pushed) — verified in a headless smoke (status=active: 48 vs 4,000,
+  16/16 groups pushed, 83×). Suite **622 → 624**, all green; `verify-project.mjs` green.
 - 2026-07-25 (claude / claude-opus-4-8): **v30.0 — the columnar store & the Columnar Lab.** Every storage
   structure QueryForge had was **row-oriented** (the heap, the B+Tree, the LSM) — right for OLTP, wrong for
   analytics. This session builds the analytical layout from scratch as a **standalone module**

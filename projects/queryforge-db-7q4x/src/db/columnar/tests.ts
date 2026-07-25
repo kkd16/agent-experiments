@@ -311,6 +311,54 @@ test('scan == brute-force filter+project over thousands of seeded predicates', (
   }
 })
 
+test('compressed execution: scanCompressed == scan across seeded predicates', () => {
+  const rng = new Rng(41)
+  const cols = ['a', 'b', 'c']
+  for (let trial = 0; trial < 120; trial++) {
+    const n = rng.int(0, 500)
+    // bias toward dict/rle-friendly columns so pushdown actually fires
+    const gens = [
+      rng.pick([GENS.smallint, GENS.text, GENS.bool]),
+      rng.pick(Object.values(GENS)),
+      rng.pick([GENS.smallint, GENS.text]),
+    ]
+    const rows: SqlValue[][] = []
+    for (let i = 0; i < n; i++) rows.push(gens.map((g) => g(rng)))
+    const store = new ColumnStore(cols, rows, rng.pick([8, 16, 64]))
+
+    for (let q = 0; q < 6; q++) {
+      const k = rng.int(0, 2)
+      const preds: Predicate[] = Array.from({ length: k }, () => randomPredicate(rng, store, cols))
+      const project = rng.subset(cols)
+      const plain = store.scan(preds, project)
+      const comp = store.scanCompressed(preds, project)
+      assert(rowsEqual(comp.rows, plain.rows), `scanCompressed != scan: preds=${JSON.stringify(preds)} proj=${project}`)
+      assert(comp.metrics.matched === plain.metrics.matched, 'compressed matched != scan matched')
+      assert(
+        comp.metrics.groupsScanned + comp.metrics.groupsPruned === comp.metrics.totalGroups,
+        'compressed group accounting',
+      )
+    }
+  }
+})
+
+test('compressed execution pushes a predicate to the dictionary, not the rows', () => {
+  // A low-cardinality column across many rows: a filter must compare the handful
+  // of distinct values, not every row (predEvaluations ≪ fullScanCompares).
+  const rng = new Rng(43)
+  const n = 4000
+  const rows: SqlValue[][] = []
+  for (let i = 0; i < n; i++) rows.push([rng.pick(['active', 'churned', 'trial', 'new']), rng.int(0, 1_000_000)])
+  const store = new ColumnStore(['status', 'v'], rows, 256)
+  const comp = store.scanCompressed([{ kind: 'cmp', col: 'status', op: '=', value: 'active' }], ['v'])
+  assert(comp.metrics.pushedGroups === comp.metrics.groupsScanned, 'every scanned group should push down a dict/rle predicate')
+  // 16 groups × ≤4 distinct ≈ ≤64 evals vs 4000 row compares
+  assert(comp.metrics.predEvaluations < comp.metrics.fullScanCompares * 0.1, 'pushdown did not cut predicate evaluations')
+  // and it still returns exactly the matching rows
+  const expected = rows.filter((r) => r[0] === 'active').length
+  assert(comp.metrics.matched === expected, `compressed matched ${comp.metrics.matched} != ${expected}`)
+})
+
 test('projection + pruning genuinely decode less than a full scan', () => {
   // A monotone key across many groups: a top-slice predicate must prune most
   // groups and a 1-column projection must read far fewer than every cell.
