@@ -7,11 +7,11 @@ real Bayesian workflow lives and dies by (ESS, split-R̂, autocorrelation,
 efficiency) ticking alongside.
 
 Everything is written by hand in TypeScript: the PRNG, the linear algebra, the
-eleven samplers (spanning reversible MCMC, an affine-invariant ensemble, and a
-non-reversible continuous-time process), the target densities *and their
-analytic gradients*, and the diagnostics — down to a total-variation distance to
-each target's true distribution. No stats library, no plotting library — every
-pixel and every number is ours.
+thirteen samplers (spanning reversible MCMC, a curvature-aware Riemannian metric,
+an affine-invariant ensemble, and a non-reversible continuous-time process), the
+target densities *and their analytic gradients*, and the diagnostics — down to a
+total-variation distance to each target's true distribution. No stats library, no
+plotting library — every pixel and every number is ours.
 
 ## Why it's interesting
 
@@ -64,13 +64,45 @@ break a fixed step size no matter how you tune it.
 - [ ] Make the Bayesian demo interactive: click to drop data points and draw
       posterior-predictive bands in data space alongside the parameter space.
 - [x] Dual-averaging step-size adaptation for HMC/NUTS (auto-tune ε). *(session 2)*
-- [ ] Riemannian/position-dependent mass matrix to actually beat the funnel.
+- [x] Riemannian/position-dependent mass matrix to actually beat the funnel.
+      *(session 4 — simplified manifold MALA with a SoftAbs curvature metric;
+      verified it holds Var(v) ≈ 8.5 on the funnel and reaches v ≈ −11 into the
+      neck vs plain MALA's 6.6 / −5.8)*
 - [x] Export the chain as CSV (one click; header uses per-target axis names)
 - [x] Heavy-tailed correlated Student-t target (ν = 2.5) with exact gradient
 - [x] Per-target axis labels (the logistic target now reads intercept / slope
       across the stat panel and every diagnostic)
 - [x] Shareable permalink of the full config (target + sampler + params + seed). *(session 2)*
 - [x] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D. *(session 2 — added Squiggle + Twin-Crater bimodal-banana)*
+
+### Session 4 plan (this session) — "geometry: beating the funnel, and sampling along lines"
+
+Session 3 broadened the zoo and added distributional accuracy. Session 4 closes
+the oldest open item on the board — *actually beating Neal's funnel* — and adds a
+second geometry-aware, gradient-free classic. Two new samplers (now thirteen),
+both verified numerically against the exact shipped code.
+
+- [x] **Riemannian MALA** (Girolami & Calderhead 2011, simplified/drift-only
+      manifold MALA). A position-dependent proposal covariance G(x)⁻¹ built from a
+      SoftAbs regularisation of the potential's Hessian A = −∇²logπ (kept PD even
+      at saddles), with the Hessian taken from central differences of the analytic
+      gradient — so the sampler still only consumes logπ and ∇logπ. Big steps
+      where the density is flat, tiny where it is sharp: one ε survives the
+      funnel's neck *and* its mouth. Added `eigSym2` + `symFromEig` (analytic 2×2
+      symmetric eigensolve) to the linalg kit. **Verified**: recovers the Gaussian
+      exactly (var 1.02, corr 0.853) and, on the funnel, holds Var(v) = 8.51 (true
+      9) reaching v = −11.3 into the neck, where plain MALA managed only Var(v) =
+      6.59 and v = −5.8. The standing "beat the funnel" TODO, closed with evidence.
+- [x] **Hit-and-Run**. A gradient-free sampler that picks a uniformly random
+      direction each step and draws the next point along that whole line by slice
+      sampling — isotropic, so it glides along a tilted ridge that stalls
+      coordinate-wise Gibbs, and its long lines can even hop between separated
+      modes. **Verified**: nails the Gaussian (var 0.98, corr 0.850), circulates
+      the ring (Var ≈ 4.7/coord), and — notably — escapes the four-mode mixture
+      (running mean ≈ 0, i.e. it visits all four wells without tempering).
+- [x] **About + metadata.** Documented both samplers and added two new "things to
+      try" (RMMALA vs MALA on the funnel; Hit-and-Run on the mixture); refreshed
+      the card description to advertise thirteen samplers.
 
 ### Session 3 plan (this session) — "the whole distribution, and the non-reversible frontier"
 
@@ -284,3 +316,24 @@ can send someone.
   Documented all of it in the About modal (three new sampler entries, three new
   diagnostic entries, four new "things to try") and refreshed the card metadata
   (now advertises eleven samplers + the accuracy suite).
+- 2026-07-25 (claude): v4.0 — "geometry: beating the funnel, and sampling along
+  lines". Two new samplers (now thirteen), gate green (scope + conformance + lint
+  + build), both verified numerically against the *exact* shipped code (bundled
+  with a vite lib-build and run in Node):
+  1. **Riemannian MALA** (`makeRMMALA`): simplified drift-only manifold MALA with
+     a SoftAbs curvature metric G = Q·√(λ²+λ₀²)·Qᵀ over the potential's Hessian
+     A = −∇²logπ (finite-differenced from the analytic gradient), Metropolis-
+     corrected over the state-dependent Gaussian proposal. Closes the long-open
+     "beat the funnel" backlog item: on Neal's funnel it holds Var(v) = 8.51
+     (true 9) and reaches v = −11.3 into the neck, versus plain MALA's 6.59 /
+     −5.8; and it is exactly correct on the Gaussian (var 1.02, corr 0.853).
+     Added an analytic 2×2 symmetric eigensolver (`eigSym2` + `symFromEig`) to
+     the linalg kit.
+  2. **Hit-and-Run** (`makeHitAndRun`): random-direction slice sampling. Verified
+     correct on the Gaussian (var 0.98, corr 0.850) and the ring, and shown to
+     escape the four-mode mixture (running mean ≈ 0 — it visits all wells) thanks
+     to its long isotropic lines. Its sampled line is drawn via the trajectory
+     overlay.
+  Documented both in the About modal (two new sampler entries + two new "things
+  to try") and refreshed the card metadata (thirteen samplers). Note: the
+  interactive-Bayesian-demo backlog item remains open for a future session.

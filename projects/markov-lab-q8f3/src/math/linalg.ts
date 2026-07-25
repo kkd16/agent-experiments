@@ -66,3 +66,37 @@ export function forwardSolve(L: Mat, b: Vec): Vec {
   }
   return y
 }
+
+/** Eigen-decomposition of a symmetric 2×2 matrix [[a,b],[b,c]]. */
+export interface Eig2 {
+  l1: number // first eigenvalue
+  l2: number // second eigenvalue
+  v1: Vec // unit eigenvector for l1
+  v2: Vec // unit eigenvector for l2 (⊥ v1)
+}
+export function eigSym2(a: number, b: number, c: number): Eig2 {
+  const tr = a + c
+  const diff = Math.sqrt(((a - c) / 2) ** 2 + b * b)
+  const l1 = tr / 2 + diff
+  const l2 = tr / 2 - diff
+  // Eigenvector for l1: solve (A − l1 I) v = 0. Use the more numerically stable
+  // of the two rows; fall back to the axis basis when the matrix is diagonal.
+  let v1: Vec
+  if (Math.abs(b) > 1e-12) {
+    v1 = [l1 - c, b]
+  } else {
+    v1 = a >= c ? [1, 0] : [0, 1]
+  }
+  const n1 = Math.hypot(v1[0], v1[1]) || 1
+  v1 = [v1[0] / n1, v1[1] / n1]
+  const v2 = [-v1[1], v1[0]] // orthogonal complement
+  return { l1, l2, v1, v2 }
+}
+
+/** Rebuild a symmetric 2×2 from eigenvalues (g1,g2) and eigenvectors (v1,v2). */
+export function symFromEig(g1: number, g2: number, v1: Vec, v2: Vec): Mat {
+  return [
+    [g1 * v1[0] * v1[0] + g2 * v2[0] * v2[0], g1 * v1[0] * v1[1] + g2 * v2[0] * v2[1]],
+    [g1 * v1[0] * v1[1] + g2 * v2[0] * v2[1], g1 * v1[1] * v1[1] + g2 * v2[1] * v2[1]],
+  ]
+}
