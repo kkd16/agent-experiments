@@ -52,6 +52,14 @@ const SAMPLER_ROWS: Row[] = [
     name: 'Barker Proposal',
     text: 'A gradient sampler engineered for robustness (Livingstone & Zanella 2022). Per coordinate it draws a symmetric jump z and then skews its sign toward the gradient — keeping +z with probability 1/(1+e^{−z·∂ᵢlogπ}) — corrected by an exact Metropolis ratio. Its signature property: where MALA’s acceptance falls off a cliff the moment the step size is a little too big, Barker just degrades gently. A safer default when you cannot babysit ε.',
   },
+  {
+    name: 'Riemannian MALA',
+    text: 'The answer to Neal’s funnel. Every fixed-step method is doomed there: a step small enough for the narrow neck barely moves in the wide mouth, and vice-versa. Riemannian MCMC (Girolami & Calderhead 2011) gives the proposal a position-dependent covariance G(x)⁻¹ built from the local curvature — the Hessian of −log π — so it takes big steps where the density is flat and tiny ones where it is sharp, and a single ε works everywhere. Here G is a SoftAbs regularisation of that Hessian (kept positive-definite even at saddles), computed from finite differences of the analytic gradient, and the drift-only "simplified" manifold MALA is Metropolis-corrected over its state-dependent proposal. Watch it hold Var(v) ≈ 9 on the funnel and reach deep into the neck where plain MALA stalls.',
+  },
+  {
+    name: 'Hit-and-Run',
+    text: 'A gradient-free sampler that dodges the axis-alignment trap. Each step picks a uniformly random *direction* and samples a new point along that entire line from the 1-D conditional (by slice sampling, so nothing to tune along the line). Because the direction is isotropic, it glides along a tilted correlation ridge that grinds coordinate-wise Gibbs to a halt — and its long lines can even hop between separated modes.',
+  },
 ]
 
 const TUNING_ROWS: Row[] = [
@@ -156,6 +164,17 @@ export default function About({ onClose }: { onClose: () => void }) {
 
           <h3>Things to try</h3>
           <ul className="about-list">
+            <li>
+              Race <b>Riemannian MALA</b> against plain <b>MALA</b> on <b>Neal’s funnel</b>: RMMALA’s
+              curvature-aware metric lets a single ε reach deep into the neck (watch its <b>trace · x</b>
+              plunge and recover) while MALA is stranded in the mouth — the standing "beat the funnel"
+              problem, solved live. Its <b>TV dist</b> and <b>shape error</b> settle far faster.
+            </li>
+            <li>
+              Give <b>Hit-and-Run</b> the <b>Four-Mode Mixture</b> with a wide bracket: its long random
+              lines let it hop between wells that trap a single Metropolis chain — no tempering needed.
+              Then try it on the tilted <b>Gaussian</b> where <b>Metropolis-within-Gibbs</b> crawls.
+            </li>
             <li>
               Put the <b>Affine-Invariant Ensemble</b> on the tilted <b>correlated Gaussian</b> or the{' '}
               <b>heavy-tailed t</b> and race it against <b>Random-Walk Metropolis</b>: the ensemble nails

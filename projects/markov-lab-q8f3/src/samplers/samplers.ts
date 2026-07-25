@@ -3,7 +3,7 @@
 // The whole point of the studio is to watch how differently they move.
 
 import type { Vec } from '../math/linalg'
-import { add, cholesky, dot, matVec, norm2, scale, sub } from '../math/linalg'
+import { add, cholesky, dot, eigSym2, matVec, norm2, scale, sub, symFromEig } from '../math/linalg'
 import type { RNG } from '../math/rng'
 import type { Target } from '../targets/targets'
 import { DualAveraging } from './adapt'
@@ -626,6 +626,148 @@ function makeBarker(target: Target, rng: RNG, p: Record<string, number>): Sample
   return s
 }
 
+// ── Riemannian-metric MALA (simplified manifold MALA) ───────────────────────
+// The cure for Neal's funnel. Ordinary MALA/HMC use one global step size, so a
+// step that survives the funnel's narrow neck is uselessly small in its wide
+// mouth (and vice-versa). Riemannian MCMC (Girolami & Calderhead 2011) instead
+// gives the proposal a *position-dependent* covariance G(x)⁻¹ built from the
+// local curvature — big steps where the density is flat, tiny steps where it is
+// sharp — so a single ε works everywhere. We use the simplified (drift-only)
+// manifold MALA: propose x' ∼ N(x + ½ε²·G⁻¹∇logπ, ε²·G⁻¹) with an exact
+// Metropolis–Hastings correction over the state-dependent proposal. The metric
+// is a SoftAbs-style regularisation of the potential's Hessian
+// A = −∇²logπ: G = Q·√(λ² + λ₀²)·Qᵀ, which stays positive-definite even where A
+// is indefinite. The Hessian comes from central differences of the *analytic*
+// gradient, so the sampler still only needs logπ and ∇logπ from a target.
+function makeRMMALA(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const eps = p.step
+  const floor = Math.max(1e-3, p.floor) // λ₀: caps the largest step in flat regions
+  const d = target.start.length
+  const hh = 1e-4 // finite-difference spacing for the Hessian
+
+  interface MetricState {
+    logp: number
+    G: Vec[] // metric (for the reverse-proposal quadratic form)
+    Ghalfinv: Vec[] // G^{-1/2} (to shape the proposal noise)
+    logdetG: number
+    mean: Vec // drift mean of the proposal launched from this state
+  }
+
+  let dEvals = 0
+  let gEvals = 0
+
+  const metricAt = (x: Vec): MetricState => {
+    const logp = target.logDensity(x)
+    dEvals++
+    const grad = target.gradLogDensity(x)
+    gEvals++
+    // Hessian of logπ via central differences of the gradient.
+    const col: Vec[] = []
+    for (let i = 0; i < d; i++) {
+      const xp = x.slice()
+      const xm = x.slice()
+      xp[i] += hh
+      xm[i] -= hh
+      const gp = target.gradLogDensity(xp)
+      const gm = target.gradLogDensity(xm)
+      gEvals += 2
+      col.push([(gp[0] - gm[0]) / (2 * hh), (gp[1] - gm[1]) / (2 * hh)])
+    }
+    // Potential curvature A = −∇²logπ, symmetrised.
+    const Axx = -col[0][0]
+    const Axy = -0.5 * (col[0][1] + col[1][0])
+    const Ayy = -col[1][1]
+    const { l1, l2, v1, v2 } = eigSym2(Axx, Axy, Ayy)
+    const g1 = Math.sqrt(l1 * l1 + floor * floor) // SoftAbs-style PD metric
+    const g2 = Math.sqrt(l2 * l2 + floor * floor)
+    const Ginv = symFromEig(1 / g1, 1 / g2, v1, v2)
+    const Ghalfinv = symFromEig(1 / Math.sqrt(g1), 1 / Math.sqrt(g2), v1, v2)
+    const G = symFromEig(g1, g2, v1, v2)
+    const mean = add(x, scale(matVec(Ginv, grad), 0.5 * eps * eps))
+    return { logp, G, Ghalfinv, logdetG: Math.log(g1) + Math.log(g2), mean }
+  }
+
+  const s: Sampler = {
+    x: target.start.slice(),
+    logp: target.logDensity(target.start),
+    densityEvals: 1,
+    gradEvals: 0,
+    step(): StepResult {
+      const A = metricAt(this.x)
+      const xi = rng.normalVec(d)
+      const prop = add(A.mean, scale(matVec(A.Ghalfinv, xi), eps))
+      const B = metricAt(prop)
+      // MH correction over the state-dependent Gaussian proposals (constant
+      // 2π and ε terms cancel between forward and reverse).
+      const dFwd = sub(prop, A.mean)
+      const qFwd = dot(matVec(A.G, dFwd), dFwd) / (eps * eps)
+      const dRev = sub(this.x, B.mean)
+      const qRev = dot(matVec(B.G, dRev), dRev) / (eps * eps)
+      const logAccept =
+        B.logp - A.logp + 0.5 * (B.logdetG - A.logdetG) - 0.5 * (qRev - qFwd)
+      const accept = Number.isFinite(logAccept) && Math.log(rng.next()) < logAccept
+      if (accept) {
+        this.x = prop
+        this.logp = B.logp
+      }
+      this.densityEvals = dEvals + 1
+      this.gradEvals = gEvals
+      return { x: this.x, logp: this.logp, accepted: accept, proposal: prop }
+    },
+  }
+  return s
+}
+
+// ── Hit-and-Run ─────────────────────────────────────────────────────────────
+// A gradient-free sampler that sidesteps the axis-alignment problem: at each
+// step it picks a *uniformly random direction*, then draws a new point along
+// that whole line from the 1-D conditional (here by slice sampling, so there is
+// no proposal scale to tune along the line). Because the direction is isotropic,
+// it moves freely along a tilted correlation ridge that trips up coordinate-wise
+// Gibbs — a classic, elegant "sample along a line" method.
+function makeHitAndRun(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const w = p.step // initial 1-D bracket width along the line
+  const s: Sampler = {
+    x: target.start.slice(),
+    logp: target.logDensity(target.start),
+    densityEvals: 1,
+    gradEvals: 0,
+    step(): StepResult {
+      const ang = rng.next() * 2 * Math.PI
+      const u: Vec = [Math.cos(ang), Math.sin(ang)] // isotropic direction
+      const x0 = this.x
+      const y = this.logp + Math.log(rng.next() + 1e-300) // slice level
+      const at = (t: number): number => {
+        this.densityEvals++
+        return target.logDensity([x0[0] + t * u[0], x0[1] + t * u[1]])
+      }
+      // Step a bracket [lo, hi] out around t = 0.
+      let lo = -w * rng.next()
+      let hi = lo + w
+      let gl = 24
+      while (at(lo) > y && gl-- > 0) lo -= w
+      let gr = 24
+      while (at(hi) > y && gr-- > 0) hi += w
+      // Shrink until a point on the slice is found.
+      let t = 0
+      let lp = this.logp
+      for (let it = 0; it < 40; it++) {
+        t = lo + rng.next() * (hi - lo)
+        lp = at(t)
+        if (lp > y) break
+        if (t < 0) lo = t
+        else hi = t
+      }
+      const next: Vec = [x0[0] + t * u[0], x0[1] + t * u[1]]
+      const traj: Vec[] = [x0.slice(), next.slice()]
+      this.x = next
+      this.logp = lp
+      return { x: this.x, logp: this.logp, accepted: true, trajectory: traj }
+    },
+  }
+  return s
+}
+
 export const SAMPLERS: SamplerDef[] = [
   {
     id: 'rwm',
@@ -732,6 +874,25 @@ export const SAMPLERS: SamplerDef[] = [
     usesGradient: true,
     params: [{ key: 'step', label: 'jump σ', min: 0.05, max: 2, step: 0.01, default: 0.6, log: true }],
     create: makeBarker,
+  },
+  {
+    id: 'rmmala',
+    name: 'Riemannian MALA',
+    blurb: 'A curvature-aware metric rescales every step — one ε that survives the funnel neck and its mouth alike.',
+    usesGradient: true,
+    params: [
+      { key: 'step', label: 'step ε', min: 0.1, max: 2.5, step: 0.01, default: 1, log: true },
+      { key: 'floor', label: 'metric floor λ₀', min: 0.05, max: 3, step: 0.05, default: 0.5, log: true },
+    ],
+    create: makeRMMALA,
+  },
+  {
+    id: 'hitrun',
+    name: 'Hit-and-Run',
+    blurb: 'Pick a random direction, sample the whole line. Isotropic moves glide along tilts that stall Gibbs.',
+    usesGradient: false,
+    params: [{ key: 'step', label: 'bracket w', min: 0.2, max: 6, step: 0.05, default: 2, log: true }],
+    create: makeHitAndRun,
   },
 ]
 
