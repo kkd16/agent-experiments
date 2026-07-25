@@ -120,11 +120,105 @@ plan visualizer and a built-in self-test suite.
   `query.ts` (the triangle/cycle/path/star/clique shapes + generators), `lab.ts` (the Lab driver +
   elimination trace), `tests.ts` (the `wcoj` self-test group — differential vs binary join *and* vs
   the engine's own SQL)
+- `src/db/columnar/*` — the **columnar (column-store) storage format**, standalone from the SQL core —
+  the *analytical* storage layout (Parquet/ORC/DuckDB/ClickHouse/Vertica), the counterpoint to the
+  row-oriented heap + B+Tree: `bitpack.ts` (a genuine byte-level **bit-packer** — tight LSB-first
+  bitstreams, widths ≤ 52, plus ZigZag + O(1) random access), `types.ts` (the row-group / column-chunk /
+  **zone-map** model + an honest `plainSize` physical-footprint model), `encodings.ts` (the five
+  Parquet/ORC-family codecs — **PLAIN / DICTIONARY / RLE / BITPACK (frame-of-reference) / DELTA** — each a
+  lossless round-trip, plus the **auto-encoder** that keeps the smallest legal one, and the zone-map
+  builder), `store.ts` (the store itself — a table sliced into row groups, a conjunctive-predicate `scan`
+  with **zone-map pruning** (sound: a pruned group provably holds no match), **column projection** and
+  **late materialization**, with honest cost metrics), `bench.ts` (a synthetic multi-shape dataset + the
+  compression + data-skipping benchmark), `tests.ts` (the `columnar` self-test group — every codec a
+  byte-for-byte round-trip, the auto-encoder's minimality, zone-map soundness, and a full-scan differential
+  vs a brute-force filter over thousands of seeded predicates)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
-  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
+  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **Columnar** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
 
 ## Ideas / backlog
+
+### The columnar store — the Columnar Lab (`db/columnar/*`, v30.0 — shipped this session)
+
+Every storage structure QueryForge has ever had is **row-oriented**: the heap keeps whole tuples, the
+B+Tree keeps whole index entries, the LSM keeps whole key→value records. That is the right shape for OLTP —
+you read and write a row at a time — and the *wrong* shape for analytics, where a query touches a few of
+many columns across a lot of rows, and a row store still drags every column of every row off "disk". The
+entire analytical world — **Parquet, ORC, DuckDB, ClickHouse, Vertica, Dremel** — answers that with a
+**column store**: lay the data out column-at-a-time in **row groups**, compress each column *independently*
+(so a column's values, all the same type and often highly repetitive, crush far better than a row's mixed
+bytes), and put a **min/max zone map** in front of each group so a scan can *skip* whole groups a predicate
+rules out. This session builds that whole layout from scratch as a **standalone module** (the pattern
+`lsm/*` / `wcoj/*` / `sketch/*` set — a pillar proven by a differential + invariant self-test group and
+surfaced as an interactive Lab), the analytical counterpart to the row-oriented storage engines. The
+load-bearing idea is that **every technique only ever changes the cost, never the answer**: the encodings
+are lossless round-trips, and zone-map pruning is *sound* (a pruned group provably contains no match), both
+nailed down by the self-tests against a brute-force oracle.
+
+- [x] **A genuine byte-level bit-packer** (`columnar/bitpack.ts`) — `packBits`/`unpackBits` write and read
+      non-negative integers into tight, LSB-first `Uint8Array` bitstreams (`⌈n·w/8⌉` bytes, no per-value
+      alignment waste — the whole "these values only span 9 bits, don't spend 32 on each" win). Widths up to
+      52 (a JS integer is exact to 2^53), packed a bit at a time so it stays correct past the 32-bit
+      boundary a naive `<<` corrupts. Plus ZigZag (`zigzag`/`unzigzag`) for signed deltas and `readAt` for
+      **O(1) random access** — the primitive late materialization rides on.
+- [x] **The row-group / zone-map model + a physical-size model** (`columnar/types.ts`) — the `ColumnChunk`
+      (one encoded column in one group: encoding tag, NULL bitmap, the encoding's payload, its `byteSize`
+      and its `ZoneMap`), the `ZoneMap` (count / null-count / min / max / distinct), and `plainSize` — an
+      honest, documented model of each value's on-disk footprint (varint for ints, 8 bytes for a REAL,
+      length-prefixed UTF-8 for TEXT, a length-prefixed rendering for the rich types) so the Lab reports a
+      *real* compression ratio while decode stays exact.
+- [x] **Five Parquet/ORC-family codecs + an auto-encoder** (`columnar/encodings.ts`) — **PLAIN** (baseline),
+      **DICTIONARY** (distinct values + a bit-packed code per row — low-cardinality columns), **RLE**
+      (value + run-length — clustered/sorted columns), **BITPACK / frame-of-reference** (subtract the group
+      min, bit-pack the residuals — wide integers with a small in-group range), **DELTA** (first value +
+      bit-packed ZigZag deltas — monotone ids/timestamps). NULLs split into a bitmap + a dense present-values
+      list before any encoding. `encodeColumn` builds every *legal* candidate (the numeric codecs only for an
+      all-integer column whose width fits the packer) and keeps the smallest — exactly how a real writer
+      picks a codec per chunk. `decodeColumn` is the exact inverse; `presentAt` is the random-access read.
+- [x] **The store: pruning + projection + late materialization** (`columnar/store.ts`) — `ColumnStore`
+      slices rows into groups and encodes each column; `scan(predicates, project)` (a conjunction of
+      cmp/between/in/isnull/notnull over columns) (1) **prunes** any group whose zone map can't satisfy a
+      conjunct — `canMatch` is *sound*: it only ever returns false on a provably empty group, and treats any
+      incomparable comparison as "keep"; (2) decodes only the **projected** columns; and (3)
+      **late-materializes** — evaluate the predicate on the predicate columns, then fetch the projected
+      columns only at the surviving row offsets. Honest cost metrics (groups scanned/pruned, values decoded
+      vs a full row-store scan, rows matched) come out with the result.
+- [x] **The benchmark** (`columnar/bench.ts`) — a deterministic multi-shape dataset (a monotone key, a
+      monotone timestamp, a low-card category, a run-heavy status, a wide integer, a high-card token) whose
+      columns each want a *different* codec, plus the compression-ratio + data-skipping measurement the Lab
+      surfaces. Asserted by the self-tests (columnar < row store; `id`→DELTA, `region`→DICT/RLE; the
+      selective predicate prunes > 0 groups).
+- [x] **The `columnar` self-test group** (`columnar/tests.ts`, wired into `runTests()`) — held to the
+      storage bar: the bit-packer round-trips at every width incl. random access; **every codec is a
+      byte-for-byte round-trip** over seeded columns of every value type (int/real/text/bool/DECIMAL/DATE/
+      JSON) with NULLs; `presentAt` matches the dense decode; the **auto-encoder always picks the true
+      minimum** and never loses to PLAIN; the zone map equals a brute-force min/max/null/distinct;
+      **zone-map pruning is sound** (a pruned group, decoded, holds zero matches); and **a full predicate
+      scan equals a brute-force filter+project over the original rows** across thousands of seeded predicate
+      conjunctions and projections, with the cost metrics internally consistent. **14 cases, all green.**
+- [x] **The Columnar Lab** (`ui/ColumnarLab.tsx`) — the fourteenth Lab: the auto-encoder's per-column codec
+      choice with a size-vs-encoding bar for every candidate (watch `id`/`ts` pick DELTA, `region`/`status`
+      pick DICTIONARY, `amount` pick frame-of-reference, `token` stay PLAIN), the aggregate compression ratio
+      vs a row store, and a live predicate builder that lights up each row group as **scanned** or **pruned**
+      with the data-skipping percentage and the fraction of cells actually decoded — showing both the win on
+      a clustered column and, honestly, the *non*-win when a predicate hits an unsorted column no zone map
+      can prune. Row-count and row-group-size selectors. Verified end-to-end in a headless Chromium smoke.
+- [x] **Docs + wiring** — a "Columnar storage & zone maps" Reference section, a Storage/columnar Internals
+      topic (n 7.3), the new tab in `App.tsx` + CSS, a refreshed `project.json`, and the gate re-run to green.
+
+Open follow-ups:
+
+- [ ] **Wire the column store as a real table backend** behind `CREATE TABLE … USING columnar`, so an
+      analytical table's heap is a column store and the planner emits a zone-map-pruned columnar scan (the
+      storage analogue of the `USING lsm` follow-up) — feeding the vectorized engine its native columnar input.
+- [ ] **Dictionary/RLE-aware vectorized kernels** — push a predicate down to the *codes* (compare against the
+      dictionary once, then scan the bit-packed codes) so a filter never materializes the values at all
+      (ClickHouse's LowCardinality, DuckDB's compressed execution).
+- [ ] **Bloom / per-column min-max at the block level** — a finer skip granularity than the row group, plus a
+      per-column Bloom filter for equality data-skipping on a high-cardinality column a zone map can't prune.
+- [ ] **A general-purpose block compressor** (LZ4/Snappy-style) layered under the encodings, with a
+      decompress-vs-decode cost split in the Lab.
 
 ### Concurrency-control protocols — the Protocols Lab (`db/protocols/*`, v29.0 — shipped this session)
 
@@ -1543,6 +1637,34 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-25 (claude / claude-opus-4-8): **v30.0 — the columnar store & the Columnar Lab.** Every storage
+  structure QueryForge had was **row-oriented** (the heap, the B+Tree, the LSM) — right for OLTP, wrong for
+  analytics. This session builds the analytical layout from scratch as a **standalone module**
+  (`db/columnar/*`, like `lsm/*`/`wcoj/*`/`sketch/*`): the **column store** behind Parquet/ORC/DuckDB/
+  ClickHouse/Vertica. A table is sliced into **row groups**; each column is encoded *independently* by the
+  smallest of five Parquet/ORC-family codecs — **PLAIN / DICTIONARY / RLE / BITPACK (frame-of-reference) /
+  DELTA** — all riding a **genuine byte-level bit-packer** (`bitpack.ts`: tight LSB-first `Uint8Array`
+  streams, widths ≤ 52, ZigZag, O(1) random access), so decode is an exact round-trip and an **auto-encoder**
+  keeps the smallest legal codec per chunk exactly as a real writer does. Each group carries a min/max
+  **zone map**, so `ColumnStore.scan` (`store.ts`) does three things a row store can't: **column projection**
+  (only touched columns decoded), **zone-map pruning** (skip a group whose range can't satisfy the
+  predicate — Parquet's row-group stats / the "data skipping" of every analytical engine), and **late
+  materialization** (evaluate the predicate first, then fetch projected columns only at surviving rows). The
+  guiding invariant: every technique only ever changes the **cost, never the answer** — `canMatch` is *sound*
+  (a pruned group provably holds no match) and the codecs are lossless. New `columnar` self-test group
+  (`tests.ts`, **14 cases, all green**): the bit-packer at every width + random access; **every codec a
+  byte-for-byte round-trip** over columns of every value type (int/real/text/bool/DECIMAL/DATE/JSON) with
+  NULLs; the auto-encoder's minimality; the zone map vs a brute-force compute; **zone-map soundness** (a
+  pruned group decoded holds zero matches); and the headline **full-scan differential** — `scan` equals a
+  brute-force filter+project over the original rows across thousands of seeded predicate conjunctions +
+  projections, cost metrics consistent. Surfaced as the fourteenth interactive **Columnar Lab**
+  (`ui/ColumnarLab.tsx`): the per-column codec choice with a size bar per candidate (id/ts→DELTA,
+  region/status→DICTIONARY, amount→frame-of-reference, token→PLAIN), the compression ratio vs a row store
+  (~2.5× on the bench dataset), and a live predicate lighting up each row group scanned/pruned with the
+  data-skipping % and cells-decoded fraction — honestly showing both the win on a clustered column (id ≥ cut
+  prunes 14/16 groups) and the *non*-win on an unsorted one (region can't be range-pruned, yet projection +
+  late-mat still cut decoding to ~36%). Verified end-to-end in a headless Chromium smoke. Suite **608 → 622**,
+  all green; Reference + Internals docs added; `verify-project.mjs` (scope + conformance + lint + build) green.
 - 2026-07-16 (claude / claude-opus-4-8): **v29.0 — the concurrency-control Protocols Lab.** QueryForge had
   one concurrency-control protocol — the MVCC engine (`db/concurrency/*`) with snapshot isolation + SSI.
   This session builds the *rest of the family* from scratch as a **standalone module** (`db/protocols/*`,

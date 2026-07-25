@@ -21,6 +21,7 @@ import { LsmLab } from './ui/LsmLab'
 import { IvmLab } from './ui/IvmLab'
 import { SketchLab } from './ui/SketchLab'
 import { WcojLab } from './ui/WcojLab'
+import { ColumnarLab } from './ui/ColumnarLab'
 import { CsvImport } from './ui/CsvImport'
 import { SAMPLE_QUERIES } from './db/sampleData'
 import type { QueryResult } from './db/engine'
@@ -44,6 +45,7 @@ const TABS = [
   { id: 'ivm', label: 'IVM Lab' },
   { id: 'sketch', label: 'Sketch Lab' },
   { id: 'wcoj', label: 'WCOJ Lab' },
+  { id: 'columnar', label: 'Columnar Lab' },
   { id: 'optimizer', label: 'Optimizer Lab' },
   { id: 'execution', label: 'Execution Lab' },
   { id: 'vectorize', label: 'Vectorize Lab' },
@@ -159,6 +161,7 @@ export default function App() {
           {route === 'ivm' && <IvmLab />}
           {route === 'sketch' && <SketchLab />}
           {route === 'wcoj' && <WcojLab />}
+          {route === 'columnar' && <ColumnarLab />}
           {route === 'optimizer' && (
             <OptimizerLab engine={engine} version={version} onApply={(ddl) => run(ddl)} />
           )}
