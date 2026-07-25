@@ -10,6 +10,8 @@ import {
   splitRHat,
   std,
 } from '../diagnostics/diagnostics'
+import { shapeGrids, tvDistance } from '../diagnostics/distance'
+import type { ShapeGrids } from '../diagnostics/distance'
 import { RNG } from '../math/rng'
 import type { Vec } from '../math/linalg'
 import { samplerById } from '../samplers/samplers'
@@ -50,6 +52,11 @@ export interface LiveStats {
   info?: Record<string, number>
   /** ‖running mean − true mean‖ when the target's mean is known analytically. */
   meanErr?: number
+  /** Monte-Carlo standard error of the mean estimate, per coordinate (sd/√ESS). */
+  mcseX?: number
+  mcseY?: number
+  /** Total-variation distance from the sampled to the analytic distribution. */
+  tvDist?: number
 }
 
 export class Simulation {
@@ -203,6 +210,8 @@ export class Simulation {
     }
     const essX = effectiveSampleSize(sx)
     const essY = effectiveSampleSize(sy)
+    const sdX = std(sx)
+    const sdY = std(sy)
     const totalEval = this.sampler.densityEvals + this.sampler.gradEvals
     return {
       iters: this.iters,
@@ -214,8 +223,8 @@ export class Simulation {
       tauX: iact(sx),
       meanX: mean(sx),
       meanY: mean(sy),
-      sdX: std(sx),
-      sdY: std(sy),
+      sdX,
+      sdY,
       ci: [quantile(sx, 0.025), quantile(sx, 0.975)],
       densityEvals: this.sampler.densityEvals,
       gradEvals: this.sampler.gradEvals,
@@ -223,7 +232,19 @@ export class Simulation {
       usedForStats: n,
       info: this.liveInfo(),
       meanErr: this.meanError(mean(sx), mean(sy)),
+      mcseX: essX > 0 ? sdX / Math.sqrt(essX) : undefined,
+      mcseY: essY > 0 ? sdY / Math.sqrt(essY) : undefined,
+      tvDist: tvDistance(this.target, sx, sy),
     }
+  }
+
+  /**
+   * Reference + empirical density grids and their TV distance, for the
+   * "shape error" diagnostic — computed on the same post-burn-in window the
+   * other diagnostics use. Null until enough samples land inside the view.
+   */
+  shapeGrids(): ShapeGrids | null {
+    return shapeGrids(this.target, this.statSlice(this.xs), this.statSlice(this.ys))
   }
 
   /** Distance of the running mean estimate from the target's known true mean. */

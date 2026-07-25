@@ -3,6 +3,7 @@
 // in CSS pixels (the caller handles DPI scaling).
 
 import { autocorr, quantile } from '../diagnostics/diagnostics'
+import type { ShapeGrids } from '../diagnostics/distance'
 import { ACCENT, ACCENT_WARM } from './colormap'
 
 const GRID = 'rgba(255,255,255,0.06)'
@@ -275,6 +276,81 @@ export function drawConvergence(
     ctx.stroke()
   })
   ctx.globalAlpha = 1
+}
+
+/**
+ * The "shape error" map: the signed discrepancy (empirical − reference) of the
+ * sampled distribution, drawn as a diverging heatmap over the target's view.
+ * Red = the sampler over-visits this region, blue = it under-visits it, black =
+ * a match. A chain trapped in one mode glows red there and leaves the abandoned
+ * modes blue. The TV distance is printed in the corner. `null` grids (too few
+ * samples yet) draw a quiet "warming up" placeholder.
+ */
+export function drawShapeError(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  grids: ShapeGrids | null,
+) {
+  clear(ctx, w, h)
+  if (!grids) {
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'
+    ctx.font = '11px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('warming up…', w / 2, h / 2)
+    ctx.textAlign = 'start'
+    return
+  }
+  const { res, ref, emp } = grids
+  // Symmetric colour scale from the largest single-cell discrepancy, with a
+  // gentle floor so a near-perfect match doesn't amplify pure sampling noise.
+  let maxAbs = 1e-4
+  for (let k = 0; k < ref.length; k++) {
+    const dd = Math.abs(emp[k] - ref[k])
+    if (dd > maxAbs) maxAbs = dd
+  }
+  const img = ctx.createImageData(res, res)
+  for (let j = 0; j < res; j++) {
+    for (let i = 0; i < res; i++) {
+      // Grid row 0 is the bottom of the view; canvas row 0 is the top.
+      const gk = (res - 1 - j) * res + i
+      const t = Math.max(-1, Math.min(1, (emp[gk] - ref[gk]) / maxAbs))
+      // A perceptual-ish diverging ramp: blue (under) → near-black → red (over).
+      const mag = Math.pow(Math.abs(t), 0.6)
+      let r: number
+      let g: number
+      let b: number
+      if (t >= 0) {
+        r = 20 + mag * 235
+        g = 20 + mag * 70
+        b = 24
+      } else {
+        r = 24
+        g = 26 + mag * 90
+        b = 30 + mag * 225
+      }
+      const p = (j * res + i) * 4
+      img.data[p] = r
+      img.data[p + 1] = g
+      img.data[p + 2] = b
+      img.data[p + 3] = 255
+    }
+  }
+  // Blit the small grid up to the card, nearest-neighbour, via an offscreen.
+  const off = document.createElement('canvas')
+  off.width = res
+  off.height = res
+  off.getContext('2d')!.putImageData(img, 0, 0)
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(off, 0, 0, res, res, 0, 0, w, h)
+  ctx.imageSmoothingEnabled = true
+
+  // TV read-out.
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'
+  ctx.fillRect(4, 4, 74, 16)
+  ctx.fillStyle = grids.tv < 0.1 ? '#7ce0a0' : grids.tv < 0.25 ? '#ffd166' : '#ff6b8a'
+  ctx.font = '11px ui-monospace, monospace'
+  ctx.fillText(`TV ${grids.tv.toFixed(3)}`, 8, 16)
 }
 
 /** Autocorrelation function — how fast the chain forgets where it was. */
