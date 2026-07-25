@@ -315,7 +315,22 @@
     "imperative-language",
     "interpreter",
     "loop-unrolling",
-    "verification"
+    "verification",
+    "e-graph",
+    "egraph",
+    "equality-saturation",
+    "egg",
+    "term-rewriting",
+    "rewrite-rules",
+    "extraction",
+    "peephole-optimization",
+    "strength-reduction",
+    "constant-folding",
+    "equational-reasoning",
+    "theorem-proving",
+    "hash-consing",
+    "union-find",
+    "congruence"
   ],
   "createdAt": "2026-06-15"
 }

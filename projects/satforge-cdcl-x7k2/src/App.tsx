@@ -30,6 +30,7 @@ import { CpStudio } from './components/CpStudio'
 import { Gf2Studio } from './components/Gf2Studio'
 import { AigStudio } from './components/AigStudio'
 import { SymxStudio } from './components/SymxStudio'
+import { EgraphStudio } from './components/EgraphStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -49,6 +50,7 @@ type Mode =
   | 'cp'
   | 'aig'
   | 'symx'
+  | 'egraph'
   | 'lab'
 
 export default function App() {
@@ -145,6 +147,8 @@ export default function App() {
                                       ? 'And-Inverter Graphs & SAT sweeping: combinational equivalence checking, the industrial killer app of SAT.'
                                       : mode === 'symx'
                                       ? 'Symbolic execution: verify imperative programs by discharging path conditions to the integer-linear core, with concrete counterexamples.'
+                                      : mode === 'egraph'
+                                      ? 'Equality saturation: an e-graph optimizes a term to its cheapest equivalent and proves algebraic identities — the “egg” technique.'
                                       : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
@@ -198,6 +202,9 @@ export default function App() {
           <button className={mode === 'symx' ? 'active' : ''} onClick={() => setMode('symx')}>
             Symbolic Studio
           </button>
+          <button className={mode === 'egraph' ? 'active' : ''} onClick={() => setMode('egraph')}>
+            Congruence Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -219,6 +226,7 @@ export default function App() {
       {mode === 'gf2' && <Gf2Studio />}
       {mode === 'aig' && <AigStudio />}
       {mode === 'symx' && <SymxStudio />}
+      {mode === 'egraph' && <EgraphStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -357,7 +365,14 @@ export default function App() {
         <code>assert</code> to the very same <b>Omega test</b>, so a violated assertion returns a concrete{' '}
         <b>counterexample input</b> and a loop-free program is proven safe for <em>all</em> integers (loops
         unrolled to a bound — bounded model checking in miniature), every verdict replayed and refereed by an
-        independent concrete interpreter — all hand-written in TypeScript.
+        independent concrete interpreter · plus a <b>Congruence Studio</b> built on a from-scratch{' '}
+        <b>e-graph</b> — hash-consed e-nodes over a union-find of e-classes with deferred congruence
+        rebuilding and an e-class analysis that constant-folds inside the graph (the <b>egg</b> design) —
+        that runs <b>equality saturation</b> to a fixpoint and reads back the cheapest equivalent term by
+        cost-based extraction, turning the same machine into an algebraic <b>optimizer</b> (strength
+        reduction, factoring, identity collapse) and an equational <b>prover</b> (two terms are equal
+        exactly when they share a class), every rewrite an integer identity and every result re-checked by
+        an independent exact BigInt evaluator — all hand-written in TypeScript.
       </footer>
     </div>
   )

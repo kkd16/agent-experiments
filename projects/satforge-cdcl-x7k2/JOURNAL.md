@@ -211,6 +211,32 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   concretely" badge), a path-explosion stat grid, an independent box-scan cross-check, and a
   collapsible explored-paths tree.
 
+- `src/egraph/*` — the **e-graph / equality-saturation** subsystem (Session 29), a seventeenth
+  studio and the first that reasons about *terms modulo an equational theory*. `term.ts` is the
+  surface language — a commutative-ring expression grammar (`+ - * <<`, integers, variables) with a
+  precedence-climbing parser that **desugars** subtraction and unary minus into a `neg` node, a
+  re-sugaring pretty-printer, and an exact **BigInt evaluator** (the semantic ground truth). `egraph.ts`
+  is the data structure: a hash-consed **e-graph** (the "egg" design) — a union-find over e-classes,
+  a memo table interning canonical e-nodes, egg's **deferred `rebuild`** that repairs the congruence
+  invariant in batches, and an **e-class analysis** whose `modify` hook folds a class of constants
+  into its value *inside the graph* — plus a `checkInvariants()` structural oracle (hashcons
+  consistency, congruence-closedness, analysis soundness). `rewrite.ts` layers rewriting on top:
+  pattern **e-matching**, the read-phase/write-phase **equality-saturation** loop (with an O(1)
+  fixpoint signal and a class-count budget that survives the associativity/​distributivity blow-up),
+  a cost-based bottom-up **extractor**, and a `prove(a,b)` that saturates both terms in one graph and
+  checks whether they share a class. `rules.ts` is five toggleable, provably-integer-sound rule
+  families (commutativity/associativity, identities/annihilation, distributivity/factoring, negation,
+  strength reduction). `examples.ts` carries the optimize + prove galleries and a seeded random-term
+  generator. `layout.ts` positions the graph for SVG (a cycle-safe depth leveling, since a saturated
+  e-graph is cyclic). `selfcheck.ts` — `runEgraphChecks()`: an independent BigInt evaluator hammers
+  the engine (extracted terms stay numerically identical and never cost more, invariants hold after
+  every saturation, every *proved* equality actually holds on hundreds of assignments, and the curated
+  galleries reach their answers). UI: `components/EgraphStudio.tsx` — an **Optimize** pane (expression
+  editor + gallery, before/after terms with cost delta, a saturation-stage slider that redraws the
+  e-graph iteration by iteration, an iteration table, and an inline evaluator cross-check) and a
+  **Prove** pane (two-term editor, a PROVED / NOT-PROVED / NOT-EQUAL verdict with a counterexample
+  from the evaluator, and the merged e-graph), sharing a live rule-family toggle panel.
+
 ## Correctness
 
 `selftest.ts` (run with `node runtest.mjs`) is the safety net. The strongest check is a
@@ -2583,3 +2609,84 @@ ground-truth verdict. All seven green, in-browser, in well under a second.
       the counterexample path highlighted and the accumulated path condition on hover.
 - [ ] **Cross-studio bridge** — export a program's bounded unrolling as a raw CNF/SMT instance into
       the SAT/SMT studios, so the same bug can be inspected as an implication graph or a DRAT proof.
+
+### Session 29 — from *proving formulas* to *rewriting terms*: e-graphs & equality saturation (a seventeenth studio)
+
+- 2026-07-25 (claude): Added an entire new reasoning paradigm — **term rewriting modulo an
+  equational theory** — as a self-contained subsystem (`src/egraph/*`) that touches nothing else. It
+  is a from-scratch **e-graph** (the "egg" data structure, Willsey et al., POPL 2021): hash-consed
+  e-nodes over a union-find of **e-classes**, with egg's **deferred `rebuild`** restoring the
+  congruence invariant (`x ≡ y ⇒ f(x) ≡ f(y)`) in batches, and an **e-class analysis** whose `modify`
+  hook constant-folds a class into its value *inside the graph*. On top sits pattern **e-matching**,
+  the read-then-write **equality-saturation** loop, a cost-based **extractor**, and an equational
+  **prover** — two terms are provably equal exactly when saturation drives them into the same class.
+  The same engine is therefore *both* an algebraic **optimizer** (strength reduction `a*2 → a<<1`,
+  factoring `a*b + a*c → a*(b+c)`, identity collapse `a*0 + b*1 → b`, constant folding `2*3*a → 6*a`)
+  *and* a **theorem prover** (`(a+b)² ≡ a² + 2ab + b²` in a handful of milliseconds). Certified the
+  project's way: `runEgraphChecks()` folds **346 assertions** into the studio badge via an *independent
+  exact BigInt evaluator* that shares no code with the rewriter — extracted terms must stay numerically
+  identical on every random assignment and never cost more, the congruence/hashcons/analysis invariants
+  must hold after every saturation, and every *proved* equality must actually hold on hundreds of
+  assignments (so an unsound rule is caught immediately). The AC blow-up (associativity + distributivity
+  can explode a single pass into hundreds of thousands of nodes) is tamed by an O(1) fixpoint signal
+  plus a mid-loop class-count budget, and the studio honestly reports "stopped at node budget" when a
+  term does not saturate. New **Congruence Studio** mode (`EgraphStudio.tsx`, a seventeenth top-level
+  studio) with a live e-graph SVG (a saturation-stage slider redraws it iteration by iteration),
+  toggleable rule families, and an inline evaluator cross-check on every result. Lint + build + full
+  gate green.
+
+**What shipped (this session):**
+- [x] **`src/egraph/term.ts`** — the ring-expression grammar: a precedence-climbing parser that
+      desugars `-`/unary-minus into `neg`, a re-sugaring pretty-printer, and an exact **BigInt**
+      evaluator (the oracle's semantic ground truth), plus `freeVars`/`termSize`/`termKey`.
+- [x] **`src/egraph/egraph.ts`** — the hash-consed e-graph: union-find, canonicalizing `add`, `union`,
+      egg's deferred **`rebuild`** congruence repair, the constant-folding **e-class analysis**, and a
+      `checkInvariants()` structural oracle (hashcons consistency + congruence-closedness + analysis).
+- [x] **`src/egraph/rewrite.ts`** — pattern **e-matching**, the **equality-saturation** fixpoint loop
+      (O(1) change counters + a class budget against AC blow-up), the cost-based bottom-up
+      **extractor**, `optimize()` and `prove()`.
+- [x] **`src/egraph/rules.ts`** — five provably-integer-sound, individually-toggleable rewrite
+      families (commutativity/associativity, identities/annihilation, distributivity/factoring,
+      negation, strength reduction).
+- [x] **`src/egraph/examples.ts`** — the optimize + prove galleries and a seeded random-term generator.
+- [x] **`src/egraph/layout.ts`** — a cycle-safe depth-leveled SVG layout (a saturated e-graph is
+      cyclic: after `x + 0 → x` the node `+(x,0)` points back into its own class).
+- [x] **`src/egraph/selfcheck.ts`** — `runEgraphChecks()`: invariance + structural + soundness +
+      completeness spot-checks against the independent evaluator (346 assertions).
+- [x] **`src/components/EgraphStudio.tsx` + `.css`** — the Optimize/Prove studio, wired into
+      `App.tsx` as the seventeenth mode, with a matching footer clause.
+
+**Backlog / next steps (planned):**
+- [ ] **A proof-producing prover (equality certificates)** — record, per union, *which rule* fired and
+      with what substitution, then walk the union-find back to emit a human-readable rewrite chain
+      `a ≡ … ≡ b` for a proved goal (egg's `Explanation`), so the studio shows *why* two terms are
+      equal, not just *that* they are — cross-checked by replaying each step through the evaluator.
+- [ ] **Conditional & dynamic rewrites** — guards on a rule (`?x / ?x → 1  if ?x ≠ 0`) and analysis-driven
+      right-hand sides (fold using the class's constant value), unlocking sound division/modulo and the
+      classic `a * 2^k → a << k` for *any* constant `k`, with the guard checked against the analysis.
+- [ ] **Ackermann / EUF bridge** — feed the e-graph uninterpreted function symbols and the input
+      equalities of an EUF query, saturate with congruence only, and decide `QF_UF` by a class compare —
+      then cross-check verdict-for-verdict against the SMT studio's existing proof-producing congruence
+      closure (a second, independent EUF engine).
+- [ ] **A real cost lattice + LP/ILP extraction** — replace greedy bottom-up extraction with the
+      exact **ILP** formulation (one 0/1 variable per e-node, congruence constraints) solved by the
+      studio's *own* pseudo-Boolean optimizer, so extraction is provably optimal under shared-subterm
+      costs (common-subexpression-aware), with the greedy result as a cheap warm start.
+- [ ] **A richer object language** — Booleans and `if`/`select`, `min`/`max`, bit-ops (`& | ^ ~`), and
+      let-bindings, with rule families for each (short-circuit laws, De Morgan, `x & x → x`), turning
+      the optimizer into a small **peephole superoptimizer** over a realistic expression IR.
+- [ ] **A verified rule set from the SMT theories** — import bit-vector rewrite lemmas already proven
+      in `src/smt/bv` as e-graph rules, so the studio's simplifications are backed by the bit-blaster's
+      exhaustive truth-table oracle rather than only random evaluation.
+- [ ] **Saturation animation & scheduling** — an egg-style **rule scheduler** (back off rules that
+      match explosively, à la `BackoffScheduler`) with a live per-rule "matches / applied / banned"
+      readout, plus a play/pause animation that grows the SVG one rewrite at a time.
+- [ ] **Extraction diff & term DAG view** — highlight, in the e-graph, the exact e-nodes the extractor
+      chose (the winning term as a sub-DAG), and show the before/after terms as aligned trees so the
+      structural change (a multiply replaced by a shift, a factored sum) is visually legible.
+- [ ] **Proof-carrying optimization export** — emit the optimized term *together with* its equality
+      certificate as a self-contained artifact the SMT studio can re-check, closing the loop between
+      "optimize" and "prove".
+- [ ] **Random differential vs. a normalizer** — a second oracle: a canonicalizing polynomial normal
+      form (expand + collect like terms over ℤ[a,b,c]) that must agree with the prover on *every*
+      randomly generated pair — completeness testing for the ring fragment, not just soundness.
