@@ -18,7 +18,8 @@
 
 import { compareValues, valuesEqual, type SqlValue } from '../types'
 import { plainSize, type ColumnChunk, type ZoneMap } from './types'
-import { decodeColumn, encodeColumn, presentAt, isNullAt } from './encodings'
+import { decodeColumn, decodePresent, encodeColumn, presentAt, isNullAt } from './encodings'
+import { readAt } from './bitpack'
 
 export type CompareOp = '=' | '<>' | '<' | '<=' | '>' | '>='
 
@@ -55,6 +56,31 @@ export interface ScanResult {
   columns: string[]
   rows: SqlValue[][]
   metrics: ScanMetrics
+}
+
+/** Metrics for a **compressed-execution** scan, which evaluates a predicate
+ *  directly against the encoded data (once per dictionary entry / RLE run)
+ *  instead of decoding every value first. */
+export interface CompressedMetrics {
+  totalGroups: number
+  groupsScanned: number
+  groupsPruned: number
+  /** Predicate comparisons a row store would make (every predicate on every row). */
+  fullScanCompares: number
+  /** Predicate comparisons this scan actually made — over dictionary entries /
+   *  RLE runs where it can push down, over decoded values otherwise. */
+  predEvaluations: number
+  /** Projected cells materialized at surviving rows (late materialization). */
+  valuesMaterialized: number
+  /** Row groups in which at least one predicate ran directly on encoded data. */
+  pushedGroups: number
+  matched: number
+}
+
+export interface CompressedResult {
+  columns: string[]
+  rows: SqlValue[][]
+  metrics: CompressedMetrics
 }
 
 // ---- row-level predicate evaluation (SQL three-valued: NULL ⇒ no match) -----
@@ -94,6 +120,61 @@ export function matchRow(p: Predicate, cell: SqlValue): boolean {
       }
     }
   }
+}
+
+/** Compute a per-row match mask for one predicate against one encoded column —
+ *  the heart of **compressed execution**. For a DICTIONARY column the predicate
+ *  is evaluated once per *distinct* value (the dictionary), then the bit-packed
+ *  codes are scanned against that tiny boolean table; for an RLE column it is
+ *  evaluated once per *run*. Only when neither applies does it fall back to
+ *  decoding the values. `evals` is the number of value comparisons actually made
+ *  (the compressed-execution win); `pushed` records whether it ran on encoded
+ *  data. NULL rows never match a value predicate (three-valued logic), matching
+ *  `matchRow`. */
+function predRowMask(chunk: ColumnChunk, p: Predicate): { mask: Uint8Array; evals: number; pushed: boolean } {
+  const n = chunk.n
+  const mask = new Uint8Array(n)
+  if (p.kind === 'isnull') {
+    for (let i = 0; i < n; i++) if (isNullAt(chunk.nulls, i)) mask[i] = 1
+    return { mask, evals: 0, pushed: false }
+  }
+  if (p.kind === 'notnull') {
+    for (let i = 0; i < n; i++) if (!isNullAt(chunk.nulls, i)) mask[i] = 1
+    return { mask, evals: 0, pushed: false }
+  }
+  // value predicate: build a mask over the dense non-NULL ("present") values
+  const present = chunk.present
+  const pmask = new Uint8Array(present)
+  let evals: number
+  let pushed = false
+  if (chunk.encoding === 'dict') {
+    const { values, codes, width } = chunk.dict!
+    const dictMask = values.map((v) => matchRow(p, v)) // one eval per distinct value
+    evals = values.length
+    pushed = true
+    for (let j = 0; j < present; j++) pmask[j] = dictMask[readAt(codes, width, j)] ? 1 : 0
+  } else if (chunk.encoding === 'rle') {
+    const { values, lens, starts } = chunk.rle!
+    evals = values.length // one eval per run
+    pushed = true
+    for (let r = 0; r < values.length; r++) {
+      if (matchRow(p, values[r])) {
+        const s = starts[r]
+        for (let k = 0; k < lens[r]; k++) pmask[s + k] = 1
+      }
+    }
+  } else {
+    const vals = decodePresent(chunk)
+    evals = vals.length
+    for (let j = 0; j < present; j++) pmask[j] = matchRow(p, vals[j]) ? 1 : 0
+  }
+  // weave the present mask back through the NULL bitmap onto row positions
+  let j = 0
+  for (let i = 0; i < n; i++) {
+    if (isNullAt(chunk.nulls, i)) continue
+    mask[i] = pmask[j++]
+  }
+  return { mask, evals, pushed }
 }
 
 // ---- zone-map pruning (sound: only prunes a provably empty group) -----------
@@ -257,6 +338,70 @@ export class ColumnStore {
             const pi = rank[col][i]
             metrics.valuesDecoded++
             return pi < 0 ? null : presentAt(chunk, pi)
+          }),
+        )
+      }
+    }
+    return { columns: project.slice(), rows, metrics }
+  }
+
+  /** **Compressed-execution** scan — identical results to `scan`, but the
+   *  predicate is evaluated directly on the encoded data (once per dictionary
+   *  entry / RLE run) rather than by decoding every value first, and the
+   *  projected columns are late-materialized only at survivors. This is
+   *  ClickHouse's LowCardinality / DuckDB's compressed execution: a filter over
+   *  a low-cardinality or run-heavy column touches the *distinct* values, not
+   *  the rows. Proven equal to `scan` (and thus to a brute-force filter) in the
+   *  self-tests — it only ever changes the cost. */
+  scanCompressed(predicates: Predicate[] = [], project: string[] = this.columns): CompressedResult {
+    const metrics: CompressedMetrics = {
+      totalGroups: this.groups.length,
+      groupsScanned: 0,
+      groupsPruned: 0,
+      fullScanCompares: this.totalRows * predicates.length,
+      predEvaluations: 0,
+      valuesMaterialized: 0,
+      pushedGroups: 0,
+      matched: 0,
+    }
+    const rows: SqlValue[][] = []
+
+    for (const g of this.groups) {
+      // zone-map pruning, same as scan().
+      if (predicates.some((p) => !canMatch(p, g.chunks[predColumn(p)].zone))) {
+        metrics.groupsPruned++
+        continue
+      }
+      metrics.groupsScanned++
+
+      // AND the encoded per-predicate row masks together.
+      const survivor = new Uint8Array(g.rows).fill(1)
+      let anyPushed = false
+      for (const p of predicates) {
+        const { mask, evals, pushed } = predRowMask(g.chunks[predColumn(p)], p)
+        metrics.predEvaluations += evals
+        anyPushed = anyPushed || pushed
+        for (let i = 0; i < g.rows; i++) survivor[i] &= mask[i]
+      }
+      if (anyPushed) metrics.pushedGroups++
+
+      // late-materialize the projected columns only at surviving rows.
+      const rank: Record<string, Int32Array> = {}
+      for (const col of project) {
+        const chunk = g.chunks[col]
+        const r = new Int32Array(g.rows)
+        let j = 0
+        for (let i = 0; i < g.rows; i++) r[i] = isNullAt(chunk.nulls, i) ? -1 : j++
+        rank[col] = r
+      }
+      for (let i = 0; i < g.rows; i++) {
+        if (!survivor[i]) continue
+        metrics.matched++
+        rows.push(
+          project.map((col) => {
+            const pi = rank[col][i]
+            metrics.valuesMaterialized++
+            return pi < 0 ? null : presentAt(g.chunks[col], pi)
           }),
         )
       }

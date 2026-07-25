@@ -98,12 +98,13 @@ export function ColumnarLab() {
     }
     const pred: Predicate = { kind: 'cmp', col: predCol, op, value }
     const res = store.scan([pred], data.columns)
+    const comp = store.scanCompressed([pred], ['id', 'amount'])
     const groups = store.groups.map((g, i) => {
       const zone = g.chunks[predCol].zone
       const kept = canMatch(pred, zone)
       return { i, rows: g.rows, min: zone.min, max: zone.max, kept }
     })
-    return { pred, value, numeric, res, groups }
+    return { pred, value, numeric, res, comp, groups }
   }, [store, data, predCol, op, valInput])
 
   return (
@@ -284,6 +285,72 @@ export function ColumnarLab() {
               {((scan.res.metrics.valuesDecoded / Math.max(1, scan.res.metrics.fullScanValues)) * 100).toFixed(1)}%
             </b>{' '}
             of a full scan — and the answer is identical (proven against a brute-force filter in the self-tests).
+          </p>
+        </div>
+      </div>
+
+      {/* ---- compressed execution ---- */}
+      <div className="cs-panel">
+        <h3>Compressed execution — run the predicate on the encoded data</h3>
+        <p className="cs-sub">
+          Instead of decoding every value and then comparing, a filter on a <b>DICTIONARY</b> or <b>RLE</b> column is
+          evaluated once per <em>distinct value</em> (or per run) and the result reused across every row that shares it —
+          ClickHouse’s LowCardinality, DuckDB’s compressed execution. On a high-cardinality or unsorted column it falls
+          back to decoding. Pick a low-cardinality column above (<code>region</code>, <code>status</code>) to watch it
+          push down.
+        </p>
+        <div className="cs-stat-row">
+          <Stat k="Predicate on" v={predCol} />
+          <Stat
+            k="Row-store compares"
+            v={fmtNum(scan.comp.metrics.fullScanCompares)}
+          />
+          <Stat k="Compressed compares" v={fmtNum(scan.comp.metrics.predEvaluations)} accent />
+          <Stat
+            k="Groups pushed down"
+            v={`${scan.comp.metrics.pushedGroups}/${scan.comp.metrics.groupsScanned}`}
+            accent={scan.comp.metrics.pushedGroups > 0}
+          />
+        </div>
+        <div className="cs-decode">
+          <div className="cs-decode-row">
+            <span>Comparisons a row store makes</span>
+            <div className="cs-decode-track">
+              <div className="cs-decode-fill full" style={{ width: '100%' }} />
+            </div>
+            <span className="cs-decode-num">{fmtNum(scan.comp.metrics.fullScanCompares)}</span>
+          </div>
+          <div className="cs-decode-row">
+            <span>Comparisons on the encoded data</span>
+            <div className="cs-decode-track">
+              <div
+                className="cs-decode-fill kept"
+                style={{
+                  width: `${Math.max(
+                    0.5,
+                    (scan.comp.metrics.predEvaluations / Math.max(1, scan.comp.metrics.fullScanCompares)) * 100,
+                  )}%`,
+                }}
+              />
+            </div>
+            <span className="cs-decode-num accent">{fmtNum(scan.comp.metrics.predEvaluations)}</span>
+          </div>
+          <p className="cs-note">
+            {scan.comp.metrics.pushedGroups > 0 ? (
+              <>
+                The predicate touched <b>{fmtNum(scan.comp.metrics.predEvaluations)}</b> distinct/encoded values instead
+                of <b>{fmtNum(scan.comp.metrics.fullScanCompares)}</b> rows — a{' '}
+                <b>
+                  {(scan.comp.metrics.fullScanCompares / Math.max(1, scan.comp.metrics.predEvaluations)).toFixed(0)}×
+                </b>{' '}
+                cut — and returned the same rows (proven equal to the decode-first scan in the self-tests).
+              </>
+            ) : (
+              <>
+                This column isn’t DICTIONARY/RLE-encoded, so there’s nothing to push down — the scan decodes its values.
+                Try <code>region</code> or <code>status</code>.
+              </>
+            )}
           </p>
         </div>
       </div>

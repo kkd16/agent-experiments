@@ -3011,3 +3011,5 @@ body {
 .cs-decode-num.accent { color: var(--accent-2); }
 .cs-note { margin: 4px 0 0; font: 12.5px/1.6 var(--sans); color: var(--txt-dim); }
 .cs-note b { color: var(--txt); }
+.cs-sub { margin: -4px 0 4px; font: 12.5px/1.6 var(--sans); color: var(--txt-dim); max-width: 860px; }
+.cs-sub b { color: var(--txt); } .cs-sub code, .cs-note code { font: 12px var(--mono); color: var(--accent-2); }
