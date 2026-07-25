@@ -3,7 +3,7 @@
 // The whole point of the studio is to watch how differently they move.
 
 import type { Vec } from '../math/linalg'
-import { add, cholesky, dot, matVec, scale, sub } from '../math/linalg'
+import { add, cholesky, dot, matVec, norm2, scale, sub } from '../math/linalg'
 import type { RNG } from '../math/rng'
 import type { Target } from '../targets/targets'
 import { DualAveraging } from './adapt'
@@ -450,6 +450,182 @@ function makePT(target: Target, rng: RNG, p: Record<string, number>): Sampler {
   return s
 }
 
+// ── Affine-Invariant Ensemble (Goodman & Weare 2010) ────────────────────────
+// The engine behind `emcee`. A *population* of K walkers explores together: to
+// move walker k, pick another walker j and propose a point on the line through
+// them, stretched by z ~ g(z) ∝ 1/√z on [1/a, a]. The Jacobian of that stretch
+// puts a z^{d−1} factor in the accept ratio. The whole scheme is invariant to
+// any affine transform of the space, so a skewed, correlated target is no
+// harder than a spherical one — *without* a gradient or a tuned covariance.
+function makeEnsemble(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const K = Math.max(4, Math.round(p.walkers))
+  const a = Math.max(1.2, p.stretch) // stretch scale a > 1
+  const d = target.start.length
+  // Scatter the walkers so the ensemble spans a volume (a collapsed ensemble
+  // can't move — the stretch of a zero-length line is zero).
+  const xs: Vec[] = []
+  const lps: number[] = []
+  let evals = 0
+  for (let k = 0; k < K; k++) {
+    const x = target.start.map((v) => v + rng.normal(0, 0.75))
+    xs.push(x)
+    lps.push(target.logDensity(x))
+    evals++
+  }
+
+  const s: Sampler = {
+    x: xs[0].slice(),
+    logp: lps[0],
+    densityEvals: evals,
+    gradEvals: 0,
+    step(): StepResult {
+      for (let k = 0; k < K; k++) {
+        // A partner walker j ≠ k, uniformly.
+        let j = Math.floor(rng.next() * (K - 1))
+        if (j >= k) j++
+        // z from the inverse CDF of g(z) ∝ 1/√z on [1/a, a].
+        const u = rng.next()
+        const z = ((a - 1) * u + 1) ** 2 / a
+        const prop = xs[k].map((v, i) => xs[j][i] + z * (v - xs[j][i]))
+        const lp = target.logDensity(prop)
+        evals++
+        const logAccept = (d - 1) * Math.log(z) + lp - lps[k]
+        if (Math.log(rng.next()) < logAccept) {
+          xs[k] = prop
+          lps[k] = lp
+        }
+      }
+      // Walker 0 is the canonical chain the diagnostics read; the whole
+      // ensemble is drawn through the `chains` overlay.
+      this.x = xs[0].slice()
+      this.logp = lps[0]
+      this.densityEvals = evals
+      return {
+        x: this.x,
+        logp: this.logp,
+        accepted: true,
+        chains: xs.map((x) => x.slice()),
+      }
+    },
+  }
+  return s
+}
+
+// ── Bouncy Particle Sampler (Bouchard-Côté, Vollmer & Doucet 2018) ──────────
+// A *non-reversible*, continuous-time PDMP. A particle flies in a straight line
+// and *bounces* off the potential U = −log π: at rate max(0, ⟨v, ∇U⟩) it
+// reflects its velocity in the gradient hyperplane, v ← v − 2⟨v,∇U⟩∇U/‖∇U‖².
+// Independent Poisson "refreshment" events resample v ∼ N(0,I) to guarantee
+// ergodicity. This is a time-discretised (thinned) simulation: we march the
+// flow in small steps and fire each event with probability 1 − e^{−rate·dt}.
+function makeBPS(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const T = Math.max(0.5, p.pathlen) // flow time simulated per recorded sample
+  const lref = Math.max(0, p.refresh) // refreshment rate
+  const dtBase = 0.03 // nominal integration step
+  // Cap how far the particle may travel per sub-step. Fixed time-stepping lets a
+  // fast particle punch deep into a steep wall before its single bounce fires,
+  // which over-disperses the samples; capping the *spatial* step keeps the
+  // event resolution fine exactly where the gradient is large.
+  const maxStep = 0.06
+  const d = target.start.length
+  let v = rng.normalVec(d)
+
+  const s: Sampler = {
+    x: target.start.slice(),
+    logp: target.logDensity(target.start),
+    densityEvals: 1,
+    gradEvals: 0,
+    step(): StepResult {
+      let x = this.x.slice()
+      const traj: Vec[] = [x.slice()]
+      let bounces = 0
+      let elapsed = 0
+      let guard = 0
+      while (elapsed < T && guard < 4000) {
+        guard++
+        const speed = norm2(v) || 1e-9
+        const h = Math.min(dtBase, maxStep / speed) // adaptive sub-step
+        x = x.map((c, k) => c + v[k] * h) // deterministic drift
+        const grad = target.gradLogDensity(x) // ∇log π
+        this.gradEvals++
+        const gU: Vec = grad.map((g) => -g) // ∇U = −∇log π
+        const vU = dot(v, gU)
+        const rate = Math.max(0, vU) // bounce intensity
+        if (rate > 0 && rng.next() < 1 - Math.exp(-rate * h)) {
+          const nn = dot(gU, gU) || 1e-12
+          const c = (2 * vU) / nn
+          v = v.map((vk, k) => vk - c * gU[k]) // specular reflection (‖v‖ preserved)
+          bounces++
+        }
+        if (lref > 0 && rng.next() < 1 - Math.exp(-lref * h)) {
+          v = rng.normalVec(d) // velocity refreshment
+        }
+        traj.push(x.slice())
+        elapsed += h
+      }
+      this.x = x
+      this.logp = target.logDensity(x)
+      this.densityEvals++
+      return {
+        x: this.x,
+        logp: this.logp,
+        accepted: true,
+        trajectory: traj,
+        info: { speed: norm2(v), bounces },
+      }
+    },
+  }
+  return s
+}
+
+// ── Barker proposal (Livingstone & Zanella 2022) ────────────────────────────
+// A first-order (gradient) sampler built for *robustness to step-size choice*.
+// Per coordinate, draw a symmetric jump z ∼ N(0, σ²), then keep it (+z) with
+// probability 1/(1 + e^{−z·∂ᵢlogπ}) and flip it (−z) otherwise — skewing the
+// move toward higher density. An exact, numerically-stable Metropolis ratio
+// (softplus form) corrects it. Where MALA's acceptance collapses if ε is a
+// touch too large, Barker degrades gently — its whole selling point.
+function makeBarker(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const sigma = p.step
+  // log(1 + e^t), overflow-safe.
+  const softplus = (t: number): number =>
+    t > 0 ? t + Math.log1p(Math.exp(-t)) : Math.log1p(Math.exp(t))
+
+  const s: Sampler = {
+    x: target.start.slice(),
+    logp: target.logDensity(target.start),
+    densityEvals: 1,
+    gradEvals: 0,
+    step(): StepResult {
+      const g = target.gradLogDensity(this.x)
+      this.gradEvals++
+      const d = this.x.length
+      const b = new Array<number>(d)
+      for (let i = 0; i < d; i++) {
+        const z = rng.normal(0, sigma)
+        const pKeep = 1 / (1 + Math.exp(-z * g[i]))
+        b[i] = rng.next() < pKeep ? z : -z
+      }
+      const prop = this.x.map((v, i) => v + b[i])
+      const lp = target.logDensity(prop)
+      const gp = target.gradLogDensity(prop)
+      this.densityEvals++
+      this.gradEvals++
+      // Metropolis correction: Σ softplus(−bᵢgᵢ(x)) − softplus(bᵢgᵢ(y)).
+      let corr = 0
+      for (let i = 0; i < d; i++) corr += softplus(-b[i] * g[i]) - softplus(b[i] * gp[i])
+      const logAccept = lp - this.logp + corr
+      const accept = Math.log(rng.next()) < logAccept
+      if (accept) {
+        this.x = prop
+        this.logp = lp
+      }
+      return { x: this.x, logp: this.logp, accepted: accept, proposal: prop }
+    },
+  }
+  return s
+}
+
 export const SAMPLERS: SamplerDef[] = [
   {
     id: 'rwm',
@@ -526,6 +702,36 @@ export const SAMPLERS: SamplerDef[] = [
       { key: 'replicas', label: 'replicas', min: 2, max: 8, step: 1, default: 5, integer: true },
     ],
     create: makePT,
+  },
+  {
+    id: 'ensemble',
+    name: 'Affine-Invariant Ensemble',
+    blurb: 'A swarm of walkers stretching along each other — emcee’s move. Gradient-free, immune to skew.',
+    usesGradient: false,
+    params: [
+      { key: 'walkers', label: 'walkers', min: 6, max: 40, step: 1, default: 20, integer: true },
+      { key: 'stretch', label: 'stretch a', min: 1.5, max: 4, step: 0.05, default: 2 },
+    ],
+    create: makeEnsemble,
+  },
+  {
+    id: 'bps',
+    name: 'Bouncy Particle',
+    blurb: 'A non-reversible particle flying straight and bouncing off the gradient. Continuous-time PDMP.',
+    usesGradient: true,
+    params: [
+      { key: 'pathlen', label: 'flow time', min: 0.5, max: 12, step: 0.1, default: 4 },
+      { key: 'refresh', label: 'refresh rate', min: 0, max: 3, step: 0.05, default: 0.4 },
+    ],
+    create: makeBPS,
+  },
+  {
+    id: 'barker',
+    name: 'Barker Proposal',
+    blurb: 'A gradient-skewed jump that shrugs off a bad step size where MALA would stall.',
+    usesGradient: true,
+    params: [{ key: 'step', label: 'jump σ', min: 0.05, max: 2, step: 0.01, default: 0.6, log: true }],
+    create: makeBarker,
   },
 ]
 

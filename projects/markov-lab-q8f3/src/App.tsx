@@ -16,6 +16,7 @@ import {
   drawConvergence,
   drawHistMulti,
   drawHistogram,
+  drawShapeError,
   drawTrace,
   drawTraceMulti,
 } from './render/plots'
@@ -96,6 +97,7 @@ export default function App() {
   const histYRef = useRef<HTMLCanvasElement | null>(null)
   const acfRef = useRef<HTMLCanvasElement | null>(null)
   const convRef = useRef<HTMLCanvasElement | null>(null)
+  const shapeRef = useRef<HTMLCanvasElement | null>(null)
 
   // Loop-facing mirrors of reactive state (so the rAF loop never restarts).
   const runningRef = useRef(running)
@@ -176,7 +178,7 @@ export default function App() {
     const t = TARGETS.find((x) => x.id === targetId)!
     const rt = laneRef.current
     for (let i = 0; i < laneCount; i++) rt[i].resize(t.view)
-    for (const ref of [traceXRef, traceYRef, histXRef, histYRef, acfRef, convRef]) {
+    for (const ref of [traceXRef, traceYRef, histXRef, histYRef, acfRef, convRef, shapeRef]) {
       const c = ref.current
       if (c) sizeDiag(c)
     }
@@ -207,6 +209,8 @@ export default function App() {
       fn(ctx, r.width, r.height)
     }
     const truthX = TARGETS.find((t) => t.id === targetId)?.trueMean?.[0]
+    // Shape-error map always tracks lane A (the reference lane in either mode).
+    draw(shapeRef, (ctx, w, h) => drawShapeError(ctx, w, h, rt[0].shapeGrids()))
     if (laneCount === 2) {
       // Head-to-head: overlay both chains in their lane colours.
       const cx = [rt[0].column(0), rt[1].column(0)]
@@ -448,6 +452,12 @@ export default function App() {
           subtitle={target.trueMean ? 'running mean → true value' : 'running mean vs iterations'}
         >
           <canvas ref={convRef} className="diag-canvas" />
+        </DiagCard>
+        <DiagCard
+          title={mode === 'race' ? 'shape error · A' : 'shape error'}
+          subtitle="over- (red) vs under- (blue) sampled"
+        >
+          <canvas ref={shapeRef} className="diag-canvas" />
         </DiagCard>
       </section>
 

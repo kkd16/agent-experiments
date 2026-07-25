@@ -92,6 +92,17 @@ export default function Race({
       hint: 'distance of the running mean from the known true mean — actual accuracy; lower is better',
     })
   }
+  // Distributional accuracy — available for every target (needs only its density).
+  if (A.tvDist !== undefined && B.tvDist !== undefined && isFinite(A.tvDist) && isFinite(B.tvDist)) {
+    rows.splice(3, 0, {
+      label: 'TV dist',
+      a: A.tvDist,
+      b: B.tvDist,
+      digits: 3,
+      moreIsBetter: false,
+      hint: 'total-variation distance to the true distribution — captures the *whole shape*, not just the mean; lower is better',
+    })
+  }
 
   // Headline: efficiency ratio, the one number that settles the race.
   const ea = A.essPerKEval

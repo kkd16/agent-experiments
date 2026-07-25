@@ -46,6 +46,14 @@ export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [
       hint: 'running posterior mean estimate',
     },
     {
+      label: 'MCSE',
+      value:
+        s.mcseX !== undefined && s.mcseY !== undefined
+          ? `±(${fmt(s.mcseX, 3)}, ${fmt(s.mcseY, 3)})`
+          : '—',
+      hint: 'Monte-Carlo standard error sd/√ESS — the actual ± uncertainty on the mean estimate from finitely many effective samples',
+    },
+    {
       label: `95% CI · ${ax}`,
       value: `[${fmt(s.ci[0])}, ${fmt(s.ci[1])}]`,
       hint: `central 95% credible interval for ${ax}`,
@@ -77,6 +85,14 @@ export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [
       value: fmt(s.meanErr, 3),
       cls: s.meanErr < 0.15 ? 'good' : s.meanErr < 0.5 ? 'warn' : 'bad',
       hint: 'distance of the running mean from the target’s known true mean — the honest accuracy of the estimate (lower is better)',
+    })
+  }
+  if (s.tvDist !== undefined && isFinite(s.tvDist)) {
+    cells.push({
+      label: 'TV dist',
+      value: fmt(s.tvDist, 3),
+      cls: s.tvDist < 0.1 ? 'good' : s.tvDist < 0.25 ? 'warn' : 'bad',
+      hint: 'total-variation distance from the sampled to the true distribution (½Σ|p̂−p| on a grid) — how well the *whole shape* is captured, not just the mean; lower is better',
     })
   }
   return (

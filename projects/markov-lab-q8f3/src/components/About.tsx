@@ -40,6 +40,18 @@ const SAMPLER_ROWS: Row[] = [
     name: 'Parallel Tempering',
     text: 'Run a ladder of replicas at temperatures 1 = T₀ < T₁ < … . Hot replicas flatten the landscape and roam across modes; periodic swaps let the cold chain (the one you keep) inherit a jump it could never have made alone. The cure for isolated modes.',
   },
+  {
+    name: 'Affine-Invariant Ensemble',
+    text: 'The move behind emcee (Goodman & Weare 2010). Instead of one chain, evolve a whole ensemble of walkers; to move walker k, pick another walker j and propose a point stretched along the line between them, x* = x_j + z·(x_k − x_j), with z drawn from g(z) ∝ 1/√z and accepted with min(1, z^{d−1}·π(x*)/π(x_k)). The magic is that this is invariant to every affine transform of the space — so a skewed, tightly-correlated target is exactly as easy as a round one, with no gradient and no covariance to tune. The whole swarm is drawn; the diagnostics read walker 0.',
+  },
+  {
+    name: 'Bouncy Particle Sampler',
+    text: 'A non-reversible, continuous-time process (Bouchard-Côté, Vollmer & Doucet 2018). A particle flies in a straight line at constant velocity and, at a rate set by how fast it is climbing the potential, reflects off the log-density gradient like light off a mirror: v ← v − 2⟨v,∇U⟩∇U/‖∇U‖². Occasional random velocity refreshments keep it ergodic. Because it never reverses time-symmetrically, it can suppress the diffusive back-tracking that slows reversible MCMC. (Here it is simulated by fine time-stepping, so its evaluation count is not directly comparable to the reversible samplers — read it for the *motion*, not the eval budget.)',
+  },
+  {
+    name: 'Barker Proposal',
+    text: 'A gradient sampler engineered for robustness (Livingstone & Zanella 2022). Per coordinate it draws a symmetric jump z and then skews its sign toward the gradient — keeping +z with probability 1/(1+e^{−z·∂ᵢlogπ}) — corrected by an exact Metropolis ratio. Its signature property: where MALA’s acceptance falls off a cliff the moment the step size is a little too big, Barker just degrades gently. A safer default when you cannot babysit ε.',
+  },
 ]
 
 const TUNING_ROWS: Row[] = [
@@ -81,6 +93,18 @@ const DIAG_ROWS: Row[] = [
   {
     name: 'convergence — the estimate settling in',
     text: 'The bottom plot tracks the whole-chain running mean of the first coordinate as the chain grows (iterations on a log axis). When the target’s mean is known it is drawn as a dashed line, and you watch the estimate walk onto it — the picture of Monte-Carlo consistency. In Race mode both curves are overlaid, so “which sampler converges first” stops being an abstraction and becomes a footrace you can watch.',
+  },
+  {
+    name: 'TV dist — the whole distribution, not just the mean',
+    text: 'Total-variation distance ½·Σ|p̂ − p| between the sampled distribution and the target’s *analytic* density, gridded over the view. Because it needs only the density (which every target here has), it scores accuracy even for the multimodal and heavy-tailed shapes that have no tidy closed-form mean. It is the honest answer to “did you capture the shape?” — a chain trapped in one mode of a mixture reads a large TV even while its local statistics look perfectly healthy. Lower is better; a small residual floor is unavoidable from finite grid and finite samples.',
+  },
+  {
+    name: 'shape error — where the sampler is wrong',
+    text: 'The map in the diagnostics rail draws the signed discrepancy (empirical − reference) across the view: red where the sampler over-visits, blue where it under-visits, dark where it matches. It turns the TV number into a picture — the marooned mode of a mixture glows red while the modes the chain never reached sit flatly blue, and a chain that oversamples a tail lights it up. Watch it fade to black as a good sampler fills the density in evenly.',
+  },
+  {
+    name: 'MCSE — the ± on the estimate',
+    text: 'Monte-Carlo standard error, sd/√ESS: the actual uncertainty on the running-mean estimate that finitely many *effective* samples buy you. It closes the loop from ESS (“how many independent draws am I worth?”) to the number those draws produce (“…so how tight is my answer?”). Halving MCSE takes four times the effective samples.',
   },
 ]
 
@@ -132,6 +156,28 @@ export default function About({ onClose }: { onClose: () => void }) {
 
           <h3>Things to try</h3>
           <ul className="about-list">
+            <li>
+              Put the <b>Affine-Invariant Ensemble</b> on the tilted <b>correlated Gaussian</b> or the{' '}
+              <b>heavy-tailed t</b> and race it against <b>Random-Walk Metropolis</b>: the ensemble nails
+              the skew with no tuning and no gradient, because its move is invariant to the very
+              correlation that cripples the random walk — watch its <b>TV dist</b> plunge.
+            </li>
+            <li>
+              Select the <b>Bouncy Particle</b> sampler and turn the <b>trajectory</b> overlay on: you
+              literally watch a non-reversible particle fly straight and ricochet off the density. Drop
+              the <b>refresh rate</b> toward 0 and it glides in long ballistic arcs; raise it and the
+              motion turns diffusive.
+            </li>
+            <li>
+              Race <b>Barker Proposal</b> against <b>MALA</b> on the <b>banana</b>, then drag both step
+              sizes up together: MALA’s acceptance collapses and its chain freezes, while Barker keeps
+              moving — the robustness-to-mistuning it was designed for, seen live.
+            </li>
+            <li>
+              Watch the <b>shape error</b> card while a single <b>Metropolis</b> chain sits in one well
+              of the <b>four-mode mixture</b>: its well glows red (over-visited) and the other three stay
+              blue (never reached). Switch to <b>Parallel Tempering</b> and watch the map fade to black.
+            </li>
             <li>
               Switch to <b>Race mode</b> with <b>HMC</b> vs <b>Random-Walk Metropolis</b> on the{' '}
               <b>Rosenbrock banana</b>: HMC carries an order of magnitude more ESS, yet the two nearly

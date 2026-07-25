@@ -7,9 +7,11 @@ real Bayesian workflow lives and dies by (ESS, split-R̂, autocorrelation,
 efficiency) ticking alongside.
 
 Everything is written by hand in TypeScript: the PRNG, the linear algebra, the
-eight samplers, the target densities *and their analytic gradients*, and the
-diagnostics. No stats library, no plotting library — every pixel and every
-number is ours.
+eleven samplers (spanning reversible MCMC, an affine-invariant ensemble, and a
+non-reversible continuous-time process), the target densities *and their
+analytic gradients*, and the diagnostics — down to a total-variation distance to
+each target's true distribution. No stats library, no plotting library — every
+pixel and every number is ours.
 
 ## Why it's interesting
 
@@ -69,6 +71,59 @@ break a fixed step size no matter how you tune it.
       across the stat panel and every diagnostic)
 - [x] Shareable permalink of the full config (target + sampler + params + seed). *(session 2)*
 - [x] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D. *(session 2 — added Squiggle + Twin-Crater bimodal-banana)*
+
+### Session 3 plan (this session) — "the whole distribution, and the non-reversible frontier"
+
+Sessions 1–2 built a fast single-chain visualiser and then a comparative
+laboratory. Session 3 pushes on two fronts at once: **broaden the algorithm
+zoo past the reversible-MCMC canon**, and **stop scoring samplers only by how
+fast they mix or how close the *mean* is — start scoring how well they capture
+the *entire distribution***. Three new samplers from genuinely different
+mathematical families, and a ground-truth accuracy engine that reads the whole
+shape, not one moment.
+
+- [x] **Affine-Invariant Ensemble sampler** (Goodman & Weare 2010; the engine
+      behind `emcee`). A *population* of walkers proposes moves by "stretching"
+      along the line to another walker: `x' = x_j + z·(x_k − x_j)` with the
+      stretch `z ∼ g(z) ∝ 1/√z`, accepted with `min(1, z^{d−1}·π(x')/π(x_k))`.
+      Gradient-free, yet **invariant to every affine transform** of the space —
+      so it nails the correlated Gaussian, the tilted Student-t and the Squiggle
+      with *no* tuning, where axis-aligned proposals crawl. The ensemble draws
+      through the existing `chains` overlay.
+- [x] **Bouncy Particle Sampler** (Bouchard-Côté, Vollmer & Doucet 2018). A
+      **non-reversible**, continuous-time piecewise-deterministic Markov process:
+      a particle flies in a straight line and *bounces* off the log-density
+      gradient (`v ← v − 2⟨v,∇U⟩∇U/‖∇U‖²`), with Poisson velocity refreshments
+      for ergodicity. Reuses the trajectory overlay — you literally watch the
+      particle ricochet around the density. A time-discretised (thinned)
+      implementation; the About panel is explicit that its eval-count isn't
+      directly comparable to the reversible samplers.
+- [x] **Barker proposal** (Livingstone & Zanella 2022). A gradient sampler
+      whose defining property is **robustness to step-size mis-tuning**: it skews
+      a symmetric jump toward the gradient with probability
+      `1/(1+e^{−z·∂ᵢlogπ})` per coordinate, corrected by an exact,
+      numerically-stable (softplus) Metropolis ratio. Where MALA blows up if ε is
+      a little too big, Barker just degrades gracefully.
+- [x] **Distributional accuracy — total-variation distance to ground truth.**
+      A new `diagnostics/distance.ts` normalises each target's *analytic* density
+      onto a grid (every target has one, so this works for **all** of them — even
+      the multimodal and heavy-tailed ones that have no simple closed-form mean),
+      bins the live samples into the same grid, and reports
+      `TV = ½·Σ|p̂ − p|`. It's the honest "did you capture the whole shape?"
+      score the mean-error metric can't give: a chain trapped in one mode reads a
+      large TV even when its per-mode statistics look healthy. Surfaced in the
+      stat panel and as a Race tiebreaker.
+- [x] **"Shape error" diagnostic card.** Renders the *signed* discrepancy
+      (empirical − reference) as a diverging heatmap: red where the sampler
+      over-visits, blue where it under-visits, with the TV number in the corner.
+      You *see* which region a sampler is getting wrong — the trapped mode glows
+      red while the abandoned ones sit blue.
+- [x] **Monte-Carlo standard error (MCSE = sd/√ESS).** The actual ± on the
+      running-mean estimate, per coordinate, added to the stat panel — closing
+      the loop from "how many effective samples" to "how uncertain is the number
+      those samples produced."
+- [x] **About + metadata.** Documented all three samplers, TV distance, the
+      shape-error map and MCSE; added new "things to try"; refreshed tags.
 
 ### Session 2 plan (this session) — "compare, adapt, share"
 
@@ -189,3 +244,43 @@ can send someone.
   Monte-Carlo consistency — the estimate walking onto the truth line — and in
   Race mode both lanes' curves overlay, turning "which sampler converges first"
   into a literal footrace. Gate green; documented in About.
+- 2026-07-25 (claude): v3.0 — "the whole distribution, and the non-reversible
+  frontier". Broadened the algorithm zoo from 8 to 11 samplers and added a
+  ground-truth accuracy engine that scores the *entire distribution*, not just
+  the mean. All with the CI gate green (scope + conformance + lint + build) and
+  smoke-tested live in headless Chromium:
+  1. **Affine-Invariant Ensemble** (Goodman & Weare 2010; the `emcee` move): a
+     swarm of walkers that propose by stretching along the line to a partner
+     walker, accepted with a z^{d−1} Jacobian factor. Gradient-free yet invariant
+     to every affine map — it nails the tilted Gaussian and the correlated
+     Student-t with no tuning where a random walk crawls. Drawn through the
+     existing `chains` overlay (the swarm visibly traces the correlation ridge).
+  2. **Bouncy Particle Sampler** (Bouchard-Côté et al. 2018): a *non-reversible*,
+     continuous-time PDMP — a particle flies straight and specularly reflects off
+     the log-density gradient (an exact, ‖v‖-preserving Householder), with Poisson
+     velocity refreshments. Time-discretised with an adaptive spatial step-cap
+     (dtBase 0.03, maxStep 0.06) to keep event resolution fine in steep walls.
+  3. **Barker proposal** (Livingstone & Zanella 2022): a gradient sampler that
+     skews a symmetric jump toward higher density per coordinate, corrected by an
+     exact, overflow-safe (softplus) Metropolis ratio. Its selling point —
+     graceful degradation when the step size is mis-tuned — is visible against
+     MALA. Correctness of all three checked numerically against the *exact*
+     shipped code (bundled with vite lib-build, run in Node): on the correlated
+     Gaussian each recovers mean (0,0), var (1,1) and corr 0.85 to ≲2%, and the
+     tuned BPS recovers the Rosenbrock mean (≈1, ≈10) and variance within
+     sampling error of the analytic (10, 240).
+  4. **Distributional accuracy — TV distance to ground truth** (`diagnostics/
+     distance.ts`): grid-normalises each target's *analytic* density (so it works
+     for every target, even the multimodal / heavy-tailed ones with no tidy mean),
+     bins the live samples onto the same grid, and reports TV = ½Σ|p̂−p|. Surfaced
+     in the stat panel and as a Race tiebreaker — the honest "did you capture the
+     shape?" score a trapped chain can't fake.
+  5. **"Shape error" diagnostic card**: the signed discrepancy (empirical −
+     reference) as a diverging heatmap — red where the sampler over-visits, blue
+     where it under-visits — so you *see* which region is wrong, with the TV
+     number printed in the corner.
+  6. **Monte-Carlo standard error** (sd/√ESS) added to the stat panel — the
+     actual ± on the mean estimate, closing the loop from ESS to uncertainty.
+  Documented all of it in the About modal (three new sampler entries, three new
+  diagnostic entries, four new "things to try") and refreshed the card metadata
+  (now advertises eleven samplers + the accuracy suite).

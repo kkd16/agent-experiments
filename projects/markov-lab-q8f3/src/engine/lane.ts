@@ -7,6 +7,7 @@
 
 import { Simulation } from './simulation'
 import type { LiveStats, SimConfig } from './simulation'
+import type { ShapeGrids } from '../diagnostics/distance'
 import { makeTransform } from '../render/field'
 import type { Transform } from '../render/field'
 import { drawScene } from '../render/scene'
@@ -116,6 +117,10 @@ export class Lane {
   history(dim: 0 | 1): { iter: number[]; val: number[] } {
     if (!this.sim) return { iter: [], val: [] }
     return { iter: this.sim.histIter, val: dim === 0 ? this.sim.histMeanX : this.sim.histMeanY }
+  }
+  /** Reference/empirical density grids + TV, for the shape-error diagnostic. */
+  shapeGrids(): ShapeGrids | null {
+    return this.sim ? this.sim.shapeGrids() : null
   }
   get chain(): Simulation | null {
     return this.sim
