@@ -118,6 +118,16 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Columnar storage & zone maps  —  the Columnar Lab',
+    entries: [
+      { syntax: 'why a column store', note: 'The heap and the B+Tree store data row-at-a-time — great for OLTP, wasteful for analytics, where a query touches a few of many columns and scans a lot of rows. The analytical world (Parquet, ORC, DuckDB, ClickHouse, Vertica) stores data column-at-a-time in row groups, each column compressed on its own and fronted by a min/max zone map. QueryForge builds that layout from scratch in src/db/columnar/*.' },
+      { syntax: 'per-column encodings', note: 'Each column chunk is encoded by the smallest of PLAIN, DICTIONARY (distinct values + bit-packed codes), RLE (run-length), BITPACK / frame-of-reference (subtract the group min, pack residuals in ⌈log₂(max−min)⌉ bits) and DELTA (first value + bit-packed ZigZag deltas). A monotone key collapses to DELTA, a low-cardinality category to DICTIONARY/RLE, a wide integer to frame-of-reference. Every codec rides a genuine byte-level bit-packer, so decode is an exact round-trip — the encoding only ever changes the size.' },
+      { syntax: 'zone-map pruning (data skipping)', note: 'Each row group keeps the min/max of every column. A predicate whose range can’t overlap a group’s [min, max] skips the whole group without decoding it — Parquet’s row-group statistics, ORC’s row index, the “data skipping” of every analytical engine. It is sound by construction (a pruned group provably holds zero matches), so it never changes an answer, only the cost.' },
+      { syntax: 'late materialization', note: 'A scan evaluates the predicate on the predicate columns first, then fetches the projected columns only at the row offsets that survived (a random-access decode). With column projection this cuts the cells decoded to a fraction of a full row-store scan.' },
+      { syntax: 'explore it', note: 'The Columnar Lab shows the auto-encoder’s per-column codec choice with a size bar per encoding, the compression ratio vs a row store, and a live predicate lighting up each row group as scanned or pruned — with the data-skipping percentage and the fraction of cells actually decoded.' },
+    ],
+  },
+  {
     title: 'Subqueries',
     entries: [
       { syntax: 'WHERE x > (SELECT …)', note: 'Scalar subquery — must return one row / one column (0 rows → NULL).' },

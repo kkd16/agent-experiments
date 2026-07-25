@@ -2944,3 +2944,70 @@ body {
 .pl-bench-bar-fill { width: 100%; border-radius: 4px 4px 0 0; transition: height 0.3s ease; min-height: 2px; }
 .pl-bench-pct { font: 700 0.6rem var(--mono); color: var(--txt-dim); }
 .pl-bench-axis { margin: 8px 0 0; font: 0.66rem var(--sans); color: var(--txt-faint); }
+
+/* ── Columnar Lab ────────────────────────────────────────────────────────── */
+.cs-lab { display: flex; flex-direction: column; gap: 18px; max-width: 1000px; }
+.cs-head h2 { margin: 0 0 6px; font: 700 20px var(--sans); color: var(--txt); }
+.cs-head p { margin: 0; font: 13.5px/1.6 var(--sans); color: var(--txt-dim); max-width: 860px; }
+.cs-head em { color: var(--txt); font-style: normal; font-weight: 600; }
+.cs-head code { font: 12.5px var(--mono); color: var(--accent-2); }
+.cs-controls { display: flex; flex-wrap: wrap; gap: 26px; align-items: flex-end; padding: 14px 16px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 10px; }
+.cs-control { display: flex; flex-direction: column; gap: 6px; }
+.cs-control > label { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--txt-faint); }
+.cs-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.cs-seg button { border: none; background: var(--bg-2); color: var(--txt-dim); font: 12.5px var(--mono); padding: 5px 12px; cursor: pointer; border-right: 1px solid var(--line-2); }
+.cs-seg button:last-child { border-right: none; }
+.cs-seg button:hover { color: var(--txt); }
+.cs-seg button.active { background: var(--accent); color: #06101f; font-weight: 600; }
+.cs-ratio { font: 700 20px var(--mono); color: var(--green); }
+.cs-ratio span { font: 12px var(--sans); color: var(--txt-dim); font-weight: 400; }
+.cs-panel { display: flex; flex-direction: column; gap: 14px; padding: 18px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 12px; }
+.cs-panel h3 { margin: 0; font: 600 14.5px var(--sans); color: var(--txt); }
+.cs-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.cs-col { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+.cs-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cs-col-name { font: 700 14px var(--mono); color: var(--txt); }
+.cs-chip { font: 600 10.5px var(--sans); color: #06101f; padding: 2px 8px; border-radius: 20px; letter-spacing: .02em; }
+.cs-col-meta { font: 11.5px var(--mono); color: var(--txt-faint); }
+.cs-bars { display: flex; flex-direction: column; gap: 4px; }
+.cs-bar-row { display: grid; grid-template-columns: 58px 1fr 62px; align-items: center; gap: 8px; }
+.cs-bar-label { font: 10.5px var(--mono); color: var(--txt-dim); }
+.cs-bar-track { height: 9px; background: var(--bg-1); border-radius: 5px; overflow: hidden; }
+.cs-bar-fill { height: 100%; border-radius: 5px; transition: width .2s; }
+.cs-bar-num { font: 10.5px var(--mono); color: var(--txt-dim); text-align: right; }
+.cs-total { display: flex; align-items: center; gap: 14px; padding-top: 6px; border-top: 1px solid var(--line); }
+.cs-total-item { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
+.cs-total-item .cs-k { font: 11px var(--sans); text-transform: uppercase; letter-spacing: .03em; color: var(--txt-faint); }
+.cs-total-item .cs-v { font: 700 17px var(--mono); color: var(--txt); }
+.cs-total-item .cs-v.accent { color: var(--accent-2); }
+.cs-total-bar { position: relative; flex: 1; height: 22px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.cs-total-fill { position: absolute; top: 0; left: 0; height: 100%; }
+.cs-total-fill.row { background: var(--line-2); }
+.cs-total-fill.col { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.cs-pred { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 13px var(--mono); color: var(--txt-dim); }
+.cs-pred select, .cs-val { background: var(--bg-2); border: 1px solid var(--line-2); color: var(--txt); font: 13px var(--mono); padding: 5px 9px; border-radius: 7px; }
+.cs-val { width: 130px; }
+.cs-pred-hint { color: var(--txt-faint); font: 12px var(--sans); }
+.cs-pred-hint b { color: var(--accent-2); font-family: var(--mono); }
+.cs-stat-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.cs-stat { display: flex; flex-direction: column; gap: 3px; padding: 9px 13px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; min-width: 120px; }
+.cs-stat-k { font: 10.5px var(--sans); text-transform: uppercase; letter-spacing: .03em; color: var(--txt-faint); }
+.cs-stat-v { font: 700 18px var(--mono); color: var(--txt); }
+.cs-stat-v.accent { color: var(--green); }
+.cs-groups { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-group { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line-2); min-width: 62px; cursor: default; }
+.cs-group.scanned { background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); border-color: var(--accent); }
+.cs-group.pruned { background: var(--bg-2); opacity: .5; }
+.cs-group-i { font: 700 11px var(--mono); color: var(--txt); }
+.cs-group-range { font: 10px var(--mono); color: var(--txt-dim); }
+.cs-decode { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.cs-decode-row { display: grid; grid-template-columns: 260px 1fr 90px; align-items: center; gap: 12px; }
+.cs-decode-row > span:first-child { font: 12px var(--sans); color: var(--txt-dim); }
+.cs-decode-track { height: 14px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.cs-decode-fill { height: 100%; }
+.cs-decode-fill.full { background: var(--line-2); }
+.cs-decode-fill.kept { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.cs-decode-num { font: 12.5px var(--mono); color: var(--txt-dim); text-align: right; }
+.cs-decode-num.accent { color: var(--accent-2); }
+.cs-note { margin: 4px 0 0; font: 12.5px/1.6 var(--sans); color: var(--txt-dim); }
+.cs-note b { color: var(--txt); }
