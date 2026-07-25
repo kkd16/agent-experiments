@@ -1,0 +1,358 @@
+/* Congruence Studio — e-graph / equality-saturation UI. Reuses the shared
+   .layout / .control / .content / .imc-* classes; only e-graph-specific bits live
+   here. */
+
+.eg-side {
+  overflow-y: auto;
+}
+
+.eg-rules {
+  margin-top: 18px;
+}
+.eg-rules h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.eg-hint {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.eg-rulegroup {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+  transition: opacity 0.15s;
+}
+.eg-rulegroup.off {
+  opacity: 0.5;
+}
+.eg-rulehead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.eg-rulehead input {
+  accent-color: var(--accent);
+}
+.eg-rulelist {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 24px;
+}
+.eg-rulelist li {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.eg-rulelist code {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* --- panes ---------------------------------------------------------------- */
+
+.eg-subtabs {
+  margin-bottom: 14px;
+}
+.eg-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.eg-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.eg-examples button {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.eg-examples button:hover {
+  border-color: var(--accent);
+}
+.eg-examples button.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #0b1020;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.eg-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.eg-editor > label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.eg-editor input {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 15px;
+}
+.eg-editor input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.eg-prove-editor {
+  gap: 4px;
+}
+.eg-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 2px 0 0;
+  line-height: 1.5;
+}
+
+/* --- result cards --------------------------------------------------------- */
+
+.eg-term {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 17px;
+  margin: 6px 0 2px;
+  word-break: break-word;
+}
+.eg-best {
+  color: var(--sat);
+  font-weight: 600;
+}
+.eg-cost {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+.eg-win {
+  color: var(--sat);
+  font-weight: 600;
+}
+
+.eg-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin-top: 4px;
+}
+.eg-stats > div {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--muted);
+}
+.eg-stats > div span {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.eg-reason {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.eg-reason.saturated {
+  color: var(--sat);
+}
+.eg-reason.nodes,
+.eg-reason.iterations {
+  color: var(--unknown);
+}
+
+/* --- eval cross-check banner --------------------------------------------- */
+
+.eg-evalcheck {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  border: 1px solid;
+}
+.eg-evalcheck.ok {
+  background: color-mix(in srgb, var(--sat) 12%, transparent);
+  border-color: color-mix(in srgb, var(--sat) 45%, transparent);
+}
+.eg-evalcheck.bad {
+  background: color-mix(in srgb, var(--unsat) 14%, transparent);
+  border-color: color-mix(in srgb, var(--unsat) 55%, transparent);
+}
+.eg-evalcheck code {
+  color: var(--accent);
+}
+
+.eg-verdict-head {
+  align-items: center;
+}
+.eg-unmerged {
+  color: var(--unknown);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* --- iteration table ------------------------------------------------------ */
+
+.eg-itertable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.eg-itertable th,
+.eg-itertable td {
+  text-align: right;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.eg-itertable th {
+  color: var(--muted);
+  font-weight: 500;
+}
+.eg-itertable td:first-child,
+.eg-itertable th:first-child {
+  text-align: left;
+  color: var(--accent);
+}
+
+/* --- slider --------------------------------------------------------------- */
+
+.eg-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.eg-slider label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.eg-slider input[type='range'] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+/* --- the e-graph SVG ------------------------------------------------------ */
+
+.eg-svgwrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 8px;
+}
+.eg-graph {
+  display: block;
+}
+.eg-box {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.eg-box.const {
+  fill: color-mix(in srgb, var(--accent-2) 16%, var(--panel-2));
+  stroke: color-mix(in srgb, var(--accent-2) 60%, var(--border));
+}
+.eg-box.root {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+.eg-classid {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  fill: var(--muted);
+}
+.eg-constval {
+  fill: var(--accent-2);
+  font-weight: 700;
+}
+.eg-consttag {
+  color: var(--accent-2);
+}
+.eg-nodelabel {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  fill: var(--text);
+  font-weight: 600;
+}
+.eg-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 55%, transparent);
+  stroke-width: 1.3;
+}
+.eg-arrowhead {
+  fill: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.eg-toobig {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* --- self-test ------------------------------------------------------------ */
+
+.eg-selftest {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.eg-selftest h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.eg-selftest p {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+.eg-selftest button {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  width: 100%;
+}
+.eg-selftest button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.eg-check {
+  margin-top: 10px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.eg-check.ok {
+  background: color-mix(in srgb, var(--sat) 12%, transparent);
+  color: var(--sat);
+}
+.eg-check.bad {
+  background: color-mix(in srgb, var(--unsat) 14%, transparent);
+  color: var(--unsat);
+}
+.eg-check ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+}
