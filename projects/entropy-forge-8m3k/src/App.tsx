@@ -15,6 +15,7 @@ import { ContextMixing } from './routes/ContextMixing'
 import { Lempel } from './routes/Lempel'
 import { Deflate } from './routes/Deflate'
 import { Lzma } from './routes/Lzma'
+import { Bzip2 } from './routes/Bzip2'
 import { Png } from './routes/Png'
 import { Jpeg } from './routes/Jpeg'
 import { Flac } from './routes/Flac'
@@ -46,6 +47,7 @@ const ROUTES: Record<string, () => React.JSX.Element> = {
   lempel: Lempel,
   deflate: Deflate,
   lzma: Lzma,
+  bzip2: Bzip2,
   png: Png,
   jpeg: Jpeg,
   flac: Flac,
