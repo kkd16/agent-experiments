@@ -856,8 +856,24 @@ function App() {
   const [inputMethod, setInputMethod] = useState<'numpad' | 'row'>(getInitialInputMethod());
   const [statsCollapsed, setStatsCollapsed] = useState<boolean>(false);
   const [hasOpenedSettings, setHasOpenedSettings] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsHasOpenedSettings') === 'true'; } catch { return false; } });
+
+  const [bouncingHeader, setBouncingHeader] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsBouncingHeader') === 'true'; } catch { return false; } });
+  const [scoreAsCurrency, setScoreAsCurrency] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsScoreAsCurrency') === 'true'; } catch { return false; } });
+  const [minimalistMode, setMinimalistMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsMinimalistMode') === 'true'; } catch { return false; } });
+  const [floatingMathSymbols, setFloatingMathSymbols] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsFloatingMathSymbols') === 'true'; } catch { return false; } });
+  const [showSessionClock, setShowSessionClock] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsShowSessionClock') === 'true'; } catch { return false; } });
+
+  const [monospaceFont, setMonospaceFont] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsMonospaceFont') === 'true'; } catch { return false; } });
+  const [jumpingNumbers, setJumpingNumbers] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsJumpingNumbers') === 'true'; } catch { return false; } });
   const [dyslexiaFriendly, setDyslexiaFriendly] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsDyslexiaFriendly') === 'true'; } catch { return false; } });
   const [currentTimeStr, setCurrentTimeStr] = useState<string>(new Date().toLocaleTimeString());
+
+  useEffect(() => {
+    if (!showSessionClock) return;
+    const interval = setInterval(() => setCurrentTimeStr(new Date().toLocaleTimeString()), 1000);
+    return () => clearInterval(interval);
+  }, [showSessionClock]);
+
 
 
   useEffect(() => {
@@ -1930,7 +1946,24 @@ function App() {
   };
 
   return (
-    <div className={`app-wrapper ${retroFont ? 'retro-font' : ''} ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <>
+        {showSessionClock && <div style={{ position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold' }}>{currentTimeStr}</div>}
+
+    <div className={`app-wrapper ${minimalistMode ? "minimalist-mode" : ""} ${monospaceFont ? "monospace-font" : ""} ${jumpingNumbers ? "jumping-numbers" : ""} ${retroFont ? 'retro-font' : ''} ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+
+      {floatingMathSymbols && !lowBatteryMode && (
+        <div className="math-symbols-container">
+          {['+', '-', '×', '÷', '=', '∞', 'π', '√'].map((symbol, i) => {
+            const seed = (i * 13.37) % 1;
+            return (
+              <div key={i} className="math-symbol" style={{ left: `${seed * 100}vw`, animationDuration: `${5 + seed * 5}s`, animationDelay: `${seed * 5}s` }}>
+                {symbol}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {floatingBubbles && !lowBatteryMode && (
         <div className="bubbles-container">
           {bubbleProps.map((props, i) => (
@@ -1956,7 +1989,7 @@ function App() {
       )}
       {!(isSpeedRunActive && focusMode) && (<div className="header-top" style={{ backgroundColor: headerColor || undefined }}>
         <div style={{display: 'flex', flexDirection: 'column'}}>
-          <h1>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
+          <h1 className={bouncingHeader ? "bouncing-header" : ""}>Math Flashcards {avatar} {!hideNightOwl && nightOwlUnlocked && <span title="Night Owl">🦉</span>}{isHardcoreMode && <span className="badge hardcore">Hardcore</span>}</h1>
           <div className="daily-goal-progress" style={{display: 'flex', flexDirection: 'column', marginTop: '0.2rem'}}>
             <span style={{fontSize: '0.7rem', color: theme === 'dark' ? '#aaa' : '#666'}}>Daily Goal: {dailyQuestions.count}/{dailyGoal}</span>
             <progress value={dailyQuestions.count} max={dailyGoal} style={{width: '100px', height: '6px'}} title="Daily Goal Progress"></progress>
@@ -2035,6 +2068,14 @@ function App() {
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
         <label htmlFor="dyslexiaFriendly"><input id="dyslexiaFriendly" type="checkbox" checked={dyslexiaFriendly} onChange={(e) => setDyslexiaFriendly(e.target.checked)} /> Dyslexia Friendly Font</label>
+
+        <label htmlFor="bouncingHeader"><input id="bouncingHeader" type="checkbox" checked={bouncingHeader} onChange={(e) => setBouncingHeader(e.target.checked)} /> Bouncing Header</label>
+        <label htmlFor="scoreAsCurrency"><input id="scoreAsCurrency" type="checkbox" checked={scoreAsCurrency} onChange={(e) => setScoreAsCurrency(e.target.checked)} /> Score As Currency</label>
+        <label htmlFor="minimalistMode"><input id="minimalistMode" type="checkbox" checked={minimalistMode} onChange={(e) => setMinimalistMode(e.target.checked)} /> Minimalist Mode</label>
+        <label htmlFor="floatingMathSymbols"><input id="floatingMathSymbols" type="checkbox" checked={floatingMathSymbols} onChange={(e) => setFloatingMathSymbols(e.target.checked)} /> Floating Math Symbols</label>
+        <label htmlFor="showSessionClock"><input id="showSessionClock" type="checkbox" checked={showSessionClock} onChange={(e) => setShowSessionClock(e.target.checked)} /> Show Session Clock</label>
+        <label htmlFor="monospaceFont"><input id="monospaceFont" type="checkbox" checked={monospaceFont} onChange={(e) => setMonospaceFont(e.target.checked)} /> Monospace Font</label>
+        <label htmlFor="jumpingNumbers"><input id="jumpingNumbers" type="checkbox" checked={jumpingNumbers} onChange={(e) => setJumpingNumbers(e.target.checked)} /> Jumping Numbers Animation</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="isWordMode"><input id="isWordMode" type="checkbox" checked={isWordMode} onChange={(e) => setIsWordMode(e.target.checked)} /> Word Mode</label>
         <label htmlFor="pulseEffect"><input id="pulseEffect" type="checkbox" checked={pulseEffect} onChange={(e) => setPulseEffect(e.target.checked)} /> Correct Pulse Effect</label>
@@ -2669,9 +2710,16 @@ function App() {
           <div className="summary-modal">
             <h2>{isSuddenDeathMode && !isSpeedRunActive && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft > 0 : questionsAnswered < (questionLimit === 0 ? customQuestionLimit : questionLimit)) ? "Game Over!" : ((gameMode === 'time' || gameMode === 'timeAttack') ? "Time's Up!" : "Challenge Complete!")}</h2>
             {history.length > 0 && history.every(h => h.isCorrect) && <div style={{ color: '#f1c40f', fontWeight: 'bold', fontSize: '1.5rem', animation: 'pulse 1.5s infinite', marginBottom: '1rem' }}>Perfect Game! 🌟</div>}
-            <p>Final Score: <strong>{score}</strong></p>
+
+            {history.length > 0 && (
+              <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>
+                {((currentSessionDuration / history.length) < 3000) ? '⭐⭐⭐' : ((currentSessionDuration / history.length) < 5000) ? '⭐⭐' : '⭐'}
+              </div>
+            )}
+
+            <p>Final Score: <strong>{scoreAsCurrency ? `$${score}` : score}</strong></p>
             <p>Session Duration: <strong>{Math.floor(currentSessionDuration / 60000)}m {Math.floor((currentSessionDuration % 60000) / 1000)}s</strong></p>
-            <p>High Score: <strong>{highScore}</strong></p>
+            <p>High Score: <strong>{scoreAsCurrency ? `$${highScore}` : highScore}</strong></p>
             <p>Best Combo: <strong>{bestHistoricalCombo}</strong></p>
             <p>Max Combo Reached: <strong>{maxComboThisRun}</strong></p>
             <p>Questions Answered: <strong>{questionsAnswered}</strong></p>
@@ -2834,6 +2882,7 @@ function App() {
 
     </div>
     </div>
+    </>
   );
 }
 
