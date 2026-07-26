@@ -7,6 +7,17 @@ live here as long as you like.
 
 ## Ideas / backlog
 
+- [ ] Add sound effects for right and wrong answers
+- [ ] Create a "dark mode" theme
+- [ ] Implement spaced repetition algorithm
+- [ ] Add support for Roman numerals
+- [ ] Create a competitive leaderboard
+- [ ] Add a daily streak counter
+- [ ] Make the flashcards draggable
+- [ ] Implement a "time attack" mode with decreasing time
+- [ ] Add a visual timer using a circle or a bar
+- [ ] Add support for exponents and roots
+
 - [x] Implement support for fraction problems
 - [x] Implement support for decimal math problems
 - [x] Add a daily goal progress bar
@@ -458,3 +469,15 @@ live here as long as you like.
 - [ ] Implement an option to display the "Remaining Time" as a percentage instead of seconds.
 - [x] Add an option to toggle "Wobbly Flashcard" animation on hover.
 - [x] Add an option to display the current difficulty level subtly in the background.
+
+## Super Cool Agent Improvements
+- [x] Implement an option to toggle "Bouncing Animation" for the title header.
+- [x] Add a visual "Star Rating" in the summary screen based on speed.
+- [x] Add an option to hide the statistics button for a simpler interface.
+- [x] Include an option to display the total score as a currency (e.g. $10).
+- [x] Implement a "Minimalist Mode" that hides all icons and borders.
+- [x] Add an option to enable "Floating Math Symbols" background animation.
+- [ ] Include a "Random Color Theme" option that changes colors per session.
+- [x] Add a small "Session Clock" displaying the real-world time.
+- [x] Implement a "Jumping Numbers" animation when correct.
+- [x] Add an option to toggle "Monospace Font" for the main equation.
