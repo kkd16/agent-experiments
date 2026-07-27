@@ -1118,3 +1118,31 @@ h1 {
   50% { transform: translateY(-10px); }
   100% { transform: translateY(0); }
 }
+
+@keyframes focusPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.2); color: #ff0000; text-shadow: 0 0 10px #ff0000; }
+  100% { transform: scale(1); }
+}
+
+.focus-pulse {
+  animation: focusPulse 0.5s infinite;
+}
+
+@keyframes wavy {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.wavy-text {
+  animation: wavy 2s ease-in-out infinite;
+}
+
+.neon-text {
+  text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 20px #0ff, 0 0 40px #0ff, 0 0 80px #0ff;
+  color: white !important;
+}
+
+.shake-input {
+  animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+}
