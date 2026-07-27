@@ -1135,6 +1135,13 @@ function App() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [numpadLayout, setNumpadLayout] = useState<'phone' | 'calculator'>(getInitialNumpadLayout());
   const [invertKeypad, setInvertKeypad] = useState<boolean>(getInitialInvertKeypad());
+  const [enableWavyText, setEnableWavyText] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsWavyText') === 'true'; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsWavyText', enableWavyText.toString()); } catch (e) { console.error(e); } }, [enableWavyText]);
+  const [enableNeonText, setEnableNeonText] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsNeonText') === 'true'; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsNeonText', enableNeonText.toString()); } catch (e) { console.error(e); } }, [enableNeonText]);
+  const [sessionHighestCombo, setSessionHighestCombo] = useState<number>(0);
+  const [showSessionMistakesMain, setShowSessionMistakesMain] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsShowMistakes') === 'true'; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShowMistakes', showSessionMistakesMain.toString()); } catch (e) { console.error(e); } }, [showSessionMistakesMain]);
 
   useEffect(() => {
     try { window.localStorage.setItem('mathFlashcardsInvertKeypad', invertKeypad.toString()); } catch (e) { console.error(e); }
@@ -1715,6 +1722,7 @@ function App() {
 
     if (isCorrect) {
       const newStreak = streak + 1;
+      if (newStreak > sessionHighestCombo) setSessionHighestCombo(newStreak);
       if (!unlockedAchievements.includes('first_blood')) {
         setUnlockedAchievements(prev => [...prev, 'first_blood']);
       }
@@ -2092,6 +2100,9 @@ function App() {
 
 
         <label htmlFor="invertKeypad"><input id="invertKeypad" type="checkbox" checked={invertKeypad} onChange={(e) => setInvertKeypad(e.target.checked)} /> Invert Keypad Numbers</label>
+        <label htmlFor="enableWavyText"><input id="enableWavyText" type="checkbox" checked={enableWavyText} onChange={(e) => setEnableWavyText(e.target.checked)} /> Wavy Text</label>
+        <label htmlFor="enableNeonText"><input id="enableNeonText" type="checkbox" checked={enableNeonText} onChange={(e) => setEnableNeonText(e.target.checked)} /> Neon Text</label>
+        <label htmlFor="showSessionMistakesMain"><input id="showSessionMistakesMain" type="checkbox" checked={showSessionMistakesMain} onChange={(e) => setShowSessionMistakesMain(e.target.checked)} /> Show Session Mistakes</label>
       </div>
 
       <div className="color-picker" style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
@@ -2141,17 +2152,18 @@ function App() {
                 </div>
               )}
 
-              <span className={streak >= 10 ? 'streak-glow-3x' : (streak >= 5 ? 'streak-glow-2x' : '')}>{streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')}</span>
+              <span className={streak >= 10 ? 'streak-glow-3x' : (streak >= 5 ? 'streak-glow-2x' : '')}>{streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')} | Multiplier: {1 + Math.floor(streak / 5)}x</span>
               <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
             </div>
             <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
           </div>
           )}
+          {showSessionMistakesMain && !isSpeedRunActive && (<div className="stat" style={{ color: "#e74c3c" }}>Total Session Mistakes: {sessionMistakes}</div>)}
           {!hideHighScore && (<div className="stat">
             High Score: {highScore}
             <button onClick={resetHighScore} className="reset-btn" title="Reset High Score" disabled={isSpeedRunActive}>↺</button>
           </div>)}
-          <div className="stat">Total Questions Answered: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak} | Total Time Played: {Math.floor(lifetimeTimePlayed / 3600)}h {Math.floor((lifetimeTimePlayed % 3600) / 60)}m {lifetimeTimePlayed % 60}s | Fastest Answer: {lifetimeFastestAnswer === Infinity ? "-" : (lifetimeFastestAnswer / 1000).toFixed(2) + "s"}</div>
+          <div className="stat">Total Questions Answered: {lifetimeQuestions} | Correct: {lifetimeCorrectAnswers} | Skips: {lifetimeSkips} | Acc: {lifetimeQuestions > 0 ? (lifetimeCorrectAnswers / lifetimeQuestions * 100).toFixed(1) : 0}% | Max Combo: {lifetimeLongestStreak} | Total Time Played: {Math.floor(lifetimeTimePlayed / 3600)}h {Math.floor((lifetimeTimePlayed % 3600) / 60)}m {lifetimeTimePlayed % 60}s | Fastest Answer: {lifetimeFastestAnswer === Infinity ? "-" : (lifetimeFastestAnswer / 1000).toFixed(2) + "s"} | Avg Time/Question: {lifetimeQuestions > 0 ? (lifetimeTimePlayed / lifetimeQuestions).toFixed(2) : 0}s</div>
 
           {(() => {
             let bestTime = 'N/A';
@@ -2466,7 +2478,7 @@ function App() {
                   {ghostPacer && runScores.length > 0 && (
                     <div className="ghost-pacer-bar" style={{ position: 'absolute', top: 0, left: 0, height: '100%', backgroundColor: 'rgba(255, 255, 255, 0.4)', width: `${Math.max(0, 100 - (elapsedTime / (runScores.reduce((acc, val) => acc + val.score, 0) / runScores.length || 1)) * 100)}%`, zIndex: 1, pointerEvents: 'none', transition: 'width 1s linear' }}></div>
                   )}
-                  <div className={`progress-text ${(timeLeft <= 10 && timeLeft > 0) ? 'heartbeat' : ''}`} style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
+                  <div className={`progress-text ${(timeLeft <= 5 && timeLeft > 0) ? 'focus-pulse' : (timeLeft <= 10 && timeLeft > 0) ? 'heartbeat' : ''}`} style={{ zIndex: 2, position: 'relative' }}>{timeLeft}s</div>
                   {isSpeedRunActive && (gameMode === 'time' || gameMode === 'timeAttack') && <div className="stat speedometer" style={{marginTop: '0.5rem', fontWeight: 'bold', zIndex: 10, position: 'relative'}}>Speed: {elapsedTime > 0 ? ((questionsAnswered / (elapsedTime / 1000)) * 60).toFixed(1) : 0} ans/min</div>}
                 </div>
               ) : gameMode === 'questions' ? (
@@ -2576,7 +2588,8 @@ function App() {
       <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined}}>
 
         {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
-        <div className="problem" style={{position: 'relative'}}>
+        <div style={{textAlign: "center", marginBottom: "0.5rem", fontSize: "0.8rem", color: "gray"}}>Highest Combo: {sessionHighestCombo}</div>
+        <div className={`problem ${enableWavyText ? 'wavy-text' : ''} ${enableNeonText ? 'neon-text' : ''}`} style={{position: 'relative'}}>
           {isBossActive && <div className="boss-indicator" style={{position: 'absolute', top: '-15px', right: '-15px', fontSize: '2rem', animation: 'shake 0.5s infinite'}} title="Boss Battle! Numbers are doubled.">👾</div>}
           {answerStatus && (
             <div className={`answer-feedback ${answerStatus}`} style={{ color: answerStatus === 'correct' ? correctColor : incorrectColor }}>
@@ -2620,7 +2633,7 @@ function App() {
             value={userAnswer}
             onChange={(e) => setUserAnswer(e.target.value)}
             autoFocus
-            className="answer-input"
+            className={`answer-input ${answerStatus === 'incorrect' ? 'shake-input' : ''}`}
             placeholder={hintActive && showHints ? String(operation === '+' ? num1 + num2 : operation === '-' ? num1 - num2 : operation === '*' ? num1 * num2 : operation === 'x' ? num2 - num1 : Math.floor(num1 / num2)).charAt(0) + '...' : "?"}
             disabled={isPaused || (isSpeedRunActive && gameMode !== 'zen' && ((gameMode === 'time' || gameMode === 'timeAttack') ? timeLeft === 0 : (gameMode === 'questions' ? questionsAnswered >= (questionLimit === 0 ? customQuestionLimit : questionLimit) : false)))}
           />

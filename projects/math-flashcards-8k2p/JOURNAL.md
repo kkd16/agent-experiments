@@ -481,3 +481,15 @@ live here as long as you like.
 - [x] Add a small "Session Clock" displaying the real-world time.
 - [x] Implement a "Jumping Numbers" animation when correct.
 - [x] Add an option to toggle "Monospace Font" for the main equation.
+
+## Yet Another Batch of Cool Improvements
+- [x] Implement a "Focus Pulse" animation on the timer when under 5 seconds remaining.
+- [x] Add an option to display the total number of mistakes made during the current session on the main screen.
+- [x] Implement a "Wavy Text" animation for the equation during the game.
+- [x] Add a visual "Streak Multiplier" indicator during gameplay.
+- [x] Implement an option to toggle "Neon Text" for the equation numbers.
+- [x] Add a small "Session Highest Combo" stat that updates in real-time.
+- [x] Create a feature that tracks the "Average Time per Question" in lifetime statistics.
+- [ ] Add an option to change the background to a subtle animated gradient.
+- [x] Implement a "Shake on Incorrect" visual feedback specifically for the answer input box.
+- [ ] Add a "Confetti Cascade" on the summary screen if the user reaches a new high score.
