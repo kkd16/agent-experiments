@@ -493,3 +493,15 @@ live here as long as you like.
 - [ ] Add an option to change the background to a subtle animated gradient.
 - [x] Implement a "Shake on Incorrect" visual feedback specifically for the answer input box.
 - [ ] Add a "Confetti Cascade" on the summary screen if the user reaches a new high score.
+
+## Mega Batch of Jules Enhancements
+- [ ] Implement a "Double Combo" mode where sequential correct answers multiply the score.
+- [x] Add an option to toggle "Blinking Answer Box" when the timer is low.
+- [x] Create a "Mirror Keypad" option that reverses the numbers on the keypad left to right.
+- [ ] Add a small "Number Line" visual aid at the top for younger users.
+- [ ] Implement an option to practice "Squaring Numbers" (e.g. 12 x 12).
+- [x] Add an option to toggle "Spinning Operator" animation.
+- [x] Create a "Daily Math Fact" displayed on the main menu.
+- [ ] Implement a "Math Word Search" mini-game mode.
+- [x] Add an option to change the shape of the flashcard (e.g. circle, hexagon).
+- [x] Include a "Lifetime Stars Earned" metric in statistics.
