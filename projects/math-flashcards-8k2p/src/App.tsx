@@ -35,6 +35,14 @@ const ACHIEVEMENTS: Achievement[] = [
 ];
 
 
+
+const DAILY_MATH_FACTS = [
+  "Zero is the only number that can't be represented in Roman numerals.",
+  "A 'jiffy' is an actual unit of time: 1/100th of a second.",
+  "Every odd number has an 'e' in it.",
+  "Forty is the only number that is spelt with letters arranged in alphabetical order."
+];
+
 const MOTIVATIONAL_QUOTES = ["Math is power.", "Every problem has a solution.", "Practice makes perfect.", "Numbers rule the universe."];
 
 function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], allowNegativesParam: boolean = false, customMin: number = 1, customMax: number = 10, isBossBattle: boolean = false) {
@@ -111,6 +119,11 @@ function generateRandomProblem(difficulty: Difficulty, allowedOps: Operation[], 
 
 
 
+
+
+function getInitialBlinkingAnswerBox(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsBlinkingAnswerBox') === 'true'; } catch { return false; }
+}
 
 function getInitialHideSkipButton(): boolean {
   try {
@@ -306,6 +319,27 @@ function getInitialLowBatteryMode(): boolean {
     console.error("Local storage error:", e);
   }
   return false;
+}
+
+
+function getInitialMirrorKeypad(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsMirrorKeypad') === 'true'; } catch { return false; }
+}
+
+
+function getInitialSpinningOperator(): boolean {
+  try { return window.localStorage.getItem('mathFlashcardsSpinningOperator') === 'true'; } catch { return false; }
+}
+
+
+function getInitialFlashcardShape(): 'rounded' | 'circle' | 'square' {
+  try {
+    const shape = window.localStorage.getItem('mathFlashcardsShape');
+    if (shape === 'circle' || shape === 'square') return shape;
+  } catch (e) {
+    console.error(e);
+  }
+  return 'rounded';
 }
 
 function getInitialMirrorMode(): boolean {
@@ -770,6 +804,18 @@ function App() {
   const [lastPlayedDate, setLastPlayedDate] = useState<string>(window.localStorage.getItem('mathFlashcardsLastPlayedDate') || '');
   const [hideStats, setHideStats] = useState<boolean>(getInitialHideStats());
   const [hideStreak, setHideStreak] = useState<boolean>(getInitialHideStreak());
+
+  const [mirrorKeypad, setMirrorKeypad] = useState<boolean>(getInitialMirrorKeypad());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsMirrorKeypad', mirrorKeypad.toString()); } catch (e) { console.error(e); } }, [mirrorKeypad]);
+
+
+  const [spinningOperator, setSpinningOperator] = useState<boolean>(getInitialSpinningOperator());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsSpinningOperator', spinningOperator.toString()); } catch (e) { console.error(e); } }, [spinningOperator]);
+
+
+  const [flashcardShape, setFlashcardShape] = useState<'rounded' | 'circle' | 'square'>(getInitialFlashcardShape());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShape', flashcardShape); } catch (e) { console.error(e); } }, [flashcardShape]);
+
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
   const [lowBatteryMode, setLowBatteryMode] = useState<boolean>(getInitialLowBatteryMode());
   const [disableKeyboardShortcuts, setDisableKeyboardShortcuts] = useState<boolean>(getInitialDisableKeyboardShortcuts());
@@ -803,6 +849,10 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsAutoHideKeypad', autoHideKeypad.toString()); } catch (e) { console.error(e); } }, [autoHideKeypad]);
 
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsColorBlindMode', colorBlindMode.toString()); } catch (e) { console.error(e); } }, [colorBlindMode]);
+
+
+  const [blinkingAnswerBox, setBlinkingAnswerBox] = useState<boolean>(getInitialBlinkingAnswerBox());
+  useEffect(() => { try { window.localStorage.setItem('mathFlashcardsBlinkingAnswerBox', blinkingAnswerBox.toString()); } catch (e) { console.error(e); } }, [blinkingAnswerBox]);
 
   const [hideSkipButton, setHideSkipButton] = useState<boolean>(getInitialHideSkipButton());
   const [disableAnimations, setDisableAnimations] = useState<boolean>(getInitialDisableAnimations());
@@ -2069,12 +2119,16 @@ function App() {
         <label htmlFor="hideStats"><input id="hideStats" type="checkbox" checked={hideStats} onChange={(e) => setHideStats(e.target.checked)} /> Hide Stats</label>
         <label htmlFor="hideHighScore"><input id="hideHighScore" type="checkbox" checked={hideHighScore} onChange={(e) => setHideHighScore(e.target.checked)} /> Hide High Score</label>
         <label htmlFor="hideStreak"><input id="hideStreak" type="checkbox" checked={hideStreak} onChange={(e) => setHideStreak(e.target.checked)} /> Hide Streak</label>
+
+        <label htmlFor="mirrorKeypad"><input id="mirrorKeypad" type="checkbox" checked={mirrorKeypad} onChange={(e) => setMirrorKeypad(e.target.checked)} /> Mirror Keypad</label>
         <label htmlFor="mirrorMode"><input id="mirrorMode" type="checkbox" checked={mirrorMode} onChange={(e) => setMirrorMode(e.target.checked)} /> Mirror Mode</label>
 
         <label htmlFor="lowBatteryMode"><input id="lowBatteryMode" type="checkbox" checked={lowBatteryMode} onChange={(e) => setLowBatteryMode(e.target.checked)} /> Low Battery Mode</label>
         <label htmlFor="focusMode"><input id="focusMode" type="checkbox" checked={focusMode} onChange={(e) => setFocusMode(e.target.checked)} /> Focus Mode</label>
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
+
+        <label htmlFor="flashcardShape">Shape: <select id="flashcardShape" value={flashcardShape} onChange={(e) => setFlashcardShape(e.target.value as 'rounded' | 'circle' | 'square')}><option value="rounded">Rounded</option><option value="circle">Circle</option><option value="square">Square</option></select></label>
         <label htmlFor="dyslexiaFriendly"><input id="dyslexiaFriendly" type="checkbox" checked={dyslexiaFriendly} onChange={(e) => setDyslexiaFriendly(e.target.checked)} /> Dyslexia Friendly Font</label>
 
         <label htmlFor="bouncingHeader"><input id="bouncingHeader" type="checkbox" checked={bouncingHeader} onChange={(e) => setBouncingHeader(e.target.checked)} /> Bouncing Header</label>
@@ -2083,11 +2137,15 @@ function App() {
         <label htmlFor="floatingMathSymbols"><input id="floatingMathSymbols" type="checkbox" checked={floatingMathSymbols} onChange={(e) => setFloatingMathSymbols(e.target.checked)} /> Floating Math Symbols</label>
         <label htmlFor="showSessionClock"><input id="showSessionClock" type="checkbox" checked={showSessionClock} onChange={(e) => setShowSessionClock(e.target.checked)} /> Show Session Clock</label>
         <label htmlFor="monospaceFont"><input id="monospaceFont" type="checkbox" checked={monospaceFont} onChange={(e) => setMonospaceFont(e.target.checked)} /> Monospace Font</label>
+
+        <label htmlFor="spinningOperator"><input id="spinningOperator" type="checkbox" checked={spinningOperator} onChange={(e) => setSpinningOperator(e.target.checked)} /> Spinning Operator</label>
         <label htmlFor="jumpingNumbers"><input id="jumpingNumbers" type="checkbox" checked={jumpingNumbers} onChange={(e) => setJumpingNumbers(e.target.checked)} /> Jumping Numbers Animation</label>
         <label htmlFor="showCurrentTime"><input id="showCurrentTime" type="checkbox" checked={showCurrentTime} onChange={(e) => setShowCurrentTime(e.target.checked)} /> Show Current Time</label>
         <label htmlFor="isWordMode"><input id="isWordMode" type="checkbox" checked={isWordMode} onChange={(e) => setIsWordMode(e.target.checked)} /> Word Mode</label>
         <label htmlFor="pulseEffect"><input id="pulseEffect" type="checkbox" checked={pulseEffect} onChange={(e) => setPulseEffect(e.target.checked)} /> Correct Pulse Effect</label>
         <label htmlFor="floatingBubbles"><input id="floatingBubbles" type="checkbox" checked={floatingBubbles} onChange={(e) => setFloatingBubbles(e.target.checked)} /> Floating Bubbles</label>
+
+        <label htmlFor="blinkingAnswerBox"><input id="blinkingAnswerBox" type="checkbox" checked={blinkingAnswerBox} onChange={(e) => setBlinkingAnswerBox(e.target.checked)} /> Blinking Answer Box</label>
         <label htmlFor="pulsingFlashcard"><input id="pulsingFlashcard" type="checkbox" checked={pulsingFlashcard} onChange={(e) => setPulsingFlashcard(e.target.checked)} /> Pulsing Flashcard &lt; 5s</label>
         <label htmlFor="showHints"><input id="showHints" type="checkbox" checked={showHints} onChange={(e) => setShowHints(e.target.checked)} /> Show Hints</label>
         <label htmlFor="ghostPacer"><input id="ghostPacer" type="checkbox" checked={ghostPacer} onChange={(e) => setGhostPacer(e.target.checked)} /> Ghost Pacer</label>
@@ -2136,6 +2194,8 @@ function App() {
             {statsCollapsed ? '▶ Show Stats' : '▼ Hide Stats Info'}
           </button>
         </div>
+
+        <div className="quote" style={{ fontStyle: 'italic', color: '#7f8c8d', marginBottom: '1rem', textAlign: 'center' }}>Fact: {DAILY_MATH_FACTS[new Date().getDate() % DAILY_MATH_FACTS.length]}</div>
         <div className="quote" style={{ fontStyle: 'italic', color: '#7f8c8d', marginBottom: '1rem', textAlign: 'center' }}>{MOTIVATIONAL_QUOTES[new Date().getDate() % MOTIVATIONAL_QUOTES.length]}</div>
         {!statsCollapsed && (
         <div className="header-stats">
@@ -2232,6 +2292,9 @@ function App() {
             );
           })()}
           <div className="stat">Consecutive Days Played: {consecutiveDays}</div>
+
+          <div className="stat">Lifetime Stars Earned: {Math.floor(highScore / 10)} ⭐️</div>
+
 
           {(() => {
             const missed = fullHistory.filter(h => !h.isCorrect);
@@ -2585,7 +2648,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined, borderRadius: flashcardShape === 'circle' ? '50%' : flashcardShape === 'square' ? '0px' : '15px'}}>
 
         {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
         <div style={{textAlign: "center", marginBottom: "0.5rem", fontSize: "0.8rem", color: "gray"}}>Highest Combo: {sessionHighestCombo}</div>
@@ -2606,7 +2669,7 @@ function App() {
           {operation === 'frac' ? (
              <>
                <span className="number">1/{num1}</span>
-               <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>of</span>
+               <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed " : "") + (spinningOperator ? "spinning-operator" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>of</span>
                <span className="number">{num2}</span>
              </>
           ) : operation === 'x' ? (
@@ -2620,7 +2683,7 @@ function App() {
           ) : (
             <>
               <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
-              <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation === 'dec' ? '+' : operation === '*' ? '×' : operation === '/' ? '÷' : operation}</span>
+              <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed " : "") + (spinningOperator ? "spinning-operator" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation === 'dec' ? '+' : operation === '*' ? '×' : operation === '/' ? '÷' : operation}</span>
               <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
             </>
           )}
@@ -2650,7 +2713,10 @@ function App() {
 
         {!hideKeypad && (
         <div className={`numpad ${inputMethod === 'row' ? 'row-layout' : ''}`}>
-          {(invertKeypad ? (numpadLayout === 'phone' ? [7, 8, 9, 4, 5, 6, 1, 2, 3] : [1, 2, 3, 4, 5, 6, 7, 8, 9]) : (numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3])).map(num => (
+          {(() => {
+            const baseLayout = invertKeypad ? (numpadLayout === 'phone' ? [7, 8, 9, 4, 5, 6, 1, 2, 3] : [1, 2, 3, 4, 5, 6, 7, 8, 9]) : (numpadLayout === 'phone' ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [7, 8, 9, 4, 5, 6, 1, 2, 3]);
+            return mirrorKeypad ? [baseLayout[2], baseLayout[1], baseLayout[0], baseLayout[5], baseLayout[4], baseLayout[3], baseLayout[8], baseLayout[7], baseLayout[6]] : baseLayout;
+          })().map(num => (
             <button
               key={num}
               type="button"
