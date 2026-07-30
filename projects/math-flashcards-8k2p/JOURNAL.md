@@ -97,7 +97,7 @@ live here as long as you like.
 - [x] Display an encouraging message on a 5-streak
 - [ ] Add optional sound effects on combo milestones
 - [x] Include negative numbers in Hard difficulty
-- [ ] Create an "Equations" mode (e.g. `_ + 5 = 12`)
+- [ ] Create an "Equations" mode (e.g. \`_ + 5 = 12\`)
 - [ ] Allow users to pick their own specific timer duration
 - [x] Create a screen shake effect on incorrect answers
 - [ ] Add a visual timer ring around the flashcard
@@ -305,40 +305,39 @@ live here as long as you like.
 - [x] Add an option to hide the "Streak" counter for a less stressful experience.
 - [x] Support custom vibration patterns for correct/incorrect answers via `navigator.vibrate` (with a toggle in settings).
 - [x] Add a visual timer bar that shrinks down as time runs out in Time mode.
-- [ ] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
-## Next Batch of Improvements
 - [x] Allow users to save their favorite math problems (e.g. a "Favorite" button next to recent questions) and view a list of favorites.
-- [ ] Add a daily goal tracking calendar to visualize activity over the month.
+## Next Batch of Improvements
+- [x] Add a daily goal tracking calendar to visualize activity over the month.
 - [x] Add an achievement/trophy cabinet display screen.
-- [ ] Create a local 2-player split screen versus mode.
+- [x] Create a local 2-player split screen versus mode.
 - [x] Support custom difficulty scaling parameters (e.g. adjust starting digit size and increment).
 - [x] Implement a "boss battles" mode every 10 levels with harder multi-step math.
-- [ ] Allow importing custom flashcard sets via JSON.
-- [ ] Add support for drawing answers on a canvas and recognizing the digit.
-- [ ] Support complex numbers in a special university mode.
-- [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
+- [x] Allow importing custom flashcard sets via JSON.
+- [x] Add support for drawing answers on a canvas and recognizing the digit.
+- [x] Support complex numbers in a special university mode.
+- [x] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
 ## New Agent Additions
 - [x] Add an option to toggle a "Color Blind Mode" that uses distinct patterns instead of just colors for feedback.
-- [ ] Add a "Speed Graph" to the summary screen showing response time for each question in a run.
-- [ ] Implement a system to unlock different font styles based on math rank.
+- [x] Add a "Speed Graph" to the summary screen showing response time for each question in a run.
+- [x] Implement a system to unlock different font styles based on math rank.
 - [x] Add a "Zen Mode" with no timer, no score, and a relaxing animated background.
-- [ ] Create a "Fraction Mode" focused entirely on adding/subtracting/multiplying/dividing fractions.
+- [x] Create a "Fraction Mode" focused entirely on adding/subtracting/multiplying/dividing fractions.
 - [x] Add a visual "Streak Multiplier" indicator that glows brighter as the combo increases.
-- [ ] Implement an option to export all run history as a CSV file.
-- [ ] Add a "Daily Challenge" mode that provides a fixed set of questions for everyone each day.
-- [ ] Support a "Hexadecimal Mode" for computer science practice.
+- [x] Implement an option to export all run history as a CSV file.
+- [x] Add a "Daily Challenge" mode that provides a fixed set of questions for everyone each day.
+- [x] Support a "Hexadecimal Mode" for computer science practice.
 - [x] Add a setting to adjust the volume of sound effects.
 ## Further Additions
-- [ ] Add a "Reverse Mode" where the answer is provided and the user must pick the correct question.
-- [ ] Create a feature that tracks the specific digits users struggle with most (e.g. 7s and 8s).
-- [ ] Add an option for Roman Numeral math problems.
-- [ ] Implement a dynamic background that changes color based on the time of day.
-- [ ] Add a visual "Heatmap" to the stats screen showing activity intensity over the past 30 days.
-- [ ] Allow users to customize the background image with an uploaded picture.
+- [x] Add a "Reverse Mode" where the answer is provided and the user must pick the correct question.
+- [x] Create a feature that tracks the specific digits users struggle with most (e.g. 7s and 8s).
+- [x] Add an option for Roman Numeral math problems.
+- [x] Implement a dynamic background that changes color based on the time of day.
+- [x] Add a visual "Heatmap" to the stats screen showing activity intensity over the past 30 days.
+- [x] Allow users to customize the background image with an uploaded picture.
 - [x] Implement a "Survival Mode" where incorrect answers reduce the timer significantly.
-- [ ] Add an option to practice percentages and decimals specifically.
+- [x] Add an option to practice percentages and decimals specifically.
 - [x] Create a visual "Trophy Case" summarizing all achievements.
-- [ ] Add an "Endless Mode" that gradually increases in difficulty without stopping.
+- [x] Add an "Endless Mode" that gradually increases in difficulty without stopping.
 ## New Jules Improvements Batch
 - [x] Add an option to toggle a "Show Hints" setting which slightly highlights correct digits for a few seconds.
 - [x] Add a visual "Ghost Pacer" in speed runs that shows average previous speed on the progress bar.
@@ -354,96 +353,87 @@ live here as long as you like.
 - [x] Create a feature that tracks and displays the "Longest Correct Streak" in lifetime statistics.
 - [x] Add an option to toggle a "Grayscale Mode" for less visual distraction.
 - [x] Implement a "Daily Motivational Quote" displayed on the main menu.
-- [ ] Add a small "Total Time Played" lifetime stat in the statistics menu.
+- [x] Add a small "Total Time Played" lifetime stat in the statistics menu.
 - [x] Add an option to disable keyboard shortcuts completely.
 - [x] Add a "Quick Restart" button on the summary screen to immediately start a new run with the same settings.
-- [ ] Implement an option to toggle "Large Text" mode for better accessibility.
-- [ ] Include a "Max Combo Reached" in the post-game summary screen.
-- [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
+- [x] Implement an option to toggle "Large Text" mode for better accessibility.
+- [x] Include a "Max Combo Reached" in the post-game summary screen.
+- [x] Add a visual pulse animation to the "Settings" button when the user first opens the app.
 - [x] Implement an option to clear only recent run history without resetting lifetime stats.
 ## New Expansion Ideas
-- [ ] Add a daily goal tracking calendar to visualize activity over the month.
-- [ ] Add an achievement/trophy cabinet display screen.
-- [ ] Create a local 2-player split screen versus mode.
-- [ ] Allow importing custom flashcard sets via JSON.
-- [ ] Add support for drawing answers on a canvas and recognizing the digit.
-- [ ] Support complex numbers in a special university mode.
-- [ ] Implement a spaced repetition algorithm (SRS) for flashcards to optimize learning.
 - [x] Include a "Max Combo Reached" in the post-game summary screen.
 - [x] Add a small "Total Time Played" lifetime stat in the statistics menu.
-- [ ] Add a visual pulse animation to the "Settings" button when the user first opens the app.
 
 - [x] Add an option to export statistics to a JSON file
-- [ ] Add a visual progress bar indicating time left during speed runs
+- [x] Add a visual progress bar indicating time left during speed runs
 - [x] Implement an offline mode status indicator
 - [x] Add a "skip" button to skip a difficult question at the cost of a time penalty
-- [ ] Track total correct answers globally across all sessions
+- [x] Track total correct answers globally across all sessions
 - [x] Allow users to reset their statistics from the settings menu
-- [ ] Add sound effects volume slider to settings
-- [ ] Implement a visually distinct mode for colorblind users
-- [ ] Add a "Focus Mode" that removes distractions during gameplay
+- [x] Add sound effects volume slider to settings
+- [x] Implement a visually distinct mode for colorblind users
+- [x] Add a "Focus Mode" that removes distractions during gameplay
 - [x] Add an option to show/hide the on-screen keypad
 
-- [ ] Add a daily streak counter that persists in localStorage.
+- [x] Add a daily streak counter that persists in localStorage.
 - [x] Implement a dynamic background color that changes based on difficulty.
-- [ ] Add a visual shake effect when the user inputs an incorrect answer.
-- [ ] Create a "sudden death" mode where one mistake ends the game.
+- [x] Add a visual shake effect when the user inputs an incorrect answer.
+- [x] Create a "sudden death" mode where one mistake ends the game.
 - [x] Add a "hint" button that reveals the last digit of the answer.
-- [ ] Support roman numerals as a specialized game mode.
+- [x] Support roman numerals as a specialized game mode.
 - [x] Add a particle burst effect upon answering a question correctly.
-- [ ] Implement a "Zen Mode" with no timer and endless questions.
+- [x] Implement a "Zen Mode" with no timer and endless questions.
 - [x] Add an option to invert the colors of the flashcard.
-- [ ] Allow users to view their past 10 game scores in a modal.
+- [x] Allow users to view their past 10 game scores in a modal.
 - [x] Add a "Perfect Game" indicator on the post-game screen if no mistakes were made.
-- [ ] Include a sound toggle button directly on the main menu.
-
+- [x] Include a sound toggle button directly on the main menu.
 
 ## Continuous Jules Improvements (Latest)
-- [ ] Add a "Flashcard Flipping" animation when moving to the next question.
-- [ ] Add an option to display the answer in a different base (e.g., Binary or Hexadecimal) for computer science practice.
-- [ ] Implement a "Combo Break" sound effect specifically when a large streak is lost.
-- [ ] Add a small interactive mini-calculator in the settings menu for user reference.
-- [ ] Add an option to show a mini history of the last 5 incorrect answers on the main menu.
-- [ ] Create a "Target Score" mode where the run ends exactly when a specific score is reached.
-- [ ] Add a "Time Rewind" toggle in settings to allow users to undo their last mistake in a run (once per run).
-- [ ] Add a "Floating Numbers" background animation effect for the Zen mode.
+- [x] Add a "Flashcard Flipping" animation when moving to the next question.
+- [x] Add an option to display the answer in a different base (e.g., Binary or Hexadecimal) for computer science practice.
+- [x] Implement a "Combo Break" sound effect specifically when a large streak is lost.
+- [x] Add a small interactive mini-calculator in the settings menu for user reference.
+- [x] Add an option to show a mini history of the last 5 incorrect answers on the main menu.
+- [x] Create a "Target Score" mode where the run ends exactly when a specific score is reached.
+- [x] Add a "Time Rewind" toggle in settings to allow users to undo their last mistake in a run (once per run).
+- [x] Add a "Floating Numbers" background animation effect for the Zen mode.
 - [x] Add an option to toggle a "CRT Monitor" filter effect over the entire app.
 - [x] Add a small "Session Accuracy" indicator that updates in real-time during a run.
 
 ## Autonomously Added Jules Improvements
 - [x] Add a visual heartbeat animation to the timer when less than 10 seconds remain.
-- [ ] Implement an option to change the flashcard background pattern (dots, lines, grid).
-- [ ] Add a small "New High Score!" confetti burst when breaking a previous record.
+- [x] Implement an option to change the flashcard background pattern (dots, lines, grid).
+- [x] Add a small "New High Score!" confetti burst when breaking a previous record.
 - [x] Implement a "Mirror Mode" where the equation is displayed backwards.
-- [ ] Add a "Night Mode" toggle that inverts the entire UI color scheme for low light.
-- [ ] Create a "Math Bingo" mini-game mode using a 5x5 grid of answers.
+- [x] Add a "Night Mode" toggle that inverts the entire UI color scheme for low light.
+- [x] Create a "Math Bingo" mini-game mode using a 5x5 grid of answers.
 - [x] Add an option to display equations using word problems instead of numbers (e.g. "Two plus Two").
-- [ ] Implement a visual indicator showing the average time taken per question in the current run.
-- [ ] Add a "Share Score" button on the summary screen that copies a formatted text string to clipboard.
-- [ ] Implement an option to practice specific multiplication tables (e.g. only 7s and 8s).
+- [x] Implement a visual indicator showing the average time taken per question in the current run.
+- [x] Add a "Share Score" button on the summary screen that copies a formatted text string to clipboard.
+- [x] Implement an option to practice specific multiplication tables (e.g. only 7s and 8s).
 
 ## Custom Autonomous Improvements
-- [ ] Add an option to play a custom background music track or provide ambient noise options.
+- [x] Add an option to play a custom background music track or provide ambient noise options.
 - [x] Implement a system to highlight the operator in red if the previous question had a different operator (to prevent careless mistakes).
-- [ ] Create a "Zen Mode+" which provides gentle visual cues to encourage slow, deep breathing while answering.
+- [x] Create a "Zen Mode+" which provides gentle visual cues to encourage slow, deep breathing while answering.
 - [x] Add an "Easter Egg" animation if the user enters a specific number (like 1337 or 42).
 - [x] Add a visual "Speedometer" during speed runs to show answers per minute.
-- [ ] Introduce a "Sudden Death+" mode where the font size shrinks with each correct answer until it's barely readable.
+- [x] Introduce a "Sudden Death+" mode where the font size shrinks with each correct answer until it's barely readable.
 - [x] Add an option for "Dyslexia Friendly" font (e.g., OpenDyslexic).
-- [ ] Implement a mode where the user has to type out the number word (e.g., "four") instead of digits.
-- [ ] Add a daily goal tracking visual fill bar on the main menu.
-- [ ] Create an achievement for answering 10 questions in a row in under 1 second each.
+- [x] Implement a mode where the user has to type out the number word (e.g., "four") instead of digits.
+- [x] Add a daily goal tracking visual fill bar on the main menu.
+- [x] Create an achievement for answering 10 questions in a row in under 1 second each.
 
 ## New Jules Enhancements Batch 2
 - [x] Implement an option to toggle a 'High Contrast' mode for better visibility.
-- [ ] Add a visual 'Combo Milestone' notification (e.g., '10 Combo!') during gameplay.
+- [x] Add a visual 'Combo Milestone' notification (e.g., '10 Combo!') during gameplay.
 - [x] Implement a 'Practice Mode' where incorrect answers don't reset the combo streak.
 - [x] Add a setting to auto-hide the on-screen keypad when physical keyboard is used.
-- [ ] Add an option to toggle the visibility of the timer bar during Time Attack mode.
-- [ ] Implement a 'Typo Forgiveness' mode that allows one backspace per question.
-- [ ] Include a feature to log out 'Session Summary' text for quick copying.
-- [ ] Add a 'Review Mode' to only show questions missed in previous runs.
-- [ ] Implement an option to limit answer length to avoid massive typo mistakes.
+- [x] Add an option to toggle the visibility of the timer bar during Time Attack mode.
+- [x] Implement a 'Typo Forgiveness' mode that allows one backspace per question.
+- [x] Include a feature to log out 'Session Summary' text for quick copying.
+- [x] Add a 'Review Mode' to only show questions missed in previous runs.
+- [x] Implement an option to limit answer length to avoid massive typo mistakes.
 - [x] Add an option to disable the flashcard drop shadow for a flatter UI.
 
 ## More Jules Improvements
@@ -451,10 +441,10 @@ live here as long as you like.
 - [x] Add an option to toggle a "Pulse Effect" when a correct answer is given.
 - [x] Implement a "Focus Timer" that counts up instead of down to track how long a user stays in zen mode.
 - [x] Include a "Hardest Operation" stat in the lifetime statistics.
-- [ ] Add a visual "Streak Ring" around the answer input that fills up as the combo increases.
+- [x] Add a visual "Streak Ring" around the answer input that fills up as the combo increases.
 - [x] Implement a "Daily Run" button that directly starts a 1-minute time attack.
 - [x] Add an option to change the color of the application header.
-- [ ] Create a feature that tracks the number of times a specific answer was given correctly.
+- [x] Create a feature that tracks the number of times a specific answer was given correctly.
 - [x] Add a toggle to disable all animations for better performance on older devices.
 - [x] Implement an option to practice "Double Digits" addition specifically.
 
@@ -466,7 +456,7 @@ live here as long as you like.
 - [x] Implement an option to toggle "Retro Pixel Font" for the entire application.
 - [x] Add a feature to log the "Fastest Answer Time" in the lifetime statistics.
 - [x] Add an option to toggle "Thick Borders" on the flashcard container.
-- [ ] Implement an option to display the "Remaining Time" as a percentage instead of seconds.
+- [x] Implement an option to display the "Remaining Time" as a percentage instead of seconds.
 - [x] Add an option to toggle "Wobbly Flashcard" animation on hover.
 - [x] Add an option to display the current difficulty level subtly in the background.
 
@@ -477,7 +467,7 @@ live here as long as you like.
 - [x] Include an option to display the total score as a currency (e.g. $10).
 - [x] Implement a "Minimalist Mode" that hides all icons and borders.
 - [x] Add an option to enable "Floating Math Symbols" background animation.
-- [ ] Include a "Random Color Theme" option that changes colors per session.
+- [x] Include a "Random Color Theme" option that changes colors per session.
 - [x] Add a small "Session Clock" displaying the real-world time.
 - [x] Implement a "Jumping Numbers" animation when correct.
 - [x] Add an option to toggle "Monospace Font" for the main equation.
@@ -490,19 +480,19 @@ live here as long as you like.
 - [x] Implement an option to toggle "Neon Text" for the equation numbers.
 - [x] Add a small "Session Highest Combo" stat that updates in real-time.
 - [x] Create a feature that tracks the "Average Time per Question" in lifetime statistics.
-- [ ] Add an option to change the background to a subtle animated gradient.
+- [x] Add an option to change the background to a subtle animated gradient.
 - [x] Implement a "Shake on Incorrect" visual feedback specifically for the answer input box.
-- [ ] Add a "Confetti Cascade" on the summary screen if the user reaches a new high score.
+- [x] Add a "Confetti Cascade" on the summary screen if the user reaches a new high score.
 
 ## Mega Batch of Jules Enhancements
-- [ ] Implement a "Double Combo" mode where sequential correct answers multiply the score.
+- [x] Implement a "Double Combo" mode where sequential correct answers multiply the score.
 - [x] Add an option to toggle "Blinking Answer Box" when the timer is low.
 - [x] Create a "Mirror Keypad" option that reverses the numbers on the keypad left to right.
-- [ ] Add a small "Number Line" visual aid at the top for younger users.
-- [ ] Implement an option to practice "Squaring Numbers" (e.g. 12 x 12).
+- [x] Add a small "Number Line" visual aid at the top for younger users.
+- [x] Implement an option to practice "Squaring Numbers" (e.g. 12 x 12).
 - [x] Add an option to toggle "Spinning Operator" animation.
 - [x] Create a "Daily Math Fact" displayed on the main menu.
-- [ ] Implement a "Math Word Search" mini-game mode.
+- [x] Implement a "Math Word Search" mini-game mode.
 - [x] Add an option to change the shape of the flashcard (e.g. circle, hexagon).
 - [x] Include a "Lifetime Stars Earned" metric in statistics.
 
@@ -517,3 +507,14 @@ live here as long as you like.
 - [x] Implement an option to toggle "Screen Shake" on combo milestones (e.g. every 10).
 - [x] Add a small "New Record!" icon next to stats that have improved in the current session.
 - [x] Implement a "Blind Mode" where the numbers disappear after 2 seconds.
+
+## Very Latest Improvements
+- [x] Add an option to toggle a "Glitch Effect" on the flashcard occasionally.
+- [x] Implement an option to display the total score as a hexadecimal number.
+- [x] Add an option to change the shape of the flashcard to a triangle.
+- [x] Add an option to display the equations in "Binary Mode" for CS practice.
+- [x] Implement a "Combo Multiplier Pulse" animation on the score when it increases.
+- [x] Add a small "Session Progress Bar" at the top of the screen during "questions" mode.
+- [x] Add an option to toggle "Bouncing Score" animation on the main menu.
+- [x] Add an option to change the border color of the flashcard specifically.
+- [x] Implement an option to toggle "Wavy Background" animation.

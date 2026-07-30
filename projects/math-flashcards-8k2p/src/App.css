@@ -1146,3 +1146,53 @@ h1 {
 .shake-input {
   animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
 }
+
+.glitch-effect {
+  animation: glitch-anim 2s infinite linear alternate-reverse;
+}
+
+@keyframes glitch-anim {
+  0% { transform: translate(0); }
+  2% { transform: translate(-2px, 2px); }
+  4% { transform: translate(-2px, -2px); }
+  6% { transform: translate(2px, 2px); }
+  8% { transform: translate(2px, -2px); }
+  10% { transform: translate(0); }
+  100% { transform: translate(0); }
+}
+
+.pulse-multiplier {
+  animation: multiplier-pulse 1s infinite alternate;
+  display: inline-block;
+}
+
+@keyframes multiplier-pulse {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.1); text-shadow: 0 0 10px rgba(255, 215, 0, 0.8); }
+}
+
+.bouncing-score {
+  animation: bounce-anim 1s infinite;
+}
+
+@keyframes bounce-anim {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.wavy-bg {
+  background: repeating-radial-gradient(
+    circle at 0 0,
+    transparent 0,
+    var(--surface-color) 40px
+  ), repeating-linear-gradient(
+    var(--bg-color),
+    var(--bg-color)
+  );
+  animation: bg-wave 10s infinite linear;
+}
+
+@keyframes bg-wave {
+  0% { background-position: 0 0; }
+  100% { background-position: 100px 100px; }
+}
