@@ -973,6 +973,36 @@ let answer = area (Circle 2.0) in      // melts all the way to a Float literal
 (answer, 2 * 3 + 4 * 5 |> (fn n -> n + 1))   // and a folded, beta-reduced pipe`,
   },
   {
+    id: 'demand',
+    title: 'Demand analysis: a dead accumulator',
+    blurb: 'Open the Demand tab, then "measure" — watch a dead loop argument proven irrelevant and deleted.',
+    visual: false,
+    code: `// Open the "Demand" tab, then press "measure ≡ / steps".
+//
+// Two mutually-recursive functions walk a counter down to zero. Each one carries
+// TWO accumulators it threads to the OTHER: 'total', a running sum that IS read
+// at the base case, and 'calls', a call-counter that is only ever fed round the
+// loop and NEVER read. No single-function reasoning can see 'calls' is dead —
+// it's alive in each function only because the *other* keeps feeding it.
+//
+// Aether's backward DEMAND / ABSENCE ANALYSIS (Mycroft 1980; the heart of GHC's
+// demand analyser) proves it anyway: a greatest fixpoint over the whole group at
+// once shows 'calls' can never reach the answer or an effect. Dead-argument
+// elimination (Aether 31.0) then deletes it from both functions and every call
+// site — so the per-iteration 'calls + 1' vanishes, the answer stays exactly 55,
+// and the VM step count falls. The Demand tab shows the signatures:
+//   sumUp   :: total(used) -> calls(dropped) -> n(used)
+//   sumDown :: total(used) -> calls(dropped) -> n(used)
+
+let rec sumUp = fn total -> fn calls -> fn n ->
+      if n == 0 then total
+      else sumDown (total + n) (calls + 1) (n - 1)
+  and sumDown = fn total -> fn calls -> fn n ->
+      if n == 0 then total
+      else sumUp (total + n) (calls + 1) (n - 1)
+in sumUp 0 0 10`,
+  },
+  {
     id: 'gc-stress',
     title: 'Garbage collector',
     blurb: 'Open the WebAssembly tab, tick "stress GC", and watch the heap stay bounded.',

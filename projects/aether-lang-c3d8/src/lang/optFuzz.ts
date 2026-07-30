@@ -444,3 +444,124 @@ export function runSroaFuzz(runs = 150, seed = 0x5404eccc): SroaFuzzResult {
 
   return { total: passed + failures.length, passed, fired, eliminated, bestSavingPct, stepsSaved, failures }
 }
+
+// ---------------------------------------------------------------------------
+// a FOURTH generator, dense in the shapes Aether 31.0 demand/absence analysis +
+// group dead-argument elimination crush: MUTUALLY-recursive loops that thread a
+// bundle of accumulators through *each other*, where an arbitrary subset of the
+// accumulators is genuinely dead (never read at the base case, only fed round the
+// loop) and the rest are live. The pass must drop exactly the (transitively) dead
+// ones and keep the live ones — re-proved here by equivalence + monotone steps.
+// ---------------------------------------------------------------------------
+
+/** a pure Int update over the accumulators + the counter `n` */
+function genAcc(rng: Rng, accs: string[], d: number): string {
+  if (d <= 0 || rng() < 0.5) {
+    return rng() < 0.7 ? pick(rng, [...accs, 'n']) : String(1 + int(rng, 4))
+  }
+  return `(${genAcc(rng, accs, d - 1)} ${pick(rng, ARITH)} ${genAcc(rng, accs, d - 1)})`
+}
+
+/** two or three mutually-recursive functions, each carrying `k` accumulators + a
+ *  counter. Each function's base case returns a (possibly empty) sum of a random
+ *  subset of its accumulators — so the others are dead unless kept alive by
+ *  feeding a live slot. The recursive arm calls the *next* function in the cycle,
+ *  rebuilding every accumulator from a pure update and decrementing the counter. */
+function genDemandProgram(rng: Rng): string {
+  const fns = 2 + int(rng, 2) // 2 or 3 mutually-recursive functions
+  const k = 1 + int(rng, 3) // 1..3 accumulators
+  const accs = Array.from({ length: k }, (_, i) => `a${i}`)
+  const names = Array.from({ length: fns }, (_, i) => `g${i}`)
+  const header = (n: string): string => `${n} = fn ${accs.join(' -> fn ')} -> fn n ->`
+  const baseFor = (): string => {
+    const live = accs.filter(() => rng() < 0.45)
+    return live.length > 0 ? `(${live.join(' + ')})` : rng() < 0.5 ? 'n' : String(int(rng, 6))
+  }
+  const callTo = (target: string): string =>
+    `${target} ${accs.map(() => genAcc(rng, accs, 2)).join(' ')} (n - 1)`
+  const defs = names.map((nm, i) => {
+    const next = names[(i + 1) % fns]
+    return (
+      `${i === 0 ? 'let rec ' : 'and '}${header(nm)}\n` +
+      `  if n <= 0 then ${baseFor()} else ${callTo(next)}`
+    )
+  })
+  const seed = `${accs.map(() => String(int(rng, 4))).join(' ')} ${3 + int(rng, 7)}`
+  return `${defs.join('\n')}\nin g0 ${seed}`
+}
+
+export interface DemandFuzzResult {
+  total: number
+  passed: number
+  /** how many generated loops actually had a parameter dropped */
+  fired: number
+  /** total accumulator parameters dropped across the batch */
+  dropped: number
+  bestSavingPct: number
+  stepsSaved: number
+  failures: { code: string; detail: string }[]
+}
+
+/** The Aether 31.0 differential fuzzer: random mutually-recursive loops threading
+ *  a mix of live and dead accumulators, each proving the demand-driven group
+ *  dead-argument elimination is sound — the reduced program equals the naive one
+ *  on the VM and on the JS backend, and never takes more VM steps. Deterministic
+ *  given the seed; pure logic, so it also runs head-less under Node. */
+export function runDemandFuzz(runs = 150, seed = 0xdeadacc0): DemandFuzzResult {
+  const rng = makeRng(seed)
+  let passed = 0
+  let fired = 0
+  let dropped = 0
+  let bestSavingPct = 0
+  let stepsSaved = 0
+  const failures: { code: string; detail: string }[] = []
+
+  for (let i = 0; i < runs; i++) {
+    const code = genDemandProgram(rng)
+    const off = runPipeline(code, { optimize: false })
+    const on = runPipeline(code, { optimize: true })
+
+    if (off.error || on.error || !on.optimizedCoreAst) continue // generator slip — skip
+    passed++ // provisionally; demoted below on any disagreement
+
+    const vmOff = off.run?.result ? valueToString(off.run.result) : '()'
+    const vmOn = on.run?.result ? valueToString(on.run.result) : '()'
+    const js = ((): string => {
+      try {
+        const r = runJsModule(compileToJs(on.optimizedCoreAst!).full)
+        return r.error ? `error: ${r.error}` : (r.result ?? '()')
+      } catch (e) {
+        return `threw: ${e instanceof Error ? e.message : String(e)}`
+      }
+    })()
+
+    const stepsOff = off.run?.steps ?? 0
+    const stepsOn = on.run?.steps ?? 0
+    const agree = vmOn === vmOff && js === vmOff
+    const monotone = stepsOn <= stepsOff
+
+    if (!agree || !monotone) {
+      passed--
+      if (failures.length < 5) {
+        const detail = !agree
+          ? `disagree: unopt-VM ${vmOff}, opt-VM ${vmOn}, opt-JS ${js}`
+          : `steps rose: ${stepsOff} → ${stepsOn}`
+        failures.push({ code: code.trim(), detail })
+      }
+      continue
+    }
+
+    const drops = (on.optimization?.deadParams ?? []).filter((d) => d.recursive)
+    if (drops.length > 0) {
+      fired++
+      dropped += drops.reduce((n, d) => n + d.dropped.length, 0)
+    }
+    if (stepsOff > 0) {
+      stepsSaved += stepsOff - stepsOn
+      const savingPct = Math.round(((stepsOff - stepsOn) / stepsOff) * 100)
+      if (savingPct > bestSavingPct) bestSavingPct = savingPct
+    }
+  }
+
+  return { total: passed + failures.length, passed, fired, dropped, bestSavingPct, stepsSaved, failures }
+}

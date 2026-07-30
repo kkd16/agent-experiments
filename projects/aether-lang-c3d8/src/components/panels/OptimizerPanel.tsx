@@ -34,6 +34,8 @@ const PASS_LABELS: Record<string, string> = {
     'call-pattern specialisation / SpecConstr (recurse on a tuple/constructor argument’s fields so the per-iteration box + match vanish)',
   'float-in': 'float-in (sink a pure binding past a conditional into the one branch that uses it)',
   'dead-param': 'dead-argument elimination (drop a parameter whose value never reaches the result)',
+  'dead-param-group':
+    'dead-argument elimination across a mutually-recursive group (demand/absence analysis, Aether 31.0)',
   eqsat: 'equality saturation (e-graph superoptimiser over integer-arithmetic islands)',
   fuse: 'short-cut fusion (delete the intermediate list flowing between two combinators)',
 }
@@ -475,13 +477,14 @@ export default function OptimizerPanel({ code }: Props) {
 
       {stats.deadParams.length > 0 && (
         <div className="opt-passes">
-          <h4>Dead-argument elimination (Aether 20.0)</h4>
+          <h4>Dead-argument elimination (Aether 20.0 · 31.0)</h4>
           <p className="panel-note" style={{ marginTop: 0 }}>
             A parameter whose value can never reach the result is dropped from the function and from
-            every saturated call site — both an <em>unused</em> parameter and a <em>useless
-            accumulator</em> that only ever feeds its own recursive slot (its per-iteration update runs
-            for nothing). Fires only when every dropped argument is pure, so no effect is lost and the VM
-            step count can only fall:
+            every saturated call site — an <em>unused</em> parameter, a <em>useless accumulator</em>{' '}
+            that only feeds its own recursive slot, or (Aether 31.0, backed by the{' '}
+            <strong>demand/absence analysis</strong> — see the Demand tab) an accumulator threaded round
+            a whole <em>mutually-recursive group</em> and thrown away. Fires only when every dropped
+            argument is pure, so no effect is lost and the VM step count can only fall:
           </p>
           <table className="opt-table">
             <tbody>
