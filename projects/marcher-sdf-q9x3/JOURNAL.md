@@ -134,10 +134,13 @@ a second or two on a GPU. This is the biggest jump in image quality the engine h
 - [x] **World → Render → Lighting** control: a **Ray march / Path trace** segmented switch, a
   **Bounces** slider (1–12) and a **Firefly clamp** slider, with hints and an accumulation
   reminder. A `path traced` badge lights up in the viewport HUD.
-- [x] **Two GI showcase presets.** **Cornell Box** — the canonical test: a white room with one
+- [x] **Three GI showcase presets.** **Cornell Box** — the canonical test: a white room with one
   red and one green wall and a glowing ceiling panel; the walls bleed colour onto the floor and
   blocks. **Radiance** — a matte white sphere between a red and a blue wall under a soft sun, its
   shadow flanks glowing red and blue from bounce light, with a chrome sphere mirroring it all.
+  **Nocturne** — a dark room with no sun, lit only by a magenta and a cyan neon bar, so the
+  central shapes glow magenta on one flank and cyan on the other and mix toward white between
+  them: the multi-emitter next-event estimation on show.
 - [x] **Runtime-verified.** Beyond the CI gate, drove the built app in headless Chromium
   (SwiftShader WebGL2): the path-traced Cornell Box compiles and renders with visible red/green
   colour bleeding and soft contact shadows, no shader-compile error, badge + spp HUD live.

@@ -845,6 +845,61 @@ function radiance(): Scene {
   )
 }
 
+// Pure emissive global illumination: a dark room with no sun, lit only by two
+// coloured neon bars — magenta on the left, cyan on the right. Path-traced, each
+// bar is a real area light; where their beams overlap on the central shapes the
+// colours mix toward white, one flank of every object glows magenta and the other
+// cyan, and the soft penumbrae come straight from the bars' finite size. The
+// clearest demonstration of the multi-emitter next-event estimation.
+function nocturne(): Scene {
+  return base(
+    [
+      mk('roundBox', { name: 'Floor', params: [3, 0.1, 2.4, 0.05], pos: [0, -0.1, 0], color: '#15151c', rough: 0.55, refl: 0.12, op: 'union', smooth: false }),
+      mk('sphere', { name: 'Sphere', params: [0.62, 0, 0, 0], pos: [-0.55, 0.62, 0], color: '#d8d8e0', rough: 0.85, op: 'union', smooth: false }),
+      mk('octahedron', { name: 'Gem', params: [0.7, 0, 0, 0], pos: [0.7, 0.66, 0.1], color: '#e8e8ee', metallic: 0.6, rough: 0.25, refl: 0.4, op: 'union', smooth: false, spin: [0, 24, 0] }),
+      mk('roundBox', {
+        name: 'Neon left (magenta)',
+        params: [0.05, 0.9, 0.05, 0.04],
+        pos: [-1.9, 1.0, 0],
+        color: '#ff3ba7',
+        emission: 3.4,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+      }),
+      mk('roundBox', {
+        name: 'Neon right (cyan)',
+        params: [0.05, 0.9, 0.05, 0.04],
+        pos: [1.9, 1.0, 0],
+        color: '#37e0ff',
+        emission: 3.4,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), autoRotate: true, autoRotateSpeed: 5, target: [0, 0.6, 0], distance: 6.4, elevation: 14, azimuth: 8 },
+      sun: { ...defaultSun(), intensity: 0 },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#04040a'),
+        horizonColor: c('#04040a'),
+        groundColor: c('#04040a'),
+        ambient: 0,
+        fogColor: c('#04040a'),
+        fogDensity: 0.02,
+        emissive: true,
+        emissiveStrength: 1.1,
+      },
+      ground: { ...defaultGround(), enabled: false },
+      quality: { ...defaultQuality(), maxSteps: 130, maxDist: 50 },
+      post: { ...defaultPost(), exposure: 1.35, vignette: 0.6, saturation: 1.2 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 5, maxSamples: 640, fireflyClamp: 8 },
+    },
+  )
+}
+
 export interface Preset {
   id: string
   name: string
@@ -855,6 +910,7 @@ export const PRESETS: Preset[] = [
   { id: 'genesis', name: 'Genesis', build: genesis },
   { id: 'cornell', name: 'Cornell Box', build: cornellBox },
   { id: 'radiance', name: 'Radiance', build: radiance },
+  { id: 'nocturne', name: 'Nocturne', build: nocturne },
   { id: 'lattice', name: 'Lattice', build: lattice },
   { id: 'orrery', name: 'Orrery', build: orrery },
   { id: 'monolith', name: 'Monolith', build: monolith },
