@@ -505,3 +505,15 @@ live here as long as you like.
 - [ ] Implement a "Math Word Search" mini-game mode.
 - [x] Add an option to change the shape of the flashcard (e.g. circle, hexagon).
 - [x] Include a "Lifetime Stars Earned" metric in statistics.
+
+## Yet Another Set of Jules Improvements
+- [x] Add an option to disable the timer visually while it still runs in the background.
+- [x] Implement a feature to track the number of "perfect sessions" (zero mistakes).
+- [x] Add a small "Session Progress" text (e.g. Question 5/20) when a fixed number of questions is selected.
+- [x] Implement an option to toggle "Bouncing Numbers" animation on the flashcard.
+- [x] Add a visual "Time Bonus" popup when answering quickly.
+- [x] Create a feature that tracks the "Most Played Mode" in lifetime statistics.
+- [x] Add an option to change the text color of the equation.
+- [x] Implement an option to toggle "Screen Shake" on combo milestones (e.g. every 10).
+- [x] Add a small "New Record!" icon next to stats that have improved in the current session.
+- [x] Implement a "Blind Mode" where the numbers disappear after 2 seconds.
