@@ -43,6 +43,27 @@ export interface Material {
   roughness: number
   reflectivity: number
   emission: number
+  /**
+   * Dielectric transmission, 0..1. Above 0 the surface behaves as glass: the path
+   * tracer splits each hit into a Fresnel-weighted reflection and refraction, and
+   * the fast raymarch shade approximates it with a two-refraction see-through.
+   * Blends smoothly with the opaque base material (0 = opaque, 1 = clear glass).
+   */
+  transmission: number
+  /** Index of refraction for the glass (1 = air, ~1.33 water, ~1.5 glass, ~2.4 diamond). */
+  ior: number
+  /**
+   * Beer–Lambert absorption density inside the glass. Thicker/denser glass tints
+   * transmitted light toward `color`'s complement, so a blue-tinted absorbing glass
+   * looks blue by eating red/green as light travels through it. 0 = perfectly clear.
+   */
+  absorption: number
+  /**
+   * Chromatic dispersion: how much the IOR varies across wavelengths. Above 0 the
+   * path tracer traces one wavelength per sample and the accumulation reconstructs a
+   * prism rainbow at refractive edges. 0 = achromatic glass.
+   */
+  dispersion: number
   /** Procedural pattern woven into the albedo. */
   texture: TextureKind
   /** Feature frequency of the texture (world units). */
@@ -184,6 +205,18 @@ export interface Post {
   gamma: number
   vignette: number
   saturation: number
+  /**
+   * Bloom intensity — how strongly bright, over-1.0 regions (emitters, hot
+   * highlights, the sun) bleed a soft glow into their surroundings. 0 = off. The
+   * glow is a real HDR bright-pass + separable Gaussian, folded in before tonemap,
+   * so it only kindles where the *linear* image is genuinely bright. Accumulation
+   * path only (the direct fallback has no HDR buffer to bloom from).
+   */
+  bloom: number
+  /** Linear-luminance threshold above which a pixel contributes to the bloom. */
+  bloomThreshold: number
+  /** Radius of the bloom blur, in multiples of the base kernel (wider = dreamier). */
+  bloomRadius: number
 }
 
 /**

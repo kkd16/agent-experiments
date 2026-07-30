@@ -7,11 +7,12 @@
 // it never affects the CI lint/build gate — it's a developer safety net.
 
 import { describe, expect, it } from 'vitest'
-import { buildShader } from '../src/sdf/shader'
+import { BLOOM_BLUR_SHADER, BLOOM_PREFILTER_SHADER, buildShader } from '../src/sdf/shader'
 import { generateMap } from '../src/sdf/codegen'
 import { defaultScene, PRESETS } from '../src/scene/presets'
 import { DOMAIN_LIST, PRIMITIVES, PRIMITIVE_LIST, makeNode } from '../src/scene/primitives'
 import { parseScene, serializeScene } from '../src/scene/io'
+import { buildStandaloneHtml } from '../src/export/standalone'
 import type { DomainMod, PrimitiveKind, Scene } from '../src/scene/types'
 
 /** Strip GLSL comments so prose parentheses/braces don't skew the balance check. */
@@ -75,6 +76,65 @@ describe('shader assembly', () => {
     const cornell = PRESETS.find((p) => p.id === 'cornell')?.build()
     expect(cornell?.render.integrator, 'Cornell Box is path-traced').toBe('pathtrace')
     expect(cornell?.env.emissive, 'Cornell Box has an emitter light').toBe(true)
+  })
+
+  it('carries the dielectric glass + dispersion machinery in every variant', () => {
+    const scene = defaultScene()
+    const g = makeNode('sphere')
+    g.material.transmission = 1
+    g.material.ior = 1.5
+    g.material.absorption = 2
+    g.material.dispersion = 0.6
+    scene.nodes = [g, ...scene.nodes]
+    scene.render.integrator = 'pathtrace'
+    const built = buildShader(scene)
+    for (const variant of [built.fragment, built.fragmentAccum]) {
+      assertBalanced('glass', variant)
+      for (const sym of ['uMatGlass', 'glassOf(', 'fresnelDielectric(', 'raymarchSide(', 'uDispersive']) {
+        expect(variant, `glass shader defines ${sym}`).toContain(sym)
+      }
+    }
+    // The direct/fast path approximates glass; the path tracer does it for real.
+    expect(built.fragment, 'direct path has the glass see-through').toContain('glassShade(')
+    expect(built.fragmentAccum, 'path tracer refracts the ray').toContain('refract(')
+  })
+
+  it('wires the bloom passes and present composite', () => {
+    const built = buildShader(defaultScene())
+    // The present pass reads the bloom texture and its intensity.
+    for (const sym of ['uAccum', 'uBloomTex', 'uBloomInt']) {
+      expect(built.present, `present samples ${sym}`).toContain(sym)
+    }
+    // The two scene-independent bloom passes are balanced, well-formed shaders.
+    assertShaderVariant('bloom/prefilter', BLOOM_PREFILTER_SHADER)
+    assertShaderVariant('bloom/blur', BLOOM_BLUR_SHADER)
+    expect(BLOOM_PREFILTER_SHADER, 'prefilter thresholds').toContain('uThresh')
+    expect(BLOOM_BLUR_SHADER, 'blur is directional').toContain('uDir')
+  })
+
+  it('bakes the accumulation path tracer + bloom into the standalone export', () => {
+    const cornell = PRESETS.find((p) => p.id === 'cornell')!.build()
+    const html = buildStandaloneHtml(cornell, 'Test')
+    expect(html.startsWith('<!doctype html>'), 'is an HTML document').toBe(true)
+    expect(html, 'closes the document').toContain('</html>')
+    expect(html, 'no undefined leaked into the export').not.toContain('undefined')
+    // Ships every shader the progressive path needs, plus the glass uniform upload.
+    for (const sym of ['FRAG_ACCUM', 'FRAG_PRESENT', 'FRAG_PRE', 'FRAG_BLUR', 'uMatGlass', 'progAccum']) {
+      expect(html, `export ships ${sym}`).toContain(sym)
+    }
+    // A path-traced preset bakes integrator = 1 into the config.
+    expect(html, 'config marks the path tracer').toContain('"integrator":1')
+  })
+
+  it('ships the glass, dispersion and bloom showcase presets', () => {
+    const prism = PRESETS.find((p) => p.id === 'prism')?.build()
+    expect(prism, 'Prism exists').toBeTruthy()
+    expect(prism?.nodes.some((n) => n.material.dispersion > 0), 'Prism disperses').toBe(true)
+    const crystal = PRESETS.find((p) => p.id === 'crystal')?.build()
+    expect(crystal?.nodes.some((n) => n.material.transmission > 0), 'Crystal has glass').toBe(true)
+    expect(crystal?.nodes.some((n) => n.material.absorption > 0), 'Crystal absorbs').toBe(true)
+    const supernova = PRESETS.find((p) => p.id === 'supernova')?.build()
+    expect(supernova?.post.bloom, 'Supernova blooms').toBeGreaterThan(0)
   })
 
   it('generates a balanced map() for every primitive × modifier combination', () => {
@@ -144,6 +204,11 @@ describe('scene file round-trip', () => {
     expect(parsed?.camera.aperture).toBe(0)
     expect(parsed?.sun.angle).toBeGreaterThanOrEqual(0)
     expect(parsed?.env.emissive).toBe(false)
+    // Session-5 fields backfill on an old save.
+    expect(parsed?.nodes[0].material.transmission).toBe(0)
+    expect(parsed?.nodes[0].material.ior).toBeGreaterThan(1)
+    expect(parsed?.post.bloom).toBe(0)
+    expect(parsed?.post.bloomThreshold).toBeGreaterThan(0)
   })
 
   it('rejects junk input', () => {

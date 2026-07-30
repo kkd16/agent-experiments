@@ -36,6 +36,10 @@ interface NodeOpts {
   rough?: number
   refl?: number
   emission?: number
+  transmission?: number
+  ior?: number
+  absorption?: number
+  dispersion?: number
   op?: BooleanOp
   smooth?: boolean
   radius?: number
@@ -74,6 +78,10 @@ function mk(kind: PrimitiveKind, o: NodeOpts = {}): SdfNode {
   if (o.rough != null) n.material.roughness = o.rough
   if (o.refl != null) n.material.reflectivity = o.refl
   if (o.emission != null) n.material.emission = o.emission
+  if (o.transmission != null) n.material.transmission = o.transmission
+  if (o.ior != null) n.material.ior = o.ior
+  if (o.absorption != null) n.material.absorption = o.absorption
+  if (o.dispersion != null) n.material.dispersion = o.dispersion
   if (o.op) n.combine.op = o.op
   if (o.smooth != null) n.combine.smooth = o.smooth
   if (o.radius != null) n.combine.radius = o.radius
@@ -165,7 +173,15 @@ export function defaultQuality(): Quality {
 }
 
 export function defaultPost(): Post {
-  return { exposure: 1.15, gamma: 2.2, vignette: 0.35, saturation: 1.08 }
+  return {
+    exposure: 1.15,
+    gamma: 2.2,
+    vignette: 0.35,
+    saturation: 1.08,
+    bloom: 0,
+    bloomThreshold: 1.1,
+    bloomRadius: 1,
+  }
 }
 
 function base(nodes: SdfNode[], over: Partial<Scene> = {}): Scene {
@@ -900,6 +916,197 @@ function nocturne(): Scene {
   )
 }
 
+// Prism — chromatic dispersion. A cut-glass gem and a bead rest on a bright checker
+// floor and bend it beneath them; because each path commits to one wavelength the
+// accumulation reconstructs a full rainbow along every refracting edge. The
+// signature of the new dielectric path.
+function prism(): Scene {
+  return base(
+    [
+      mk('octahedron', {
+        name: 'Gem',
+        params: [1.0, 0, 0, 0],
+        pos: [0, 1.0, 0],
+        rot: [10, 22, 0],
+        color: '#ffffff',
+        rough: 0.02,
+        transmission: 1,
+        ior: 1.7,
+        dispersion: 0.55,
+      }),
+      mk('sphere', {
+        name: 'Bead',
+        params: [0.5, 0, 0, 0],
+        pos: [1.35, 0.5, 0.7],
+        color: '#ffffff',
+        rough: 0.02,
+        transmission: 1,
+        ior: 1.5,
+        dispersion: 0.45,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: {
+        ...defaultCamera(),
+        autoRotate: false,
+        distance: 5,
+        elevation: 16,
+        azimuth: 26,
+        target: [0, 0.85, 0],
+        fov: 42,
+      },
+      sun: { ...defaultSun(), intensity: 1.8, elevation: 44, azimuth: 120, angle: 1.5, color: c('#ffffff') },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#6f92c8'),
+        horizonColor: c('#e6eefb'),
+        groundColor: c('#4a5568'),
+        ambient: 0.4,
+        fogDensity: 0,
+      },
+      ground: { ...defaultGround(), checker: true, color1: c('#e9edf4'), color2: c('#2a3550'), height: 0 },
+      quality: { ...defaultQuality(), maxSteps: 190 },
+      post: { ...defaultPost(), exposure: 1.2, vignette: 0.45, saturation: 1.3, bloom: 0.22, bloomThreshold: 1.5 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 8, maxSamples: 768, fireflyClamp: 5 },
+    },
+  )
+}
+
+// Crystal — refraction + coloured absorption. A clear glass ball and a teal block
+// sit in an open studio box lit by a single panel: the ball bends the room behind
+// it, the block drinks red and green as light travels through it (Beer–Lambert), so
+// it glows teal from the inside. Path-traced.
+function crystal(): Scene {
+  const white = '#cfcfca'
+  const wall = (o: NodeOpts): SdfNode =>
+    mk('box', { color: white, rough: 0.9, refl: 0.02, op: 'union', smooth: false, ...o })
+  return base(
+    [
+      wall({ name: 'Floor', params: [1.6, 0.05, 1.6, 0], pos: [0, 0, 0] }),
+      wall({ name: 'Back wall', params: [1.6, 1.5, 0.05, 0], pos: [0, 1.5, -1.6] }),
+      wall({ name: 'Left wall (blue)', params: [0.05, 1.5, 1.6, 0], pos: [-1.6, 1.5, 0], color: '#3b6fb0' }),
+      wall({ name: 'Right wall (amber)', params: [0.05, 1.5, 1.6, 0], pos: [1.6, 1.5, 0], color: '#c46b2e' }),
+      mk('box', {
+        name: 'Light',
+        params: [0.6, 0.02, 0.5, 0],
+        pos: [0, 2.7, 0],
+        color: '#fff4e0',
+        emission: 4.0,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+      }),
+      mk('sphere', {
+        name: 'Clear ball',
+        params: [0.62, 0, 0, 0],
+        pos: [-0.6, 0.62, 0.25],
+        color: '#ffffff',
+        rough: 0.02,
+        transmission: 1,
+        ior: 1.5,
+        op: 'union',
+        smooth: false,
+      }),
+      mk('roundBox', {
+        name: 'Teal glass',
+        params: [0.4, 0.72, 0.4, 0.08],
+        pos: [0.62, 0.72, -0.25],
+        rot: [0, 18, 0],
+        color: '#3ad6c0',
+        rough: 0.03,
+        transmission: 1,
+        ior: 1.45,
+        absorption: 3.2,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: {
+        ...defaultCamera(),
+        autoRotate: false,
+        target: [0, 1.0, 0],
+        distance: 5.4,
+        azimuth: 0,
+        elevation: 6,
+        fov: 44,
+      },
+      sun: { ...defaultSun(), intensity: 0 },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#05060a'),
+        horizonColor: c('#05060a'),
+        groundColor: c('#05060a'),
+        ambient: 0.03,
+        fogDensity: 0,
+        emissive: true,
+        emissiveStrength: 1,
+      },
+      ground: { ...defaultGround(), enabled: false },
+      quality: { ...defaultQuality(), maxSteps: 170, maxDist: 40 },
+      post: { ...defaultPost(), exposure: 1.3, vignette: 0.3, saturation: 1.12, bloom: 0.2, bloomThreshold: 1.5 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 8, maxSamples: 768, fireflyClamp: 6 },
+    },
+  )
+}
+
+// Supernova — a bloom showcase. A blazing core and two neon rings on a dark stage;
+// the HDR bright-pass + Gaussian glare bleeds a soft halo from everything hotter
+// than the threshold. Uses the raymarch shade under accumulation so it stays clean
+// and animated while the glow does the work.
+function supernova(): Scene {
+  return base(
+    [
+      mk('sphere', { name: 'Core', params: [0.7, 0, 0, 0], pos: [0, 1.0, 0], color: '#ffd48a', emission: 2.4, rough: 1 }),
+      mk('torus', {
+        name: 'Ring',
+        params: [1.5, 0.06, 0, 0],
+        pos: [0, 1.0, 0],
+        rot: [80, 0, 0],
+        color: '#ff5da2',
+        emission: 1.5,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+        spin: [0, 0, 30],
+      }),
+      mk('torus', {
+        name: 'Ring 2',
+        params: [1.95, 0.05, 0, 0],
+        pos: [0, 1.0, 0],
+        rot: [66, 32, 0],
+        color: '#5db8ff',
+        emission: 1.2,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+        spin: [0, 0, -24],
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), distance: 6.5, elevation: 16, target: [0, 1.0, 0], autoRotate: true, autoRotateSpeed: 6 },
+      sun: { ...defaultSun(), intensity: 0 },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#03040a'),
+        horizonColor: c('#070a16'),
+        groundColor: c('#03040a'),
+        ambient: 0.05,
+        fogDensity: 0.012,
+        fogColor: c('#05060f'),
+        emissive: true,
+        emissiveStrength: 1.4,
+      },
+      ground: { ...defaultGround(), enabled: false },
+      quality: { ...defaultQuality(), maxSteps: 140, reflections: true },
+      post: { ...defaultPost(), exposure: 1.15, vignette: 0.5, saturation: 1.25, bloom: 0.85, bloomThreshold: 1.05, bloomRadius: 1.7 },
+      render: { ...defaultRender(), integrator: 'raymarch', maxSamples: 256 },
+    },
+  )
+}
+
 export interface Preset {
   id: string
   name: string
@@ -910,6 +1117,9 @@ export const PRESETS: Preset[] = [
   { id: 'genesis', name: 'Genesis', build: genesis },
   { id: 'cornell', name: 'Cornell Box', build: cornellBox },
   { id: 'radiance', name: 'Radiance', build: radiance },
+  { id: 'prism', name: 'Prism', build: prism },
+  { id: 'crystal', name: 'Crystal', build: crystal },
+  { id: 'supernova', name: 'Supernova', build: supernova },
   { id: 'nocturne', name: 'Nocturne', build: nocturne },
   { id: 'lattice', name: 'Lattice', build: lattice },
   { id: 'orrery', name: 'Orrery', build: orrery },

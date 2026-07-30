@@ -16,7 +16,9 @@ This file is the app's long-lived memory. Read it first when you pick the app ba
 - `src/sdf/library.ts` — the GLSL library: primitive distance functions + CSG operators.
 - `src/sdf/codegen.ts` — compiles a `Scene` into a GLSL `map()` + material table.
 - `src/sdf/shader.ts` — assembles the full vertex + fragment shader (camera, lighting, AO,
-  soft shadows, tonemapping) around the generated `map()`.
+  soft shadows, the Monte-Carlo path tracer with its **dielectric glass** lobe, tonemapping)
+  around the generated `map()`. Also owns the standalone **bloom** passes (prefilter + separable
+  Gaussian) and the present shader that composites them.
 - `src/gl/renderer.ts` — WebGL2 plumbing: program compile, uniforms, the render loop, FPS.
 - `src/gl/camera.ts` — orbit camera maths + pointer/wheel interaction state.
 - `src/hooks/useRenderer.ts` — binds the renderer to a canvas and the React scene state.
@@ -148,17 +150,70 @@ a second or two on a GPU. This is the biggest jump in image quality the engine h
   machinery (`pathTrace`/`neeSun`/`neeEmitters`/`cosineHemisphere`/`glossyLobe`/`visibility` +
   the `uIntegrator` dispatch) and that the showcase presets ship in path-trace mode.
 
+### Session 5 plan (claude, 2026-07-30) — "dielectrics & the finished image"
+
+The headline is **glass**. Until now the BSDF only knew diffuse and reflection, so every
+material was opaque — the one thing a renderer needs to look like the real world was missing.
+This session gives the path tracer a full **dielectric lobe** (refraction, Fresnel, Beer–Lambert
+absorption, total internal reflection) and, riding on the accumulation buffer, **chromatic
+dispersion** — real prisms. Around it, the session clears the rest of the rendering backlog:
+a proper HDR **bloom**, and **baking the whole progressive path tracer into the standalone
+export** so a shared page converges to the same GI image the studio shows.
+
+- [x] **Dielectric glass / refraction lobe.** A material gains `transmission`, `ior`,
+  `absorption` and `dispersion`. In the path tracer each hit on a transmissive surface splits
+  into a Fresnel-weighted reflection and refraction; a side-aware sphere trace (`raymarchSide`,
+  stepping by `side·SDF`) marches the ray *through* the solid and out the far face, tracking
+  which side of the interface we're on. Total internal reflection is handled (GLSL `refract`
+  returns 0 → reflect). The fast raymarch shade gets a two-refraction see-through so glass reads
+  in the live preview too.
+- [x] **Beer–Lambert coloured absorption.** While a ray is inside a dielectric, throughput is
+  attenuated by `exp(-σ·distance)` with `σ = absorption·(1 − colour)`, so thick/dense glass eats
+  its colour's complement and glows from the inside — teal glass looks teal.
+- [x] **Chromatic dispersion.** When any material disperses, each path commits to a single
+  wavelength (R/G/B chosen uniformly, throughput pre-tinted 3× that channel so the average is
+  white) and refracts at that wavelength's IOR. The accumulation reconstructs a full prism rainbow
+  along every refracting edge — physically, not as a texture.
+- [x] **Bloom / glare post pass.** A real HDR bright-pass (hue-preserving soft knee above a
+  threshold) + a separable Gaussian at half resolution, folded into the present pipeline before
+  tonemap (three tiny fullscreen passes: prefilter → blur-H → blur-V). Threshold + radius +
+  intensity in World → Post. Accumulation path only (the direct fallback has no HDR buffer).
+- [x] **Path tracer baked into the standalone export.** The exporter now ships the accumulation
+  shader, present pass and bloom passes plus a full progressive runtime (RGBA16F ping-pong,
+  view-hash reset, bloom), so an exported path-traced scene converges to the same global-
+  illumination image — with graceful fallback to the direct shader when float targets are absent.
+- [x] **Three showcase presets** — **Prism** (a cut-glass gem + bead dispersing a checker floor
+  into rainbows), **Crystal** (a clear ball and a teal absorbing block in a lit studio box), and
+  **Supernova** (a blooming core + neon rings). Plus a Node → **Glass** inspector section, World →
+  Post **Bloom** controls, and a refreshed Help overlay.
+- [x] **Tests + verification.** New Vitest cases assert the glass/dispersion machinery is present
+  in every shader variant, the bloom passes + present composite are wired, and the standalone
+  export bakes the accumulation path tracer + glass uniforms; the JSON backfill test covers the new
+  material/post fields. Beyond the CI gate, every preset's three shader variants **and** the two
+  bloom passes were compiled+linked on real SwiftShader WebGL2 (59/59), and the exported HTML for
+  Cornell / Prism / Crystal / Supernova / a glass-stress scene was driven headless — no
+  shader-compile or JS errors, non-blank HDR frames with visible refraction, absorption tint,
+  dispersion fringing and bloom.
+
 ### Later / backlog
 
-- [ ] Node groups / sub-trees with their own local blend (needs a hierarchy refactor of the
-  flat node list — deferred to keep this session's changes verifiable without a GPU in CI).
-- [ ] Denoise the low-spp accumulation (e.g. an À-Trous / edge-aware pass) for faster convergence.
-- [ ] Bloom / glare post pass driven by the emissive channel.
-- [ ] Bake the path tracer into the standalone HTML export (needs the accumulation runtime, not
-  just the single-pass shader the exporter ships today).
-- [ ] Multiple-importance sampling so glossy surfaces get NEE too (currently glossy lobes rely on
-  BSDF sampling alone, which is a touch noisier on rough metals under a small sun).
-- [ ] Transmission / refraction lobe (glass) — the BSDF only does diffuse + reflection so far.
+- [x] Bloom / glare post pass driven by the emissive channel. *(Session 5)*
+- [x] Bake the path tracer into the standalone HTML export. *(Session 5)*
+- [x] Transmission / refraction lobe (glass) — diffuse + reflection + **dielectric**. *(Session 5)*
+- [ ] **Multiple-importance sampling** for glossy NEE. Deliberately deferred: the engine's
+  radiometry is artistic (no explicit 1/π, next-event terms folded into "1"), so a *correct* MIS
+  estimator needs the whole radiometry reworked to physical units first — bolting a normalised
+  glossy NEE onto the current scale would bias highlights in a way that can't be verified without a
+  GPU in CI. Worth doing as its own session (physical radiometry → power-heuristic MIS).
+- [ ] Node groups / sub-trees with their own local blend (needs a hierarchy refactor of the flat
+  node list).
+- [ ] Denoise the low-spp accumulation (À-Trous / edge-aware, or temporal reprojection) — dispersion
+  triples variance, so a denoiser would pay off most on the glass presets.
+- [ ] **Caustics** — glass currently refracts light *to the eye* but doesn't focus bright caustic
+  patterns onto diffuse surfaces (would want light-tracing or a photon pass).
+- [ ] **Frosted glass** — scatter the refraction direction by roughness (rough dielectrics), and a
+  **thin-film / iridescence** term for soap-bubble colour.
+- [ ] **HDRI / image-based environment** instead of the analytic sky gradient.
 
 ## Session log
 
@@ -234,3 +289,30 @@ a second or two on a GPU. This is the biggest jump in image quality the engine h
     + build-output) is green, `pnpm test` passes 9 tests (incl. a new GI-assembly case), and the
     built app was driven in headless Chromium (SwiftShader WebGL2): the Cornell Box path-traces
     with clear red/green colour bleeding and soft contact shadows, no shader-compile error.
+- 2026-07-30 (claude, session 5): "Dielectrics & the finished image" — gave the path tracer a real
+  **glass** lobe and cleared the rest of the rendering backlog.
+  • **Dielectric glass** (`src/sdf/shader.ts`) — materials gain `transmission`/`ior`/`absorption`/
+    `dispersion`. `pathTrace()` now splits each transmissive hit into a Fresnel reflection and a
+    refraction, uses a new side-aware march (`raymarchSide`, stepping by `side·SDF`) to travel
+    through the solid, tracks inside/outside `side`, handles total internal reflection, and
+    attenuates by **Beer–Lambert** absorption (`σ = absorption·(1 − colour)`) while inside — so
+    coloured glass tints from within. The fast raymarch shade got a matching two-refraction
+    see-through (`glassShade`) so glass reads live too.
+  • **Chromatic dispersion** — one wavelength per path (R/G/B, throughput pre-tinted 3×, IOR shifted
+    per channel), so the accumulation reconstructs a real prism rainbow at refracting edges.
+    Gated by a scene-wide `uDispersive` flag so non-dispersive scenes pay nothing.
+  • **Bloom** — new `BLOOM_PREFILTER_SHADER` (hue-preserving over-threshold bright-pass + ½-res
+    downsample) and `BLOOM_BLUR_SHADER` (separable 9-tap Gaussian); the renderer runs
+    prefilter→blur-H→blur-V into linearly-filtered half-res targets and the present pass composites
+    the glow before tonemap. Threshold/radius/intensity in World → Post; post stays out of the view
+    hash so tweaking bloom never resets the accumulation.
+  • **Standalone export bakes the path tracer** — the exporter ships the accum/present/bloom shaders
+    plus a full progressive runtime (RGBA16F ping-pong, view-hash reset, bloom) with fallback to the
+    direct shader, so a shared page converges to the same GI image (with glass + bloom).
+  • **Presets** Prism (dispersion), Crystal (refraction + coloured absorption), Supernova (bloom);
+    plus a Node → Glass inspector section, World → Post bloom controls, refreshed Help.
+  • **Verified** — CI gate green, `pnpm test` passes 13 (4 new: glass/dispersion assembly, bloom
+    wiring, standalone-accum bake, JSON backfill). Beyond CI: compiled+linked all shader variants
+    for every preset + the two bloom passes on real SwiftShader WebGL2 (59/59), and drove the
+    exported HTML for Cornell/Prism/Crystal/Supernova/glass-stress headless — no compile/JS errors,
+    HDR frames showing refraction, teal absorption, dispersion fringing and a clean bloom halo.
