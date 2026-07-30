@@ -56,6 +56,10 @@ function domainLines(node: SdfNode, i: number): string[] {
       return [`  pl = opTwist(pl, ${a}.x);`]
     case 'bend':
       return [`  pl = opBend(pl, ${a}.x);`]
+    case 'elongate':
+      return [`  pl = opElongate(pl, ${a}.xyz);`]
+    case 'polar':
+      return [`  pl = opPolar(pl, ${a}.x);`]
     default:
       return []
   }

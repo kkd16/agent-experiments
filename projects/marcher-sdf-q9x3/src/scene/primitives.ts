@@ -209,6 +209,8 @@ export function defaultModifier(): Modifier {
     mirror: [0, 0, 0],
     twist: 1.2,
     bend: 0.4,
+    elongate: [0.4, 0, 0],
+    polar: 6,
     round: 0,
     shellOn: false,
     shell: 0.06,
@@ -249,9 +251,19 @@ export const DOMAIN_LABELS: Record<Modifier['domain'], string> = {
   mirror: 'Mirror',
   twist: 'Twist',
   bend: 'Bend',
+  elongate: 'Elongate',
+  polar: 'Polar',
 }
 
-export const DOMAIN_LIST: Array<Modifier['domain']> = ['none', 'repeat', 'mirror', 'twist', 'bend']
+export const DOMAIN_LIST: Array<Modifier['domain']> = [
+  'none',
+  'repeat',
+  'mirror',
+  'twist',
+  'bend',
+  'elongate',
+  'polar',
+]
 
 export const TEXTURE_LABELS: Record<Material['texture'], string> = {
   none: 'None',

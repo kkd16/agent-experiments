@@ -20,6 +20,10 @@ function packModA(n: SdfNode): [number, number, number, number] {
       return [m.twist, 0, 0, 0]
     case 'bend':
       return [m.bend, 0, 0, 0]
+    case 'elongate':
+      return [m.elongate[0], m.elongate[1], m.elongate[2], 0]
+    case 'polar':
+      return [m.polar, 0, 0, 0]
     default:
       return [0, 0, 0, 0]
   }
@@ -113,6 +117,9 @@ function buildConfig(scene: Scene) {
     aoStr: q.aoStrength,
     reflect: q.reflections ? 1 : 0,
     aa: q.antialias ? 2 : 1,
+    emissive: scene.env.emissive ? 1 : 0,
+    emissiveStr: scene.env.emissiveStrength,
+    emisShadow: scene.env.emissiveShadows ? 1 : 0,
     exposure: scene.post.exposure,
     gamma: scene.post.gamma,
     vignette: scene.post.vignette,
@@ -183,6 +190,9 @@ else {
   gl.uniform1f(u('uAoStr'), S.aoStr);
   gl.uniform1i(u('uReflect'), S.reflect);
   gl.uniform1i(u('uAA'), S.aa);
+  gl.uniform1i(u('uEmissive'), S.emissive);
+  gl.uniform1f(u('uEmissiveStr'), S.emissiveStr);
+  gl.uniform1i(u('uEmisShadow'), S.emisShadow);
   gl.uniform1f(u('uExposure'), S.exposure);
   gl.uniform1f(u('uGamma'), S.gamma);
   gl.uniform1f(u('uVignette'), S.vignette);

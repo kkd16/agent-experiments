@@ -139,6 +139,23 @@ vec3 opBend(vec3 p, float k){
   vec2 xy = m * p.xy;
   return vec3(xy.x, xy.y, p.z);
 }
+
+// Stretch a primitive along each axis by h: the shape is split and a straight
+// prism of length 2·h is inserted, leaving the caps intact. Distance-preserving.
+vec3 opElongate(vec3 p, vec3 h){
+  return p - clamp(p, -h, h);
+}
+
+// Kaleidoscopic fold: wrap the XZ plane into "reps" identical angular wedges
+// around the Y axis. A rotation of the domain, so the metric stays valid.
+vec3 opPolar(vec3 p, float reps){
+  if (reps < 0.5) return p;
+  float a = atan(p.z, p.x);
+  float r = length(p.xz);
+  float sector = 6.28318530718 / reps;
+  a = mod(a + 0.5 * sector, sector) - 0.5 * sector;
+  return vec3(cos(a) * r, p.y, sin(a) * r);
+}
 `
 
 // Procedural texture bank: value-noise-driven patterns woven into material albedo.

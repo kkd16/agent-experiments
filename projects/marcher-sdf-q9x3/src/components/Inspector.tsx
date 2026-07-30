@@ -265,6 +265,29 @@ function ModifierSection({ node, dispatch }: SubProps) {
         />
       ) : null}
 
+      {m.domain === 'elongate' ? (
+        <Vec3Field
+          label="Stretch per axis"
+          value={m.elongate}
+          min={0}
+          max={2}
+          step={0.02}
+          onChange={(elongate) => dispatch({ type: 'patchModifier', id, patch: { elongate } })}
+        />
+      ) : null}
+
+      {m.domain === 'polar' ? (
+        <Slider
+          label="Sectors"
+          value={m.polar}
+          min={2}
+          max={24}
+          step={1}
+          format={(v) => v.toFixed(0)}
+          onChange={(polar) => dispatch({ type: 'patchModifier', id, patch: { polar } })}
+        />
+      ) : null}
+
       <Slider
         label="Round edges"
         value={m.round}

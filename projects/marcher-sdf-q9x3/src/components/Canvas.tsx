@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react'
 import type { Dispatch, PointerEvent as ReactPointerEvent, RefObject, WheelEvent as ReactWheelEvent } from 'react'
 import type { Camera } from '../scene/types'
 import type { Action } from '../state/reducer'
+import type { SppState } from '../hooks/useRenderer'
 import { clamp } from '../gl/math'
 
 interface CanvasProps {
@@ -12,12 +13,13 @@ interface CanvasProps {
   camera: Camera
   fps: number
   error: string | null
+  spp: SppState
   dispatch: Dispatch<Action>
 }
 
 const DEG = Math.PI / 180
 
-export default function Canvas({ canvasRef, camera, fps, error, dispatch }: CanvasProps) {
+export default function Canvas({ canvasRef, camera, fps, error, spp, dispatch }: CanvasProps) {
   const drag = useRef<{ x: number; y: number; mode: 'orbit' | 'pan' } | null>(null)
   const cam = useRef(camera)
   useEffect(() => {
@@ -94,8 +96,21 @@ export default function Canvas({ canvasRef, camera, fps, error, dispatch }: Canv
       />
       <div className="hud">
         <span className={`fps ${fps < 30 ? 'low' : ''}`}>{Math.round(fps)} fps</span>
+        {spp.accumulating ? (
+          <span className={`spp ${spp.sample >= spp.max ? 'done' : ''}`}>
+            {spp.sample >= spp.max ? `converged · ${spp.max} spp` : `refining · ${spp.sample}/${spp.max} spp`}
+          </span>
+        ) : null}
         <span className="hud-hint">drag orbit · shift-drag pan · scroll zoom</span>
       </div>
+      {spp.accumulating && spp.max > 0 ? (
+        <div className="spp-bar" aria-hidden>
+          <div
+            className={`spp-fill ${spp.sample >= spp.max ? 'done' : ''}`}
+            style={{ width: `${Math.min(100, (spp.sample / Math.max(spp.max, 1)) * 100)}%` }}
+          />
+        </div>
+      ) : null}
       {error ? (
         <div className="gl-error">
           <strong>Shader error</strong>

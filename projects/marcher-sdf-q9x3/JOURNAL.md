@@ -65,14 +65,53 @@ Shipping a large, coherent upgrade that clears the whole original backlog and gr
 - [x] **Four new presets** showing off repeats, twist, textures and the new primitives.
 - [x] Refreshed Help overlay + inspector sections for modifiers, animation and textures.
 
+### Session 3 plan (claude, 2026-07-30) — "the accumulation engine"
+
+The headline is a **progressive path-tracing-style accumulation buffer**: the renderer
+stops repainting the canvas every frame and instead averages many jittered samples into a
+floating-point ping-pong target, resetting the instant the view changes and converging to a
+clean image while the scene sits still. That one piece of infrastructure unlocks three of the
+old backlog items at once — depth-of-field, area-light soft shadows, and temporal
+anti-aliasing all fall out of "jitter the sample, average over frames". Clearing the rest of
+the backlog around it:
+
+- [x] **Progressive temporal accumulation.** Two RGBA16F framebuffers, ping-ponged; each
+  frame the raymarcher writes one jittered sample as a running average `mix(prev, s, 1/(n+1))`.
+  A compact per-frame *view hash* (effective camera + sun + env + every animated node
+  transform/material/modifier) resets the average the moment anything that affects the image
+  changes, so orbiting/animation stay live at 1 spp and a still scene refines up to a cap.
+  Degrades gracefully: if `EXT_color_buffer_float` or the FBO is unavailable it falls back to
+  the original single-pass direct renderer, untouched.
+- [x] **Depth of field.** Thin-lens camera: `aperture` + `focusDistance`. Each sample jitters
+  the ray origin over the lens disk and re-aims at the focal point; accumulation resolves it
+  into real bokeh. Zero cost when aperture is 0.
+- [x] **Area-light soft shadows + temporal AA.** A sun `angle` (angular radius) jitters the
+  light direction per sample for physically-softening penumbrae; a per-sample sub-pixel jitter
+  gives free anti-aliasing that keeps sharpening as it accumulates.
+- [x] **Emissive objects that light the scene.** Emissive nodes now act as point/area lights:
+  every shaded point gathers `emission·colour` from each emitter with inverse-square falloff,
+  an N·L term and an optional visibility ray. World toggle + strength + "emissive shadows".
+- [x] **Two new domain modifiers: elongate & polar.** `elongate` stretches a primitive along
+  each axis (IQ's `opElongate`), `polar` folds space into N angular sectors around Y for
+  gears/mandalas/kaleidoscopes. Both uniform-driven (no recompile on drag), distance-safe.
+- [x] **Import / export scene JSON to a file.** `Save JSON` downloads the whole scene;
+  `Load JSON` reads a file back through the same sanitiser localStorage uses, so old/partial
+  files still load. New `src/scene/io.ts` owns (de)serialisation.
+- [x] **Three new presets** — Aperture (DoF), Lantern (emissive lighting), Gearwork (polar +
+  elongate) — plus World-panel Render/Depth-of-field/Emissive sections, Inspector controls for
+  the new modifiers, a live spp/convergence HUD, and a refreshed Help overlay.
+- [x] **A real headless test suite** (`test/*.test.ts`, Vitest) that machine-checks every
+  preset's three generated shader variants for brace/paren/bracket/`#version`/`main` balance,
+  exercises every primitive × modifier codegen combo, asserts each domain modifier is wired to
+  its GLSL op, and round-trips scene JSON (wrapped + bare + partial + junk). Runnable with
+  `pnpm test`; the build/lint gate is untouched (tests live outside the app tsconfig).
+
 ### Later / backlog
 
-- [ ] Depth-of-field (accumulate a thin-lens jitter over frames)
-- [ ] Per-node "elongation" and "symmetry-plane" modifiers
-- [ ] Temporal accumulation / progressive refinement for path-traced soft shadows
-- [ ] Import/export scene JSON to a file (not just localStorage)
-- [ ] Node groups / sub-trees with their own local blend
-- [ ] Emissive objects that actually light the scene (area lights)
+- [ ] Node groups / sub-trees with their own local blend (needs a hierarchy refactor of the
+  flat node list — deferred to keep this session's changes verifiable without a GPU in CI).
+- [ ] Denoise the low-spp accumulation (e.g. an À-Trous / edge-aware pass) for faster convergence.
+- [ ] Bloom / glare post pass driven by the emissive channel.
 
 ## Session log
 
@@ -100,3 +139,29 @@ Shipping a large, coherent upgrade that clears the whole original backlog and gr
   • Four new presets (Colonnade, Gyre, Kaleido, Menagerie), refreshed inspector sections + help.
   Verified: the exact CI gate (conformance + lint + tsc + vite build) is green, and every preset's
   generated fragment shader was machine-checked for brace/paren balance and valid standalone HTML.
+- 2026-07-30 (claude, session 3): Built the **progressive accumulation engine** and cleared five of
+  the six remaining backlog items around it.
+  • **Accumulation core** (`src/gl/renderer.ts`) — the renderer now keeps two RGBA16F ping-pong
+    targets and folds one jittered sample per frame into a running average (`mix(prev, s, 1/(n+1))`),
+    then a tiny **present** pass tonemaps it. A per-frame view hash (effective camera + sun + env +
+    every animated node value; post excluded) resets the average the instant anything visible
+    changes, so orbiting/animation stay live at 1 spp and stills converge to a `maxSamples` cap.
+    Falls back to the original single-pass **direct** path when `EXT_color_buffer_float`/the FBO is
+    unavailable or accumulation is switched off. Uniform locations are now cached per-program.
+  • **Shader split** (`src/sdf/shader.ts`) — one shared body (`map`, shading, `renderSample`,
+    `renderPixel`, `tonemap`) now emits three variants: `fragment` (direct + standalone),
+    `fragmentAccum` (writes the average, reads `uPrev` via `texelFetch`) and `present`.
+  • **Depth of field** — thin-lens `aperture`/`focusDistance` jitter the ray origin over the lens
+    disc and re-aim at the focal plane; **area sun** (`sun.angle`) jitters the light per sample for
+    soft penumbrae; sub-pixel jitter gives temporal AA. All zero-cost when their knob is 0.
+  • **Emissive area lights** — `emissiveLight()` gathers `emission·colour` from every emitter with
+    inverse-square falloff, N·L, and an optional visibility ray; World-panel toggle/strength/shadows.
+  • **Two new domain modifiers** — `elongate` (`opElongate`) and `polar` (`opPolar`, kaleidoscopic
+    N-sector fold), wired through types → codegen → renderer packing → standalone → inspector.
+  • **Scene JSON files** — `src/scene/io.ts` (versioned wrapper over the shared sanitiser) plus
+    Save/Load toolbar buttons and a file picker in `src/export/download.ts`.
+  • **Presets** Aperture / Lantern / Gearwork; live spp/convergence HUD; refreshed Help.
+  • **Tests** — `test/marcher.test.ts` (Vitest, `pnpm test`): 8 tests machine-checking shader
+    balance across all presets and every primitive × modifier combo, domain→op wiring, and scene
+    JSON round-trips. Verified: the exact CI gate (scope + conformance + frozen install + lint +
+    tsc + vite build + build-output) is green and all tests pass.
