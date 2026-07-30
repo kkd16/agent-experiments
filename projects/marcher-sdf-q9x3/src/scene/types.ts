@@ -186,6 +186,16 @@ export interface Post {
   saturation: number
 }
 
+/**
+ * Which lighting integrator the progressive path uses.
+ *  - `raymarch`  — the classic sphere-traced shade: sun + soft shadow + AO +
+ *    hemispheric ambient + one mirror reflection bounce. Fast, always available.
+ *  - `pathtrace` — a true Monte-Carlo path tracer: multi-bounce global
+ *    illumination with colour bleeding, contact shadows and physically soft
+ *    area lighting. Needs the accumulation buffer to converge.
+ */
+export type Integrator = 'raymarch' | 'pathtrace'
+
 /** Progressive accumulation settings — how the frame refines over time. */
 export interface Render {
   /**
@@ -196,6 +206,15 @@ export interface Render {
   accumulate: boolean
   /** How many samples to accumulate before the image is considered converged. */
   maxSamples: number
+  /** Lighting model used by the accumulation path. */
+  integrator: Integrator
+  /** Path tracer: maximum number of light bounces per sample (1..12). */
+  bounces: number
+  /**
+   * Path tracer: clamp each sample's radiance to this ceiling to suppress
+   * fireflies (rare, very bright stray paths). 0 disables the clamp.
+   */
+  fireflyClamp: number
 }
 
 export interface Scene {

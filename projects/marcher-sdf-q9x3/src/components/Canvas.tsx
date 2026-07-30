@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { Dispatch, PointerEvent as ReactPointerEvent, RefObject, WheelEvent as ReactWheelEvent } from 'react'
-import type { Camera } from '../scene/types'
+import type { Camera, Integrator } from '../scene/types'
 import type { Action } from '../state/reducer'
 import type { SppState } from '../hooks/useRenderer'
 import { clamp } from '../gl/math'
@@ -14,12 +14,13 @@ interface CanvasProps {
   fps: number
   error: string | null
   spp: SppState
+  integrator: Integrator
   dispatch: Dispatch<Action>
 }
 
 const DEG = Math.PI / 180
 
-export default function Canvas({ canvasRef, camera, fps, error, spp, dispatch }: CanvasProps) {
+export default function Canvas({ canvasRef, camera, fps, error, spp, integrator, dispatch }: CanvasProps) {
   const drag = useRef<{ x: number; y: number; mode: 'orbit' | 'pan' } | null>(null)
   const cam = useRef(camera)
   useEffect(() => {
@@ -96,6 +97,7 @@ export default function Canvas({ canvasRef, camera, fps, error, spp, dispatch }:
       />
       <div className="hud">
         <span className={`fps ${fps < 30 ? 'low' : ''}`}>{Math.round(fps)} fps</span>
+        {integrator === 'pathtrace' ? <span className="tag-pt">path traced</span> : null}
         {spp.accumulating ? (
           <span className={`spp ${spp.sample >= spp.max ? 'done' : ''}`}>
             {spp.sample >= spp.max ? `converged · ${spp.max} spp` : `refining · ${spp.sample}/${spp.max} spp`}

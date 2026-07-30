@@ -64,6 +64,11 @@ uniform int uEmissive;        // 1 = emissive nodes light the scene
 uniform float uEmissiveStr;   // global multiplier on gathered emissive light
 uniform int uEmisShadow;      // 1 = trace a visibility ray to each emitter
 
+// Path-traced global illumination.
+uniform int uIntegrator;      // 0 = raymarch shade, 1 = Monte-Carlo path tracer
+uniform int uBounces;         // path tracer: max light bounces per sample
+uniform float uClamp;         // path tracer: per-sample firefly clamp (0 = off)
+
 uniform float uExposure;
 uniform float uGamma;
 uniform float uVignette;
@@ -305,6 +310,201 @@ vec3 shadeRay(vec3 ro, vec3 rd){
   return shade(ro + rd * res.x, rd, res.y);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Monte-Carlo path tracer.
+//
+// A true multi-bounce integrator that replaces the raymarch shade's fake ambient
+// + single reflection with genuine global illumination: light that leaves the sun
+// or an emitter, scatters off several diffuse/glossy surfaces (picking up their
+// colour on the way — the "colour bleeding" that gives GI its look), and finally
+// reaches the eye. It is stochastic, so it converges only under the accumulation
+// buffer — one sample is noisy, a few hundred are photographic.
+//
+// Radiometry is kept in the SAME artistic units the raymarch path uses (direct
+// sun = albedo·sunColour·intensity·n·l, no explicit 1/π) so flipping the
+// integrator changes the *quality* of the light, not its overall brightness. The
+// environment dome and emitters share that scale, which keeps the estimator
+// self-consistent between direct (next-event) and indirect (BSDF-sampled) terms.
+#define MAX_BOUNCES 12
+#define PI 3.14159265359
+
+// The soft sky gradient WITHOUT the sharp sun disc. Diffuse bounces gather the
+// sun through next-event estimation, so the disc is excluded here to avoid
+// double-counting it; the broad near-sun glow is kept (it is not a delta light).
+vec3 envDome(vec3 rd){
+  float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 col = mix(uHorizonColor, uSkyColor, pow(t, 0.75));
+  float s = max(dot(rd, uSunDir), 0.0);
+  col += uSunColor * pow(s, 5.0) * 0.04 * uSunIntensity;
+  return col;
+}
+
+// The sharp solar disc — only added for camera/specular rays that miss the scene,
+// so the sun shows up in the background and in mirror reflections but is otherwise
+// delivered by next-event estimation.
+vec3 sunGlow(vec3 rd){
+  float s = max(dot(rd, uSunDir), 0.0);
+  return uSunColor * pow(s, 350.0) * 1.2 * uSunIntensity;
+}
+
+// Cosine-weighted hemisphere sample about n. The cosine pdf cancels the Lambert
+// cosine term, so the diffuse indirect estimator is simply the surface albedo.
+vec3 cosineHemisphere(vec3 n){
+  float u1 = rnd();
+  float u2 = rnd();
+  float r = sqrt(u1);
+  float phi = 6.28318530718 * u2;
+  vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 t = normalize(cross(up, n));
+  vec3 b = cross(n, t);
+  return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+}
+
+// Perturb a mirror direction into a glossy lobe whose tightness tracks roughness:
+// rough≈0 stays near-mirror, rough≈1 spreads toward a wide cone.
+vec3 glossyLobe(vec3 refl, float rough){
+  float u1 = rnd();
+  float u2 = rnd();
+  float a = max(rough * rough, 1e-3);
+  float phi = 6.28318530718 * u1;
+  float ct = pow(max(1.0 - u2, 0.0), a / (1.0 + a));
+  float st = sqrt(max(1.0 - ct * ct, 0.0));
+  vec3 up = abs(refl.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 t = normalize(cross(up, refl));
+  vec3 b = cross(refl, t);
+  return normalize(t * (st * cos(phi)) + b * (st * sin(phi)) + refl * ct);
+}
+
+// Hard visibility march for shadow rays: 0 if anything is hit before maxT, else 1.
+float visibility(vec3 ro, vec3 rd, float maxT){
+  float t = 0.02;
+  for (int i = 0; i < 256; i++){
+    if (i >= uMaxSteps) break;
+    if (t > maxT) break;
+    float h = map(ro + rd * t).x;
+    if (h < 0.0015) return 0.0;
+    t += clamp(h, 0.01, 0.5);
+  }
+  return 1.0;
+}
+
+// Next-event estimation toward the sun: sample a direction inside the sun disc,
+// trace one shadow ray, and return the direct diffuse contribution.
+vec3 neeSun(vec3 pos, vec3 nor, vec3 albedo){
+  if (uSunIntensity <= 0.0) return vec3(0.0);
+  vec3 L = uSunDir;
+  if (uSunAngle > 0.001){
+    vec3 up = abs(uSunDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 st = normalize(cross(uSunDir, up));
+    vec3 sb = cross(uSunDir, st);
+    float sr = tan(radians(uSunAngle)) * sqrt(rnd());
+    float sa = 6.28318530718 * rnd();
+    L = normalize(uSunDir + (st * cos(sa) + sb * sin(sa)) * sr);
+  }
+  float ndl = max(dot(nor, L), 0.0);
+  if (ndl <= 0.0) return vec3(0.0);
+  float vis = visibility(pos + nor * 0.02, L, uMaxDist);
+  if (vis <= 0.0) return vec3(0.0);
+  return albedo * uSunColor * uSunIntensity * ndl * vis;
+}
+
+// Next-event estimation toward every emissive node, treating each as an area
+// light. Sampling a jittered point on the emitter turns its finite size into a
+// soft penumbra as the frame accumulates.
+vec3 neeEmitters(vec3 pos, vec3 nor, vec3 albedo){
+  if (uEmissive == 0) return vec3(0.0);
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < NODE_COUNT; i++){
+    float em = uMatPBR[i].w;
+    if (em <= 0.001) continue;
+    float er = max(uParam[i].x, 0.05) * uScale[i] * 0.8;
+    vec3 ep = uPos[i] + (vec3(rnd(), rnd(), rnd()) - 0.5) * (2.0 * er);
+    vec3 d = ep - pos;
+    float dist = length(d);
+    if (dist < 1e-3) continue;
+    vec3 L = d / dist;
+    float ndl = max(dot(nor, L), 0.0);
+    if (ndl <= 0.0) continue;
+    float atten = 1.0 / (1.0 + 0.7 * dist * dist);
+    float vis = visibility(pos + nor * 0.02, L, dist - 0.05);
+    sum += uMatColor[i] * (em * ndl * atten * vis);
+  }
+  return albedo * sum * uEmissiveStr;
+}
+
+// Trace one full light path from the eye and return its radiance estimate.
+vec3 pathTrace(vec3 ro, vec3 rd){
+  gSunDir = uSunDir;
+  vec3 radiance = vec3(0.0);
+  vec3 thr = vec3(1.0);
+  bool specular = true; // gates emission + solar disc so NEE isn't double-counted
+  float firstT = uMaxDist;
+
+  for (int b = 0; b < MAX_BOUNCES; b++){
+    if (b >= uBounces) break;
+    vec2 res = raymarch(ro, rd);
+    if (b == 0) firstT = min(res.x, uMaxDist);
+
+    if (res.y < -1.5){
+      vec3 env = envDome(rd);
+      if (specular) env += sunGlow(rd);
+      radiance += thr * env;
+      break;
+    }
+
+    vec3 pos = ro + rd * res.x;
+    vec3 nor = calcNormal(pos);
+    if (dot(nor, rd) > 0.0) nor = -nor;
+
+    vec3 albedo; float metallic, rough, refl, emis;
+    getMaterial(res.y, pos, nor, albedo, metallic, rough, refl, emis);
+
+    // Emitted radiance is only added on primary/specular arrivals; diffuse
+    // arrivals were already accounted for by the previous vertex's NEE.
+    if (specular && emis > 0.0) radiance += thr * albedo * emis * 2.5;
+
+    // Probability of taking the specular (reflection) lobe: Fresnel, lifted
+    // toward 1 for metals and by the material's own reflectivity dial.
+    float F0 = mix(0.04, 1.0, metallic);
+    float fres = F0 + (1.0 - F0) * pow(clamp(1.0 - max(dot(nor, -rd), 0.0), 0.0, 1.0), 5.0);
+    float pSpec = clamp(max(fres, metallic * 0.9 + refl * 0.5), 0.02, 0.95);
+
+    if (rnd() < pSpec){
+      vec3 r = reflect(rd, nor);
+      vec3 nd = glossyLobe(r, rough);
+      if (dot(nd, nor) <= 0.0) break;
+      vec3 tint = mix(vec3(1.0), albedo, metallic);
+      thr *= tint / pSpec;
+      specular = true;
+      ro = pos + nor * 0.02;
+      rd = nd;
+    } else {
+      // Diffuse lobe: gather direct light here, then scatter cosine-weighted.
+      radiance += thr * (neeSun(pos, nor, albedo) + neeEmitters(pos, nor, albedo));
+      vec3 nd = cosineHemisphere(nor);
+      thr *= albedo / (1.0 - pSpec);
+      specular = false;
+      ro = pos + nor * 0.02;
+      rd = nd;
+    }
+
+    // Russian roulette: after a couple of bounces, kill dim paths unbiasedly.
+    if (b >= 2){
+      float q = clamp(max(thr.r, max(thr.g, thr.b)), 0.05, 0.95);
+      if (rnd() > q) break;
+      thr /= q;
+    }
+  }
+
+  // Firefly clamp keeps a single unlucky bright path from speckling the average.
+  if (uClamp > 0.0) radiance = min(radiance, vec3(uClamp));
+
+  // Distance fog, matched to the raymarch path, based on the primary hit.
+  float fog = 1.0 - exp(-uFogDensity * firstT);
+  radiance = mix(radiance, uFogColor, clamp(fog * 0.6, 0.0, 1.0));
+  return radiance;
+}
+
 // Deterministic pinhole sample — used by the single-pass (direct) renderer and
 // the standalone export, where there's no accumulation to hide jitter.
 vec3 renderPixel(vec2 frag){
@@ -352,6 +552,9 @@ vec3 renderSample(vec2 frag){
     rd = normalize(focal - ro);
   }
 
+  // Dispatch on the chosen integrator: the Monte-Carlo path tracer for true GI,
+  // or the classic raymarch shade. Both fold into the same running average.
+  if (uIntegrator == 1) return pathTrace(ro, rd);
   return shadeRay(ro, rd);
 }
 `

@@ -68,6 +68,31 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           </li>
         </ul>
 
+        <h3>Path-traced global illumination</h3>
+        <p>
+          Switch <strong>World → Render → Lighting</strong> to <strong>Path trace</strong> and the
+          studio becomes a real Monte-Carlo path tracer. Instead of faking indirect light with an
+          ambient term, it fires stochastic rays that bounce between surfaces — each one picks up
+          the colour of what it hit, so light genuinely <em>bleeds</em> from one object onto the
+          next. That gives you soft indirect lighting, physically correct contact shadows and the
+          colour bleeding you can't get any other way (try the <strong>Cornell Box</strong> and
+          <strong> Radiance</strong> presets).
+        </p>
+        <ul>
+          <li>
+            <strong>Bounces</strong> sets how many times a ray may scatter — 1 is direct-only, 4–6 is
+            a rich look, higher deepens indirect light in enclosed scenes at more cost.
+          </li>
+          <li>
+            The sun and every emitter are sampled directly each bounce (<em>next-event
+            estimation</em>), so lighting is clean; diffuse and glossy surfaces scatter the rest.
+          </li>
+          <li>
+            <strong>Firefly clamp</strong> caps a single sample's brightness to kill the odd bright
+            speckle. Path tracing needs <strong>accumulation</strong> on to converge.
+          </li>
+        </ul>
+
         <h3>Exporting</h3>
         <ul>
           <li><strong>Export</strong> bakes the whole scene into one standalone, dependency-free HTML file.</li>

@@ -4,7 +4,7 @@
 import type { Dispatch } from 'react'
 import type { Scene } from '../scene/types'
 import type { Action } from '../state/reducer'
-import { ColorField, Section, Slider, Toggle, Vec3Field } from './controls'
+import { ColorField, Section, Segmented, Slider, Toggle, Vec3Field } from './controls'
 
 interface GlobalPanelProps {
   scene: Scene
@@ -37,6 +37,51 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
             onChange={(maxSamples) => dispatch({ type: 'patchRender', patch: { maxSamples } })}
           />
         ) : null}
+
+        <Segmented
+          label="Lighting"
+          value={render.integrator}
+          options={[
+            { value: 'raymarch', label: 'Ray march' },
+            { value: 'pathtrace', label: 'Path trace' },
+          ]}
+          onChange={(integrator) => dispatch({ type: 'patchRender', patch: { integrator } })}
+        />
+        {render.integrator === 'pathtrace' ? (
+          <>
+            <p className="hint">
+              True multi-bounce global illumination — light bounces between surfaces and picks
+              up their colour, so you get soft indirect lighting, contact shadows and colour
+              bleeding. Refines over a few seconds under accumulation.
+            </p>
+            {!render.accumulate ? (
+              <p className="hint warn">Path tracing needs progressive accumulation on (above).</p>
+            ) : null}
+            <Slider
+              label="Bounces"
+              value={render.bounces}
+              min={1}
+              max={12}
+              step={1}
+              format={(v) => v.toFixed(0)}
+              onChange={(bounces) => dispatch({ type: 'patchRender', patch: { bounces } })}
+            />
+            <Slider
+              label="Firefly clamp"
+              value={render.fireflyClamp}
+              min={0}
+              max={20}
+              step={0.5}
+              format={(v) => (v <= 0 ? 'off' : v.toFixed(1))}
+              onChange={(fireflyClamp) => dispatch({ type: 'patchRender', patch: { fireflyClamp } })}
+            />
+          </>
+        ) : (
+          <p className="hint">
+            Classic sphere-traced shade — sun, soft shadows, ambient occlusion and one mirror
+            reflection. Fast, and the fallback when float buffers are unavailable.
+          </p>
+        )}
       </Section>
 
       <Section title="Motion">

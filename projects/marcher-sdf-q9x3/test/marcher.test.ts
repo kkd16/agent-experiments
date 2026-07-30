@@ -57,6 +57,26 @@ describe('shader assembly', () => {
     }
   })
 
+  it('assembles the path-traced integrator into the accumulation shader', () => {
+    // A scene that opts into the path tracer must carry the whole GI machinery in
+    // its accumulation variant, and it must still be a balanced, well-formed shader.
+    const scene = defaultScene()
+    scene.render.integrator = 'pathtrace'
+    scene.render.bounces = 6
+    scene.render.fireflyClamp = 8
+    const built = buildShader(scene)
+    assertShaderVariant('pathtrace/accum', built.fragmentAccum)
+    for (const sym of ['pathTrace(', 'neeSun(', 'neeEmitters(', 'cosineHemisphere(', 'glossyLobe(', 'visibility(']) {
+      expect(built.fragmentAccum, `path tracer defines ${sym}`).toContain(sym)
+    }
+    // The dispatch that routes samples to the path tracer must be present.
+    expect(built.fragmentAccum, 'renderSample dispatches on uIntegrator').toContain('uIntegrator == 1')
+    // The GI showcase presets ship in path-trace mode.
+    const cornell = PRESETS.find((p) => p.id === 'cornell')?.build()
+    expect(cornell?.render.integrator, 'Cornell Box is path-traced').toBe('pathtrace')
+    expect(cornell?.env.emissive, 'Cornell Box has an emitter light').toBe(true)
+  })
+
   it('generates a balanced map() for every primitive × modifier combination', () => {
     for (const kind of PRIMITIVE_LIST) {
       for (const domain of DOMAIN_LIST) {

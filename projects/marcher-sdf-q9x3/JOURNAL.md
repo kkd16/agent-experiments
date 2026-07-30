@@ -106,12 +106,56 @@ the backlog around it:
   its GLSL op, and round-trips scene JSON (wrapped + bare + partial + junk). Runnable with
   `pnpm test`; the build/lint gate is untouched (tests live outside the app tsconfig).
 
+### Session 4 plan (claude, 2026-07-30) — "global illumination"
+
+The headline is a **true Monte-Carlo path tracer**. Session 3 built the accumulation buffer;
+this session puts a real light-transport integrator on top of it. Until now every shaded point
+faked its indirect light with a constant ambient term and a single mirror bounce — good, but it
+can't do the one thing that makes rendered images read as *real*: light that bounces between
+surfaces and carries their colour with it. The path tracer does exactly that, and because the
+ping-pong average was already there, a noisy single sample refines into a photographic frame in
+a second or two on a GPU. This is the biggest jump in image quality the engine has made.
+
+- [x] **Path-traced integrator** (`src/sdf/shader.ts`, `pathTrace()`): fire a stochastic ray
+  from the eye and let it scatter up to `bounces` times. Each vertex picks a **diffuse**
+  (cosine-weighted hemisphere) or **glossy/mirror** lobe by a Fresnel-driven probability, and
+  the throughput carries the surface albedo — so light literally bleeds one object's colour onto
+  the next. Unbiased **Russian roulette** kills dim paths after two bounces.
+- [x] **Next-event estimation** to every light each diffuse bounce: the **sun** (sampled inside
+  its angular disc, one shadow ray) and every **emissive node** (sampled as an area light with a
+  jittered surface point for soft penumbrae). Emission and the sharp solar disc are only added on
+  primary/specular arrivals, so NEE is never double-counted — the standard MIS-free dedup.
+- [x] **Brightness-matched radiometry.** The path tracer stays in the *same* artistic units as
+  the raymarch shade (direct sun = `albedo·sunColour·intensity·n·l`), so flipping the Lighting
+  toggle changes the *character* of the light — real bounce, real contact shadows — not the
+  overall exposure. Diffuse indirect falls out of cosine sampling as simply `albedo`.
+- [x] **Firefly clamp** — cap each sample's radiance to kill the rare bright speckle that
+  stochastic paths throw, so the average cleans up fast.
+- [x] **World → Render → Lighting** control: a **Ray march / Path trace** segmented switch, a
+  **Bounces** slider (1–12) and a **Firefly clamp** slider, with hints and an accumulation
+  reminder. A `path traced` badge lights up in the viewport HUD.
+- [x] **Two GI showcase presets.** **Cornell Box** — the canonical test: a white room with one
+  red and one green wall and a glowing ceiling panel; the walls bleed colour onto the floor and
+  blocks. **Radiance** — a matte white sphere between a red and a blue wall under a soft sun, its
+  shadow flanks glowing red and blue from bounce light, with a chrome sphere mirroring it all.
+- [x] **Runtime-verified.** Beyond the CI gate, drove the built app in headless Chromium
+  (SwiftShader WebGL2): the path-traced Cornell Box compiles and renders with visible red/green
+  colour bleeding and soft contact shadows, no shader-compile error, badge + spp HUD live.
+- [x] **Tests extended** — a new case asserts the accumulation shader carries the whole GI
+  machinery (`pathTrace`/`neeSun`/`neeEmitters`/`cosineHemisphere`/`glossyLobe`/`visibility` +
+  the `uIntegrator` dispatch) and that the showcase presets ship in path-trace mode.
+
 ### Later / backlog
 
 - [ ] Node groups / sub-trees with their own local blend (needs a hierarchy refactor of the
   flat node list — deferred to keep this session's changes verifiable without a GPU in CI).
 - [ ] Denoise the low-spp accumulation (e.g. an À-Trous / edge-aware pass) for faster convergence.
 - [ ] Bloom / glare post pass driven by the emissive channel.
+- [ ] Bake the path tracer into the standalone HTML export (needs the accumulation runtime, not
+  just the single-pass shader the exporter ships today).
+- [ ] Multiple-importance sampling so glossy surfaces get NEE too (currently glossy lobes rely on
+  BSDF sampling alone, which is a touch noisier on rough metals under a small sun).
+- [ ] Transmission / refraction lobe (glass) — the BSDF only does diffuse + reflection so far.
 
 ## Session log
 
@@ -165,3 +209,25 @@ the backlog around it:
     balance across all presets and every primitive × modifier combo, domain→op wiring, and scene
     JSON round-trips. Verified: the exact CI gate (scope + conformance + frozen install + lint +
     tsc + vite build + build-output) is green and all tests pass.
+- 2026-07-30 (claude, session 4): Put a **real path tracer** on top of the accumulation buffer —
+  the engine's biggest image-quality jump yet.
+  • **`pathTrace()`** (`src/sdf/shader.ts`) — a multi-bounce Monte-Carlo integrator dispatched
+    from `renderSample` on a new `uIntegrator` uniform (0 = raymarch shade, 1 = path trace). Each
+    vertex stochastically takes a cosine-weighted **diffuse** lobe or a roughness-driven
+    **glossy/mirror** lobe (Fresnel-weighted probability), throughput carries albedo (→ colour
+    bleeding), and Russian roulette prunes dim paths after two bounces.
+  • **Next-event estimation** — `neeSun()` samples the sun's angular disc with one shadow ray;
+    `neeEmitters()` samples every emissive node as an area light with a jittered surface point for
+    soft shadows. `visibility()` is a hard shadow march. Emission + the sharp solar disc are gated
+    behind a `specular` flag so NEE is never double-counted. `envDome()`/`sunGlow()` split the sky.
+  • **Radiometry** kept in the raymarch path's artistic units so toggling Lighting changes the
+    *character* of the light, not the exposure. **Firefly clamp** (`uClamp`) tames stray samples.
+  • **UI** — World → Render gains a Ray march / Path trace segmented switch, Bounces + Firefly
+    clamp sliders (with an accumulation reminder), and a `path traced` HUD badge (`Canvas.tsx`).
+    New `Render` fields `integrator`/`bounces`/`fireflyClamp` thread through types → presets →
+    reducer → renderer upload + view hash; old saves backfill via `defaultRender()`.
+  • **Presets** Cornell Box + Radiance (both path-traced) placed up front to show colour bleeding.
+  • **Verified** the exact CI gate (scope + conformance + frozen install + lint + tsc + vite build
+    + build-output) is green, `pnpm test` passes 9 tests (incl. a new GI-assembly case), and the
+    built app was driven in headless Chromium (SwiftShader WebGL2): the Cornell Box path-traces
+    with clear red/green colour bleeding and soft contact shadows, no shader-compile error.
