@@ -78,8 +78,18 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       mousePosRef.current = null;
     };
 
+    const handleContextMenu = (e: MouseEvent) => {
+      if (paramsRef.current.predatorStun) {
+        e.preventDefault();
+        for (const predator of predatorsRef.current) {
+          predator.stunTimer = 60; // Approx 1 second stun
+        }
+      }
+    };
+
     window.addEventListener('resize', handleResize);
     window.addEventListener('click', handleClick);
+    window.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseleave', handleMouseLeave);
     handleResize();
@@ -117,7 +127,11 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       if (dt > 0) {
         fpsRef.current = 1000 / dt;
         if (fpsDisplayRef.current) {
-          fpsDisplayRef.current.innerText = `FPS: ${Math.round(fpsRef.current)}`;
+          let text = `FPS: ${Math.round(fpsRef.current)}`;
+          if (paramsRef.current.boidStats) {
+            text += `\nBoids: ${boidsRef.current.length}\nPredators: ${predatorsRef.current.length}\nObstacles: ${obstaclesRef.current.length}`;
+          }
+          fpsDisplayRef.current.innerText = text;
         }
       }
 
@@ -216,7 +230,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       }
 
       for (const predator of predatorsRef.current) {
-        if (!isPaused) {
+        if (!isPaused && !currentParams.freezePredators) {
           predator.hunt(grid, currentParams);
           predator.update(currentParams);
         }
@@ -257,6 +271,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('click', handleClick);
+      window.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseleave', handleMouseLeave);
       if (animationFrameId.current) {
