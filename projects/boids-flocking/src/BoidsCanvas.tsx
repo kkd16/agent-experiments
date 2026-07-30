@@ -49,7 +49,7 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
     };
 
     const handleClick = (e: MouseEvent) => {
-      if (paramsRef.current.mouseInteraction === 'obstacle') {
+      if (paramsRef.current.mouseInteraction === 'obstacle' || paramsRef.current.mouseInteraction === 'repulsor') {
          // Check if clicking on an existing obstacle to remove it
          const clickedIdx = obstaclesRef.current.findIndex(obs => {
             const dx = obs.x - e.clientX;
@@ -63,7 +63,8 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
             obstaclesRef.current.push({
                x: e.clientX,
                y: e.clientY,
-               radius: 30
+               radius: 30,
+               type: paramsRef.current.mouseInteraction === 'repulsor' ? 'repulsor' : 'normal'
             });
          }
       }
@@ -134,9 +135,9 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
 
       // Background rendering & Trail Decay
       const isNight = currentParams.nightMode;
-      const bgR = isNight ? 15 : 241;
-      const bgG = isNight ? 23 : 245;
-      const bgB = isNight ? 42 : 249;
+      const bgR = currentParams.partyMode ? Math.floor(Math.random() * 256) : (isNight ? 15 : 241);
+      const bgG = currentParams.partyMode ? Math.floor(Math.random() * 256) : (isNight ? 23 : 245);
+      const bgB = currentParams.partyMode ? Math.floor(Math.random() * 256) : (isNight ? 42 : 249);
 
       const decay = currentParams.showTrails ? currentParams.trailDecay : 1.0;
       ctx.fillStyle = `rgba(${bgR}, ${bgG}, ${bgB}, ${decay})`;
@@ -189,9 +190,9 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       for (const obs of obstaclesRef.current) {
         ctx.beginPath();
         ctx.arc(obs.x, obs.y, obs.radius, 0, Math.PI * 2);
-        ctx.fillStyle = '#64748b'; // slate-500
+        ctx.fillStyle = obs.type === 'repulsor' ? '#f97316' : '#64748b'; // orange-500 or slate-500
         ctx.fill();
-        ctx.strokeStyle = '#94a3b8'; // slate-400
+        ctx.strokeStyle = obs.type === 'repulsor' ? '#fb923c' : '#94a3b8'; // orange-400 or slate-400
         ctx.lineWidth = 2;
         ctx.stroke();
       }

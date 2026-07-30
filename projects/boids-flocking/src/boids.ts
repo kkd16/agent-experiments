@@ -76,7 +76,7 @@ export interface BoidParams {
   visualRange: number;
   maxSpeed: number;
   maxForce: number;
-  mouseInteraction: 'none' | 'attract' | 'repel' | 'obstacle';
+  mouseInteraction: 'none' | 'attract' | 'repel' | 'obstacle' | 'repulsor';
   mouseRadius: number;
   edgeBehavior: 'wrap' | 'bounce';
   predatorAvoidance: number;
@@ -93,11 +93,17 @@ export interface BoidParams {
   trailDecay: number;
   cameraFollow: boolean;
   glowEffect: boolean;
+  rainbowMode: boolean;
+  collisionFlash: boolean;
+  vortexMode: boolean;
+  partyMode: boolean;
+  timeScale: number;
 }
 
 
 
 export interface Obstacle {
+  type?: 'normal' | 'repulsor';
   x: number;
   y: number;
   radius: number;
@@ -167,6 +173,7 @@ export class Boid {
   baseMaxSpeedMultiplier: number;
   baseSizeMultiplier: number;
   history: Vector[];
+  isColliding: boolean;
 
   constructor(x: number, y: number, width: number, height: number) {
     this.position = new Vector(x, y);
@@ -178,6 +185,7 @@ export class Boid {
     this.size = (3 + Math.random() * 2) * this.baseSizeMultiplier;
     this.baseMaxSpeedMultiplier = 0.8 + Math.random() * 0.4; // 0.8x to 1.2x speed
     this.history = [];
+    this.isColliding = false;
 
     // Nice gradient of colors based on initial velocity
     const hue = Math.floor(Math.random() * 360);
@@ -187,10 +195,20 @@ export class Boid {
   update(params: BoidParams) {
     this.acceleration.add(new Vector(params.windX, params.windY));
     this.acceleration.add(new Vector(0, params.gravity)); // Add gravity
-    this.velocity.add(this.acceleration);
+    if (params.partyMode) {
+      this.acceleration.add(new Vector((Math.random() - 0.5) * params.maxForce * 5, (Math.random() - 0.5) * params.maxForce * 5));
+    }
+    this.velocity.add(new Vector(this.acceleration.x * params.timeScale, this.acceleration.y * params.timeScale));
     this.velocity.limit(params.maxSpeed * this.baseMaxSpeedMultiplier);
-    this.position.add(this.velocity);
+    this.position.add(new Vector(this.velocity.x * params.timeScale, this.velocity.y * params.timeScale));
     this.acceleration.mult(0); // Reset acceleration each frame
+    if (params.rainbowMode) {
+      const match = this.color.match(/\d+/);
+      if (match) {
+        const currentHue = parseInt(match[0]);
+        this.color = `hsl(${(currentHue + 1) % 360}, 80%, 60%)`;
+      }
+    }
     this.edges(params.edgeBehavior);
 
     // Track history for trails
@@ -211,6 +229,17 @@ export class Boid {
   flock(grid: Grid, predators: Predator[], obstacles: Obstacle[], params: BoidParams, mousePos: { x: number; y: number } | null = null) {
     const nearbyBoids = grid.query(this.position.x, this.position.y, Math.max(params.visualRange, params.visualRange / 2));
     const sep = this.separate(nearbyBoids, params.visualRange / 2);
+
+    this.isColliding = false;
+    for (const other of nearbyBoids) {
+      if (other !== this) {
+        const d = Vector.dist(this.position, other.position);
+        if (d > 0 && d < this.size + other.size) {
+          this.isColliding = true;
+          break;
+        }
+      }
+    }
     const ali = this.align(nearbyBoids, params.visualRange);
     const coh = this.cohere(nearbyBoids, params.visualRange);
     const avoid = this.avoidPredators(predators, params.predatorVisualRange);
@@ -229,6 +258,17 @@ export class Boid {
     this.applyForce(coh);
     this.applyForce(avoid);
     this.applyForce(avoidObs);
+
+    if (params.vortexMode) {
+      const center = new Vector(this.width / 2, this.height / 2);
+      const diff = Vector.sub(this.position, center);
+      if (diff.mag() > 0) {
+        const vortexForce = new Vector(-diff.y, diff.x);
+        vortexForce.normalize();
+        vortexForce.mult(params.maxForce * 2);
+        this.applyForce(vortexForce);
+      }
+    }
 
     if (mousePos && params.mouseInteraction !== 'none') {
       const mouseVec = new Vector(mousePos.x, mousePos.y);
@@ -258,10 +298,12 @@ export class Boid {
     for (const obs of obstacles) {
       const d = Vector.dist(this.position, new Vector(obs.x, obs.y));
       // Bounding box / distance check
-      if (d > 0 && d < obs.radius + avoidDist) {
+      const currentAvoidDist = obs.type === 'repulsor' ? avoidDist * 2 : avoidDist;
+      if (d > 0 && d < obs.radius + currentAvoidDist) {
         const diff = Vector.sub(this.position, new Vector(obs.x, obs.y));
         diff.normalize();
         diff.div(d); // Weight by distance
+        if (obs.type === 'repulsor') diff.mult(5);
         steer.add(diff);
         count++;
       }
@@ -288,6 +330,7 @@ export class Boid {
         const diff = Vector.sub(this.position, pred.position);
         diff.normalize();
         diff.div(d); // Weight by distance
+
         steer.add(diff);
         count++;
       }
@@ -318,6 +361,7 @@ export class Boid {
         const diff = Vector.sub(this.position, other.position);
         diff.normalize();
         diff.div(d); // Weight by distance
+
         steer.add(diff);
         count++;
       }
@@ -477,7 +521,7 @@ export class Boid {
       ctx.closePath();
     }
 
-    ctx.fillStyle = this.color;
+    ctx.fillStyle = this.isColliding && params.collisionFlash ? 'white' : this.color;
     ctx.fill();
     ctx.restore();
   }

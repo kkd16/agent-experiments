@@ -2,6 +2,7 @@
 
 ## Session: 2024-05-24
 
+
 ### Tasks Completed
 1. Created project structure by duplicating the template to `boids-flocking`.
 2. Updated project metadata in `project.json` and `package.json`.
@@ -20,6 +21,18 @@
 ## Session: 2024-06-15
 
 ### Backlog & Planned Improvements
+- [x] Implement a "rainbow mode" where boids constantly shift colors over time.
+- [x] Create a "vortex" mode that applies a circular rotational force to all boids.
+- [ ] Allow users to save their current parameter configuration to LocalStorage and load it later.
+- [x] Introduce a simple collision detection that briefly flashes boids white when they overlap.
+- [x] Add a "party mode" with flashing background colors and erratic boid movements.
+- [ ] Implement wind turbulence, making the wind force noisy across different areas of the canvas.
+- [ ] Create a "Flock Leader" visual indicator (e.g., a star icon on the boid with the most neighbors).
+- [x] Introduce "repulsor" obstacles that push boids away much stronger than normal obstacles.
+- [x] Add an interactive slider to control the simulation timescale (speed up or slow down time).
+- [ ] Implement "boid aging" where boids slowly grow older, changing color and eventually dying/respawning.
+- [ ] Add a visual indicator showing which boids are currently being tracked by predators.
+- [ ] Implement an "energy" system where boids need to rest if they move at max speed for too long.
 - [x] Add an edge behavior toggle (Wrap Around vs Bounce).
 - [x] Add Predator boids that hunt regular boids.
 - [x] Make regular boids flee from Predators.

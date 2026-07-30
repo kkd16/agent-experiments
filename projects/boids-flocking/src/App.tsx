@@ -25,7 +25,12 @@ const defaultParams: BoidParams = {
   nightMode: true,
   trailDecay: 0.1,
   cameraFollow: false,
-  glowEffect: false
+  glowEffect: false,
+  rainbowMode: false,
+  collisionFlash: false,
+  vortexMode: false,
+  partyMode: false,
+  timeScale: 1.0
 }
 
 function App() {
@@ -196,12 +201,13 @@ function App() {
               Mouse Interaction
               <select
                 value={params.mouseInteraction}
-                onChange={(e) => setParams(prev => ({ ...prev, mouseInteraction: e.target.value as 'none' | 'attract' | 'repel' }))}
+                onChange={(e) => setParams(prev => ({ ...prev, mouseInteraction: e.target.value as 'none' | 'attract' | 'repel' | 'obstacle' | 'repulsor' }))}
               >
                 <option value="none">None</option>
                 <option value="attract">Attract</option>
                 <option value="repel">Repel</option>
                 <option value="obstacle">Place Obstacle</option>
+                <option value="repulsor">Place Repulsor</option>
               </select>
             </label>
           </div>
@@ -352,6 +358,69 @@ function App() {
                  onChange={(e) => setParams(prev => ({ ...prev, glowEffect: e.target.checked }))}
                />
                Glow Effect
+            </label>
+          </div>
+
+
+          <div className="control-group">
+            <label title="Enable rainbow mode where boids constantly shift colors">
+               <input
+                 type="checkbox"
+                 checked={params.rainbowMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, rainbowMode: e.target.checked }))}
+               />
+               Rainbow Mode
+            </label>
+          </div>
+
+
+          <div className="control-group">
+            <label title="Briefly flash boids white when they overlap">
+               <input
+                 type="checkbox"
+                 checked={params.collisionFlash}
+                 onChange={(e) => setParams(prev => ({ ...prev, collisionFlash: e.target.checked }))}
+               />
+               Collision Flash
+            </label>
+          </div>
+
+
+          <div className="control-group">
+            <label title="Apply a circular rotational force to all boids">
+               <input
+                 type="checkbox"
+                 checked={params.vortexMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, vortexMode: e.target.checked }))}
+               />
+               Vortex Mode
+            </label>
+          </div>
+
+
+          <div className="control-group">
+            <label title="Party mode with flashing colors and erratic movements">
+               <input
+                 type="checkbox"
+                 checked={params.partyMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, partyMode: e.target.checked }))}
+               />
+               Party Mode
+            </label>
+          </div>
+
+
+          <div className="control-group">
+            <label title="Control the simulation timescale">
+              Timescale: {params.timeScale.toFixed(1)}x
+              <input
+                type="range"
+                min="0.1"
+                max="3.0"
+                step="0.1"
+                value={params.timeScale}
+                onChange={(e) => handleParamChange('timeScale', Number(e.target.value))}
+              />
             </label>
           </div>
 
