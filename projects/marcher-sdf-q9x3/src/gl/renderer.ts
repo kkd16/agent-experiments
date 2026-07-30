@@ -359,6 +359,7 @@ export class Renderer {
     h(s.env.ambient); h(s.env.fogDensity)
     h(s.env.fogColor[0]); h(s.env.fogColor[1]); h(s.env.fogColor[2])
     h(s.env.emissive ? 1 : 0); h(s.env.emissiveStrength); h(s.env.emissiveShadows ? 1 : 0)
+    h(s.render.integrator === 'pathtrace' ? 1 : 0); h(s.render.bounces); h(s.render.fireflyClamp)
     h(s.ground.enabled ? 1 : 0); h(s.ground.height); h(s.ground.checker ? 1 : 0)
     h(s.ground.color1[0]); h(s.ground.color1[1]); h(s.ground.color1[2])
     h(s.ground.color2[0]); h(s.ground.color2[1]); h(s.ground.color2[2])
@@ -420,6 +421,10 @@ export class Renderer {
     u1i('uEmissive', s.env.emissive ? 1 : 0)
     u1f('uEmissiveStr', s.env.emissiveStrength)
     u1i('uEmisShadow', s.env.emissiveShadows ? 1 : 0)
+
+    u1i('uIntegrator', s.render.integrator === 'pathtrace' ? 1 : 0)
+    u1i('uBounces', Math.max(1, Math.round(s.render.bounces)))
+    u1f('uClamp', Math.max(0, s.render.fireflyClamp))
 
     u1f('uGroundH', s.ground.height)
     u1i('uCheck', s.ground.checker ? 1 : 0)

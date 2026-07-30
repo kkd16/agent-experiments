@@ -138,6 +138,7 @@ export default function App() {
             fps={fps}
             error={error}
             spp={spp}
+            integrator={scene.render.integrator}
             dispatch={dispatch}
           />
         </main>

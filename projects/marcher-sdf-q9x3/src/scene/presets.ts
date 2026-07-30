@@ -137,7 +137,7 @@ export function defaultEnv(): Environment {
 }
 
 export function defaultRender(): Render {
-  return { accumulate: true, maxSamples: 256 }
+  return { accumulate: true, maxSamples: 256, integrator: 'raymarch', bounces: 4, fireflyClamp: 6 }
 }
 
 export function defaultGround(): Ground {
@@ -613,7 +613,7 @@ function aperture(): Scene {
     env: { ...defaultEnv(), ambient: 0.5 },
     ground: { ...defaultGround(), checker: true, color1: c('#1a1c24'), color2: c('#23262f') },
     post: { ...defaultPost(), vignette: 0.5, exposure: 1.15 },
-    render: { accumulate: true, maxSamples: 512 },
+    render: { ...defaultRender(), maxSamples: 512 },
   })
 }
 
@@ -672,7 +672,7 @@ function lantern(): Scene {
       },
       ground: { ...defaultGround(), checker: false, color1: c('#0c0d12'), color2: c('#0c0d12') },
       post: { ...defaultPost(), exposure: 1.3, vignette: 0.7, saturation: 1.2 },
-      render: { accumulate: true, maxSamples: 512 },
+      render: { ...defaultRender(), maxSamples: 512 },
     },
   )
 }
@@ -735,6 +735,116 @@ function gearwork(): Scene {
   )
 }
 
+// The canonical global-illumination test scene: a white room with one red wall,
+// one green wall and a single glowing panel in the ceiling. With the path tracer
+// on you see the effect that no raymarch shade can fake — the red and green walls
+// bleed their colour onto the white floor, ceiling and the two inner blocks. Best
+// viewed head-on (auto-rotate off); the front is open so the camera looks in.
+function cornellBox(): Scene {
+  const white = '#d6d6d1'
+  const wall = (o: NodeOpts): SdfNode =>
+    mk('box', { color: white, rough: 0.92, refl: 0.02, op: 'union', smooth: false, ...o })
+  return base(
+    [
+      wall({ name: 'Floor', params: [1.5, 0.05, 1.5, 0], pos: [0, 0, 0] }),
+      wall({ name: 'Ceiling', params: [1.5, 0.05, 1.5, 0], pos: [0, 3, 0] }),
+      wall({ name: 'Back wall', params: [1.5, 1.5, 0.05, 0], pos: [0, 1.5, -1.5] }),
+      wall({ name: 'Left wall (red)', params: [0.05, 1.5, 1.5, 0], pos: [-1.5, 1.5, 0], color: '#c1352b' }),
+      wall({ name: 'Right wall (green)', params: [0.05, 1.5, 1.5, 0], pos: [1.5, 1.5, 0], color: '#2f9e44' }),
+      mk('box', {
+        name: 'Light',
+        params: [0.55, 0.02, 0.5, 0],
+        pos: [0, 2.96, -0.1],
+        color: '#fff4e0',
+        emission: 4.2,
+        rough: 1,
+        op: 'union',
+        smooth: false,
+      }),
+      wall({ name: 'Tall block', params: [0.32, 0.72, 0.32, 0], pos: [-0.52, 0.72, -0.42], rot: [0, 19, 0] }),
+      wall({ name: 'Short block', params: [0.34, 0.34, 0.34, 0], pos: [0.55, 0.34, 0.42], rot: [0, -22, 0] }),
+    ],
+    {
+      camera: {
+        ...defaultCamera(),
+        autoRotate: false,
+        target: [0, 1.4, 0],
+        distance: 5.6,
+        azimuth: 0,
+        elevation: 4,
+        fov: 42,
+      },
+      sun: { ...defaultSun(), intensity: 0 },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#05060a'),
+        horizonColor: c('#05060a'),
+        groundColor: c('#05060a'),
+        ambient: 0,
+        fogDensity: 0,
+        fogColor: c('#05060a'),
+        emissive: true,
+        emissiveStrength: 1,
+      },
+      ground: { ...defaultGround(), enabled: false },
+      quality: { ...defaultQuality(), maxSteps: 120, maxDist: 40 },
+      post: { ...defaultPost(), exposure: 1.35, vignette: 0.25, saturation: 1.05 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 6, maxSamples: 640, fireflyClamp: 8 },
+    },
+  )
+}
+
+// A colour-bleeding still life under a soft sun: a matte white sphere flanked by a
+// saturated red wall and a blue wall. Path-traced, the sphere's shadow flank glows
+// red on one side and blue on the other — bounce light carrying wall colour — while
+// a little chrome sphere mirrors the whole set. The lesson of indirect light in one
+// frame; switch to Ray march to watch the colour bleed vanish.
+function radiance(): Scene {
+  return base(
+    [
+      mk('sphere', { name: 'Matte sphere', params: [0.8, 0, 0, 0], pos: [0, 0.8, 0], color: '#e8e4dc', rough: 0.95, refl: 0.02 }),
+      mk('box', {
+        name: 'Red wall',
+        params: [0.06, 1.3, 1.4, 0],
+        pos: [-1.5, 1.3, 0],
+        color: '#d1332a',
+        rough: 0.95,
+        op: 'union',
+        smooth: false,
+      }),
+      mk('box', {
+        name: 'Blue wall',
+        params: [0.06, 1.3, 1.4, 0],
+        pos: [1.5, 1.3, 0],
+        color: '#2f6bd1',
+        rough: 0.95,
+        op: 'union',
+        smooth: false,
+      }),
+      mk('sphere', {
+        name: 'Chrome',
+        params: [0.45, 0, 0, 0],
+        pos: [0.95, 0.45, 1.0],
+        color: '#e8e8ee',
+        metallic: 1,
+        rough: 0.06,
+        refl: 0.7,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), autoRotate: false, target: [0, 0.8, 0], distance: 6.2, azimuth: 12, elevation: 12, fov: 40 },
+      sun: { ...defaultSun(), elevation: 58, azimuth: 35, intensity: 1.05, angle: 3 },
+      env: { ...defaultEnv(), skyColor: c('#8fb2e0'), horizonColor: c('#dfeaf6'), ambient: 0.4, fogDensity: 0 },
+      ground: { ...defaultGround(), checker: false, color1: c('#cfcabd'), color2: c('#cfcabd'), height: 0 },
+      quality: { ...defaultQuality(), maxSteps: 130, maxDist: 50 },
+      post: { ...defaultPost(), exposure: 1.2, vignette: 0.35, saturation: 1.1 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 5, maxSamples: 512, fireflyClamp: 8 },
+    },
+  )
+}
+
 export interface Preset {
   id: string
   name: string
@@ -743,6 +853,8 @@ export interface Preset {
 
 export const PRESETS: Preset[] = [
   { id: 'genesis', name: 'Genesis', build: genesis },
+  { id: 'cornell', name: 'Cornell Box', build: cornellBox },
+  { id: 'radiance', name: 'Radiance', build: radiance },
   { id: 'lattice', name: 'Lattice', build: lattice },
   { id: 'orrery', name: 'Orrery', build: orrery },
   { id: 'monolith', name: 'Monolith', build: monolith },
