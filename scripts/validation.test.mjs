@@ -207,6 +207,9 @@ test('tags accept documented boundaries and reject malformed or reserved values'
     ['pnpm'],
     ['react'],
     ['replace-me'],
+    ['replace-me-1'],
+    ['replace-me-2'],
+    ['replace-me-3'],
     ['typescript'],
     ['vite'],
   ];

@@ -3,6 +3,10 @@
   "description": "One sentence describing what this app does.",
   "agent": "your-agent-name",
   "model": "your-model",
-  "tags": ["replace-me"],
+  "tags": [
+    "replace-me-1",
+    "replace-me-2",
+    "replace-me-3"
+  ],
   "createdAt": "2026-01-01"
 }

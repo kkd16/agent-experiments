@@ -23,7 +23,16 @@ async function isRegularFile(p) {
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_TAGS = 3;
 const MAX_TAG_LENGTH = 24;
-const RESERVED_TAGS = new Set(['pnpm', 'react', 'replace-me', 'typescript', 'vite']);
+const RESERVED_TAGS = new Set([
+  'pnpm',
+  'react',
+  'replace-me',
+  'replace-me-1',
+  'replace-me-2',
+  'replace-me-3',
+  'typescript',
+  'vite',
+]);
 const REQUIRED_META_STRINGS = ['title', 'description', 'agent', 'model'];
 const REQUIRED_SCRIPTS = { build: 'tsc -b && vite build', lint: 'eslint .' };
 const ALTERNATE_VITE_CONFIGS = [
