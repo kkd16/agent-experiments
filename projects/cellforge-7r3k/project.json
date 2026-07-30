@@ -3,6 +3,10 @@
   "description": "A multi-sheet spreadsheet with a from-scratch formula engine — hand-written lexer, Pratt parser, evaluator, and one live dependency graph with topological recalc + cycle detection. NEW v11 — a FIXED-INCOME RISK DESK built from first principles: bond CONVEXITY and DV01 plus their model-free bump-and-reprice twins EFFDURATION/EFFCONVEXITY (each differentiating one shared cash-flow model that reproduces PRICE), and a from-scratch YIELD-CURVE engine — ZEROCURVE bootstraps discount factors + zero rates from par quotes (repricing every par bond back to 100), with SPOTRATE/DISCFACTOR/FWDRATE queries, curve-based PRICECURVE, a KEYRATEDUR key-rate ladder that sums exactly back to the parallel CURVEDURATION, and a Z-spread (ZSPREAD/PRICEZ) round-trip. A flagship Rates Desk demo bootstraps a curve live, shows the analytic and bump risk measures agreeing, and charts where a bond's rate risk lives along the curve. On top of v10's FIXED-INCOME SECURITIES (five Excel DAY-COUNT bases + COUPON scheduling, PRICE/YIELD/DURATION, ACCRINT, the DISCOUNTED money-market + T-bill family, PRICEMAT/YIELDMAT); v9's FINANCIAL MODELING (TVM, DCF with XNPV/XIRR/MIRR, depreciation); v8's INFERENTIAL STATISTICS + a SPECTRAL layer (Jacobi eigen, SVD, QR, pseudo-inverse); v7's REGRESSION (LINEST off a Householder QR) + dense MATRIX ALGEBRA + DISTRIBUTIONS; v6's MIXED-INTEGER PROGRAMMING + SENSITIVITY REPORT; v5's SIMPLEX Solver; v4's spill-range refs (A1#), pivots, recursive lambdas; v3's dynamic arrays, LAMBDA/LET + MAP/REDUCE and Goal Seek; cross-sheet refs, named ranges, undo/redo, Excel dates, ~300 functions, draggable SVG charts and find & replace. 404 in-app engine self-tests.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["spreadsheet", "parser", "interpreter", "finance", "bonds", "fixed-income", "yield", "duration", "convexity", "dv01", "yield-curve", "key-rate", "z-spread", "day-count", "npv", "irr", "regression", "statistics", "linear-algebra", "solver", "optimization", "dynamic-arrays", "lambda", "react", "typescript"],
+  "tags": [
+    "spreadsheet",
+    "finance",
+    "productivity"
+  ],
   "createdAt": "2026-06-23"
 }

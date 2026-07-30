@@ -41,9 +41,9 @@ Every project is a **Vite + React + TypeScript app built with pnpm**. CI validat
 project and **rejects** (does not publish, no catalog card, logs a loud error) anything that:
 
 - uses npm or yarn instead of pnpm (a `package-lock.json` or `yarn.lock` is a hard fail),
-- is missing `pnpm-lock.yaml`, `index.html`, `package.json`, or `vite.config.ts`,
+- is missing `pnpm-lock.yaml`, `index.html`, `package.json`, `project.json`, or `vite.config.ts`,
 - is missing (or has an empty) `JOURNAL.md` — every app must carry its living log of ideas + sessions,
-- doesn't depend on `react` + `react-dom`, or has no `build`/`lint` script,
+- doesn't depend on `react` + `react-dom`, or changes the template scripts (`build`: `tsc -b && vite build`; `lint`: `eslint .`),
 - doesn't keep `base: './'` in `vite.config.ts`,
 - fails to lint or build (`pnpm lint` / `pnpm build` errors, e.g. a type error).
 
@@ -85,12 +85,21 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
   "description": "A tiny widget that shows the current weather for any city.",
   "agent": "jules",
   "model": "gemini-3.1-pro",
-  "tags": ["weather", "react"],
+  "tags": ["weather", "forecast"],
   "createdAt": "2026-06-12"
 }
 ```
 
-`agent` and every `tags` entry must be **lowercase**; `createdAt` must be ISO `YYYY-MM-DD`. CI enforces this.
+`title`, `description`, `agent`, and `model` must be non-empty strings. `agent` must be **lowercase**; `createdAt` is required and must be a real ISO date (`YYYY-MM-DD`). CI enforces this.
+
+Tags are catalog filters, not an exhaustive feature list. Keep them focused:
+
+- Use **1–3 unique tags** that describe the app's main topic or user-facing capability.
+- Tags must be **2–24 characters** and lowercase kebab-case (`signal-processing`, not `Signal Processing`).
+- Prefer broad terms a visitor would browse for. Do not add a tag for every algorithm, screen, or implementation detail.
+- Do not tag the fixed stack (`react`, `typescript`, `vite`, or `pnpm`); those tags do not distinguish one app from another.
+
+The verifier enforces the count, format, uniqueness, and fixed-stack exclusions. Choosing useful broad tags remains an editorial requirement.
 
 ### Hard rules (these keep your app working on the live subpath)
 
@@ -105,7 +114,7 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
 - **Commit `pnpm-lock.yaml`** (CI runs `pnpm install --frozen-lockfile`, which fails without it).
 - **Don't commit `dist/` or `node_modules/`** — generated/gitignored. CI builds `dist/` for you.
 - **Verify before pushing**: from the repo root run `node scripts/verify-project.mjs <slug>`. It
-  runs the exact CI gate — conformance + `pnpm lint` + `pnpm build`. Green means you'll pass.
+  runs the exact CI gate — conformance + frozen install + `pnpm lint` + `pnpm build` + build-output validation. Green means you'll pass.
 
 ## Step 3 — publish (open a pull request)
 
@@ -133,7 +142,7 @@ The **auto-merge workflow** (`.github/workflows/auto-merge.yml`) runs on every P
 
 1. checks that **every** changed file is inside a single `projects/<slug>/` folder — a PR that
    touches anything else is rejected, never merged (the Golden Rule);
-2. runs the exact gate (`verify-project.mjs`: conformance + `pnpm lint` + `pnpm build`);
+2. runs the exact gate (`verify-project.mjs`: conformance + frozen install + `pnpm lint` + `pnpm build` + build-output validation);
 3. squash-merges the PR into `main` and triggers the catalog deploy.
 
 If the gate fails or the PR is out of scope, it isn't merged — read the reason in the PR's

@@ -1,4 +1,4 @@
-import { readdir, readFile, stat, mkdir, cp, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, lstat, mkdir, cp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const SHELL = ['index.html', 'assets', '.nojekyll'];
@@ -12,7 +12,96 @@ export async function exists(p) {
   }
 }
 
+async function isRegularFile(p) {
+  try {
+    return (await lstat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_TAGS = 3;
+const MAX_TAG_LENGTH = 24;
+const RESERVED_TAGS = new Set(['pnpm', 'react', 'replace-me', 'typescript', 'vite']);
+const REQUIRED_META_STRINGS = ['title', 'description', 'agent', 'model'];
+const REQUIRED_SCRIPTS = { build: 'tsc -b && vite build', lint: 'eslint .' };
+const ALTERNATE_VITE_CONFIGS = [
+  'vite.config.js',
+  'vite.config.mjs',
+  'vite.config.cjs',
+  'vite.config.mts',
+  'vite.config.cts',
+];
+
+function describeValue(value) {
+  if (typeof value !== 'string') return JSON.stringify(value);
+  const display = value.length <= 60 ? value : `${value.slice(0, 60)}... (${value.length} chars)`;
+  return JSON.stringify(display);
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isRealIsoDate(value) {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return (
+    !Number.isNaN(date.getTime()) &&
+    date.getUTCFullYear() === Number(match[1]) &&
+    date.getUTCMonth() + 1 === Number(match[2]) &&
+    date.getUTCDate() === Number(match[3])
+  );
+}
+
+export function validateTags(tags) {
+  if (!Array.isArray(tags)) return [`project.json "tags" must be an array with 1–${MAX_TAGS} entries`];
+
+  const errors = [];
+  if (tags.length < 1 || tags.length > MAX_TAGS)
+    return [`project.json "tags" must contain 1–${MAX_TAGS} entries (found ${tags.length})`];
+
+  const seen = new Set();
+  for (const tag of tags) {
+    if (typeof tag !== 'string') {
+      errors.push('project.json tags must be strings');
+      continue;
+    }
+    const display = describeValue(tag);
+    if (tag.length < 2 || tag.length > MAX_TAG_LENGTH)
+      errors.push(`project.json tag ${display} must be 2–${MAX_TAG_LENGTH} characters`);
+    if (!SLUG_RE.test(tag))
+      errors.push(`project.json tag ${display} must be lowercase kebab-case`);
+    if (seen.has(tag)) errors.push(`project.json tag ${display} is duplicated`);
+    if (RESERVED_TAGS.has(tag))
+      errors.push(`project.json tag ${display} is not catalog-specific; choose a topic or capability instead`);
+    seen.add(tag);
+  }
+  return errors;
+}
+
+export function validateBuildHtml(html) {
+  if (typeof html !== 'string') return ['dist/index.html could not be read'];
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, '');
+  const attributes = withoutComments.matchAll(/\b(href|src|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi);
+  for (const [, name, doubleQuoted, singleQuoted, unquoted] of attributes) {
+    const value = doubleQuoted ?? singleQuoted ?? unquoted;
+    const urls =
+      name.toLowerCase() === 'srcset'
+        ? value.split(',').map((part) => part.trim().split(/\s+/)[0])
+        : [value];
+    if (urls.some((url) => url.startsWith('/') && !url.startsWith('//')))
+      return ["dist/index.html contains a root-relative URL; keep Vite base set to './'"];
+  }
+  return [];
+}
 
 // Golden Rule: in scope only if every changed file is under one projects/<slug>/. → { slug } | { skip }
 export function classifyScope(files) {
@@ -95,91 +184,99 @@ export async function readMeta(projectsDir, slug) {
 }
 
 export async function validate(projectsDir, slug) {
-  const dir = join(projectsDir, slug);
   const errors = [];
+  if (!SLUG_RE.test(slug)) return ['slug must be kebab-case (lowercase letters/digits, single hyphens)'];
 
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
-    errors.push('slug must be kebab-case (lowercase letters/digits, single hyphens)');
-  if (!(await exists(join(dir, 'index.html')))) errors.push('missing index.html at the project root');
+  const dir = join(projectsDir, slug);
+  if (!(await isRegularFile(join(dir, 'index.html')))) errors.push('missing index.html at the project root');
   if (await exists(join(dir, 'package-lock.json'))) errors.push('has package-lock.json — this repo is pnpm-only');
   if (await exists(join(dir, 'yarn.lock'))) errors.push('has yarn.lock — this repo is pnpm-only');
-  if (!(await exists(join(dir, 'pnpm-lock.yaml')))) errors.push('missing pnpm-lock.yaml — run `pnpm install` and commit it');
+  if (!(await isRegularFile(join(dir, 'pnpm-lock.yaml'))))
+    errors.push('missing pnpm-lock.yaml — run `pnpm install` and commit it');
 
   const journal = join(dir, 'JOURNAL.md');
-  if (!(await exists(journal))) {
+  if (!(await isRegularFile(journal))) {
     errors.push('missing JOURNAL.md — every app needs a project journal (ideas + session log)');
   } else if (!(await readFile(journal, 'utf8').catch(() => '')).trim()) {
     errors.push('JOURNAL.md is empty — record your ideas/backlog and session log there');
   }
 
+  const packageFile = join(dir, 'package.json');
   let pkg = null;
-  try {
-    pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'));
-  } catch {
-    errors.push('missing or invalid package.json');
-  }
-  if (pkg) {
-    const deps = pkg.dependencies || {};
-    if (!deps.react || !deps['react-dom']) errors.push('package.json must depend on react and react-dom');
-    if (!pkg.scripts?.build) errors.push('package.json needs a "build" script');
-    if (!pkg.scripts?.lint) errors.push('package.json needs a "lint" script');
-  }
-
-  const candidates = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'];
-  let cfg = null;
-  for (const f of candidates) {
-    if (await exists(join(dir, f))) {
-      cfg = join(dir, f);
-      break;
+  if (!(await isRegularFile(packageFile))) {
+    errors.push('missing package.json');
+  } else {
+    try {
+      pkg = JSON.parse(await readFile(packageFile, 'utf8'));
+      if (!isRecord(pkg)) {
+        errors.push('package.json must contain a JSON object');
+        pkg = null;
+      }
+    } catch {
+      errors.push('package.json is not valid JSON');
     }
   }
-  if (!cfg) {
-    errors.push('missing vite.config.ts');
-  } else {
-    const text = await readFile(cfg, 'utf8');
-    if (!text.includes('react(')) errors.push('vite.config must use the react() plugin');
-    const m = text.match(/base\s*:\s*[`"']([^`"']*)[`"']/);
-    const base = m ? m[1] : null;
-    if (base === null) errors.push("vite.config must set base: './'");
-    else if (!(base === './' || base === '' || base === '.'))
-      errors.push(`vite.config base must be relative ('./'), found '${base}'`);
-    const out = text.match(/outDir\s*:\s*[`"']([^`"']*)[`"']/);
-    if (out && out[1] !== 'dist') errors.push(`build output must use the default dist/ (found outDir '${out[1]}')`);
+  if (pkg) {
+    if (!isNonEmptyString(pkg.dependencies?.react) || !isNonEmptyString(pkg.dependencies?.['react-dom']))
+      errors.push('package.json must depend on react and react-dom');
+    for (const [name, command] of Object.entries(REQUIRED_SCRIPTS))
+      if (pkg.scripts?.[name] !== command)
+        errors.push(`package.json "${name}" script must be exactly ${describeValue(command)}`);
   }
 
-  if (await exists(join(dir, 'project.json'))) {
+  const configFile = join(dir, 'vite.config.ts');
+  const alternateConfigs = [];
+  for (const name of ALTERNATE_VITE_CONFIGS)
+    if (await exists(join(dir, name))) alternateConfigs.push(name);
+  if (alternateConfigs.length)
+    errors.push(`remove alternate Vite config(s): ${alternateConfigs.join(', ')}; only vite.config.ts is allowed`);
+
+  if (!(await isRegularFile(configFile))) {
+    errors.push('missing vite.config.ts');
+  } else {
+    const config = (await readFile(configFile, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
+    if (!/^\s*import\s+react\s+from\s+['"]@vitejs\/plugin-react['"];?\s*$/m.test(config))
+      errors.push("vite.config.ts must import the template's React plugin");
+    if (!/^\s*base\s*:\s*['"]\.\/['"]\s*,?(?:\s*\/\/.*)?$/m.test(config))
+      errors.push("vite.config.ts must set base: './'");
+    if (!/^\s*plugins\s*:\s*\[\s*react\s*\(\s*\)/m.test(config))
+      errors.push('vite.config.ts must enable react() first in plugins');
+  }
+
+  const projectFile = join(dir, 'project.json');
+  if (await isRegularFile(projectFile)) {
     let meta = null;
     try {
-      meta = JSON.parse(await readFile(join(dir, 'project.json'), 'utf8'));
+      meta = JSON.parse(await readFile(projectFile, 'utf8'));
+      if (!isRecord(meta)) {
+        errors.push('project.json must contain a JSON object');
+        meta = null;
+      }
     } catch {
       errors.push('project.json is not valid JSON');
     }
     if (meta) {
-      if (typeof meta.agent === 'string' && meta.agent !== meta.agent.toLowerCase())
-        errors.push(`project.json "agent" must be lowercase (found "${meta.agent}")`);
-      for (const t of Array.isArray(meta.tags) ? meta.tags : [])
-        if (typeof t === 'string' && t !== t.toLowerCase())
-          errors.push(`project.json tag "${t}" must be lowercase`);
-      if (typeof meta.createdAt === 'string') {
-        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(meta.createdAt);
-        const d = m && new Date(`${meta.createdAt}T00:00:00Z`);
-        const real =
-          m &&
-          !isNaN(d) &&
-          d.getUTCFullYear() === +m[1] &&
-          d.getUTCMonth() + 1 === +m[2] &&
-          d.getUTCDate() === +m[3];
-        if (!real)
-          errors.push(`project.json "createdAt" must be a real ISO date YYYY-MM-DD (found "${meta.createdAt}")`);
-      }
+      for (const field of REQUIRED_META_STRINGS)
+        if (!isNonEmptyString(meta[field]))
+          errors.push(`project.json "${field}" must be a non-empty string`);
+      if (isNonEmptyString(meta.agent) && meta.agent !== meta.agent.toLowerCase())
+        errors.push(`project.json "agent" must be lowercase (found ${describeValue(meta.agent)})`);
+      errors.push(...validateTags(meta.tags));
+      if (!isRealIsoDate(meta.createdAt))
+        errors.push(
+          `project.json "createdAt" must be a real ISO date YYYY-MM-DD (found ${describeValue(meta.createdAt)})`,
+        );
     }
+  } else {
+    errors.push('missing project.json — add catalog metadata for this app');
   }
 
   return errors;
 }
 
 export function reportViolations(slug, violations) {
-  violations.forEach((v) => console.log(`::error title=Rejected ${slug}::${slug}: ${v}`));
+  const escape = (value) => String(value).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+  violations.forEach((v) => console.log(`::error title=Rejected project::${escape(`${slug}: ${v}`)}`));
 }
 
 export async function copyShell(root, site) {

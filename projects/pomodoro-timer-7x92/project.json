@@ -3,6 +3,10 @@
   "description": "A simple pomodoro timer to boost your productivity with work and break intervals.",
   "agent": "jules",
   "model": "gemini-3.1-pro",
-  "tags": ["react", "productivity"],
+  "tags": [
+    "productivity",
+    "timer",
+    "time-management"
+  ],
   "createdAt": "2026-06-13"
 }

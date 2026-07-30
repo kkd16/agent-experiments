@@ -3,7 +3,7 @@ name: Auto-merge project pull requests
 # Agents publish by opening a pull request into `main`. This workflow runs on
 # every PR and merges it automatically — but only if the change is confined to a
 # single projects/<slug>/ folder (the Golden Rule) and passes the exact CI gate
-# (conformance + lint + build). Anything else is rejected with a failing check
+# (conformance + install + lint + build + build output). Anything else is rejected with a failing check
 # and a "changes requested" review from the bot, never merged.
 #
 # Two jobs by design:
@@ -76,6 +76,10 @@ jobs:
           echo "::error title=Out of scope::$SKIP"
           exit 1
 
+      - name: Test project conformance policy
+        if: steps.scope.outputs.slug != ''
+        run: node --test scripts/validation.test.mjs
+
       - uses: pnpm/action-setup@v6
         if: steps.scope.outputs.slug != ''
         with:
@@ -90,9 +94,9 @@ jobs:
           rm -rf "projects/$SLUG"
           git checkout origin/pr-head -- "projects/$SLUG"
 
-      # The exact gate: scope + conformance + lint + build. A failure here fails
+      # The exact gate: scope + conformance + install + lint + build + build output. A failure here fails
       # the check; the merge job turns it into a changes-requested review.
-      - name: Verify project (conformance + lint + build)
+      - name: Verify project gate
         if: steps.scope.outputs.slug != ''
         env:
           SLUG: ${{ steps.scope.outputs.slug }}
@@ -139,14 +143,14 @@ jobs:
           printf '🚫 Out of scope. %s\n\nChange only one `projects/<slug>/` folder, then push again. Run `node scripts/verify-project.mjs <slug>` first — it catches this locally.\n' "$SKIP" > /tmp/body.md
           gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
 
-      # In scope but the gate failed (conformance/lint/build) → changes-requested review.
+      # In scope but the project gate failed → changes-requested review.
       - name: Report gate failure
         if: ${{ needs.gate.result == 'failure' && needs.gate.outputs.slug != '' }}
         env:
           SLUG: ${{ needs.gate.outputs.slug }}
         run: |
           # shellcheck disable=SC2016  # %s is a printf placeholder; $SLUG is passed as an arg
-          printf '❌ Gate failed for `%s` (conformance / lint / build). Reproduce and fix it locally with `node scripts/verify-project.mjs %s`, then push again.\n' "$SLUG" "$SLUG" > /tmp/body.md
+          printf '❌ Gate failed for `%s` (conformance / install / lint / build / build output). Reproduce and fix it locally with `node scripts/verify-project.mjs %s`, then push again.\n' "$SLUG" "$SLUG" > /tmp/body.md
           gh pr review "$PR" --request-changes --body-file /tmp/body.md || gh pr comment "$PR" --body-file /tmp/body.md || true
 
       # The merge command itself failed (conflict / head moved) → changes-requested review.

@@ -5,7 +5,7 @@ import { cp } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { exists, readMeta, validate, listProjectSlugs, reportViolations, copyShell, writeCatalog } from './_lib.mjs';
+import { readMeta, validate, listProjectSlugs, reportViolations, copyShell, writeCatalog } from './_lib.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROJECTS_DIR = join(ROOT, 'projects');
@@ -35,9 +35,10 @@ async function main() {
     const ok =
       run('pnpm', ['install', '--frozen-lockfile'], dir) &&
       run('pnpm', ['run', 'lint'], dir) &&
-      run('pnpm', ['run', 'build'], dir);
-    if (!ok || !(await exists(join(dir, 'dist', 'index.html')))) {
-      reportViolations(slug, ['build failed (or produced no dist/index.html)']);
+      run('pnpm', ['run', 'build'], dir) &&
+      run(process.execPath, [join(ROOT, 'scripts', 'verify-build-output.mjs'), dir], dir);
+    if (!ok) {
+      reportViolations(slug, ['install, lint, build, or build-output validation failed']);
       rejected.push(slug);
       continue;
     }

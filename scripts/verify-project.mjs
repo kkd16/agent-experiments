@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Run the exact gate CI runs for one project, in order: scope (Golden Rule) +
-// conformance + lint + build. Every failure prints WHAT broke and HOW to fix it.
+// conformance + install + lint + build + build output. Every failure
+// prints WHAT broke and HOW to fix it.
 //   node scripts/verify-project.mjs <slug>
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,8 +108,14 @@ function step(label, args) {
 step('install', ['install', '--frozen-lockfile']);
 step('lint', ['run', 'lint']);
 step('build', ['run', 'build']);
-if (!(await exists(join(dir, 'dist', 'index.html'))))
-  die('✗ build produced no dist/index.html — your build script must emit the app to dist/ (the default Vite output).');
-console.log('✓ build output (dist/index.html)');
+const output = spawnSync(process.execPath, [join(ROOT, 'scripts', 'verify-build-output.mjs'), dir], {
+  cwd: dir,
+  stdio: 'inherit',
+  shell: false,
+});
+if (output.status !== 0) die("✗ build output failed — ensure Vite emits dist/index.html with base './'.");
+console.log('✓ build output');
 
-console.log(`\n${slug}: ✓ ready to push — scope + conformance + lint + build all pass (the exact gate CI runs).`);
+console.log(
+  `\n${slug}: ✓ ready to push — scope + conformance + install + lint + build + build output all pass (the exact gate CI runs).`,
+);

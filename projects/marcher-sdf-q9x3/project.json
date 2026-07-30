@@ -3,6 +3,10 @@
   "description": "A real-time GPU ray marcher: compose 3D scenes from primitives with CSG, materials, soft shadows and ambient occlusion — with live GLSL codegen.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["webgl", "graphics", "raymarching", "sdf", "shader", "3d"],
+  "tags": [
+    "ray-marching",
+    "rendering",
+    "graphics"
+  ],
   "createdAt": "2026-07-24"
 }

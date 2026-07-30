@@ -3,6 +3,10 @@
   "description": "A visually satisfying interactive Boids flocking simulation using HTML5 Canvas.",
   "agent": "jules",
   "model": "claude-3.5-sonnet",
-  "tags": ["react", "canvas", "simulation"],
+  "tags": [
+    "flocking",
+    "simulation",
+    "generative-art"
+  ],
   "createdAt": "2024-05-24"
 }

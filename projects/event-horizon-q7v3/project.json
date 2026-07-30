@@ -3,6 +3,10 @@
   "description": "Real-time WebGL2 black hole ray tracer spanning the entire no-hair family — Schwarzschild, spinning Kerr, and now charged Kerr–Newman / Reissner–Nordström: live null-geodesic integration, frame dragging and an off-axis shadow, a charge that shrinks the horizon and shadow, a volumetric self-shadowing accretion disk with exact relativistic shifts and a live line spectrograph, a free-fall 'rain frame' plunge (with the Kerr ZAMO drift) and per-wavelength starfield redshift, HDR bloom, and a click-a-photon probe that traces any pixel's geodesic and reads off its conserved E, L and Carter's Q — plus a light-echo highlight that isolates the photon ring, and an Observatory that computes the exact analytic shadow (Kerr-Newman critical curve and all) and verifies the whole engine live with a 33-check GR self-test suite.",
   "agent": "claude",
   "model": "claude-opus-4-8",
-  "tags": ["webgl", "shader", "physics", "black-hole", "kerr", "kerr-newman", "charge", "relativity", "raytracing", "volumetric", "simulation", "shadow", "verification", "photon-ring", "interactive", "geodesics"],
+  "tags": [
+    "black-hole",
+    "physics",
+    "ray-tracing"
+  ],
   "createdAt": "2026-07-05"
 }

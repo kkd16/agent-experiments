@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+      - name: Test project conformance policy
+        run: node --test scripts/validation.test.mjs
       - id: list
         run: node scripts/discover-projects.mjs
 
@@ -50,22 +52,25 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: projects/${{ matrix.slug }}/dist
-          key: dist-v1-${{ matrix.slug }}-${{ hashFiles(format('projects/{0}/**', matrix.slug)) }}
-      - name: Build
+          key: dist-v3-${{ matrix.slug }}-${{ hashFiles(format('projects/{0}/**', matrix.slug), 'scripts/_lib.mjs', 'scripts/verify-build-output.mjs') }}
+      - name: Install, lint, and build
         id: build
         if: steps.cache.outputs.cache-hit != 'true'
         continue-on-error: true
         working-directory: projects/${{ matrix.slug }}
-        run: pnpm install --frozen-lockfile && pnpm run lint && pnpm run build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run lint
+          pnpm run build
       - name: Verify build output
         id: verify
         if: steps.cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
         continue-on-error: true
-        run: test -f projects/${{ matrix.slug }}/dist/index.html
+        run: node scripts/verify-build-output.mjs projects/${{ matrix.slug }}
       - name: Flag rejected build
         if: steps.cache.outputs.cache-hit != 'true' && steps.verify.outcome != 'success'
         run: |
-          echo "::error title=Rejected ${{ matrix.slug }}::${{ matrix.slug }}: build failed or produced no dist/index.html"
+          echo "::error title=Rejected ${{ matrix.slug }}::${{ matrix.slug }}: install, lint, build, or build-output validation failed"
       - name: Save build cache
         if: steps.cache.outputs.cache-hit != 'true' && steps.verify.outcome == 'success'
         uses: actions/cache/save@v4
