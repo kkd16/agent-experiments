@@ -332,7 +332,7 @@ function getInitialSpinningOperator(): boolean {
 }
 
 
-function getInitialFlashcardShape(): 'rounded' | 'circle' | 'square' {
+function getInitialFlashcardShape(): 'rounded' | 'circle' | 'square' | 'triangle' {
   try {
     const shape = window.localStorage.getItem('mathFlashcardsShape');
     if (shape === 'circle' || shape === 'square') return shape;
@@ -813,7 +813,7 @@ function App() {
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsSpinningOperator', spinningOperator.toString()); } catch (e) { console.error(e); } }, [spinningOperator]);
 
 
-  const [flashcardShape, setFlashcardShape] = useState<'rounded' | 'circle' | 'square'>(getInitialFlashcardShape());
+  const [flashcardShape, setFlashcardShape] = useState<'rounded' | 'circle' | 'square' | 'triangle'>(getInitialFlashcardShape());
   useEffect(() => { try { window.localStorage.setItem('mathFlashcardsShape', flashcardShape); } catch (e) { console.error(e); } }, [flashcardShape]);
 
   const [mirrorMode, setMirrorMode] = useState<boolean>(getInitialMirrorMode());
@@ -908,7 +908,15 @@ function App() {
   const [hasOpenedSettings, setHasOpenedSettings] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsHasOpenedSettings') === 'true'; } catch { return false; } });
 
   const [bouncingHeader, setBouncingHeader] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsBouncingHeader') === 'true'; } catch { return false; } });
+  const [glitchEffect, setGlitchEffect] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsGlitchEffect') === 'true'; } catch { return false; } });
   const [scoreAsCurrency, setScoreAsCurrency] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsScoreAsCurrency') === 'true'; } catch { return false; } });
+  const [scoreAsHex, setScoreAsHex] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsScoreAsHex') === 'true'; } catch { return false; } });
+  const [binaryMode, setBinaryMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsBinaryMode') === 'true'; } catch { return false; } });
+  const [comboMultiplierPulse, setComboMultiplierPulse] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsComboPulse') === 'true'; } catch { return false; } });
+  const [showSessionProgressBar, setShowSessionProgressBar] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsSessionProgress') === 'true'; } catch { return false; } });
+  const [bouncingScore, setBouncingScore] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsBouncingScore') === 'true'; } catch { return false; } });
+  const [flashcardBorderColor, setFlashcardBorderColor] = useState<string>(() => { try { return window.localStorage.getItem('mathFlashcardsBorderColor') || ''; } catch { return ''; } });
+  const [wavyBackground, setWavyBackground] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsWavyBg') === 'true'; } catch { return false; } });
   const [minimalistMode, setMinimalistMode] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsMinimalistMode') === 'true'; } catch { return false; } });
   const [floatingMathSymbols, setFloatingMathSymbols] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsFloatingMathSymbols') === 'true'; } catch { return false; } });
   const [showSessionClock, setShowSessionClock] = useState<boolean>(() => { try { return window.localStorage.getItem('mathFlashcardsShowSessionClock') === 'true'; } catch { return false; } });
@@ -2007,7 +2015,7 @@ function App() {
     <>
         {showSessionClock && <div style={{ position: 'absolute', top: '10px', right: '10px', fontSize: '1.2rem', fontWeight: 'bold' }}>{currentTimeStr}</div>}
 
-    <div className={`app-wrapper ${minimalistMode ? "minimalist-mode" : ""} ${monospaceFont ? "monospace-font" : ""} ${jumpingNumbers ? "jumping-numbers" : ""} ${retroFont ? 'retro-font' : ''} ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className={`app-wrapper ${minimalistMode ? "minimalist-mode" : ""} ${monospaceFont ? "monospace-font" : ""} ${jumpingNumbers ? "jumping-numbers" : ""} ${retroFont ? 'retro-font' : ''} ${disableAnimations ? 'disable-animations' : ''} ${theme} font-size-${accessibilityFontSize} ${largeTextMode ? 'large-text-mode' : ''} ${streak >= 5 && !lowBatteryMode ? 'streak-active-bg' : ''} ${graphPaper ? 'graph-paper-bg' : ''} ${gameMode === 'zen' ? 'zen' : ''} ${colorBlindMode ? 'color-blind-mode' : ''} ${grayscaleMode ? 'grayscale-mode' : ''} ${crtMode ? 'crt-effect' : ''} ${highContrastMode ? 'high-contrast-mode' : ''} ${wavyBackground ? 'wavy-bg' : ''}`} style={{ backgroundColor: theme === 'light' ? (bgColor ? bgColor : (difficulty === 'easy' ? '#e6ffe6' : difficulty === 'medium' ? '#ffffe6' : difficulty === 'hard' ? '#ffe6e6' : undefined)) : undefined, backgroundImage: bgImage && !graphPaper ? `url(${bgImage})` : (graphPaper ? undefined : 'none'), backgroundSize: 'cover', backgroundPosition: 'center' }}>
 
       {floatingMathSymbols && !lowBatteryMode && (
         <div className="math-symbols-container">
@@ -2094,6 +2102,7 @@ function App() {
           <input id="flashcardTextColor" type="text" placeholder="#333333 or black" value={flashcardTextColor} onChange={(e) => setFlashcardTextColor(e.target.value)} />
         </div>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Header: <input type="color" value={headerColor || '#ffffff'} onChange={(e) => setHeaderColor(e.target.value)} /></label>
+        <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Border: <input type="color" value={flashcardBorderColor || '#ffffff'} onChange={(e) => { setFlashcardBorderColor(e.target.value); try { window.localStorage.setItem('mathFlashcardsBorderColor', e.target.value); } catch(err) { console.error(err); } }} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Correct: <input type="color" value={correctColor} onChange={(e) => setCorrectColor(e.target.value)} /></label>
         <label style={{fontSize: '0.8rem', marginRight: '1rem'}}>Incorrect: <input type="color" value={incorrectColor} onChange={(e) => setIncorrectColor(e.target.value)} /></label>
       </div>
@@ -2128,11 +2137,18 @@ function App() {
         <label htmlFor="hideNightOwl"><input id="hideNightOwl" type="checkbox" checked={hideNightOwl} onChange={(e) => setHideNightOwl(e.target.checked)} /> Hide Night Owl</label>
         <label htmlFor="largeTextMode"><input id="largeTextMode" type="checkbox" checked={largeTextMode} onChange={(e) => setLargeTextMode(e.target.checked)} /> Large Text Mode</label>
 
-        <label htmlFor="flashcardShape">Shape: <select id="flashcardShape" value={flashcardShape} onChange={(e) => setFlashcardShape(e.target.value as 'rounded' | 'circle' | 'square')}><option value="rounded">Rounded</option><option value="circle">Circle</option><option value="square">Square</option></select></label>
+        <label htmlFor="flashcardShape">Shape: <select id="flashcardShape" value={flashcardShape} onChange={(e) => setFlashcardShape(e.target.value as 'rounded' | 'circle' | 'square' | 'triangle')}><option value="rounded">Rounded</option><option value="circle">Circle</option><option value="square">Square</option><option value="triangle">Triangle</option></select></label>
         <label htmlFor="dyslexiaFriendly"><input id="dyslexiaFriendly" type="checkbox" checked={dyslexiaFriendly} onChange={(e) => setDyslexiaFriendly(e.target.checked)} /> Dyslexia Friendly Font</label>
 
         <label htmlFor="bouncingHeader"><input id="bouncingHeader" type="checkbox" checked={bouncingHeader} onChange={(e) => setBouncingHeader(e.target.checked)} /> Bouncing Header</label>
+        <label htmlFor="glitchEffect"><input id="glitchEffect" type="checkbox" checked={glitchEffect} onChange={(e) => { setGlitchEffect(e.target.checked); try { window.localStorage.setItem('mathFlashcardsGlitchEffect', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Glitch Effect</label>
         <label htmlFor="scoreAsCurrency"><input id="scoreAsCurrency" type="checkbox" checked={scoreAsCurrency} onChange={(e) => setScoreAsCurrency(e.target.checked)} /> Score As Currency</label>
+        <label htmlFor="scoreAsHex"><input id="scoreAsHex" type="checkbox" checked={scoreAsHex} onChange={(e) => { setScoreAsHex(e.target.checked); try { window.localStorage.setItem('mathFlashcardsScoreAsHex', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Score As Hexadecimal</label>
+        <label htmlFor="binaryMode"><input id="binaryMode" type="checkbox" checked={binaryMode} onChange={(e) => { setBinaryMode(e.target.checked); try { window.localStorage.setItem('mathFlashcardsBinaryMode', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Binary Mode Equations</label>
+        <label htmlFor="comboPulse"><input id="comboPulse" type="checkbox" checked={comboMultiplierPulse} onChange={(e) => { setComboMultiplierPulse(e.target.checked); try { window.localStorage.setItem('mathFlashcardsComboPulse', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Combo Multiplier Pulse</label>
+        <label htmlFor="sessionProgress"><input id="sessionProgress" type="checkbox" checked={showSessionProgressBar} onChange={(e) => { setShowSessionProgressBar(e.target.checked); try { window.localStorage.setItem('mathFlashcardsSessionProgress', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Show Session Progress Bar</label>
+        <label htmlFor="bouncingScore"><input id="bouncingScore" type="checkbox" checked={bouncingScore} onChange={(e) => { setBouncingScore(e.target.checked); try { window.localStorage.setItem('mathFlashcardsBouncingScore', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Bouncing Score Animation</label>
+        <label htmlFor="wavyBackground"><input id="wavyBackground" type="checkbox" checked={wavyBackground} onChange={(e) => { setWavyBackground(e.target.checked); try { window.localStorage.setItem('mathFlashcardsWavyBg', e.target.checked.toString()); } catch (e) { console.error(e); } }} /> Wavy Background</label>
         <label htmlFor="minimalistMode"><input id="minimalistMode" type="checkbox" checked={minimalistMode} onChange={(e) => setMinimalistMode(e.target.checked)} /> Minimalist Mode</label>
         <label htmlFor="floatingMathSymbols"><input id="floatingMathSymbols" type="checkbox" checked={floatingMathSymbols} onChange={(e) => setFloatingMathSymbols(e.target.checked)} /> Floating Math Symbols</label>
         <label htmlFor="showSessionClock"><input id="showSessionClock" type="checkbox" checked={showSessionClock} onChange={(e) => setShowSessionClock(e.target.checked)} /> Show Session Clock</label>
@@ -2199,7 +2215,7 @@ function App() {
         <div className="quote" style={{ fontStyle: 'italic', color: '#7f8c8d', marginBottom: '1rem', textAlign: 'center' }}>{MOTIVATIONAL_QUOTES[new Date().getDate() % MOTIVATIONAL_QUOTES.length]}</div>
         {!statsCollapsed && (
         <div className="header-stats">
-          <div className="stat">Score: <span className={scoreBump ? "score-bump" : ""}>{score}</span></div>
+          <div className="stat">Score: <span className={(scoreBump ? "score-bump" : "") + (bouncingScore ? " bouncing-score" : "")} style={{display: 'inline-block'}}>{scoreAsHex ? '0x' + score.toString(16).toUpperCase() : score}</span></div>
           <div className="stat">Mistakes: {sessionMistakes}</div>
           <div className="stat">Session Acc: {history.length > 0 ? ((history.filter(h => h.isCorrect).length / history.length) * 100).toFixed(1) : '100.0'}%</div>
           {!hideStreak && (
@@ -2212,7 +2228,7 @@ function App() {
                 </div>
               )}
 
-              <span className={streak >= 10 ? 'streak-glow-3x' : (streak >= 5 ? 'streak-glow-2x' : '')}>{streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')} | Multiplier: {1 + Math.floor(streak / 5)}x</span>
+              <span className={(streak >= 10 ? 'streak-glow-3x' : (streak >= 5 ? 'streak-glow-2x' : '')) + (comboMultiplierPulse && streak >= 5 ? ' pulse-multiplier' : '')}>{streak >= 10 ? ' (x3)' : (streak >= 5 ? ' (x2)' : '')} | Multiplier: {1 + Math.floor(streak / 5)}x</span>
               <button onClick={resetStreak} className="reset-btn" title="Reset Streak" disabled={isSpeedRunActive}>↺</button>
             </div>
             <progress value={streak % 5} max={5} style={{ width: '80px', marginTop: '4px' }} title="Next Milestone"></progress>
@@ -2648,7 +2664,7 @@ function App() {
         </div>
       )}
 
-      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined, borderRadius: flashcardShape === 'circle' ? '50%' : flashcardShape === 'square' ? '0px' : '15px'}}>
+      <div className={`flashcard flashcard-${flashcardSize} ${animationClass} ${mirrorMode ? 'mirror-mode' : ''} ${invertColors ? 'invert-colors' : ''} ${rainbowBorder ? 'rainbow-border' : ''} ${neonGlow ? 'neon-glow' : ''} ${thickBorders ? 'thick-borders' : ''} ${wobblyFlashcard ? 'wobbly-flashcard' : ''} ${glitchEffect ? 'glitch-effect' : ''}`} style={{color: flashcardTextColor || undefined, boxShadow: disableDropShadow ? 'none' : undefined, borderRadius: flashcardShape === 'circle' ? '50%' : flashcardShape === 'square' ? '0px' : '15px', clipPath: flashcardShape === 'triangle' ? 'polygon(50% 0%, 0% 100%, 100% 100%)' : undefined, borderColor: flashcardBorderColor || undefined, borderStyle: flashcardBorderColor ? 'solid' : undefined, borderWidth: flashcardBorderColor ? '4px' : undefined}}>
 
         {gameMode === 'targetScore' && isSpeedRunActive && <div style={{textAlign: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.2rem', color: '#e67e22'}}>Goal: 1000 points (Current: {score})</div>}
         <div style={{textAlign: "center", marginBottom: "0.5rem", fontSize: "0.8rem", color: "gray"}}>Highest Combo: {sessionHighestCombo}</div>
@@ -2661,30 +2677,30 @@ function App() {
           )}
           {streak >= 5 && (
             <span style={{position: 'absolute', top: '-10px', right: '-10px', background: '#f1c40f', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '10px', fontSize: '1rem', fontWeight: 'bold', animation: 'pulse 0.5s'}}>
-              <span className={streak >= 10 ? 'streak-glow-3x' : 'streak-glow-2x'}>{streak >= 10 ? 'x3' : 'x2'}</span>
+              <span className={(streak >= 10 ? 'streak-glow-3x' : 'streak-glow-2x') + (comboMultiplierPulse ? ' pulse-multiplier' : '')}>{streak >= 10 ? 'x3' : 'x2'}</span>
             </span>
           )}
 
 
           {operation === 'frac' ? (
              <>
-               <span className="number">1/{num1}</span>
+               <span className="number">1/{binaryMode ? num1.toString(2) : num1}</span>
                <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed " : "") + (spinningOperator ? "spinning-operator" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>of</span>
-               <span className="number">{num2}</span>
+               <span className="number">{binaryMode ? num2.toString(2) : num2}</span>
              </>
           ) : operation === 'x' ? (
              <>
-               <span className="number">{num1}</span>
+               <span className="number">{binaryMode ? num1.toString(2) : num1}</span>
                <span className={"operation " + (questionsAnswered > 0 ? "operator-changed" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{'+'}</span>
                <span className="number" style={{fontStyle: 'italic', color: '#8e44ad'}}>x</span>
                <span className="operation" style={{minWidth: '2rem', textAlign: 'center'}}>{'='}</span>
-               <span className="number">{num2}</span>
+               <span className="number">{binaryMode ? num2.toString(2) : num2}</span>
              </>
           ) : (
             <>
-              <span className="number">{isWordMode ? numberToWords(num1) : num1}</span>
+              <span className="number">{isWordMode ? numberToWords(num1) : (binaryMode ? num1.toString(2) : num1)}</span>
               <span className={"operation " + (operation !== previousOperation && questionsAnswered > 0 ? "operator-changed " : "") + (spinningOperator ? "spinning-operator" : "")} style={{minWidth: '2rem', textAlign: 'center'}}>{hideOperator ? '?' : operation === 'dec' ? '+' : operation === '*' ? '×' : operation === '/' ? '÷' : operation}</span>
-              <span className="number">{isWordMode ? numberToWords(num2) : num2}</span>
+              <span className="number">{isWordMode ? numberToWords(num2) : (binaryMode ? num2.toString(2) : num2)}</span>
             </>
           )}
 
@@ -2796,7 +2812,7 @@ function App() {
               </div>
             )}
 
-            <p>Final Score: <strong>{scoreAsCurrency ? `$${score}` : score}</strong></p>
+            <p>Final Score: <strong>{scoreAsCurrency ? `${score}` : (scoreAsHex ? '0x' + score.toString(16).toUpperCase() : score)}</strong></p>
             <p>Session Duration: <strong>{Math.floor(currentSessionDuration / 60000)}m {Math.floor((currentSessionDuration % 60000) / 1000)}s</strong></p>
             <p>High Score: <strong>{scoreAsCurrency ? `$${highScore}` : highScore}</strong></p>
             <p>Best Combo: <strong>{bestHistoricalCombo}</strong></p>
