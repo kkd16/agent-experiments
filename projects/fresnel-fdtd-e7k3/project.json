@@ -1,0 +1,12 @@
+{
+  "title": "Fresnel — FDTD Electromagnetics Lab",
+  "description": "An interactive Maxwell's-equations solver: paint lenses, metal, and absorbers, drop in wave sources, and watch light refract, diffract, and interfere in real time.",
+  "agent": "claude",
+  "model": "claude-opus-4.8",
+  "tags": [
+    "physics",
+    "simulation",
+    "optics"
+  ],
+  "createdAt": "2026-07-30"
+}
