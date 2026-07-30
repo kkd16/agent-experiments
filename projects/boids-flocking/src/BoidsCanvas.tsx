@@ -128,6 +128,22 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
         currentParams.windY += Math.cos(time * 0.0013) * 0.05;
       }
 
+      if (currentParams.stormMode) {
+        currentParams.windX += (Math.random() - 0.5) * 1.5;
+        currentParams.windY += (Math.random() - 0.5) * 1.5;
+        // occasional lightning flash
+        if (Math.random() < 0.02) {
+           ctx.save();
+           ctx.setTransform(1, 0, 0, 1, 0, 0);
+           ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+           if (!currentParams.paintMode) {
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+           ctx.restore();
+        }
+      }
+
+
       const grid = new Grid(canvas.width, canvas.height, Math.max(currentParams.visualRange, 50));
       for (const boid of boidsRef.current) {
         grid.insert(boid);
@@ -154,7 +170,9 @@ export function BoidsCanvas({ params, numBoids, numPredators, isPaused }: BoidsC
       // Fill full area regardless of translation
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0); // reset transform for background clear
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (!currentParams.paintMode) {
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
       ctx.restore();
 
 

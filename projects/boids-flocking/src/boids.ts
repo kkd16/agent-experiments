@@ -96,6 +96,11 @@ export interface BoidParams {
   rainbowMode: boolean;
   collisionFlash: boolean;
   vortexMode: boolean;
+  orbitMode: boolean;
+  stormMode: boolean;
+  zenMode: boolean;
+  predatorAnxiety: boolean;
+  paintMode: boolean;
   partyMode: boolean;
   timeScale: number;
 }
@@ -174,6 +179,7 @@ export class Boid {
   baseSizeMultiplier: number;
   history: Vector[];
   isColliding: boolean;
+  isAnxious: boolean;
 
   constructor(x: number, y: number, width: number, height: number) {
     this.position = new Vector(x, y);
@@ -186,6 +192,7 @@ export class Boid {
     this.baseMaxSpeedMultiplier = 0.8 + Math.random() * 0.4; // 0.8x to 1.2x speed
     this.history = [];
     this.isColliding = false;
+    this.isAnxious = false;
 
     // Nice gradient of colors based on initial velocity
     const hue = Math.floor(Math.random() * 360);
@@ -199,7 +206,16 @@ export class Boid {
       this.acceleration.add(new Vector((Math.random() - 0.5) * params.maxForce * 5, (Math.random() - 0.5) * params.maxForce * 5));
     }
     this.velocity.add(new Vector(this.acceleration.x * params.timeScale, this.acceleration.y * params.timeScale));
-    this.velocity.limit(params.maxSpeed * this.baseMaxSpeedMultiplier);
+
+    let currentMaxSpeed = params.maxSpeed * this.baseMaxSpeedMultiplier;
+    // We can't access avoid.mag() here easily as it's computed in flock,
+    // but we can compute it if predatorAnxiety is on and there are predators nearby.
+    // Instead we can just check if acceleration is very high (meaning dodging).
+    if (params.predatorAnxiety && this.isAnxious) {
+        currentMaxSpeed *= 1.5;
+    }
+    this.velocity.limit(currentMaxSpeed);
+
     this.position.add(new Vector(this.velocity.x * params.timeScale, this.velocity.y * params.timeScale));
     this.acceleration.mult(0); // Reset acceleration each frame
     if (params.rainbowMode) {
@@ -231,6 +247,7 @@ export class Boid {
     const sep = this.separate(nearbyBoids, params.visualRange / 2);
 
     this.isColliding = false;
+    this.isAnxious = false;
     for (const other of nearbyBoids) {
       if (other !== this) {
         const d = Vector.dist(this.position, other.position);
@@ -243,6 +260,7 @@ export class Boid {
     const ali = this.align(nearbyBoids, params.visualRange);
     const coh = this.cohere(nearbyBoids, params.visualRange);
     const avoid = this.avoidPredators(predators, params.predatorVisualRange);
+    if (params.predatorAnxiety && avoid.mag() > 0) this.isAnxious = true;
 
 
     const avoidObs = this.avoidObstacles(obstacles);
@@ -267,6 +285,25 @@ export class Boid {
         vortexForce.normalize();
         vortexForce.mult(params.maxForce * 2);
         this.applyForce(vortexForce);
+      }
+    }
+
+
+    if (params.orbitMode && mousePos) {
+      const mouseVec = new Vector(mousePos.x, mousePos.y);
+      const diff = Vector.sub(this.position, mouseVec);
+      if (diff.mag() > 0 && diff.mag() < params.mouseRadius) {
+        // Tangent force to orbit
+        const orbitForce = new Vector(-diff.y, diff.x);
+        orbitForce.normalize();
+        orbitForce.mult(params.maxForce * 1.5);
+
+        // Slight pull towards center
+        const seekForce = this.seek(mouseVec, params.maxSpeed, params.maxForce);
+        seekForce.mult(0.5);
+
+        orbitForce.add(seekForce);
+        this.applyForce(orbitForce);
       }
     }
 
