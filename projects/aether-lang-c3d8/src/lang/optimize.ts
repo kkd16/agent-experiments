@@ -60,6 +60,7 @@ import { equalitySaturate } from './egraph.ts'
 import type { EqSatStats } from './egraph.ts'
 import { fuseLists } from './fusion.ts'
 import type { FusionStat } from './fusion.ts'
+import { analyzeAbsence } from './demand.ts'
 
 export interface OptimizeStats {
   /** fixpoint rounds run */
@@ -95,6 +96,10 @@ export interface OptimizeStats {
   /** one entry per function the dead-argument-elimination pass dropped a parameter
    *  from — one whose value never reaches the result (Aether 20.0). */
   deadParams: { name: string; dropped: string[]; recursive: boolean }[]
+  /** relevance signatures from the demand/absence analysis (Aether 31.0): one
+   *  entry per function of every mutually-recursive group the analysis examined,
+   *  each parameter tagged `used` / `absent` / `dropped` — for the Demand panel. */
+  demandSigs: { fn: string; params: { name: string; status: 'used' | 'absent' | 'dropped' }[] }[]
   /** one entry per eliminator the case-of-case pass pushed into an `if`/`match`
    *  producer's branches (Aether 21.0) — for the Optimizer panel. */
   commutes: { frame: string; producer: string; branches: number; exposed: number }[]
@@ -206,6 +211,13 @@ let SPECCONSTRS: { name: string; shape: string; arity: number; param: string; ca
 // panel. Reset per run.
 let DEADPARAMS: { name: string; dropped: string[]; recursive: boolean }[] = []
 
+// Aether 31.0 — relevance signatures recorded by the demand/absence analysis
+// while dead-argument elimination scans mutually-recursive groups. Reset per run.
+let DEMANDSIGS: {
+  fn: string
+  params: { name: string; status: 'used' | 'absent' | 'dropped' }[]
+}[] = []
+
 // One entry per eliminator the case-of-case pass pushed into an `if`/`match`
 // producer this run (Aether 21.0). Module-level for the same reason as
 // `freshCounter` — optimization is synchronous and single-shot — and surfaced in
@@ -249,6 +261,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
   FLOATINS = []
   SPECCONSTRS = []
   DEADPARAMS = []
+  DEMANDSIGS = []
   COMMUTES = []
   SROAS = []
   ALLOW_FN_INLINE = true
@@ -357,6 +370,7 @@ export function optimizeCore(root: Expr): OptimizeResult {
       floatIns: FLOATINS,
       specConstrs: SPECCONSTRS,
       deadParams: DEADPARAMS,
+      demandSigs: DEMANDSIGS,
       commutes: COMMUTES,
       sroaRecords: SROAS,
       dt,
@@ -1819,7 +1833,298 @@ function reduceLetrec(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | 
     if (kept.length === 0) return e.body
     return { ...e, bindings: kept }
   }
+  // Dead-argument elimination across the mutually-recursive group (Aether 31.0):
+  // the demand/absence analysis proves which parameters never reach the answer —
+  // including accumulators threaded round a *mutual* loop and thrown away, which
+  // the single-function pass (Aether 20.0) cannot see — and drops them.
+  const dag = deadArgGroupElim(e, bump)
+  if (dag) return dag
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Aether 31.0 — dead-argument elimination across a mutually-recursive group
+//
+// The single-`let` dead-argument pass (Aether 20.0) drops a useless accumulator
+// only when it feeds *its own* recursive slot. A `let rec f = … and g = …` group
+// can thread a dead accumulator *through each other* — `f`'s `acc` feeds `g`'s
+// `acc` feeds `f`'s `acc`, computed every iteration and never read — and no
+// single-function reasoning catches it. The demand/absence analysis (`demand.ts`)
+// does: it proves the largest self-consistent set of parameters that cannot reach
+// the result or any effect, across the whole group at once. This pass consumes
+// those signatures and drops every absent parameter — from each function and from
+// every saturated call site.
+//
+// Soundness & the never-increase-steps invariant (all conservative):
+//   • eligibility — every occurrence of every group function is a *saturated*
+//     call (no bare escape, no partial application), so changing arities is safe;
+//   • no group name is shadowed inside the group, so a `var g` unambiguously means
+//     the group function `g` (the call detection is by name);
+//   • a parameter is dropped only if the demand analysis proves it Absent *and* a
+//     syntactic strip-and-check confirms that, once every dropped slot is removed,
+//     the parameter no longer occurs (so its binder can go with no free variable
+//     left behind) — a fixpoint that only ever shrinks the drop set;
+//   • every argument passed to a dropped slot (at every call and the entry) is
+//     pure, so not evaluating it loses no effect; and
+//   • at least one parameter is retained per function (a nullary binding would
+//     turn a recursive function into a recursive *value* — a black hole under
+//     strict evaluation).
+// Dropping pure dead work can only lower the VM step count, and the VM ≡ JS ≡ WASM
+// equivalence checks + the optimizer fuzzer re-prove the answer never moved.
+// ---------------------------------------------------------------------------
+
+interface GroupMember {
+  name: string
+  params: string[]
+  body: Expr
+}
+
+/** Split a curried lambda into its parameter names and the body beneath them. */
+function peelLambda(value: Expr): { params: string[]; body: Expr } {
+  const params: string[] = []
+  let cur: Expr = value
+  while (cur.kind === 'lambda') {
+    params.push(cur.param)
+    cur = cur.body
+  }
+  return { params, body: cur }
+}
+
+/** True if some binder *inside* the group's bodies or entry reuses a group name
+ *  (which would make the name-based call detection unsound). */
+function groupNameRebound(e: Extract<Expr, { kind: 'letrec' }>, names: Set<string>): boolean {
+  const scopes = [...e.bindings.map((b) => b.value), e.body]
+  for (const s of scopes) {
+    for (const bound of collectBinderCounts(s).keys()) {
+      if (names.has(bound)) return true
+    }
+  }
+  return false
+}
+
+/** True when every free occurrence of every group function is a *saturated* call
+ *  (≥ its arity). A bare or partially-applied occurrence observes the arity, so
+ *  we cannot change it. */
+function groupCallsAllSaturated(
+  root: Expr,
+  names: Set<string>,
+  arity: Map<string, number>,
+): boolean {
+  let ok = true
+  const walk = (e: Expr): void => {
+    if (!ok) return
+    if (e.kind === 'var') {
+      if (names.has(e.name)) ok = false
+      return
+    }
+    if (e.kind === 'app') {
+      const sp = spineHead(e)
+      if (sp && names.has(sp.name)) {
+        if (sp.args.length < arity.get(sp.name)!) {
+          ok = false
+          return
+        }
+        for (const a of sp.args) walk(a) // the head is consumed; scan the args
+        return
+      }
+    }
+    for (const c of childrenOf(e)) walk(c)
+  }
+  walk(root)
+  return ok
+}
+
+/** For every saturated group call, the argument expressions seen in each slot
+ *  `< arity` — used by the purity gate. */
+function collectGroupSlotArgs(
+  root: Expr,
+  names: Set<string>,
+  arity: Map<string, number>,
+): Map<string, Expr[][]> {
+  const out = new Map<string, Expr[][]>()
+  for (const [n, a] of arity) out.set(n, Array.from({ length: a }, () => []))
+  const walk = (e: Expr): void => {
+    if (e.kind === 'app') {
+      const sp = spineHead(e)
+      if (sp && names.has(sp.name)) {
+        const a = arity.get(sp.name)!
+        const slots = out.get(sp.name)!
+        sp.args.forEach((arg, i) => {
+          if (i < a) slots[i].push(arg)
+          walk(arg)
+        })
+        return
+      }
+    }
+    for (const c of childrenOf(e)) walk(c)
+  }
+  walk(root)
+  return out
+}
+
+/** `body` with every saturated group call's *candidate-drop* slots replaced by
+ *  `unit`, so a deadness check can ask whether a parameter still occurs once its
+ *  feeding slots are gone. Arities are preserved (slots are replaced, not removed). */
+function stripGroupSlots(
+  body: Expr,
+  names: Set<string>,
+  arity: Map<string, number>,
+  cand: Map<string, Set<number>>,
+): Expr {
+  const rec = (node: Expr): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && names.has(sp.name)) {
+        const a = arity.get(sp.name)!
+        const drops = cand.get(sp.name)!
+        let call: Expr = { kind: 'var', name: sp.name, span: node.span }
+        sp.args.forEach((arg, i) => {
+          const replaced: Expr =
+            i < a && drops.has(i) ? { kind: 'unit', span: arg.span } : rec(arg)
+          call = { kind: 'app', fn: call, arg: replaced, span: node.span }
+        })
+        return call
+      }
+    }
+    return mapAllChildren(node, rec)
+  }
+  return rec(body)
+}
+
+function deadArgGroupElim(e: Extract<Expr, { kind: 'letrec' }>, bump: Bump): Expr | null {
+  if (e.bindings.length === 0) return null
+  // Every binding must be a curried function with ≥ 1 parameter.
+  const group: GroupMember[] = []
+  for (const b of e.bindings) {
+    if (b.value.kind !== 'lambda') return null
+    const { params, body } = peelLambda(b.value)
+    if (params.length === 0) return null
+    if (new Set(params).size !== params.length) return null // duplicate params: bail
+    group.push({ name: b.name, params, body })
+  }
+  const names = new Set(group.map((g) => g.name))
+  const arity = new Map(group.map((g) => [g.name, g.params.length]))
+
+  if (groupNameRebound(e, names)) return null
+  if (!groupCallsAllSaturated(e, names, arity)) return null
+
+  // Demand/absence analysis — the principled per-parameter relevance signatures.
+  const { absent } = analyzeAbsence(group, { isPure, freeVars })
+
+  // Seed the drop candidates from the absent parameters.
+  const cand = new Map<string, Set<number>>()
+  for (const g of group) {
+    const flags = absent.get(g.name)!
+    const s = new Set<number>()
+    flags.forEach((ab, i) => {
+      if (ab) s.add(i)
+    })
+    cand.set(g.name, s)
+  }
+
+  // Purity gate: a slot is droppable only if every argument ever passed there is
+  // pure (dropping its evaluation must lose no effect).
+  const slotArgs = collectGroupSlotArgs(e, names, arity)
+  for (const g of group) {
+    const s = cand.get(g.name)!
+    for (const i of [...s]) {
+      if (!slotArgs.get(g.name)![i].every(isPure)) s.delete(i)
+    }
+  }
+
+  // Retain ≥ 1 parameter per function (never let a function become nullary).
+  for (const g of group) {
+    const s = cand.get(g.name)!
+    while (s.size >= g.params.length) s.delete(Math.max(...s))
+  }
+
+  // Syntactic strip-and-check: once every candidate slot is stripped, a dropped
+  // parameter must no longer occur — else its binder cannot be removed. Demote to
+  // a fixpoint (the set only shrinks).
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const g of group) {
+      const s = cand.get(g.name)!
+      if (s.size === 0) continue
+      const stripped = stripGroupSlots(g.body, names, arity, cand)
+      for (const i of [...s]) {
+        if (countUses(g.params[i], stripped) > 0) {
+          s.delete(i)
+          changed = true
+        }
+      }
+    }
+  }
+
+  const totalDrops = [...cand.values()].reduce((n, s) => n + s.size, 0)
+
+  // Record the relevance signatures for the Demand panel — informative even when
+  // nothing is dropped (a parameter can be proven Absent yet retained because its
+  // argument carries an effect). Once the pass drops parameters the group re-enters
+  // the fixpoint at a smaller arity, so only record a function the *first* time it
+  // is seen (its original signature, with the drops it just earned); a later,
+  // already-reduced view of the same function is ignored.
+  for (const g of group) {
+    if (DEMANDSIGS.some((d) => d.fn === g.name)) continue
+    const flags = absent.get(g.name)!
+    const drops = cand.get(g.name)!
+    DEMANDSIGS.push({
+      fn: g.name,
+      params: g.params.map((p, i) => ({
+        name: p,
+        status: (drops.has(i) ? 'dropped' : flags[i] ? 'absent' : 'used') as
+          | 'used'
+          | 'absent'
+          | 'dropped',
+      })),
+    })
+  }
+
+  if (totalDrops === 0) return null
+
+  // Rewrite: drop the chosen slots from every function and every call site. No
+  // group name is shadowed, so the scope-unaware walk is sound.
+  const rw = (node: Expr): Expr => {
+    if (node.kind === 'app') {
+      const sp = spineHead(node)
+      if (sp && names.has(sp.name)) {
+        const a = arity.get(sp.name)!
+        const drops = cand.get(sp.name)!
+        let call: Expr = { kind: 'var', name: sp.name, span: node.span }
+        sp.args.forEach((arg, i) => {
+          if (i < a && drops.has(i)) return
+          call = { kind: 'app', fn: call, arg: rw(arg), span: node.span }
+        })
+        return call
+      }
+    }
+    return mapAllChildren(node, rw)
+  }
+
+  const newBindings = group.map((g) => {
+    const drops = cand.get(g.name)!
+    let lam: Expr = rw(g.body)
+    for (let i = g.params.length - 1; i >= 0; i--) {
+      if (drops.has(i)) continue
+      lam = { kind: 'lambda', param: g.params[i], body: lam, span: e.span }
+    }
+    return { name: g.name, value: lam }
+  })
+  const newBody = rw(e.body)
+
+  for (const g of group) {
+    const drops = cand.get(g.name)!
+    if (drops.size === 0) continue
+    bump('dead-param-group')
+    DEADPARAMS.push({
+      name: g.name,
+      dropped: [...drops].sort((a, b) => a - b).map((i) => g.params[i]),
+      recursive: true,
+    })
+  }
+  // Fresh identities everywhere — later identity-keyed passes (CSE/GVN) stay sound.
+  return cloneExpr({ ...e, bindings: newBindings, body: newBody })
 }
 
 // ---------------------------------------------------------------------------

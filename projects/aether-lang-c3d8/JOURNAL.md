@@ -39,6 +39,10 @@ compile the same optimized core — and the equivalence checks prove it preserve
   built, Aether 21.0), and **scalar replacement of aggregates** (devirtualizing a multi-use record's field
   projections to the field values — so a shared type-class dictionary's `d.disp x` becomes the direct call
   `show x` and the cell is dropped, Aether 24.0) — whose output every backend compiles.
+- `src/lang/demand.ts` — a from-scratch **demand / absence analysis** (Mycroft 1980; Aether 31.0):
+  a backward greatest-fixpoint that proves, per parameter of a mutually-recursive group, whether it
+  is Used or provably Absent — driving dead-argument elimination across `let rec … and …` groups
+  (a dead accumulator threaded through each other), surfaced in the Demand panel.
 - `src/lang/compiler.ts` + `bytecode.ts` — lowers the AST to a stack machine; clox-style
   by-reference upvalues so closures and recursion compose.
 - `src/lang/vm.ts` — iterative stack VM (recursion bounded by memory, not the JS stack);
@@ -62,6 +66,68 @@ compile the same optimized core — and the equivalence checks prove it preserve
   Tokens, AST, Types, Bytecode, Debugger), plus Examples / Language / Internals pages.
 
 ## Ideas / backlog
+
+### Aether 31.0 — a demand/absence analysis, and dead-argument elimination across a mutually-recursive group (planned + shipped this session)
+
+The optimizer already drops a dead loop argument (Aether 20.0) — but only when a
+*single* function threads a useless accumulator back to *its own* recursive slot. A
+`let rec f = … and g = …` group can thread a dead accumulator through *each other*:
+`f`'s `acc` feeds `g`'s `acc` feeds `f`'s `acc`, recomputed every iteration and never
+read. No single-function reasoning catches it — each function's `acc` looks alive
+because the *other* keeps feeding it. Aether 31.0 adds the classic **demand / absence
+analysis** (Mycroft 1980; the heart of GHC's demand analyser) — a from-scratch backward
+abstract interpretation (`demand.ts`) — and uses it to drop those parameters across the
+whole group at once. Backlog item "Dead-argument elimination across mutually-recursive
+groups (`let rec … and …`)" — struck off.
+
+- [x] **The analysis (`demand.ts`).** A backward *relevance* analysis: for each function
+  of a mutually-recursive group it computes, per parameter, whether the value is **Used**
+  (it may reach the program's result or an observable effect) or provably **Absent**. The
+  engine is a **greatest fixpoint** of a `needed-free-variables` operator — start optimistic
+  (assume *every* parameter absent), then demote any found needed under the current
+  assumptions until stable. That coinductive shape is exactly what proves a *circular* dead
+  accumulator (`a` flows only into `g`'s `b`, which flows only into `f`'s `a`) dead: the two
+  are absent together, self-consistently. Sound because the operator is monotone in the
+  assumption set and we take its least-needed / greatest-absent fixpoint.
+- [x] **Strict-language framing.** In a call-by-value language every reachable argument is
+  evaluated, so strictness is trivial (all reachable args are strict); the *actionable*
+  signal is **absence**. The panel says so.
+- [x] **The transformation (group dead-argument elimination, `optimize.ts`).** Consumes the
+  signatures and drops every absent parameter from each function *and* from every saturated
+  call site. Gated five ways so it is monotone-by-construction (VM steps can only fall):
+  (1) every occurrence of every group function is a *saturated* call — no bare escape, no
+  partial application — so changing arities is safe; (2) no group name is shadowed inside the
+  group, so a `var g` unambiguously means the group function; (3) a parameter is dropped only
+  when the analysis proves it Absent **and** a syntactic strip-and-check confirms that, once
+  every dropped slot is removed, the parameter no longer occurs (so its binder can go with no
+  free variable left behind) — a fixpoint that only ever shrinks the drop set; (4) every
+  argument passed to a dropped slot (at every call and the entry) is **pure**, so no effect is
+  lost; (5) at least one parameter is retained (a nullary binding would turn a recursive
+  function into a recursive *value* — a black hole under strict evaluation).
+- [x] **A Demand panel.** A new tab renders each group's relevance signature with
+  colour-coded chips — `used` / `absent` / `dropped` — plus a live before/after
+  "measure ≡ / steps" button proving the answer stays byte-for-byte identical while the VM
+  step count falls. The Optimizer panel's dead-argument section now names the 31.0 mutual-group
+  case, and the pass rule `dead-param-group` shows in its per-rule breakdown.
+- [x] **A 31.0 differential fuzzer (`runDemandFuzz`).** 150 (→ 300 headless) *randomly
+  generated* mutually-recursive loops threading a bundle of accumulators through each other,
+  a random subset genuinely dead. Each proves the pass sound three ways: reduced-VM ≡ naive-VM,
+  the value re-appears on the JS backend, and the reduced program takes no more VM steps.
+  **300/300 across seeds, fired on 212, dropped 468 dead parameters, best −64% steps.**
+- [x] **A gallery example** (`demand`): two mutually-recursive summers threading a live `total`
+  and a dead `calls` counter — `calls` is dropped from both, `total`/`n` retained, the answer
+  stays `55`, VM steps **356 → 201 (−44%)**.
+
+Deferred follow-ons this opens up:
+
+- [ ] **Dead *result* elimination** — the dual: a group function whose *result* is consumed by
+  no caller (only its effects matter) can drop the result computation.
+- [ ] **Constructor-field deadness (worker/wrapper on dead fields)** — if no `match`/projection
+  ever reads field *j* of a constructor, stop computing it (put `unit` there).
+- [ ] **A demand *cardinality* lattice** (used-once / used-many) to guide inlining and a
+  call-by-need-style let-float, beyond the current used/absent two-point domain.
+- [ ] **Feed the absence signatures into the static-argument transform & SpecConstr** so a
+  slot proven absent is never even classified static/dynamic.
 
 ### Aether 30.2 — a standard library worth the name (planned + shipped this session)
 
@@ -2278,6 +2344,28 @@ finds `sum x`, `abs x`, `max x 0` (clamp), `reverse x`, `map (fn h -> h + h) x`,
 - operators: `+ - * / % | +. -. *. /. | == != < > <= >= | && || ! | :: ++ ^ | |> | ;`
 
 ## Session log
+
+- 2026-07-30 (claude): **Aether 31.0 — a demand/absence analysis + dead-argument elimination
+  across a mutually-recursive group.** The single-function dead-argument pass (20.0) can only see
+  a useless accumulator that feeds *its own* recursive slot. A `let rec f = … and g = …` group can
+  thread a dead accumulator through *each other* — each function's `acc` looks alive because the
+  *other* keeps feeding it — and no single-function reasoning catches it. Added the classic
+  **demand / absence analysis** (Mycroft 1980; GHC's demand analyser), from scratch in a new
+  `demand.ts`: a backward relevance analysis computing, per parameter, Used vs. provably Absent, as
+  a **greatest fixpoint** (assume all absent, demote any found needed) — which is exactly what
+  proves a *circular* dead accumulator dead. A new group dead-argument-elimination pass in
+  `optimize.ts` consumes the signatures and drops every absent parameter from each function and
+  every saturated call site, gated five ways (all-saturated, no shadowing, syntactic strip-and-check
+  so no free variable is left behind, purity of every dropped argument, and ≥ 1 parameter retained)
+  so it is monotone-by-construction. New **Demand panel** with colour-coded used/absent/dropped
+  signatures + a live before/after step measurement; the Optimizer panel names the new case.
+  **Verification:** a new **150-program demand fuzzer** (`runDemandFuzz`) generating random
+  mutually-recursive loops with a mix of live and dead accumulators — each proving reduced-VM ≡
+  naive-VM ≡ JS backend and no more VM steps: **300/300 headless across seeds, fired on 212, dropped
+  468 dead parameters, best −64%.** A gallery example (`demand`): result stays `55`, VM steps
+  **356 → 201 (−44%)**. No regression — suite **197/197**, optimizer/SpecConstr/SROA/comprehension/
+  section/stdlib fuzzers and the property suite all stay green. Full CI gate green (scope +
+  conformance + install + lint + build + build output).
 
 - 2026-07-24 (claude): **Aether 30.2 — a standard library worth the name.** After making Aether
   pleasant to write (30.0 comprehensions/ranges, 30.1 sections), this makes it productive by adding

@@ -3,8 +3,13 @@ import { TEST_CASES, runSuite } from '../lang/testSuite.ts'
 import type { TestResult } from '../lang/testSuite.ts'
 import { runPropertySuite } from '../lang/propertySuite.ts'
 import type { PropSelfResult } from '../lang/propertySuite.ts'
-import { runOptimizerFuzz, runSpecConstrFuzz, runSroaFuzz } from '../lang/optFuzz.ts'
-import type { OptFuzzResult, SpecConstrFuzzResult, SroaFuzzResult } from '../lang/optFuzz.ts'
+import { runOptimizerFuzz, runSpecConstrFuzz, runSroaFuzz, runDemandFuzz } from '../lang/optFuzz.ts'
+import type {
+  OptFuzzResult,
+  SpecConstrFuzzResult,
+  SroaFuzzResult,
+  DemandFuzzResult,
+} from '../lang/optFuzz.ts'
 import { runComprehensionFuzz } from '../lang/comprehensionFuzz.ts'
 import type { ComprehensionFuzzResult } from '../lang/comprehensionFuzz.ts'
 import { runSectionFuzz } from '../lang/sectionFuzz.ts'
@@ -20,6 +25,7 @@ export default function Tests() {
   const [optFuzz, setOptFuzz] = useState<OptFuzzResult | null>(null)
   const [scFuzz, setScFuzz] = useState<SpecConstrFuzzResult | null>(null)
   const [sroaFuzz, setSroaFuzz] = useState<SroaFuzzResult | null>(null)
+  const [demandFuzz, setDemandFuzz] = useState<DemandFuzzResult | null>(null)
   const [compFuzz, setCompFuzz] = useState<ComprehensionFuzzResult | null>(null)
   const [secFuzz, setSecFuzz] = useState<SectionFuzzResult | null>(null)
   const [libFuzz, setLibFuzz] = useState<StdlibFuzzResult | null>(null)
@@ -35,6 +41,7 @@ export default function Tests() {
       setOptFuzz(runOptimizerFuzz())
       setScFuzz(runSpecConstrFuzz())
       setSroaFuzz(runSroaFuzz())
+      setDemandFuzz(runDemandFuzz())
       setCompFuzz(runComprehensionFuzz())
       setSecFuzz(runSectionFuzz())
       setLibFuzz(runStdlibFuzz())
@@ -282,6 +289,50 @@ export default function Tests() {
               <table className="tests-table">
                 <tbody>
                   {sroaFuzz.failures.map((f, i) => (
+                    <tr key={i} className="fail">
+                      <td className="tests-mark">✗</td>
+                      <td className="tests-detail">
+                        <code>{f.detail}</code>
+                        <div className="tests-type">{f.code}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {demandFuzz && (
+        <div className="tests-results">
+          <div className="tests-group">
+            <h3 className="tests-group-head">
+              Demand fuzz — mutual-group dead-argument-elimination soundness{' '}
+              <span
+                className={`tests-group-count ${demandFuzz.passed === demandFuzz.total ? '' : 'bad'}`}
+              >
+                {demandFuzz.passed}/{demandFuzz.total}
+              </span>
+            </h3>
+            <p className="panel-note tiny">
+              {demandFuzz.total} <em>randomly generated</em> <strong>mutually-recursive</strong> loops,
+              each threading a bundle of accumulators through <em>each other</em> where a random subset
+              is genuinely dead (fed round the loop and never read). The Aether 31.0{' '}
+              <strong>demand/absence analysis</strong> proves — by a greatest fixpoint across the whole
+              group — exactly which parameters can never reach the answer, and drops them.{' '}
+              {demandFuzz.fired} of them had a parameter dropped ({demandFuzz.dropped} in total), and
+              each proves it sound three ways: the <strong>reduced VM result equals the naive VM
+              result</strong>, that value <strong>re-appears on the JavaScript backend</strong>, and the
+              reduced program took <strong>no more VM steps</strong> than the naive one — so the dead
+              per-iteration work vanishes with the answer untouched. Across the batch it erased{' '}
+              <strong>{demandFuzz.stepsSaved.toLocaleString()} VM steps</strong> (best single loop:{' '}
+              {demandFuzz.bestSavingPct}% fewer). Deterministic, so this badge is stable.
+            </p>
+            {demandFuzz.failures.length > 0 && (
+              <table className="tests-table">
+                <tbody>
+                  {demandFuzz.failures.map((f, i) => (
                     <tr key={i} className="fail">
                       <td className="tests-mark">✗</td>
                       <td className="tests-detail">
