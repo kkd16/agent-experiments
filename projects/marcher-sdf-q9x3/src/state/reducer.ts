@@ -12,6 +12,7 @@ import type {
   Post,
   PrimitiveKind,
   Quality,
+  Render,
   Scene,
   Sun,
   Transform,
@@ -45,6 +46,7 @@ export type Action =
   | { type: 'patchGround'; patch: Partial<Ground> }
   | { type: 'patchQuality'; patch: Partial<Quality> }
   | { type: 'patchPost'; patch: Partial<Post> }
+  | { type: 'patchRender'; patch: Partial<Render> }
   | { type: 'loadScene'; scene: Scene }
 
 function mapNode(scene: Scene, id: string, fn: (node: Scene['nodes'][number]) => Scene['nodes'][number]): Scene {
@@ -199,6 +201,9 @@ export function reducer(state: EditorState, action: Action): EditorState {
 
     case 'patchPost':
       return { ...state, scene: { ...scene, post: { ...scene.post, ...action.patch } } }
+
+    case 'patchRender':
+      return { ...state, scene: { ...scene, render: { ...scene.render, ...action.patch } } }
 
     case 'loadScene':
       return { scene: action.scene, selectedId: action.scene.nodes[0]?.id ?? null }

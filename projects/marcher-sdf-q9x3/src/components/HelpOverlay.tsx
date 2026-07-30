@@ -29,8 +29,9 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
         <ul>
           <li>
             <strong>Modifiers</strong> warp a node's own space: infinite/limited <em>repeat</em>
-            (tilings), <em>mirror</em> symmetry, <em>twist</em> and <em>bend</em> — plus rounding
-            and hollow shells.
+            (tilings), <em>mirror</em> symmetry, <em>twist</em>, <em>bend</em>, <em>elongate</em>
+            (stretch along each axis) and <em>polar</em> (fold into N kaleidoscopic sectors) — plus
+            rounding and hollow shells.
           </li>
           <li>
             <strong>Textures</strong> weave procedural checker / noise / marble / wood / grid into a
@@ -42,13 +43,35 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           </li>
           <li>
             Reflective materials cast <strong>real second-bounce reflections</strong> of the actual
-            scene. Turn on <strong>anti-alias</strong> before capturing a still.
+            scene.
+          </li>
+        </ul>
+
+        <h3>Progressive rendering</h3>
+        <ul>
+          <li>
+            With <strong>accumulation</strong> on (World → Render), the image averages many jittered
+            samples while the view holds still, converging to a clean result — watch the
+            <strong> spp</strong> readout climb, then freeze. Orbiting or animating resets it to stay live.
+          </li>
+          <li>
+            <strong>Depth of field</strong> — give the camera an <em>aperture</em> and a
+            <em> focus distance</em>; near and far shapes melt into bokeh.
+          </li>
+          <li>
+            A non-zero sun <strong>angular size</strong> gives physically soft shadow penumbrae; a
+            sub-pixel jitter anti-aliases every edge for free.
+          </li>
+          <li>
+            <strong>Emissive lighting</strong> (World → Emissive lighting) makes glowing nodes act as
+            coloured area lights that illuminate everything around them.
           </li>
         </ul>
 
         <h3>Exporting</h3>
         <ul>
           <li><strong>Export</strong> bakes the whole scene into one standalone, dependency-free HTML file.</li>
+          <li><strong>Save</strong> / <strong>Load</strong> round-trip the scene as a JSON file you can share or version.</li>
           <li><strong>PNG</strong> saves the current frame straight from the canvas.</li>
         </ul>
 
@@ -64,6 +87,7 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           <li><kbd>D</kbd> duplicate selected · <kbd>Delete</kbd> remove selected</li>
           <li><kbd>R</kbd> toggle auto-rotate · <kbd>G</kbd> view GLSL</li>
           <li><kbd>P</kbd> capture PNG · <kbd>E</kbd> export HTML</li>
+          <li><kbd>S</kbd> save scene JSON · <kbd>O</kbd> open scene JSON</li>
           <li><kbd>1</kbd>–<kbd>9</kbd> load a preset</li>
         </ul>
 

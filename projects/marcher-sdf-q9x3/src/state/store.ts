@@ -9,6 +9,7 @@ import {
   defaultGround,
   defaultPost,
   defaultQuality,
+  defaultRender,
   defaultScene,
   defaultSun,
 } from '../scene/presets'
@@ -32,7 +33,7 @@ function sanitizeNode(raw: unknown): SdfNode {
 }
 
 /** Fill in any missing global blocks so old/partial saves don't crash the renderer. */
-function sanitize(raw: unknown): Scene | null {
+export function sanitize(raw: unknown): Scene | null {
   if (!raw || typeof raw !== 'object') return null
   const s = raw as Partial<Scene>
   if (!Array.isArray(s.nodes)) return null
@@ -44,6 +45,7 @@ function sanitize(raw: unknown): Scene | null {
     ground: { ...defaultGround(), ...(s.ground ?? {}) },
     quality: { ...defaultQuality(), ...(s.quality ?? {}) },
     post: { ...defaultPost(), ...(s.post ?? {}) },
+    render: { ...defaultRender(), ...(s.render ?? {}) },
     animate: s.animate ?? true,
   }
 }

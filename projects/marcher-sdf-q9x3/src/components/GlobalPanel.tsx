@@ -12,10 +12,33 @@ interface GlobalPanelProps {
 }
 
 export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
-  const { camera, sun, env, ground, quality, post } = scene
+  const { camera, sun, env, ground, quality, post, render } = scene
 
   return (
     <div className="global-panel">
+      <Section title="Render">
+        <Toggle
+          label="Progressive accumulation"
+          value={render.accumulate}
+          onChange={(accumulate) => dispatch({ type: 'patchRender', patch: { accumulate } })}
+        />
+        <p className="hint">
+          Averages many jittered samples while the view holds still — depth-of-field, soft
+          shadows and anti-aliasing sharpen over a second or two, then freeze.
+        </p>
+        {render.accumulate ? (
+          <Slider
+            label="Max samples"
+            value={render.maxSamples}
+            min={16}
+            max={1024}
+            step={16}
+            format={(v) => v.toFixed(0)}
+            onChange={(maxSamples) => dispatch({ type: 'patchRender', patch: { maxSamples } })}
+          />
+        ) : null}
+      </Section>
+
       <Section title="Motion">
         <Toggle
           label="Animate scene"
@@ -85,6 +108,28 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
             onChange={(autoRotateSpeed) => dispatch({ type: 'patchCamera', patch: { autoRotateSpeed } })}
           />
         ) : null}
+        <Slider
+          label="Aperture (DoF)"
+          value={camera.aperture}
+          min={0}
+          max={0.4}
+          step={0.005}
+          format={(v) => v.toFixed(3)}
+          onChange={(aperture) => dispatch({ type: 'patchCamera', patch: { aperture } })}
+        />
+        {camera.aperture > 0 ? (
+          <Slider
+            label="Focus distance"
+            value={camera.focusDistance}
+            min={0.5}
+            max={30}
+            step={0.1}
+            onChange={(focusDistance) => dispatch({ type: 'patchCamera', patch: { focusDistance } })}
+          />
+        ) : null}
+        {camera.aperture > 0 && !render.accumulate ? (
+          <p className="hint">Depth-of-field needs progressive accumulation on (Render section).</p>
+        ) : null}
       </Section>
 
       <Section title="Sun">
@@ -119,6 +164,18 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
           step={0.01}
           onChange={(intensity) => dispatch({ type: 'patchSun', patch: { intensity } })}
         />
+        <Slider
+          label="Angular size°"
+          value={sun.angle}
+          min={0}
+          max={20}
+          step={0.5}
+          format={(v) => v.toFixed(1)}
+          onChange={(angle) => dispatch({ type: 'patchSun', patch: { angle } })}
+        />
+        {sun.angle > 0 && render.accumulate ? (
+          <p className="hint">A wider sun softens shadow penumbrae as the frame accumulates.</p>
+        ) : null}
       </Section>
 
       <Section title="Environment">
@@ -151,6 +208,36 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
           onChange={(fogDensity) => dispatch({ type: 'patchEnv', patch: { fogDensity } })}
         />
         <ColorField label="Fog colour" value={env.fogColor} onChange={(fogColor) => dispatch({ type: 'patchEnv', patch: { fogColor } })} />
+      </Section>
+
+      <Section title="Emissive lighting">
+        <Toggle
+          label="Emitters light the scene"
+          value={env.emissive}
+          onChange={(emissive) => dispatch({ type: 'patchEnv', patch: { emissive } })}
+        />
+        <p className="hint">
+          Nodes with an Emission value act as coloured area lights, spilling onto everything
+          nearby with inverse-square falloff.
+        </p>
+        {env.emissive ? (
+          <>
+            <Slider
+              label="Strength"
+              value={env.emissiveStrength}
+              min={0}
+              max={4}
+              step={0.05}
+              onChange={(emissiveStrength) => dispatch({ type: 'patchEnv', patch: { emissiveStrength } })}
+            />
+            <Toggle
+              label="Emissive shadows"
+              value={env.emissiveShadows}
+              onChange={(emissiveShadows) => dispatch({ type: 'patchEnv', patch: { emissiveShadows } })}
+            />
+            <p className="hint">Shadows from emitters are costlier but give crisp contact darkening.</p>
+          </>
+        ) : null}
       </Section>
 
       <Section title="Ground">

@@ -6,7 +6,8 @@ import { reducer } from './state/reducer'
 import { clearPersisted, cloneScene, initState, persist } from './state/store'
 import { useRenderer } from './hooks/useRenderer'
 import { buildStandaloneHtml } from './export/standalone'
-import { downloadDataUrl, downloadText } from './export/download'
+import { downloadDataUrl, downloadText, pickTextFile } from './export/download'
+import { parseScene, serializeScene } from './scene/io'
 import Toolbar from './components/Toolbar'
 import Canvas from './components/Canvas'
 import SceneTree from './components/SceneTree'
@@ -21,7 +22,7 @@ type Overlay = 'none' | 'glsl' | 'help'
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initState)
   const { scene, selectedId } = state
-  const { canvasRef, fps, error, getGlsl, capturePng } = useRenderer(scene)
+  const { canvasRef, fps, error, spp, getGlsl, capturePng } = useRenderer(scene)
 
   const [tab, setTab] = useState<RightTab>('node')
   const [overlay, setOverlay] = useState<Overlay>('none')
@@ -71,6 +72,18 @@ export default function App() {
     downloadDataUrl(capturePng(), 'marcher.png')
   }, [capturePng])
 
+  const exportJson = useCallback(() => {
+    downloadText(serializeScene(scene), 'marcher-scene.json', 'application/json')
+  }, [scene])
+
+  const importJson = useCallback(() => {
+    void pickTextFile().then((text) => {
+      if (!text) return
+      const loaded = parseScene(text)
+      if (loaded) dispatch({ type: 'loadScene', scene: loaded })
+    })
+  }, [])
+
   // Keyboard shortcuts (ignored while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -87,6 +100,8 @@ export default function App() {
       else if (k === 'g') showGlsl()
       else if (k === 'p') capture()
       else if (k === 'e') exportHtml()
+      else if (k === 's') exportJson()
+      else if (k === 'o') importJson()
       else if (k === '?' || (k === '/' && e.shiftKey)) setOverlay('help')
       else if (k >= '1' && k <= '9') {
         const idx = Number(k) - 1
@@ -95,7 +110,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, scene.camera.autoRotate, showGlsl, loadPreset, capture, exportHtml])
+  }, [selectedId, scene.camera.autoRotate, showGlsl, loadPreset, capture, exportHtml, exportJson, importJson])
 
   return (
     <div className="app">
@@ -106,6 +121,8 @@ export default function App() {
         onShowHelp={() => setOverlay('help')}
         onExport={exportHtml}
         onCapture={capture}
+        onExportJson={exportJson}
+        onImportJson={importJson}
         saved={saved}
       />
 
@@ -120,6 +137,7 @@ export default function App() {
             camera={scene.camera}
             fps={fps}
             error={error}
+            spp={spp}
             dispatch={dispatch}
           />
         </main>

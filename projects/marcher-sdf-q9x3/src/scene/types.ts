@@ -23,7 +23,7 @@ export type PrimitiveKind =
 export type BooleanOp = 'union' | 'subtract' | 'intersect'
 
 /** Domain warp applied to a node's local space before its distance is evaluated. */
-export type DomainMod = 'none' | 'repeat' | 'mirror' | 'twist' | 'bend'
+export type DomainMod = 'none' | 'repeat' | 'mirror' | 'twist' | 'bend' | 'elongate' | 'polar'
 
 /** Procedural surface pattern that modulates a material's albedo. */
 export type TextureKind = 'none' | 'checker' | 'noise' | 'marble' | 'wood' | 'grid'
@@ -68,6 +68,10 @@ export interface Modifier {
   twist: number
   /** bend: curvature applied along X. */
   bend: number
+  /** elongate: per-axis stretch length (the shape is extruded by ±this along each axis). */
+  elongate: Vec3
+  /** polar: number of angular sectors folded around the Y axis (kaleidoscopic). */
+  polar: number
   /** round: inflates the surface, rounding every edge (post-distance). */
   round: number
   /** shell/onion: hollow the shape into a shell of this thickness. */
@@ -123,6 +127,10 @@ export interface Camera {
   fov: number
   autoRotate: boolean
   autoRotateSpeed: number
+  /** Thin-lens aperture radius. 0 = pinhole (no depth-of-field). */
+  aperture: number
+  /** World distance to the focal plane for depth-of-field. */
+  focusDistance: number
 }
 
 export interface Sun {
@@ -130,6 +138,8 @@ export interface Sun {
   elevation: number
   color: Vec3
   intensity: number
+  /** Angular radius (degrees) of the sun disc — widens the penumbra of soft shadows. */
+  angle: number
 }
 
 export interface Environment {
@@ -139,6 +149,12 @@ export interface Environment {
   ambient: number
   fogDensity: number
   fogColor: Vec3
+  /** Let emissive nodes cast light onto the rest of the scene (area lights). */
+  emissive: boolean
+  /** Global multiplier on the light gathered from emissive nodes. */
+  emissiveStrength: number
+  /** Trace a visibility ray to each emitter (costlier, crisper contact shadows). */
+  emissiveShadows: boolean
 }
 
 export interface Ground {
@@ -170,6 +186,18 @@ export interface Post {
   saturation: number
 }
 
+/** Progressive accumulation settings — how the frame refines over time. */
+export interface Render {
+  /**
+   * Average many jittered samples over successive frames into a float buffer,
+   * converging to a clean image while the view holds still. Falls back to the
+   * single-pass direct renderer when float render targets aren't available.
+   */
+  accumulate: boolean
+  /** How many samples to accumulate before the image is considered converged. */
+  maxSamples: number
+}
+
 export interface Scene {
   nodes: SdfNode[]
   camera: Camera
@@ -178,6 +206,7 @@ export interface Scene {
   ground: Ground
   quality: Quality
   post: Post
+  render: Render
   /** Master switch for per-node time animation. */
   animate: boolean
 }

@@ -200,6 +200,35 @@ button {
   padding: 3px 8px;
   backdrop-filter: blur(6px);
 }
+.spp {
+  background: rgba(10, 12, 18, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(6px);
+}
+.spp.done {
+  color: var(--ok);
+}
+.spp-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(110, 168, 255, 0.12);
+  pointer-events: none;
+}
+.spp-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+.spp-fill.done {
+  background: var(--ok);
+}
 .gl-error {
   position: absolute;
   left: 12px;

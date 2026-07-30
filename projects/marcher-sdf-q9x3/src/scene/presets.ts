@@ -11,6 +11,7 @@ import type {
   Post,
   PrimitiveKind,
   Quality,
+  Render,
   Scene,
   SdfNode,
   Sun,
@@ -45,6 +46,8 @@ interface NodeOpts {
   mirror?: Vec3
   twist?: number
   bend?: number
+  elongate?: Vec3
+  polar?: number
   round?: number
   shell?: number
   // Material texture
@@ -80,6 +83,8 @@ function mk(kind: PrimitiveKind, o: NodeOpts = {}): SdfNode {
   if (o.mirror) n.modifier.mirror = o.mirror
   if (o.twist != null) n.modifier.twist = o.twist
   if (o.bend != null) n.modifier.bend = o.bend
+  if (o.elongate) n.modifier.elongate = o.elongate
+  if (o.polar != null) n.modifier.polar = o.polar
   if (o.round != null) n.modifier.round = o.round
   if (o.shell != null) {
     n.modifier.shellOn = true
@@ -108,11 +113,13 @@ export function defaultCamera(): Camera {
     fov: 45,
     autoRotate: true,
     autoRotateSpeed: 8,
+    aperture: 0,
+    focusDistance: 6,
   }
 }
 
 export function defaultSun(): Sun {
-  return { azimuth: 40, elevation: 42, color: c('#fff3e0'), intensity: 1.15 }
+  return { azimuth: 40, elevation: 42, color: c('#fff3e0'), intensity: 1.15, angle: 2 }
 }
 
 export function defaultEnv(): Environment {
@@ -123,7 +130,14 @@ export function defaultEnv(): Environment {
     ambient: 0.55,
     fogDensity: 0.012,
     fogColor: c('#cfe3f5'),
+    emissive: false,
+    emissiveStrength: 1,
+    emissiveShadows: false,
   }
+}
+
+export function defaultRender(): Render {
+  return { accumulate: true, maxSamples: 256 }
 }
 
 export function defaultGround(): Ground {
@@ -163,6 +177,7 @@ function base(nodes: SdfNode[], over: Partial<Scene> = {}): Scene {
     ground: defaultGround(),
     quality: defaultQuality(),
     post: defaultPost(),
+    render: defaultRender(),
     animate: true,
     ...over,
   }
@@ -562,6 +577,164 @@ function menagerie(): Scene {
   )
 }
 
+// A row of spheres marching into the distance — the near and far ones melt into
+// bokeh while the middle one snaps into focus. Best seen with auto-rotate off.
+function aperture(): Scene {
+  const nodes: SdfNode[] = []
+  const cols = ['#e0524a', '#f0a43a', '#f4d35e', '#43c6ac', '#4a9fe0', '#7a6ff0']
+  for (let i = 0; i < 6; i++) {
+    nodes.push(
+      mk('sphere', {
+        name: `Bead ${i + 1}`,
+        params: [0.5, 0, 0, 0],
+        pos: [(i - 2.5) * 1.15, 0.1, -(i - 2.5) * 1.15],
+        color: cols[i],
+        metallic: 0.2,
+        rough: 0.25,
+        refl: 0.25,
+        op: 'union',
+        smooth: false,
+      }),
+    )
+  }
+  return base(nodes, {
+    camera: {
+      ...defaultCamera(),
+      autoRotate: false,
+      distance: 8,
+      elevation: 8,
+      azimuth: 34,
+      fov: 38,
+      aperture: 0.11,
+      focusDistance: 8,
+      target: [0, 0.1, 0],
+    },
+    sun: { ...defaultSun(), elevation: 34, azimuth: 55, angle: 3 },
+    env: { ...defaultEnv(), ambient: 0.5 },
+    ground: { ...defaultGround(), checker: true, color1: c('#1a1c24'), color2: c('#23262f') },
+    post: { ...defaultPost(), vignette: 0.5, exposure: 1.15 },
+    render: { accumulate: true, maxSamples: 512 },
+  })
+}
+
+// A glowing lantern that genuinely lights the darkness around it: the emissive
+// core is the only real light, spilling warm colour onto the pillars and floor.
+function lantern(): Scene {
+  return base(
+    [
+      mk('roundBox', {
+        name: 'Cage',
+        params: [0.42, 0.6, 0.42, 0.05],
+        pos: [0, 0.7, 0],
+        color: '#2a2118',
+        rough: 0.4,
+        metallic: 0.6,
+        refl: 0.2,
+        shell: 0.06,
+      }),
+      mk('sphere', {
+        name: 'Flame',
+        params: [0.28, 0, 0, 0],
+        pos: [0, 0.7, 0],
+        color: '#ffb14a',
+        emission: 1.4,
+        op: 'union',
+        smooth: false,
+        scalePulse: 0.06,
+        scaleSpeed: 3,
+      }),
+      mk('cylinder', {
+        name: 'Pillars',
+        params: [0.18, 1.1, 0, 0],
+        pos: [1.7, 0.1, 0],
+        color: '#c9c2b4',
+        rough: 0.5,
+        domain: 'polar',
+        polar: 5,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), distance: 6.5, elevation: 14, target: [0, 0.7, 0], autoRotateSpeed: 5 },
+      sun: { ...defaultSun(), intensity: 0.15, elevation: 60 },
+      env: {
+        ...defaultEnv(),
+        skyColor: c('#0a0c14'),
+        horizonColor: c('#141824'),
+        groundColor: c('#0a0a10'),
+        ambient: 0.12,
+        fogColor: c('#0a0c14'),
+        fogDensity: 0.03,
+        emissive: true,
+        emissiveStrength: 1.6,
+        emissiveShadows: true,
+      },
+      ground: { ...defaultGround(), checker: false, color1: c('#0c0d12'), color2: c('#0c0d12') },
+      post: { ...defaultPost(), exposure: 1.3, vignette: 0.7, saturation: 1.2 },
+      render: { accumulate: true, maxSamples: 512 },
+    },
+  )
+}
+
+// A brass gear machine: one tooth elongated and folded into rings by the polar
+// modifier, stacked into interlocking cogs. Shows off elongate + polar together.
+function gearwork(): Scene {
+  return base(
+    [
+      mk('box', {
+        name: 'Gear A',
+        params: [0.16, 0.12, 0.16, 0],
+        pos: [-0.9, 0.6, 0],
+        color: '#c8963e',
+        metallic: 0.9,
+        rough: 0.28,
+        refl: 0.35,
+        domain: 'polar',
+        polar: 12,
+        elongate: [1.0, 0, 0],
+        spin: [0, 30, 0],
+      }),
+      mk('cylinder', {
+        name: 'Hub A',
+        params: [0.4, 0.14, 0, 0],
+        pos: [-0.9, 0.6, 0],
+        color: '#8a6a2a',
+        metallic: 0.9,
+        rough: 0.3,
+        refl: 0.3,
+        op: 'union',
+        smooth: true,
+        radius: 0.08,
+        spin: [0, 30, 0],
+      }),
+      mk('box', {
+        name: 'Gear B',
+        params: [0.14, 0.12, 0.14, 0],
+        pos: [0.62, 0.6, 0],
+        color: '#c8963e',
+        metallic: 0.9,
+        rough: 0.28,
+        refl: 0.35,
+        domain: 'polar',
+        polar: 10,
+        elongate: [0.85, 0, 0],
+        op: 'union',
+        smooth: false,
+        spin: [0, -36, 0],
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), distance: 6, elevation: 46, target: [0, 0.6, 0], autoRotateSpeed: 4 },
+      sun: { ...defaultSun(), elevation: 52, azimuth: 30, angle: 4 },
+      env: { ...defaultEnv(), skyColor: c('#26313f'), horizonColor: c('#aeb9c6'), ambient: 0.5 },
+      ground: { ...defaultGround(), checker: false, color1: c('#15171e'), color2: c('#15171e'), height: -0.2 },
+      quality: { ...defaultQuality(), reflections: true },
+      post: { ...defaultPost(), exposure: 1.15, saturation: 1.12 },
+    },
+  )
+}
+
 export interface Preset {
   id: string
   name: string
@@ -578,6 +751,9 @@ export const PRESETS: Preset[] = [
   { id: 'gyre', name: 'Gyre', build: gyre },
   { id: 'kaleido', name: 'Kaleido', build: kaleido },
   { id: 'menagerie', name: 'Menagerie', build: menagerie },
+  { id: 'aperture', name: 'Aperture', build: aperture },
+  { id: 'lantern', name: 'Lantern', build: lantern },
+  { id: 'gearwork', name: 'Gearwork', build: gearwork },
 ]
 
 export function defaultScene(): Scene {
