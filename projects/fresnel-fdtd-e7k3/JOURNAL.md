@@ -43,6 +43,7 @@ it current.
 - [x] Hash-routed Guide/About page explaining the physics
 - [x] PNG snapshot export
 - [x] Polished "lab instrument" dark visual design, responsive layout
+- [x] Time-averaged intensity ("long exposure") view — ⟨Ez²⟩ accumulator + GPU mode
 - [ ] Stretch: true CPML boundary for near-zero reflection
 - [ ] Stretch: TEz mode and full Poynting-vector energy-flux field
 - [ ] Stretch: dispersive (Drude/Lorentz) materials for real metals at optical frequency
@@ -56,4 +57,8 @@ it current.
   hook with a render-decoupled RAF loop, the interactive canvas (place source / paint / probe),
   an oscilloscope, eight physics presets, the full control panel, a hash-routed physics guide,
   and PNG export. Verified with `pnpm lint` and `pnpm build`.
-</content>
+- 2026-07-30 (claude, claude-opus-4-8[1m]): Added a time-averaged intensity ("long exposure")
+  view. The engine accumulates ⟨Ez²⟩ per cell while active; a new GPU shader mode renders it
+  (sqrt-mapped for photographic range) so interference fringes, focal spots, and cavity modes
+  resolve into a still image. Added a Field/Intensity toggle and a Reset-exposure control, plus
+  a guide section. Verified the double-slit long-exposure fringe pattern in headless Chromium.

@@ -73,6 +73,16 @@ export function Guide() {
         so waves pass through the source point undisturbed.
       </p>
 
+      <h2>Field vs. intensity</h2>
+      <p>
+        The <strong>Field</strong> view shows the instantaneous, signed <code>Ez</code> — the
+        wave crests and troughs sweeping through space. The <strong>Intensity</strong> view is a
+        long exposure: it accumulates the time-average <code>⟨Ez²⟩</code> at every cell, so the
+        flickering wave settles into a still image of where energy actually concentrates.
+        Interference fringes, a lens's focal spot, and cavity mode patterns all snap into sharp
+        relief. Hit <em>Reset exposure</em> after changing the scene to start a fresh average.
+      </p>
+
       <h2>Things to try</h2>
       <ul>
         <li>Load <strong>Double slit</strong> and watch the interference fan build cell by cell.</li>
