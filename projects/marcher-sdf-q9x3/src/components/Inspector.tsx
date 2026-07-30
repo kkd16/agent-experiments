@@ -187,6 +187,59 @@ export default function Inspector({ node, isBase, dispatch }: InspectorProps) {
         ) : null}
       </Section>
 
+      <Section title="Glass">
+        <Slider
+          label="Transmission"
+          value={node.material.transmission}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(transmission) => dispatch({ type: 'patchMaterial', id, patch: { transmission } })}
+        />
+        {node.material.transmission > 0 ? (
+          <>
+            <p className="hint">
+              A dielectric surface: the path tracer splits each hit into a Fresnel reflection and a
+              refraction (and the fast preview approximates a see-through). Best under Path trace.
+            </p>
+            <Slider
+              label="IOR"
+              value={node.material.ior}
+              min={1}
+              max={2.6}
+              step={0.01}
+              onChange={(ior) => dispatch({ type: 'patchMaterial', id, patch: { ior } })}
+            />
+            <Slider
+              label="Absorption"
+              value={node.material.absorption}
+              min={0}
+              max={6}
+              step={0.05}
+              format={(v) => (v <= 0 ? 'clear' : v.toFixed(2))}
+              onChange={(absorption) => dispatch({ type: 'patchMaterial', id, patch: { absorption } })}
+            />
+            {node.material.absorption > 0 ? (
+              <p className="hint">Thick glass eats light toward the colour's complement — tint it here via the material Colour.</p>
+            ) : null}
+            <Slider
+              label="Dispersion"
+              value={node.material.dispersion}
+              min={0}
+              max={1}
+              step={0.01}
+              format={(v) => (v <= 0 ? 'off' : v.toFixed(2))}
+              onChange={(dispersion) => dispatch({ type: 'patchMaterial', id, patch: { dispersion } })}
+            />
+            {node.material.dispersion > 0 ? (
+              <p className="hint">Splits wavelengths into a prism rainbow at refractive edges — resolves under accumulation.</p>
+            ) : null}
+          </>
+        ) : (
+          <p className="hint">Turn up Transmission to make this node glass.</p>
+        )}
+      </Section>
+
       <ModifierSection node={node} dispatch={dispatch} />
       <AnimationSection node={node} dispatch={dispatch} />
     </div>

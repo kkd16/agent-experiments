@@ -1,6 +1,6 @@
 {
   "title": "Marcher — SDF Ray Marching Studio",
-  "description": "A real-time GPU ray marcher and progressive path tracer: compose 3D scenes from SDF primitives with CSG and materials, then light them with true multi-bounce global illumination — colour bleeding, soft shadows, depth of field — over live GLSL codegen.",
+  "description": "A real-time GPU ray marcher and progressive path tracer: compose 3D scenes from SDF primitives with CSG and materials, then light them with true multi-bounce global illumination — colour bleeding, refractive glass with chromatic dispersion, soft shadows, depth of field and bloom — over live GLSL codegen.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [

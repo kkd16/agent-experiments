@@ -69,6 +69,10 @@ uniform int uIntegrator;      // 0 = raymarch shade, 1 = Monte-Carlo path tracer
 uniform int uBounces;         // path tracer: max light bounces per sample
 uniform float uClamp;         // path tracer: per-sample firefly clamp (0 = off)
 
+// Dielectric glass: per-node (transmission, ior, absorption, dispersion).
+uniform vec4 uMatGlass[NODE_COUNT];
+uniform int uDispersive;      // 1 = at least one material has dispersion > 0
+
 uniform float uExposure;
 uniform float uGamma;
 uniform float uVignette;
@@ -127,6 +131,13 @@ vec3 skyColor(vec3 rd){
   return col;
 }
 
+// Schlick's approximation for an air↔dielectric interface (unpolarised).
+float fresnelDielectric(float cosi, float ior){
+  float f0 = (1.0 - ior) / (1.0 + ior);
+  f0 *= f0;
+  return f0 + (1.0 - f0) * pow(1.0 - clamp(cosi, 0.0, 1.0), 5.0);
+}
+
 vec2 raymarch(vec3 ro, vec3 rd){
   float t = 0.0;
   for (int i = 0; i < 512; i++){
@@ -135,6 +146,24 @@ vec2 raymarch(vec3 ro, vec3 rd){
     vec2 h = map(pos);
     if (h.x < uEps * t){ return vec2(t, h.y); }
     t += h.x;
+    if (t > uMaxDist) break;
+  }
+  return vec2(t, -2.0);
+}
+
+// Side-aware sphere trace for glass: side = +1 outside a solid, -1 inside it.
+// Because abs(SDF) is the distance to the nearest surface from either side, stepping
+// by side*map marches to the boundary whether we started outside (toward the front
+// face) or inside a dielectric (toward the exit face). Used by the refraction paths
+// in both the raymarch glass approximation and the path tracer.
+vec2 raymarchSide(vec3 ro, vec3 rd, float side){
+  float t = 0.0;
+  for (int i = 0; i < 512; i++){
+    if (i >= uMaxSteps) break;
+    vec2 h = map(ro + rd * t);
+    float d = h.x * side;
+    if (d < uEps * t){ return vec2(t, h.y); }
+    t += max(d, uEps);
     if (t > uMaxDist) break;
   }
   return vec2(t, -2.0);
@@ -206,6 +235,14 @@ void getMaterial(float id, vec3 pos, vec3 nor, out vec3 albedo, out float metall
   }
 }
 
+// The dielectric parameters (transmission, ior, absorption, dispersion) for a
+// material id. The ground plane is never glass.
+vec4 glassOf(float id){
+  if (id < -0.5) return vec4(0.0, 1.5, 0.0, 0.0);
+  int i = int(id + 0.5);
+  return uMatGlass[i];
+}
+
 // Light gathered from every emissive node treated as a point/area light, with
 // inverse-square falloff and an optional visibility ray. Returns the incident
 // irradiance (the caller multiplies by albedo).
@@ -257,13 +294,55 @@ vec3 localShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, float metallic,
   return col;
 }
 
+// A quick see-through for the fast raymarch shade: refract into the surface, march
+// to the far wall, refract back out, and shade whatever lies beyond — tinted by
+// Beer–Lambert absorption through the glass and mixed with a Fresnel sky reflection.
+// The path tracer does this properly; this keeps glass legible in the live preview.
+vec3 glassShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, vec4 g){
+  float ior = max(g.y, 1.0);
+  float absorb = g.z;
+  float cosi = max(dot(nor, -rd), 0.0);
+  float fres = fresnelDielectric(cosi, ior);
+  vec3 rcol = skyColor(reflect(rd, nor));
+  vec3 rin = refract(rd, nor, 1.0 / ior);
+  if (dot(rin, rin) < 1e-6) return rcol;           // total internal reflection
+  rin = normalize(rin);
+  vec3 ro2 = pos - nor * 0.02;
+  vec2 ex = raymarchSide(ro2, rin, -1.0);          // march the interior to the exit
+  vec3 exitPos = ro2 + rin * ex.x;
+  vec3 tcol;
+  if (ex.y < -1.5){
+    tcol = skyColor(rin);
+  } else {
+    vec3 exN = calcNormal(exitPos);
+    if (dot(exN, rin) < 0.0) exN = -exN;           // outward at the exit face
+    vec3 outv = refract(rin, -exN, ior);
+    outv = dot(outv, outv) < 1e-6 ? reflect(rin, exN) : normalize(outv);
+    vec3 ro3 = exitPos + outv * 0.02;
+    vec2 bg = raymarch(ro3, outv);
+    if (bg.y < -1.5){
+      tcol = skyColor(outv);
+    } else {
+      vec3 bp = ro3 + outv * bg.x;
+      vec3 bn = calcNormal(bp);
+      vec3 ba; float bm, brg, brf, be;
+      getMaterial(bg.y, bp, bn, ba, bm, brg, brf, be);
+      tcol = localShade(bp, bn, outv, ba, bm, brg, be);
+    }
+    tcol *= exp(-absorb * (1.0 - albedo) * ex.x);  // coloured absorption
+  }
+  return mix(tcol, rcol, clamp(fres, 0.0, 1.0));
+}
+
 // Full primary shade: local shading, then one real reflection bounce that mirrors
-// the actual scene (or the sky), Fresnel-weighted and roughness-attenuated, then fog.
+// the actual scene (or the sky), Fresnel-weighted and roughness-attenuated, glass
+// see-through where the material transmits, then fog.
 vec3 shade(vec3 pos, vec3 rd, float matId){
   vec3 nor = calcNormal(pos);
   vec3 albedo; float metallic, rough, refl, emis;
   getMaterial(matId, pos, nor, albedo, metallic, rough, refl, emis);
   vec3 col = localShade(pos, nor, rd, albedo, metallic, rough, emis);
+  vec4 glass = glassOf(matId);
 
   if (uReflect == 1){
     float fres = pow(clamp(1.0 - max(dot(nor, -rd), 0.0), 0.0, 1.0), 5.0);
@@ -285,6 +364,10 @@ vec3 shade(vec3 pos, vec3 rd, float matId){
       }
       col = mix(col, rcol * tint, amount);
     }
+  }
+
+  if (glass.x > 0.001){
+    col = mix(col, glassShade(pos, nor, rd, albedo, glass), glass.x);
   }
 
   float fog = 1.0 - exp(-uFogDensity * length(pos - uCamPos));
@@ -433,17 +516,40 @@ vec3 neeEmitters(vec3 pos, vec3 nor, vec3 albedo){
 }
 
 // Trace one full light path from the eye and return its radiance estimate.
+//
+// Surfaces resolve into three families: emitters (add radiance on specular
+// arrivals), dielectric glass (a Fresnel-weighted split into reflection and
+// refraction, tracking which side of the interface we're on and attenuating by
+// Beer–Lambert absorption while inside), and opaque metal/diffuse (a
+// Fresnel-weighted glossy or a cosine-weighted diffuse lobe, the latter gathering
+// direct light by next-event estimation). When any material is dispersive the whole
+// path commits to a single wavelength, so the accumulation reconstructs a prism.
 vec3 pathTrace(vec3 ro, vec3 rd){
   gSunDir = uSunDir;
   vec3 radiance = vec3(0.0);
   vec3 thr = vec3(1.0);
   bool specular = true; // gates emission + solar disc so NEE isn't double-counted
   float firstT = uMaxDist;
+  float side = 1.0;      // +1 = travelling through vacuum, -1 = inside a dielectric
+  vec3 sigma = vec3(0.0); // Beer–Lambert absorption coefficient of the current medium
+
+  // Spectral dispersion: fix one wavelength (R/G/B) for the whole path and pre-tint
+  // the throughput 3× that channel, so averaging the three reconstructs white while
+  // each channel refracts at its own IOR — the physical origin of the prism spread.
+  float wlo = 0.0;
+  if (uDispersive == 1){
+    float u = rnd();
+    wlo = u < 0.33333 ? -1.0 : (u < 0.66667 ? 0.0 : 1.0);
+    thr = wlo < -0.5 ? vec3(3.0, 0.0, 0.0) : (wlo > 0.5 ? vec3(0.0, 0.0, 3.0) : vec3(0.0, 3.0, 0.0));
+  }
 
   for (int b = 0; b < MAX_BOUNCES; b++){
     if (b >= uBounces) break;
-    vec2 res = raymarch(ro, rd);
+    vec2 res = raymarchSide(ro, rd, side);
     if (b == 0) firstT = min(res.x, uMaxDist);
+
+    // Attenuate by absorption over the segment just travelled (a no-op in vacuum).
+    thr *= exp(-sigma * min(res.x, uMaxDist));
 
     if (res.y < -1.5){
       vec3 env = envDome(rd);
@@ -453,39 +559,72 @@ vec3 pathTrace(vec3 ro, vec3 rd){
     }
 
     vec3 pos = ro + rd * res.x;
-    vec3 nor = calcNormal(pos);
-    if (dot(nor, rd) > 0.0) nor = -nor;
+    vec3 gnor = calcNormal(pos);
+    vec3 nf = gnor;
+    if (dot(nf, rd) > 0.0) nf = -nf; // orient toward the incoming ray
 
     vec3 albedo; float metallic, rough, refl, emis;
-    getMaterial(res.y, pos, nor, albedo, metallic, rough, refl, emis);
+    getMaterial(res.y, pos, nf, albedo, metallic, rough, refl, emis);
+    vec4 g = glassOf(res.y);
+    float trans = g.x;
 
-    // Emitted radiance is only added on primary/specular arrivals; diffuse
-    // arrivals were already accounted for by the previous vertex's NEE.
+    // Emission is only added on primary/specular arrivals; diffuse arrivals were
+    // already accounted for by the previous vertex's next-event estimation.
     if (specular && emis > 0.0) radiance += thr * albedo * emis * 2.5;
 
-    // Probability of taking the specular (reflection) lobe: Fresnel, lifted
-    // toward 1 for metals and by the material's own reflectivity dial.
-    float F0 = mix(0.04, 1.0, metallic);
-    float fres = F0 + (1.0 - F0) * pow(clamp(1.0 - max(dot(nor, -rd), 0.0), 0.0, 1.0), 5.0);
-    float pSpec = clamp(max(fres, metallic * 0.9 + refl * 0.5), 0.02, 0.95);
-
-    if (rnd() < pSpec){
-      vec3 r = reflect(rd, nor);
-      vec3 nd = glossyLobe(r, rough);
-      if (dot(nd, nor) <= 0.0) break;
-      vec3 tint = mix(vec3(1.0), albedo, metallic);
-      thr *= tint / pSpec;
+    if (trans > 0.001 && rnd() < trans){
+      // ── Dielectric interface: reflect or refract by Fresnel ────────────────
+      float ior = max(g.y, 1.0);
+      float iorC = ior + g.w * wlo * 0.06;             // per-wavelength IOR
+      bool entering = side > 0.0;
+      float eta = entering ? (1.0 / iorC) : iorC;
+      float cosi = max(dot(-rd, nf), 0.0);
+      vec3 refrd = refract(rd, nf, eta);
+      bool tir = dot(refrd, refrd) < 1e-6;             // total internal reflection
+      float fres = tir ? 1.0 : fresnelDielectric(cosi, iorC);
+      thr /= trans;                                    // un-bias the branch choice
       specular = true;
-      ro = pos + nor * 0.02;
-      rd = nd;
+      if (rnd() < fres){
+        vec3 r = reflect(rd, nf);
+        vec3 nd = rough > 0.001 ? glossyLobe(r, rough) : r;
+        if (dot(nd, nf) <= 0.0) nd = r;
+        ro = pos + nf * 0.02;
+        rd = nd;
+      } else {
+        vec3 nd = normalize(refrd);
+        ro = pos - nf * 0.02;                          // step across the interface
+        rd = nd;
+        side = -side;
+        // Adopt this glass's (colour-tinted) absorption when entering; clear it
+        // back to vacuum when leaving.
+        sigma = entering ? (g.z * (1.0 - albedo)) : vec3(0.0);
+      }
     } else {
-      // Diffuse lobe: gather direct light here, then scatter cosine-weighted.
-      radiance += thr * (neeSun(pos, nor, albedo) + neeEmitters(pos, nor, albedo));
-      vec3 nd = cosineHemisphere(nor);
-      thr *= albedo / (1.0 - pSpec);
-      specular = false;
-      ro = pos + nor * 0.02;
-      rd = nd;
+      // ── Opaque metal / diffuse ─────────────────────────────────────────────
+      if (trans > 0.001) thr /= (1.0 - trans);         // un-bias the branch choice
+
+      float F0 = mix(0.04, 1.0, metallic);
+      float fres = F0 + (1.0 - F0) * pow(clamp(1.0 - max(dot(nf, -rd), 0.0), 0.0, 1.0), 5.0);
+      float pSpec = clamp(max(fres, metallic * 0.9 + refl * 0.5), 0.02, 0.95);
+
+      if (rnd() < pSpec){
+        vec3 r = reflect(rd, nf);
+        vec3 nd = glossyLobe(r, rough);
+        if (dot(nd, nf) <= 0.0) break;
+        vec3 tint = mix(vec3(1.0), albedo, metallic);
+        thr *= tint / pSpec;
+        specular = true;
+        ro = pos + nf * 0.02;
+        rd = nd;
+      } else {
+        // Diffuse lobe: gather direct light here, then scatter cosine-weighted.
+        radiance += thr * (neeSun(pos, nf, albedo) + neeEmitters(pos, nf, albedo));
+        vec3 nd = cosineHemisphere(nf);
+        thr *= albedo / (1.0 - pSpec);
+        specular = false;
+        ro = pos + nf * 0.02;
+        rd = nd;
+      }
     }
 
     // Russian roulette: after a couple of bounces, kill dim paths unbiasedly.
@@ -590,11 +729,68 @@ void main(){
 }
 `
 
-// Present pass: read the accumulated HDR average and tonemap it to the canvas.
+// ── Bloom ────────────────────────────────────────────────────────────────────
+// A physically-motivated glare: isolate the genuinely-bright (over-threshold) part
+// of the linear HDR image, blur it wide with a separable Gaussian at half
+// resolution, and add it back before tonemapping. Runs only on the accumulation
+// path (the direct fallback writes straight to the canvas with no HDR buffer to
+// bloom from). Three tiny fullscreen passes: prefilter → blur-H → blur-V.
+
+const LUMA = 'float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }'
+
+// Prefilter + ½-res downsample: average a 2×2 block of the HDR accumulation, keep
+// only the energy above the threshold (hue-preserving soft knee), so the bloom
+// kindles from emitters and hot highlights rather than the whole frame.
+export const BLOOM_PREFILTER_SHADER = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform sampler2D uSrc;
+uniform float uThresh;
+${LUMA}
+void main(){
+  ivec2 base = ivec2(gl_FragCoord.xy) * 2;
+  vec3 c = texelFetch(uSrc, base, 0).rgb
+         + texelFetch(uSrc, base + ivec2(1, 0), 0).rgb
+         + texelFetch(uSrc, base + ivec2(0, 1), 0).rgb
+         + texelFetch(uSrc, base + ivec2(1, 1), 0).rgb;
+  c *= 0.25;
+  float l = luma(c);
+  float k = max(l - uThresh, 0.0);
+  vec3 bright = c * (k / max(l, 1e-4));
+  fragColor = vec4(bright, 1.0);
+}
+`
+
+// Separable 9-tap Gaussian. uDir is the per-tap texel step (already scaled by the
+// bloom radius); run once horizontally then once vertically for a 2D blur.
+export const BLOOM_BLUR_SHADER = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexSize;
+uniform vec2 uDir;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uTexSize;
+  vec2 d = uDir / uTexSize;
+  float w[5];
+  w[0] = 0.227027; w[1] = 0.1945946; w[2] = 0.1216216; w[3] = 0.054054; w[4] = 0.016216;
+  vec3 sum = texture(uSrc, uv).rgb * w[0];
+  for (int i = 1; i < 5; i++){
+    vec2 o = d * float(i);
+    sum += texture(uSrc, uv + o).rgb * w[i];
+    sum += texture(uSrc, uv - o).rgb * w[i];
+  }
+  fragColor = vec4(sum, 1.0);
+}
+`
+
+// Present pass: read the accumulated HDR average, add the blurred bloom, tonemap.
 export const PRESENT_SHADER = /* glsl */ `#version 300 es
 precision highp float;
 out vec4 fragColor;
 uniform sampler2D uAccum;
+uniform sampler2D uBloomTex;
+uniform float uBloomInt;
 uniform vec2 uResolution;
 uniform float uExposure;
 uniform float uGamma;
@@ -604,6 +800,9 @@ ${TONEMAP_FN}
 void main(){
   vec2 frag = gl_FragCoord.xy;
   vec3 col = texelFetch(uAccum, ivec2(frag), 0).rgb;
+  if (uBloomInt > 0.0){
+    col += texture(uBloomTex, frag / uResolution).rgb * uBloomInt;
+  }
   fragColor = vec4(tonemap(col, frag), 1.0);
 }
 `

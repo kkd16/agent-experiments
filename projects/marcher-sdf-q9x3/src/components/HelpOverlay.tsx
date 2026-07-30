@@ -93,9 +93,41 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
           </li>
         </ul>
 
+        <h3>Glass &amp; dispersion</h3>
+        <p>
+          Turn up a material's <strong>Transmission</strong> (Node → Glass) and it becomes a
+          dielectric: the path tracer splits every hit into a Fresnel-weighted reflection and a
+          refraction, tracing the ray through the solid and out the far side (the fast preview
+          approximates the same see-through).
+        </p>
+        <ul>
+          <li><strong>IOR</strong> sets how hard the light bends — 1.33 water, 1.5 glass, 2.4 diamond.</li>
+          <li>
+            <strong>Absorption</strong> tints thick glass by eating light as it travels through
+            (Beer–Lambert), so a coloured absorbing glass glows from the inside.
+          </li>
+          <li>
+            <strong>Dispersion</strong> splits the spectrum by wavelength, throwing a prism rainbow
+            along refracting edges as the frame accumulates (try <strong>Prism</strong> and
+            <strong> Crystal</strong>).
+          </li>
+        </ul>
+
+        <h3>Bloom</h3>
+        <p>
+          <strong>World → Post → Bloom</strong> adds a soft HDR glare: the genuinely-bright parts of
+          the linear image (emitters, hot highlights, the sun) are isolated above a
+          <strong> threshold</strong>, blurred by a separable Gaussian at a chosen <strong>radius</strong>,
+          and added back before tonemapping. Accumulation only — try <strong>Supernova</strong>.
+        </p>
+
         <h3>Exporting</h3>
         <ul>
-          <li><strong>Export</strong> bakes the whole scene into one standalone, dependency-free HTML file.</li>
+          <li>
+            <strong>Export</strong> bakes the whole scene into one standalone, dependency-free HTML
+            file — including the progressive path tracer, so a shared page converges to the same
+            global-illumination image (with bloom) the studio shows.
+          </li>
           <li><strong>Save</strong> / <strong>Load</strong> round-trip the scene as a JSON file you can share or version.</li>
           <li><strong>PNG</strong> saves the current frame straight from the canvas.</li>
         </ul>

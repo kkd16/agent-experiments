@@ -15,7 +15,7 @@
 
 import type { Scene, SdfNode } from '../scene/types'
 import { TEXTURE_INDEX } from '../scene/primitives'
-import { buildShader } from '../sdf/shader'
+import { BLOOM_BLUR_SHADER, BLOOM_PREFILTER_SHADER, buildShader } from '../sdf/shader'
 import { structuralKey } from '../sdf/codegen'
 import { orbitPosition, sunDirection, worldToObjectMat3 } from './math'
 
@@ -44,6 +44,8 @@ export class Renderer {
   private program: WebGLProgram | null = null
   private accumProgram: WebGLProgram | null = null
   private presentProgram: WebGLProgram | null = null
+  private prefilterProgram: WebGLProgram | null = null
+  private blurProgram: WebGLProgram | null = null
   private locsByProg = new WeakMap<WebGLProgram, Map<string, WebGLUniformLocation | null>>()
   private activeProg: WebGLProgram | null = null
   private scene: Scene
@@ -70,6 +72,13 @@ export class Renderer {
   private viewSig = Number.NaN
   private hashAccum = 0
 
+  // Bloom ping-pong targets, allocated at half the accumulation resolution and
+  // linearly filtered so the blurred glow upsamples smoothly in the present pass.
+  private bloomTex: [WebGLTexture | null, WebGLTexture | null] = [null, null]
+  private bloomFbo: [WebGLFramebuffer | null, WebGLFramebuffer | null] = [null, null]
+  private bloomW = 0
+  private bloomH = 0
+
   // Scratch uniform buffers, resized when the node count changes.
   private posArr = new Float32Array(3)
   private rotArr = new Float32Array(9)
@@ -81,6 +90,8 @@ export class Renderer {
   private modAArr = new Float32Array(4)
   private modBArr = new Float32Array(4)
   private matTexArr = new Float32Array(4)
+  private matGlassArr = new Float32Array(4)
+  private dispersive = 0
   private rotTmp = new Float32Array(9)
   private rotScratch: [number, number, number] = [0, 0, 0]
   private eye: [number, number, number] = [0, 0, 0]
@@ -104,9 +115,13 @@ export class Renderer {
       try {
         const built = buildShader(scene)
         this.presentProgram = this.makeProgram(built.vertex, built.present)
+        this.prefilterProgram = this.makeProgram(built.vertex, BLOOM_PREFILTER_SHADER)
+        this.blurProgram = this.makeProgram(built.vertex, BLOOM_BLUR_SHADER)
       } catch {
         this.floatOk = false
         this.presentProgram = null
+        this.prefilterProgram = null
+        this.blurProgram = null
       }
     }
     this.rebuild(scene)
@@ -139,6 +154,7 @@ export class Renderer {
     this.modAArr = new Float32Array(slots * 4)
     this.modBArr = new Float32Array(slots * 4)
     this.matTexArr = new Float32Array(slots * 4)
+    this.matGlassArr = new Float32Array(slots * 4)
   }
 
   private makeProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -248,7 +264,30 @@ export class Renderer {
     this.cur = 0
     this.lastTex = null
     this.sample = 0
+    this.setupBloom(Math.max(1, w >> 1), Math.max(1, h >> 1))
     return true
+  }
+
+  /** (Re)allocate the linearly-filtered half-res bloom ping-pong targets. */
+  private setupBloom(w: number, h: number): void {
+    const gl = this.gl
+    for (let i = 0; i < 2; i++) {
+      const tex = gl.createTexture()
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      const fbo = gl.createFramebuffer()
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+      this.bloomTex[i] = tex
+      this.bloomFbo[i] = fbo
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    this.bloomW = w
+    this.bloomH = h
   }
 
   private disposeTargets(): void {
@@ -258,9 +297,15 @@ export class Renderer {
       if (this.fbo[i]) gl.deleteFramebuffer(this.fbo[i])
       this.tex[i] = null
       this.fbo[i] = null
+      if (this.bloomTex[i]) gl.deleteTexture(this.bloomTex[i])
+      if (this.bloomFbo[i]) gl.deleteFramebuffer(this.bloomFbo[i])
+      this.bloomTex[i] = null
+      this.bloomFbo[i] = null
     }
     this.accumW = 0
     this.accumH = 0
+    this.bloomW = 0
+    this.bloomH = 0
     this.lastTex = null
   }
 
@@ -340,7 +385,23 @@ export class Renderer {
       this.matTexArr[i * 4 + 1] = node.material.texScale
       this.matTexArr[i * 4 + 2] = node.material.texStrength
       this.matTexArr[i * 4 + 3] = 0
+
+      this.matGlassArr[i * 4] = node.material.transmission
+      this.matGlassArr[i * 4 + 1] = node.material.ior
+      this.matGlassArr[i * 4 + 2] = node.material.absorption
+      this.matGlassArr[i * 4 + 3] = node.material.dispersion
     }
+
+    // Dispersion is a whole-path property, so a single scene-wide flag lets the
+    // shader skip the spectral bookkeeping entirely when no material disperses.
+    let dispersive = 0
+    for (let i = 0; i < n; i++) {
+      if (s.nodes[i].material.transmission > 0.001 && s.nodes[i].material.dispersion > 0.001) {
+        dispersive = 1
+        break
+      }
+    }
+    this.dispersive = dispersive
 
     // View hash: eye/target/fov/DoF, sun, environment, ground, quality, emissive,
     // AA, and every (animated) per-node value. Post is excluded — it only affects
@@ -376,6 +437,8 @@ export class Renderer {
     for (let i = 0; i < this.modAArr.length; i++) h(this.modAArr[i])
     for (let i = 0; i < this.modBArr.length; i++) h(this.modBArr[i])
     for (let i = 0; i < this.matTexArr.length; i++) h(this.matTexArr[i])
+    for (let i = 0; i < this.matGlassArr.length; i++) h(this.matGlassArr[i])
+    h(this.dispersive)
     return this.hashAccum
   }
 
@@ -469,6 +532,8 @@ export class Renderer {
     setV4('uModA', this.modAArr)
     setV4('uModB', this.modBArr)
     setV4('uMatTex', this.matTexArr)
+    setV4('uMatGlass', this.matGlassArr)
+    u1i('uDispersive', this.dispersive)
   }
 
   /** Pack a node's domain modifier into the uModA/uModB vec4 slots. */
@@ -619,13 +684,15 @@ export class Renderer {
 
     // Present the accumulated average to the canvas.
     if (this.lastTex) {
+      const p = this.scene.post
+      const bloomOn = this.renderBloom(p.bloom, p.bloomThreshold, p.bloomRadius)
+
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       gl.viewport(0, 0, w, h)
       this.activeProg = this.presentProgram
       gl.useProgram(this.presentProgram)
       const rl = this.loc('uResolution')
       if (rl) gl.uniform2f(rl, w, h)
-      const p = this.scene.post
       const setf = (name: string, v: number) => {
         const l = this.loc(name)
         if (l) gl.uniform1f(l, v)
@@ -634,14 +701,67 @@ export class Renderer {
       setf('uGamma', p.gamma)
       setf('uVignette', p.vignette)
       setf('uSaturation', p.saturation)
+      setf('uBloomInt', bloomOn ? p.bloom : 0)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, this.lastTex)
       const al = this.loc('uAccum')
       if (al) gl.uniform1i(al, 0)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, this.bloomTex[0])
+      const bl = this.loc('uBloomTex')
+      if (bl) gl.uniform1i(bl, 1)
       gl.drawArrays(gl.TRIANGLES, 0, 3)
     }
 
     this.cb.onSpp?.(this.sample, maxSamples, true)
+  }
+
+  /**
+   * Populate bloomTex[0] with the blurred glow: prefilter/downsample the HDR
+   * average, then a separable Gaussian (H then V). Returns false (bloom off) when
+   * intensity is 0 or the targets/programs aren't ready, so the present pass skips
+   * the composite. Cheap: three half-res fullscreen passes.
+   */
+  private renderBloom(intensity: number, threshold: number, radius: number): boolean {
+    if (intensity <= 0 || !this.prefilterProgram || !this.blurProgram) return false
+    if (!this.lastTex || !this.bloomTex[0] || !this.bloomTex[1]) return false
+    const gl = this.gl
+    const bw = this.bloomW
+    const bh = this.bloomH
+    const spread = Math.max(0.2, radius) * 1.5
+
+    // Prefilter: HDR average → bloomTex[0] (bright part, half-res).
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomFbo[0])
+    gl.viewport(0, 0, bw, bh)
+    this.activeProg = this.prefilterProgram
+    gl.useProgram(this.prefilterProgram)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, this.lastTex)
+    let l = this.loc('uSrc')
+    if (l) gl.uniform1i(l, 0)
+    l = this.loc('uThresh')
+    if (l) gl.uniform1f(l, Math.max(0, threshold))
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+
+    // Separable Gaussian: bloomTex[0] --H--> bloomTex[1] --V--> bloomTex[0].
+    this.activeProg = this.blurProgram
+    gl.useProgram(this.blurProgram)
+    const ts = this.loc('uTexSize')
+    if (ts) gl.uniform2f(ts, bw, bh)
+    const blurPass = (srcTex: WebGLTexture, dstFbo: WebGLFramebuffer, dx: number, dy: number) => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo)
+      gl.viewport(0, 0, bw, bh)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, srcTex)
+      const ls = this.loc('uSrc')
+      if (ls) gl.uniform1i(ls, 0)
+      const ld = this.loc('uDir')
+      if (ld) gl.uniform2f(ld, dx, dy)
+      gl.drawArrays(gl.TRIANGLES, 0, 3)
+    }
+    blurPass(this.bloomTex[0]!, this.bloomFbo[1]!, spread, 0)
+    blurPass(this.bloomTex[1]!, this.bloomFbo[0]!, 0, spread)
+    return true
   }
 
   private lastFpsReport = 0
@@ -660,9 +780,13 @@ export class Renderer {
     if (this.program) gl.deleteProgram(this.program)
     if (this.accumProgram) gl.deleteProgram(this.accumProgram)
     if (this.presentProgram) gl.deleteProgram(this.presentProgram)
+    if (this.prefilterProgram) gl.deleteProgram(this.prefilterProgram)
+    if (this.blurProgram) gl.deleteProgram(this.blurProgram)
     this.program = null
     this.accumProgram = null
     this.presentProgram = null
+    this.prefilterProgram = null
+    this.blurProgram = null
     this.disposeTargets()
     this.activeProg = null
   }

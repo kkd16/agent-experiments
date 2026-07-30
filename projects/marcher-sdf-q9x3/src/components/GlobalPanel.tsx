@@ -407,6 +407,42 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
           step={0.01}
           onChange={(saturation) => dispatch({ type: 'patchPost', patch: { saturation } })}
         />
+        <Slider
+          label="Bloom"
+          value={post.bloom}
+          min={0}
+          max={1.5}
+          step={0.01}
+          format={(v) => (v <= 0 ? 'off' : v.toFixed(2))}
+          onChange={(bloom) => dispatch({ type: 'patchPost', patch: { bloom } })}
+        />
+        {post.bloom > 0 ? (
+          <>
+            {!render.accumulate ? (
+              <p className="hint warn">Bloom needs progressive accumulation on (Render section).</p>
+            ) : (
+              <p className="hint">A soft HDR glare bleeding from emitters and hot highlights.</p>
+            )}
+            <Slider
+              label="Bloom threshold"
+              value={post.bloomThreshold}
+              min={0}
+              max={4}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(bloomThreshold) => dispatch({ type: 'patchPost', patch: { bloomThreshold } })}
+            />
+            <Slider
+              label="Bloom radius"
+              value={post.bloomRadius}
+              min={0.3}
+              max={3}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(bloomRadius) => dispatch({ type: 'patchPost', patch: { bloomRadius } })}
+            />
+          </>
+        ) : null}
       </Section>
     </div>
   )
