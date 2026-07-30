@@ -1,4 +1,4 @@
-import type { SimController, SimParams, SimStats } from '../hooks/useSimulation';
+import type { SimController, SimParams, SimStats, DisplayMode } from '../hooks/useSimulation';
 import type { ToolState, Tool } from './types';
 import type { SourceKind } from '../sim/FDTD';
 import { Section, Slider, Segmented } from './ui';
@@ -28,6 +28,11 @@ const SOURCE_OPTS: { value: SourceKind; label: string }[] = [
   { value: 'sine', label: 'Sine' },
   { value: 'gaussian', label: 'Pulse' },
   { value: 'ricker', label: 'Ricker' },
+];
+
+const VIEW_OPTS: { value: DisplayMode; label: string; title: string }[] = [
+  { value: 'field', label: 'Field', title: 'Instantaneous signed Ez field' },
+  { value: 'intensity', label: 'Intensity', title: 'Time-averaged ⟨Ez²⟩ — a long exposure' },
 ];
 
 export function ControlPanel({
@@ -164,6 +169,12 @@ export function ControlPanel({
       </Section>
 
       <Section title="Display">
+        <Segmented options={VIEW_OPTS} value={params.displayMode} onChange={(v) => set('displayMode', v)} />
+        {params.displayMode === 'intensity' && (
+          <button type="button" className="btn btn--wide" onClick={() => controller.resetExposure()}>
+            ↻ Reset exposure
+          </button>
+        )}
         <label className="select-row">
           <span>Colormap</span>
           <select value={params.colormap} onChange={(e) => set('colormap', e.target.value as ColormapName)}>
@@ -175,7 +186,7 @@ export function ControlPanel({
           </select>
         </label>
         <Slider
-          label="Field gain"
+          label="Gain"
           value={params.gain}
           min={0.2}
           max={6}

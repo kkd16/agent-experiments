@@ -23,19 +23,28 @@ precision highp float;
 in vec2 v_uv;
 out vec4 outColor;
 
-uniform sampler2D u_field;   // R32F Ez
-uniform sampler2D u_lut;     // 256x1 RGBA colormap
-uniform sampler2D u_mat;     // RGBA8: R=epsNorm, G=pec, B=lossNorm
+uniform sampler2D u_field;     // R32F Ez
+uniform sampler2D u_intensity; // R32F time-averaged Ez^2
+uniform sampler2D u_lut;       // 256x1 RGBA colormap
+uniform sampler2D u_mat;       // RGBA8: R=epsNorm, G=pec, B=lossNorm
 uniform float u_gain;
-uniform vec2 u_grid;         // (nx, ny)
-uniform float u_matOverlay;  // 0..1 overlay strength
+uniform vec2 u_grid;           // (nx, ny)
+uniform float u_matOverlay;    // 0..1 overlay strength
+uniform int u_mode;            // 0 = signed field, 1 = intensity
 
 void main() {
   // Flip vertically so row 0 is at the top of the canvas.
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
 
-  float ez = texture(u_field, uv).r;
-  float t = clamp(ez * u_gain * 0.5 + 0.5, 0.0, 1.0);
+  float t;
+  if (u_mode == 1) {
+    // Long-exposure intensity: sqrt for a photographic dynamic range.
+    float ii = texture(u_intensity, uv).r;
+    t = clamp(sqrt(max(ii, 0.0)) * u_gain, 0.0, 1.0);
+  } else {
+    float ez = texture(u_field, uv).r;
+    t = clamp(ez * u_gain * 0.5 + 0.5, 0.0, 1.0);
+  }
   vec3 col = texture(u_lut, vec2(t, 0.5)).rgb;
 
   // Material sampling (nearest) + neighbour edge detection for outlines.
@@ -73,6 +82,7 @@ export class FieldRenderer {
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private fieldTex: WebGLTexture;
+  private intensityTex: WebGLTexture;
   private lutTex: WebGLTexture;
   private matTex: WebGLTexture;
   private vao: WebGLVertexArrayObject;
@@ -94,16 +104,27 @@ export class FieldRenderer {
 
     this.program = this.buildProgram();
     gl.useProgram(this.program);
-    for (const name of ['u_field', 'u_lut', 'u_mat', 'u_gain', 'u_grid', 'u_matOverlay']) {
+    for (const name of [
+      'u_field',
+      'u_intensity',
+      'u_lut',
+      'u_mat',
+      'u_gain',
+      'u_grid',
+      'u_matOverlay',
+      'u_mode',
+    ]) {
       this.uniforms[name] = gl.getUniformLocation(this.program, name);
     }
     gl.uniform1i(this.uniforms.u_field, 0);
     gl.uniform1i(this.uniforms.u_lut, 1);
     gl.uniform1i(this.uniforms.u_mat, 2);
+    gl.uniform1i(this.uniforms.u_intensity, 3);
     gl.uniform2f(this.uniforms.u_grid, nx, ny);
 
     this.vao = this.buildQuad();
     this.fieldTex = this.buildFieldTex();
+    this.intensityTex = this.buildFieldTex();
     this.lutTex = this.buildLutTex();
     this.matTex = this.buildMatTex();
     this.setColormap('rdbu');
@@ -211,16 +232,30 @@ export class FieldRenderer {
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.nx, this.ny, gl.RGBA, gl.UNSIGNED_BYTE, data);
   }
 
-  /** Draw one frame from the current Ez field. */
-  render(ez: Float32Array, gain: number, matOverlay: number): void {
+  /**
+   * Draw one frame. In `field` mode the signed Ez texture is shown; in
+   * `intensity` mode the supplied time-averaged intensity buffer is shown.
+   */
+  render(
+    ez: Float32Array,
+    gain: number,
+    matOverlay: number,
+    mode: 'field' | 'intensity' = 'field',
+    intensity?: Float32Array,
+  ): void {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.nx, this.ny, gl.RED, gl.FLOAT, ez);
+    if (mode === 'intensity' && intensity) {
+      gl.bindTexture(gl.TEXTURE_2D, this.intensityTex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.nx, this.ny, gl.RED, gl.FLOAT, intensity);
+    }
 
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.useProgram(this.program);
     gl.uniform1f(this.uniforms.u_gain, gain);
     gl.uniform1f(this.uniforms.u_matOverlay, matOverlay);
+    gl.uniform1i(this.uniforms.u_mode, mode === 'intensity' ? 1 : 0);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
@@ -228,6 +263,8 @@ export class FieldRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.matTex);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.intensityTex);
 
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -237,6 +274,7 @@ export class FieldRenderer {
   dispose(): void {
     const gl = this.gl;
     gl.deleteTexture(this.fieldTex);
+    gl.deleteTexture(this.intensityTex);
     gl.deleteTexture(this.lutTex);
     gl.deleteTexture(this.matTex);
     gl.deleteVertexArray(this.vao);

@@ -71,6 +71,14 @@ export class FDTD {
   readonly hx: Float32Array;
   readonly hy: Float32Array;
 
+  // Time-averaged intensity ("long exposure"): running sum of Ez^2 and a
+  // normalized buffer computed on demand. Only accumulated while `accumulate`
+  // is on, so the field-only view pays no cost.
+  private sumSq: Float32Array;
+  private intensityBuf: Float32Array;
+  private sampleCount = 0;
+  accumulate = false;
+
   // Per-cell material description.
   readonly epsR: Float32Array;
   readonly loss: Float32Array;
@@ -100,6 +108,8 @@ export class FDTD {
     this.ez = new Float32Array(n);
     this.hx = new Float32Array(n);
     this.hy = new Float32Array(n);
+    this.sumSq = new Float32Array(n);
+    this.intensityBuf = new Float32Array(n);
     this.epsR = new Float32Array(n);
     this.loss = new Float32Array(n);
     this.pec = new Uint8Array(n);
@@ -123,11 +133,31 @@ export class FDTD {
     this.coeffsDirty = true;
   }
 
+  /** Toggle whether each step accumulates into the intensity buffer. */
+  setAccumulate(on: boolean): void {
+    this.accumulate = on;
+  }
+
+  /** Reset the time-averaged intensity accumulation. */
+  resetExposure(): void {
+    this.sumSq.fill(0);
+    this.sampleCount = 0;
+  }
+
+  /** Normalized time-averaged intensity ⟨Ez²⟩ into a reusable buffer. */
+  normalizedIntensity(): Float32Array {
+    const inv = this.sampleCount > 0 ? 1 / this.sampleCount : 0;
+    const { sumSq, intensityBuf } = this;
+    for (let i = 0; i < sumSq.length; i++) intensityBuf[i] = sumSq[i] * inv;
+    return intensityBuf;
+  }
+
   /** Zero all fields and probe traces; keep materials & sources. */
   resetFields(): void {
     this.ez.fill(0);
     this.hx.fill(0);
     this.hy.fill(0);
+    this.resetExposure();
     this.step_ = 0;
     for (const p of this.probes) {
       p.history.fill(0);
@@ -366,6 +396,13 @@ export class FDTD {
         const k = s.x + s.y * nx;
         if (k >= 0 && k < ez.length) ez[k] += v;
       }
+    }
+
+    // --- Accumulate time-averaged intensity (long exposure) ---
+    if (this.accumulate) {
+      const sumSq = this.sumSq;
+      for (let k = 0; k < ez.length; k++) sumSq[k] += ez[k] * ez[k];
+      this.sampleCount++;
     }
 
     // --- Sample probes ---

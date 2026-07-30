@@ -13,12 +13,15 @@ export interface SimStats {
   energy: number;
 }
 
+export type DisplayMode = 'field' | 'intensity';
+
 export interface SimParams {
   running: boolean;
   substeps: number;
   gain: number;
   colormap: ColormapName;
   matOverlay: number;
+  displayMode: DisplayMode;
 }
 
 export interface SimController {
@@ -28,6 +31,7 @@ export interface SimController {
   loadPreset: (key: string) => void;
   reset: () => void;
   resetFields: () => void;
+  resetExposure: () => void;
   stepOnce: () => void;
   snapshot: () => string | null;
 }
@@ -50,6 +54,7 @@ export function useSimulation(
     gain: 1.0,
     colormap: 'rdbu',
     matOverlay: 1,
+    displayMode: 'field',
   });
   const paramsRef = useRef(params);
   useEffect(() => {
@@ -101,6 +106,8 @@ export function useSimulation(
     let fpsAccum = 0;
     let statTimer = 0;
     let lastColormap = paramsRef.current.colormap;
+    let lastMode = paramsRef.current.displayMode;
+    sim.setAccumulate(lastMode === 'intensity');
 
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
@@ -112,11 +119,21 @@ export function useSimulation(
         renderer.setColormap(p.colormap);
         lastColormap = p.colormap;
       }
+      if (p.displayMode !== lastMode) {
+        // Entering intensity mode starts a fresh exposure.
+        if (p.displayMode === 'intensity') sim.resetExposure();
+        sim.setAccumulate(p.displayMode === 'intensity');
+        lastMode = p.displayMode;
+      }
 
       if (p.running) {
         for (let s = 0; s < p.substeps; s++) sim.step();
       }
-      renderer.render(sim.ez, p.gain, p.matOverlay);
+      if (p.displayMode === 'intensity') {
+        renderer.render(sim.ez, p.gain, p.matOverlay, 'intensity', sim.normalizedIntensity());
+      } else {
+        renderer.render(sim.ez, p.gain, p.matOverlay, 'field');
+      }
 
       // FPS + stats throttled to ~5 Hz.
       frames++;
@@ -165,6 +182,10 @@ export function useSimulation(
     sim.resetFields();
   }, [sim]);
 
+  const resetExposure = useCallback(() => {
+    sim.resetExposure();
+  }, [sim]);
+
   const stepOnce = useCallback(() => {
     sim.step();
   }, [sim]);
@@ -186,6 +207,7 @@ export function useSimulation(
     loadPreset,
     reset,
     resetFields,
+    resetExposure,
     stepOnce,
     snapshot,
   };
