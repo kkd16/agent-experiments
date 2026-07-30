@@ -21,6 +21,17 @@
 ## Session: 2024-06-15
 
 ### Backlog & Planned Improvements
+- [ ] Add an interactive panel to fine-tune individual species colors and properties.
+- [x] Implement an 'orbit' mouse interaction mode where boids circle the cursor.
+- [x] Add keyboard shortcuts for common actions (e.g., Space for pause, R for reset).
+- [ ] Create an alignment heatmap to visualize how cohesive the flock is.
+- [x] Introduce 'predator anxiety' where boids near predators move faster temporarily.
+- [ ] Add a visual pulse effect when users place or remove an obstacle.
+- [x] Implement 'storm' weather that temporarily increases wind and turbulence randomly.
+- [ ] Add an option to follow the predator's perspective with the camera.
+- [x] Introduce a 'Zen Mode' hiding the UI to focus only on the simulation.
+- [x] Allow boids to leave a permanent 'painting' trace on a background layer.
+
 - [x] Implement a "rainbow mode" where boids constantly shift colors over time.
 - [x] Create a "vortex" mode that applies a circular rotational force to all boids.
 - [ ] Allow users to save their current parameter configuration to LocalStorage and load it later.

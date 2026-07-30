@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BoidsCanvas } from './BoidsCanvas'
 import { type BoidParams } from './boids'
 import './App.css'
@@ -29,6 +29,11 @@ const defaultParams: BoidParams = {
   rainbowMode: false,
   collisionFlash: false,
   vortexMode: false,
+  orbitMode: false,
+  stormMode: false,
+  zenMode: false,
+  predatorAnxiety: false,
+  paintMode: false,
   partyMode: false,
   timeScale: 1.0
 }
@@ -41,6 +46,28 @@ function App() {
   const [showControls, setShowControls] = useState(true)
   const [isPaused, setIsPaused] = useState(false)
 
+  const handleResetDefaults = () => {
+    setParams(defaultParams);
+    setNumBoids(150);
+    setNumPredators(0);
+  }
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPaused(p => !p);
+      } else if (e.code === 'KeyR') {
+        handleResetDefaults();
+      } else if (e.code === 'KeyZ') {
+        setParams(prev => ({ ...prev, zenMode: !prev.zenMode }));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+
   const handleDownloadScreenshot = () => {
     const canvas = document.querySelector('canvas');
     if (!canvas) return;
@@ -51,11 +78,6 @@ function App() {
     a.click();
   }
 
-  const handleResetDefaults = () => {
-    setParams(defaultParams);
-    setNumBoids(150);
-    setNumPredators(0);
-  }
 
   const handleParamChange = (key: keyof BoidParams, value: number) => {
     setParams(prev => ({ ...prev, [key]: value }))
@@ -67,12 +89,13 @@ function App() {
 
       <button
         className="toggle-controls"
+        style={{ display: params.zenMode ? 'none' : 'block' }}
         onClick={() => setShowControls(!showControls)}
       >
         {showControls ? 'Hide Controls' : 'Show Controls'}
       </button>
 
-      {showControls && (
+      {showControls && !params.zenMode && (
         <div className="controls-panel">
           <h2>Boids Flocking</h2>
 
@@ -396,6 +419,64 @@ function App() {
                Vortex Mode
             </label>
           </div>
+
+          <div className="control-group">
+            <label title="Boids orbit the mouse cursor">
+               <input
+                 type="checkbox"
+                 checked={params.orbitMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, orbitMode: e.target.checked }))}
+               />
+               Orbit Mode
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Temporary storm weather with high wind/turbulence">
+               <input
+                 type="checkbox"
+                 checked={params.stormMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, stormMode: e.target.checked }))}
+               />
+               Storm Mode
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Hide UI to focus on simulation">
+               <input
+                 type="checkbox"
+                 checked={params.zenMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, zenMode: e.target.checked }))}
+               />
+               Zen Mode (Press Z)
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Boids move faster when near predators">
+               <input
+                 type="checkbox"
+                 checked={params.predatorAnxiety}
+                 onChange={(e) => setParams(prev => ({ ...prev, predatorAnxiety: e.target.checked }))}
+               />
+               Predator Anxiety
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Boids leave a permanent painting on the canvas">
+               <input
+                 type="checkbox"
+                 checked={params.paintMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, paintMode: e.target.checked }))}
+               />
+               Paint Mode
+            </label>
+          </div>
+
+
+
 
 
           <div className="control-group">
