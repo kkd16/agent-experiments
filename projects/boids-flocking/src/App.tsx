@@ -35,7 +35,13 @@ const defaultParams: BoidParams = {
   predatorAnxiety: false,
   paintMode: false,
   partyMode: false,
-  timeScale: 1.0
+  timeScale: 1.0,
+  ghostMode: false,
+  isolationPanic: false,
+  antiGravity: false,
+  boidStats: false,
+  freezePredators: false,
+  predatorStun: false,
 }
 
 function App() {
@@ -231,6 +237,7 @@ function App() {
                 <option value="repel">Repel</option>
                 <option value="obstacle">Place Obstacle</option>
                 <option value="repulsor">Place Repulsor</option>
+                <option value="blackhole">Black Hole</option>
               </select>
             </label>
           </div>
@@ -487,6 +494,72 @@ function App() {
                  onChange={(e) => setParams(prev => ({ ...prev, partyMode: e.target.checked }))}
                />
                Party Mode
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Render boids and predators partially transparent">
+               <input
+                 type="checkbox"
+                 checked={params.ghostMode}
+                 onChange={(e) => setParams(prev => ({ ...prev, ghostMode: e.target.checked }))}
+               />
+               Ghost Mode
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Boids move erratically when no others are nearby">
+               <input
+                 type="checkbox"
+                 checked={params.isolationPanic}
+                 onChange={(e) => setParams(prev => ({ ...prev, isolationPanic: e.target.checked }))}
+               />
+               Isolation Panic
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Reverse gravity direction">
+               <input
+                 type="checkbox"
+                 checked={params.antiGravity}
+                 onChange={(e) => setParams(prev => ({ ...prev, antiGravity: e.target.checked }))}
+               />
+               Anti-Gravity
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Show counts of boids, predators, and obstacles">
+               <input
+                 type="checkbox"
+                 checked={params.boidStats}
+                 onChange={(e) => setParams(prev => ({ ...prev, boidStats: e.target.checked }))}
+               />
+               Boid Stats Overlay
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Prevent predators from moving">
+               <input
+                 type="checkbox"
+                 checked={params.freezePredators}
+                 onChange={(e) => setParams(prev => ({ ...prev, freezePredators: e.target.checked }))}
+               />
+               Freeze Predators
+            </label>
+          </div>
+
+          <div className="control-group">
+            <label title="Right-click canvas to temporarily stun predators">
+               <input
+                 type="checkbox"
+                 checked={params.predatorStun}
+                 onChange={(e) => setParams(prev => ({ ...prev, predatorStun: e.target.checked }))}
+               />
+               Predator Stun (Right-Click)
             </label>
           </div>
 

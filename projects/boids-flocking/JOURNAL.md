@@ -22,6 +22,14 @@
 
 ### Backlog & Planned Improvements
 - [ ] Add an interactive panel to fine-tune individual species colors and properties.
+- [x] Implement Ghost Mode, rendering boids and predators partially transparent.
+- [x] Implement Predator Trails, extending the trail rendering to predators.
+- [x] Implement Isolation Panic, causing boids to move erratically when no other boids are nearby.
+- [x] Implement Anti-Gravity, allowing gravity to pull boids upwards instead of downwards.
+- [x] Implement Boid Stats overlay, displaying current counts of boids, predators, and obstacles.
+- [x] Implement Freeze Predators, preventing predators from moving or hunting.
+- [x] Implement Black Hole mouse interaction, strongly pulling all boids towards the cursor.
+- [x] Implement Predator Stun, freezing predators temporarily when right-clicking on the canvas.
 - [x] Implement an 'orbit' mouse interaction mode where boids circle the cursor.
 - [x] Add keyboard shortcuts for common actions (e.g., Space for pause, R for reset).
 - [ ] Create an alignment heatmap to visualize how cohesive the flock is.

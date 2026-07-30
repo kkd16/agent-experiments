@@ -76,7 +76,7 @@ export interface BoidParams {
   visualRange: number;
   maxSpeed: number;
   maxForce: number;
-  mouseInteraction: 'none' | 'attract' | 'repel' | 'obstacle' | 'repulsor';
+  mouseInteraction: 'none' | 'attract' | 'repel' | 'obstacle' | 'repulsor' | 'blackhole';
   mouseRadius: number;
   edgeBehavior: 'wrap' | 'bounce';
   predatorAvoidance: number;
@@ -103,6 +103,12 @@ export interface BoidParams {
   paintMode: boolean;
   partyMode: boolean;
   timeScale: number;
+  ghostMode: boolean;
+  isolationPanic: boolean;
+  antiGravity: boolean;
+  boidStats: boolean;
+  freezePredators: boolean;
+  predatorStun: boolean;
 }
 
 
@@ -201,7 +207,7 @@ export class Boid {
 
   update(params: BoidParams) {
     this.acceleration.add(new Vector(params.windX, params.windY));
-    this.acceleration.add(new Vector(0, params.gravity)); // Add gravity
+    this.acceleration.add(new Vector(0, params.antiGravity ? -params.gravity : params.gravity)); // Add gravity or anti-gravity
     if (params.partyMode) {
       this.acceleration.add(new Vector((Math.random() - 0.5) * params.maxForce * 5, (Math.random() - 0.5) * params.maxForce * 5));
     }
@@ -248,6 +254,13 @@ export class Boid {
 
     this.isColliding = false;
     this.isAnxious = false;
+
+    if (params.isolationPanic && nearbyBoids.length === 1) {
+      this.isAnxious = true;
+      const panicForce = new Vector((Math.random() - 0.5) * params.maxForce * 10, (Math.random() - 0.5) * params.maxForce * 10);
+      this.applyForce(panicForce);
+    }
+
     for (const other of nearbyBoids) {
       if (other !== this) {
         const d = Vector.dist(this.position, other.position);
@@ -314,13 +327,16 @@ export class Boid {
         let mouseForce: Vector;
         if (params.mouseInteraction === 'attract') {
           mouseForce = this.seek(mouseVec, (params.maxSpeed * this.baseMaxSpeedMultiplier), params.maxForce);
+        } else if (params.mouseInteraction === 'blackhole') {
+          mouseForce = this.seek(mouseVec, (params.maxSpeed * this.baseMaxSpeedMultiplier) * 5, params.maxForce * 10);
         } else {
           mouseForce = this.flee(mouseVec, (params.maxSpeed * this.baseMaxSpeedMultiplier), params.maxForce);
         }
 
         // Weight the mouse force based on distance (stronger when closer)
         const weight = 1 - (d / params.mouseRadius);
-        mouseForce.mult(weight * 2); // Multiplier for interaction strength
+        const strengthMultiplier = params.mouseInteraction === 'blackhole' ? 10 : 2;
+        mouseForce.mult(weight * strengthMultiplier); // Multiplier for interaction strength
         this.applyForce(mouseForce);
       }
     }
@@ -509,6 +525,9 @@ export class Boid {
   }
 
   draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
+    if (params.ghostMode) {
+      ctx.globalAlpha = 0.5;
+    }
     if (params.glowEffect) {
       ctx.shadowBlur = 10;
       ctx.shadowColor = this.color;
@@ -561,10 +580,15 @@ export class Boid {
     ctx.fillStyle = this.isColliding && params.collisionFlash ? 'white' : this.color;
     ctx.fill();
     ctx.restore();
+    if (params.ghostMode) {
+      ctx.globalAlpha = 1.0; // Reset global alpha
+    }
   }
 }
 
 export class Predator extends Boid {
+  stunTimer: number = 0;
+
   constructor(x: number, y: number, width: number, height: number) {
     super(x, y, width, height);
     this.size = 8;
@@ -572,7 +596,18 @@ export class Predator extends Boid {
     this.velocity = new Vector((Math.random() - 0.5) * 15, (Math.random() - 0.5) * 15);
   }
 
+  update(params: BoidParams) {
+    if (this.stunTimer > 0) {
+      this.stunTimer--;
+      // Keep within bounds even when stunned if wrap mode is on
+      this.edges(params.edgeBehavior);
+      return;
+    }
+    super.update(params);
+  }
+
   hunt(grid: Grid, params: BoidParams) {
+    if (this.stunTimer > 0) return;
     const nearbyBoids = grid.query(this.position.x, this.position.y, params.visualRange * 2);
     // Find closest boid
     let closestDist = Infinity;
@@ -599,11 +634,33 @@ export class Predator extends Boid {
   }
 
   draw(ctx: CanvasRenderingContext2D, params: BoidParams) {
+    if (params.ghostMode) {
+      ctx.globalAlpha = 0.5;
+    }
     if (params.glowEffect) {
       ctx.shadowBlur = 15;
       ctx.shadowColor = this.color;
     } else {
       ctx.shadowBlur = 0;
+    }
+
+    if (params.showTrails && this.history.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(this.history[0].x, this.history[0].y);
+      for (let i = 1; i < this.history.length; i++) {
+        // Handle wrap-around discontinuities in trails
+        const d = Vector.dist(this.history[i-1], this.history[i]);
+        if (d > 100) {
+           ctx.moveTo(this.history[i].x, this.history[i].y);
+        } else {
+           ctx.lineTo(this.history[i].x, this.history[i].y);
+        }
+      }
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.globalAlpha = params.ghostMode ? 0.5 : 1.0;
     }
 
     const theta = this.velocity.heading() + Math.PI / 2;
@@ -633,5 +690,8 @@ export class Predator extends Boid {
     ctx.fillStyle = this.color;
     ctx.fill();
     ctx.restore();
+    if (params.ghostMode) {
+      ctx.globalAlpha = 1.0; // Reset global alpha
+    }
   }
 }
