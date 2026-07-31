@@ -23,6 +23,7 @@ import { sroa } from './sroa';
 import { osr } from './osr';
 import { pre } from './pre';
 import { reassociate } from './reassoc';
+import { slp } from './slp';
 import { dumpModule } from '../irdump';
 import { i32, satTruncI32, rotl32, rotr32, rotl64, rotr64 } from '../interp';
 
@@ -998,6 +999,15 @@ export function optimize(mod: IRModule, level: OptLevel, snapshots = false): Opt
     // Runs right after VRP (its magnitude counterpart) so the round's DCE / SCCP /
     // CFG-simplify sweep the constants and dead arms both analyses expose.
     if (level >= 2) record('known-bits' + suffix, knownBits);
+    // SLP vectorization: pack a run of isomorphic, independent straight-line scalar
+    // statements (`c[0..3] = a[0..3] * b[0..3]`) into one v128 SIMD chain. Runs in
+    // the round (not up front like the loop vectorizer) so it sees the straight-line
+    // code the *earlier* passes create — most importantly a small counted loop that
+    // full unrolling turned into an adjacent-store run, and the canonical `base +
+    // const` element addresses GVN/reassoc/algebraic have by now settled. The seed
+    // (adjacent stores) and its collapsed vloads/vstore then flow through the
+    // round's tail DCE / CFG-simplify like any other vector code.
+    if (level >= 2) record('slp-vectorize' + suffix, slp);
     if (level >= 2) record('strength-reduce-iv' + suffix, osr);
     record('algebraic-simplify' + suffix, algebraic);
     if (level >= 2) record('licm' + suffix, (fn) => licm(fn, eff.pureNoTrap));

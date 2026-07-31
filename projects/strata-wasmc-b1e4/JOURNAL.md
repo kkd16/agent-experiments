@@ -371,6 +371,32 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
 
 ## Done
 
+- [x] **SLP vectorization — isomorphic straight-line scalar ops → one v128** (`opt/slp.ts`, -O2+) —
+      the *superword-level parallelism* partner of the counted-loop auto-vectorizer (Larsen &
+      Amarasinghe, PLDI 2000). Where `vectorize.ts` finds width *across loop iterations*, this finds
+      it in **straight-line code within one basic block**: a run of `W` independent, structurally
+      identical statements (`c[0..3] = a[0..3] * b[0..3] + a[0..3]`) collapses into one v128.load per
+      array, lanewise `vbin`s and one v128.store. It builds a **pack tree** bottom-up from a *seed* of
+      `W` contiguous stores (`A, A+E, …`; W=4 for i32/f32, W=2 for i64/f64), recursing on the stored
+      values — a uniform operand becomes a **splat**, lanewise constants a **splat + replace_lane**,
+      contiguous loads a **vload**, an isomorphic `ibin`/`fbin` a **vbin** — widening the whole tree or
+      nothing. Because no lanes are ever shuffled, each lane runs the identical scalar op, so integer
+      trees are bit-exact mod 2³²/2⁶⁴, bitwise trees trivially, and — unlike a reduction — **float**
+      elementwise trees too (each lane rounds exactly like the scalar). Its natural feeder is **full
+      unrolling**: a small fixed-trip loop the counted-loop vectorizer skips is flattened into an
+      adjacent-store run that SLP then re-widens, so it runs *in the round* (after unroll + the
+      address-canonicalizing GVN/reassoc/algebraic), not up front. Memory reordering is proven sound
+      three ways: the `W` seed stores write distinct lanes (never alias); every load group is checked
+      **identical-to** (in-place) or **provably-disjoint** (distinct `alloc`, or ≥ W·E apart) from the
+      store region — a shifted stencil or permutation is neither, so it declines; and the touched span
+      is scanned for any *aliasing* foreign memory op, one of which aborts the seed. A consumed value
+      that escapes the tree (e.g. store→load forwarding rewiring a later `print` to read the stored
+      value) is detected by an operand-exact use-count equality and declines. Every rewrite is
+      checked; a bug can only miss. Proven by the three-engine oracle (interp = V8 = VM) at -O0…-O3:
+      the headless harness at **1460/1460** (7 new SLP corpus cases — i32/i64/f64, in-place, memset,
+      const-vector, unroll→SLP, and two decline cases — plus a new `slp` showcase example), and a seeded **~7,000-program** differential fuzz across
+      four seeds (`tools/check-slp.mjs`, i32x4/i64x2/f64x2 straight-line kernels, ~half firing at
+      -O2/-O3) with **zero disagreements**. See the 2026-07-31 plan.
 - [x] **64-bit lane auto-vectorization — `i64x2` / `f64x2`** (`opt/vectorize.ts`, -O2+) — the
       auto-vectorizer, formerly `i32x4`/`f32x4`-only, now widens the entire 64-bit world. It picks
       the lane **shape from the array element type** and with it the lane count `W` and the byte
@@ -661,6 +687,135 @@ yet stored in arrays/structs/globals — extract their lanes for that.)
       **120 basic blocks** and **918 wasm bytes**; the pass fires on **46** of the
       238 corpus programs. Proven by the three-engine oracle (interp = wasm = VM)
       at -O0…-O3. **1096 → 1112 differential checks.** See the 2026-06-25 plan.
+
+## 2026-07-31 — plan + shipped: SLP vectorization — isomorphic straight-line scalar ops → one v128 (claude / claude-opus-4-8[1m])
+
+**The gap.** The compiler had *one* road to SIMD: `opt/vectorize.ts`, the counted-loop
+auto-vectorizer, which widens a loop by running `W` of its iterations in parallel lanes. But a
+loop is not the only place data-parallel width lives. A run of straight-line, structurally
+identical statements —
+
+```
+c[0] = a[0] * b[0] + a[0];
+c[1] = a[1] * b[1] + a[1];
+c[2] = a[2] * b[2] + a[2];
+c[3] = a[3] * b[3] + a[3];
+```
+
+— is four independent computations sitting side by side with no loop at all. The counted-loop
+pass can't touch it (there's no induction variable, no back edge), so it stayed four scalar
+chains. This is exactly the code **full unrolling already produces**: a small fixed-trip loop
+the counted-loop vectorizer skips (unknown-but-small bound, a body it rejected) is flattened by
+the unroller into precisely this adjacent-store run — and then nothing re-widened it. The
+classic fix is **SLP — superword-level parallelism** (Larsen & Amarasinghe, PLDI 2000), the
+straight-line dual of loop vectorization.
+
+### What SLP is, and where it sits (`opt/slp.ts`)
+
+SLP builds a **pack tree** bottom-up from a *seed*: a group of `W` stores to contiguous
+addresses `A, A+E, …, A+(W−1)·E` (element size `E`, lane count `W` from the store type — i32/f32
+→ 4, i64/f64 → 2, one v128 either way). To emit the seed as a single `vstore` it must produce
+the `W` stored values as one v128, so it recurses on them:
+
+- all `W` the same operand → **splat**;
+- all `W` lanewise constants → **splat + `replace_lane`** (a const-vector);
+- all `W` loads from contiguous `B+k·E` → one **vload**;
+- all `W` the same lanewise-representable `ibin`/`fbin` → **recurse on each operand column**, emit
+  one **vbin**.
+
+Any other shape declines the pack, and a declined pack declines the whole seed — SLP widens the
+entire tree or nothing (the standard single-seed bottom-up rule). Every leaf is thus a splat,
+const-vector or vload; every interior node a lanewise `vbin`. Because no lanes are ever shuffled,
+each lane runs the *identical* scalar op it replaced — so an integer tree is bit-exact mod
+2³²/2⁶⁴, a bitwise tree trivially, and (unlike a *reduction*, which reorders the fold and so is
+integer-only) a **float elementwise tree too**, each lane rounding in IEEE-754 exactly like the
+scalar op.
+
+It runs **in the optimization round at -O2+**, not up front like the loop vectorizer, and that
+placement is load-bearing: it needs the *straight-line* code the earlier passes create — most of
+all the adjacent-store run **full unrolling** leaves behind — and the *canonical* `base + const`
+element addresses GVN / reassociation / algebraic-simplify have by then settled (its address
+decomposition reuses `opt/memopt.ts`'s exact `resolveAddr` peel of `copy` / `add(x, const)`
+chains). The seed's collapsed vloads/vstore then flow through the round's tail DCE / CFG-simplify
+like any other vector code.
+
+### Soundness — three memory arguments + an escape check, then the oracle
+
+Collapsing `W` scalar loads/stores into one vload/vstore reorders memory, so the pass *proves*
+the reordering can't change a result before it fires:
+
+1. **Store/store.** The `W` seed stores write `W` *distinct* addresses `A+k·E`, so they never
+   alias each other — one `vstore` writing all `W` lanes leaves memory identical to the `W` scalar
+   stores in any order.
+2. **Load/store.** Every load group the tree reads is checked against the store region `[A,
+   A+W·E)` and must be either **identical** to it (same base, same offset — an in-place `a[k] =
+   f(a[k])` kernel, purely within-lane: lane `k`'s load reads element `k`, lane `k`'s store writes
+   element `k`, and a store to lane `j ≠ k` is a different address) or **provably disjoint** (a
+   distinct `alloc` — the fresh-region reasoning `memopt` already uses — or the same base ≥ `W·E`
+   bytes away). A *partial* overlap — the shifted `a[k] = a[k+1]` stencil, a permutation — is
+   neither, so it declines: those carry a genuine cross-lane dependence a vload-then-vstore would
+   break.
+3. **Foreign ops.** The span of block instructions the pass touches is scanned for any *other*
+   memory op (a load/store/vload/vstore/call) that **may-alias** the tree's regions; one aborts
+   the seed. So the only memory ops ever reordered are the tree's own, whose independence (1)+(2)
+   already established. `alloc`/`print`/`gget`/`gset`/pure ops don't touch the arrays, so they may
+   sit in the span freely.
+
+A fourth, non-memory check earns its keep: a consumed scalar value must be **fully internal** to
+the tree (every use of its result is by another consumed instruction), or deleting it strands a
+live use. The subtle case the fuzzer surfaced: store→load forwarding had already rewired a later
+`print(c[k])` to read the tree's *own* stored value, so that value escapes the pack — caught by an
+operand-exact use-count equality (uses inside the tree must equal the whole-function use count),
+which then declines. A companion guard rejects any seed whose emitted vectors would *reference* a
+value another column deletes. Every rewrite is checked; on the slightest doubt the seed is
+declined and the IR is untouched, so a bug can only ever miss an opportunity — which the
+three-engine differential oracle (interpreter = V8 = from-scratch VM, at every −O level) then
+confirms the widening it *did* do never changed.
+
+### Plan — the checklist for this session (all shipped)
+
+- [x] `opt/slp.ts` — the pass: seed collection (contiguous-store runs, cut into W-wide,
+      non-overlapping seeds), the bottom-up `packColumn` tree builder (splat / const-vector /
+      vload / recursive vbin), the identical-or-disjoint region legality, the aliasing-foreign-op
+      span scan, the internal-use + emit-reference escape guards, and a single one-pass block
+      rebuild that applies every committed seed at once.
+- [x] Reuse `memopt`'s address model — `resolveAddr` (peel `copy` + `add`-const) and the
+      distinct-`alloc` disjointness — so SLP and the alias analysis agree on what "same location"
+      means.
+- [x] Register `slp` in `opt/optimize.ts` at -O2+, in the round, right after known-bits (unroll
+      done, addresses canonical); its output flows through the round's DCE/GVN/CFG cleanup.
+- [x] `slpProbe.ts` + `tools/_slpentry.js` + `tools/check-slp.mjs` — the fire/decline harness and a
+      seeded three-shape (i32x4 / i64x2 / f64x2) straight-line-kernel differential fuzzer.
+- [x] Seven corpus cases in `tests.ts` (elementwise, in-place bitwise, const-vectors, i64+f64,
+      unroll→SLP, decline-stencil, decline-escaping-value).
+
+### Proof
+
+- Full headless harness (every example + corpus program, all three engines, -O0…-O3):
+  `1460/1460 checks pass` — includes the 7 new SLP corpus cases and the new `slp` example.
+- `tools/check-slp.mjs`: all 8 targeted cases fire/decline as expected; ~**7,000** fuzz programs
+  across seeds {1, 1000, 3000, 7777} × 4 levels, **zero** disagreements, SLP firing in ~half the
+  -O2/-O3 compiles.
+- `node scripts/verify-project.mjs strata-wasmc-b1e4` — scope + conformance + frozen install +
+  lint + build + build-output: green.
+
+### Backlog — where SLP goes next (deliberately deferred, all clean)
+
+- [ ] **Interleaved independent seeds.** Two output arrays interleaved store-by-store
+      (`store c0; store d0; store c1; …`) both widen only when their regions don't alias; today the
+      aliasing-foreign-op scan is per-seed against the original block, which handles the common
+      single-output case — a two-pass "commit then re-scan" would widen more interleavings.
+- [ ] **Gather leaves (non-uniform, non-contiguous columns).** A column that is neither uniform,
+      constant, contiguous-load nor isomorphic currently declines; a `splat + replace_lane` gather
+      would let a *partly*-vectorizable tree still widen where the packed part pays for the inserts.
+- [ ] **Casts in the tree** (`f32x4 ↔ i32x4` convert, `i2l`/`l2i` widen/narrow) so a mixed-width
+      elementwise kernel packs instead of declining at the first cast.
+- [ ] **A wider seed than one store group** — chains of `W`·2 contiguous stores emitted as two v128
+      halves sharing operand sub-trees, and 8-lane i8/i16 shapes once the narrow SIMD lane types land.
+- [ ] **Reduction SLP** — a straight-line `s = a[0] ⊕ a[1] ⊕ a[2] ⊕ a[3]` folded via a vload + one
+      horizontal reduce (integer monoids only, as in the loop reducer).
+- [ ] **A `slp` metric in the Optimizer lab** — surface "scalar statements packed / v128 chains
+      emitted" beside the existing per-pass counters.
 
 ## 2026-07-24 — plan + shipped: two memory optimizations — global (cross-block) dead-store elimination + loop-invariant load hoisting (claude / claude-opus-4-8[1m])
 

@@ -3780,6 +3780,101 @@ fn main() {
   print(y[0]); print(y[7]); print(y[m - 1]);
 }`,
   },
+  // === SLP vectorizer (opt/slp.ts) =========================================
+  // Straight-line runs of isomorphic adjacent-store statements packed into one
+  // v128 chain at -O2+. Each is proven bit-identical (interp = V8 = VM) at
+  // -O0..-O3, so the widened vloads/vbins/vstore must agree exactly with the
+  // scalar statements at -O0. The last two are decline cases: a shifted stencil
+  // (a cross-lane dependence) and a value that escapes to a later read must be
+  // left scalar, so their output equally pins the *absence* of a miswiden.
+  {
+    // c[k] = a[k]*b[k] + a[k] over three distinct arrays — one v128.load each of a
+    // and b, an i32x4.mul, an i32x4.add and one v128.store into c, replacing four
+    // scalar statements. Every lane wraps mod 2^32 exactly like the scalar imul.
+    name: 'slp-int-elementwise',
+    source: `fn main(){
+  let a = int_array(4); let b = int_array(4); let c = int_array(4);
+  a[0]=1; a[1]=-2; a[2]=100000; a[3]=-7; b[0]=5; b[1]=6; b[2]=99999; b[3]=-3;
+  c[0]=a[0]*b[0]+a[0]; c[1]=a[1]*b[1]+a[1]; c[2]=a[2]*b[2]+a[2]; c[3]=a[3]*b[3]+a[3];
+  print(c[0]); print(c[1]); print(c[2]); print(c[3]);
+}`,
+  },
+  {
+    // In-place update: the loaded and stored regions are *identical* (same base,
+    // same offset), so the widening is purely within-lane. Lanewise &, |, ^ are
+    // whole-register v128 ops; the i32x4.mul wraps per lane.
+    name: 'slp-int-inplace-bitwise',
+    source: `fn main(){
+  let a = int_array(4); let b = int_array(4);
+  a[0]=87654321; a[1]=-13; a[2]=1000003; a[3]=-999; b[0]=255; b[1]=-1; b[2]=170; b[3]=4095;
+  a[0]=(a[0]&b[0])|(a[0]^b[0])*7; a[1]=(a[1]&b[1])|(a[1]^b[1])*7; a[2]=(a[2]&b[2])|(a[2]^b[2])*7; a[3]=(a[3]&b[3])|(a[3]^b[3])*7;
+  print(a[0]); print(a[1]); print(a[2]); print(a[3]);
+}`,
+  },
+  {
+    // A memset (all-constant lanes → a splat + replace_lane vector) beside a
+    // lanewise-const vector (`c[k] = a[k] + k`, the literal indices packed).
+    name: 'slp-const-vectors',
+    source: `fn main(){
+  let a = int_array(4); let c = int_array(4);
+  a[0]=7; a[1]=7; a[2]=7; a[3]=7;
+  c[0]=a[0]+0; c[1]=a[1]+1; c[2]=a[2]+2; c[3]=a[3]+3;
+  print(a[0]+a[1]+a[2]+a[3]); print(c[0]); print(c[1]); print(c[2]); print(c[3]);
+}`,
+  },
+  {
+    // 64-bit shapes: an i64x2 kernel (a[k]*b[k]+a[k], wrapping mod 2^64) and an
+    // f64x2 straight-line SAXPY (each lane rounds in IEEE-754 double exactly like
+    // the scalar path — SLP never reorders lanes, so elementwise floats widen).
+    name: 'slp-i64-and-f64',
+    source: `fn main(){
+  let a = long_array(2); let b = long_array(2); let c = long_array(2);
+  a[0]=1000000007L; a[1]=-42L; b[0]=999999937L; b[1]=7L;
+  c[0]=a[0]*b[0]+a[0]; c[1]=a[1]*b[1]+a[1];
+  let x = float_array(2); let y = float_array(2);
+  x[0]=1.5; x[1]=2.5; y[0]=0.25; y[1]=0.75;
+  y[0]=2.25*x[0]+y[0]; y[1]=2.25*x[1]+y[1];
+  print(c[0]); print(c[1]); print(y[0]); print(y[1]);
+}`,
+  },
+  {
+    // A small fixed-trip loop the *unroller* flattens into an adjacent-store run,
+    // which SLP then re-widens — the `unroll → SLP` path. Result must match the
+    // scalar loop at -O0 (where neither fires).
+    name: 'slp-after-unroll',
+    source: `fn main(){
+  let a = int_array(4); let b = int_array(4); let c = int_array(4);
+  a[0]=1; a[1]=2; a[2]=3; a[3]=4; b[0]=5; b[1]=6; b[2]=7; b[3]=8;
+  for (let i = 0; i < 4; i = i + 1) { c[i] = a[i] * b[i]; }
+  print(c[0]); print(c[1]); print(c[2]); print(c[3]);
+}`,
+  },
+  {
+    // Decline: a shifted stencil `a[k] = a[k+1] + 1` overlaps the store region by
+    // one element — a real cross-lane dependence. SLP must leave it scalar; the
+    // init runs in a loop the unroller keeps (so it isn't itself a seed). A
+    // miswiden here would read stale/old neighbours and change the output.
+    name: 'slp-decline-stencil',
+    source: `fn main(){
+  let n = 64;
+  let a = int_array(n);
+  for (let i = 0; i < n; i = i + 1) { a[i] = i * 7 - 3; }
+  a[0]=a[1]+1; a[1]=a[2]+1; a[2]=a[3]+1; a[3]=a[4]+1;
+  print(a[0]); print(a[1]); print(a[2]); print(a[3]);
+}`,
+  },
+  {
+    // Decline: each stored value is also *read back* by a later print (store→load
+    // forwarding rewires the print to the tree's own value), so the value escapes
+    // the pack and SLP must keep the scalars. The output pins that it declined.
+    name: 'slp-decline-escaping-value',
+    source: `fn main(){
+  let a = int_array(4); let b = int_array(4);
+  a[0]=3; a[1]=4; a[2]=5; a[3]=6; b[0]=1; b[1]=2; b[2]=3; b[3]=4;
+  a[0]=a[0]+b[0]; a[1]=a[1]+b[1]; a[2]=a[2]+b[2]; a[3]=a[3]+b[3];
+  print(a[0]*2); print(a[1]*2); print(a[2]*2); print(a[3]*2);
+}`,
+  },
   // ----- global (cross-block) dead-store elimination (opt/dse.ts) -----
   {
     // The flagship case: `a[0] = 999` is overwritten by `a[0] = 1` on *every*
