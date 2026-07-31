@@ -66,15 +66,19 @@ plan visualizer and a built-in self-test suite.
   proves the directory↔bucket coupling and a per-op `trace`), `linear.ts` (**Linear Hashing**, Litwin 1980
   — directory-free, a single **split pointer** sweeps buckets in round-robin order *independent of which
   overflowed*, addresses computed arithmetically with two hash functions, **overflow chains** paid down by
-  later splits, a level bump when a sweep completes, and **contraction** on drain), `tests.ts` (the
-  `hashindex` self-test group — a differential oracle vs a brute-force map **and** the invariant checker
-  after **every** mutation across thousands of seeded ops at several bucket capacities, event-coverage
-  proofs that growth doubles/level-bumps and drain merges/halves, overflow, composite keys, cross-checks
-  and a hash low-bit distribution test)
-- `src/ui/HashIndexLab.tsx` — the **Hash Index Lab**: insert/delete/look up a live extendible or linear
-  hash as SVG (the directory column wired to its buckets, or the bucket array with its split pointer and
-  overflow), each step narrated from the structure's own trace, with an after-every-step "valid" badge and
-  an extendible↔linear toggle
+  later splits, a level bump when a sweep completes, and **contraction** on drain), `cuckoo.ts` (**Cuckoo
+  Hashing**, Pagh & Rodler 2001 — the **open-addressed** method: **two** tables and two hash functions, a key
+  in exactly one of two candidate slots so a lookup is a *worst-case* **two probes**; a full slot **evicts**
+  its incumbent to that key's other table — the cuckoo kick — and a kick loop **rehashes** into larger tables,
+  with **shrink** on drain), `tests.ts` (the `hashindex` self-test group — a differential oracle vs a
+  brute-force map **and** the invariant checker after **every** mutation across thousands of seeded ops at
+  several bucket capacities / table sizes, event-coverage proofs that growth doubles/level-bumps/evicts+rehashes
+  and drain merges/halves/shrinks, overflow, composite keys, a three-way cross-check and a hash low-bit
+  distribution test)
+- `src/ui/HashIndexLab.tsx` — the **Hash Index Lab**: insert/delete/look up a live extendible, linear or
+  cuckoo hash as SVG (the directory column wired to its buckets, the bucket array with its split pointer and
+  overflow, or the two cuckoo slot-tables), each step narrated from the structure's own trace, with an
+  after-every-step "valid" badge and an extendible↔linear↔cuckoo toggle
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
 - `src/db/decimal.ts` — first-class exact numerics: DECIMAL/NUMERIC as a tagged,
   JSON-serializable value `{t:'decimal', d, s}` (unscaled BigInt rendered to a
@@ -198,12 +202,16 @@ invariant must stay green, after **every** mutation across thousands of seeded r
   as a termination guard.
 - [x] `linear.ts` — linear hashing with round-robin **split**, **level** bump, **overflow chains**, delete
   **contraction**, per-op trace, snapshot, stats and `checkInvariants()`.
-- [x] `tests.ts` — the `hashindex` self-test group (11 cases): differential + invariants after every op at
-  capacities {1,2,3,4,8}; growth doubles/level-bumps, drain merges/halves back to one bucket; overflow chains;
-  non-unique row-id sets; extendible↔linear cross-check; composite keys; hash low-bit chi-square.
-- [x] `HashIndexLab.tsx` + `App.tsx`/`App.css` wiring — the interactive SVG Lab with an extendible↔linear
-  toggle, capacity control, insert/delete/lookup, a guided grow-then-drain demo, a live "valid" badge, the
-  operation trace and a per-method explainer.
+- [x] `cuckoo.ts` — cuckoo hashing (two tables, two hash functions via double-hashing) with the eviction
+  **kick** chain, loop-detected **rehash**, eager **grow** under a load ceiling, **shrink** on drain, per-op
+  trace, snapshot, stats and `checkInvariants()`.
+- [x] `tests.ts` — the `hashindex` self-test group (14 cases): differential + invariants after every op at
+  capacities {1,2,3,4,8} / table sizes {2,4,8}; growth doubles/level-bumps/evicts+rehashes, drain
+  merges/halves/shrinks back to the minimum; overflow chains; the ≤2-probe cuckoo guarantee; non-unique
+  row-id sets; a three-way extendible↔linear↔cuckoo cross-check; composite keys; hash low-bit chi-square.
+- [x] `HashIndexLab.tsx` + `App.tsx`/`App.css` wiring — the interactive SVG Lab with an
+  extendible↔linear↔cuckoo toggle, capacity control, insert/delete/lookup, a guided grow-then-drain demo, a
+  live "valid" badge, the operation trace and a per-method explainer.
 
 **Next steps (backlog — the wiring + the deeper structure variants):**
 
@@ -219,11 +227,11 @@ invariant must stay green, after **every** mutation across thousands of seeded r
   keeping the load variance across buckets tighter; a third toggle in the Lab.
 - [ ] **A bulk-load / packed build** (like the B+Tree's `bulkLoad`) — bottom-up construct an extendible
   directory from a sorted/hashed key set in one pass, for the `CREATE INDEX` path.
-- [ ] **Cuckoo hashing** as a fourth method — two tables, two hash functions, worst-case **O(1)** lookup and the
-  eviction-chain insert, with the classic "insert may rehash" cycle detection — the open-addressing contrast to
-  these chained/directory schemes.
-- [ ] **A comparison bench** (`bench.ts`) pitting extendible vs linear vs the B+Tree on point-lookup touches and
-  space overhead across load factors, mirroring `lsm/bench.ts`.
+- [x] **Cuckoo hashing** as a third method — two tables, two hash functions, worst-case **two-probe** lookup and
+  the eviction-chain insert, with loop-detected rehash — the open-addressing contrast to these chained/directory
+  schemes. *(shipped this session)*
+- [ ] **A comparison bench** (`bench.ts`) pitting extendible vs linear vs cuckoo vs the B+Tree on point-lookup
+  touches and space overhead across load factors, mirroring `lsm/bench.ts`.
 - [ ] **Persist-and-reopen round-trip** — snapshot a hash index to a compact form and rebuild it, proving the
   directory/level state survives serialization (a step toward a real on-disk index).
 
@@ -1753,9 +1761,15 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
   cross-check; composite (multi-column) keys; and a hash low-bit chi-square. The **Hash Index Lab** renders a
   live extendible directory-and-buckets or linear bucket-array-with-split-pointer as SVG, narrated from each
   op's own trace, with a grow-then-drain guided demo, an extendible↔linear toggle and an after-every-step
-  "valid" badge. Suite **624 → 635**, all green (verified headlessly); `pnpm lint` + `pnpm build` +
-  `verify-project.mjs` green. Backlog: wire it behind `CREATE INDEX … USING HASH` as a real HashIndexScan, plus
-  cuckoo/spiral variants and a comparison bench.
+  "valid" badge. A third method, **cuckoo hashing** (Pagh & Rodler 2001), was added the same session
+  (`cuckoo.ts`): the **open-addressed** design — two tables, two hash functions (double-hashing), a key in one
+  of two slots for a *worst-case* **two-probe** lookup; a full slot **evicts** its incumbent to the other table
+  and a kick loop **rehashes** into larger tables, with **shrink** on drain — with its own differential +
+  invariant + ≤2-probe self-tests, a two-slot-table Lab view and an extendible↔linear↔cuckoo toggle, so the Lab
+  now shows all three dynamic-hashing families (chained-directory / directory-free / open-addressed). Suite
+  **624 → 638**, all green (verified headlessly: 638/638); `pnpm lint` + `pnpm build` + `verify-project.mjs`
+  green. Backlog: wire the hash index behind `CREATE INDEX … USING HASH` as a real HashIndexScan, plus a
+  spiral-hashing variant and a comparison bench.
 - 2026-07-25 (claude / claude-opus-4-8): **v30.1 — compressed execution (predicate pushdown to encoded data).**
   A focused deepening of the v30.0 column store: `ColumnStore.scanCompressed` runs a filter **directly on the
   encoded data** instead of decoding first — a **DICTIONARY** column is evaluated once per *distinct value* (a

@@ -2587,6 +2587,9 @@ body {
 .hx-addr.split { fill: var(--accent-2); }
 .hx-next-marker { fill: var(--green); }
 .hx-overflow-div { stroke: var(--red); stroke-width: 1.2; stroke-dasharray: 3 2; }
+.hx-ckcell { fill: var(--bg-1); stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+.hx-ckcell.full { fill: color-mix(in srgb, var(--accent) 16%, var(--bg-3)); stroke: color-mix(in srgb, var(--accent) 40%, var(--line-2)); stroke-dasharray: none; }
+.hx-ckcell.touched { stroke: var(--amber); stroke-width: 2.2; stroke-dasharray: none; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--amber) 50%, transparent)); }
 .sl-trace-item.k-double .sl-trace-kind, .sl-trace-item.k-levelup .sl-trace-kind { background: color-mix(in srgb, var(--green) 22%, var(--bg-3)); color: var(--green); }
 .sl-trace-item.k-halve .sl-trace-kind, .sl-trace-item.k-leveldown .sl-trace-kind { background: color-mix(in srgb, var(--violet) 24%, var(--bg-3)); color: var(--violet); }
 .sl-trace-item.k-overflow .sl-trace-kind { background: color-mix(in srgb, var(--amber) 22%, var(--bg-3)); color: var(--amber); }

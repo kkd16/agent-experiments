@@ -14,6 +14,7 @@
 
 import { ExtendibleHash } from './extendible'
 import { LinearHash } from './linear'
+import { CuckooHash } from './cuckoo'
 import { hashKey } from './hash'
 import { compareKeys, type IndexKey } from '../storage/btree'
 import type { SqlValue } from '../types'
@@ -237,23 +238,89 @@ test('linear: overflow chains form and are still fully searchable', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Cuckoo hashing — differential + structural, after every op.
+// ---------------------------------------------------------------------------
+test('cuckoo: differential + invariants across random ops', () => {
+  for (const size of [2, 4, 8]) {
+    const rng = new Rng(0xcc + size * 613)
+    const ch = new CuckooHash({ size, maxLoadFactor: 0.45, minLoadFactor: 0.12 })
+    const ref = new Ref()
+    const live: { key: IndexKey; rowid: number }[] = []
+    for (let step = 0; step < 2500; step++) {
+      if (live.length === 0 || rng.chance(0.62)) {
+        const key = k(rng.int(0, 90))
+        const rowid = rng.int(0, 4000)
+        ch.insert(key, rowid)
+        ref.insert(key, rowid)
+        if (!live.some((l) => compareKeys(l.key, key) === 0 && l.rowid === rowid)) live.push({ key, rowid })
+      } else {
+        const j = rng.int(0, live.length - 1)
+        const { key, rowid } = live[j]
+        ch.remove(key, rowid)
+        ref.remove(key, rowid)
+        live.splice(j, 1)
+      }
+      const errs = ch.checkInvariants()
+      assert(errs.length === 0, `size ${size} step ${step}: invariant — ${errs[0]}`)
+      const probe = k(rng.int(0, 90))
+      assert(sameArr(ch.lookup(probe), ref.lookup(probe)), `size ${size} step ${step}: lookup mismatch`)
+    }
+    assert(sameEntries(ch.entries(), ref.entries()), `size ${size}: full entries mismatch`)
+    assert(ch.sizeKeys() === ref.size(), `size ${size}: count mismatch`)
+  }
+})
+
+test('cuckoo: a lookup is at most two probes; growth evicts and rehashes', () => {
+  const ch = new CuckooHash({ size: 2 })
+  for (let i = 0; i < 400; i++) ch.insert(k(i), i)
+  const s = ch.stats()
+  assert(s.evictions > 0, 'a dense cuckoo load must kick incumbents')
+  assert(s.grows + s.rehashes > 0, 'the tables must grow / rehash to stay under the load ceiling')
+  assert(s.loadFactor <= 0.5 + 1e-9, 'two-table cuckoo stays under half full')
+  for (let i = 0; i < 400; i++) assert(sameArr(ch.lookup(k(i)), [i]), `key ${i} lost after growth`)
+  assert(ch.checkInvariants().length === 0, 'valid after growth')
+})
+
+test('cuckoo: draining shrinks the tables back down', () => {
+  const ch = new CuckooHash({ size: 2, minLoadFactor: 0.12 })
+  const keys: number[] = []
+  for (let i = 0; i < 300; i++) {
+    ch.insert(k(i), i)
+    keys.push(i)
+  }
+  const grown = ch.stats().size
+  assert(grown > 2, 'grew before draining')
+  for (const i of keys) {
+    ch.remove(k(i), i)
+    assert(ch.checkInvariants().length === 0, `invalid while draining at key ${i}`)
+  }
+  const s = ch.stats()
+  assert(s.shrinks > 0, 'draining must shrink the tables')
+  assert(s.keys === 0 && s.size === 2, 'a fully drained cuckoo returns to its minimum size')
+})
+
+// ---------------------------------------------------------------------------
 // Cross-checks and hash quality.
 // ---------------------------------------------------------------------------
-test('extendible and linear agree with each other on the same workload', () => {
+test('extendible, linear and cuckoo all agree on the same workload', () => {
   const rng = new Rng(0xc0ffee)
   const eh = new ExtendibleHash(3)
   const lh = new LinearHash({ base: 2, capacity: 3 })
+  const ch = new CuckooHash({ size: 4 })
   const keys = new Set<number>()
   for (let i = 0; i < 1500; i++) {
     const key = rng.int(0, 200)
     eh.insert(k(key), key)
     lh.insert(k(key), key)
+    ch.insert(k(key), key)
     keys.add(key)
   }
   for (const key of keys) {
-    assert(sameArr(eh.lookup(k(key)), lh.lookup(k(key))), `disagree on key ${key}`)
+    assert(sameArr(eh.lookup(k(key)), lh.lookup(k(key))), `extendible/linear disagree on key ${key}`)
+    assert(sameArr(eh.lookup(k(key)), ch.lookup(k(key))), `extendible/cuckoo disagree on key ${key}`)
   }
-  assert(sameEntries(eh.entries(), lh.entries()), 'full entry sets disagree')
+  assert(sameEntries(eh.entries(), lh.entries()), 'extendible/linear entry sets disagree')
+  assert(sameEntries(eh.entries(), ch.entries()), 'extendible/cuckoo entry sets disagree')
 })
 
 test('composite (multi-column) keys hash and route correctly', () => {
