@@ -14,10 +14,11 @@
 //    6. Glushkov DFA              (position automaton → determinise)
 //    7. position automaton        (Glushkov NFA simulated directly)
 //    8. Pike VM                   (bytecode thread-list, anchored)
-//    9. backtracking VM           (continuation-passing matcher, anchored)
-//   10. the platform's own RegExp (an external oracle — the one engine we did *not* write)
+//    9. Tagged DFA                (the determinised capture machine, reached at end-of-input)
+//   10. backtracking VM           (continuation-passing matcher, anchored)
+//   11. the platform's own RegExp (an external oracle — the one engine we did *not* write)
 //
-// Ten implementations, one verdict. Any single disagreement is a real bug in
+// Eleven implementations, one verdict. Any single disagreement is a real bug in
 // one of them, surfaced with the exact pattern and input that triggers it.
 // Because the PRNG is seeded, every run is perfectly reproducible.
 
@@ -27,8 +28,9 @@ import { fromAst, accepts, buildDerivDFA, dsize } from './derivatives';
 import { acceptsPartial, buildAntimirovNFA, buildAntimirovDFA } from './antimirov';
 import { buildGlushkov, buildGlushkovDFA, acceptsGlushkov, GlushkovTooBig } from './glushkov';
 import { dfaAccepts, toCodePoints } from './simulate';
-import { runPike } from './pike';
+import { compileProgram, runPike } from './pike';
 import { runVM } from './vm';
+import { buildTDFA, runTDFA, type TDFA } from './tags/tdfa';
 
 // --- Seeded PRNG (mulberry32) ----------------------------------------------
 
@@ -229,6 +231,7 @@ const ENGINES_BASE = [
   'Glushkov DFA',
   'position NFA',
   'Pike VM',
+  'Tagged DFA',
   'backtracking VM',
 ];
 
@@ -279,6 +282,20 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
       glush = null;
     }
     const gdfa = glush ? buildGlushkovDFA(glush) : null;
+    // The Tagged DFA: a deterministic capture machine, here consulted only for the
+    // yes/no question. Whole-string acceptance = the pattern matches ^…$, which is
+    // exactly the membership the DFA road decides — an 11th independent implementation.
+    // Capped for the same pathological-pattern safety; a truncated build is skipped.
+    let tdfa: TDFA | null = null;
+    if (dsize(d) <= 40) {
+      try {
+        const prog = compileProgram(c.ast, c.groupCount);
+        const built = buildTDFA(prog, c.groupCount, { maxStates: 400 });
+        if (!built.truncated) tdfa = built;
+      } catch {
+        tdfa = null;
+      }
+    }
     const anc = anchored(c.ast);
     let oracle: RegExp | null = null;
     if (config.useOracle) {
@@ -312,6 +329,9 @@ export function runFuzz(config: FuzzConfig = DEFAULT_FUZZ): FuzzReport {
           return !!r.match && r.match.start === 0 && r.match.end === codeLen;
         }),
       });
+      // The Tagged DFA decides whole-string membership by whether it reaches an
+      // accepting state at end-of-input — the same ^…$ question, deterministically.
+      if (tdfa) results.push({ engine: 'Tagged DFA', verdict: safe(() => runTDFA(tdfa!, toCodePoints(input)).match !== null) });
       // The backtracking VM can hit its step limit on a (randomly generated)
       // catastrophic pattern. An aborted run is "gave up", not "rejected", so it
       // yields no verdict — we skip it rather than count it as a disagreement.

@@ -222,6 +222,9 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
         <RegisterFile tdfa={tdfa} state={currentState} regFile={regFile} written={writtenRegs} />
       </div>
 
+      {/* --- Runtime cost --- */}
+      <ComplexityStrip run={run} codes={codes} states={tdfa.states.length} buildSteps={tdfa.buildSteps} />
+
       {/* --- Whole-string capture result --- */}
       <CaptureResult tdfa={tdfa} codes={codes} run={run} groupCount={groupCount} text={text} />
 
@@ -237,6 +240,45 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
         by an empty iteration; a loop body's inner groups being cleared each iteration), which is why the verifier only
         cross-checks against JS <code>RegExp</code> where the two conventions provably coincide.
       </p>
+    </div>
+  );
+}
+
+// Runtime cost for this input: the whole point of a TDFA is that per-character
+// work is a single edge + a bounded number of register ops — no thread set, no
+// closure, no capture-array copies — with all of that paid once at build time.
+function ComplexityStrip({
+  run,
+  codes,
+  states,
+  buildSteps,
+}: {
+  run: ReturnType<typeof runTDFA>;
+  codes: number[];
+  states: number;
+  buildSteps: number;
+}) {
+  const edges = Math.max(0, run.steps.length - 1);
+  const ops = run.steps.reduce((n, s) => n + s.ops.length, 0);
+  const perChar = edges > 0 ? (ops / edges).toFixed(1) : '0';
+  return (
+    <div className="engine-bar engine-bar-3">
+      <div className="engine-stat engine-good">
+        <span className="engine-name">run · this input</span>
+        <span className="engine-val">
+          {codes.length} chars → {edges} edges, {ops} reg-ops
+        </span>
+      </div>
+      <div className="engine-stat">
+        <span className="engine-name">per character</span>
+        <span className="engine-val">1 edge · {perChar} ops (O(1))</span>
+      </div>
+      <div className="engine-stat">
+        <span className="engine-name">paid once · at build</span>
+        <span className="engine-val">
+          {states} states · {buildSteps.toLocaleString()} closures
+        </span>
+      </div>
     </div>
   );
 }

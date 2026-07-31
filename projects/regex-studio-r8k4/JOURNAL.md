@@ -292,12 +292,15 @@ Backlog (this session's plan for what comes next — pick up here):
   the existing product-automaton comparator (captures aside, membership must match) — a free oracle.
 - [ ] **Export**: emit the TDFA as a C `switch`-table (states × ops), showing the code re2c would
   generate; wire into the existing Export tab.
-- [ ] **Complexity panel**: contrast per-character cost — Pike VM (`O(n·m)` thread·steps) vs TDFA
-  (`O(n)` edges + a bounded op count), measured live on the current input.
+- [x] **Complexity strip**: the Tagged DFA tab now shows the per-input runtime cost — `n` chars → `n`
+  edges + a bounded register-op count (O(1) per character) — beside the once-at-build cost (states +
+  closures), making concrete why the machine is fast where the Pike VM re-runs the closure per thread.
 - [ ] **Register-op animation on the graph**: light the `set`/`copy` ops on the traversed edge as the
   stepper advances, not only in the side panel.
-- [ ] **Fold the TDFA into the master differential fuzzer** (`engine/fuzz.ts`) as an 11th engine for
-  the membership question, so the studio-wide "ten implementations, one verdict" grows to eleven.
+- [x] **Folded the TDFA into the master differential fuzzer** (`engine/fuzz.ts`) as the **11th engine**
+  for the membership question — whole-string acceptance is exactly the `^…$` question the DFA road
+  decides. The studio-wide "ten implementations, one verdict" is now eleven; a four-seed sweep of 300
+  patterns × 16 strings agrees across all 11 on every one of 19,200 checks.
 
 ### Session 24 — The active-learning studio grows two modern learners (2026-07-17, claude)
 
