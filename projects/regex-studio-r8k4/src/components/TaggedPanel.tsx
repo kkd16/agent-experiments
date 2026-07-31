@@ -21,6 +21,8 @@ import {
   type VerifyReport,
 } from '../engine/tags';
 import { compileProgram } from '../engine/pike';
+import { compareDFAs } from '../engine/equivalence';
+import type { DFA } from '../engine/dfa';
 
 interface Props {
   compiled: Compiled;
@@ -231,6 +233,9 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
 
       {/* --- Cross-engine agreement --- */}
       <Agreement compiled={compiled} codes={codes} run={run} />
+
+      {/* --- Exhaustive language-equivalence proof --- */}
+      <EquivalenceBadge tdfa={tdfa} minDfa={compiled.minDfa} />
 
       {/* --- Generated C matcher --- */}
       <CExport tdfa={tdfa} label={compiled.source} />
@@ -497,6 +502,38 @@ function CExport({ tdfa, label }: { tdfa: TDFA; label: string }) {
         </p>
       </div>
     </details>
+  );
+}
+
+// A structural, *exhaustive* check (not sampling): the TDFA's accepted language
+// must equal the minimal DFA's. The product-automaton comparator either proves
+// equality or hands back a distinguishing string. This certifies that stripping
+// the captures leaves exactly the right regular language.
+function EquivalenceBadge({ tdfa, minDfa }: { tdfa: TDFA; minDfa: DFA | null }) {
+  const result = useMemo(() => {
+    if (!minDfa || tdfa.states.length > 400) return null;
+    const asDfa: DFA = {
+      start: tdfa.start,
+      states: tdfa.states.map((s) => ({ id: s.id, nfaStates: [], accept: s.accept })),
+      transitions: [],
+      atoms: tdfa.atoms,
+      table: tdfa.table,
+    };
+    return compareDFAs(asDfa, minDfa);
+  }, [tdfa, minDfa]);
+  if (!result) return null;
+  const equal = result.relation === 'equal';
+  return (
+    <div className="tdfa-equiv">
+      <span className={`chip ${equal ? 'chip-yes' : 'chip-no'}`}>
+        {equal ? 'language ≡ minimal DFA ✓' : `language ≠ minimal DFA (${result.relation})`}
+      </span>
+      <span className="muted-note" style={{ margin: 0 }}>
+        {equal
+          ? 'exhaustive product-automaton proof — the TDFA, captures aside, recognises exactly the pattern’s language.'
+          : `distinguishing string: "${result.inAOnly?.display ?? result.inBOnly?.display ?? '?'}"`}
+      </span>
+    </div>
   );
 }
 

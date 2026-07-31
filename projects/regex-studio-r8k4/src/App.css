@@ -5933,3 +5933,10 @@
   white-space: pre;
   margin-top: 8px;
 }
+
+.tdfa-equiv {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

@@ -288,8 +288,10 @@ Backlog (this session's plan for what comes next — pick up here):
   scan a whole text like the Run tab, not only whole-string.
 - [ ] **Anchors & word boundaries** via alphabet extension (begin/end sentinels + a boundary-marker
   split of the atom classes), lifting the scope note for `^ $ \b`.
-- [ ] **Determinism / equivalence check**: prove the TDFA's *language* equals the plain min-DFA's via
-  the existing product-automaton comparator (captures aside, membership must match) — a free oracle.
+- [x] **Language-equivalence badge**: an *exhaustive* proof (not sampling) that the TDFA, captures
+  aside, recognises exactly the pattern's language — the TDFA is adapted to a plain DFA and run through
+  the studio's product-automaton comparator against the minimal DFA; `equal` ⇒ a green badge, otherwise
+  the distinguishing string. Confirmed `equal` on every pattern tried.
 - [x] **C export** (`emitC`): emit the machine on screen as a self-contained C matcher — a `state`
   switch, per-state range dispatch, an integer register file, the `set`/`copy` ops inlined, and the
   capture read-out at accept (exactly what re2c generates). Shown in a collapsible panel section with a
