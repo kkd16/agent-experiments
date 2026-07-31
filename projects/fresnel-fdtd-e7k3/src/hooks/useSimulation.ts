@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FDTD } from '../sim/FDTD';
+import { FDTD, type BoundaryMode } from '../sim/FDTD';
 import { FieldRenderer } from '../render/FieldRenderer';
+import { drawFluxArrows } from '../render/fluxArrows';
 import type { ColormapName } from '../sim/colormaps';
 import { PRESET_BY_KEY, PRESETS } from '../sim/presets';
 
@@ -13,7 +14,7 @@ export interface SimStats {
   energy: number;
 }
 
-export type DisplayMode = 'field' | 'intensity';
+export type DisplayMode = 'field' | 'intensity' | 'flux';
 
 export interface SimParams {
   running: boolean;
@@ -22,6 +23,8 @@ export interface SimParams {
   colormap: ColormapName;
   matOverlay: number;
   displayMode: DisplayMode;
+  boundary: BoundaryMode;
+  showArrows: boolean;
 }
 
 export interface SimController {
@@ -38,6 +41,7 @@ export interface SimController {
 
 export function useSimulation(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  arrowsRef: React.RefObject<HTMLCanvasElement | null>,
   onReady?: () => void,
 ) {
   // Stable engine instance (created once, never reassigned).
@@ -55,6 +59,8 @@ export function useSimulation(
     colormap: 'rdbu',
     matOverlay: 1,
     displayMode: 'field',
+    boundary: 'cpml',
+    showArrows: true,
   });
   const paramsRef = useRef(params);
   useEffect(() => {
@@ -83,7 +89,7 @@ export function useSimulation(
     // Load the default scene now that the GPU renderer exists.
     sim.reset();
     (PRESET_BY_KEY['lens'] ?? PRESETS[0]).build(sim);
-    renderer.updateMaterials(sim.epsR, sim.loss, sim.pec);
+    renderer.updateMaterials(sim.epsR, sim.loss, sim.pec, sim.dispId);
     onReadyRef.current?.();
 
     // Keep the drawing buffer matched to the on-screen size for crisp output.
@@ -94,6 +100,11 @@ export function useSimulation(
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
+      }
+      const ac = arrowsRef.current;
+      if (ac && (ac.width !== w || ac.height !== h)) {
+        ac.width = w;
+        ac.height = h;
       }
     };
     resize();
@@ -107,7 +118,18 @@ export function useSimulation(
     let statTimer = 0;
     let lastColormap = paramsRef.current.colormap;
     let lastMode = paramsRef.current.displayMode;
-    sim.setAccumulate(lastMode === 'intensity');
+    let lastBoundary = paramsRef.current.boundary;
+    const applyAccum = (mode: DisplayMode) => {
+      sim.setAccumulate(mode === 'intensity');
+      sim.setAccumulateFlux(mode === 'flux');
+    };
+    applyAccum(lastMode);
+    const arrowsCanvas = arrowsRef.current;
+    const arrowCtx = arrowsCanvas ? arrowsCanvas.getContext('2d') : null;
+    const clearArrows = () => {
+      if (arrowsCanvas && arrowCtx)
+        arrowCtx.clearRect(0, 0, arrowsCanvas.width, arrowsCanvas.height);
+    };
 
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
@@ -119,10 +141,15 @@ export function useSimulation(
         renderer.setColormap(p.colormap);
         lastColormap = p.colormap;
       }
+      if (p.boundary !== lastBoundary) {
+        sim.setBoundaryMode(p.boundary);
+        lastBoundary = p.boundary;
+      }
       if (p.displayMode !== lastMode) {
-        // Entering intensity mode starts a fresh exposure.
-        if (p.displayMode === 'intensity') sim.resetExposure();
-        sim.setAccumulate(p.displayMode === 'intensity');
+        // Entering an averaged mode starts a fresh exposure.
+        if (p.displayMode === 'intensity' || p.displayMode === 'flux') sim.resetExposure();
+        applyAccum(p.displayMode);
+        if (p.displayMode !== 'flux') clearArrows();
         lastMode = p.displayMode;
       }
 
@@ -131,8 +158,18 @@ export function useSimulation(
       }
       if (p.displayMode === 'intensity') {
         renderer.render(sim.ez, p.gain, p.matOverlay, 'intensity', sim.normalizedIntensity());
+        clearArrows();
+      } else if (p.displayMode === 'flux') {
+        const flux = sim.normalizedFlux();
+        renderer.render(sim.ez, p.gain * 1.4, p.matOverlay, 'intensity', flux.mag);
+        if (arrowsCanvas && arrowCtx && p.showArrows) {
+          drawFluxArrows(arrowCtx, arrowsCanvas.width, arrowsCanvas.height, sim.nx, sim.ny, flux);
+        } else {
+          clearArrows();
+        }
       } else {
         renderer.render(sim.ez, p.gain, p.matOverlay, 'field');
+        clearArrows();
       }
 
       // FPS + stats throttled to ~5 Hz.
@@ -159,7 +196,7 @@ export function useSimulation(
   }, []);
 
   const syncMaterials = useCallback(() => {
-    rendererRef.current?.updateMaterials(sim.epsR, sim.loss, sim.pec);
+    rendererRef.current?.updateMaterials(sim.epsR, sim.loss, sim.pec, sim.dispId);
   }, [sim]);
 
   const loadPreset = useCallback(

@@ -101,6 +101,7 @@ export class FDTD {
   private sumSy: Float32Array;
   private fluxBufX: Float32Array;
   private fluxBufY: Float32Array;
+  private fluxMagBuf: Float32Array;
   private fluxCount = 0;
   accumulateFlux = false;
 
@@ -168,6 +169,7 @@ export class FDTD {
     this.sumSy = new Float32Array(n);
     this.fluxBufX = new Float32Array(n);
     this.fluxBufY = new Float32Array(n);
+    this.fluxMagBuf = new Float32Array(n);
     this.epsR = new Float32Array(n);
     this.loss = new Float32Array(n);
     this.pec = new Uint8Array(n);
@@ -263,14 +265,17 @@ export class FDTD {
   }
 
   /** Time-averaged Poynting vector components ⟨Sx⟩, ⟨Sy⟩ and its magnitude. */
-  normalizedFlux(): { sx: Float32Array; sy: Float32Array; count: number } {
+  normalizedFlux(): { sx: Float32Array; sy: Float32Array; mag: Float32Array; count: number } {
     const inv = this.fluxCount > 0 ? 1 / this.fluxCount : 0;
-    const { sumSx, sumSy, fluxBufX, fluxBufY } = this;
+    const { sumSx, sumSy, fluxBufX, fluxBufY, fluxMagBuf } = this;
     for (let i = 0; i < sumSx.length; i++) {
-      fluxBufX[i] = sumSx[i] * inv;
-      fluxBufY[i] = sumSy[i] * inv;
+      const x = sumSx[i] * inv;
+      const y = sumSy[i] * inv;
+      fluxBufX[i] = x;
+      fluxBufY[i] = y;
+      fluxMagBuf[i] = Math.hypot(x, y);
     }
-    return { sx: fluxBufX, sy: fluxBufY, count: this.fluxCount };
+    return { sx: fluxBufX, sy: fluxBufY, mag: fluxMagBuf, count: this.fluxCount };
   }
 
   /** Zero all fields and probe traces; keep materials & sources. */

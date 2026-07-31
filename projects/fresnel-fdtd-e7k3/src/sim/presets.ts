@@ -6,10 +6,13 @@
  */
 
 import type { FDTD, Material } from './FDTD';
+import { MATERIAL_BY_KEY } from './materials';
 
 const PEC: Material = { epsR: 1, loss: 0, pec: true };
 const GLASS: Material = { epsR: 2.25, loss: 0, pec: false };
 const DENSE: Material = { epsR: 4, loss: 0, pec: false };
+const GOLD = MATERIAL_BY_KEY['gold'].material;
+const SILVER = MATERIAL_BY_KEY['silver'].material;
 
 export interface Preset {
   key: string;
@@ -221,6 +224,71 @@ export const PRESETS: Preset[] = [
       markDirty(f);
       planeSource(f, 0.14, lambda, 0.5);
       f.addProbe(plateX + Math.round(focal), cy);
+    },
+  },
+  {
+    key: 'plasmon',
+    label: 'Surface plasmon',
+    blurb:
+      'A dipole beside a silver surface launches a surface plasmon polariton — light ' +
+      'bound to the metal–vacuum interface, riding along it. View as Intensity or Flux.',
+    build: (f) => {
+      const cy = Math.round(f.ny * 0.52);
+      // silver half-space (lower half)
+      f.paintRect(0, cy, f.nx - 1, f.ny - 1, SILVER);
+      markDirty(f);
+      // a compact dipole sitting right at the interface, near the left
+      f.addSource({
+        x: Math.round(f.nx * 0.22),
+        y: cy - 1,
+        kind: 'sine',
+        wavelength: 15, // near ε ≈ −1, where the SPP lives
+        amplitude: 0.9,
+        halfLen: 1,
+      });
+      f.addProbe(Math.round(f.nx * 0.75), cy - 2);
+    },
+  },
+  {
+    key: 'drudemirror',
+    label: 'Drude mirror',
+    blurb:
+      'A gold slab: a plane wave below the plasma frequency is reflected like a real ' +
+      'metal mirror (its permittivity is negative), unlike a lossless dielectric.',
+    build: (f) => {
+      const x0 = Math.round(f.nx * 0.5);
+      f.paintRect(x0, 20, x0 + Math.round(f.nx * 0.12), f.ny - 20, GOLD);
+      markDirty(f);
+      planeSource(f, 0.14, 20, 0.5); // λ=20 > plasma λ → reflective
+      f.addProbe(Math.round(f.nx * 0.32), Math.round(f.ny / 2));
+    },
+  },
+  {
+    key: 'nanoparticle',
+    label: 'Plasmonic particle',
+    blurb:
+      'A plane wave drives a silver nano-disc into a localized surface-plasmon ' +
+      'resonance, concentrating the field into bright near-field lobes. Try Intensity.',
+    build: (f) => {
+      const cx = Math.round(f.nx * 0.55);
+      const cy = Math.round(f.ny / 2);
+      f.paintDisc(cx, cy, Math.max(4, Math.round(f.ny * 0.045)), SILVER);
+      markDirty(f);
+      planeSource(f, 0.16, 16, 0.5);
+    },
+  },
+  {
+    key: 'enz',
+    label: 'ε-near-zero',
+    blurb:
+      'Driven right at its plasma frequency a Drude slab has ε ≈ 0: the wavelength ' +
+      'inside stretches enormously and the phase goes flat — an epsilon-near-zero tunnel.',
+    build: (f) => {
+      const x0 = Math.round(f.nx * 0.42);
+      f.paintRect(x0, 20, x0 + Math.round(f.nx * 0.16), f.ny - 20, GOLD);
+      markDirty(f);
+      planeSource(f, 0.14, 13, 0.5); // λ ≈ plasma λ → ε ≈ 0
+      f.addProbe(Math.round(f.nx * 0.72), Math.round(f.ny / 2));
     },
   },
 ];

@@ -288,14 +288,20 @@ export function expBoundary(): ExperimentResult {
  * sin(ωΔt/2)/(Sc) = sin(kΔx/2). The solver should match the *numerical* value it
  * is bound to reproduce (not the ideal c) — a fingerprint of a correct scheme.
  */
-export function expDispersion(): ExperimentResult {
+/**
+ * Measure the axial numerical phase velocity of a monochromatic wave of the
+ * given wavelength (cells) with two closely-spaced probes, and return it
+ * alongside the analytic FDTD prediction.
+ */
+function measureAxialPhaseVelocity(wavelength: number): { vMeasured: number; vAnalytic: number } {
   const nx = 340;
   const ny = 40;
-  const wavelength = 12;
   const steps = 1700;
   const winStart = 950;
   const cy = ny >> 1;
-  // probes < one wavelength apart so the phase difference is unambiguous
+  // Probes a few cells apart (< λ/2) so the phase difference is unambiguous and
+  // the measurement stays local — a finite-height plane wave accumulates slight
+  // curvature over long baselines that would bias a widely-spaced measurement.
   const x1 = 180;
   const x2 = 184;
 
@@ -315,12 +321,9 @@ export function expDispersion(): ExperimentResult {
       g2.push(f.ez[k2]);
     }
   }
-  // Phase difference wrapped to (−π, π]; probes are < λ/2 apart so |Δφ| < π and
-  // the wavenumber is unambiguous.
   const raw = g1.phase() - g2.phase();
   const dphi = Math.abs(Math.atan2(Math.sin(raw), Math.cos(raw)));
-  const dx = x2 - x1;
-  const kMeasured = dphi / dx;
+  const kMeasured = dphi / (x2 - x1);
   const omegaPhys = (2 * Math.PI) / wavelength; // rad per time unit
   const vMeasured = omegaPhys / kMeasured;
 
@@ -328,7 +331,12 @@ export function expDispersion(): ExperimentResult {
   const s = Math.sin((omegaPhys * COURANT) / 2) / COURANT;
   const kAnalytic = 2 * Math.asin(Math.min(1, Math.max(-1, s)));
   const vAnalytic = omegaPhys / kAnalytic;
+  return { vMeasured, vAnalytic };
+}
 
+export function expDispersion(): ExperimentResult {
+  const wavelength = 12;
+  const { vMeasured, vAnalytic } = measureAxialPhaseVelocity(wavelength);
   const error = Math.abs(vMeasured - vAnalytic) / vAnalytic;
   const tolerance = 0.01;
   return {

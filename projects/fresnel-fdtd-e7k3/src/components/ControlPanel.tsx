@@ -1,8 +1,9 @@
 import type { SimController, SimParams, SimStats, DisplayMode } from '../hooks/useSimulation';
 import type { ToolState, Tool } from './types';
-import type { SourceKind } from '../sim/FDTD';
+import type { SourceKind, BoundaryMode } from '../sim/FDTD';
 import { Section, Slider, Segmented } from './ui';
-import { BRUSH_MATERIALS } from '../sim/materials';
+import { BRUSH_MATERIALS, isDispersiveBrush } from '../sim/materials';
+import { MaterialEpsChart } from './MaterialEpsChart';
 import { PRESETS } from '../sim/presets';
 import { COLORMAP_NAMES, COLORMAP_LABELS, type ColormapName } from '../sim/colormaps';
 
@@ -33,6 +34,12 @@ const SOURCE_OPTS: { value: SourceKind; label: string }[] = [
 const VIEW_OPTS: { value: DisplayMode; label: string; title: string }[] = [
   { value: 'field', label: 'Field', title: 'Instantaneous signed Ez field' },
   { value: 'intensity', label: 'Intensity', title: 'Time-averaged ⟨Ez²⟩ — a long exposure' },
+  { value: 'flux', label: 'Flux', title: 'Time-averaged Poynting energy flux ⟨S⟩ = ⟨E×H⟩' },
+];
+
+const BOUNDARY_OPTS: { value: BoundaryMode; label: string; title: string }[] = [
+  { value: 'cpml', label: 'CPML', title: 'Convolutional PML — near-zero reflection (~−70 dB)' },
+  { value: 'sponge', label: 'Sponge', title: 'Graded lossy layer — cheap, a few % reflection' },
 ];
 
 export function ControlPanel({
@@ -125,6 +132,15 @@ export function ControlPanel({
             onChange={(v) => setT('brushSize', v)}
             format={(v) => `${v} cells`}
           />
+          {isDispersiveBrush(tool.brushKey) && (
+            <>
+              <MaterialEpsChart brushKey={tool.brushKey} />
+              <p className="hint">
+                Frequency-dispersive metal. Where Re ε &lt; 0 it reflects; near ε = −1 it carries a
+                surface plasmon; at ε = 0 the wavelength inside diverges (ε-near-zero).
+              </p>
+            </>
+          )}
         </Section>
       )}
 
@@ -168,12 +184,31 @@ export function ControlPanel({
         />
       </Section>
 
+      <Section title="Boundary">
+        <Segmented
+          options={BOUNDARY_OPTS}
+          value={params.boundary}
+          onChange={(v) => set('boundary', v)}
+        />
+        <p className="hint">{BOUNDARY_OPTS.find((o) => o.value === params.boundary)?.title}</p>
+      </Section>
+
       <Section title="Display">
         <Segmented options={VIEW_OPTS} value={params.displayMode} onChange={(v) => set('displayMode', v)} />
-        {params.displayMode === 'intensity' && (
+        {params.displayMode !== 'field' && (
           <button type="button" className="btn btn--wide" onClick={() => controller.resetExposure()}>
-            ↻ Reset exposure
+            ↻ Reset {params.displayMode === 'flux' ? 'flux average' : 'exposure'}
           </button>
+        )}
+        {params.displayMode === 'flux' && (
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={params.showArrows}
+              onChange={(e) => set('showArrows', e.target.checked)}
+            />
+            <span>Flow arrows</span>
+          </label>
         )}
         <label className="select-row">
           <span>Colormap</span>

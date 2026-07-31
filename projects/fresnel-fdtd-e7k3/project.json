@@ -1,6 +1,6 @@
 {
   "title": "Fresnel — FDTD Electromagnetics Lab",
-  "description": "An interactive Maxwell's-equations solver: paint lenses, metal, and absorbers, drop in wave sources, and watch light refract, diffract, and interfere in real time.",
+  "description": "An interactive, quantitatively-validated Maxwell's-equations solver. Paint lenses, dispersive Drude/Lorentz metals and absorbers, drop in wave sources, and watch light refract, diffract, interfere and drive surface plasmons in real time — with a near-reflection-free convolutional PML boundary, a Poynting energy-flux view, and a Measurement lab that checks the engine against Fresnel, Drude and the FDTD dispersion relation.",
   "agent": "claude",
   "model": "claude-opus-4.8",
   "tags": [

@@ -54,6 +54,7 @@ void main() {
   float epsN = m.r;
   float pec = m.g;
   float lossN = m.b;
+  float disp = m.a; // dispersive (Drude/Lorentz) metal marker
 
   // Subtle body tint so material regions are visible over the field.
   if (u_matOverlay > 0.0) {
@@ -63,14 +64,20 @@ void main() {
     col = mix(col, col * vec3(1.05, 0.92, 0.80), clamp(lossN, 0.0, 0.5) * u_matOverlay);
     // metal: flat metallic gray
     col = mix(col, vec3(0.62, 0.64, 0.68), pec * 0.9 * u_matOverlay);
+    // dispersive metal: warm burnished tint (gold/silver-ish)
+    col = mix(col, vec3(0.60, 0.55, 0.40), disp * 0.62 * u_matOverlay);
 
-    // Edge outlines: compare index / pec against 4-neighbours.
+    // Edge outlines: compare a combined material key against 4-neighbours.
+    float c = epsN + pec * 2.0 + disp * 1.6;
+    vec4 mr = texelFetch(u_mat, ip + ivec2(1,0), 0);
+    vec4 ml = texelFetch(u_mat, ip + ivec2(-1,0), 0);
+    vec4 mu = texelFetch(u_mat, ip + ivec2(0,1), 0);
+    vec4 md = texelFetch(u_mat, ip + ivec2(0,-1), 0);
     float e = 0.0;
-    float c = epsN + pec * 2.0;
-    e = max(e, abs(c - (texelFetch(u_mat, ip + ivec2(1,0),0).r + texelFetch(u_mat, ip + ivec2(1,0),0).g*2.0)));
-    e = max(e, abs(c - (texelFetch(u_mat, ip + ivec2(-1,0),0).r + texelFetch(u_mat, ip + ivec2(-1,0),0).g*2.0)));
-    e = max(e, abs(c - (texelFetch(u_mat, ip + ivec2(0,1),0).r + texelFetch(u_mat, ip + ivec2(0,1),0).g*2.0)));
-    e = max(e, abs(c - (texelFetch(u_mat, ip + ivec2(0,-1),0).r + texelFetch(u_mat, ip + ivec2(0,-1),0).g*2.0)));
+    e = max(e, abs(c - (mr.r + mr.g*2.0 + mr.a*1.6)));
+    e = max(e, abs(c - (ml.r + ml.g*2.0 + ml.a*1.6)));
+    e = max(e, abs(c - (mu.r + mu.g*2.0 + mu.a*1.6)));
+    e = max(e, abs(c - (md.r + md.g*2.0 + md.a*1.6)));
     float edge = smoothstep(0.04, 0.25, e);
     col = mix(col, vec3(0.95, 0.97, 1.0), edge * 0.5 * u_matOverlay);
   }
@@ -216,8 +223,15 @@ export class FieldRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
   }
 
-  /** Upload the material description. epsR & loss arrays sized nx*ny. */
-  updateMaterials(epsR: Float32Array, loss: Float32Array, pec: Uint8Array): void {
+  /** Upload the material description. epsR & loss arrays sized nx*ny; dispId
+   *  marks frequency-dispersive (Drude/Lorentz) cells so they stay visible even
+   *  though their stored εr is just ε∞. */
+  updateMaterials(
+    epsR: Float32Array,
+    loss: Float32Array,
+    pec: Uint8Array,
+    dispId?: Uint8Array,
+  ): void {
     const gl = this.gl;
     const n = this.nx * this.ny;
     const data = new Uint8Array(n * 4);
@@ -226,7 +240,7 @@ export class FieldRenderer {
       data[i * 4 + 0] = Math.min(255, Math.round(((epsR[i] - 1) / 11) * 255));
       data[i * 4 + 1] = pec[i] ? 255 : 0;
       data[i * 4 + 2] = Math.min(255, Math.round((loss[i] / 0.5) * 255));
-      data[i * 4 + 3] = 255;
+      data[i * 4 + 3] = dispId && dispId[i] ? 255 : 0;
     }
     gl.bindTexture(gl.TEXTURE_2D, this.matTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.nx, this.ny, gl.RGBA, gl.UNSIGNED_BYTE, data);

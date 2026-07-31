@@ -2,12 +2,15 @@ import { useEffect, useState } from 'react';
 import './App.css';
 import { LabView } from './components/LabView';
 import { Guide } from './components/Guide';
+import { VerifyView } from './components/VerifyView';
 
-type Route = 'lab' | 'guide';
+type Route = 'lab' | 'verify' | 'guide';
 
 function parseHash(): Route {
   const h = window.location.hash.replace(/^#\/?/, '');
-  return h === 'guide' ? 'guide' : 'lab';
+  if (h === 'guide') return 'guide';
+  if (h === 'verify') return 'verify';
+  return 'lab';
 }
 
 export default function App() {
@@ -33,12 +36,17 @@ export default function App() {
           <a href="#/" className={route === 'lab' ? 'is-active' : ''}>
             Lab
           </a>
+          <a href="#/verify" className={route === 'verify' ? 'is-active' : ''}>
+            Measure
+          </a>
           <a href="#/guide" className={route === 'guide' ? 'is-active' : ''}>
             Guide
           </a>
         </nav>
       </header>
-      <main className="main">{route === 'guide' ? <Guide /> : <LabView />}</main>
+      <main className="main">
+        {route === 'guide' ? <Guide /> : route === 'verify' ? <VerifyView /> : <LabView />}
+      </main>
     </div>
   );
 }

@@ -54,6 +54,29 @@ export const BRUSH_MATERIALS: BrushMaterial[] = [
     material: { epsR: 1, loss: 0, pec: true },
   },
   {
+    key: 'gold',
+    label: 'Gold · Drude',
+    swatch: '#d7a94b',
+    // Real dispersive metal: ε(ω)=1−ωp²/(ω²+iγω). Plasma λ≈13 cells; below it the
+    // metal reflects, near ε≈−1 it carries surface plasmons.
+    material: { epsR: 1, loss: 0, pec: false, disp: { kind: 'drude', wp: (2 * Math.PI) / 13, gamma: ((2 * Math.PI) / 13) * 0.03 }, dispId: 1 },
+  },
+  {
+    key: 'silver',
+    label: 'Silver · Drude',
+    swatch: '#cdd6e0',
+    // Lower loss, higher plasma frequency than gold — sharper plasmonics.
+    material: { epsR: 1, loss: 0, pec: false, disp: { kind: 'drude', wp: (2 * Math.PI) / 11, gamma: ((2 * Math.PI) / 11) * 0.014 }, dispId: 2 },
+  },
+  {
+    key: 'resonant',
+    label: 'Resonator · Lorentz',
+    swatch: '#b06ec8',
+    // A Lorentz oscillator: strong anomalous dispersion & absorption near its
+    // resonance at λ≈16 cells (ε(ω)=ε∞+Δε·ω0²/(ω0²−ω²+iγω)).
+    material: { epsR: 1.4, loss: 0, pec: false, disp: { kind: 'lorentz', w0: (2 * Math.PI) / 16, gamma: ((2 * Math.PI) / 16) * 0.06, wp: 0, deltaEps: 3 }, dispId: 3 },
+  },
+  {
     key: 'absorber',
     label: 'Absorber',
     swatch: '#7a5a3a',
@@ -64,3 +87,8 @@ export const BRUSH_MATERIALS: BrushMaterial[] = [
 export const MATERIAL_BY_KEY: Record<string, BrushMaterial> = Object.fromEntries(
   BRUSH_MATERIALS.map((m) => [m.key, m]),
 );
+
+/** True for the frequency-dispersive (Drude/Lorentz) brushes. */
+export function isDispersiveBrush(key: string): boolean {
+  return !!MATERIAL_BY_KEY[key]?.material.disp;
+}
