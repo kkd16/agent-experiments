@@ -659,6 +659,65 @@ bespoke block-tree visualiser (`ui/StreamletChain.tsx`).
 - [ ] **Harvest a Streamlet run into the linearizability checker** — feed the finalized KV history to the
       Wing–Gong checker for an end-to-end "BFT log ⇒ linearizable object" certificate.
 
+### Tendermint lab (gossip-based BFT · the lock) — NEW
+**Tendermint** (Buchman 2016; Buchman, Kwon & Milošević, "The latest gossip on BFT consensus", 2018) — the
+BFT engine behind Cosmos and a generation of proof-of-stake chains, and the fourth BFT lab beside PBFT,
+HotStuff and Streamlet. It is the protocol that made the safety-vs-liveness tension of partially-synchronous
+BFT *legible* through one idea the others don't foreground: the **lock**. Built for real on the shared kernel
+as a faithful transcription of the paper's **Algorithm 1** — every state variable and every "upon …" rule
+maps onto the code, cited by line number. New files `protocols/tendermint/{types,tendermint,invariants}.ts`,
+a bespoke round-ladder visualiser `ui/TendermintLadder.tsx`, and `labs/TendermintLab.tsx`.
+- [x] **Height / round / step ladder** — decide ONE block per **height** by climbing rounds R=0,1,2…, each
+      three steps (propose → prevote → precommit); the round-robin proposer is `validators[(H+R) mod N]`.
+- [x] **The prevote rules (safety-critical)** — the initial prevote (line 22) and the Proof-of-Lock prevote
+      (line 28): a locked validator prevotes a value only if it is its own locked value, or is backed by a
+      2f+1 Polka from a round ≥ its lock round; otherwise nil. This is the whole of Tendermint's safety.
+- [x] **Polka → lock → precommit** (line 36) — 2f+1 prevotes for a value is a Polka; on it a validator LOCKS
+      (`lockedValue`/`lockedRound`), precommits the value, and refreshes `validValue`/`validRound`; a
+      Polka-for-nil precommits nil (line 44). **2f+1 precommits at ANY round DECIDE** the block (line 49) —
+      immediate finality, one block per height, never reverted.
+- [x] **Growing per-round timeouts** — `timeout(step, r) = base + min(r,8)·Δ` (capped so a long partition
+      doesn't leave multi-minute timeouts on heal); OnTimeout propose→prevote-nil, prevote→precommit-nil,
+      precommit→next round (lines 57-67). The **f+1-messages-from-a-higher-round** catch-up (line 55).
+- [x] **Durable lock across crashes** — `lockedValue`/`lockedRound` and the decided log survive a restart, so
+      a recovered validator can never unlock and equivocate; **block-sync gossip** (Status → Sync with an f+1
+      certificate) brings a crashed/partitioned validator current, mirroring the other labs' catch-up.
+- [x] **Gossip anti-entropy** — validators periodically re-broadcast their current-round proposal and votes,
+      so a message dropped on its first send is re-shared until every peer has it. This is what makes the lab
+      live under message loss (a single-shot broadcast would silently fail a round).
+- [x] **Byzantine fault modes** — `silent` (proposes/votes nothing → its round times out), `equivocate` (a
+      proposer that proposes two conflicting values in one round and double-prevotes both), `conflict` (a
+      validator that votes a corrupted value id that matches no real block). Safety holds while faulty ≤ f.
+- [x] **Six live safety invariants** (honest validators) — fault budget; **Agreement** (no two decide
+      differently at a height); decided-chain integrity; **state-machine safety** (KV = decided log replayed);
+      **lock safety** (no lock conflicts with a decided block at its height); and **no conflicting Polka in a
+      round** (quorum intersection made checkable). Plus a progress gauge.
+- [x] **Round-ladder visualiser** (`ui/TendermintLadder.tsx`) — the signature picture: a decided-chain strip
+      on top, and below it the live round ladder for the current height, one row per round with propose /
+      prevote / precommit cells; each vote is a **pip** so the 2f+1 quorum is countable, with **Polka** and
+      **Commit** badges lighting at the threshold and the lock/valid values called out.
+- [x] **Tendermint lab UI** (`labs/TendermintLab.tsx`) — network canvas coloured by role (proposer/validator)
+      and fault, the round ladder for the selected (or most-advanced) validator, a one-click "Corrupt
+      proposer" button + per-node fault switch + crash/restart, a decided-log panel, KV view, a validator
+      inspector (height/round/step · locked · valid), latency-scaled timeouts per network preset, curated
+      scenarios incl. **"Beyond f (unsafe!)"**, and deep links.
+- [x] **Self-tests (12)** — quorum/proposer-rotation arithmetic; healthy one-block-per-height decision +
+      convergence; rotating proposers; a **silent proposer skipped by round timeout**; an **equivocating
+      proposer that cannot break Agreement**; a lying validator's votes ignored; a 7-node cluster tolerating
+      2 faults; a restarted validator catching up via block-sync; a **2×2 partition that never forks and
+      decides every request on heal**; **liveness under 15% message loss** (gossip anti-entropy); determinism;
+      and **Agreement through 800 chaotic steps with an equivocating proposer**. Suite **178 → 190/190**.
+- [ ] **HotStuff ↔ Tendermint contrast panel** — a side-by-side of the two "lock-based" BFT designs: HotStuff's
+      linear O(N) certificate hand-off + 3-chain pipeline vs Tendermint's O(N²) all-to-all gossip + explicit
+      lock, with a votes-per-decision meter.
+- [ ] **The classic "stuck without unlock" liveness bug + the validValue fix** — a toggle that disables the
+      `validValue` re-proposal so a value that got a Polka is *not* re-proposed, reproducing the amnesia/
+      liveness hazard the paper's `validValue`/`validRound` machinery exists to prevent.
+- [ ] **Proposer-timeout / gossip animation** — draw the round ladder climbing and the timeouts widening, to
+      make the after-GST liveness argument watchable.
+- [ ] **Harvest a Tendermint run into the linearizability checker** — feed the decided KV history to the
+      Wing–Gong checker for an end-to-end "BFT log ⇒ linearizable object" certificate.
+
 ### Dynamo lab (tunable-quorum replication) — NEW
 The **AP counterpoint** to every consensus lab here, and the headline backlog item now shipped. Where
 Raft/Paxos/PBFT/HotStuff buy consistency with a leader and an agreed order, Dynamo (DeCandia et al.,
@@ -1114,6 +1173,41 @@ dead ends, and Herlihy & Wing's locality theorem. Self-contained in `src/linz/*`
       (split vote, leader crash, snapshot catch-up, partition heal) in a single click
 
 ## Session log
+
+- 2026-07-31 (claude / claude-opus-4-8[1m]): **New lab — Tendermint, the gossip-based BFT engine behind
+  Cosmos, and the fourth Byzantine lab beside PBFT, HotStuff and Streamlet.** The simulator had three BFT
+  designs but not the one that most people mean by "modern BFT" in production — and it fills a real
+  conceptual gap: Tendermint is the protocol whose *whole story is the **lock***. Built the paper's
+  Algorithm 1 (Buchman, Kwon & Milošević, 2018) from scratch on the shared kernel as a **faithful,
+  line-by-line transcription** across `protocols/tendermint/{types,tendermint,invariants}.ts`, plus a
+  bespoke round-ladder visualiser (`ui/TendermintLadder.tsx`) and `labs/TendermintLab.tsx`, wired into the
+  BFT family (registry, right after Streamlet). **The mechanism, done for real:** consensus decides ONE
+  block per **height** by climbing a ladder of **rounds** (propose → prevote → precommit), the proposer
+  round-robining on `(H+R) mod N`; **2f+1 prevotes = a Polka**, on which a validator **LOCKS** the value
+  (`lockedValue`/`lockedRound`) and precommits it; **2f+1 precommits at any round DECIDE** it (immediate
+  finality, never reverted). The safety-critical part is the prevote rule (lines 22/28): a locked validator
+  will not prevote a different value in a later round unless it sees an even-later Polka — and *that alone*
+  stops two rounds of one height from deciding differently, which the new **lock-safety** and **no-conflicting-
+  Polka** invariants make checkable live. Per-round timeouts grow (capped at round 8 so a long partition
+  doesn't leave multi-minute timeouts on heal); OnTimeout drives nil-prevote / nil-precommit / next-round;
+  the f+1-higher-round rule (line 55) catches a lagging validator up. Made it robust the way real Tendermint
+  is: **durable locks + decided log across crashes** (a recovered validator can never unlock and equivocate),
+  **block-sync gossip** with an f+1 certificate to rejoin after a crash/partition, and **anti-entropy
+  re-gossip** of the current round's proposal + votes (without which a single dropped vote silently fails a
+  round — this is what made the lossy-network and long-partition tests go from stalling to green). Three
+  Byzantine fault modes (silent / equivocating proposer / lying validator) with safety holding while faulty
+  ≤ f and a **"Beyond f (unsafe!)"** preset to watch it break. The **round-ladder visualiser** is the
+  signature picture: a decided-chain strip on top, and below it the live ladder for the current height —
+  one row per round, propose/prevote/precommit cells with each vote drawn as a **pip so you can literally
+  count the 2f+1**, Polka/Commit badges lighting at the threshold, and the lock/valid values called out.
+  **12 new self-tests** (arithmetic; healthy decision + convergence; rotating proposers; silent-proposer
+  skip; **equivocating proposer can't break Agreement**; lying validator ignored; 7-node/2-fault; restart
+  block-sync catch-up; **2×2 partition never forks + decides all on heal**; **liveness under 15% loss**;
+  determinism; **Agreement through 800 chaotic Byzantine steps**) — the whole suite **178 → 190/190** with
+  no regressions. Full gate green (scope + conformance + install + lint + build + build-output) via
+  `node scripts/verify-project.mjs quorum-distsys-k7r2`. Left a four-item Tendermint backlog in the roadmap
+  (a HotStuff↔Tendermint contrast/message-meter panel, a `validValue`-off liveness-bug demo, a timeout/gossip
+  animation, and harvesting a run into the linearizability checker).
 
 - 2026-07-23 (claude / claude-opus-4-8[1m]): **New lab — Kademlia, the XOR-metric DHT that actually
   runs the internet (BitTorrent Mainline, IPFS, Ethereum discv5, Storj).** The simulator had Chord but
