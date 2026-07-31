@@ -5,6 +5,7 @@ import { AutomatonGraph } from './AutomatonGraph';
 import { layoutGraph } from '../engine/layout';
 import {
   astToTDFA,
+  minimizeRegisters,
   runTDFA,
   simulateTagged,
   tdfaGraph,
@@ -51,12 +52,18 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
 
   const codes = useMemo(() => toCodePoints(text), [text]);
 
-  const run = useMemo(() => (built?.kind === 'ok' ? runTDFA(built.tdfa, codes) : null), [built, codes]);
+  const [minimise, setMinimise] = useState(false);
+  const activeTdfa = useMemo(() => {
+    if (built?.kind !== 'ok') return null;
+    return minimise ? minimizeRegisters(built.tdfa) : built.tdfa;
+  }, [built, minimise]);
+
+  const run = useMemo(() => (activeTdfa ? runTDFA(activeTdfa, codes) : null), [activeTdfa, codes]);
 
   // Per-step register-file snapshots (replayed from the run's ops).
   const snapshots = useMemo(() => {
-    if (!built || built.kind !== 'ok' || !run) return [];
-    const rf = new Int32Array(built.tdfa.regCount).fill(-1);
+    if (!activeTdfa || !run) return [];
+    const rf = new Int32Array(activeTdfa.regCount).fill(-1);
     const out: Int32Array[] = [];
     for (const st of run.steps) {
       for (const op of st.ops) {
@@ -91,11 +98,11 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
       </div>
     );
   }
-  if (!built || built.kind !== 'ok' || !run) {
+  if (!built || built.kind !== 'ok' || !run || !activeTdfa) {
     return <div className="placeholder">Compiling…</div>;
   }
 
-  const tdfa = built.tdfa;
+  const tdfa = activeTdfa;
   const step = run.steps[idx];
   const regFile = snapshots[idx] ?? new Int32Array(tdfa.regCount).fill(-1);
   const currentState = step.toState;
@@ -118,9 +125,16 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
 
       <div className="tdfa-stats">
         <Stat label="states" value={String(tdfa.states.length)} />
-        <Stat label="registers" value={String(tdfa.regCount)} />
+        <Stat
+          label={tdfa.minimizedFrom != null ? 'registers (min)' : 'registers'}
+          value={tdfa.minimizedFrom != null ? `${tdfa.matRegCount} ⟵ ${tdfa.minimizedFrom}` : String(tdfa.matRegCount)}
+        />
         <Stat label="input classes" value={String(tdfa.atoms.length)} />
         <Stat label="capture slots" value={String(tdfa.slotCount)} />
+        <label className="mini-toggle" title="Liveness-coalesce registers into a small pool reused across states">
+          <input type="checkbox" checked={minimise} onChange={(e) => setMinimise(e.target.checked)} />
+          minimise registers
+        </label>
         {check?.ran && (
           <span className={`chip ${check.agreed ? 'chip-yes' : 'chip-no'}`} title="differential check vs the reference thread-list simulator">
             {check.agreed ? `≡ reference · ${check.checks} inputs ✓` : 'mismatch!'}
@@ -432,8 +446,10 @@ function Verifier() {
         <div className={`verify-report ${report.agreed ? 'ok' : 'bad'}`}>
           {report.agreed ? (
             <p>
-              ✓ all three engines agreed — <strong>{report.checks.toLocaleString()}</strong> checks over{' '}
-              <strong>{report.patterns}</strong> patterns (largest TDFA {report.maxStates} states) in {report.elapsedMs} ms.
+              ✓ agreed on <strong>{report.checks.toLocaleString()}</strong> checks over{' '}
+              <strong>{report.patterns}</strong> patterns — TDFA <em>and</em> its register-minimised form both match the
+              reference (largest TDFA {report.maxStates} states) in {report.elapsedMs} ms. Minimisation cut registers{' '}
+              <strong>{report.regsBefore.toLocaleString()} → {report.regsAfter.toLocaleString()}</strong> in total.
             </p>
           ) : (
             <>

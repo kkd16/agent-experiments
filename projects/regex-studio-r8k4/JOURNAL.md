@@ -264,11 +264,20 @@ Design notes for the next session:
   canonical index per new state, so a small pattern can carry dozens of registers where a handful
   would do. That is the naïve allocation on purpose; register minimisation is the marquee follow-up.
 
+Shipped (continued):
+
+- [x] **Register minimisation** (`minimizeRegisters`). The key observation: in a TDFA built this way,
+  every register is written by the edges *entering* its home state and read only by the edges *leaving*
+  it (nothing survives a transition un-rewritten), so a register's live range is a **single state** and
+  registers of different states never conflict. That turns minimisation into: drop never-read registers,
+  then renumber each state's live registers into a small pool *reused* across all states, re-scheduling
+  every edge clobber-safe under the new numbering. Verified through the same harness (the minimised
+  machine is checked against the reference on every input): typical reductions **58→10, 26→10, 24→6**;
+  over a 400-pattern fuzz run, **30,682 → 2,426** registers total (~12×). Surfaced as a panel toggle
+  with a *before → after* readout and the reduction reported by the verifier.
+
 Backlog (this session's plan for what comes next — pick up here):
 
-- [ ] **Register minimisation** (the re2c pass): compute liveness over the TDFA graph and coalesce
-  registers by an interference graph, with a *before → after* register-count readout in the panel.
-  Verify the minimised machine through the same differential harness before trusting it.
 - [ ] **TDFA(1) — lookahead determinisation**: defer the register writes by one character (the re2c
   TDFA(1) optimisation) so tags set on *outgoing* transitions collapse duplicate states; contrast
   TDFA(0) vs TDFA(1) state counts live.

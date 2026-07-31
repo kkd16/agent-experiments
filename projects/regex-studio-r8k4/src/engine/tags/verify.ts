@@ -21,7 +21,7 @@ import { analyzeFeatures } from '../ast';
 import type { RegexNode } from '../ast';
 import { compileProgram, type Program } from '../pike';
 import { toCodePoints } from '../simulate';
-import { simulateTagged, runTDFA, buildTDFA, type TaggedMatch } from './tdfa';
+import { simulateTagged, runTDFA, buildTDFA, minimizeRegisters, type TaggedMatch } from './tdfa';
 
 // --- Seeded PRNG (mulberry32) ----------------------------------------------
 
@@ -234,7 +234,7 @@ export interface Counterexample {
   tdfa: (Span | 'nomatch')[];
   reference: (Span | 'nomatch')[];
   oracle: (Span | 'nomatch')[] | null;
-  which: 'tdfa≠reference' | 'reference≠oracle';
+  which: 'tdfa≠reference' | 'minimised≠reference' | 'reference≠oracle';
 }
 
 export interface VerifyReport {
@@ -246,6 +246,8 @@ export interface VerifyReport {
   skipped: number; // patterns filtered out (non-regular / nullable-loop / build-truncated)
   maxStates: number; // the largest TDFA built during the run
   totalStates: number;
+  regsBefore: number; // total materialised registers, summed over patterns (pre-minimisation)
+  regsAfter: number; // total after register minimisation
   elapsedMs: number;
 }
 
@@ -257,6 +259,8 @@ export function runVerify(config: VerifyConfig = DEFAULT_VERIFY): VerifyReport {
   let skipped = 0;
   let maxStates = 0;
   let totalStates = 0;
+  let regsBefore = 0;
+  let regsAfter = 0;
   let counterexample: Counterexample | null = null;
 
   outer: for (let t = 0; t < config.trials; t++) {
@@ -286,9 +290,12 @@ export function runVerify(config: VerifyConfig = DEFAULT_VERIFY): VerifyReport {
       skipped++;
       continue;
     }
+    const mini = minimizeRegisters(tdfa);
     patterns++;
     maxStates = Math.max(maxStates, tdfa.states.length);
     totalStates += tdfa.states.length;
+    regsBefore += tdfa.matRegCount;
+    regsAfter += mini.matRegCount;
 
     for (let s = 0; s < config.stringsPerPattern; s++) {
       const input = genInput(rng, config.maxStringLen);
@@ -298,6 +305,12 @@ export function runVerify(config: VerifyConfig = DEFAULT_VERIFY): VerifyReport {
       checks++;
       if (!spansEqual(tdfaSpans, refSpans)) {
         counterexample = { pattern: source, input, tdfa: tdfaSpans, reference: refSpans, oracle: null, which: 'tdfa≠reference' };
+        break outer;
+      }
+      // The minimised machine must agree with the reference too.
+      const miniSpans = groupsToSpans(runTDFA(mini, codes).match, groupCount);
+      if (!spansEqual(miniSpans, refSpans)) {
+        counterexample = { pattern: source, input, tdfa: miniSpans, reference: refSpans, oracle: null, which: 'minimised≠reference' };
         break outer;
       }
       if (config.useOracle && oracleSafe) {
@@ -320,6 +333,8 @@ export function runVerify(config: VerifyConfig = DEFAULT_VERIFY): VerifyReport {
     skipped,
     maxStates,
     totalStates,
+    regsBefore,
+    regsAfter,
     elapsedMs: Math.max(0, Math.round(t1 - t0)),
   };
 }
