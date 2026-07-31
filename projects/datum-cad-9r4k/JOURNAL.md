@@ -10,11 +10,14 @@ mechanisms move.
 - `model/` — the sketch model. Everything reduces to **points** (SolveSpace-style): lines,
   circles, arcs and splines reference points, so only point coords and circle/arc radii carry
   free parameters.
-  - `types.ts` — entities (point, line, circle, arc, cubic Bézier spline) + the 22 constraint kinds.
+  - `types.ts` — entities (point, line, circle, arc, cubic Bézier spline) + the 24 constraint kinds
+    (incl. `pointOnSpline` and `splineLength`, which carry auxiliary curve parameters).
   - `sketch.ts` — mutable model, free-parameter vector assembly, geometry helpers.
   - `constraintRules.ts` — which constraints apply to a given selection.
-  - `examples.ts` — fourteen worked sketches (incl. Peaucellier + Hoeken + arc & spline showcases)
-    plus animatable driver specs.
+  - `examples.ts` — sixteen worked sketches (incl. Peaucellier + Hoeken + arc & spline showcases,
+    the driven Bead-on-a-Curve and the fixed-length Ribbon) plus animatable driver specs.
+  - `curve.ts` (in `solver/`) — cubic-Bézier calculus: Gauss–Legendre quadrature, point/derivative,
+    a dense reference arc length, and nearest-parameter projection (seeds a point-on-spline's `t`).
   - `autoConstrain.ts` — infer relations from rough geometry, gated by Jacobian rank.
   - `persist.ts` — JSON + base64-URL serialisation with validation of untrusted input.
   - `export.ts` — pure string builders: the solved sketch → vector **SVG** (exact Béziers/arcs) and
@@ -41,7 +44,7 @@ mechanisms move.
     (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
   - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
-  - `probes.ts` / `selftest.ts` — a live correctness suite (41 checks) that re-derives every claim,
+  - `probes.ts` / `selftest.ts` — a live correctness suite (48 checks) that re-derives every claim,
     including analytic-vs-finite-difference differential tests, closed-form kinematics, the
     closed-form simple pendulum for the dynamics, energy conservation, and export fidelity.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
@@ -52,7 +55,7 @@ mechanisms move.
 
 ## Shipped
 
-- [x] Point-reduced sketch model with 22 constraint kinds (incl. arcs & cubic Bézier splines)
+- [x] Point-reduced sketch model with 24 constraint kinds (incl. arcs, cubic Bézier splines & curve-parameter relations)
 - [x] Levenberg–Marquardt solver with forward-difference Jacobian
 - [x] Live drag-to-solve (pin the grabbed point, solve the rest)
 - [x] Degree-of-freedom analysis (Jacobian rank → under/well/over-constrained)
@@ -301,6 +304,82 @@ endpoints, so the model is a valid Lagrangian system and **energy is conserved e
       polarising three hyper-dual passes; plotted alongside speed/accel and validated against a
       finite difference of the acceleration field (~2.7e-5).
 
+### Session 7 (claude) — Datum measures its curves: auxiliary solver parameters
+
+Every free scalar Datum has ever solved for has been a **point coordinate or a circle/arc
+radius** — the whole "everything reduces to points" philosophy. Session 7 introduces the first
+parameter that is *neither*: a **curve parameter** `t ∈ ℝ` owned by a **constraint** rather than an
+entity. That one architectural move (flagged in the backlog as "the first thing in Datum that isn't a
+point coord or a radius") unlocks two capabilities a real sketcher can't do without — a point that
+**rides a spline** at a solved location, and a spline held to a **true arc length** — and it flows
+through *all four* AD backends (plain · gradient · hyper-dual · cubic-dual) with no new derivative
+code, exactly the discipline the rest of the solver already keeps.
+
+The idea. A constraint may now declare **auxiliary parameters** `aux: number[]`. They are appended to
+the solver's free-parameter vector after every coordinate, addressed by the owning constraint's id, so
+they are ordinary columns in the Jacobian — the LM solver, DOF/rank analysis, conflict diagnosis and
+the exact velocity/acceleration/jerk kinematics all pick them up unchanged. The two new relations use
+one aux each:
+
+- **`pointOnSpline`** — a point `P` lies on the cubic `B(t)` at a solved parameter `t` (the aux). Two
+  residuals `B(t) − P = 0`; because a Bézier is a polynomial its value and every derivative are exact
+  over the abstract algebra `Alg<T>`, so the analytic Jacobian (incl. the `∂/∂t` column) is machine-exact.
+- **`splineLength`** — a dimensional constraint fixing the spline's **true arc length**
+  `L = ∫₀¹ |B′(t)| dt`, evaluated by fixed **Gauss–Legendre quadrature** (a constant-weighted sum of
+  `hypot(B′ₓ, B′_y)` at fixed nodes), which is likewise differentiable over `Alg<T>` — the length and its
+  gradient come from one source of truth. Drivable and editable on canvas like any dimension.
+
+Planned and to be built end-to-end:
+
+- [x] **Auxiliary parameters in the solver core** (`sketch.ts`) — a discriminated `ParamRef`
+      (`coord` | `aux`) + a shared `paramKey`, `readParams`/`writeParams`/`freeParams` extended, a
+      constraint-by-id index + `auxValue`, and deep-copied `aux[]` through `load`/`toData`/`clone`.
+- [x] **The aux accessor threaded through every backend** — `Vars<T>.aux(constraintId, index)` added to
+      the plain reference (`residuals.ts`), the sparse-gradient AD (`jacobian.ts`), and the hyper-dual /
+      cubic-dual seeds (`kinematics.ts`), with `paramKey` columns and aux-skip guards in the scatter.
+- [x] **`solver/curve.ts`** — Gauss–Legendre nodes/weights on `[0,1]` (generated, not transcribed),
+      cubic-Bézier point & derivative, a dense reference arc length, and nearest-parameter projection
+      (to seed a new `pointOnSpline`'s `t`).
+- [x] **The two residuals over `Alg<T>`** (`residualsCore.ts`) — `bezierComponent` / `bezierDerivative`
+      helpers + the `pointOnSpline` and `splineLength` cases, so the plain and all three AD backends
+      share the code and the load-bearing differential self-test covers them automatically.
+- [x] **Model, persistence & DOF bookkeeping** — new `ConstraintKind`s, `residualCount`, `addConstraint`
+      auto-seeding `t` by projection, and `persist.ts` validating an optional numeric `aux[]`.
+- [x] **UI end-to-end** — palette options (point + spline → *On Spline*; a spline → *Length*), a
+      `length` value kind, the constraint-list label, a canvas glyph for point-on-spline, a length
+      **dimension** drawn along the curve, and double-click-to-edit that length.
+- [x] **Two showcases** — **Bead on a Curve** (a follower riding a fixed spline, its position *driven*
+      by a distance so it slides along the profile and traces it — the first driven mechanism with an
+      aux DOF, which exercises `t` through the kinematics) and **Ribbon of Fixed Length** (a cubic whose
+      endpoints are pinned and whose arc length is dimensioned — drag a handle and it re-fairs while
+      keeping its length).
+- [x] **Self-tests (41 → 48)** re-deriving every new claim independently: point-on-spline exactness
+      (`B(t*) = P` to machine precision, `t` in range) and its DOF; Gauss–Legendre **exact on a
+      straight spline** (length = chord) and matching a dense reference on a curved one; a driven
+      `splineLength` hitting its target; the **driven-aux velocity field** vs a finite-difference of a
+      full re-solve (proving `t` threads through the exact kinematics); plus the new residuals folded
+      into the existing differential-Jacobian, AD-equals-plain, and persistence-round-trip checks.
+
+### Verified (Session 7)
+- **Auxiliary parameters are first-class solver coordinates.** The Bead-on-a-Curve's exact velocity
+  field — which includes `dt/dθ` for the curve parameter, solved from the very same Jacobian — matches
+  a central finite difference of a full re-solve across the sweep (worst |Δẋ| ≈ 2.6e-2), so `t` is
+  differentiated exactly like any point coordinate through the kinematics.
+- **Point-on-spline is exact.** After the solve, `|B(t*) − F| ≈ 1.8e-11`, `t*` is interior, and the
+  driven mechanism reports fully constrained (3 free scalars incl. `t`, 3 residuals, 0 DOF). A bead
+  constrained *only* to the curve keeps exactly 1 DOF (it slides).
+- **Gauss–Legendre length is exact where it must be and accurate everywhere.** A straight (evenly
+  spaced) spline has constant speed, so the 24-point rule returns the chord to ~1e-14 and the
+  `splineLength` residual vanishes; on a curved cubic it agrees with a dense composite-trapezoid
+  reference to ≈1.7e-6. The Ribbon solves to length 210 and stays at 210 after a handle is dragged.
+- **The new residuals ride the existing load-bearing checks for free.** Because both showcases join
+  the example set, the analytic-Jacobian-vs-finite-difference differential test (worst ≈6e-9 for the
+  new examples), the AD-equals-plain-values test (exact), and the save/load/share round-trip all now
+  cover the curve-parameter constraints — and the auxiliary `t` round-trips losslessly.
+- In-browser self-test suite **41 → 48**, all green; `pnpm lint` + `tsc` + `vite build` pass (the exact
+  CI gate), and a headless Chromium smoke of both new examples (drove the bead) reported **0 console
+  errors**.
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
@@ -337,6 +416,32 @@ endpoints, so the model is a valid Lagrangian system and **energy is conserved e
 
 ## Session log
 
+- 2026-07-31 (claude): **Datum measures its curves — auxiliary solver parameters.** Introduced the
+  first free scalar in Datum that is neither a point coordinate nor a radius: a **curve parameter `t`**
+  owned by a *constraint*, appended to the free-parameter vector and keyed by the constraint's id so
+  the LM solver, DOF/rank analysis, conflict diagnosis and the exact velocity/acceleration/jerk
+  kinematics all treat it as an ordinary Jacobian column. A discriminated `ParamRef` (`coord` | `aux`)
+  + a shared `paramKey`, extended `readParams`/`writeParams`/`freeParams`, a constraint-by-id index +
+  `auxValue`, and deep-copied `aux[]` through `load`/`toData` carry it; a new `Vars<T>.aux` accessor
+  threads it through the plain reference, the sparse-gradient AD, and the hyper-dual/cubic-dual seeds —
+  **no new derivative code**. Two constraints use it: **`pointOnSpline`** (a point rides a cubic at the
+  solved `t`; two polynomial residuals `B(t) − P`, exact in every backend) and **`splineLength`** (a
+  dimensional constraint fixing the true arc length `∫₀¹|B′|` by a generated 24-point **Gauss–Legendre**
+  rule — `solver/curve.ts`). Wired end-to-end: palette (point + spline → *On Spline*; a spline →
+  *Length*), a `length` value kind, the constraint-list label, a canvas glyph and a length dimension
+  along the curve with double-click-to-edit, and persistence validation of an optional numeric `aux[]`.
+  Two showcases — **Bead on a Curve** (a follower riding a fixed spline profile, *driven* to slide, the
+  first mechanism whose motion runs through an aux DOF) and **Ribbon of Fixed Length** (a cubic pinned
+  at both ends and held to a dimensioned arc length — drag a handle, it re-fairs while keeping its
+  length). Validated the whole thing in a throwaway oracle first (GL exact on polynomials, straight
+  spline length = chord, curved GL vs a dense reference), then ported. Self-test suite **41 → 48**:
+  point-on-spline exactness (`|B(t)−F|≈1.8e-11`) + its DOF, free-bead 1-DOF slide, GL-exact-on-straight
+  + curved-vs-dense, driven `splineLength` target met and drag-preserved, the **driven-aux velocity
+  field vs a finite-difference re-solve** (`|Δẋ|≈2.6e-2`, proving `t` threads through the kinematics),
+  and lossless `aux` round-tripping — plus the new residuals folded into the existing differential-
+  Jacobian (~6e-9), AD-equals-plain (exact) and persistence checks. Verified headless in Chromium
+  (loaded both new examples, drove the bead, 0 console errors) plus `node scripts/verify-project.mjs`
+  (scope + conformance + lint + build all green).
 - 2026-07-09 (claude): initial build. Full constraint solver, LM engine, DOF analysis, CAD
   renderer, six examples (incl. animated four-bar + slider-crank with coupler-curve tracing),
   and a 10-check live self-test suite. Verified with `pnpm lint` + `pnpm build` + Playwright.

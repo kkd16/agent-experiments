@@ -457,6 +457,51 @@ function splinePetal(): BuiltExample {
   return { sketch: s }
 }
 
+// Bead on a Curve: a follower reads a fixed spline profile from a pivot below it. The
+// bead F is pinned to the curve (pointOnSpline, carrying the curve parameter t as an
+// auxiliary DOF) and the reader arm O→F is held at a driven angle, so as the angle
+// sweeps the bead is the ray∩curve intersection — it slides along the profile and
+// traces it. The first driven mechanism whose motion runs partly through an aux DOF,
+// so the exact velocity/acceleration kinematics exercise dt/dθ.
+function beadOnCurve(): BuiltExample {
+  const s = new Sketch()
+  const O = s.addPoint(0, -60, { fixed: true }) // reader pivot
+  const R = s.addPoint(60, -60, { fixed: true }) // fixed reference (0° direction)
+  // A fixed arch profile.
+  const P0 = s.addPoint(-90, 20, { fixed: true })
+  const C0 = s.addPoint(-30, 90, { fixed: true })
+  const C1 = s.addPoint(30, 90, { fixed: true })
+  const P1 = s.addPoint(90, 20, { fixed: true })
+  const prof = s.addSpline(P0.id, C0.id, C1.id, P1.id)
+  const F = s.addPoint(0, 72) // the bead (rides the curve)
+
+  const refLine = s.addLine(O.id, R.id, true) // construction reference
+  const arm = s.addLine(O.id, F.id) // the reader arm
+
+  s.addConstraint('pointOnSpline', [F.id, prof.id])
+  const drv = s.addConstraint('angle', [refLine.id, arm.id], 90, true)
+  return {
+    sketch: s,
+    driver: { constraintId: drv.id, min: 50, max: 130, period: 5, wrap: false, label: 'Reader angle', unit: '°' },
+    tracePoints: [F.id],
+  }
+}
+
+// Ribbon of Fixed Length: a cubic whose endpoints are pinned to a baseline and whose
+// true arc length is dimensioned longer than the chord, so it bows into an arch. Drag
+// either handle and the ribbon re-fairs while keeping its length — an inextensible
+// strip. The splineLength constraint measures ∫₀¹|B′| by Gauss–Legendre quadrature.
+function fixedLengthRibbon(): BuiltExample {
+  const s = new Sketch()
+  const p0 = s.addPoint(-80, 0, { fixed: true })
+  const p1 = s.addPoint(80, 0, { fixed: true })
+  const c0 = s.addPoint(-40, 60)
+  const c1 = s.addPoint(40, 60)
+  const sp = s.addSpline(p0.id, c0.id, c1.id, p1.id)
+  s.addConstraint('splineLength', [sp.id], 210)
+  return { sketch: s }
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'four-bar', name: 'Four-Bar Linkage', blurb: 'Grashof crank-rocker tracing a coupler curve.', build: fourBar },
   { id: 'peaucellier', name: 'Peaucellier (exact line)', blurb: 'An inversor that draws a perfect straight line.', build: peaucellier },
@@ -471,6 +516,8 @@ export const EXAMPLES: Example[] = [
   { id: 'spline-s', name: 'Tangent S-Curve', blurb: 'Two cubic Béziers with a smooth join; ends tangent to level.', build: splineSCurve },
   { id: 'spline-blend', name: 'Spline Blend', blurb: 'A cubic fairing a line into a circle, tangent to both.', build: splineBlend },
   { id: 'spline-petal', name: 'Symmetric Petal', blurb: 'Two mirrored splines make a leaf. Drag one side.', build: splinePetal },
+  { id: 'bead-on-curve', name: 'Bead on a Curve', blurb: 'A follower rides a spline profile at a solved parameter — driven to slide.', build: beadOnCurve },
+  { id: 'ribbon', name: 'Ribbon of Fixed Length', blurb: 'A cubic dimensioned by its true arc length. Drag a handle; it keeps its length.', build: fixedLengthRibbon },
   { id: 'hexagon', name: 'Regular Hexagon', blurb: 'Equal edges on a circle snap to regular.', build: regularHexagon },
   { id: 'blank', name: 'Blank Sketch', blurb: 'An empty canvas to draw your own.', build: blank },
 ]

@@ -1,5 +1,6 @@
 import type { Constraint, EntityId } from '../model/types'
 import type { ParamRef, Sketch } from '../model/sketch'
+import { paramKey } from '../model/sketch'
 import { pushArcResidualsG, pushResidualsG } from './residualsCore'
 import { AD, konst, variable } from './ad'
 import type { Dual } from './ad'
@@ -17,9 +18,9 @@ export type LinearSystem = {
 // and the sparse gradient scatters into the corresponding Jacobian row.
 export function residualsAndJacobian(sketch: Sketch, constraints: Constraint[], refs: ParamRef[]): LinearSystem {
   const n = refs.length
-  // Map each free scalar (entity id + field) to its column in the Jacobian.
+  // Map each free scalar (coordinate or auxiliary) to its column in the Jacobian.
   const col = new Map<string, number>()
-  for (let i = 0; i < n; i++) col.set(refs[i].owner.id + ':' + refs[i].key, i)
+  for (let i = 0; i < n; i++) col.set(paramKey(refs[i]), i)
 
   // A coordinate is a free variable (unit gradient in its column) unless it is
   // fixed — an anchored point, or one pinned for this solve — in which case it is
@@ -39,6 +40,11 @@ export function residualsAndJacobian(sketch: Sketch, constraints: Constraint[], 
       const c = col.get(id + ':r')
       const r = sketch.radiusOf(id)
       return c === undefined ? konst(r) : variable(r, c)
+    },
+    aux: (cid: EntityId, index: number): Dual => {
+      const c = col.get(cid + ':aux' + index)
+      const val = sketch.auxValue(cid, index)
+      return c === undefined ? konst(val) : variable(val, c)
     },
   }
 

@@ -108,6 +108,8 @@ export type ConstraintKind =
   | 'splineTangentLine' // a spline endpoint is tangent to a line   (1)
   | 'splineTangentSpline' // two splines meet with a smooth G1 join (1)
   | 'splineTangentArc' // a spline endpoint is tangent to a circle/arc (1)
+  | 'pointOnSpline' // a point lies on a cubic spline at a solved parameter t (2)
+  | 'splineLength' // a spline's true arc length = value                    (1)
 
 export type Constraint = {
   kind: ConstraintKind
@@ -119,6 +121,13 @@ export type Constraint = {
   // Marks a constraint whose `value` is animated by the driver to sweep a
   // mechanism through its motion.
   driver?: boolean
+  // Auxiliary solver parameters owned by *this constraint* rather than any entity —
+  // the first free scalars in Datum that are neither a point coordinate nor a radius
+  // (see Session 7). A `pointOnSpline` carries one: the curve parameter t ∈ ℝ at which
+  // the point rides the cubic. They are appended to the free-parameter vector, keyed
+  // by the constraint's id, so the solver, DOF/rank analysis and the exact kinematics
+  // treat them as ordinary Jacobian columns.
+  aux?: number[]
 }
 
 export type SketchData = {

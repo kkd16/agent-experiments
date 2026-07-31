@@ -15,6 +15,7 @@ export function residualCount(c: Constraint): number {
     case 'midpoint':
     case 'symmetric':
     case 'colinear':
+    case 'pointOnSpline':
       return 2
     default:
       return 1
@@ -27,6 +28,7 @@ function plainVars(sketch: Sketch): Vars<number> {
     px: (id) => sketch.point(id).x,
     py: (id) => sketch.point(id).y,
     cr: (id) => sketch.radiusOf(id),
+    aux: (cid, i) => sketch.auxValue(cid, i),
   }
 }
 

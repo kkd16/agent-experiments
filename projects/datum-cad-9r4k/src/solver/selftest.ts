@@ -14,6 +14,7 @@ import { evalDynamics, lumpedMasses, stepDynamics } from './dynamics'
 import type { DynParams } from './dynamics'
 import { sketchToSVG, sketchToDXF, motionProfileToCSV } from '../model/export'
 import { computeMotionProfile, computeJerk } from './kinematics'
+import { cubicPoint, cubicLength, cubicLengthDense } from './curve'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
 
@@ -884,6 +885,152 @@ export function runSelfTests(): TestResult[] {
     const dataRows = rows.length - 1
     const allFinite = rows.slice(1).every((r) => r.split(',').every((v) => Number.isFinite(parseFloat(v))))
     check('export CSV rows + finite', header && dataRows === 25 && allFinite, `header ${header}, rows ${dataRows} (want 25), finite ${allFinite}`)
+  }
+
+  // === Session 7 — curve parameters (auxiliary DOF) =======================
+
+  // 42. Point-on-spline is exact: after solving the driven Bead-on-a-Curve, the curve
+  //     point B(t*) at the solved parameter coincides with the follower to machine
+  //     precision, t* is interior, and the driven mechanism is fully constrained
+  //     (3 free scalars — the bead's x, y and the auxiliary parameter t — and 3
+  //     residual equations, so 0 DOF once the driver pins the angle).
+  {
+    const built = EXAMPLES.find((e) => e.id === 'bead-on-curve')!.build()
+    const s = built.sketch
+    solve(s, { maxIterations: 160 })
+    const cps = s.constraints.find((c) => c.kind === 'pointOnSpline')!
+    const F = s.point(cps.entities[0])
+    const sp = s.spline(cps.entities[1])
+    const t = cps.aux![0]
+    const P = (id: number): [number, number] => {
+      const p = s.point(id)
+      return [p.x, p.y]
+    }
+    const bt = cubicPoint(P(sp.p0), P(sp.c0), P(sp.c1), P(sp.p1), t)
+    const dev = Math.hypot(bt[0] - F.x, bt[1] - F.y)
+    const dof = analyzeDof(s)
+    const ok = dev < 1e-8 && t > 0 && t < 1 && dof.params === 3 && dof.equations === 3 && dof.dof === 0
+    check('point-on-spline exact & mechanism well-constrained', ok, `|B(t)−F|=${dev.toExponential(1)}, t=${t.toFixed(3)}, dof=${dof.dof}`)
+  }
+
+  // 43. A bead constrained *only* to ride a fixed spline keeps exactly one degree of
+  //     freedom — it slides along the curve. Its two coordinates plus the auxiliary
+  //     parameter t are 3 free scalars against 2 residuals (B(t) − P), so dof = 1.
+  {
+    const s = new Sketch()
+    const p0 = s.addPoint(-80, 0, { fixed: true })
+    const c0 = s.addPoint(-40, 60, { fixed: true })
+    const c1 = s.addPoint(40, 60, { fixed: true })
+    const p1 = s.addPoint(80, 0, { fixed: true })
+    const sp = s.addSpline(p0.id, c0.id, c1.id, p1.id)
+    const bead = s.addPoint(0, 50)
+    s.addConstraint('pointOnSpline', [bead.id, sp.id])
+    const dof = analyzeDof(s)
+    check('free bead on a curve has 1 DOF (slides)', dof.params === 3 && dof.equations === 2 && dof.dof === 1, `params=${dof.params}, eqs=${dof.equations}, dof=${dof.dof}`)
+  }
+
+  // 44. Gauss–Legendre is *exact* on a straight spline: a cubic whose four control
+  //     points are evenly spaced along a line has constant speed |B′| = 3|d|, so its
+  //     arc-length integrand is a constant — captured exactly by any quadrature order.
+  //     The length equals the chord, and a splineLength residual targeting it vanishes.
+  {
+    const len = cubicLength([0, 0], [10, 0], [20, 0], [30, 0])
+    const s = new Sketch()
+    const p0 = s.addPoint(0, 0, { fixed: true })
+    const c0 = s.addPoint(10, 0, { fixed: true })
+    const c1 = s.addPoint(20, 0, { fixed: true })
+    const p1 = s.addPoint(30, 0, { fixed: true })
+    const sp = s.addSpline(p0.id, c0.id, c1.id, p1.id)
+    s.addConstraint('splineLength', [sp.id], 30)
+    const res = residualVector(s, s.constraints)
+    const worstRes = res.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
+    check('Gauss–Legendre exact on a straight spline', approx(len, 30, 1e-9) && worstRes < 1e-9, `len=${len.toFixed(9)}, |residual|=${worstRes.toExponential(1)}`)
+  }
+
+  // 45. On a genuinely curved cubic the fixed Gauss–Legendre length agrees with an
+  //     independent dense composite-trapezoid reference — the quadrature rule the
+  //     solver uses, cross-checked against a different integration method entirely.
+  {
+    const gl = cubicLength([-80, 0], [-40, 60], [40, 60], [80, 0])
+    const dense = cubicLengthDense([-80, 0], [-40, 60], [40, 60], [80, 0])
+    check('spline-length quadrature = dense reference', approx(gl, dense, 1e-4), `GL=${gl.toFixed(6)}, dense=${dense.toFixed(6)}, |Δ|=${Math.abs(gl - dense).toExponential(1)}`)
+  }
+
+  // 46. The splineLength constraint drives a spline to a target arc length, and holds
+  //     it there: the Ribbon of Fixed Length solves to length 210, and after a handle
+  //     is dragged the re-solved ribbon still measures 210 (the curve re-fairs while
+  //     keeping its length — an inextensible strip).
+  {
+    const s = EXAMPLES.find((e) => e.id === 'ribbon')!.build().sketch
+    const sp = s.spline(s.entities.find((e) => e.kind === 'spline')!.id)
+    const P = (id: number): [number, number] => {
+      const p = s.point(id)
+      return [p.x, p.y]
+    }
+    const r0 = solve(s, { maxIterations: 200 })
+    const len0 = cubicLength(P(sp.p0), P(sp.c0), P(sp.c1), P(sp.p1))
+    const handle = s.point(sp.c0)
+    handle.x += 25
+    handle.y -= 15
+    const r1 = solve(s, { maxIterations: 200 })
+    const len1 = cubicLength(P(sp.p0), P(sp.c0), P(sp.c1), P(sp.p1))
+    const ok = r0.converged && approx(len0, 210, 1e-3) && r1.converged && approx(len1, 210, 1e-3)
+    check('splineLength meets target & survives a drag', ok, `len ${len0.toFixed(3)} → drag → ${len1.toFixed(3)} (want 210)`)
+  }
+
+  // 47. The exact kinematics thread through the auxiliary DOF: the Bead-on-a-Curve's
+  //     velocity field (which includes dt/dθ for the curve parameter, solved from the
+  //     same Jacobian) agrees with a central finite difference of a full re-solve at
+  //     θ ± h across the sweep. This is the proof that the aux parameter is a genuine,
+  //     first-class solver coordinate — differentiated like any other.
+  {
+    const built = EXAMPLES.find((e) => e.id === 'bead-on-curve')!.build()
+    const s = built.sketch
+    const drv = built.driver!
+    const c = s.constraints.find((k) => k.id === drv.constraintId)!
+    let worst = 0
+    for (const theta0 of [70, 90, 110]) {
+      c.value = theta0
+      solve(s, { maxIterations: 160 })
+      const k = computeKinematics(s, drv.constraintId)
+      const h = 5e-3
+      c.value = theta0 + h
+      const sp = s.clone()
+      solve(sp, { maxIterations: 160 })
+      c.value = theta0 - h
+      const sm = s.clone()
+      solve(sm, { maxIterations: 160 })
+      const hr = h * (Math.PI / 180)
+      for (const pm of k.points) {
+        const pP = sp.point(pm.id)
+        const pM = sm.point(pm.id)
+        worst = Math.max(worst, Math.abs((pP.x - pM.x) / (2 * hr) - pm.vx), Math.abs((pP.y - pM.y) / (2 * hr) - pm.vy))
+      }
+    }
+    check('driven-aux velocity field = finite-diff of a re-solve', worst < 5e-2, `worst |Δẋ| = ${worst.toExponential(1)} over the bead sweep`)
+  }
+
+  // 48. The auxiliary curve parameter round-trips losslessly through serialisation:
+  //     save the solved bead, reload it, and the parameter t (and therefore every
+  //     residual) is recovered exactly. Complements the all-examples round-trip check
+  //     by pinning the specific new field.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'bead-on-curve')!.build().sketch
+    solve(s, { maxIterations: 160 })
+    const reloaded = fromJSONString(toJSONString(s.toData()))
+    const s2 = reloaded ? new Sketch(reloaded) : null
+    const cps1 = s.constraints.find((c) => c.kind === 'pointOnSpline')!
+    const cps2 = s2?.constraints.find((c) => c.kind === 'pointOnSpline')
+    const t1 = cps1.aux?.[0]
+    const t2 = cps2?.aux?.[0]
+    let drift = 0
+    if (s2) {
+      const r1 = residualVector(s, s.constraints)
+      const r2 = residualVector(s2, s2.constraints)
+      for (let i = 0; i < r1.length; i++) drift = Math.max(drift, Math.abs(r1[i] - r2[i]))
+    }
+    const ok = t1 !== undefined && t2 !== undefined && t1 === t2 && drift === 0
+    check('auxiliary parameter round-trips through save/load', ok, `t ${t1?.toFixed(6)} → ${t2?.toFixed(6)}, residual drift ${drift.toExponential(1)}`)
   }
 
   return out

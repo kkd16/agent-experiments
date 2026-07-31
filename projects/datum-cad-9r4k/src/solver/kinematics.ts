@@ -1,5 +1,6 @@
 import type { Constraint, EntityId } from '../model/types'
 import type { ParamRef, Sketch } from '../model/sketch'
+import { paramKey } from '../model/sketch'
 import { residualsAndJacobian } from './jacobian'
 import { residualCount, arcResidualCount } from './residuals'
 import { pushArcResidualsG, pushResidualsG } from './residualsCore'
@@ -127,6 +128,11 @@ function seededVars(sketch: Sketch, col: Map<string, number>, seed: Float64Array
     px: (id: EntityId) => read(id, 'x', sketch.point(id).x),
     py: (id: EntityId) => read(id, 'y', sketch.point(id).y),
     cr: (id: EntityId) => read(id, 'r', sketch.radiusOf(id)),
+    aux: (cid: EntityId, index: number): HyperDual => {
+      const c = col.get(cid + ':aux' + index)
+      const val = sketch.auxValue(cid, index)
+      return c === undefined ? h_konst(val) : h_seed(val, seed[c])
+    },
   }
 }
 
@@ -148,7 +154,7 @@ function secondDirectional(sketch: Sketch, constraints: Constraint[], col: Map<s
 export function directionalDerivatives(sketch: Sketch, seed: Float64Array): { refs: ParamRef[]; d1: number[]; d2: number[] } {
   const refs = sketch.freeParams()
   const col = new Map<string, number>()
-  for (let i = 0; i < refs.length; i++) col.set(refs[i].owner.id + ':' + refs[i].key, i)
+  for (let i = 0; i < refs.length; i++) col.set(paramKey(refs[i]), i)
   const vars = seededVars(sketch, col, seed)
   const hds: HyperDual[] = []
   for (const e of sketch.entities) if (e.kind === 'arc') pushArcResidualsG(AD2, vars, e, hds)
@@ -182,7 +188,7 @@ export function computeKinematics(sketch: Sketch, driverId: EntityId): Kinematic
 
   // Acceleration: J ẍ = −b, with b_i = ẋᵀ H_i ẋ from one hyper-dual pass.
   const col = new Map<string, number>()
-  for (let i = 0; i < n; i++) col.set(refs[i].owner.id + ':' + refs[i].key, i)
+  for (let i = 0; i < n; i++) col.set(paramKey(refs[i]), i)
   const b = secondDirectional(sketch, constraints, col, vel)
   const negB = b.map((x) => -x)
   const acc = pseudoSolve(J, negB, m, n) ?? new Float64Array(n)
@@ -193,6 +199,9 @@ export function computeKinematics(sketch: Sketch, driverId: EntityId): Kinematic
   const radiusIdx = new Map<EntityId, { vr: number; ar: number }>()
   for (let i = 0; i < n; i++) {
     const ref = refs[i]
+    // Auxiliary parameters (a curve parameter t) have their own motion coefficient
+    // dt/dθ, but there is no point/arrow to scatter it onto — skip them here.
+    if (ref.kind === 'aux') continue
     const id = ref.owner.id
     if (ref.key === 'r') {
       radiusIdx.set(id, { vr: vel[i], ar: acc[i] })
@@ -268,6 +277,11 @@ function seededVars3(sketch: Sketch, col: Map<string, number>, seed: Float64Arra
     px: (id: EntityId) => read(id, 'x', sketch.point(id).x),
     py: (id: EntityId) => read(id, 'y', sketch.point(id).y),
     cr: (id: EntityId) => read(id, 'r', sketch.radiusOf(id)),
+    aux: (cid: EntityId, index: number): CubicDual => {
+      const c = col.get(cid + ':aux' + index)
+      const val = sketch.auxValue(cid, index)
+      return c === undefined ? h3_konst(val) : h3_seed(val, seed[c])
+    },
   }
 }
 
@@ -300,7 +314,7 @@ export function computeJerk(sketch: Sketch, driverId: EntityId): Jerk {
   if (!vel) return { ok: false, points: [], peak: 0 }
 
   const col = new Map<string, number>()
-  for (let i = 0; i < n; i++) col.set(refs[i].owner.id + ':' + refs[i].key, i)
+  for (let i = 0; i < n; i++) col.set(paramKey(refs[i]), i)
 
   const b2vel = secondDirectional(sketch, constraints, col, vel) // x'ᵀHx'
   const acc = pseudoSolve(J, b2vel.map((x) => -x), m, n) ?? new Float64Array(n)
@@ -322,7 +336,7 @@ export function computeJerk(sketch: Sketch, driverId: EntityId): Jerk {
   const jIdx = new Map<EntityId, { jx?: number; jy?: number }>()
   for (let i = 0; i < n; i++) {
     const ref = refs[i]
-    if (ref.key === 'r') continue
+    if (ref.kind === 'aux' || ref.key === 'r') continue
     const slot = jIdx.get(ref.owner.id) ?? {}
     if (ref.key === 'x') slot.jx = jerk[i]
     else slot.jy = jerk[i]

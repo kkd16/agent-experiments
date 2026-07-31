@@ -21,6 +21,7 @@ import type { DynState, DynParams } from './solver/dynamics'
 import { render } from './render/renderer'
 import type { RenderState, TracePath, MotionOverlay } from './render/renderer'
 import type { MotionData, DynView, DynSample } from './ui/components'
+import { cubicPoint } from './solver/curve'
 import { pickEntity } from './render/picking'
 import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
 import type { View } from './render/view'
@@ -772,6 +773,16 @@ export default function App() {
       const pivot = s.point(s.line(c.entities[1]).p1)
       return worldToScreen(v, pivot.x, pivot.y)
     }
+    if (c.kind === 'splineLength') {
+      const sp = s.spline(c.entities[0])
+      const P = (id: EntityId): [number, number] => {
+        const p = s.point(id)
+        return [p.x, p.y]
+      }
+      const mid = cubicPoint(P(sp.p0), P(sp.c0), P(sp.c1), P(sp.p1), 0.5)
+      const [mx, my] = worldToScreen(v, mid[0], mid[1])
+      return [mx, my - 16]
+    }
     return null
   }
 
@@ -788,7 +799,7 @@ export default function App() {
       }
     }
     if (!best) return
-    const labels: Record<string, string> = { distance: 'Distance', radius: 'Radius', diameter: 'Diameter', angle: 'Angle' }
+    const labels: Record<string, string> = { distance: 'Distance', radius: 'Radius', diameter: 'Diameter', angle: 'Angle', splineLength: 'Length' }
     setEditDim({
       constraintId: best.id,
       option: {

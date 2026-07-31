@@ -3,6 +3,7 @@ import type { Constraint, EntityId } from '../model/types'
 import type { DofStatus } from '../solver/dof'
 import type { View } from './view'
 import { worldToScreen } from './view'
+import { cubicPoint } from '../solver/curve'
 
 export type TracePath = { pts: [number, number][]; color: string }
 
@@ -433,6 +434,7 @@ const GLYPH: Partial<Record<Constraint['kind'], string>> = {
   splineTangentLine: '⌒',
   splineTangentSpline: '⌒',
   splineTangentArc: '⌒',
+  pointOnSpline: '∿',
 }
 
 function midOfLine(sketch: Sketch, id: EntityId): [number, number] {
@@ -454,6 +456,8 @@ function drawConstraints(ctx: CanvasRenderingContext2D, sketch: Sketch, st: Rend
       drawRadiusDim(ctx, sketch, c, st, conflict)
     } else if (c.kind === 'angle') {
       drawAngleDim(ctx, sketch, c, st, conflict)
+    } else if (c.kind === 'splineLength') {
+      drawSplineLengthDim(ctx, sketch, c, st, conflict)
     } else {
       const sym = GLYPH[c.kind]
       if (!sym) continue
@@ -590,6 +594,20 @@ function drawAngleDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constrai
   ctx.stroke()
   const mid = (a0 + a1) / 2
   drawDimLabel(ctx, px + Math.cos(mid) * (rad + 12), py + Math.sin(mid) * (rad + 12), `${(c.value ?? 0).toFixed(0)}°`, c.driver === true, conflict)
+}
+
+// A spline's arc-length dimension: an "L…" badge floated just above the curve's
+// midpoint (the point B(0.5)), so it reads as a measurement of that curve.
+function drawSplineLengthDim(ctx: CanvasRenderingContext2D, sketch: Sketch, c: Constraint, st: RenderState, conflict: boolean) {
+  const v = st.view
+  const s = sketch.spline(c.entities[0])
+  const P = (id: EntityId): [number, number] => {
+    const p = sketch.point(id)
+    return [p.x, p.y]
+  }
+  const mid = cubicPoint(P(s.p0), P(s.c0), P(s.c1), P(s.p1), 0.5)
+  const [mx, my] = worldToScreen(v, mid[0], mid[1])
+  drawDimLabel(ctx, mx, my - 16, `L${(c.value ?? 0).toFixed(0)}`, c.driver === true, conflict)
 }
 
 function drawDimLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, driver: boolean, conflict = false) {
