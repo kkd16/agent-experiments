@@ -49,6 +49,17 @@ keep it current.
   bytecode (`char/split/jmp/save/assert/match`) and runs Thompson's NFA as a breadth-first
   thread list tracking capture slots — **linear time *with* submatches**, no backtracking. It
   declines backreferences and lookaround (those cost you the linear bound — which is the lesson).
+- `src/engine/tags/` — the **Tagged DFA (TDFA)** subsystem — capture groups as a *deterministic
+  automaton*, the one engine road the studio was missing. `tdfa.ts` determinises the Pike bytecode
+  (read as a **tagged NFA**: a `save` is a tag, a `split` is priority) into a DFA whose edges carry
+  **register operations** (`set r←pos`, `copy r←r`); states store an *abstract register* per tag
+  (not a position) and are identified up to a renaming, so the machine stays finite (the Laurikari /
+  re2c construction). It ships with `simulateTagged` — a transparent whole-string thread-list that is
+  the reference oracle — plus `runTDFA` (a single left-to-right pass filling the register file) and
+  presentation helpers (`tdfaGraph`, `registerRoles`, `formatRegOp`). `verify.ts` is the differential
+  harness: thousands of seeded random capturing patterns × inputs, checking TDFA ≡ reference on every
+  one, and ≡ JS `RegExp` capture indices wherever Thompson/Pike and ECMAScript capture semantics
+  coincide. The **Tagged DFA** tab (`components/TaggedPanel.tsx`) is the visualiser.
 - `src/engine/redos.ts` — **static ReDoS analysis**. Builds the backtracking NFA, forms the
   squared automaton N×N, and finds an SCC touching both the diagonal and an off-diagonal node:
   proof that a state reaches itself by two distinct paths over one word. It then *synthesises a
@@ -211,6 +222,73 @@ keep it current.
   and an exhaustive gallery sweep.
 
 ## Ideas / backlog
+
+### Session 25 — The Tagged DFA: capture groups as a deterministic automaton (2026-07-31, claude)
+
+The studio had four roads to a DFA and three matching engines, but every engine that recovered
+*capture groups* did it dynamically — the Pike VM forks a thread set, the backtracking VM backtracks.
+The one classic construction missing was the **Tagged DFA (TDFA)**: push all the submatch bookkeeping
+to *compile time* and leave a deterministic machine that reads one character, follows one edge, and
+runs a few register ops. This session builds it, end to end, and *proves* it.
+
+The tagged NFA we determinise is the existing Pike bytecode — no new front-end, so we inherit the
+exact semantics the rest of the studio already trusts. A `save slot` is a **tag**; a `split` encodes
+**priority** (x before y = greedy). The hard part is finiteness: tag values are input positions, so a
+naïve subset construction storing them would be infinite. The fix (Laurikari 2000): a state stores an
+**abstract register** per tag rather than a concrete position, and two states are the same up to a
+*renaming* of registers — a transition into an existing state carries the **copy-ops** that reconcile
+the two namings, and a tag crossed on an edge becomes a `set register ← current position`. The
+registers are filled in at run time by executing the ops along the path.
+
+Shipped:
+
+- [x] `engine/tags/tdfa.ts` — the alphabet partition over the Pike program, the transparent
+  whole-string thread-list **reference simulator** (`simulateTagged`), the **determiniser**
+  (`buildTDFA`) with abstract-register states, canonicalisation up to renaming, a clobber-free
+  parallel-copy discipline (fresh scratch registers, pooled across edges), and the single-pass
+  **runner** (`runTDFA`) that fills the register file and reads out whole-string captures.
+- [x] `engine/tags/verify.ts` — the differential harness. TDFA ≡ reference on **every** generated
+  pattern (the determinisation theorem), and ≡ JS `RegExp` capture indices on the subset where the
+  Thompson/Pike and ECMAScript conventions provably coincide (no capturing group under a quantifier).
+  **44,800 checks across seven seeds, zero disagreements.** Also `quickCheckPattern` for a live badge.
+- [x] `components/TaggedPanel.tsx` + CSS — the **Tagged DFA** tab: the state graph, a character
+  stepper (current state lit, register file annotated with which slot each register backs, ops shown
+  per step), the input tape with a caret and per-group capture colours, the whole-string capture
+  table, a TDFA-vs-reference agreement strip, and an in-panel verifier button.
+- [x] Documented the deliberate Thompson-vs-ECMAScript capture divergence (empty-iteration; per-
+  iteration capture reset) as a teaching note rather than papering over it.
+
+Design notes for the next session:
+
+- Registers are **correct but not minimal** — the determiniser allocates a fresh register per
+  canonical index per new state, so a small pattern can carry dozens of registers where a handful
+  would do. That is the naïve allocation on purpose; register minimisation is the marquee follow-up.
+
+Backlog (this session's plan for what comes next — pick up here):
+
+- [ ] **Register minimisation** (the re2c pass): compute liveness over the TDFA graph and coalesce
+  registers by an interference graph, with a *before → after* register-count readout in the panel.
+  Verify the minimised machine through the same differential harness before trusting it.
+- [ ] **TDFA(1) — lookahead determinisation**: defer the register writes by one character (the re2c
+  TDFA(1) optimisation) so tags set on *outgoing* transitions collapse duplicate states; contrast
+  TDFA(0) vs TDFA(1) state counts live.
+- [ ] **POSIX longest-match disambiguation** as a second mode beside leftmost-greedy: track submatch
+  *lengths* (the Kuklewicz/Okui–Suzuki orbit tags) and let the user flip the rule and watch the
+  captures change — the canonical greedy-vs-POSIX teaching moment (`(a|ab)(c|bcd)` etc.).
+- [ ] **Unanchored search + all-matches** on the TDFA (a leftmost re-seeding driver) so the tab can
+  scan a whole text like the Run tab, not only whole-string.
+- [ ] **Anchors & word boundaries** via alphabet extension (begin/end sentinels + a boundary-marker
+  split of the atom classes), lifting the scope note for `^ $ \b`.
+- [ ] **Determinism / equivalence check**: prove the TDFA's *language* equals the plain min-DFA's via
+  the existing product-automaton comparator (captures aside, membership must match) — a free oracle.
+- [ ] **Export**: emit the TDFA as a C `switch`-table (states × ops), showing the code re2c would
+  generate; wire into the existing Export tab.
+- [ ] **Complexity panel**: contrast per-character cost — Pike VM (`O(n·m)` thread·steps) vs TDFA
+  (`O(n)` edges + a bounded op count), measured live on the current input.
+- [ ] **Register-op animation on the graph**: light the `set`/`copy` ops on the traversed edge as the
+  stepper advances, not only in the side panel.
+- [ ] **Fold the TDFA into the master differential fuzzer** (`engine/fuzz.ts`) as an 11th engine for
+  the membership question, so the studio-wide "ten implementations, one verdict" grows to eleven.
 
 ### Session 24 — The active-learning studio grows two modern learners (2026-07-17, claude)
 
