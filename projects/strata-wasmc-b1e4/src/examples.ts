@@ -206,6 +206,46 @@ fn main() {
 `,
   },
   {
+    id: 'slp',
+    title: 'SLP straight-line SIMD',
+    blurb: 'Open the Optimizer tab at -O2+: a run of isomorphic adjacent-store statements — and a small unrolled loop — pack into one v128 chain (opt/slp.ts), the straight-line partner of the loop auto-vectorizer.',
+    source: `// The loop auto-vectorizer (opt/vectorize.ts) finds SIMD width across the
+// iterations of a counted loop. SLP — superword-level parallelism (opt/slp.ts,
+// -O2+) — finds it in STRAIGHT-LINE code: a run of independent, structurally
+// identical statements sitting side by side. Open the "Optimizer" tab at -O2 and
+// watch the "slp-vectorize" pass collapse four scalar stores into one v128.store.
+//
+//   * four adjacent stores  c[0..3] = …  become one 4-wide chain: a v128.load of
+//     each array, an i32x4.mul, an i32x4.add and a single v128.store;
+//   * every lane runs the identical scalar op (i32x4 wraps mod 2^32 exactly like
+//     the scalar imul), so the widened code is bit-for-bit the scalar code;
+//   * a stencil with a cross-lane read (a[k] = a[k+1]) is DECLINED — only
+//     provably lane-independent runs widen.
+//
+// Its natural feeder is full unrolling: the fixed-trip loop below is flattened
+// into an adjacent-store run that SLP then re-widens — the "unroll -> SLP" path.
+// Proven bit-identical to the interpreter at every level (tools/check-slp.mjs).
+
+fn main() {
+  let a = int_array(4); let b = int_array(4); let c = int_array(4);
+  for (let i = 0; i < 4; i = i + 1) { a[i] = i * 3 - 5; b[i] = i * i + 1; }
+
+  // A straight-line run of four isomorphic statements — one SLP seed. At -O2 this
+  // is one v128.load a, one v128.load b, an i32x4.mul, an i32x4.add, one v128.store.
+  c[0] = a[0] * b[0] + a[0];
+  c[1] = a[1] * b[1] + a[1];
+  c[2] = a[2] * b[2] + a[2];
+  c[3] = a[3] * b[3] + a[3];
+
+  // A small fixed-trip loop the unroller flattens, then SLP re-widens in place.
+  for (let i = 0; i < 4; i = i + 1) { a[i] = a[i] * 2; }
+
+  for (let i = 0; i < 4; i = i + 1) { print(c[i]); }
+  for (let i = 0; i < 4; i = i + 1) { print(a[i]); }
+}
+`,
+  },
+  {
     id: 'fib',
     title: 'Recursive Fibonacci',
     blurb: 'Tree recursion — watch the call graph in the WASM output.',
