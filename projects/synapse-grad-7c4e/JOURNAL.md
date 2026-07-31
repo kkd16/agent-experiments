@@ -138,7 +138,16 @@ gradient is hand-derived and the tape is hand-rolled). Twenty-four labs share th
   exposes the architecture's superpower: the B-spline basis is a **partition of unity** (proven to
   machine precision) and the coefficients can be **re-solved onto a new knot vector by least squares**,
   so a *trained* KAN can be **refined live** (×2 grid resolution) or **re-centred** onto its real
-  activation range **without forgetting** — the curves are preserved to ~1e-5.
+  activation range **without forgetting** — the curves are preserved to ~1e-5. And it delivers the
+  paper's real promise — **a trained KAN becoming an equation**: every edge can be **snapped** to its
+  closest elementary function (frozen to `a·g(x)+b`, still differentiable so the layers beneath keep
+  training), **pruned** to zero, or left a spline; a **group-lasso (L1) sparsifier** drives whole edges
+  toward zero as it trains, and **auto-prune/auto-snap** sweep the graph in one click. A from-scratch
+  **whole-network symbolic compiler** then substitutes the snapped edges into one readable closed-form
+  expression per output (e.g. `y = 1.49·sin(π·x)`, recovered exactly from `1.5·sin(πx)`) with a live
+  **coverage** bar. An opt-in **KAN-vs-MLP race** trains an equal-parameter MLP in lockstep on the same
+  data, both validation curves on one chart, to make the accuracy-per-parameter case concrete. The new
+  per-edge-mode fused op is gradchecked to 3.3e-8 in the engine self-test.
 - **Neural ODE · Continuous depth** — a from-scratch **continuous-depth** classifier: instead of
   stacking discrete residual blocks, a *single* learned vector field defines the whole trajectory
   by an ODE, `dz/dt = f_θ(z, t)`, with the prediction read off the terminal state `head(z(1))`.
@@ -262,9 +271,13 @@ src/
                   and *weak* class-signal-in-noise node features so the structure carries the signal
     kan.ts        a from-scratch Kolmogorov–Arnold Network: the extended-uniform B-spline grid +
                   `evalSplineBasis` (Cox–de Boor recursion with the exact analytic derivative), one fused
-                  differentiable `KANLayer` (φ = SiLU base + spline per edge; backward into base/coeff/
-                  bias *and* x), grid refitting by least squares (`refitToGrid` → grid extension /
-                  re-centring, function-preserving), and the `KAN` model (forward + tape-free `infer`)
+                  differentiable `KANLayer` with **per-edge modes** (spline / symbolic-frozen / pruned;
+                  backward into base/coeff/bias *and* x, with frozen edges taking exact-zero param grad yet
+                  still passing `a·g′(x)`), grid refitting by least squares (`refitToGrid`, function-
+                  preserving), the symbolic library (value **+ analytic derivative + string template**) with
+                  `suggestSymbolic`, edge surgery (`snapEdge`/`pruneEdge`/`autoPrune`/`autoSnap`), the
+                  group-lasso sparsifier (`addGroupLassoGrad`), and the `KAN` model (forward, tape-free
+                  `infer`, and the whole-network `compileFormula`)
     rl-env.ts     from-scratch RL environments: CartPole (gym dynamics), a GridWorld maze
                   (one-hot states, 4 layouts), Pendulum (continuous-torque swing-up) and
                   MountainCar (sparse reward + potential-based shaping), each a reset/step MDP
@@ -352,13 +365,19 @@ src/
     kan/
       KANLab.tsx           the KAN · Splines lab layout + keyboard shortcuts + save/share `#k=`
       KANPanel.tsx         task (classify/regress) / dataset / arch / spline-grid / training controls,
-                           the live ×2-grid-refine and fit-grid-to-data buttons, stats, gradcheck, self-test
-      KANDiagram.tsx       the headline: the network as a graph of functions, each edge's spline drawn
-                           inline and animating, edge prominence ∝ φ magnitude, click-to-inspect
-      EdgeInspector.tsx    a magnified view of one edge's φ(x) with the spline's knot positions marked,
-                           plus its closest elementary formula (symbolic regression over φ, with R²)
+                           the live ×2-grid-refine and fit-grid-to-data buttons, the Interpretability
+                           section (sparsify λ, auto-prune/auto-snap, mode tally, MLP-race toggle),
+                           stats, gradcheck, self-test
+      KANDiagram.tsx       the headline: the network as a graph of functions, each edge's φ drawn inline
+                           and animating, edges coloured by mode (cyan spline / amber symbolic / faint
+                           pruned), prominence ∝ φ magnitude, click-to-inspect
+      EdgeInspector.tsx    a magnified view of one edge's φ(x) with the spline's knots, its top-3 symbolic
+                           fits (click to snap), and Snap/Prune/Reset surgery + a mode badge
+      KANFormula.tsx       the compiled closed-form equation(s) for the whole network + coverage bar + tally
+      KANvsMLP.tsx         the head-to-head chart: KAN vs an equal-parameter MLP, both val-score curves
       KANBoundary.tsx      the classification decision-boundary field behind the data points
-      KANFunctionFit.tsx   the 1-D regression view: the learned curve through the noisy samples
+      KANFunctionFit.tsx   the 1-D regression view: the learned KAN curve (and the dashed MLP curve when
+                           racing) through the noisy samples
   hooks/
     ...
     useGNNTrainer.ts     owns the GNN+optimizer+graph; full-batch masked-CE training on the labeled
@@ -1011,13 +1030,45 @@ unity** (Σ_k B_k(x) ≡ 1), proven to machine precision in the self-test.
       library of 14 elementary functions (x, x², x³, |x|, √|x|, sin/cos, tanh, exp, σ, gaussian, log)
       by closed-form 1-D least squares and ranks by R²; the EdgeInspector shows the closest formula
       live (e.g. "≈ 1.98·sin(πx) + 0.01, R²=0.999"), recovering known forms to R²=1.0 in testing
-- [ ] **symbolic snap** — replace a selected edge with its best-fit formula (freeze it as a fixed
-      function), then keep training the rest, distilling the trained KAN into a readable equation
-- [ ] **L1 + entropy sparsification** of the edge functions and a **prune** button that drops
-      low-importance edges, then a re-fit — watch the network shrink to its essential skeleton
-- [ ] **multiplicative nodes** (KAN 2.0) alongside the additive ones, for rational/product structure
-- [ ] a **KAN-vs-MLP** head-to-head panel: same parameter budget, same dataset, both curves on one
-      chart, to make the accuracy-per-parameter trade-off concrete
+
+### Session 12 — the interpretability pipeline (sparsify → prune → snap → compile) ✅ shipped
+
+The KAN paper's *whole promise* is that a trained KAN can be **turned into an equation**. Today the
+lab only *shows* the closest formula per edge (read-only). This session builds the real pipeline —
+edge surgery, structured sparsification, and a **whole-network symbolic compiler** that watches the
+graph collapse into a closed-form expression — plus a **head-to-head race against an equal-parameter
+MLP**. Steps:
+
+- [x] **Per-edge modes in `KANLayer`** — every edge is `spline` (trained, default), `symbolic`
+      (frozen to `a·g(x)+b`), or `pruned` (φ≡0, frozen). The fused forward/backward honours the mode:
+      symbolic/pruned edges contribute their fixed value and still pass the `dφ/dx` chain rule
+      (so layers keep stacking) but receive **zero** gradient into their base/spline params.
+- [x] **Analytic derivatives + string templates for the symbolic library** — extended the 14-function
+      library with `dg(x)` (the frozen edge's `dx` backward) and a `tmpl(inner)` printer
+      (the compiler), so a snapped edge is both differentiable *and* printable. `formatSymbolic`/`fmtCoef` shared.
+- [x] **Prune / snap / reset API** — `KANLayer.snapEdge`/`pruneEdge`/`resetEdge`/`fitCandidates`, and
+      `KAN.autoPrune(importance<τ)` / `autoSnap(R²≥τ)` sweeps + `resetAllEdges` + `modeSummary`.
+- [x] **Whole-network symbolic compiler** — `compileFormula()` walks the layers substituting each
+      symbolic edge's printed form into its input expression (folding all biases/offsets into one
+      constant per node), dropping pruned edges, leaving `φ(...)` placeholders for un-snapped splines;
+      returns one readable equation per output + a **coverage** fraction. The headline.
+- [x] **Group-lasso (L1) sparsification during training** — `KAN.addGroupLassoGrad(λ)`, a per-edge
+      `‖base,coeffs‖₂` sub-gradient injected after backward (drives whole edges to zero); reported as
+      a penalty term.
+- [x] **Gradcheck the new modes** — added `kan-surgery (symbolic+pruned)` to the engine self-test on
+      its own RNG stream (frozen params get exact-zero grad; the `a·g′(x)` dx path matches FD): **3.3e-8**.
+- [x] **Wired the hook** — `sparsify` λ + `mlpRace` into the train step; exposed
+      prune/snap/reset/autoPrune/autoSnap/compile/modeSummary + `mlpFitView`; diagram refreshes on surgery.
+- [x] **EdgeInspector surgery UI** — top-3 symbolic fits (clickable to snap), **Snap best** / **Prune**
+      / **Reset**, the edge's current mode badged, and the φ curve coloured by mode.
+- [x] **KANPanel · Interpretability section** — sparsify-λ slider, auto-prune/auto-snap thresholds
+      and buttons, a live `spline · symbolic · pruned` tally + `% compiled`, reset-all, MLP-race toggle.
+- [x] **KANLab · Compiled-equation card** — the compiled formula(s) in monospace with a coverage bar
+      that fills as you snap the network into symbols; the KANDiagram now colours edges by mode.
+- [x] **KAN-vs-MLP race** — an opt-in equal-parameter MLP (matched param count, SiLU units) trained
+      in lockstep on the same data; a comparison chart overlays both validation-score curves + a
+      params/score readout, and the regression MLP fit is overlaid (dashed) on the function-fit plot.
+- [ ] **multiplicative nodes** (KAN 2.0) alongside the additive ones — the remaining stretch.
 - [ ] adaptive grids that **update during training** on a schedule (not just on demand), and a
       per-input-dimension grid range instead of one range per layer
 - [ ] expose the B-spline **order** sweep visually (piecewise-linear → cubic) on a single edge
@@ -1026,6 +1077,17 @@ unity** (Σ_k B_k(x) ≡ 1), proven to machine precision in the self-test.
 first (all ≤~2.5e-6), confirm training converges and the grid refit actually preserves the learned
 function, then keep the full CI gate (scope + conformance + lint + tsc + vite build) green via
 `node scripts/verify-project.mjs synapse-grad-7c4e`.
+
+**Verified (headless, this session).** The new `kan-surgery (symbolic+pruned)` self-test op gradchecks
+to **3.3e-8** (frozen params get exact-zero gradient; the `a·g′(x)` dx path matches finite differences),
+and an end-to-end snapped 2-layer KAN gradchecks to **2.2e-11** — the engine's proof that a *distilled*
+network still trains the layers beneath a snapped edge. A full train→sparsify→snap pipeline on
+`y = 1.5·sin(πx)` recovers the exact symbol: the edge fits **`sin(πx)`** with a=**1.489** (R²=0.996),
+auto-snaps, and `compileFormula()` prints **`y = 1.49·sin(π·x)`** with prediction MSE unchanged at
+6e-5. A 2-layer net compiles to a clean nested closed form, e.g.
+`0.28·tanh(2·(0.16·(x)² + 0.22·sin(π·y) + 0.12)) + 0.15`. CI gate green (127 engine ops; the two
+pre-existing seed-7 finite-difference outliers, `alphazero-loss`/`contrastive-ntxent`, are untouched
+and unrelated to this work).
 
 ## Session log
 
@@ -2493,6 +2555,20 @@ whole thing live-verified in a headless browser. All work is confined to `projec
   `transformer.ts` gained a provably-exact KV-cache decoder, a real sampler, `attentionRollout`,
   and head ablation. UI: three new interpretability cards + a rewired generator + save/share. No
   new dependencies; `base: './'`, hash routing, and the fixed 12-token vocab all preserved.
+- 2026-07-31 (claude / claude-opus-4-8[1m]): **Turned the KAN lab into a real interpretability
+  workbench** (Session 12 above). The KAN paper's promise — a trained network *becoming an equation* —
+  is now the headline: every edge can be **snapped** to its closest elementary function (frozen to
+  `a·g(x)+b`), **pruned** to zero, or left a trained spline, and a from-scratch **whole-network symbolic
+  compiler** substitutes the snapped edges into one readable closed-form expression per output with a
+  live coverage bar. A **group-lasso (L1) sparsifier** drives whole edges toward zero during training
+  so pruning is meaningful; **auto-prune**/**auto-snap** sweep the network in one click. The fused
+  autograd op was extended to honour per-edge modes — frozen edges take exact-zero parameter gradient
+  yet still pass `dφ/dx = a·g′(x)` so the layers beneath a snapped edge keep training — and a new
+  `kan-surgery` self-test gradchecks it to 3.3e-8. Added an opt-in **KAN-vs-MLP race**: an
+  equal-parameter MLP trains in lockstep on the same data, both validation curves on one chart. The
+  KANDiagram/EdgeInspector now colour edges by mode. No new dependencies; `base: './'`, hash routing
+  and the full CI gate all preserved. New files: `components/kan/KANFormula.tsx`,
+  `components/kan/KANvsMLP.tsx`.
 
 ### Session 23 — a twenty-first lab: Memory · Neural Turing Machine (claude, 2026-07-18)
 

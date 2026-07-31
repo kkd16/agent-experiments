@@ -20,6 +20,8 @@ import KANDiagram from './KANDiagram';
 import KANBoundary from './KANBoundary';
 import KANFunctionFit from './KANFunctionFit';
 import EdgeInspector from './EdgeInspector';
+import KANFormula from './KANFormula';
+import KANvsMLP from './KANvsMLP';
 
 const HASH_KEY = 'k';
 
@@ -41,6 +43,8 @@ const KAN_INITIAL: KANConfigUI = {
   weightDecay: 0,
   clipNorm: 2,
   stepsPerFrame: 4,
+  sparsify: 0,
+  mlpRace: false,
   loadId: 0,
 };
 
@@ -56,6 +60,8 @@ function sanitize(raw: unknown): KANConfigUI {
     hiddenLayers: Math.max(0, Math.min(3, Math.round(Number(c.hiddenLayers ?? KAN_INITIAL.hiddenLayers)))),
     gridSize: Math.max(3, Math.min(20, Math.round(Number(c.gridSize) || KAN_INITIAL.gridSize))),
     degree: Math.max(1, Math.min(3, Math.round(Number(c.degree) || KAN_INITIAL.degree))),
+    sparsify: Math.max(0, Math.min(0.02, Number(c.sparsify) || 0)),
+    mlpRace: Boolean(c.mlpRace),
   };
 }
 
@@ -70,6 +76,7 @@ export default function KANLab() {
     running,
     tick,
     metrics,
+    mlpMetrics,
     handle,
     start,
     pause,
@@ -80,7 +87,17 @@ export default function KANLab() {
     runGradCheck,
     boundaryView,
     fitView,
+    mlpFitView,
     diagram,
+    pruneEdge,
+    snapEdge,
+    resetEdge,
+    resetAllEdges,
+    autoPrune,
+    autoSnap,
+    edgeFits,
+    compileFormula,
+    modeSummary,
     snapshot,
     prepareLoad,
   } = useKANTrainer(config);
@@ -101,6 +118,19 @@ export default function KANLab() {
   const bView = useMemo(() => (config.task === 'classify' ? boundaryView() : null), [boundaryView, tick, config.task]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rView = useMemo(() => (config.task === 'regress' ? fitView() : null), [fitView, tick, config.task]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const compiled = useMemo(() => compileFormula(), [compileFormula, tick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const modes = useMemo(() => modeSummary(), [modeSummary, tick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mlpCurve = useMemo(() => (config.task === 'regress' && config.mlpRace ? mlpFitView() : null), [mlpFitView, tick, config.task, config.mlpRace]);
+  // ranked fits + current mode of the selected edge, for the EdgeInspector surgery controls
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const selFits = useMemo(() => (selected ? edgeFits(selected.layer, selected.i, selected.j) : []), [edgeFits, selected, tick]);
+  const selMode = useMemo(() => {
+    if (!selected || !curves || selected.layer >= curves.length) return null;
+    return curves[selected.layer].edges.find((e) => e.i === selected.i && e.j === selected.j)?.mode ?? null;
+  }, [curves, selected]);
 
   const doGradCheck = () => setGradResult(runGradCheck());
   const onRefineGrid = () => setGridSize(metrics.gridSize * 2);
@@ -170,6 +200,11 @@ export default function KANLab() {
         onGradCheck={doGradCheck}
         onRefineGrid={onRefineGrid}
         onFitGrid={fitGridToData}
+        onAutoPrune={autoPrune}
+        onAutoSnap={autoSnap}
+        onResetEdges={resetAllEdges}
+        modes={modes}
+        coverage={compiled?.coverage ?? 0}
         gradResult={gradResult}
         metrics={metrics}
         paramCount={paramCount}
@@ -185,9 +220,17 @@ export default function KANLab() {
         <div className="card">
           <div className="card-title">
             The network is a graph of learned functions
-            <span className="muted small"> — each box is one edge's spline φ(x); click it to inspect. Faint edges have been pruned by training.</span>
+            <span className="muted small"> — each box is one edge's φ(x); click to inspect &amp; snap it. Cyan = spline · amber = symbolic · faint = pruned.</span>
           </div>
           <KANDiagram layers={curves} tick={tick} selected={selected} onSelect={setSelected} width={620} height={300} />
+        </div>
+
+        <div className="card flow-side-card">
+          <div className="card-title">
+            The network as an equation
+            <span className="muted small"> — snap edges to symbols (or auto-snap) and watch the KAN compile into closed form</span>
+          </div>
+          <KANFormula compiled={compiled} classify={classify} />
         </div>
 
         <div className="stage-row">
@@ -196,7 +239,7 @@ export default function KANLab() {
               {classify ? 'Decision boundary' : 'Function fit'}
               <span className="muted small"> — {classify ? 'argmax class field behind the data' : 'the learned curve through the noisy samples'}</span>
             </div>
-            {classify ? <KANBoundary view={bView} tick={tick} size={300} /> : <KANFunctionFit view={rView} tick={tick} size={300} />}
+            {classify ? <KANBoundary view={bView} tick={tick} size={300} /> : <KANFunctionFit view={rView} tick={tick} size={300} mlpYs={mlpCurve} />}
             {classify && handle.classData && (
               <div className="legend-row">
                 {Array.from({ length: handle.classData.classes }, (_, c) => (
@@ -211,7 +254,18 @@ export default function KANLab() {
             <div className="card-title">
               Selected edge <span className="muted small">— φ(x) with its spline knots</span>
             </div>
-            <EdgeInspector layers={curves} selected={selected} tick={tick} width={300} height={210} />
+            <EdgeInspector
+              layers={curves}
+              selected={selected}
+              tick={tick}
+              width={300}
+              height={210}
+              fits={selFits}
+              mode={selMode}
+              onSnap={(name) => selected && snapEdge(selected.layer, selected.i, selected.j, name)}
+              onPrune={() => selected && pruneEdge(selected.layer, selected.i, selected.j)}
+              onReset={() => selected && resetEdge(selected.layer, selected.i, selected.j)}
+            />
             <div className="acc-readout">
               <div>
                 <span className="muted small">{classify ? 'train acc' : 'train R²'}</span>
@@ -245,6 +299,27 @@ export default function KANLab() {
             height={200}
           />
         </div>
+
+        {config.mlpRace && (
+          <div className="card flow-side-card">
+            <div className="card-title">
+              KAN vs. MLP <span className="muted small">— an equal-parameter MLP trained in lockstep on the same data</span>
+            </div>
+            <KANvsMLP
+              kanHistory={metrics.valScoreHistory}
+              mlpHistory={mlpMetrics.valScoreHistory}
+              kanParams={paramCount}
+              mlpParams={mlpMetrics.paramCount}
+              kanScore={metrics.valScore}
+              mlpScore={mlpMetrics.valScore}
+              scoreLabel={classify ? 'accuracy' : 'R²'}
+              classify={classify}
+              width={620}
+              height={200}
+              tick={tick}
+            />
+          </div>
+        )}
 
         <div className="card explain-card">
           <div className="card-title">What you're looking at</div>

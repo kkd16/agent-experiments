@@ -5,12 +5,13 @@ interface Props {
   view: FitView | null;
   tick: number;
   size: number;
+  mlpYs?: Float64Array | null; // optional overlay: the equal-parameter MLP's fit over the same xs
 }
 
 // The regression headline: the noisy 1-D dataset (points) with the KAN's learned function drawn
 // through it (the sky curve). Because each edge is a spline, a tiny KAN can fit sharp features —
 // steps, sawtooths, kinks — that a same-size ReLU MLP smears.
-export default function KANFunctionFit({ view, tick, size }: Props) {
+export default function KANFunctionFit({ view, tick, size, mlpYs }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -37,6 +38,13 @@ export default function KANFunctionFit({ view, tick, size }: Props) {
     for (const v of view.ys) {
       lo = Math.min(lo, v);
       hi = Math.max(hi, v);
+    }
+    if (mlpYs) {
+      for (const v of mlpYs) {
+        if (!Number.isFinite(v)) continue;
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
+      }
     }
     if (hi - lo < 1e-6) {
       lo -= 1;
@@ -78,6 +86,22 @@ export default function KANFunctionFit({ view, tick, size }: Props) {
       ctx.fill();
     }
 
+    // MLP overlay curve (dashed pink) — the equal-parameter opponent, drawn under the KAN curve
+    if (mlpYs && mlpYs.length === view.xs.length) {
+      ctx.strokeStyle = '#f472b6';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      for (let s = 0; s < view.xs.length; s++) {
+        const px = toX(view.xs[s]);
+        const py = toY(mlpYs[s]);
+        if (s === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // model curve
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2.4;
@@ -89,7 +113,7 @@ export default function KANFunctionFit({ view, tick, size }: Props) {
       else ctx.lineTo(px, py);
     }
     ctx.stroke();
-  }, [view, tick, size]);
+  }, [view, tick, size, mlpYs]);
 
   return <canvas ref={ref} style={{ width: size, height: size, maxWidth: '100%' }} className="board" />;
 }

@@ -1,6 +1,7 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import type { KANConfigUI, KANMetrics } from '../../hooks/useKANTrainer';
 import type { GradCheckResult } from '../../engine/gradcheck';
+import type { ModeSummary } from '../../engine/kan';
 import type { OptimizerKind } from '../../engine/optim';
 import { CLASS_DATASETS, REGRESSION_DATASETS } from '../../engine/data';
 import SelfTestPanel from '../SelfTestPanel';
@@ -16,6 +17,11 @@ interface Props {
   onGradCheck: () => void;
   onRefineGrid: () => void;
   onFitGrid: () => void;
+  onAutoPrune: (tau: number) => number;
+  onAutoSnap: (r2: number) => number;
+  onResetEdges: () => void;
+  modes: ModeSummary | null;
+  coverage: number;
   gradResult: GradCheckResult | null;
   metrics: KANMetrics;
   paramCount: number;
@@ -50,6 +56,11 @@ export default function KANPanel({
   onGradCheck,
   onRefineGrid,
   onFitGrid,
+  onAutoPrune,
+  onAutoSnap,
+  onResetEdges,
+  modes,
+  coverage,
   gradResult,
   metrics,
   paramCount,
@@ -61,8 +72,16 @@ export default function KANPanel({
   shareMsg,
 }: Props) {
   const [slotName, setSlotName] = useState('kan-1');
+  const [pruneTau, setPruneTau] = useState(0.05);
+  const [snapR2, setSnapR2] = useState(0.99);
+  const [surgeryMsg, setSurgeryMsg] = useState<string | null>(null);
   const set = <K extends keyof KANConfigUI>(key: K, value: KANConfigUI[K]) => setConfig((c) => ({ ...c, [key]: value }));
   const classify = config.task === 'classify';
+  const flashSurgery = (msg: string) => {
+    setSurgeryMsg(msg);
+    window.setTimeout(() => setSurgeryMsg(null), 2600);
+  };
+  const covPct = Math.round(coverage * 100);
 
   return (
     <aside className="panel">
@@ -171,6 +190,50 @@ export default function KANPanel({
             fit grid → data
           </button>
         </div>
+      </section>
+
+      <section className="group">
+        <h3>
+          Interpretability
+          {modes && <span className="muted small"> · {covPct}% compiled</span>}
+        </h3>
+        <div className="kan-mode-tally">
+          <span className="tag tag-spline">{modes ? modes.spline : 0} spline</span>
+          <span className="tag tag-symbolic">{modes ? modes.symbolic : 0} symbolic</span>
+          <span className="tag tag-pruned">{modes ? modes.pruned : 0} pruned</span>
+        </div>
+        <label className="field">
+          <span>Sparsify λ (group-lasso) · {config.sparsify.toFixed(4)}</span>
+          <input type="range" min={0} max={0.02} step={0.0005} value={config.sparsify} onChange={(e) => set('sparsify', Number(e.target.value))} />
+        </label>
+        <p className="muted small">
+          A per-edge L1 (group-lasso) penalty drives whole edges to zero while it trains — the structured
+          sparsity that makes pruning meaningful. Watch faint edges disappear, then prune &amp; snap.
+        </p>
+        <label className="field">
+          <span>Auto-prune importance &lt; {pruneTau.toFixed(3)}</span>
+          <input type="range" min={0.005} max={0.4} step={0.005} value={pruneTau} onChange={(e) => setPruneTau(Number(e.target.value))} />
+        </label>
+        <label className="field">
+          <span>Auto-snap R² ≥ {snapR2.toFixed(3)}</span>
+          <input type="range" min={0.9} max={0.999} step={0.001} value={snapR2} onChange={(e) => setSnapR2(Number(e.target.value))} />
+        </label>
+        <div className="run-row">
+          <button className="ghost" onClick={() => flashSurgery(`Pruned ${onAutoPrune(pruneTau)} edge(s)`)} title="drop every faint spline edge">
+            ✂ Auto-prune
+          </button>
+          <button className="ghost" onClick={() => flashSurgery(`Snapped ${onAutoSnap(snapR2)} edge(s)`)} title="freeze every well-fit edge to its formula">
+            ⧉ Auto-snap
+          </button>
+          <button className="ghost" onClick={onResetEdges} title="every edge back to a trained spline">
+            ↺ Reset
+          </button>
+        </div>
+        {surgeryMsg && <div className="share-msg">{surgeryMsg}</div>}
+        <label className="toggle">
+          <input type="checkbox" checked={config.mlpRace} onChange={(e) => set('mlpRace', e.target.checked)} />
+          <span>Race an equal-parameter MLP</span>
+        </label>
       </section>
 
       <section className="group">
