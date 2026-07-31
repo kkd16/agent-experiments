@@ -6,6 +6,7 @@ import { layoutGraph } from '../engine/layout';
 import {
   astToTDFA,
   minimizeRegisters,
+  emitC,
   runTDFA,
   simulateTagged,
   tdfaGraph,
@@ -230,6 +231,9 @@ export function TaggedPanel({ compiled, text, onTextChange }: Props) {
 
       {/* --- Cross-engine agreement --- */}
       <Agreement compiled={compiled} codes={codes} run={run} />
+
+      {/* --- Generated C matcher --- */}
+      <CExport tdfa={tdfa} label={compiled.source} />
 
       {/* --- The verifier --- */}
       <Verifier />
@@ -459,6 +463,40 @@ function Agreement({ compiled, codes, run }: { compiled: Compiled; codes: number
         <span className="engine-val">{agree ? 'identical ✓' : 'DIVERGED'}</span>
       </div>
     </div>
+  );
+}
+
+// The endpoint: the machine on screen, emitted as compilable C. What re2c does.
+function CExport({ tdfa, label }: { tdfa: TDFA; label: string }) {
+  const code = useMemo(() => emitC(tdfa, label || 'regex'), [tdfa, label]);
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(code).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      },
+      () => {},
+    );
+  };
+  return (
+    <details className="c-export">
+      <summary>
+        Generated C matcher <span className="c-export-hint">— the machine on screen, as compilable code (what re2c emits)</span>
+      </summary>
+      <div className="c-export-body">
+        <button className="verify-btn" onClick={copy}>
+          {copied ? 'copied ✓' : 'copy'}
+        </button>
+        <pre className="c-code">{code}</pre>
+        <p className="muted-note">
+          A straight rendering of this TDFA: a <code>state</code> switch, per-state range dispatch, the integer register
+          file, the <code>set</code>/<code>copy</code> ops inlined, and the capture read-out at accept. Feed it a
+          code-point array; it fills <code>caps[]</code> and returns 1 on a whole-string match. Verified in development by
+          compiling with <code>gcc -O2</code> and diffing its captures against this engine.
+        </p>
+      </div>
+    </details>
   );
 }
 
