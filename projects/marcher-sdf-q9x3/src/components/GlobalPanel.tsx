@@ -2,7 +2,7 @@
 // render quality and post-processing — everything that isn't a single node.
 
 import type { Dispatch } from 'react'
-import type { Scene } from '../scene/types'
+import type { Scene, SkyMode } from '../scene/types'
 import type { Action } from '../state/reducer'
 import { ColorField, Section, Segmented, Slider, Toggle, Vec3Field } from './controls'
 
@@ -224,7 +224,33 @@ export default function GlobalPanel({ scene, dispatch }: GlobalPanelProps) {
       </Section>
 
       <Section title="Environment">
-        <ColorField label="Sky" value={env.skyColor} onChange={(skyColor) => dispatch({ type: 'patchEnv', patch: { skyColor } })} />
+        <Segmented<SkyMode>
+          label="Sky"
+          value={env.skyMode}
+          options={[
+            { value: 'gradient', label: 'Gradient' },
+            { value: 'physical', label: 'Physical' },
+          ]}
+          onChange={(skyMode) => dispatch({ type: 'patchEnv', patch: { skyMode } })}
+        />
+        {env.skyMode === 'physical' ? (
+          <>
+            <p className="hint">
+              A Rayleigh + Mie atmosphere driven by the sun: blue overhead, pale at the horizon,
+              reddening toward a low sun. Feeds the background, reflections and path-traced sky.
+            </p>
+            <Slider
+              label="Turbidity (haze)"
+              value={env.turbidity}
+              min={1}
+              max={10}
+              step={0.1}
+              format={(v) => v.toFixed(1)}
+              onChange={(turbidity) => dispatch({ type: 'patchEnv', patch: { turbidity } })}
+            />
+          </>
+        ) : null}
+        <ColorField label="Sky colour" value={env.skyColor} onChange={(skyColor) => dispatch({ type: 'patchEnv', patch: { skyColor } })} />
         <ColorField
           label="Horizon"
           value={env.horizonColor}

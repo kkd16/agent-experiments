@@ -40,6 +40,8 @@ interface NodeOpts {
   ior?: number
   absorption?: number
   dispersion?: number
+  iridescence?: number
+  filmThickness?: number
   op?: BooleanOp
   smooth?: boolean
   radius?: number
@@ -82,6 +84,8 @@ function mk(kind: PrimitiveKind, o: NodeOpts = {}): SdfNode {
   if (o.ior != null) n.material.ior = o.ior
   if (o.absorption != null) n.material.absorption = o.absorption
   if (o.dispersion != null) n.material.dispersion = o.dispersion
+  if (o.iridescence != null) n.material.iridescence = o.iridescence
+  if (o.filmThickness != null) n.material.filmThickness = o.filmThickness
   if (o.op) n.combine.op = o.op
   if (o.smooth != null) n.combine.smooth = o.smooth
   if (o.radius != null) n.combine.radius = o.radius
@@ -132,6 +136,8 @@ export function defaultSun(): Sun {
 
 export function defaultEnv(): Environment {
   return {
+    skyMode: 'gradient',
+    turbidity: 3,
     skyColor: c('#5b8fd6'),
     horizonColor: c('#cfe3f5'),
     groundColor: c('#3a3a44'),
@@ -1107,6 +1113,126 @@ function supernova(): Scene {
   )
 }
 
+// Daybreak — the physical sky. A chrome sphere and a clear-glass torus rest on a
+// pale stone floor under a low, orange sun; the Rayleigh+Mie atmosphere reddens
+// toward the horizon and the whole scene is bathed in real golden-hour light, the
+// sky mirrored in the chrome and refracted through the glass. Turn Sky → Gradient
+// in the World panel to watch the atmosphere collapse back to a flat ramp.
+function daybreak(): Scene {
+  return base(
+    [
+      mk('sphere', {
+        name: 'Chrome',
+        params: [0.85, 0, 0, 0],
+        pos: [-0.95, 0.85, 0],
+        color: '#eef0f4',
+        metallic: 1,
+        rough: 0.05,
+        refl: 0.7,
+      }),
+      mk('torus', {
+        name: 'Glass ring',
+        params: [0.85, 0.26, 0, 0],
+        pos: [1.0, 0.9, 0],
+        rot: [72, 0, 18],
+        color: '#ffffff',
+        rough: 0.03,
+        transmission: 1,
+        ior: 1.5,
+        op: 'union',
+        smooth: false,
+        spin: [0, 16, 0],
+      }),
+      mk('roundBox', {
+        name: 'Plinth',
+        params: [0.5, 0.32, 0.5, 0.06],
+        pos: [-0.95, 0.16, 0],
+        color: '#b9b2a3',
+        rough: 0.5,
+        op: 'union',
+        smooth: false,
+      }),
+    ],
+    {
+      camera: { ...defaultCamera(), autoRotate: true, autoRotateSpeed: 4, distance: 6.6, elevation: 8, azimuth: 20, target: [0, 0.8, 0], fov: 42 },
+      sun: { ...defaultSun(), azimuth: 165, elevation: 5, color: c('#ffd9a8'), intensity: 1.7, angle: 2 },
+      env: { ...defaultEnv(), skyMode: 'physical', turbidity: 4, ambient: 0.4, fogDensity: 0.006, fogColor: c('#e9c6a0') },
+      ground: { ...defaultGround(), checker: false, color1: c('#c8c0b0'), color2: c('#c8c0b0'), height: -0.28 },
+      quality: { ...defaultQuality(), maxSteps: 170, reflections: true },
+      post: { ...defaultPost(), exposure: 1.15, vignette: 0.4, saturation: 1.14, bloom: 0.18, bloomThreshold: 1.6 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 5, maxSamples: 640, fireflyClamp: 8 },
+    },
+  )
+}
+
+// Frost — rough dielectrics. Three etched-glass slabs and a bead stand in front of
+// a bright coloured backdrop: because their Roughness is turned up, the refraction
+// scatters, so the backdrop blurs to a soft frosted wash rather than a sharp
+// see-through. Slide Roughness to 0 on a slab (Node → Material) to melt the frost
+// back to clear glass. Path-traced so the scatter resolves cleanly.
+function frost(): Scene {
+  const slab = (o: NodeOpts): SdfNode =>
+    mk('roundBox', { color: '#eaf2f6', transmission: 1, ior: 1.45, op: 'union', smooth: false, ...o })
+  return base(
+    [
+      mk('box', { name: 'Backdrop', params: [3.2, 1.7, 0.12, 0], pos: [0, 1.0, -1.5], color: '#ff7a4d', rough: 0.85, texture: 'checker', texScale: 1.1, texStrength: 0.4 }),
+      slab({ name: 'Frosted L', params: [0.42, 1.0, 0.14, 0.06], pos: [-1.05, 0.7, 0.1], rot: [0, 8, 0], rough: 0.5 }),
+      slab({ name: 'Frosted M', params: [0.42, 1.15, 0.14, 0.06], pos: [0, 0.85, 0.35], rot: [0, -4, 0], rough: 0.34 }),
+      slab({ name: 'Frosted R', params: [0.42, 0.9, 0.14, 0.06], pos: [1.05, 0.6, 0.1], rot: [0, -12, 0], rough: 0.6 }),
+      mk('sphere', { name: 'Clear bead', params: [0.4, 0, 0, 0], pos: [0.2, 0.4, 1.1], color: '#ffffff', rough: 0.04, transmission: 1, ior: 1.5, op: 'union', smooth: false }),
+    ],
+    {
+      camera: { ...defaultCamera(), autoRotate: false, distance: 5.6, elevation: 8, azimuth: 12, target: [0, 0.8, 0], fov: 44 },
+      sun: { ...defaultSun(), elevation: 46, azimuth: 40, intensity: 1.4, angle: 3 },
+      env: { ...defaultEnv(), skyColor: c('#9fb8d8'), horizonColor: c('#eef4fb'), ambient: 0.6, fogDensity: 0 },
+      ground: { ...defaultGround(), checker: false, color1: c('#d6d9de'), color2: c('#d6d9de'), height: -0.02 },
+      quality: { ...defaultQuality(), maxSteps: 180 },
+      post: { ...defaultPost(), exposure: 1.15, vignette: 0.35, saturation: 1.1 },
+      render: { ...defaultRender(), integrator: 'pathtrace', bounces: 6, maxSamples: 768, fireflyClamp: 6 },
+    },
+  )
+}
+
+// Iridescent — thin-film colour. A cluster of soap-bubble spheres float over a dark
+// reflective pool; each has a slightly different film thickness, so every highlight
+// shimmers a different hue and the colours shift as the camera drifts. The clearest
+// demonstration of the thin-film interference term. Under the physical dawn sky.
+function iridescent(): Scene {
+  const nodes: SdfNode[] = []
+  const cols = ['#f4f6fb', '#eef2fa', '#f6f0fa', '#eef6f4', '#f8f2ee', '#f0f2f8']
+  const thick = [220, 340, 470, 300, 560, 400]
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2
+    nodes.push(
+      mk('sphere', {
+        name: `Bubble ${i + 1}`,
+        params: [0.4 + 0.08 * Math.cos(a * 2), 0, 0, 0],
+        pos: [Math.cos(a) * 1.1, 0.85 + 0.35 * Math.sin(a * 1.5), Math.sin(a) * 1.1],
+        color: cols[i],
+        rough: 0.08,
+        refl: 0.4,
+        transmission: 0.85,
+        ior: 1.33,
+        iridescence: 1,
+        filmThickness: thick[i],
+        op: i === 0 ? 'union' : 'union',
+        smooth: false,
+        posAmp: [0, 0.18, 0],
+        posSpeed: [0.8 + i * 0.1, 0.8, 0.8],
+      }),
+    )
+  }
+  return base(nodes, {
+    camera: { ...defaultCamera(), autoRotate: true, autoRotateSpeed: 5, distance: 6.2, elevation: 14, azimuth: 24, target: [0, 0.9, 0], fov: 44 },
+    sun: { ...defaultSun(), elevation: 24, azimuth: 130, color: c('#ffe6c4'), intensity: 1.4, angle: 2 },
+    env: { ...defaultEnv(), skyMode: 'physical', turbidity: 5, ambient: 0.35, fogDensity: 0 },
+    ground: { ...defaultGround(), checker: false, color1: c('#0a0c14'), color2: c('#0a0c14'), height: -0.05 },
+    quality: { ...defaultQuality(), maxSteps: 180, reflections: true },
+    post: { ...defaultPost(), exposure: 1.2, vignette: 0.45, saturation: 1.3, bloom: 0.24, bloomThreshold: 1.4 },
+    render: { ...defaultRender(), integrator: 'pathtrace', bounces: 6, maxSamples: 768, fireflyClamp: 6 },
+  })
+}
+
 export interface Preset {
   id: string
   name: string
@@ -1119,6 +1245,9 @@ export const PRESETS: Preset[] = [
   { id: 'radiance', name: 'Radiance', build: radiance },
   { id: 'prism', name: 'Prism', build: prism },
   { id: 'crystal', name: 'Crystal', build: crystal },
+  { id: 'iridescent', name: 'Iridescent', build: iridescent },
+  { id: 'frost', name: 'Frost', build: frost },
+  { id: 'daybreak', name: 'Daybreak', build: daybreak },
   { id: 'supernova', name: 'Supernova', build: supernova },
   { id: 'nocturne', name: 'Nocturne', build: nocturne },
   { id: 'lattice', name: 'Lattice', build: lattice },

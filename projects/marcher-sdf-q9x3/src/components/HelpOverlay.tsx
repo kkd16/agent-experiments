@@ -111,6 +111,27 @@ export default function HelpOverlay({ onClose }: { onClose: () => void }) {
             along refracting edges as the frame accumulates (try <strong>Prism</strong> and
             <strong> Crystal</strong>).
           </li>
+          <li>
+            <strong>Roughness</strong> now frosts glass too: raise it and the refracted light
+            scatters, blurring what shows through into etched, sea-glass frost (try <strong>Frost</strong>).
+          </li>
+        </ul>
+
+        <h3>Iridescence &amp; the sky</h3>
+        <ul>
+          <li>
+            <strong>Iridescence</strong> (Node → Material) coats a surface in a soap-bubble-thin
+            film: the specular highlight is tinted by wavelength interference and shifts hue with the
+            viewing angle — bubbles, oil slicks, anodised metal. <strong>Film thickness</strong> picks
+            the palette. Try the <strong>Iridescent</strong> preset.
+          </li>
+          <li>
+            <strong>Sky → Physical</strong> (World → Environment) swaps the flat gradient for a real
+            Rayleigh + Mie <em>atmosphere</em> driven by the sun: deep-blue zenith, pale horizon, a
+            reddening low sun and a genuine solar aureole, with a <strong>Turbidity</strong> haze
+            knob. It lights the background, reflections and the path-traced sky — set the sun near the
+            horizon for golden hour (try <strong>Daybreak</strong>).
+          </li>
         </ul>
 
         <h3>Bloom</h3>

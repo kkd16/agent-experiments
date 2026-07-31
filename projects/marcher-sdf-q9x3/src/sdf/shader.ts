@@ -73,6 +73,13 @@ uniform float uClamp;         // path tracer: per-sample firefly clamp (0 = off)
 uniform vec4 uMatGlass[NODE_COUNT];
 uniform int uDispersive;      // 1 = at least one material has dispersion > 0
 
+// Thin-film iridescence: per-node (iridescence 0..1, film thickness nm, _, _).
+uniform vec4 uMatFilm[NODE_COUNT];
+
+// Environment / sky model.
+uniform int uSkyMode;         // 0 = gradient, 1 = physical Rayleigh+Mie atmosphere
+uniform float uTurbidity;     // physical sky: atmospheric haze (Mie scale)
+
 uniform float uExposure;
 uniform float uGamma;
 uniform float uVignette;
@@ -108,6 +115,8 @@ vec3 tonemap(vec3 col, vec2 frag){
 `
 
 const RENDER_CODE = /* glsl */ `
+#define PI 3.14159265359
+
 // Jittered per-sample light direction (an area sun), set once per sample.
 vec3 gSunDir;
 
@@ -122,7 +131,115 @@ void seedRng(vec2 frag, int si){
   gSeed = fract((p.x + p.y) * 0.61803398875 + float(si) * 0.375);
 }
 
+// Ray ↔ origin-centred sphere; returns the two hit distances (near, far), or an
+// empty interval (near > far) on a miss. Used by the atmosphere integral.
+vec2 raySphere(vec3 r0, vec3 rd, float sr){
+  float a = dot(rd, rd);
+  float b = 2.0 * dot(rd, r0);
+  float cc = dot(r0, r0) - sr * sr;
+  float d = b * b - 4.0 * a * cc;
+  if (d < 0.0) return vec2(1e9, -1e9);
+  d = sqrt(d);
+  return vec2((-b - d) / (2.0 * a), (-b + d) / (2.0 * a));
+}
+
+// A compact analytic **Rayleigh + Mie single-scattering** atmosphere: integrate the
+// in-scattered sunlight along the view ray through an Earth-like shell, accounting
+// for out-scattering toward the sun at each step. Gives a blue zenith, a pale
+// horizon, a reddening low sun and a real solar aureole — all from the sun's own
+// direction plus a turbidity (haze) knob. Called only on ray misses / reflections,
+// so the small double loop is cheap. Adapted from wwwtyro/glsl-atmosphere (MIT).
+vec3 physicalSky(vec3 rd, vec3 sun){
+  const int iSteps = 12;
+  const int jSteps = 4;
+  const float rPlanet = 6371000.0;
+  const float rAtmos = 6471000.0;
+  const vec3 kRlh = vec3(0.0000055, 0.000013, 0.0000224);
+  const float shRlh = 8000.0;
+  const float shMie = 1200.0;
+  const float g = 0.758;
+  const float iSun = 22.0;
+  float kMie = 0.000021 * clamp(uTurbidity, 0.4, 12.0) * (1.0 / 3.0);
+
+  // Lift the view ray a touch above the horizon so grazing/downward reflections
+  // still graze the sky instead of dropping straight into the planet's shadow.
+  vec3 r = normalize(vec3(rd.x, max(rd.y, -0.05) + 0.05, rd.z));
+  vec3 r0 = vec3(0.0, rPlanet + 1000.0, 0.0);
+  vec3 pSun = normalize(sun);
+
+  vec2 patmo = raySphere(r0, r, rAtmos);
+  if (patmo.x > patmo.y) return vec3(0.0);
+  patmo.y = min(patmo.y, raySphere(r0, r, rPlanet).x);
+  float iStepSize = (patmo.y - patmo.x) / float(iSteps);
+
+  float iTime = 0.0;
+  vec3 totalRlh = vec3(0.0);
+  vec3 totalMie = vec3(0.0);
+  float iOdRlh = 0.0;
+  float iOdMie = 0.0;
+
+  float mu = dot(r, pSun);
+  float mumu = mu * mu;
+  float gg = g * g;
+  float pRlh = 3.0 / (16.0 * PI) * (1.0 + mumu);
+  float pMie = 3.0 / (8.0 * PI) * ((1.0 - gg) * (mumu + 1.0)) /
+               (pow(1.0 + gg - 2.0 * mu * g, 1.5) * (2.0 + gg));
+
+  for (int i = 0; i < iSteps; i++){
+    vec3 iPos = r0 + r * (iTime + iStepSize * 0.5);
+    float iHeight = length(iPos) - rPlanet;
+    float odStepRlh = exp(-iHeight / shRlh) * iStepSize;
+    float odStepMie = exp(-iHeight / shMie) * iStepSize;
+    iOdRlh += odStepRlh;
+    iOdMie += odStepMie;
+
+    float jStepSize = raySphere(iPos, pSun, rAtmos).y / float(jSteps);
+    float jTime = 0.0;
+    float jOdRlh = 0.0;
+    float jOdMie = 0.0;
+    for (int j = 0; j < jSteps; j++){
+      vec3 jPos = iPos + pSun * (jTime + jStepSize * 0.5);
+      float jHeight = length(jPos) - rPlanet;
+      jOdRlh += exp(-jHeight / shRlh) * jStepSize;
+      jOdMie += exp(-jHeight / shMie) * jStepSize;
+      jTime += jStepSize;
+    }
+    vec3 attn = exp(-(kMie * (iOdMie + jOdMie) + kRlh * (iOdRlh + jOdRlh)));
+    totalRlh += odStepRlh * attn;
+    totalMie += odStepMie * attn;
+    iTime += iStepSize;
+  }
+  return iSun * (pRlh * kRlh * totalRlh + pMie * kMie * totalMie);
+}
+
+// Thin-film interference tint: for a soap-bubble-thin coating of optical thickness
+// thicknessNm, seen at grazing factor cosTheta, the constructive/destructive
+// interference of three wavelengths gives a hue that shifts with angle. Normalised
+// to mean 1 so it re-tints the specular highlight without darkening it — a pure
+// hue shift that iridescence then blends in.
+vec3 thinFilm(float cosTheta, float thicknessNm){
+  float nf = 1.35;
+  float sinT2 = (1.0 - cosTheta * cosTheta) / (nf * nf);
+  float cosT = sqrt(max(1.0 - sinT2, 0.0));
+  float opd = 2.0 * nf * thicknessNm * cosT;              // optical path difference (nm)
+  vec3 lambda = vec3(650.0, 550.0, 450.0);
+  vec3 inten = 0.5 + 0.5 * cos((2.0 * PI * opd) / lambda);
+  float m = max((inten.r + inten.g + inten.b) / 3.0, 1e-3);
+  return inten / m;
+}
+
+// The iridescent tint for material id at grazing factor cosTheta (white if the
+// material isn't iridescent).
+vec3 iridescenceTint(float id, float cosTheta){
+  if (id < -0.5) return vec3(1.0);
+  int i = int(id + 0.5);
+  float amt = uMatFilm[i].x;
+  if (amt <= 0.001) return vec3(1.0);
+  return mix(vec3(1.0), thinFilm(clamp(cosTheta, 0.0, 1.0), uMatFilm[i].y), amt);
+}
+
 vec3 skyColor(vec3 rd){
+  if (uSkyMode == 1) return physicalSky(rd, gSunDir);
   float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
   vec3 col = mix(uHorizonColor, uSkyColor, pow(t, 0.75));
   float s = max(dot(rd, gSunDir), 0.0);
@@ -272,7 +389,7 @@ vec3 emissiveLight(vec3 pos, vec3 nor){
 // Blinn-Phong highlight + emission + emissive-node lighting. No reflection or
 // fog — the caller adds those.
 vec3 localShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, float metallic,
-                float rough, float emis){
+                float rough, float emis, vec3 specTint){
   vec3 L = gSunDir;
   float shadow = softShadow(pos + nor * 0.02, L, 0.02, 14.0, uShadowSoft);
   shadow = mix(1.0, shadow, uShadowStr);
@@ -285,7 +402,7 @@ vec3 localShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, float metallic,
   vec3 H = normalize(L - rd);
   float shin = mix(8.0, 420.0, 1.0 - rough);
   float spec = pow(max(dot(nor, H), 0.0), shin);
-  vec3 specCol = mix(vec3(1.0), albedo, metallic);
+  vec3 specCol = mix(vec3(1.0), albedo, metallic) * specTint;
 
   vec3 col = albedo * (amb * ao + direct);
   col += specCol * spec * direct * (0.6 + 0.5 * metallic);
@@ -298,7 +415,7 @@ vec3 localShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, float metallic,
 // to the far wall, refract back out, and shade whatever lies beyond — tinted by
 // Beer–Lambert absorption through the glass and mixed with a Fresnel sky reflection.
 // The path tracer does this properly; this keeps glass legible in the live preview.
-vec3 glassShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, vec4 g){
+vec3 glassShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, vec4 g, float rough){
   float ior = max(g.y, 1.0);
   float absorb = g.z;
   float cosi = max(dot(nor, -rd), 0.0);
@@ -327,10 +444,15 @@ vec3 glassShade(vec3 pos, vec3 nor, vec3 rd, vec3 albedo, vec4 g){
       vec3 bn = calcNormal(bp);
       vec3 ba; float bm, brg, brf, be;
       getMaterial(bg.y, bp, bn, ba, bm, brg, brf, be);
-      tcol = localShade(bp, bn, outv, ba, bm, brg, be);
+      tcol = localShade(bp, bn, outv, ba, bm, brg, be, vec3(1.0));
     }
     tcol *= exp(-absorb * (1.0 - albedo) * ex.x);  // coloured absorption
   }
+  // Frosted glass: a rough dielectric scatters what shows through, so wash the
+  // crisp see-through toward the surrounding sky/reflection as roughness climbs.
+  // (The path tracer resolves true frost by scattering the refracted ray; this
+  // keeps it legible in the fast preview.)
+  tcol = mix(tcol, rcol, clamp(rough - 0.12, 0.0, 1.0) * 0.6);
   return mix(tcol, rcol, clamp(fres, 0.0, 1.0));
 }
 
@@ -341,14 +463,15 @@ vec3 shade(vec3 pos, vec3 rd, float matId){
   vec3 nor = calcNormal(pos);
   vec3 albedo; float metallic, rough, refl, emis;
   getMaterial(matId, pos, nor, albedo, metallic, rough, refl, emis);
-  vec3 col = localShade(pos, nor, rd, albedo, metallic, rough, emis);
+  vec3 irid = iridescenceTint(matId, max(dot(nor, -rd), 0.0));
+  vec3 col = localShade(pos, nor, rd, albedo, metallic, rough, emis, irid);
   vec4 glass = glassOf(matId);
 
   if (uReflect == 1){
     float fres = pow(clamp(1.0 - max(dot(nor, -rd), 0.0), 0.0, 1.0), 5.0);
     float amount = clamp(refl + fres * 0.4, 0.0, 1.0) * mix(1.0, 0.22, rough);
     if (amount > 0.01){
-      vec3 tint = mix(vec3(1.0), albedo, metallic);
+      vec3 tint = mix(vec3(1.0), albedo, metallic) * irid;
       vec3 rr = reflect(rd, nor);
       vec3 rro = pos + nor * 0.03;
       vec2 r2 = raymarch(rro, rr);
@@ -360,14 +483,14 @@ vec3 shade(vec3 pos, vec3 rd, float matId){
         vec3 rn = calcNormal(rp);
         vec3 ra; float rmet, rrg, rrf, rem;
         getMaterial(r2.y, rp, rn, ra, rmet, rrg, rrf, rem);
-        rcol = localShade(rp, rn, rr, ra, rmet, rrg, rem);
+        rcol = localShade(rp, rn, rr, ra, rmet, rrg, rem, vec3(1.0));
       }
       col = mix(col, rcol * tint, amount);
     }
   }
 
   if (glass.x > 0.001){
-    col = mix(col, glassShade(pos, nor, rd, albedo, glass), glass.x);
+    col = mix(col, glassShade(pos, nor, rd, albedo, glass, rough), glass.x);
   }
 
   float fog = 1.0 - exp(-uFogDensity * length(pos - uCamPos));
@@ -409,12 +532,13 @@ vec3 shadeRay(vec3 ro, vec3 rd){
 // environment dome and emitters share that scale, which keeps the estimator
 // self-consistent between direct (next-event) and indirect (BSDF-sampled) terms.
 #define MAX_BOUNCES 12
-#define PI 3.14159265359
 
-// The soft sky gradient WITHOUT the sharp sun disc. Diffuse bounces gather the
-// sun through next-event estimation, so the disc is excluded here to avoid
-// double-counting it; the broad near-sun glow is kept (it is not a delta light).
+// The soft sky WITHOUT the sharp sun disc. Diffuse bounces gather the sun through
+// next-event estimation, so the disc is excluded here to avoid double-counting it;
+// the broad near-sun glow is kept (it is not a delta light). In physical-sky mode
+// the atmosphere already carries its own (non-delta) aureole, so we return it whole.
 vec3 envDome(vec3 rd){
+  if (uSkyMode == 1) return physicalSky(rd, uSunDir);
   float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
   vec3 col = mix(uHorizonColor, uSkyColor, pow(t, 0.75));
   float s = max(dot(rd, uSunDir), 0.0);
@@ -424,8 +548,10 @@ vec3 envDome(vec3 rd){
 
 // The sharp solar disc — only added for camera/specular rays that miss the scene,
 // so the sun shows up in the background and in mirror reflections but is otherwise
-// delivered by next-event estimation.
+// delivered by next-event estimation. The physical sky bakes its own sun into the
+// atmosphere (see envDome), so the disc is suppressed there to avoid doubling it.
 vec3 sunGlow(vec3 rd){
+  if (uSkyMode == 1) return vec3(0.0);
   float s = max(dot(rd, uSunDir), 0.0);
   return uSunColor * pow(s, 350.0) * 1.2 * uSunIntensity;
 }
@@ -588,10 +714,19 @@ vec3 pathTrace(vec3 ro, vec3 rd){
         vec3 r = reflect(rd, nf);
         vec3 nd = rough > 0.001 ? glossyLobe(r, rough) : r;
         if (dot(nd, nf) <= 0.0) nd = r;
+        // Thin-film iridescence tints the specular reflection off the glass.
+        thr *= iridescenceTint(res.y, cosi);
         ro = pos + nf * 0.02;
         rd = nd;
       } else {
+        // Refract, and — for a rough dielectric (frosted glass) — scatter the
+        // transmitted ray into a roughness-driven lobe, keeping it on the far side
+        // of the interface. This is what turns Roughness into frost on transmission.
         vec3 nd = normalize(refrd);
+        if (rough > 0.001){
+          vec3 pert = glossyLobe(nd, rough);
+          if (dot(pert, nf) < 0.0) nd = pert;          // still transmitting
+        }
         ro = pos - nf * 0.02;                          // step across the interface
         rd = nd;
         side = -side;
@@ -611,7 +746,8 @@ vec3 pathTrace(vec3 ro, vec3 rd){
         vec3 r = reflect(rd, nf);
         vec3 nd = glossyLobe(r, rough);
         if (dot(nd, nf) <= 0.0) break;
-        vec3 tint = mix(vec3(1.0), albedo, metallic);
+        // Metallic tint plus thin-film iridescence on the specular highlight.
+        vec3 tint = mix(vec3(1.0), albedo, metallic) * iridescenceTint(res.y, max(dot(nf, -rd), 0.0));
         thr *= tint / pSpec;
         specular = true;
         ro = pos + nf * 0.02;

@@ -39,6 +39,11 @@ function packGlass(n: SdfNode): [number, number, number, number] {
   return [m.transmission, m.ior, m.absorption, m.dispersion]
 }
 
+function packFilm(n: SdfNode): [number, number, number, number] {
+  const m = n.material
+  return [m.iridescence, m.filmThickness, 0, 0]
+}
+
 interface NodeAnimData {
   p: [number, number, number]
   r: [number, number, number]
@@ -61,6 +66,7 @@ function buildConfig(scene: Scene) {
   const modB: number[] = []
   const matTex: number[] = []
   const matGlass: number[] = []
+  const matFilm: number[] = []
   const nodes: NodeAnimData[] = []
 
   scene.nodes.forEach((nd) => {
@@ -77,6 +83,7 @@ function buildConfig(scene: Scene) {
     modB.push(...packModB(nd))
     matTex.push(TEXTURE_INDEX[nd.material.texture] ?? 0, nd.material.texScale, nd.material.texStrength, 0)
     matGlass.push(...packGlass(nd))
+    matFilm.push(...packFilm(nd))
     nodes.push({
       p: [nd.transform.position[0], nd.transform.position[1], nd.transform.position[2]],
       r: [nd.transform.rotation[0], nd.transform.rotation[1], nd.transform.rotation[2]],
@@ -126,6 +133,8 @@ function buildConfig(scene: Scene) {
     bloom: scene.post.bloom,
     bloomThreshold: scene.post.bloomThreshold,
     bloomRadius: scene.post.bloomRadius,
+    skyMode: scene.env.skyMode === 'physical' ? 1 : 0,
+    turbidity: scene.env.turbidity,
     skyColor: scene.env.skyColor,
     horizonColor: scene.env.horizonColor,
     groundColor: scene.env.groundColor,
@@ -159,6 +168,7 @@ function buildConfig(scene: Scene) {
     modB,
     matTex,
     matGlass,
+    matFilm,
     nodes,
   }
 }
@@ -228,6 +238,8 @@ else {
     gl.uniform3fv(loc(prog,'uSkyColor'), S.skyColor);
     gl.uniform3fv(loc(prog,'uHorizonColor'), S.horizonColor);
     gl.uniform3fv(loc(prog,'uGroundColor'), S.groundColor);
+    gl.uniform1i(loc(prog,'uSkyMode'), S.skyMode);
+    gl.uniform1f(loc(prog,'uTurbidity'), S.turbidity);
     gl.uniform1f(loc(prog,'uAmbient'), S.ambient);
     gl.uniform3fv(loc(prog,'uFogColor'), S.fogColor);
     gl.uniform1f(loc(prog,'uFogDensity'), S.fogDensity);
@@ -263,6 +275,7 @@ else {
     gl.uniform4fv(loc(prog,'uModB'), new Float32Array(S.modB));
     gl.uniform4fv(loc(prog,'uMatTex'), new Float32Array(S.matTex));
     gl.uniform4fv(loc(prog,'uMatGlass'), new Float32Array(S.matGlass));
+    gl.uniform4fv(loc(prog,'uMatFilm'), new Float32Array(S.matFilm));
   }
   uploadScene(progDirect);
   if(useAccum) uploadScene(progAccum);

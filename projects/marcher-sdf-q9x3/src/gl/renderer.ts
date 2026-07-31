@@ -91,6 +91,7 @@ export class Renderer {
   private modBArr = new Float32Array(4)
   private matTexArr = new Float32Array(4)
   private matGlassArr = new Float32Array(4)
+  private matFilmArr = new Float32Array(4)
   private dispersive = 0
   private rotTmp = new Float32Array(9)
   private rotScratch: [number, number, number] = [0, 0, 0]
@@ -155,6 +156,7 @@ export class Renderer {
     this.modBArr = new Float32Array(slots * 4)
     this.matTexArr = new Float32Array(slots * 4)
     this.matGlassArr = new Float32Array(slots * 4)
+    this.matFilmArr = new Float32Array(slots * 4)
   }
 
   private makeProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -390,6 +392,11 @@ export class Renderer {
       this.matGlassArr[i * 4 + 1] = node.material.ior
       this.matGlassArr[i * 4 + 2] = node.material.absorption
       this.matGlassArr[i * 4 + 3] = node.material.dispersion
+
+      this.matFilmArr[i * 4] = node.material.iridescence
+      this.matFilmArr[i * 4 + 1] = node.material.filmThickness
+      this.matFilmArr[i * 4 + 2] = 0
+      this.matFilmArr[i * 4 + 3] = 0
     }
 
     // Dispersion is a whole-path property, so a single scene-wide flag lets the
@@ -414,6 +421,7 @@ export class Renderer {
     h(this.sun[0]); h(this.sun[1]); h(this.sun[2])
     h(s.sun.color[0]); h(s.sun.color[1]); h(s.sun.color[2])
     h(s.sun.intensity); h(s.sun.angle)
+    h(s.env.skyMode === 'physical' ? 1 : 0); h(s.env.turbidity)
     h(s.env.skyColor[0]); h(s.env.skyColor[1]); h(s.env.skyColor[2])
     h(s.env.horizonColor[0]); h(s.env.horizonColor[1]); h(s.env.horizonColor[2])
     h(s.env.groundColor[0]); h(s.env.groundColor[1]); h(s.env.groundColor[2])
@@ -438,6 +446,7 @@ export class Renderer {
     for (let i = 0; i < this.modBArr.length; i++) h(this.modBArr[i])
     for (let i = 0; i < this.matTexArr.length; i++) h(this.matTexArr[i])
     for (let i = 0; i < this.matGlassArr.length; i++) h(this.matGlassArr[i])
+    for (let i = 0; i < this.matFilmArr.length; i++) h(this.matFilmArr[i])
     h(this.dispersive)
     return this.hashAccum
   }
@@ -478,6 +487,8 @@ export class Renderer {
     u3f('uSkyColor', s.env.skyColor[0], s.env.skyColor[1], s.env.skyColor[2])
     u3f('uHorizonColor', s.env.horizonColor[0], s.env.horizonColor[1], s.env.horizonColor[2])
     u3f('uGroundColor', s.env.groundColor[0], s.env.groundColor[1], s.env.groundColor[2])
+    u1i('uSkyMode', s.env.skyMode === 'physical' ? 1 : 0)
+    u1f('uTurbidity', s.env.turbidity)
     u1f('uAmbient', s.env.ambient)
     u3f('uFogColor', s.env.fogColor[0], s.env.fogColor[1], s.env.fogColor[2])
     u1f('uFogDensity', s.env.fogDensity)
@@ -533,6 +544,7 @@ export class Renderer {
     setV4('uModB', this.modBArr)
     setV4('uMatTex', this.matTexArr)
     setV4('uMatGlass', this.matGlassArr)
+    setV4('uMatFilm', this.matFilmArr)
     u1i('uDispersive', this.dispersive)
   }
 
