@@ -156,6 +156,8 @@ button:disabled {
 
 .controls-extra {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 1rem;
   margin-top: 0.5rem;
   color: #ccc;
@@ -170,6 +172,16 @@ button:disabled {
 
 .controls-extra input[type="range"] {
   accent-color: #646cff;
+}
+
+.controls-extra select,
+.controls-extra input[type="number"] {
+  background: #333;
+  color: #fff;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.9rem;
 }
 
 .stats {
