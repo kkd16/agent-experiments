@@ -908,3 +908,62 @@ export function overheadSamples(dist: DegreeDist, trials: number, salt: number, 
   const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN)
   return { peel, ge, meanPeel: mean(peel), meanGE: mean(ge) }
 }
+
+export interface WaterfallPoint {
+  eps: number
+  failPeel: number
+  failGE: number
+  failRaptor: number
+}
+
+/**
+ * Decode-failure probability vs channel erasure rate ε, at a *fixed* transmission
+ * effort (sent = ⌈k·sentMultiple⌉ droplets). As ε rises the receiver catches fewer
+ * droplets and, once the survivors fall below what each decoder needs, failure
+ * climbs — the erasure-channel analog of the BER waterfalls elsewhere in the lab.
+ * Structural (payload-independent), so it is cheap.
+ */
+export function erasureWaterfall(
+  dist: DegreeDist,
+  opts: { eps: number[]; sentMultiple: number; trials: number; salt: number; precodeParities: number; precodeSeed?: number },
+): WaterfallPoint[] {
+  const k = dist.k
+  const sent = Math.max(k, Math.round(k * opts.sentMultiple))
+  const pre = opts.precodeParities > 0 ? buildPrecode(k, opts.precodeParities, opts.precodeSeed ?? 4242) : null
+  const preDist = pre ? robustSoliton(pre.L, 0.03, 0.5) : null
+  // Pre-generate the neighbour structures once per trial (they don't depend on ε).
+  const out: WaterfallPoint[] = []
+  for (const eps of opts.eps) {
+    let failPeel = 0
+    let failGE = 0
+    let failRaptor = 0
+    for (let t = 0; t < opts.trials; t++) {
+      const base = (t + 1) * 4_000_037
+      const erase = new RNG((base ^ Math.imul((eps * 1e6) | 0, 0x9e3779b1)) >>> 0)
+      // LT over sources
+      const surv: number[][] = []
+      const survR: number[][] = []
+      for (let i = 0; i < sent; i++) {
+        const drop = erase.float() < eps
+        if (!drop) surv.push(deriveNeighbors(base + i, opts.salt, dist, k))
+        if (pre && preDist) {
+          const dropR = erase.float() < eps
+          if (!dropR) survR.push(deriveNeighbors(base + i, opts.salt + 7, preDist, pre.L))
+        }
+      }
+      if (peelSucceedsStruct(surv, k) !== k) failPeel++
+      if (rankStruct(surv, k) !== k) failGE++
+      if (pre && preDist) {
+        for (let j = 0; j < pre.p; j++) survR.push([...pre.subsets[j], pre.k + j])
+        if (rankStruct(survR, pre.L) !== pre.L) failRaptor++
+      }
+    }
+    out.push({
+      eps,
+      failPeel: failPeel / opts.trials,
+      failGE: failGE / opts.trials,
+      failRaptor: pre ? failRaptor / opts.trials : 1,
+    })
+  }
+  return out
+}

@@ -897,8 +897,13 @@ swarm delivery.
       GE's overhead concentrates just above 0, peeling's has a long heavy tail. *(v15.2)*
 - [x] **Ripple-size-over-time curve** — the pool of degree-1 droplets plotted at each release step of
       the current decode, next to the graph. *(v15.2)*
+- [x] **Erasure waterfall** — decode-failure probability vs channel erasure rate ε at a fixed
+      transmission effort, the erasure sibling of the BER waterfalls on the LDPC/polar/convolutional
+      pages; `erasureWaterfall` + a page panel with the peeling/GE/Raptor cliffs. *(v15.4)*
 - [ ] **Wire a rateless mode into the Channel Lab** — gzip → fountain-encode → bursty *erasure*
       channel → decode → gunzip, the erasure-channel sibling of the existing RS end-to-end demo.
+      (Deferred: the Channel Lab's pipeline is RS/byte-error-shaped; a clean erasure variant wants its
+      own mode rather than grafting onto the RS flow.)
 
 ## Session log
 
@@ -956,6 +961,17 @@ swarm delivery.
   exact; and the source recovers exactly under 50% erasure topped up with repairs): **869 → 872 checks,
   all green.** That closes the RaptorQ arc the module set out to build — soliton LT, peeling, ML Gaussian
   elimination, an LDPC precode, inactivation decoding, and now a systematic layer.
+- 2026-07-31 (claude): **v15.4 — the erasure waterfall.** Added `erasureWaterfall`: at a *fixed*
+  transmission effort (sent = a multiple of k), sweep the channel erasure rate ε and Monte-Carlo the
+  decode-failure probability for peeling, ML Gaussian elimination and Raptor. It draws the erasure-channel
+  sibling of the BER waterfalls on the LDPC/polar/convolutional pages — flat-and-low while losses are mild,
+  then a cliff once the survivors fall below k, with the ML and Raptor curves holding out far longer than
+  greedy peeling. New page panel (LineChart of P(decode fails) vs ε) plus two self-tests (fail(GE) ≤
+  fail(peeling) at every ε; failure climbs monotonically from a low floor to a high ceiling): **872 → 874
+  checks, all green.** The Fountain page now carries five analytical views — the live decode graph, the
+  degree histograms, the decode-probability-vs-overhead curve, the overhead distribution + ripple, the
+  systematic strip, and this waterfall — matching the visual language of the rest of the channel-coding
+  pillar.
 
 - 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
   The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an

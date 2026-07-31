@@ -112,6 +112,7 @@ import {
   raptorDecode,
   successCurve,
   overheadSamples,
+  erasureWaterfall,
   buildSystematic,
   systematicIntermediate,
   systematicDroplet,
@@ -654,6 +655,19 @@ function runFountainTests(results: TestCase[]): void {
     results.push({ group: G, name: 'systematic: exact recovery under 50% erasure + repairs', pass: lossyOk, detail: 'k ∈ {10,16,24}' })
   } catch (e) {
     results.push({ group: G, name: 'systematic fountain', pass: false, detail: (e as Error).message })
+  }
+
+  // Erasure waterfall: at a fixed transmission effort, decode failure must climb
+  // monotonically with the channel erasure rate, and GE must never fail more than peeling.
+  try {
+    const wf = erasureWaterfall(robustSoliton(40), { eps: [0.05, 0.15, 0.3, 0.45], sentMultiple: 1.6, trials: 120, salt: 2, precodeParities: 8 })
+    const geDom = wf.every((p) => p.failGE <= p.failPeel + 1e-9)
+    const rises = wf.every((p, i) => i === 0 || p.failGE >= wf[i - 1].failGE - 0.08)
+    const lowStart = wf[0].failGE < 0.25 && wf[wf.length - 1].failGE > 0.6
+    results.push({ group: G, name: 'waterfall: fail(GE) ≤ fail(peeling) at every ε', pass: geDom, detail: '' })
+    results.push({ group: G, name: 'waterfall: failure climbs with erasure rate', pass: rises && lowStart, detail: `${(wf[0].failGE * 100).toFixed(0)}% → ${(wf[wf.length - 1].failGE * 100).toFixed(0)}%` })
+  } catch (e) {
+    results.push({ group: G, name: 'erasure waterfall', pass: false, detail: (e as Error).message })
   }
 }
 
