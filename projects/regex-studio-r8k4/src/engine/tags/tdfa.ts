@@ -193,6 +193,47 @@ export type RegOp =
   | { kind: 'set'; reg: number } // reg ← current input position
   | { kind: 'copy'; dst: number; src: number }; // dst ← src
 
+// A *semantic* register assignment on a transition: destination register ←
+// current position (src === -1) or ← a source register. A transition is a
+// parallel assignment of these; `scheduleAssign` turns it into a clobber-safe
+// sequence of RegOps. Keeping the assignment separate from its schedule is what
+// lets the minimiser renumber registers and re-schedule without redoing the
+// determinisation.
+export interface Assign {
+  dest: number;
+  src: number; // -1 ⇒ set from current position; otherwise copy from this register
+}
+
+// Sequence a parallel assignment so no write clobbers a source that is still
+// needed. Any source register that is also a destination is first snapshotted
+// into a fresh scratch register (allocated via `scratchId`), then read from there.
+export function scheduleAssign(assign: Assign[], scratchId: (k: number) => number): { ops: RegOp[]; scratch: number } {
+  const destSet = new Set(assign.map((a) => a.dest));
+  const scratchOf = new Map<number, number>();
+  let localScratch = 0;
+  const pre: RegOp[] = [];
+  const post: RegOp[] = [];
+  for (const a of assign) {
+    if (a.src === -1) {
+      post.push({ kind: 'set', reg: a.dest });
+      continue;
+    }
+    if (a.src === a.dest) continue; // identity — nothing to do
+    let src = a.src;
+    if (destSet.has(a.src)) {
+      let sc = scratchOf.get(a.src);
+      if (sc === undefined) {
+        sc = scratchId(localScratch++);
+        scratchOf.set(a.src, sc);
+        pre.push({ kind: 'copy', dst: sc, src: a.src });
+      }
+      src = sc;
+    }
+    post.push({ kind: 'copy', dst: a.dest, src });
+  }
+  return { ops: [...pre, ...post], scratch: localScratch };
+}
+
 interface Config {
   pc: number;
   regs: Int32Array; // regs[slot] = register id holding that slot's value, or -1 (unset)
@@ -212,13 +253,17 @@ export interface TDFA {
   states: TDFAState[];
   start: number;
   initialOps: RegOp[]; // run once at position 0, before reading input
+  initialAssign: Assign[]; // the semantic form of initialOps (for the minimiser)
   table: Int32Array[]; // table[state][atom] = next state id, or -1 for the dead sink
   edgeOps: RegOp[][][]; // edgeOps[state][atom] = ops for that transition
-  regCount: number;
+  edgeAssign: Assign[][][]; // the semantic form of edgeOps
+  regCount: number; // total registers, including the scratch pool
+  matRegCount: number; // materialised (non-scratch) registers
   slotCount: number; // = prog.nslots
   groupCount: number;
   truncated: boolean; // hit the state / register budget
   buildSteps: number; // configurations expanded — a build-work proxy
+  minimizedFrom: number | null; // if this machine came from register minimisation, the original matRegCount
 }
 
 // A saved-slot in a candidate config points to one of:
@@ -330,8 +375,9 @@ export function buildTDFA(prog: Program, groupCount: number, opts: TdfaOptions =
   }
 
   // Turn a candidate config list into a destination state (existing or new) and
-  // the register ops that establish that state's registers from the source's.
-  function resolve(configs: Config[]): { id: number; ops: RegOp[] } | null {
+  // the semantic register assignment that establishes that state's registers
+  // from the source's.
+  function resolve(configs: Config[]): { id: number; assign: Assign[] } | null {
     const { key, values, canonOf } = canonicalise(configs);
     let dest = stateByKey.get(key);
 
@@ -365,75 +411,50 @@ export function buildTDFA(prog: Program, groupCount: number, opts: TdfaOptions =
       dest = id;
     }
 
-    // Emit ops that write every canonical register of `dest` from the candidate's
-    // carried registers (copy) or from the current position (set). Reads are
-    // routed through fresh scratch registers whenever a source register is also a
-    // destination register, so the writes can never clobber a not-yet-read source.
-    const destState = states[dest];
-    const targets = destState.regByCanon; // canon-index → dest reg
-    const destSet = new Set(targets);
-    const scratchOf = new Map<number, number>();
-    let localScratch = 0;
-    const pre: RegOp[] = [];
-    const post: RegOp[] = [];
+    // The semantic assignment: every canonical register of `dest` ← either the
+    // current position (a tag crossed on this edge) or a carried source register.
+    const targets = states[dest].regByCanon; // canon-index → dest reg
+    const assign: Assign[] = [];
     for (let ci = 0; ci < values.length; ci++) {
       const v = values[ci];
-      const target = targets[ci];
-      if (v >= TEMP_BASE) {
-        post.push({ kind: 'set', reg: target });
-      } else {
-        // carried register v → target
-        if (v === target) continue; // already in place
-        let src = v;
-        if (destSet.has(v)) {
-          // v will be overwritten by some write on this edge — snapshot it first
-          let sc = scratchOf.get(v);
-          if (sc === undefined) {
-            sc = scratchPlaceholder(localScratch++);
-            scratchOf.set(v, sc);
-            pre.push({ kind: 'copy', dst: sc, src: v });
-          }
-          src = sc;
-        }
-        post.push({ kind: 'copy', dst: target, src });
-      }
+      assign.push({ dest: targets[ci], src: v >= TEMP_BASE ? -1 : v });
     }
-    if (localScratch > maxScratch) maxScratch = localScratch;
-    return { id: dest, ops: [...pre, ...post] };
+    return { id: dest, assign };
   }
-
-  // Initial state: closure from pc 0 with all slots unset.
-  const initSeed: Config = { pc: 0, regs: new Int32Array(prog.nslots).fill(-1) };
-  const initClosure = closure([initSeed]);
-  const initResolved = resolve(initClosure);
-  if (!initResolved) {
-    // Budget blown before we even built the start state — return a stub.
-    return {
-      prog,
-      atoms,
-      states,
-      start: 0,
-      initialOps: [],
-      table: [],
-      edgeOps: [],
-      regCount,
-      slotCount: prog.nslots,
-      groupCount,
-      truncated: true,
-      buildSteps,
-    };
-  }
-  const start = initResolved.id;
-  const initialOps = initResolved.ops;
 
   const table: Int32Array[] = [];
-  const edgeOps: RegOp[][][] = [];
+  const edgeAssign: Assign[][][] = [];
   const ensureRows = (id: number): void => {
     while (table.length <= id) {
       table.push(new Int32Array(atoms.length).fill(-1));
-      edgeOps.push(atoms.map(() => [] as RegOp[]));
+      edgeAssign.push(atoms.map(() => [] as Assign[]));
     }
   };
+
+  // Initial state: closure from pc 0 with all slots unset.
+  const initSeed: Config = { pc: 0, regs: new Int32Array(prog.nslots).fill(-1) };
+  const initResolved = resolve(closure([initSeed]));
+  const emptyTdfa = (): TDFA => ({
+    prog,
+    atoms,
+    states,
+    start: 0,
+    initialOps: [],
+    initialAssign: [],
+    table: [],
+    edgeOps: [],
+    edgeAssign: [],
+    regCount,
+    matRegCount: regCount,
+    slotCount: prog.nslots,
+    groupCount,
+    truncated: true,
+    buildSteps,
+    minimizedFrom: null,
+  });
+  if (!initResolved) return emptyTdfa();
+  const start = initResolved.id;
+  const initialAssign = initResolved.assign;
   ensureRows(start);
 
   const queue = [start];
@@ -459,17 +480,27 @@ export function buildTDFA(prog: Program, groupCount: number, opts: TdfaOptions =
       if (!resolved) break;
       ensureRows(Math.max(resolved.id, from));
       table[from][a] = resolved.id;
-      edgeOps[from][a] = resolved.ops;
+      edgeAssign[from][a] = resolved.assign;
       if (resolved.id === before) queue.push(resolved.id);
       else if (!processed.has(resolved.id) && !queue.includes(resolved.id)) queue.push(resolved.id);
     }
   }
   // Make sure every reachable state has table rows (states with no out-edges).
   for (const st of states) ensureRows(st.id);
+  const matRegCount = regCount;
 
-  // Remap scratch placeholders (negative) to a shared pool above the materialised
-  // registers. Scratch cells are live only within a single transition, so all
-  // edges reuse the same `maxScratch` cells.
+  // Schedule every assignment into clobber-safe ops, using placeholder scratch
+  // registers (negative) that are remapped to a shared pool above the materialised
+  // range — scratch cells are live only within a single transition, so all edges
+  // reuse the same `maxScratch` cells.
+  const schedule = (assign: Assign[]): RegOp[] => {
+    const r = scheduleAssign(assign, scratchPlaceholder);
+    if (r.scratch > maxScratch) maxScratch = r.scratch;
+    return r.ops;
+  };
+  const initialOps = schedule(initialAssign);
+  const edgeOps: RegOp[][][] = edgeAssign.map((row) => row.map(schedule));
+
   const scratchBase = regCount;
   const fixReg = (r: number): number => (r < 0 ? scratchBase + (-r - 1) : r);
   const fixOps = (ops: RegOp[]): void => {
@@ -491,13 +522,17 @@ export function buildTDFA(prog: Program, groupCount: number, opts: TdfaOptions =
     states,
     start,
     initialOps,
+    initialAssign,
     table,
     edgeOps,
+    edgeAssign,
     regCount,
+    matRegCount,
     slotCount: prog.nslots,
     groupCount,
     truncated,
     buildSteps,
+    minimizedFrom: null,
   };
 }
 
@@ -576,6 +611,78 @@ export function astToTDFA(ast: RegexNode, groupCount: number, opts?: TdfaOptions
     throw e;
   }
   return buildTDFA(prog, groupCount, opts);
+}
+
+// --- Register minimisation --------------------------------------------------
+//
+// In a TDFA built by `buildTDFA`, every materialised register is written by the
+// edges *entering* its home state and read only by the edges *leaving* that state
+// (plus that state's accept read) — no register value survives a transition
+// un-rewritten, because every incoming edge redefines the whole destination state.
+// So a register's live range is a single state, and registers homed in different
+// states never conflict. That makes a correct, near-optimal reallocation cheap:
+// drop registers that are never read at all, then renumber each state's live
+// registers into a small pool that is *reused* across every state. Each edge is
+// re-scheduled (clobber-safe) under the new numbering.
+//
+// The result is verified the same way as the machine itself — see
+// `engine/tags/verify.ts`, which runs the minimised TDFA through the differential
+// harness alongside the original.
+export function minimizeRegisters(tdfa: TDFA): TDFA {
+  if (tdfa.truncated || tdfa.states.length === 0) return tdfa;
+  const N = tdfa.matRegCount;
+
+  // 1. Liveness: a register is read as some edge's source, or at an accept.
+  const live = new Uint8Array(N);
+  for (const row of tdfa.edgeAssign) for (const assign of row) for (const a of assign) if (a.src >= 0) live[a.src] = 1;
+  for (const st of tdfa.states) if (st.accept && st.acceptRegs) for (const r of st.acceptRegs) if (r >= 0) live[r] = 1;
+
+  // 2. Renumber each state's live registers into cells reused across states.
+  const newId = new Int32Array(N).fill(-1);
+  let pool = 0;
+  for (const st of tdfa.states) {
+    let cell = 0;
+    for (const r of st.regByCanon) if (r >= 0 && live[r]) newId[r] = cell++;
+    if (cell > pool) pool = cell;
+  }
+  const mapReg = (r: number): number => (r < 0 ? -1 : newId[r]);
+
+  // 3. Rebuild states (configs, acceptRegs, regByCanon) under the new numbering.
+  const states: TDFAState[] = tdfa.states.map((st) => {
+    const configs = st.configs.map((c) => {
+      const regs = new Int32Array(c.regs.length);
+      for (let s = 0; s < c.regs.length; s++) regs[s] = mapReg(c.regs[s]);
+      return { pc: c.pc, regs };
+    });
+    let acceptRegs: Int32Array | null = null;
+    if (st.acceptRegs) {
+      acceptRegs = new Int32Array(st.acceptRegs.length);
+      for (let s = 0; s < st.acceptRegs.length; s++) acceptRegs[s] = mapReg(st.acceptRegs[s]);
+    }
+    return { id: st.id, configs, accept: st.accept, acceptRegs, regByCanon: st.regByCanon.map(mapReg).filter((r) => r >= 0) };
+  });
+
+  // 4. Remap + re-schedule assignments, dropping writes to dead destinations.
+  let maxScratch = 0;
+  const remapAssign = (assign: Assign[]): Assign[] =>
+    assign.filter((a) => live[a.dest]).map((a) => ({ dest: newId[a.dest], src: a.src < 0 ? -1 : newId[a.src] }));
+  const schedule = (assign: Assign[]): RegOp[] => {
+    const r = scheduleAssign(remapAssign(assign), (k) => pool + k);
+    if (r.scratch > maxScratch) maxScratch = r.scratch;
+    return r.ops;
+  };
+  const initialOps = schedule(tdfa.initialAssign);
+  const edgeOps = tdfa.edgeAssign.map((row) => row.map(schedule));
+
+  return {
+    ...tdfa,
+    states,
+    initialOps,
+    edgeOps,
+    matRegCount: pool,
+    regCount: pool + maxScratch,
+    minimizedFrom: tdfa.matRegCount,
+  };
 }
 
 // --- Presentation helpers (for the UI) -------------------------------------
