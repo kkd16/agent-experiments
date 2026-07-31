@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { suggestSymbolic, type LayerCurves } from '../../engine/kan';
+import { useEffect, useRef } from 'react';
+import { fmtCoef, type EdgeMode, type LayerCurves, type SymbolicFit } from '../../engine/kan';
 
 interface Sel {
   layer: number;
@@ -13,12 +13,19 @@ interface Props {
   tick: number;
   width: number;
   height: number;
+  fits: SymbolicFit[]; // ranked symbolic fits of the underlying spline (what a snap chooses from)
+  mode: EdgeMode | null; // current mode of the selected edge
+  onSnap: (name?: string) => void;
+  onPrune: () => void;
+  onReset: () => void;
 }
 
+const MODE_LABEL: Record<EdgeMode, string> = { spline: 'spline', symbolic: 'symbolic', pruned: 'pruned' };
+
 // A magnified view of one edge's learned function φ_{j,i}(x), with the spline's knot positions
-// marked along the x-axis — so you can watch the control points bend the curve as it trains, and
-// see new knots appear when the grid is refined.
-export default function EdgeInspector({ layers, selected, tick, width, height }: Props) {
+// marked along the x-axis — and the interpretability surgery: snap the edge to its closest
+// elementary formula (freezing it), prune it to zero, or reset it back to a trained spline.
+export default function EdgeInspector({ layers, selected, tick, width, height, fits, mode, onSnap, onPrune, onReset }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -92,8 +99,8 @@ export default function EdgeInspector({ layers, selected, tick, width, height }:
       ctx.stroke();
     }
 
-    // the curve
-    ctx.strokeStyle = '#38bdf8';
+    // the curve — colour by mode (symbolic = amber, pruned = grey, spline = cyan)
+    ctx.strokeStyle = edge.mode === 'symbolic' ? '#fbbf24' : edge.mode === 'pruned' ? 'rgba(148,163,184,0.5)' : '#38bdf8';
     ctx.lineWidth = 2.2;
     ctx.beginPath();
     for (let s = 0; s < edge.xs.length; s++) {
@@ -118,30 +125,52 @@ export default function EdgeInspector({ layers, selected, tick, width, height }:
   }, [layers, selected, tick, width, height]);
 
   const label = selected ? `layer ${selected.layer + 1}: node ${selected.i} → node ${selected.j}` : '—';
+  const top = fits.slice(0, 3);
+  const best = top[0];
 
-  // Closest elementary formula to the learned curve — KAN interpretability in one line.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const symbolic = useMemo(() => {
-    if (!layers || !selected || selected.layer >= layers.length) return null;
-    const edge = layers[selected.layer].edges.find((e) => e.i === selected.i && e.j === selected.j);
-    if (!edge) return null;
-    return suggestSymbolic(edge.xs, edge.ys);
-  }, [layers, selected, tick]);
-
-  const fmt = (v: number) => (Math.abs(v) >= 0.01 ? v.toFixed(2) : v.toExponential(1));
-  const best = symbolic && symbolic[0];
+  const affine = (f: SymbolicFit) =>
+    f.name === '1' ? fmtCoef(f.b) : `${fmtCoef(f.a)}·${f.name}${f.b >= 0 ? ' + ' : ' − '}${fmtCoef(Math.abs(f.b))}`;
 
   return (
     <div>
       <canvas ref={ref} style={{ width, height, maxWidth: '100%' }} className="chart" />
-      <div className="muted small" style={{ marginTop: 6, fontFamily: 'ui-monospace, monospace' }}>
-        φ on {label}
+      <div className="edge-head">
+        <span className="muted small" style={{ fontFamily: 'ui-monospace, monospace' }}>
+          φ on {label}
+        </span>
+        {mode && <span className={`tag tag-${mode}`}>{MODE_LABEL[mode]}</span>}
       </div>
-      {best && (
-        <div className="muted small" style={{ marginTop: 4, fontFamily: 'ui-monospace, monospace' }}>
-          ≈ <b style={{ color: '#7dd3fc' }}>{best.name === '1' ? fmt(best.b) : `${fmt(best.a)}·${best.name}${best.b >= 0 ? ' + ' : ' − '}${fmt(Math.abs(best.b))}`}</b>{' '}
-          <span style={{ color: best.r2 > 0.97 ? '#a3e635' : 'var(--muted)' }}>(R²={best.r2.toFixed(3)})</span>
-        </div>
+
+      {selected && (
+        <>
+          <div className="edge-fits">
+            {top.map((f) => (
+              <button
+                key={f.name}
+                className="edge-fit"
+                onClick={() => onSnap(f.name)}
+                title={`snap this edge to ${affine(f)}  (freeze it)`}
+              >
+                <span className="edge-fit-form">≈ {affine(f)}</span>
+                <span className="edge-fit-r2" style={{ color: f.r2 > 0.97 ? '#a3e635' : 'var(--muted)' }}>
+                  R²={f.r2.toFixed(3)}
+                </span>
+              </button>
+            ))}
+            {top.length === 0 && <span className="muted small">—</span>}
+          </div>
+          <div className="run-row" style={{ marginTop: 6 }}>
+            <button className="ghost" onClick={() => onSnap()} disabled={!best} title="freeze to the best-R² formula">
+              ⧉ Snap best
+            </button>
+            <button className="ghost" onClick={onPrune} title="drop this edge (φ ≡ 0)">
+              ✕ Prune
+            </button>
+            <button className="ghost" onClick={onReset} title="back to a trained spline">
+              ↺ Reset
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

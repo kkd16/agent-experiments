@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Tensor } from '../engine/tensor';
-import { KAN, type KANSpec, type LayerCurves } from '../engine/kan';
+import { KAN, type KANSpec, type LayerCurves, type CompiledFormula, type ModeSummary, type SymbolicFit } from '../engine/kan';
 import {
   makeClassDataset,
   makeRegressionDataset,
@@ -10,7 +10,7 @@ import {
   type ClassDatasetKind,
   type RegressionKind,
 } from '../engine/data';
-import { mulberry32 } from '../engine/nn';
+import { mulberry32, MLP, type LayerSpec } from '../engine/nn';
 import { softmaxCrossEntropy, mse } from '../engine/losses';
 import { Optimizer, defaultOptimizer, clipGradGlobalNorm, type OptimizerConfig, type OptimizerKind } from '../engine/optim';
 import { gradCheck, type GradCheckResult } from '../engine/gradcheck';
@@ -35,6 +35,8 @@ export interface KANConfigUI {
   weightDecay: number;
   clipNorm: number;
   stepsPerFrame: number;
+  sparsify: number; // group-lasso (L1) strength that drives whole edges to zero
+  mlpRace: boolean; // train an equal-parameter MLP in lockstep for the head-to-head
   loadId: number;
 }
 
@@ -45,9 +47,18 @@ export interface KANMetrics {
   valScore: number;
   gridSize: number;
   gradNorm: number;
+  penalty: number; // the group-lasso term added to the task loss (0 when sparsify off)
   lossHistory: number[];
   valLossHistory: number[];
   trainScoreHistory: number[];
+  valScoreHistory: number[];
+}
+
+// The equal-parameter MLP's live scores for the head-to-head comparison.
+export interface MLPMetrics {
+  paramCount: number;
+  trainScore: number;
+  valScore: number;
   valScoreHistory: number[];
 }
 
@@ -90,11 +101,111 @@ const EMPTY: KANMetrics = {
   valScore: NaN,
   gridSize: 0,
   gradNorm: NaN,
+  penalty: 0,
   lossHistory: [],
   valLossHistory: [],
   trainScoreHistory: [],
   valScoreHistory: [],
 };
+
+const EMPTY_MLP: MLPMetrics = { paramCount: 0, trainScore: NaN, valScore: NaN, valScoreHistory: [] };
+
+// Score a model's flat inference output [n, C] against a split: classify → accuracy, regress → R².
+function scoreFlat(
+  out: Float64Array,
+  task: KANTask,
+  y: Float64Array | Int32Array,
+  n: number,
+  classes: number,
+  split: Uint8Array,
+): { train: number; val: number } {
+  if (task === 'classify') {
+    const yc = y as Int32Array;
+    let trC = 0;
+    let trN = 0;
+    let vaC = 0;
+    let vaN = 0;
+    for (let i = 0; i < n; i++) {
+      let best = 0;
+      let bv = -Infinity;
+      for (let c = 0; c < classes; c++) {
+        const v = out[i * classes + c];
+        if (v > bv) {
+          bv = v;
+          best = c;
+        }
+      }
+      const correct = best === yc[i] ? 1 : 0;
+      if (split[i] === 1) {
+        vaN++;
+        vaC += correct;
+      } else {
+        trN++;
+        trC += correct;
+      }
+    }
+    return { train: trN ? trC / trN : NaN, val: vaN ? vaC / vaN : NaN };
+  }
+  const yr = y as Float64Array;
+  let trMean = 0;
+  let trN = 0;
+  let vaMean = 0;
+  let vaN = 0;
+  for (let i = 0; i < n; i++) {
+    if (split[i] === 1) {
+      vaMean += yr[i];
+      vaN++;
+    } else {
+      trMean += yr[i];
+      trN++;
+    }
+  }
+  trMean = trN ? trMean / trN : 0;
+  vaMean = vaN ? vaMean / vaN : 0;
+  let trRes = 0;
+  let trTot = 0;
+  let vaRes = 0;
+  let vaTot = 0;
+  for (let i = 0; i < n; i++) {
+    const r = out[i] - yr[i];
+    if (split[i] === 1) {
+      vaRes += r * r;
+      vaTot += (yr[i] - vaMean) ** 2;
+    } else {
+      trRes += r * r;
+      trTot += (yr[i] - trMean) ** 2;
+    }
+  }
+  return { train: trTot > 0 ? 1 - trRes / trTot : NaN, val: vaTot > 0 ? 1 - vaRes / vaTot : NaN };
+}
+
+// Build an MLP whose parameter count is as close as possible to the KAN's, matching its hidden
+// depth — the fair "same budget" opponent. SiLU hidden units (the KAN's own base nonlinearity).
+function buildMatchedMLP(task: KANTask, classes: number, targetParams: number, nHidden: number, rng: () => number): MLP {
+  const inDim = task === 'classify' ? 2 : 1;
+  const outDim = task === 'classify' ? classes : 1;
+  const depth = Math.max(1, nHidden);
+  const paramsFor = (w: number): number => {
+    let p = 0;
+    let prev = inDim;
+    for (let l = 0; l < depth; l++) {
+      p += prev * w + w;
+      prev = w;
+    }
+    return p + prev * outDim + outDim;
+  };
+  let bestW = 4;
+  let bestD = Infinity;
+  for (let w = 2; w <= 96; w++) {
+    const d = Math.abs(paramsFor(w) - targetParams);
+    if (d < bestD) {
+      bestD = d;
+      bestW = w;
+    }
+  }
+  const hidden: LayerSpec[] = Array.from({ length: depth }, () => ({ units: bestW, activation: 'silu' as const }));
+  return new MLP(inDim, hidden, outDim, rng);
+}
 
 function specOf(cfg: KANConfigUI, classes: number): KANSpec {
   return {
@@ -119,13 +230,18 @@ export function useKANTrainer(cfg: KANConfigUI) {
   const rafRef = useRef<number | null>(null);
   const stepRef = useRef(0);
   const gridRef = useRef(cfg.gridSize);
+  const penaltyRef = useRef(0);
   const pendingWeights = useRef<number[] | null>(null);
   const pendingStep = useRef(0);
+  // The head-to-head MLP (always built; only trained/scored when cfg.mlpRace is on).
+  const mlpRef = useRef<MLP | null>(null);
+  const mlpOptRef = useRef<Optimizer | null>(null);
 
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
   const [handle, setHandle] = useState<KANHandle>({ model: null, task: cfg.task, classData: null, regData: null });
   const [metrics, setMetrics] = useState<KANMetrics>(EMPTY);
+  const [mlpMetrics, setMlpMetrics] = useState<MLPMetrics>(EMPTY_MLP);
 
   // A rebuild key: any of these changing tears the model down and starts fresh. Grid size is
   // deliberately NOT here — it's mutated live via refine/refit, preserving the learned curves.
@@ -248,13 +364,33 @@ export function useKANTrainer(cfg: KANConfigUI) {
         valScore,
         gridSize: gridRef.current,
         gradNorm: Number.isFinite(gradNorm) ? gradNorm : m.gradNorm,
+        penalty: penaltyRef.current,
         lossHistory,
         valLossHistory,
         trainScoreHistory,
         valScoreHistory,
       };
     });
-  }, [cfg.task]);
+
+    // Head-to-head MLP scoring (only when the race is on).
+    const mlp = mlpRef.current;
+    if (cfg.mlpRace && mlp) {
+      const ds = cfg.task === 'classify' ? classRef.current : regRef.current;
+      if (ds) {
+        mlp.eval();
+        const xt = Tensor.fromFlat((ds.X as Float64Array).slice(), ds.n, cfg.task === 'classify' ? 2 : 1, false);
+        const out = mlp.forward(xt).data;
+        const classes = cfg.task === 'classify' ? (ds as ClassDataset).classes : 1;
+        const yv = cfg.task === 'classify' ? (ds as ClassDataset).y : (ds as RegressionDataset).y;
+        const sc = scoreFlat(out, cfg.task, yv, ds.n, classes, splitRef.current);
+        setMlpMetrics((mm) => {
+          const hist = mm.valScoreHistory.length >= MAX_HISTORY ? mm.valScoreHistory.slice(1) : mm.valScoreHistory.slice();
+          if (push) hist.push(sc.val);
+          return { paramCount: mlp.paramCount(), trainScore: sc.train, valScore: sc.val, valScoreHistory: hist };
+        });
+      }
+    }
+  }, [cfg.task, cfg.mlpRace]);
 
   const buildAll = useCallback(() => {
     setRunning(false);
@@ -302,9 +438,17 @@ export function useKANTrainer(cfg: KANConfigUI) {
     const model = new KAN(specOf(cfg, classes), rng);
     modelRef.current = model;
     gridRef.current = cfg.gridSize;
+    penaltyRef.current = 0;
     const ocfg: OptimizerConfig = { ...defaultOptimizer(cfg.optimizer, cfg.lr), weightDecay: cfg.weightDecay };
     optRef.current = new Optimizer(model.parameters(), ocfg);
     stepRef.current = 0;
+
+    // The equal-parameter MLP opponent (own PRNG stream so it doesn't perturb the KAN init).
+    const mlpRng = mulberry32((cfg.seed ^ 0x1b873593) >>> 0);
+    const mlp = buildMatchedMLP(cfg.task, classes, model.paramCount(), cfg.hiddenLayers, mlpRng);
+    mlpRef.current = mlp;
+    mlpOptRef.current = new Optimizer(mlp.parameters(), { ...defaultOptimizer(cfg.optimizer, cfg.lr), weightDecay: cfg.weightDecay });
+    setMlpMetrics({ ...EMPTY_MLP, paramCount: mlp.paramCount() });
 
     if (pendingWeights.current) {
       if (model.importWeights(pendingWeights.current)) stepRef.current = pendingStep.current;
@@ -343,11 +487,29 @@ export function useKANTrainer(cfg: KANConfigUI) {
     }
     opt.zeroGrad();
     loss.backward();
+    // Structured (group-lasso) sparsification: a sub-gradient injected straight into .grad.
+    penaltyRef.current = model.addGroupLassoGrad(cfg.sparsify);
     const gradNorm = clipGradGlobalNorm(model.parameters(), cfg.clipNorm);
     opt.step();
+
+    // Train the head-to-head MLP on the exact same batch/loss when the race is on.
+    if (cfg.mlpRace) {
+      const mlp = mlpRef.current;
+      const mopt = mlpOptRef.current;
+      if (mlp && mopt) {
+        mlp.train();
+        const mloss = cfg.task === 'classify' ? softmaxCrossEntropy(mlp.forward(x), trainYClsRef.current).loss : mse(mlp.forward(x), trainYRegRef.current!);
+        mopt.zeroGrad();
+        mloss.backward();
+        clipGradGlobalNorm(mlp.parameters(), cfg.clipNorm);
+        mopt.step();
+        mlp.eval();
+      }
+    }
+
     stepRef.current++;
     return { loss: loss.data[0], gradNorm };
-  }, [cfg.task, cfg.clipNorm]);
+  }, [cfg.task, cfg.clipNorm, cfg.sparsify, cfg.mlpRace]);
 
   useEffect(() => {
     if (!running) return;
@@ -498,6 +660,77 @@ export function useKANTrainer(cfg: KANConfigUI) {
     return model.layerCurves(40);
   }, []);
 
+  // ---- interpretability surgery -----------------------------------------------------
+
+  const refresh = useCallback(() => {
+    recomputeMetrics(NaN, NaN, false);
+    setTick((t) => t + 1);
+  }, [recomputeMetrics]);
+
+  const pruneEdge = useCallback(
+    (layer: number, i: number, j: number) => {
+      modelRef.current?.layers[layer]?.pruneEdge(i, j);
+      refresh();
+    },
+    [refresh],
+  );
+  const snapEdge = useCallback(
+    (layer: number, i: number, j: number, name?: string): SymbolicFit | null => {
+      const fit = modelRef.current?.layers[layer]?.snapEdge(i, j, name) ?? null;
+      refresh();
+      return fit;
+    },
+    [refresh],
+  );
+  const resetEdge = useCallback(
+    (layer: number, i: number, j: number) => {
+      modelRef.current?.layers[layer]?.resetEdge(i, j);
+      refresh();
+    },
+    [refresh],
+  );
+  const resetAllEdges = useCallback(() => {
+    modelRef.current?.resetAllEdges();
+    refresh();
+  }, [refresh]);
+  const autoPrune = useCallback(
+    (tau: number): number => {
+      const n = modelRef.current?.autoPrune(tau) ?? 0;
+      refresh();
+      return n;
+    },
+    [refresh],
+  );
+  const autoSnap = useCallback(
+    (r2: number): number => {
+      const n = modelRef.current?.autoSnap(r2) ?? 0;
+      refresh();
+      return n;
+    },
+    [refresh],
+  );
+  const edgeFits = useCallback((layer: number, i: number, j: number): SymbolicFit[] => {
+    return modelRef.current?.layers[layer]?.fitCandidates(i, j) ?? [];
+  }, []);
+  const compileFormula = useCallback((): CompiledFormula | null => {
+    return modelRef.current?.compileFormula() ?? null;
+  }, []);
+  const modeSummary = useCallback((): ModeSummary | null => {
+    return modelRef.current?.modeSummary() ?? null;
+  }, []);
+
+  // MLP prediction curve over the regression domain, aligned with fitView's abscissae.
+  const mlpFitView = useCallback((): Float64Array | null => {
+    const mlp = mlpRef.current;
+    if (!mlp || cfg.task !== 'regress') return null;
+    const M = 200;
+    const D = cfg.domain;
+    const xd = new Float64Array(M);
+    for (let m = 0; m < M; m++) xd[m] = -D + (2 * D * m) / (M - 1);
+    mlp.eval();
+    return mlp.forward(Tensor.fromFlat(xd, M, 1, false)).data.slice(0, M);
+  }, [cfg.task, cfg.domain]);
+
   const snapshot = useCallback(() => {
     const model = modelRef.current;
     return { weights: model ? model.exportWeights() : [], step: stepRef.current };
@@ -512,6 +745,7 @@ export function useKANTrainer(cfg: KANConfigUI) {
     running,
     tick,
     metrics,
+    mlpMetrics,
     handle,
     start,
     pause,
@@ -522,7 +756,17 @@ export function useKANTrainer(cfg: KANConfigUI) {
     runGradCheck,
     boundaryView,
     fitView,
+    mlpFitView,
     diagram,
+    pruneEdge,
+    snapEdge,
+    resetEdge,
+    resetAllEdges,
+    autoPrune,
+    autoSnap,
+    edgeFits,
+    compileFormula,
+    modeSummary,
     snapshot,
     prepareLoad,
   };

@@ -74,14 +74,23 @@ export default function KANDiagram({ layers, tick, selected, onSelect, width, he
         const y1 = nodeY(l + 1, e.j);
         const rel = e.importance / maxImp;
         const isSel = selected && selected.layer === l && selected.i === e.i && selected.j === e.j;
+        // Colour by interpretability mode: cyan spline · amber symbolic · faint grey pruned.
+        const rgb = e.mode === 'symbolic' ? '251,191,36' : e.mode === 'pruned' ? '148,163,184' : '56,189,248';
+        const curveRgb = e.mode === 'symbolic' ? '251,191,36' : '125,211,252';
 
         // connecting line, opacity by importance
-        ctx.strokeStyle = `rgba(56,189,248,${0.06 + 0.5 * rel})`;
+        if (e.mode === 'pruned') {
+          ctx.strokeStyle = 'rgba(148,163,184,0.14)';
+          ctx.setLineDash([3, 3]);
+        } else {
+          ctx.strokeStyle = `rgba(${rgb},${0.06 + 0.5 * rel})`;
+        }
         ctx.lineWidth = isSel ? 2 : 0.6 + 1.6 * rel;
         ctx.beginPath();
         ctx.moveTo(x0, y0);
         ctx.lineTo(x1, y1);
         ctx.stroke();
+        ctx.setLineDash([]);
 
         // inline spline box at the edge midpoint
         const mx = (x0 + x1) / 2;
@@ -90,8 +99,8 @@ export default function KANDiagram({ layers, tick, selected, onSelect, width, he
         const by = my - BH / 2;
         boxes.push({ x: bx, y: by, w: BW, h: BH, layer: l, i: e.i, j: e.j });
 
-        ctx.fillStyle = isSel ? 'rgba(56,189,248,0.18)' : 'rgba(11,18,32,0.92)';
-        ctx.strokeStyle = isSel ? '#38bdf8' : `rgba(148,163,184,${0.2 + 0.4 * rel})`;
+        ctx.fillStyle = isSel ? `rgba(${rgb},0.18)` : 'rgba(11,18,32,0.92)';
+        ctx.strokeStyle = isSel ? `rgb(${rgb})` : e.mode === 'symbolic' ? `rgba(251,191,36,${0.35 + 0.4 * rel})` : `rgba(148,163,184,${0.2 + 0.4 * rel})`;
         ctx.lineWidth = isSel ? 1.6 : 1;
         roundRect(ctx, bx, by, BW, BH, 5);
         ctx.fill();
@@ -117,7 +126,7 @@ export default function KANDiagram({ layers, tick, selected, onSelect, width, he
           ctx.lineTo(bx + BW - padb, toY(0));
           ctx.stroke();
         }
-        ctx.strokeStyle = isSel ? '#7dd3fc' : `rgba(125,211,252,${0.45 + 0.5 * rel})`;
+        ctx.strokeStyle = isSel ? `rgb(${curveRgb})` : `rgba(${curveRgb},${0.45 + 0.5 * rel})`;
         ctx.lineWidth = isSel ? 1.8 : 1.2;
         ctx.beginPath();
         for (let s = 0; s < e.ys.length; s++) {

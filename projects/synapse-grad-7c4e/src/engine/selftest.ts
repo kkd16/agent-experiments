@@ -877,6 +877,25 @@ export function runSelfTest(seed = 7): SelfTestReport {
     ops.push(checkOp('kan-layer (x+params)', [x, ...layer.parameters()], () => layer.forward(x), rng));
   }
 
+  // The interpretability surgery: a KAN layer with one edge SNAPPED to a symbolic form (a·g(x)+b,
+  // frozen) and one edge PRUNED to zero. The frozen edges must produce *exact-zero* gradient into
+  // their own base/spline coefficients while still passing dφ/dx = a·g′(x) to the input — the
+  // property that lets a distilled network keep training the layers beneath a snapped edge.
+  {
+    // A dedicated RNG stream so this newer block doesn't shift the shared stream (and the
+    // finite-difference weights) of every op that follows it in this function.
+    const srng = rngFrom(9701);
+    const inF = 3;
+    const outF = 2;
+    const grid = makeGrid(5, 3, -1.2, 1.2);
+    const layer = new KANLayer(inF, outF, grid, rngFrom(97), 0.8);
+    layer.snapEdge(0, 0, 'sin(πx)'); // freeze edge 0→0 to a·sin(π·x)+b
+    layer.snapEdge(1, 1, 'tanh(2x)'); // freeze edge 1→1 to a·tanh(2·x)+b (smooth ⇒ clean FD check)
+    layer.pruneEdge(2, 0); // drop edge 2→0 entirely
+    const x = leaf(srng, 4, inF);
+    ops.push(checkOp('kan-surgery (symbolic+pruned)', [x, ...layer.parameters()], () => layer.forward(x), srng));
+  }
+
   // End-to-end: a whole KAN — two B-spline layers — gradchecked through the classification
   // cross-entropy, proving the stacked layers differentiate correctly through one another.
   {
