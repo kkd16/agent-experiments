@@ -1041,6 +1041,34 @@ export default function App() {
     bump()
   }, [bump, pushHistory])
 
+  // Split a selected spline via de Casteljau. If a point-on-spline bead of that spline
+  // is also selected, split at the bead (reusing it as the shared join point);
+  // otherwise split at the curve's midpoint.
+  const splitSpline = useCallback(() => {
+    const splineId = selectionRef.current.find((id) => sketchRef.current.get(id)?.kind === 'spline')
+    if (splineId === undefined) return
+    let t = 0.5
+    let atPoint: EntityId | undefined
+    const beadPt = selectionRef.current.find((id) => sketchRef.current.get(id)?.kind === 'point')
+    if (beadPt !== undefined) {
+      const bead = sketchRef.current.constraints.find(
+        (c) => c.kind === 'pointOnSpline' && c.entities[0] === beadPt && c.entities[1] === splineId,
+      )
+      if (bead) {
+        t = bead.aux?.[0] ?? 0.5
+        atPoint = beadPt
+      }
+    }
+    t = Math.min(0.98, Math.max(0.02, t))
+    pushHistory()
+    sketchRef.current.splitSpline(splineId, t, atPoint)
+    solveNow()
+    selectionRef.current = []
+    setSelection([])
+    setMessage(atPoint !== undefined ? 'Split the spline at the bead — two curves, C1 at the join.' : 'Split the spline at its midpoint — two curves, C1 at the join.')
+    bump()
+  }, [bump, solveNow, pushHistory])
+
   const runAutoConstrain = useCallback(() => {
     pushHistory()
     const res = autoConstrain(sketchRef.current)
@@ -1190,6 +1218,8 @@ export default function App() {
             onAnchor={toggleAnchor}
             onReverseArc={reverseArc}
             canReverseArc={selectedEntities.some((e) => e.kind === 'arc')}
+            onSplitSpline={splitSpline}
+            canSplitSpline={selectedEntities.some((e) => e.kind === 'spline')}
             selectionCount={selection.length}
           />
           {message && <div className="statusToast">{message}</div>}

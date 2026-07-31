@@ -44,7 +44,7 @@ mechanisms move.
     (autodiff) Jacobian**, and step accept/reject on the least-squares cost.
   - `dof.ts` — degree-of-freedom analysis via Jacobian rank (under/well/over-constrained).
   - `conflicts.ts` — pinpoints the specific redundant/conflicting constraints by row-reduction.
-  - `probes.ts` / `selftest.ts` — a live correctness suite (48 checks) that re-derives every claim,
+  - `probes.ts` / `selftest.ts` — a live correctness suite (51 checks) that re-derives every claim,
     including analytic-vs-finite-difference differential tests, closed-form kinematics, the
     closed-form simple pendulum for the dynamics, energy conservation, and export fidelity.
 - `render/` — Canvas2D CAD renderer: grid, geometry, constraint glyphs + dimension annotations,
@@ -380,6 +380,34 @@ Planned and to be built end-to-end:
   CI gate), and a headless Chromium smoke of both new examples (drove the bead) reported **0 console
   errors**.
 
+### Session 8 (claude) — Datum cuts its curves: de Casteljau spline splitting
+
+Session 7 gave a point a place *on* a curve; Session 8 lets you cut the curve *there*. **Splitting a
+cubic Bézier at a parameter** is the one editing operation a spline tool can't do without, and the
+elegant way to do it exactly is the **de Casteljau** construction — the same repeated-lerp that
+evaluates the curve, read off as two new control polygons. The two halves together **retrace the
+original curve to machine precision** (the left over [0,t], the right over [t,1]) and meet with
+matching tangent (**C1**) at the cut, all from pure geometry — no solve, no new residual.
+
+- [x] **`splitCubic(p0,c0,c1,p1,t)`** (`solver/curve.ts`) — the de Casteljau split, returning the two
+      control-point quadruples (the shared split point is `left[3] === right[0]`).
+- [x] **`Sketch.splitSpline(id, t, atPoint?)`** — the model operation: replace a spline with two cubics
+      that share the split point (so dragging it moves both halves together), reusing the two endpoints
+      so chained neighbours stay attached, and removing the original spline, its two interior handles,
+      and any constraint that referenced them. If `atPoint` is given — a point-on-spline **bead** riding
+      the curve at `t` — that bead *becomes* the shared join (Session 7 and Session 8 composing: cut the
+      curve exactly where the bead sits, and the bead's now-meaningless rider constraint is dropped).
+- [x] **A "Split" palette action** — shown whenever a spline is selected. Split a lone spline at its
+      midpoint; select a spline **and its bead** to split precisely at the bead.
+- [x] **Self-tests (48 → 51)** — the de Casteljau halves sample-match the original to ~1e-14 with an
+      exact shared point and a C1 join; the `splitSpline` model op reproduces the curve, reuses its
+      endpoints, and adds exactly the six expected free scalars; and splitting at a bead reuses that
+      bead as the join (without moving it) and drops its rider.
+
+Verified: suite **48 → 51**, all green; `pnpm lint` + `tsc` + `vite build` pass; a headless Chromium
+smoke selected the ribbon's spline, hit **Split**, and confirmed the two-curve result with **0 console
+errors**.
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
@@ -406,8 +434,10 @@ Planned and to be built end-to-end:
       joins as editable smooth-join constraints.
 - [ ] Arc-length and included-angle dimensional constraints (for arcs *and* splines).
 - [ ] Auto-constrain: infer line↔arc tangency and equal-radius from rough geometry.
-- [ ] Trim / extend / fillet-in-place tools that cut real geometry at intersections
-      (including splitting a spline at a parameter via de Casteljau).
+- [x] Split a spline at a parameter via de Casteljau (incl. at a point-on-spline bead) *(Session 8)*
+- [ ] Trim / extend / fillet-in-place tools that cut real geometry at line/arc/spline **intersections**
+      (the parameter-split half is done; the remaining work is finding the cut parameter from a picked
+      intersection, and trimming lines/arcs).
 - [ ] **Offset curves** — a construction offset of a line/arc/spline at a driven distance.
 - [ ] Constraint groups / layers, and a per-entity construction toggle in the UI.
 - [ ] Pantograph / other coupler-curve mechanisms.
@@ -416,6 +446,21 @@ Planned and to be built end-to-end:
 
 ## Session log
 
+- 2026-07-31 (claude): **Datum cuts its curves — de Casteljau spline splitting.** Added the one
+  editing operation a spline tool can't do without: split a cubic Bézier at a parameter, exactly. The
+  **de Casteljau** construction (`splitCubic` in `solver/curve.ts`) reads the two half-curves off the
+  repeated-lerp that evaluates the curve, so the two halves retrace the original to machine precision
+  (~1e-14) and meet C1 at the cut — no solve, no new residual. `Sketch.splitSpline(id, t, atPoint?)`
+  makes it a model op: two cubics sharing the split point, endpoints reused so chained neighbours stay
+  attached, the original spline + interior handles + referencing constraints removed. When a
+  point-on-spline **bead** is passed as `atPoint`, the bead *becomes* the shared join and its rider
+  constraint is dropped — Session 7 and Session 8 composing. A "Split" palette action splits a lone
+  spline at its midpoint, or precisely at a selected bead. Validated in a throwaway oracle first, then
+  ported. Self-test suite **48 → 51**: de Casteljau reproduces the curve with an exact shared point and
+  a C1 join; the model op reproduces the curve, reuses endpoints and adds exactly +6 DOF; split-at-bead
+  reuses the bead (no drift) and drops its rider. Verified headless in Chromium (selected the ribbon's
+  spline, hit Split, two curves, 0 console errors) plus `node scripts/verify-project.mjs` (scope +
+  conformance + lint + build all green).
 - 2026-07-31 (claude): **Datum measures its curves — auxiliary solver parameters.** Introduced the
   first free scalar in Datum that is neither a point coordinate nor a radius: a **curve parameter `t`**
   owned by a *constraint*, appended to the free-parameter vector and keyed by the constraint's id so

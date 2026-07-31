@@ -14,7 +14,7 @@ import { evalDynamics, lumpedMasses, stepDynamics } from './dynamics'
 import type { DynParams } from './dynamics'
 import { sketchToSVG, sketchToDXF, motionProfileToCSV } from '../model/export'
 import { computeMotionProfile, computeJerk } from './kinematics'
-import { cubicPoint, cubicLength, cubicLengthDense } from './curve'
+import { cubicPoint, cubicLength, cubicLengthDense, splitCubic } from './curve'
 
 export type TestResult = { name: string; pass: boolean; detail: string }
 
@@ -1031,6 +1031,92 @@ export function runSelfTests(): TestResult[] {
     }
     const ok = t1 !== undefined && t2 !== undefined && t1 === t2 && drift === 0
     check('auxiliary parameter round-trips through save/load', ok, `t ${t1?.toFixed(6)} → ${t2?.toFixed(6)}, residual drift ${drift.toExponential(1)}`)
+  }
+
+  // === Session 8 — de Casteljau spline splitting ==========================
+
+  // 49. de Casteljau split is exact: the two halves together retrace the original cubic
+  //     to machine precision (the left over [0,t], the right over [t,1], each
+  //     reparametrised to [0,1]), share the split point exactly, and meet with matching
+  //     tangent (C1) there.
+  {
+    const p0: [number, number] = [-80, 0]
+    const c0: [number, number] = [-40, 90]
+    const c1: [number, number] = [50, 70]
+    const p1: [number, number] = [80, -10]
+    const t = 0.37
+    const { left, right } = splitCubic(p0, c0, c1, p1, t)
+    let worst = 0
+    for (let i = 0; i <= 200; i++) {
+      const u = i / 200
+      const orig = cubicPoint(p0, c0, c1, p1, u)
+      const h = u <= t ? cubicPoint(left[0], left[1], left[2], left[3], u / t) : cubicPoint(right[0], right[1], right[2], right[3], (u - t) / (1 - t))
+      worst = Math.max(worst, Math.hypot(orig[0] - h[0], orig[1] - h[1]))
+    }
+    const shared = Math.hypot(left[3][0] - right[0][0], left[3][1] - right[0][1])
+    // C1: the incoming tangent (left[3]−left[2]) is parallel to the outgoing (right[1]−right[0]).
+    const lt = [left[3][0] - left[2][0], left[3][1] - left[2][1]]
+    const rt = [right[1][0] - right[0][0], right[1][1] - right[0][1]]
+    const cross = lt[0] * rt[1] - lt[1] * rt[0]
+    check('de Casteljau split reproduces the curve (C1)', worst < 1e-11 && shared === 0 && Math.abs(cross) < 1e-9, `worst=${worst.toExponential(1)}, shared=${shared.toExponential(1)}, join cross=${cross.toExponential(1)}`)
+  }
+
+  // 50. The splitSpline model operation replaces a spline with two curves whose union
+  //     reproduces the original, reuses the two endpoints (so chained neighbours stay
+  //     attached), removes the original spline and its interior handles, and adds
+  //     exactly six free scalars (two new interior handles + the split point).
+  {
+    const s = new Sketch()
+    const p0 = s.addPoint(-80, 0)
+    const c0 = s.addPoint(-40, 90)
+    const c1 = s.addPoint(50, 70)
+    const p1 = s.addPoint(80, -10)
+    const sp = s.addSpline(p0.id, c0.id, c1.id, p1.id)
+    const P0: [number, number] = [p0.x, p0.y]
+    const C0: [number, number] = [c0.x, c0.y]
+    const C1: [number, number] = [c1.x, c1.y]
+    const P1: [number, number] = [p1.x, p1.y]
+    const dofBefore = analyzeDof(s).dof
+    const tt = 0.42
+    const { left, right } = s.splitSpline(sp.id, tt)
+    const splines = s.entities.filter((e) => e.kind === 'spline')
+    const P = (id: number): [number, number] => {
+      const p = s.point(id)
+      return [p.x, p.y]
+    }
+    let worst = 0
+    for (let i = 0; i <= 200; i++) {
+      const u = i / 200
+      const orig = cubicPoint(P0, C0, C1, P1, u)
+      const h = u <= tt ? cubicPoint(P(left.p0), P(left.c0), P(left.c1), P(left.p1), u / tt) : cubicPoint(P(right.p0), P(right.c0), P(right.c1), P(right.p1), (u - tt) / (1 - tt))
+      worst = Math.max(worst, Math.hypot(orig[0] - h[0], orig[1] - h[1]))
+    }
+    const dofAfter = analyzeDof(s).dof
+    const ok = splines.length === 2 && s.get(sp.id) === undefined && left.p0 === p0.id && right.p1 === p1.id && worst < 1e-11 && dofAfter - dofBefore === 6
+    check('splitSpline reproduces curve, reuses endpoints, +6 DOF', ok, `splines=${splines.length}, worst=${worst.toExponential(1)}, ΔDOF=${dofAfter - dofBefore}`)
+  }
+
+  // 51. Splitting at a point-on-spline bead reuses that bead as the shared join and
+  //     drops its (now meaningless) rider constraint — the Session-7 aux feature and
+  //     the Session-8 split composing: the bead is exactly where the curve is cut.
+  {
+    const s = EXAMPLES.find((e) => e.id === 'bead-on-curve')!.build().sketch
+    solve(s, { maxIterations: 160 })
+    const bead = s.constraints.find((c) => c.kind === 'pointOnSpline')!
+    const beadPt = bead.entities[0]
+    const splineId = bead.entities[1]
+    const bp = s.point(beadPt)
+    const before: [number, number] = [bp.x, bp.y]
+    const { left, right } = s.splitSpline(splineId, bead.aux![0], beadPt)
+    const after = s.point(beadPt)
+    const moved = Math.hypot(after.x - before[0], after.y - before[1])
+    const ok =
+      left.p1 === beadPt &&
+      right.p0 === beadPt &&
+      s.constraints.find((c) => c.kind === 'pointOnSpline') === undefined &&
+      s.entities.filter((e) => e.kind === 'spline').length === 2 &&
+      moved < 1e-6
+    check('split at a bead reuses it as the join', ok, `join=bead:${left.p1 === beadPt && right.p0 === beadPt}, bead moved ${moved.toExponential(1)}`)
   }
 
   return out
