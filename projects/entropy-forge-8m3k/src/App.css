@@ -179,3 +179,19 @@ svg text { font-family: var(--mono); }
   background-color: #1b2130;
 }
 .checkerboard canvas { image-rendering: pixelated; }
+
+/* Fountain-codes page: the decode verdict banner */
+.ef-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.ef-decoded {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text);
+}

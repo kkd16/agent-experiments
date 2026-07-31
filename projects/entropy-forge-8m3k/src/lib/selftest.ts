@@ -97,6 +97,20 @@ import { fdct8x8, idct8x8, ZIGZAG as JZIGZAG, DEZIGZAG as JDEZIGZAG } from './dc
 import { encodeJPEG, decodeJPEG, psnr as jpsnr, rgbToYCbCr, yCbCrToRgb, type Subsampling } from './jpeg.ts'
 import { SAMPLES as IMG_SAMPLES } from './pngSamples.ts'
 import type { RGBAImage } from './png.ts'
+import {
+  idealSoliton,
+  robustSoliton,
+  deriveNeighbors,
+  ltEncode,
+  peelDecode,
+  geDecode,
+  bytesToSymbols,
+  symbolsToBytes,
+  buildPrecode,
+  precodeIntermediate,
+  raptorDecode,
+  successCurve,
+} from './fountain.ts'
 
 export interface TestCase {
   group: string
@@ -432,7 +446,119 @@ export function runSelfTest(): TestCase[] {
   // ---- FLAC (lossless audio by linear prediction) ----
   runFlacTests(results)
 
+  // ---- Fountain codes (rateless erasure coding: LT + Raptor) ----
+  runFountainTests(results)
+
   return results
+}
+
+// ---------------------------------------------------------------------------
+// Fountain codes — LT / Raptor rateless erasure coding.
+// Every decoder must reconstruct the exact source bytes; the peeling and GE
+// decoders must agree; the precode must not lose information; and the
+// degree distributions must be proper probability distributions.
+// ---------------------------------------------------------------------------
+function runFountainTests(results: TestCase[]): void {
+  const G = 'Fountain (LT / Raptor)'
+
+  // Degree distributions are proper probability mass functions.
+  try {
+    let ok = true
+    let meanOk = true
+    for (const k of [8, 16, 32, 64]) {
+      const a = idealSoliton(k)
+      const b = robustSoliton(k)
+      if (Math.abs(a.cdf[k] - 1) > 1e-9 || Math.abs(b.cdf[k] - 1) > 1e-9) ok = false
+      const sa = a.p.slice(1).reduce((x, y) => x + y, 0)
+      const sb = b.p.slice(1).reduce((x, y) => x + y, 0)
+      if (Math.abs(sa - 1) > 1e-9 || Math.abs(sb - 1) > 1e-9) ok = false
+      if (!(a.meanDegree > 1 && a.meanDegree < k && b.meanDegree > 1)) meanOk = false
+    }
+    results.push({ group: G, name: 'ideal & robust soliton sum to 1 (proper pmf)', pass: ok, detail: 'k ∈ {8,16,32,64}' })
+    results.push({ group: G, name: 'mean degree in (1, k)', pass: meanOk, detail: '' })
+  } catch (e) {
+    results.push({ group: G, name: 'degree distributions', pass: false, detail: (e as Error).message })
+  }
+
+  // Neighbour derivation is deterministic, distinct, and in range — the seed is
+  // the only side information a droplet carries, so the receiver must reproduce it.
+  try {
+    let ok = true
+    const dist = robustSoliton(32)
+    for (let s = 1; s < 80; s++) {
+      const n1 = deriveNeighbors(s, 0, dist, 32)
+      const n2 = deriveNeighbors(s, 0, dist, 32)
+      if (JSON.stringify(n1) !== JSON.stringify(n2)) ok = false
+      if (new Set(n1).size !== n1.length) ok = false
+      if (!(n1.length >= 1 && n1.every((x) => x >= 0 && x < 32))) ok = false
+    }
+    results.push({ group: G, name: 'neighbour selection: deterministic, distinct, in-range', pass: ok, detail: '80 seeds' })
+  } catch (e) {
+    results.push({ group: G, name: 'neighbour selection', pass: false, detail: (e as Error).message })
+  }
+
+  // Exact byte round-trip under both decoders (generous 300% overhead).
+  const roundtrip = (k: number, W: number, decoder: 'peel' | 'ge'): boolean => {
+    const rng = new ChannelRNG(777 + k * 13 + (decoder === 'ge' ? 1 : 0))
+    const len = k * W - 3
+    const bytes = new Uint8Array(len)
+    for (let i = 0; i < len; i++) bytes[i] = rng.u32() & 0xff
+    const symbols = bytesToSymbols(bytes, W)
+    const dist = robustSoliton(symbols.length)
+    const drops = ltEncode(symbols, dist, symbols.length * 4)
+    const res = decoder === 'peel' ? peelDecode(drops, symbols.length, W) : geDecode(drops, symbols.length, W)
+    if (!res.success) return false
+    const rec = symbolsToBytes(res.symbols, len)
+    return rec.length === len && rec.every((b, i) => b === bytes[i])
+  }
+  try {
+    let peelOk = true
+    let geOk = true
+    for (const k of [8, 16, 24, 32]) {
+      if (!roundtrip(k, 4, 'peel')) peelOk = false
+      if (!roundtrip(k, 4, 'ge')) geOk = false
+    }
+    results.push({ group: G, name: 'peeling decoder: exact byte round-trip', pass: peelOk, detail: 'k ∈ {8,16,24,32}, W=4' })
+    results.push({ group: G, name: 'Gaussian-elimination decoder: exact byte round-trip', pass: geOk, detail: 'k ∈ {8,16,24,32}, W=4' })
+  } catch (e) {
+    results.push({ group: G, name: 'LT round-trips', pass: false, detail: (e as Error).message })
+  }
+
+  // Raptor (LDPC precode + LT) round-trips the exact source bytes.
+  try {
+    const rng = new ChannelRNG(4242)
+    const k = 24
+    const W = 4
+    const len = k * W - 1
+    const bytes = new Uint8Array(len)
+    for (let i = 0; i < len; i++) bytes[i] = rng.u32() & 0xff
+    const sources = bytesToSymbols(bytes, W)
+    const pre = buildPrecode(k, 8)
+    const inter = precodeIntermediate(sources, pre)
+    const dist = robustSoliton(pre.L)
+    const drops = ltEncode(inter, dist, pre.L * 4)
+    const res = raptorDecode(drops, pre, W)
+    const rec = res.success ? symbolsToBytes(res.sources, len) : new Uint8Array()
+    const ok = res.success && rec.length === len && rec.every((b, i) => b === bytes[i])
+    results.push({ group: G, name: 'Raptor (precode + LT): exact byte round-trip', pass: ok, detail: `${pre.p} parities, L=${pre.L}` })
+  } catch (e) {
+    results.push({ group: G, name: 'Raptor round-trip', pass: false, detail: (e as Error).message })
+  }
+
+  // The optimal (GE/ML) decoder never does worse than greedy peeling, and the
+  // Raptor precode never does worse than plain LT — at every overhead point.
+  try {
+    const dist = robustSoliton(40)
+    const curve = successCurve(dist, { received: [44, 48, 52, 56], trials: 140, salt: 3, precodeParities: 8 })
+    const geDom = curve.every((c) => c.pGE >= c.pPeel - 1e-9)
+    const rapDom = curve.every((c) => c.pRaptor >= c.pGE - 1e-9)
+    const geStrong = curve[curve.length - 1].pGE > 0.75
+    results.push({ group: G, name: 'ML (GE) decode success ≥ peeling, everywhere', pass: geDom, detail: 'k=40, 140 trials/pt' })
+    results.push({ group: G, name: 'Raptor precode ≥ plain LT (ML), everywhere', pass: rapDom, detail: 'p=8 parities' })
+    results.push({ group: G, name: 'GE decodes reliably at ~40% overhead', pass: geStrong, detail: `p=${curve[curve.length - 1].pGE.toFixed(2)} at r=56` })
+  } catch (e) {
+    results.push({ group: G, name: 'decoder dominance', pass: false, detail: (e as Error).message })
+  }
 }
 
 // ---------------------------------------------------------------------------

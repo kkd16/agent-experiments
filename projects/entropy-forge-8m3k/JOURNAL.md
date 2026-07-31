@@ -838,7 +838,82 @@ spec, end to end, and proven **byte-compatible in both directions**.
 - [ ] **Step-through of the BWT sort** — animate the rotation matrix collapsing to sorted order, the
       way the Suffix Array page animates SA-IS.
 
+## Entropy Forge v15 — Fountain codes (rateless erasure coding: LT + Raptor)
+
+For fourteen versions the channel-coding pillar has answered the same question with a *fixed* block:
+given (n, k), how many errors/erasures survive? Fountain codes throw the block length away. From k
+source symbols an encoder pours a **limitless** stream of droplets — each the XOR of a random subset of
+sources — and a receiver on an erasure channel rebuilds the whole message from *any* k(1+ε) of them.
+No feedback, no retransmission, no rate chosen in advance. This is the natural companion to the Binary
+Erasure Channel the lab already models, and the code behind 3GPP broadcast, RaptorQ (RFC 6330) and
+swarm delivery.
+
+### Plan (this session) — all shipped
+
+- [x] **`fountain.ts` core** — the ideal & robust soliton degree distributions (with the Luby
+      spike-plus-tail), reproducible **seed-driven neighbour selection** (a droplet travels as just a
+      seed + payload; the receiver regenerates its graph from the seed), the LT encoder, and real byte
+      round-trips (`bytesToSymbols` / `symbolsToBytes` with a length trim).
+- [x] **Peeling / belief-propagation decoder** — Luby's ripple process in linear time: solve a
+      degree-1 droplet, XOR the recovered symbol out of every neighbour, repeat; step-by-step trace for
+      a scrubbable animation.
+- [x] **Gaussian-elimination (ML) decoder over GF(2)** — the optimal decoder, solving the whole linear
+      system (coefficient bitsets + XORed payloads) so it decodes at a sliver of overhead above k where
+      greedy peeling still stalls.
+- [x] **Raptor-style LDPC precode** — an outer parity code whose constraint equations, folded into the
+      GE system, bridge the sources the LT layer misses and collapse the peeling error floor; exact
+      source round-trip through `raptorDecode`.
+- [x] **Monte-Carlo analysers** — structural (payload-independent) `successCurve` (P(decode) vs
+      received/k for peeling / GE / Raptor) and `meanPeelOverhead`.
+- [x] **`Fountain.tsx` lab page** — message → droplets → Binary Erasure Channel → live decode: a
+      scrubbable peeling animation over the droplet↔symbol bipartite graph, the three decoders' verdicts
+      on the same caught set with the exact reconstruction shown, the soliton pmf vs the degrees
+      actually drawn, and the decode-probability-vs-overhead curve. Wired into Nav + App under
+      *Channel coding*.
+- [x] **Nine self-tests** wired into `runSelfTest()` — proper-pmf solitons, deterministic/distinct
+      neighbour derivation, exact byte round-trips (peeling, GE, Raptor), and the ML ≥ peeling and
+      Raptor ≥ LT dominance across every overhead point. **855 → 864 checks, all green.**
+
+### Fountain / rateless roundtrip (honest next steps — not yet built)
+
+- [ ] **Inactivation decoding** — the RaptorQ decoder proper: run peeling, and when the ripple dries,
+      "inactivate" a few columns and finish them with a tiny dense GE solve, recovering GE's low
+      overhead at peeling's near-linear speed (right now GE is a full O(k³) solve).
+- [ ] **Systematic fountain** — arrange the first k droplets to *be* the source symbols (RaptorQ's
+      intermediate-symbol pre-solve) so a lossless channel needs zero decoding work.
+- [ ] **A real RaptorQ tables port** — the RFC 6330 systematic indices and the LDPC+HDPC precode, to
+      show the standardised code beside our teaching LT/Raptor.
+- [ ] **Overhead histogram** — the distribution of "droplets needed to decode" over many trials
+      (not just the mean), the classic fountain-code failure-probability tail.
+- [ ] **Online codes / LT with a proper output-degree animation** — visualise the ripple *size* over
+      time as its own curve, next to the graph.
+- [ ] **Wire a rateless mode into the Channel Lab** — gzip → fountain-encode → bursty *erasure*
+      channel → decode → gunzip, the erasure-channel sibling of the existing RS end-to-end demo.
+
 ## Session log
+
+- 2026-07-31 (claude): **v15 — Fountain codes (rateless erasure coding: LT + Raptor).** The channel-coding
+  pillar had five fixed-block code families (Hamming, Reed–Solomon, convolutional/Viterbi, LDPC, polar) but
+  nothing *rateless* — the one idea that throws the block length away. v15 builds it from scratch. New
+  `fountain.ts`: the **ideal & robust soliton** degree distributions (Luby's spike-plus-tail, verified to be
+  proper pmfs); **seed-driven neighbour selection** so a droplet is just a seed + payload and the receiver
+  regenerates its graph; the **LT encoder**; and two decoders — the linear-time **peeling / belief-propagation**
+  decoder (the ripple process, with a step trace for animation) and the optimal **Gaussian-elimination decoder
+  over GF(2)** (coefficient bitsets with their byte payloads carried through the same row ops), which decodes
+  at a sliver of overhead above k where peeling stalls. On top sits an outer **LDPC precode** whose constraint
+  equations, folded into the GE system, bridge the sources the LT layer misses — turning the near-optimal LT
+  code into an optimal **Raptor** code and collapsing the peeling error floor. Everything round-trips real
+  bytes; decode *success* depends only on the droplet↔symbol incidence, so the Monte-Carlo analysers
+  (`successCurve`, `meanPeelOverhead`) run on the graph alone and stay cheap. New `Fountain.tsx` lab page pours
+  a typed message into droplets, erases them on a Binary Erasure Channel, and decodes live: a scrubbable
+  **peeling animation** over the bipartite graph (amber degree-1 droplet being solved, green recovered symbols,
+  dimmed erased droplets, violet parity symbols under Raptor), the **three decoders' verdicts** on the same
+  caught set with the exact reconstruction printed, the **soliton pmf** against the degrees actually drawn, and
+  the **decode-probability-vs-overhead curve** where the GE and Raptor cliffs sit far left of peeling's — the
+  whole promise of rateless codes on one chart. Registered under *Channel coding* in the Nav (between Polar and
+  Channel Lab). Nine new self-tests (proper-pmf solitons; deterministic, distinct, in-range neighbour
+  derivation; exact byte round-trips under peeling, GE and Raptor; and the ML ≥ peeling and Raptor ≥ LT
+  dominance at every overhead) bring the in-browser suite **855 → 864 checks, all green**. Zero new deps.
 
 - 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
   The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an
