@@ -290,8 +290,11 @@ Backlog (this session's plan for what comes next — pick up here):
   split of the atom classes), lifting the scope note for `^ $ \b`.
 - [ ] **Determinism / equivalence check**: prove the TDFA's *language* equals the plain min-DFA's via
   the existing product-automaton comparator (captures aside, membership must match) — a free oracle.
-- [ ] **Export**: emit the TDFA as a C `switch`-table (states × ops), showing the code re2c would
-  generate; wire into the existing Export tab.
+- [x] **C export** (`emitC`): emit the machine on screen as a self-contained C matcher — a `state`
+  switch, per-state range dispatch, an integer register file, the `set`/`copy` ops inlined, and the
+  capture read-out at accept (exactly what re2c generates). Shown in a collapsible panel section with a
+  copy button, and **verified in development by compiling with `gcc -O2` and diffing the compiled
+  matcher's captures against this engine** — 19/19 cases byte-identical.
 - [x] **Complexity strip**: the Tagged DFA tab now shows the per-input runtime cost — `n` chars → `n`
   edges + a bounded register-op count (O(1) per character) — beside the once-at-build cost (states +
   closures), making concrete why the machine is fast where the Pike VM re-runs the closure per thread.
