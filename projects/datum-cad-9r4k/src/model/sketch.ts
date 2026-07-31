@@ -11,10 +11,25 @@ import type {
   SketchData,
   SplineEntity,
 } from './types'
+import { nearestParam } from '../solver/curve'
 
-// A single solvable scalar parameter, addressed by the entity it lives on and
-// the field name to read/write. The solver assembles a flat vector of these.
-export type ParamRef = { owner: PointEntity | CircleEntity | ArcEntity; key: 'x' | 'y' | 'r' }
+// A single solvable scalar parameter the solver may move. It is one of two kinds:
+//   • a *coordinate* — a point's x/y or a circle/arc radius, living on an entity, or
+//   • an *auxiliary* parameter — a curve parameter (or the like) owned by a constraint
+//     and stored in its `aux[]` array at `index` (Session 7's first non-coordinate DOF).
+// The solver assembles a flat vector of these; `paramKey` maps each to the stable
+// column key the AD backends address it by.
+export type ParamRef =
+  | { kind: 'coord'; owner: PointEntity | CircleEntity | ArcEntity; key: 'x' | 'y' | 'r' }
+  | { kind: 'aux'; owner: Constraint; index: number }
+
+// The stable string key identifying a parameter's Jacobian column. Coordinates key on
+// "<id>:x|y|r" (unchanged, so every existing lookup keeps working); auxiliaries key on
+// "<constraintId>:aux<index>". Owner ids are globally unique (entities and constraints
+// draw from one id counter), so the two namespaces never collide.
+export function paramKey(ref: ParamRef): string {
+  return ref.kind === 'aux' ? `${ref.owner.id}:aux${ref.index}` : `${ref.owner.id}:${ref.key}`
+}
 
 // The Sketch is the mutable model: a bag of entities and constraints plus the
 // bookkeeping to turn them into (and back from) a flat parameter vector.
@@ -24,6 +39,7 @@ export class Sketch {
   private nextId = 1
 
   private byId = new Map<EntityId, Entity>()
+  private constraintById = new Map<EntityId, Constraint>()
 
   constructor(data?: SketchData) {
     if (data) this.load(data)
@@ -31,7 +47,13 @@ export class Sketch {
 
   load(data: SketchData) {
     this.entities = data.entities.map((e) => ({ ...e }))
-    this.constraints = data.constraints.map((c) => ({ ...c, entities: [...c.entities] }))
+    // Deep-copy `entities` and any `aux[]` so a loaded sketch never aliases the source
+    // arrays (a stale reference would let an undo snapshot mutate the live model).
+    this.constraints = data.constraints.map((c) => ({
+      ...c,
+      entities: [...c.entities],
+      ...(c.aux ? { aux: [...c.aux] } : {}),
+    }))
     this.nextId = data.nextId
     this.reindex()
   }
@@ -39,7 +61,11 @@ export class Sketch {
   toData(): SketchData {
     return {
       entities: this.entities.map((e) => ({ ...e })),
-      constraints: this.constraints.map((c) => ({ ...c, entities: [...c.entities] })),
+      constraints: this.constraints.map((c) => ({
+        ...c,
+        entities: [...c.entities],
+        ...(c.aux ? { aux: [...c.aux] } : {}),
+      })),
       nextId: this.nextId,
     }
   }
@@ -51,6 +77,14 @@ export class Sketch {
   private reindex() {
     this.byId.clear()
     for (const e of this.entities) this.byId.set(e.id, e)
+    this.constraintById.clear()
+    for (const c of this.constraints) this.constraintById.set(c.id, c)
+  }
+
+  // The current value of a constraint's auxiliary parameter (0 if unset) — the value
+  // the plain backend reads and the AD backends seed for the "<id>:aux<index>" column.
+  auxValue(constraintId: EntityId, index: number): number {
+    return this.constraintById.get(constraintId)?.aux?.[index] ?? 0
   }
 
   private fresh(): EntityId {
@@ -156,12 +190,30 @@ export class Sketch {
 
   addConstraint(kind: ConstraintKind, entities: EntityId[], value?: number, driver = false): Constraint {
     const c: Constraint = { kind, id: this.fresh(), entities, value, driver }
+    // Constraints that carry auxiliary solver parameters seed them now, from the
+    // sketch's current geometry, so the solve starts near the right place.
+    if (kind === 'pointOnSpline') c.aux = [this.initSplineParam(entities[0], entities[1])]
     this.constraints.push(c)
+    this.constraintById.set(c.id, c)
     return c
+  }
+
+  // The curve parameter t at which a point most nearly rides a spline — the initial
+  // value for a fresh point-on-spline's auxiliary parameter. Lazy import avoids a
+  // module cycle (curve.ts pulls in nothing from the model).
+  private initSplineParam(pointId: EntityId, splineId: EntityId): number {
+    const p = this.point(pointId)
+    const s = this.spline(splineId)
+    const P = (id: EntityId): [number, number] => {
+      const q = this.point(id)
+      return [q.x, q.y]
+    }
+    return nearestParam(P(s.p0), P(s.c0), P(s.c1), P(s.p1), [p.x, p.y])
   }
 
   removeConstraint(id: EntityId) {
     this.constraints = this.constraints.filter((c) => c.id !== id)
+    this.constraintById.delete(id)
   }
 
   // Swap an arc's start and end points, flipping which side of the circle the arc
@@ -209,29 +261,46 @@ export class Sketch {
 
   // --- parameter vector ---------------------------------------------------
 
-  // Every free scalar the solver may move. Fixed points contribute nothing.
+  // Every free scalar the solver may move: point coordinates and circle/arc radii
+  // first (fixed points contribute nothing), then every constraint's auxiliary
+  // parameters. The order is stable, so the AD backends and DOF/kinematics all derive
+  // the same column layout from this one list.
   freeParams(extraFixed?: Set<EntityId>): ParamRef[] {
     const params: ParamRef[] = []
     for (const e of this.entities) {
       if (e.kind === 'point') {
         if (e.fixed || extraFixed?.has(e.id)) continue
-        params.push({ owner: e, key: 'x' })
-        params.push({ owner: e, key: 'y' })
+        params.push({ kind: 'coord', owner: e, key: 'x' })
+        params.push({ kind: 'coord', owner: e, key: 'y' })
       } else if (e.kind === 'circle' || e.kind === 'arc') {
-        params.push({ owner: e, key: 'r' })
+        params.push({ kind: 'coord', owner: e, key: 'r' })
       }
+    }
+    for (const c of this.constraints) {
+      if (c.aux) for (let i = 0; i < c.aux.length; i++) params.push({ kind: 'aux', owner: c, index: i })
     }
     return params
   }
 
   readParams(refs: ParamRef[]): Float64Array {
     const v = new Float64Array(refs.length)
-    for (let i = 0; i < refs.length; i++) v[i] = (refs[i].owner as unknown as Record<string, number>)[refs[i].key]
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i]
+      v[i] = ref.kind === 'aux' ? ref.owner.aux?.[ref.index] ?? 0 : (ref.owner as unknown as Record<string, number>)[ref.key]
+    }
     return v
   }
 
   writeParams(refs: ParamRef[], v: Float64Array) {
-    for (let i = 0; i < refs.length; i++) (refs[i].owner as unknown as Record<string, number>)[refs[i].key] = v[i]
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i]
+      if (ref.kind === 'aux') {
+        if (!ref.owner.aux) ref.owner.aux = []
+        ref.owner.aux[ref.index] = v[i]
+      } else {
+        ;(ref.owner as unknown as Record<string, number>)[ref.key] = v[i]
+      }
+    }
   }
 
   // --- geometry helpers ---------------------------------------------------

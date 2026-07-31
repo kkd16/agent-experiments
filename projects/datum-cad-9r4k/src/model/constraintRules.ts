@@ -1,7 +1,8 @@
 import type { Sketch } from './sketch'
 import type { Constraint, ConstraintKind, Entity, EntityId } from './types'
+import { cubicLength } from '../solver/curve'
 
-export type ValueKind = 'distance' | 'angle' | 'radius' | 'diameter' | null
+export type ValueKind = 'distance' | 'angle' | 'radius' | 'diameter' | 'length' | null
 
 export type ConstraintOption = {
   kind: ConstraintKind
@@ -100,6 +101,14 @@ export function applicableConstraints(sketch: Sketch, sel: EntityId[]): Constrai
     const label = sketch.get(circular[0])?.kind === 'arc' ? 'Point on Arc' : 'Point on Circle'
     out.push({ kind: 'pointOnCircle', label, symbol: '○', value: null, entities: [points[0], circular[0]] })
   }
+  // A point + a spline → the point rides the curve at a solved parameter (unless the
+  // point is one of the spline's own control points, which would be degenerate).
+  if (only(1, 0, 0, 1)) {
+    const s = sketch.spline(splines[0])
+    const isControl = points[0] === s.p0 || points[0] === s.c0 || points[0] === s.c1 || points[0] === s.p1
+    if (!isControl)
+      out.push({ kind: 'pointOnSpline', label: 'Point on Spline', symbol: '∿', value: null, entities: [points[0], splines[0]] })
+  }
   if (only(2, 1, 0)) {
     out.push({ kind: 'symmetric', label: 'Symmetric', symbol: '⇄', value: null, entities: [points[0], points[1], lines[0]] })
   }
@@ -133,6 +142,16 @@ export function applicableConstraints(sketch: Sketch, sel: EntityId[]): Constrai
     const ctr = sketch.point(circ.c)
     const end = nearestSplineEnd(sketch, splines[0], [[ctr.x, ctr.y]])
     out.push({ kind: 'splineTangentArc', label: 'Tangent to Arc', symbol: '⌒', value: null, entities: [end, splines[0], circular[0]] })
+  }
+  // A single spline → dimension its true arc length.
+  if (only(0, 0, 0, 1)) {
+    const s = sketch.spline(splines[0])
+    const p = (id: EntityId): [number, number] => {
+      const q = sketch.point(id)
+      return [q.x, q.y]
+    }
+    const len = cubicLength(p(s.p0), p(s.c0), p(s.c1), p(s.p1))
+    out.push({ kind: 'splineLength', label: 'Length', symbol: 'L', value: 'length', entities: [splines[0]], defaultValue: Math.round(len) })
   }
   if (only(0, 0, 0, 2)) {
     const shared = sharedSplineEndpoint(sketch, splines[0], splines[1])

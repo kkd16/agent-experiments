@@ -1,5 +1,6 @@
 import type { ArcEntity, Constraint, EntityId, LineEntity } from '../model/types'
 import type { Sketch } from '../model/sketch'
+import { GL } from './curve'
 
 // The residual math, written *once* against an abstract arithmetic `Alg<T>`.
 //
@@ -68,6 +69,35 @@ export type Vars<T> = {
   px: (pointId: EntityId) => T // point x
   py: (pointId: EntityId) => T // point y
   cr: (circleId: EntityId) => T // circle radius
+  // An auxiliary parameter owned by a constraint (e.g. a curve parameter t). The AD
+  // backends hand back a dual/hyper-dual carrying the seed in that column; the plain
+  // backend hands back the raw stored value.
+  aux: (constraintId: EntityId, index: number) => T
+}
+
+// A cubic Bézier component B(t) = (1−t)³·p0 + 3(1−t)²t·c0 + 3(1−t)t²·c1 + t³·p1, in the
+// algebra A. Applied once per axis. A Bézier is a polynomial, so this — and every one
+// of its derivatives — is exact in each of Datum's four backends.
+export function bezierComponent<T>(A: Alg<T>, t: T, p0: T, c0: T, c1: T, p1: T): T {
+  const { add, sub, mul, konst } = A
+  const u = sub(konst(1), t)
+  const uu = mul(u, u)
+  const tt = mul(t, t)
+  const b0 = mul(uu, u) // (1−t)³
+  const b1 = mul(konst(3), mul(uu, t)) // 3(1−t)²t
+  const b2 = mul(konst(3), mul(u, tt)) // 3(1−t)t²
+  const b3 = mul(tt, t) // t³
+  return add(add(mul(b0, p0), mul(b1, c0)), add(mul(b2, c1), mul(b3, p1)))
+}
+
+// The derivative component B′(t) = 3[(1−t)²(c0−p0) + 2(1−t)t(c1−c0) + t²(p1−c1)].
+export function bezierDerivComponent<T>(A: Alg<T>, t: T, p0: T, c0: T, c1: T, p1: T): T {
+  const { add, sub, mul, konst } = A
+  const u = sub(konst(1), t)
+  const a = mul(konst(3), mul(u, u)) // 3(1−t)²
+  const b = mul(konst(6), mul(u, t)) // 6(1−t)t
+  const c = mul(konst(3), mul(t, t)) // 3t²
+  return add(add(mul(a, sub(c0, p0)), mul(b, sub(c1, c0))), mul(c, sub(p1, c1)))
 }
 
 // Append this constraint's residual(s) to `out`, expressed in the algebra `A`.
@@ -81,7 +111,7 @@ export function pushResidualsG<T>(
   out: T[],
 ): void {
   const { add, sub, mul, div, abs, hypot, atan2, konst, wrap, guardDenom } = A
-  const { px, py, cr } = vars
+  const { px, py, cr, aux } = vars
 
   const P = (i: number): EntityId => c.entities[i]
   const lineOf = (i: number): LineEntity => sketch.line(c.entities[i])
@@ -283,6 +313,42 @@ export function pushResidualsG<T>(
       const ry = sub(py(P(0)), py(circ.c))
       const rlen = hypot(rx, ry)
       out.push(div(add(mul(h.dx, rx), mul(h.dy, ry)), guardDenom(mul(h.len, rlen))))
+      return
+    }
+    // --- curve-parameter constraints (auxiliary DOF) -----------------------
+    case 'pointOnSpline': {
+      // The point P(0) rides the cubic spline entities[1] at the solved parameter
+      // t = aux(c.id, 0): two residuals B(t) − P = 0. Because B(t) is a polynomial,
+      // its value and its ∂/∂t column are exact in every backend.
+      const p = P(0)
+      const s = sketch.spline(c.entities[1])
+      const t = aux(c.id, 0)
+      const bx = bezierComponent(A, t, px(s.p0), px(s.c0), px(s.c1), px(s.p1))
+      const by = bezierComponent(A, t, py(s.p0), py(s.c0), py(s.c1), py(s.p1))
+      out.push(sub(bx, px(p)), sub(by, py(p)))
+      return
+    }
+    case 'splineLength': {
+      // The spline entities[0]'s true arc length L = ∫₀¹ |B′(t)| dt, evaluated by the
+      // fixed Gauss–Legendre rule (a constant-weighted sum of hypot(B′ₓ, B′_y) at fixed
+      // nodes — all differentiable), driven to the target value.
+      const s = sketch.spline(c.entities[0])
+      const x0 = px(s.p0)
+      const x1 = px(s.c0)
+      const x2 = px(s.c1)
+      const x3 = px(s.p1)
+      const y0 = py(s.p0)
+      const y1 = py(s.c0)
+      const y2 = py(s.c1)
+      const y3 = py(s.p1)
+      let len = konst(0)
+      for (let k = 0; k < GL.t.length; k++) {
+        const tk = konst(GL.t[k])
+        const dx = bezierDerivComponent(A, tk, x0, x1, x2, x3)
+        const dy = bezierDerivComponent(A, tk, y0, y1, y2, y3)
+        len = add(len, mul(konst(GL.w[k]), hypot(dx, dy)))
+      }
+      out.push(sub(len, konst(c.value ?? 0)))
       return
     }
   }

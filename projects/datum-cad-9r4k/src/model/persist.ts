@@ -19,6 +19,7 @@ const CONSTRAINT_KINDS = new Set([
   'equalRadius', 'distance', 'pointOnLine', 'pointOnCircle', 'radius', 'diameter',
   'tangentLineCircle', 'tangentCircles', 'concentric', 'angle', 'midpoint', 'symmetric',
   'colinear', 'splineTangentLine', 'splineTangentSpline', 'splineTangentArc',
+  'pointOnSpline', 'splineLength',
 ])
 
 // Structural validation — enough to reject a malformed or hostile blob before it
@@ -48,7 +49,8 @@ function isConstraint(c: unknown): c is Constraint {
     CONSTRAINT_KINDS.has(o.kind) &&
     Array.isArray(o.entities) &&
     o.entities.every((x) => typeof x === 'number') &&
-    (o.value === undefined || typeof o.value === 'number')
+    (o.value === undefined || typeof o.value === 'number') &&
+    (o.aux === undefined || (Array.isArray(o.aux) && o.aux.every((x) => typeof x === 'number')))
   )
 }
 

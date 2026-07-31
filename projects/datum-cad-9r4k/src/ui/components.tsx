@@ -200,9 +200,11 @@ function describeConstraint(c: Constraint): string {
     splineTangentLine: 'Spline tangent',
     splineTangentSpline: 'Smooth join',
     splineTangentArc: 'Spline tangent',
+    pointOnSpline: 'On spline',
+    splineLength: 'Length',
   }
   let s = label[c.kind] ?? c.kind
-  if (c.value !== undefined && (c.kind === 'distance' || c.kind === 'radius' || c.kind === 'diameter'))
+  if (c.value !== undefined && (c.kind === 'distance' || c.kind === 'radius' || c.kind === 'diameter' || c.kind === 'splineLength'))
     s += ` = ${c.value.toFixed(0)}`
   else if (c.value !== undefined && c.kind === 'angle') s += ` = ${c.value.toFixed(0)}°`
   return s
