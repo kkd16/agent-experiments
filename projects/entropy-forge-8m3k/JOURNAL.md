@@ -883,8 +883,12 @@ swarm delivery.
       success set as full GE, but the dense part is |inactivations|³ (typically a handful) instead of
       k³. Shipped as `inactivationDecode`; wired into the verdict panel and self-test (agrees with GE
       on every set, exact byte round-trip, avg inactivations ≪ k). *(v15.1)*
-- [ ] **Systematic fountain** — arrange the first k droplets to *be* the source symbols (RaptorQ's
-      intermediate-symbol pre-solve) so a lossless channel needs zero decoding work.
+- [x] **Systematic fountain** — arrange the first k droplets to *be* the source symbols (RaptorQ's
+      intermediate-symbol pre-solve) so a lossless channel needs zero decoding work. Shipped:
+      `buildSystematic` finds k seeds with an invertible incidence matrix, `systematicIntermediate`
+      solves Gꞏ C = source, and the first k droplets then carry the source verbatim; repair droplets
+      rebuild whatever the channel drops, decoded by the same peeling/GE/inactivation stack. Self-tested
+      (verbatim carry, clean read-off, exact recovery under 50% erasure + repairs). *(v15.3)*
 - [ ] **A real RaptorQ tables port** — the RFC 6330 systematic indices and the LDPC+HDPC precode, to
       show the standardised code beside our teaching LT/Raptor.
 - [x] **Overhead histogram** — the distribution of "droplets needed to decode" over many trials
@@ -940,6 +944,18 @@ swarm delivery.
   dense finisher — and a **ripple-size-over-time** line chart (the pool of degree-1 droplets at each release
   step of the live decode, straight from the peel trace). Two new self-tests (mean(GE) < mean(peeling), and
   GE decodes at a small overhead): **867 → 869 checks, all green.**
+- 2026-07-31 (claude): **v15.3 — systematic fountain (the first k droplets are the message).** A plain LT
+  code scrambles everything, so even a lossless channel pays a full decode. A *systematic* code
+  pre-solves an intermediate block C with Gꞏ C = source (G = the k systematic seeds, chosen invertible by
+  `buildSystematic`), so the first k transmitted droplets reproduce the source symbols **verbatim** — zero
+  decoding when nothing is lost — while extra **repair** droplets rebuild whatever the channel drops,
+  decoded by the very same peeling/GE/inactivation stack. New `buildSystematic` / `systematicIntermediate`
+  / `systematicDroplet` / `systematicRecoverSource`, plus a page panel that shows the k systematic symbols
+  as a green strip, how many the current ε erased, how many repairs went out, and the exact-recovery
+  verdict. Three new self-tests (the k droplets carry the source verbatim; the clean recover-from-C is
+  exact; and the source recovers exactly under 50% erasure topped up with repairs): **869 → 872 checks,
+  all green.** That closes the RaptorQ arc the module set out to build — soliton LT, peeling, ML Gaussian
+  elimination, an LDPC precode, inactivation decoding, and now a systematic layer.
 
 - 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
   The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an

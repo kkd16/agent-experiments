@@ -112,6 +112,10 @@ import {
   raptorDecode,
   successCurve,
   overheadSamples,
+  buildSystematic,
+  systematicIntermediate,
+  systematicDroplet,
+  systematicRecoverSource,
 } from './fountain.ts'
 
 export interface TestCase {
@@ -608,6 +612,48 @@ function runFountainTests(results: TestCase[]): void {
     results.push({ group: G, name: 'overhead: GE decodes at a small overhead', pass: geModest, detail: `mean ${s.meanGE.toFixed(2)} of k` })
   } catch (e) {
     results.push({ group: G, name: 'overhead distribution', pass: false, detail: (e as Error).message })
+  }
+
+  // Systematic fountain: the k systematic droplets carry the source verbatim (zero
+  // decoding on a clean channel), and under loss the source still recovers exactly.
+  try {
+    let carryOk = true
+    let cleanOk = true
+    let lossyOk = true
+    for (const k of [10, 16, 24]) {
+      const W = 4
+      const rng = new ChannelRNG(321 + k)
+      const len = k * W - 1
+      const bytes = new Uint8Array(len)
+      for (let i = 0; i < len; i++) bytes[i] = rng.u32() & 0xff
+      const src = bytesToSymbols(bytes, W)
+      const dist = robustSoliton(k)
+      const code = buildSystematic(k, dist, 3)
+      const C = systematicIntermediate(src, code)
+      for (let i = 0; i < k; i++) {
+        const d = systematicDroplet(code.seeds[i], C, code)
+        if (!(d.data.length === W && d.data.every((b, j) => b === src[i][j]))) carryOk = false
+      }
+      const clean = systematicRecoverSource(C, code)
+      if (!clean.every((s, i) => !!s && s.every((b, j) => b === src[i][j]))) cleanOk = false
+      // lossy: drop ~half the systematic, top up with repair droplets, decode, recover
+      const received: { neighbors: number[]; data: Uint8Array }[] = []
+      for (let i = 0; i < k; i++) if (rng.float() < 0.5) received.push(systematicDroplet(code.seeds[i], C, code))
+      let seed = 900000 + k
+      while (received.length < Math.ceil(k * 3)) received.push(systematicDroplet(seed++, C, code))
+      const dec = inactivationDecode(received, k, W)
+      if (!dec.success) lossyOk = false
+      else {
+        const rsrc = systematicRecoverSource(dec.symbols, code)
+        const rec = symbolsToBytes(rsrc, len)
+        if (!(rec.length === len && rec.every((b, i) => b === bytes[i]))) lossyOk = false
+      }
+    }
+    results.push({ group: G, name: 'systematic: k droplets carry the source verbatim', pass: carryOk, detail: 'zero-work read-off on a clean channel' })
+    results.push({ group: G, name: 'systematic: clean recover-from-intermediates exact', pass: cleanOk, detail: '' })
+    results.push({ group: G, name: 'systematic: exact recovery under 50% erasure + repairs', pass: lossyOk, detail: 'k ∈ {10,16,24}' })
+  } catch (e) {
+    results.push({ group: G, name: 'systematic fountain', pass: false, detail: (e as Error).message })
   }
 }
 

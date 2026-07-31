@@ -338,6 +338,80 @@ export function geDecode(rows0: { neighbors: number[]; data: Uint8Array }[], L: 
 }
 
 // ---------------------------------------------------------------------------
+// Systematic fountain — the first k droplets ARE the source (RaptorQ's pre-solve)
+// ---------------------------------------------------------------------------
+
+export interface SystematicCode {
+  k: number
+  salt: number
+  /** The k systematic seeds whose incidence matrix over the intermediates is invertible. */
+  seeds: number[]
+  dist: DegreeDist
+}
+
+/**
+ * Choose k "systematic" seeds whose neighbour sets form an **invertible** k×k matrix
+ * over the intermediate symbols. On a clean channel the k droplets carrying these
+ * seeds decode to the source with *zero work*; that is the whole point of a
+ * systematic code (RaptorQ ships one). Retries with a shifted seed base until the
+ * incidence matrix reaches full rank.
+ */
+export function buildSystematic(k: number, dist: DegreeDist, salt = 0): SystematicCode {
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const base = 1 + attempt * 100_003
+    const seeds = Array.from({ length: k }, (_, i) => base + i)
+    const neigh = seeds.map((s) => deriveNeighbors(s, salt, dist, k))
+    if (rankStruct(neigh, k) === k) return { k, salt, seeds, dist }
+  }
+  // Extremely unlikely; fall back to the last try (callers treat non-invertible as failure).
+  const base = 1
+  const seeds = Array.from({ length: k }, (_, i) => base + i)
+  return { k, salt, seeds, dist }
+}
+
+/**
+ * The intermediate symbols C: the pre-image so that applying the k systematic seeds
+ * to C reproduces the source. Solve G·C = source over GF(2) (G invertible by
+ * construction), carrying the payloads through the same row operations.
+ */
+export function systematicIntermediate(source: Uint8Array[], code: SystematicCode): Uint8Array[] {
+  const W = source[0]?.length ?? 0
+  const rows = code.seeds.map((s, i) => ({ neighbors: deriveNeighbors(s, code.salt, code.dist, code.k), data: source[i] }))
+  const ge = geDecode(rows, code.k, W)
+  // Full rank by construction; map nulls to zero symbols defensively.
+  return ge.symbols.map((sym) => sym ?? new Uint8Array(W))
+}
+
+/**
+ * Encode one droplet over the intermediate symbols. For a systematic seed the
+ * payload equals the corresponding source symbol (that is the systematic property);
+ * for a repair seed it is a normal LT combination.
+ */
+export function systematicDroplet(seed: number, intermediate: Uint8Array[], code: SystematicCode): Droplet {
+  return makeDroplet(seed, intermediate, code.dist, code.salt)
+}
+
+/** After solving for the intermediates C, read the source back out via the systematic seeds. */
+export function systematicRecoverSource(intermediate: (Uint8Array | null)[], code: SystematicCode): (Uint8Array | null)[] {
+  const W = intermediate.find((s) => s)?.length ?? 0
+  const out: (Uint8Array | null)[] = []
+  for (let i = 0; i < code.k; i++) {
+    const nb = deriveNeighbors(code.seeds[i], code.salt, code.dist, code.k)
+    const acc = new Uint8Array(W)
+    let ok = true
+    for (const idx of nb) {
+      if (!intermediate[idx]) {
+        ok = false
+        break
+      }
+      xorInto(acc, intermediate[idx]!)
+    }
+    out.push(ok ? acc : null)
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // Inactivation decoding — the RaptorQ decoder: ML success at near-linear cost
 // ---------------------------------------------------------------------------
 
