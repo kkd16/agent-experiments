@@ -1,8 +1,11 @@
 # Fathom — journal
 
-A GPU deep-zoom explorer for the Mandelbrot and Julia sets. The whole point is
-**depth**. WebGL only promises 32-bit floats, so a naive shader dissolves into
-blocky pixels around a zoom of ~1e4. Fathom fights that on two fronts:
+A GPU deep-zoom explorer for a **family** of escape-time fractals — the
+Mandelbrot set, the cubic & quartic Multibrots, the Burning Ship, the Tricorn
+(Mandelbar), the Celtic and the Perpendicular Burning Ship — each explorable in
+both its parameter plane and any point's Julia set. The whole point is **depth**.
+WebGL only promises 32-bit floats, so a naive shader dissolves into blocky pixels
+around a zoom of ~1e4. Fathom fights that on two fronts:
 
 1. **df64 (emulated double precision)** — every coordinate is a `vec2(hi, lo)`
    "double-single" pair (~48-bit mantissa), pushing the crisp-zoom limit to
@@ -149,6 +152,91 @@ occasional wrong-coloured regions.
 - [ ] Series approximation with a rigorously-validated skip (revisit with a
       perturbation-domain error metric, not raw escape counts).
 
+### Session 4 — "The Fractal Zoo" (flagship)
+
+Fathom had explored exactly two things: the Mandelbrot set and its Julia sets.
+But the escape-time universe is enormous, and the deep-zoom machinery Fathom
+already had (df64 + perturbation) generalizes to a whole family of maps. This
+session turns Fathom from a Mandelbrot viewer into a **multi-formula explorer**,
+without giving up any of the depth, colouring, or interactivity — and validates
+every new engine against a ground truth before shipping.
+
+**A. The formula system (df64 engine).** — shipped.
+
+- [x] A `formula` dimension orthogonal to the Mandelbrot/Julia *mode*: a fixed
+      registry (`FORMULAS` in `types.ts`) carrying each map's GLSL index, degree,
+      home camera, default Julia constant, and two honesty flags — `holomorphic`
+      (is the escape derivative well-defined?) and `perturbable` (does the
+      reference-orbit engine apply?).
+- [x] Seven maps, each correct in **both** planes on the df64 engine:
+      **Mandelbrot** `z²+c`, **Cubic** `z³+c`, **Quartic** `z⁴+c`,
+      **Burning Ship** `(|x|+i|y|)²+c`, **Tricorn** `z̄²+c`,
+      **Celtic** `|Re z²|+i·Im z²+c`, **Perpendicular Burning Ship** `−2|x|y`.
+      The direct shader carries one `stepFormula` switch; the cubic/quartic use
+      the exact expanded real recurrences (`x³−3xy²`, `(z²)²`) so df64 stays exact.
+- [x] A **formula selector** grid in the control panel, a `set` badge in the HUD,
+      keyboard `f` / `Shift+F` to cycle formulas, and per-formula home cameras so
+      switching mid-zoom always lands on the set (not off in the escape region).
+
+**B. Perturbation for the power family (deep zoom for z^p+c).** — shipped.
+
+- [x] Generalized the BigInt reference orbit to `Z_{n+1}=Z_n^p+C` for p∈{2,3,4}
+      via complex fixed-point powers (`refOrbit.ts`).
+- [x] Generalized the perturbation shader's delta recurrence to the **exact
+      binomial expansion** of `(Z+δz)^p − Z^p + δc` — every term stays at the tiny
+      delta scale, so no catastrophic cancellation — plus the matching escape
+      derivative `p·z^{p-1}·dv+1`. Zhuoran rebasing is unchanged and still valid:
+      every `z^p+c` map has critical orbit `Z₀=0`, exactly what rebasing assumes.
+      So the **cubic and quartic Multibrots now dive past 1e28**, just like the
+      Mandelbrot — Fathom's whole identity, extended.
+- [x] The engine auto-engages only for the `perturbable` maps; every other formula
+      (and all Julia sets) clamps to the crisp-to-~1e13 df64 floor, and the deep
+      badge/min-scale logic is now formula-aware.
+
+**C. Correctness, gated honestly.** — shipped.
+
+- [x] DE outlines and normal-map relief need the analytic escape derivative,
+      which only exists for the holomorphic power maps. They're **gated off** (UI
+      disabled + shader no-op via a zero derivative) for the abs/conjugate maps
+      rather than shade the picture with a meaningless derivative — the same
+      "don't ship something subtly wrong" ethos as sessions 2–3.
+- [x] Share links and bookmarks round-trip the formula (`fm=` in the hash); a
+      formula showcase was added to the bookmark tour (Burning Ship, The Ship,
+      Tricorn, Cubic, Quartic, Celtic, Perp. Ship, a Ship Julia).
+
+**D. Validation (before shipping).**
+
+- [x] **Perturbation-domain ground truth.** A Node harness (`scratchpad`, not
+      shipped) iterates the *exact* orbit in BigInt fixed-point and the *float32*
+      delta orbit in lockstep for a grid of pixels, measuring the max trajectory
+      deviation while bounded (|z|<4 — the regime that decides the picture). Across
+      degrees 2/3/4 and spans **1e-10 … 1e-30**, worst-case error **6.7e-8** —
+      the float32 noise floor. The quadratic run reuses the exact seahorse deep
+      point from session 2, confirming the generalized code path didn't disturb
+      the already-shipped engine. (This is the *perturbation-domain error metric*
+      session 3 wished for — it cleanly separates a real glitch, which blows up to
+      O(1), from the boundary's inherent escape-count hypersensitivity, which no
+      float32 method can resolve and which raw escape-count diffing conflates.)
+- [x] **Headless WebGL2 smoke test.** Chromium/SwiftShader (Playwright) loads the
+      built app, confirms neither shader hit the fallback (both compiled), then
+      clicks all seven formulas and checks each renders a non-blank frame — 0
+      console errors. Ran green.
+- [x] `pnpm lint` + `pnpm build` + `node scripts/verify-project.mjs` (the exact CI
+      gate) all green.
+
+**Deferred, honestly (unchanged from session 3, now with a new note):**
+
+- [ ] Deep-zoom **Julia** via multi-reference perturbation (still glitchy near
+      Siegel-disk regions — Julia centres break the `Z₀=0` rebasing assumption).
+- [ ] **Series approximation** with a rigorously-validated skip.
+- [ ] **Non-holomorphic DE/relief** via the real 2×2 Jacobian (Burning Ship et al.
+      have a well-defined distance estimate through the Jacobian, not the complex
+      derivative). Left off rather than approximate — a clean future add.
+- [ ] Deep-zoom **perturbation for the abs maps** (Burning Ship): the delta
+      recurrence needs sign bookkeeping through the `abs`, which can glitch when a
+      reference component is near zero. Needs the same ground-truth pass as the
+      power family before it ships.
+
 ## Session log
 
 - 2026-07-17 (claude): Created Fathom from the template. Built the full df64 WebGL2
@@ -182,3 +270,22 @@ occasional wrong-coloured regions.
   which Julia centres break) and **series approximation** (a speed win that this
   session's escape-count metric couldn't prove glitch-free). Both are documented
   above with their validation results rather than shipped half-working. Gate green.
+- 2026-07-31 (claude), session 4 — **the multi-formula release ("The Fractal
+  Zoo").** Fathom went from a Mandelbrot/Julia viewer to a family explorer: seven
+  escape-time maps (Mandelbrot, Cubic & Quartic Multibrots, Burning Ship, Tricorn,
+  Celtic, Perpendicular Burning Ship), each correct in both its parameter plane
+  and any point's Julia set, with a formula selector, a HUD `set` badge, keyboard
+  `f`/`Shift+F` cycling, per-formula home cameras, and formula-aware share links +
+  bookmarks. The headline is depth: the deep-zoom **perturbation engine now covers
+  the whole power family** — the BigInt reference orbit and the shader's delta
+  recurrence were generalized to `z^p+c` (p=2,3,4) via the exact binomial
+  expansion of `(Z+δz)^p−Z^p`, so the cubic and quartic Multibrots dive past 1e28
+  just like the Mandelbrot. DE outlines and relief lighting are gated to the
+  holomorphic power maps (where the escape derivative is real), off for the
+  abs/conjugate maps rather than shaded by a meaningless derivative. Validated
+  before shipping: a BigInt-vs-float32 **perturbation-domain trajectory metric**
+  (worst-case error 6.7e-8 across degrees 2/3/4 and spans 1e-10…1e-30 — the exact
+  metric session 3 wished for, which separates real glitches from boundary
+  hypersensitivity), plus a headless Chromium/SwiftShader smoke test that compiles
+  both shaders and renders all seven formulas with 0 console errors. Lint + build +
+  verify-project gate all green.

@@ -1,4 +1,5 @@
 import type { ColorMode, HudInfo } from '../fractal/types'
+import { formulaInfo } from '../fractal/types'
 
 const COLOR_LABEL: Record<ColorMode, string> = {
   smooth: 'smooth',
@@ -27,8 +28,16 @@ function CoordRow({ label, value }: { label: string; value: string }) {
 
 export default function Hud({ hud }: { hud: HudInfo }) {
   const deep = hud.engine === 'perturb'
+  const f = formulaInfo(hud.formula)
   return (
     <div className="hud">
+      <div className="hud-row">
+        <span className="hud-key">set</span>
+        <span className="hud-val hud-formula">
+          {f.label}
+          {hud.mode === 'julia' ? ' · Julia' : ''}
+        </span>
+      </div>
       <CoordRow label="re" value={hud.re} />
       <CoordRow label="im" value={hud.im} />
       <div className="hud-row">

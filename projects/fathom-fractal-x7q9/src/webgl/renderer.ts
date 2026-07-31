@@ -8,6 +8,8 @@ export type FrameState = {
   centerY: number
   scale: number // world units per backing-store pixel
   maxIter: number
+  formula: number // glsl formula index (0 z² … 6 perpendicular)
+  power: number // map degree (2/3/4) — perturbation engine + smooth-count base
   mode: FractalMode
   juliaX: number
   juliaY: number
@@ -188,6 +190,7 @@ export class FractalRenderer {
 
     const aa = Math.max(1, Math.min(3, Math.round(state.aa)))
     const maxIter = Math.max(1, Math.round(state.maxIter))
+    const logPower = Math.log(Math.max(2, state.power))
 
     if (usePerturb) {
       const u = this.perturbU
@@ -198,6 +201,8 @@ export class FractalRenderer {
       gl.uniform1f(u.u_pixelScale, state.scale)
       gl.uniform1i(u.u_maxIter, maxIter)
       gl.uniform1i(u.u_orbitLen, Math.max(1, state.orbitLen))
+      gl.uniform1i(u.u_power, Math.max(2, Math.min(4, Math.round(state.power))))
+      gl.uniform1f(u.u_logPower, logPower)
       gl.uniform1i(u.u_orbit, 1)
       gl.uniform1i(u.u_aa, aa)
       gl.uniform1i(u.u_palette, 0)
@@ -220,6 +225,8 @@ export class FractalRenderer {
       gl.uniform2fv(u.u_scale, splitDouble(state.scale))
       gl.uniform1i(u.u_maxIter, maxIter)
       gl.uniform1i(u.u_mode, state.mode === 'julia' ? 1 : 0)
+      gl.uniform1i(u.u_formula, Math.max(0, Math.min(6, Math.round(state.formula))))
+      gl.uniform1f(u.u_logPower, logPower)
       gl.uniform2fv(u.u_jx, splitDouble(state.juliaX))
       gl.uniform2fv(u.u_jy, splitDouble(state.juliaY))
       gl.uniform1i(u.u_aa, aa)
