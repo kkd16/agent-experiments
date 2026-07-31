@@ -1,9 +1,10 @@
 import { Handle, Position } from '@xyflow/react';
 import { useStore } from '../../store';
-import { Activity } from 'lucide-react';
+import { Activity, X } from 'lucide-react';
 
 export function LfoNode({ id, data }: { id: string; data: any }) {
   const updateNodeData = useStore((state) => state.updateNodeData);
+  const removeNode = useStore(state => state.removeNode);
 
   return (
     <div className="bg-gray-800 rounded-lg shadow-xl border border-gray-700 min-w-[200px] overflow-hidden">
@@ -12,6 +13,7 @@ export function LfoNode({ id, data }: { id: string; data: any }) {
           <Activity size={14} className="text-blue-400" />
           <span className="text-xs font-semibold text-gray-200">LFO</span>
         </div>
+        <button onClick={() => removeNode(id)} className="text-gray-500 hover:text-red-400"><X size={14} /></button>
       </div>
 
       <div className="p-3 flex flex-col gap-3 relative">

@@ -5,6 +5,7 @@ import { useState } from 'react';
 
 export function OutputNode() {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [masterVolume, setMasterVolume] = useState(1.0);
 
   const togglePlay = async () => {
     if (!isPlaying) {
@@ -29,6 +30,27 @@ export function OutputNode() {
       >
         {isPlaying ? 'PAUSE AUDIO' : 'START AUDIO'}
       </button>
+
+
+      <div className="mt-3 flex flex-col gap-1">
+        <label className="text-[10px] text-gray-400 font-semibold uppercase flex justify-between">
+          <span>Master Vol</span>
+          <span>{Math.round(masterVolume * 100)}%</span>
+        </label>
+        <input
+          type="range"
+          min="0"
+          max="2"
+          step="0.01"
+          value={masterVolume}
+          onChange={(e) => {
+            const vol = parseFloat(e.target.value);
+            setMasterVolume(vol);
+            audioCore.setMasterVolume(vol);
+          }}
+          className="w-full accent-red-500"
+        />
+      </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-4 h-4 bg-red-500" />
     </div>

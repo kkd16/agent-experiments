@@ -4,6 +4,7 @@ export class AudioCore {
   private nodes: Map<string, AudioNode> = new Map();
   // Keep track of parameters to be able to map UI handles to Web Audio AudioParams
   private params: Map<string, AudioParam> = new Map();
+  private masterGain: GainNode | null = null;
 
   private constructor() {}
 
@@ -17,6 +18,9 @@ export class AudioCore {
   public getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new (window.AudioContext || (window as unknown as Record<string, unknown>).webkitAudioContext)();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = 1.0;
+      this.masterGain.connect(this.ctx.destination);
     }
     return this.ctx;
   }
@@ -97,7 +101,13 @@ export class AudioCore {
     const source = this.getNode(sourceId);
     const ctx = this.getContext();
     if (source && ctx) {
-      source.connect(ctx.destination);
+      if (this.masterGain) { source.connect(this.masterGain); } else { source.connect(ctx.destination); }
+    }
+  }
+
+  public setMasterVolume(vol: number) {
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(vol, this.ctx.currentTime);
     }
   }
 
@@ -105,7 +115,7 @@ export class AudioCore {
     const source = this.getNode(sourceId);
     const ctx = this.getContext();
     if (source && ctx) {
-      source.disconnect(ctx.destination);
+      if (this.masterGain) { source.disconnect(this.masterGain); } else { source.disconnect(ctx.destination); }
     }
   }
 }
