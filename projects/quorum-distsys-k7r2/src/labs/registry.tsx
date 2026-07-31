@@ -10,6 +10,7 @@ import { CraqLab } from './CraqLab';
 import { PbftLab } from './PbftLab';
 import { HotStuffLab } from './HotStuffLab';
 import { StreamletLab } from './StreamletLab';
+import { TendermintLab } from './TendermintLab';
 import { ChordLab } from './ChordLab';
 import { KademliaLab } from './KademliaLab';
 import { DynamoLab } from './DynamoLab';
@@ -116,6 +117,15 @@ export const LABS: LabDef[] = [
     icon: '≋',
     tag: 'byzantine consensus',
     Component: StreamletLab,
+  },
+  {
+    id: 'tendermint',
+    title: 'Tendermint (BFT + lock)',
+    blurb:
+      'The gossip-based Byzantine-fault-tolerant engine behind Cosmos and a generation of proof-of-stake chains (Buchman, Kwon & Milošević, 2018). Same N=3f+1 fault model as PBFT and HotStuff, but organised as a ladder of rounds, each three steps: a round-robin proposer proposes a value, everyone prevotes it (2f+1 = a Polka), on a Polka a validator LOCKS the value and precommits, and 2f+1 precommits decide the block — one per height, final forever. The famous part is the lock: a locked validator won’t prevote a different value in a later round unless it sees an even-later Polka, and that alone stops two rounds of one height from deciding differently. Watch the round ladder climb, the lock hold across a bad proposer, and Agreement stay green through equivocation, crashes and partitions — with safety surviving full asynchrony.',
+    icon: '🔒',
+    tag: 'byzantine consensus',
+    Component: TendermintLab,
   },
   {
     id: 'abd',

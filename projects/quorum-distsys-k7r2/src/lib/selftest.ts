@@ -105,6 +105,18 @@ import {
   type Command as SlCommand,
   type FaultMode as SlFaultMode,
 } from '../protocols/streamlet/types';
+import { createTendermint } from '../protocols/tendermint/tendermint';
+import { tendermintInvariants } from '../protocols/tendermint/invariants';
+import {
+  DEFAULT_TENDERMINT_CONFIG,
+  faultBudget as tmFaultBudget,
+  quorum as tmQuorum,
+  proposerOf as tmProposerOf,
+  type TendermintCmd,
+  type TendermintState,
+  type Command as TmCommand,
+  type FaultMode as TmFaultMode,
+} from '../protocols/tendermint/types';
 import { createEPaxos } from '../protocols/epaxos/epaxos';
 import { epaxosInvariants, convergenceGauge as epConvergence } from '../protocols/epaxos/invariants';
 import {
@@ -1785,6 +1797,201 @@ export function runSelfTests(): TestResult[] {
     };
     const ok = run() === run();
     return [ok, ok ? 'two independent Byzantine runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  // ---- Tendermint (gossip-based BFT consensus) ----
+  const tmKernel = (seed: number, ids: string[], drop = 0) =>
+    new Kernel<TendermintState, TendermintCmd>({
+      seed,
+      protocol: createTendermint(DEFAULT_TENDERMINT_CONFIG),
+      nodeIds: ids,
+      network: { minLatency: 20, maxLatency: 60, dropRate: drop },
+    });
+  const tmSet = (key: string, value: string, cid: string): TmCommand => ({ cid, op: { op: 'set', key, value } });
+  const tmClient = (k: Kernel<TendermintState, TendermintCmd>, c: TmCommand) => {
+    for (const id of k.nodeOrder) if (k.isUp(id)) k.command(id, { type: 'request', command: c });
+  };
+  const tmFaulty = (k: Kernel<TendermintState, TendermintCmd>, id: string, mode: TmFaultMode) => k.command(id, { type: 'set-fault', mode });
+  const tmSettle = (k: Kernel<TendermintState, TendermintCmd>, ticks = 200, dt = 20) => {
+    for (let i = 0; i < ticks; i++) k.advance(dt);
+  };
+  const tmHonest = (k: Kernel<TendermintState, TendermintCmd>) => k.views().filter((v) => v.state.fault === 'honest');
+  const tmOk = (k: Kernel<TendermintState, TendermintCmd>) => tendermintInvariants(k.views()).every((iv) => iv.ok);
+  const tmBad = (k: Kernel<TendermintState, TendermintCmd>) =>
+    tendermintInvariants(k.views())
+      .filter((iv) => !iv.ok)
+      .map((iv) => `${iv.name}: ${iv.detail}`)
+      .join(' | ');
+
+  t('Tendermint', 'Quorum sizes: N=3f+1, 2f+1 Polka, (H+R) mod N proposer', () => {
+    const good = tmFaultBudget(4) === 1 && tmQuorum(4) === 3 && tmFaultBudget(7) === 2 && tmQuorum(7) === 5 && tmFaultBudget(10) === 3 && tmQuorum(10) === 7;
+    const ids = ['A', 'B', 'C', 'D'];
+    const rr = tmProposerOf(ids, 1, 0) === 'B' && tmProposerOf(ids, 1, 1) === 'C' && tmProposerOf(ids, 2, 0) === 'C';
+    return [good && rr, good && rr ? 'f=⌊(N-1)/3⌋, quorum=2f+1, proposer=all[(H+R)%N] rotates each round' : 'quorum/proposer arithmetic wrong'];
+  });
+
+  t('Tendermint', 'Healthy 4-node cluster decides one block per height & all agree', () => {
+    const k = tmKernel(1, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 5; i++) {
+      tmClient(k, tmSet('k' + i, 'v' + i, 'c' + i));
+      tmSettle(k, 60);
+    }
+    tmSettle(k, 120);
+    const kvs = tmHonest(k).map((v) => JSON.stringify(v.state.kv));
+    const allFive = tmHonest(k).every((v) => Object.keys(v.state.kv).length === 5);
+    const good = allFive && new Set(kvs).size === 1 && tmOk(k);
+    return [good, good ? `5 commands decided across heights; all validators agree` : tmBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('Tendermint', 'Proposers rotate: distinct proposers decide blocks', () => {
+    const k = tmKernel(8, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 8; i++) {
+      tmClient(k, tmSet('r', String(i), 'r' + i));
+      tmSettle(k, 40);
+    }
+    tmSettle(k, 150);
+    const lead = tmHonest(k).reduce((a, b) => (a.state.decidedHeight >= b.state.decidedHeight ? a : b));
+    const ps = new Set<string>();
+    for (const e of lead.state.committed) {
+      const blk = lead.state.blocks[e.hash];
+      if (blk) ps.add(blk.proposer);
+    }
+    const good = ps.size >= 2 && tmOk(k);
+    return [good, good ? `${ps.size} distinct proposers decided blocks (round-robin rotation)` : tmBad(k) || `proposers=${ps.size}`];
+  });
+
+  t('Tendermint', 'A silent proposer is skipped: the round times out to the next', () => {
+    const k = tmKernel(3, ['A', 'B', 'C', 'D']);
+    tmFaulty(k, 'B', 'silent'); // B proposes height 1 round 0
+    tmClient(k, tmSet('y', '9', 'cy'));
+    tmSettle(k, 500);
+    const honest = tmHonest(k);
+    const decided = honest.every((v) => v.state.kv['y'] === '9');
+    const good = decided && tmOk(k);
+    return [good, good ? `silent proposer's round timed out; a later round decided the request` : tmBad(k) || `y=${honest.map((v) => v.state.kv['y']).join(',')}`];
+  });
+
+  t('Tendermint', 'An EQUIVOCATING proposer cannot break agreement', () => {
+    const k = tmKernel(7, ['A', 'B', 'C', 'D']);
+    tmFaulty(k, 'B', 'equivocate'); // B forges conflicting values in its round
+    for (let i = 0; i < 4; i++) {
+      tmClient(k, tmSet('w' + i, 'real' + i, 'cw' + i));
+      tmSettle(k, 60);
+    }
+    tmSettle(k, 300);
+    const honest = tmHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const noForgery = honest.every((v) => Object.values(v.state.kv).every((val) => !val.includes('✗')));
+    const good = new Set(kvs).size === 1 && noForgery && tmOk(k);
+    return [good, good ? `honest validators never decided a forged block and stayed consistent` : tmBad(k) || `kvs=${kvs.join(' / ')}`];
+  });
+
+  t('Tendermint', 'A lying (conflicting) validator is ignored', () => {
+    const k = tmKernel(11, ['A', 'B', 'C', 'D']);
+    tmFaulty(k, 'D', 'conflict'); // votes for a corrupted value id
+    for (let i = 0; i < 4; i++) {
+      tmClient(k, tmSet('k' + i, 'v' + i, 'c' + i));
+      tmSettle(k, 50);
+    }
+    tmSettle(k, 150);
+    const allFour = tmHonest(k).every((v) => Object.keys(v.state.kv).length === 4);
+    const good = allFour && tmOk(k);
+    return [good, good ? `the lying validator's votes never counted; honest decided all 4` : tmBad(k) || tmHonest(k).map((v) => v.state.decidedHeight).join(',')];
+  });
+
+  t('Tendermint', '7-node cluster tolerates 2 simultaneous Byzantine faults', () => {
+    const k = tmKernel(13, ['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    tmFaulty(k, 'B', 'silent');
+    tmFaulty(k, 'G', 'conflict');
+    for (let i = 0; i < 3; i++) {
+      tmClient(k, tmSet('k' + i, 'v' + i, 'c' + i));
+      tmSettle(k, 100);
+    }
+    tmSettle(k, 400);
+    const honest = tmHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const allKeys = honest.every((v) => Object.keys(v.state.kv).length === 3);
+    const good = new Set(kvs).size === 1 && allKeys && tmOk(k);
+    return [good, good ? `f=2 faults tolerated; all honest validators converged with 3 keys` : tmBad(k) || `distinct-kv=${new Set(kvs).size}`];
+  });
+
+  t('Tendermint', 'A restarted validator catches up via block-sync', () => {
+    const k = tmKernel(31, ['A', 'B', 'C', 'D']);
+    k.crash('D');
+    for (let i = 0; i < 6; i++) {
+      tmClient(k, tmSet('k' + i, 'v' + i, 'c' + i));
+      tmSettle(k, 50);
+    }
+    tmSettle(k, 100);
+    k.restart('D');
+    tmSettle(k, 400);
+    const D = k.views().find((v) => v.id === 'D')!.state;
+    const A = k.views().find((v) => v.id === 'A')!.state;
+    const good = JSON.stringify(D.kv) === JSON.stringify(A.kv) && D.decidedHeight === A.decidedHeight && tmOk(k);
+    return [good, good ? `the restarted validator rebuilt its state to #${D.decidedHeight} from f+1 matching reports` : tmBad(k) || `D@${D.decidedHeight} vs A@${A.decidedHeight}`];
+  });
+
+  t('Tendermint', 'A 2×2 partition never forks; heals and decides every request', () => {
+    const k = tmKernel(99, ['A', 'B', 'C', 'D']);
+    for (let i = 0; i < 3; i++) {
+      tmClient(k, tmSet('p' + i, String(i), 'p' + i));
+      tmSettle(k, 60);
+    }
+    k.partition([['A', 'B'], ['C', 'D']]); // neither side has 2f+1=3 → no side can decide
+    for (let i = 0; i < 3; i++) {
+      tmClient(k, tmSet('q' + i, String(i), 'q' + i));
+      tmSettle(k, 40);
+    }
+    const midSafe = tmOk(k);
+    k.healNetwork();
+    tmSettle(k, 500);
+    const honest = tmHonest(k);
+    const kvs = honest.map((v) => JSON.stringify(v.state.kv));
+    const good = midSafe && new Set(kvs).size === 1 && honest.every((v) => Object.keys(v.state.kv).length === 6) && tmOk(k);
+    return [good, good ? `no fork while partitioned; all 6 requests decided after heal` : tmBad(k) || `distinct-kv=${new Set(kvs).size}`];
+  });
+
+  t('Tendermint', 'Liveness under 15% message loss (gossip anti-entropy)', () => {
+    const k = tmKernel(5, ['A', 'B', 'C', 'D'], 0.15);
+    for (let i = 0; i < 5; i++) {
+      tmClient(k, tmSet('L' + i, String(i), 'L' + i));
+      tmSettle(k, 120);
+    }
+    tmSettle(k, 800);
+    const honest = tmHonest(k);
+    const good = honest.every((v) => Object.keys(v.state.kv).length === 5) && new Set(honest.map((v) => JSON.stringify(v.state.kv))).size === 1 && tmOk(k);
+    return [good, good ? `all 5 decided despite 15% drops — re-gossip recovered lost votes` : tmBad(k) || `sizes=${honest.map((v) => Object.keys(v.state.kv).length)}`];
+  });
+
+  t('Tendermint', 'Determinism: same seed → identical serialized state', () => {
+    const run = () => {
+      const k = tmKernel(2024, ['A', 'B', 'C', 'D']);
+      for (let i = 0; i < 6; i++) {
+        tmClient(k, tmSet('d', String(i), 'd' + i));
+        tmSettle(k, 50);
+      }
+      tmSettle(k, 150);
+      return k.serialize();
+    };
+    const ok = run() === run();
+    return [ok, ok ? 'two independent runs produced identical serialized state' : 'runs diverged'];
+  });
+
+  t('Tendermint', 'Agreement holds through 800 chaotic steps with an equivocating proposer', () => {
+    const k = tmKernel(2026, ['A', 'B', 'C', 'D']);
+    tmFaulty(k, 'B', 'equivocate'); // 1 Byzantine = f for N=4
+    const chaos = new Rng(70707);
+    let cmd = 0;
+    let firstBreak = '';
+    for (let i = 0; i < 800 && !firstBreak; i++) {
+      if (chaos.float(0, 1) < 0.25) tmClient(k, tmSet('c', String(cmd), 'c' + cmd++));
+      tmSettle(k, 6, 20);
+      if (!tmOk(k)) firstBreak = tmBad(k);
+    }
+    tmSettle(k, 300);
+    const good = !firstBreak && tmOk(k);
+    const lead = tmHonest(k).reduce((a, b) => (a.state.decidedHeight >= b.state.decidedHeight ? a : b));
+    return [good, good ? `agreement held through chaos; decided up to height #${lead.state.decidedHeight}` : firstBreak || tmBad(k)];
   });
 
   // ---- Vector clocks ----
