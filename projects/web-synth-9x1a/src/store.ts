@@ -30,6 +30,7 @@ type AppState = {
   onConnect: OnConnect;
   addNode: (type: string, position: { x: number; y: number }) => void;
   updateNodeData: (id: string, data: Record<string, any>) => void;
+  removeNode: (id: string) => void;
   audioNodes: Map<string, any>; // Store instances of wrappers
 };
 
@@ -152,6 +153,10 @@ export const useStore = create<AppState>((set, get) => ({
     };
 
     set({ nodes: [...get().nodes, newNode] });
+  },
+
+  removeNode: (id: string) => {
+    get().onNodesChange([{ type: 'remove', id }]);
   },
 
   updateNodeData: (id: string, data: Record<string, any>) => {

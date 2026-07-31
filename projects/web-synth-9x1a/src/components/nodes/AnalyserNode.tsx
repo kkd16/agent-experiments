@@ -1,13 +1,20 @@
 import { Handle, Position } from '@xyflow/react';
 import { useStore } from '../../store';
-import { MonitorPlay } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { MonitorPlay, Activity, BarChart2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { AnalyserWrapper } from '../../audio/nodes/visualizers';
 
 export function AnalyserNode({ id }: { id: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioNodes = useStore((state) => state.audioNodes);
+  const removeNode = useStore((state) => state.removeNode);
   const reqRef = useRef<number>(0);
+  const [viewMode, setViewMode] = useState<'waveform' | 'spectrum'>('waveform');
+  const viewModeRef = useRef(viewMode);
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
 
   useEffect(() => {
     const wrapper = audioNodes.get(id) as AnalyserWrapper;
@@ -21,37 +28,53 @@ export function AnalyserNode({ id }: { id: string }) {
       const WIDTH = canvas.width;
       const HEIGHT = canvas.height;
 
-      // Get latest data
-      const dataArray = wrapper.getWaveformData();
-      const bufferLength = dataArray.length;
-
       // Draw background
       canvasCtx.fillStyle = 'rgb(31, 41, 55)'; // gray-800
       canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
 
-      // Draw line
-      canvasCtx.lineWidth = 2;
-      canvasCtx.strokeStyle = 'rgb(96, 165, 250)'; // blue-400
-      canvasCtx.beginPath();
+      if (viewModeRef.current === 'waveform') {
+        const dataArray = wrapper.getWaveformData();
+        const bufferLength = dataArray.length;
 
-      const sliceWidth = WIDTH * 1.0 / bufferLength;
-      let x = 0;
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = 'rgb(96, 165, 250)'; // blue-400
+        canvasCtx.beginPath();
 
-      for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = v * HEIGHT / 2;
+        const sliceWidth = WIDTH * 1.0 / bufferLength;
+        let x = 0;
 
-        if (i === 0) {
-          canvasCtx.moveTo(x, y);
-        } else {
-          canvasCtx.lineTo(x, y);
+        for (let i = 0; i < bufferLength; i++) {
+          const v = dataArray[i] / 128.0;
+          const y = v * HEIGHT / 2;
+
+          if (i === 0) {
+            canvasCtx.moveTo(x, y);
+          } else {
+            canvasCtx.lineTo(x, y);
+          }
+
+          x += sliceWidth;
         }
 
-        x += sliceWidth;
-      }
+        canvasCtx.lineTo(canvas.width, canvas.height / 2);
+        canvasCtx.stroke();
+      } else {
+        const dataArray = wrapper.getFrequencyData();
+        const bufferLength = dataArray.length;
 
-      canvasCtx.lineTo(canvas.width, canvas.height / 2);
-      canvasCtx.stroke();
+        const barWidth = (WIDTH / bufferLength) * 2.5;
+        let barHeight;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          barHeight = dataArray[i] / 2;
+
+          canvasCtx.fillStyle = `rgb(${barHeight + 100}, 50, 250)`; // Purple/Blue spectrum
+          canvasCtx.fillRect(x, HEIGHT - barHeight, barWidth, barHeight);
+
+          x += barWidth + 1;
+        }
+      }
 
       reqRef.current = requestAnimationFrame(draw);
     };
@@ -70,9 +93,27 @@ export function AnalyserNode({ id }: { id: string }) {
           <MonitorPlay size={14} className="text-teal-400" />
           <span className="text-xs font-semibold text-gray-200">Oscilloscope</span>
         </div>
+        <button onClick={() => removeNode(id)} className="text-gray-500 hover:text-red-400"><X size={14} /></button>
       </div>
 
       <div className="p-3 flex flex-col gap-3 relative">
+        <div className="flex justify-center gap-2 mb-1">
+          <button
+            onClick={() => setViewMode('waveform')}
+            className={`p-1 rounded ${viewMode === 'waveform' ? 'bg-gray-700 text-teal-400' : 'text-gray-500 hover:text-gray-300'}`}
+            title="Waveform"
+          >
+            <Activity size={14} />
+          </button>
+          <button
+            onClick={() => setViewMode('spectrum')}
+            className={`p-1 rounded ${viewMode === 'spectrum' ? 'bg-gray-700 text-purple-400' : 'text-gray-500 hover:text-gray-300'}`}
+            title="Spectrum"
+          >
+            <BarChart2 size={14} />
+          </button>
+        </div>
+
         <div className="relative h-4 mb-2">
           <Handle
             type="target"
