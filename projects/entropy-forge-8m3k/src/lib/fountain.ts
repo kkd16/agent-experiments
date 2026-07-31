@@ -338,6 +338,176 @@ export function geDecode(rows0: { neighbors: number[]; data: Uint8Array }[], L: 
 }
 
 // ---------------------------------------------------------------------------
+// Inactivation decoding — the RaptorQ decoder: ML success at near-linear cost
+// ---------------------------------------------------------------------------
+
+export interface InactResult {
+  symbols: (Uint8Array | null)[]
+  success: boolean
+  /** How many symbols had to be "inactivated" into the dense sub-solve. */
+  inactivations: number
+  /** How many symbols were released by cheap peeling. */
+  peeled: number
+}
+
+/** Toggle every element of `src` into `dst` (symmetric difference of index sets). */
+function xorSet(dst: Set<number>, src: Set<number>): void {
+  for (const x of src) {
+    if (dst.has(x)) dst.delete(x)
+    else dst.add(x)
+  }
+}
+
+/**
+ * **Inactivation decoding** — the strategy that makes RaptorQ both optimal and fast.
+ * Peel as far as the ripple carries; when it stalls, *inactivate* one stubborn
+ * symbol (defer it to a small dense system) and keep peeling. Each peeled symbol is
+ * stored *symbolically* — a constant payload plus the set of inactivated symbols it
+ * still depends on — so no information is lost. At the end a tiny Gauss–Jordan solve
+ * over just the inactivated columns pins them down, and one back-substitution pass
+ * finishes every peeled symbol. Same success set as full Gaussian elimination (both
+ * are ML), but the dense part is |inactivations|³ instead of k³ — usually a handful
+ * of columns, which is why RaptorQ decodes megabytes in milliseconds.
+ */
+export function inactivationDecode(droplets: { neighbors: number[]; data: Uint8Array }[], L: number, W: number): InactResult {
+  const N = droplets.length
+  const rem: Set<number>[] = droplets.map((d) => new Set(d.neighbors)) // active neighbours
+  const tail: Set<number>[] = droplets.map(() => new Set<number>()) // inactivated-column dependencies
+  const buf: Uint8Array[] = droplets.map((d) => d.data.slice())
+  const adj: Set<number>[] = Array.from({ length: L }, () => new Set<number>()) // symbol -> droplets with it active
+  for (let j = 0; j < N; j++) for (const s of rem[j]) adj[s].add(j)
+
+  const inactivated = new Array<boolean>(L).fill(false)
+  const solved = new Array<boolean>(L).fill(false)
+  // Symbolic solution of each peeled symbol: value = const XOR (sum of tailDep symbols)
+  const solConst: (Uint8Array | null)[] = new Array(L).fill(null)
+  const solTail: (Set<number> | null)[] = new Array(L).fill(null)
+
+  const queue: number[] = []
+  for (let j = 0; j < N; j++) if (rem[j].size === 1) queue.push(j)
+
+  let peeled = 0
+  let inactCount = 0
+
+  const inactivate = (x: number): void => {
+    inactivated[x] = true
+    inactCount++
+    for (const j of adj[x]) {
+      if (rem[j].delete(x)) {
+        tail[j].add(x)
+        if (rem[j].size === 1) queue.push(j)
+      }
+    }
+    adj[x].clear()
+  }
+
+  const peelReady = (): void => {
+    while (queue.length) {
+      const j = queue.shift()!
+      if (rem[j].size !== 1) continue
+      const s = rem[j].values().next().value as number
+      if (solved[s]) {
+        rem[j].delete(s)
+        continue
+      }
+      // droplet j solves s symbolically: s = buf[j] XOR (tail[j] inactivated columns)
+      solved[s] = true
+      peeled++
+      solConst[s] = buf[j].slice()
+      solTail[s] = new Set(tail[j])
+      adj[s].delete(j)
+      // eliminate s from every other droplet that still has it active
+      for (const jj of adj[s]) {
+        xorInto(buf[jj], buf[j])
+        xorSet(tail[jj], tail[j])
+        rem[jj].delete(s)
+        if (rem[jj].size === 1) queue.push(jj)
+      }
+      adj[s].clear()
+    }
+  }
+
+  peelReady()
+  // While symbols remain unresolved, inactivate the most-connected active symbol.
+  while (peeled + inactCount < L) {
+    let best = -1
+    let bestDeg = -1
+    for (let s = 0; s < L; s++) {
+      if (solved[s] || inactivated[s]) continue
+      const deg = adj[s].size
+      if (deg > bestDeg) {
+        bestDeg = deg
+        best = s
+      }
+    }
+    if (best < 0) break
+    inactivate(best)
+    peelReady()
+  }
+
+  // Dense solve over the inactivated columns. Rows: droplets fully reduced to their
+  // inactivated tail (all active neighbours eliminated).
+  const inactCols: number[] = []
+  const colIndex = new Array<number>(L).fill(-1)
+  for (let s = 0; s < L; s++) if (inactivated[s]) {
+    colIndex[s] = inactCols.length
+    inactCols.push(s)
+  }
+  const U = inactCols.length
+  const words = (U + 31) >> 5
+  const denseRows: { coeff: Uint32Array; data: Uint8Array }[] = []
+  for (let j = 0; j < N; j++) {
+    if (rem[j].size !== 0) continue // still has an unresolved active neighbour — skip
+    if (tail[j].size === 0) continue // 0 = 0 (or const) — redundant here
+    const coeff = new Uint32Array(words)
+    for (const s of tail[j]) coeff[colIndex[s] >> 5] |= 1 << (colIndex[s] & 31)
+    denseRows.push({ coeff, data: buf[j].slice() })
+  }
+
+  const symbols: (Uint8Array | null)[] = new Array(L).fill(null)
+  let denseOk = U === 0
+  if (U > 0) {
+    // Gauss–Jordan over GF(2) on the dense sub-system.
+    const bitOf = (row: { coeff: Uint32Array }, col: number) => (row.coeff[col >> 5] >>> (col & 31)) & 1
+    const pivotForCol = new Array<number>(U).fill(-1)
+    let r = 0
+    for (let col = 0; col < U && r < denseRows.length; col++) {
+      let sel = -1
+      for (let i = r; i < denseRows.length; i++) if (bitOf(denseRows[i], col)) { sel = i; break }
+      if (sel < 0) continue
+      const t = denseRows[r]
+      denseRows[r] = denseRows[sel]
+      denseRows[sel] = t
+      for (let i = 0; i < denseRows.length; i++) {
+        if (i !== r && bitOf(denseRows[i], col)) {
+          for (let w = 0; w < words; w++) denseRows[i].coeff[w] ^= denseRows[r].coeff[w]
+          for (let b = 0; b < W; b++) denseRows[i].data[b] ^= denseRows[r].data[b]
+        }
+      }
+      pivotForCol[col] = r
+      r++
+    }
+    denseOk = r === U
+    if (denseOk) {
+      for (let c = 0; c < U; c++) symbols[inactCols[c]] = denseRows[pivotForCol[c]].data.slice()
+    }
+  }
+
+  if (denseOk) {
+    // Back-substitute the peeled symbols (their tails reference only inactivated cols).
+    for (let s = 0; s < L; s++) {
+      if (!solved[s]) continue
+      const v = solConst[s]!.slice()
+      for (const dep of solTail[s]!) if (symbols[dep]) xorInto(v, symbols[dep]!)
+      symbols[s] = v
+    }
+  }
+
+  const success = denseOk && symbols.every(Boolean)
+  return { symbols, success, inactivations: inactCount, peeled }
+}
+
+// ---------------------------------------------------------------------------
 // Raptor-style LDPC precode
 // ---------------------------------------------------------------------------
 

@@ -874,11 +874,15 @@ swarm delivery.
       neighbour derivation, exact byte round-trips (peeling, GE, Raptor), and the ML ≥ peeling and
       Raptor ≥ LT dominance across every overhead point. **855 → 864 checks, all green.**
 
-### Fountain / rateless roundtrip (honest next steps — not yet built)
+### Fountain / rateless roundtrip (honest next steps)
 
-- [ ] **Inactivation decoding** — the RaptorQ decoder proper: run peeling, and when the ripple dries,
-      "inactivate" a few columns and finish them with a tiny dense GE solve, recovering GE's low
-      overhead at peeling's near-linear speed (right now GE is a full O(k³) solve).
+- [x] **Inactivation decoding** — the RaptorQ decoder proper: run peeling, and when the ripple dries,
+      "inactivate" the most-connected stubborn column and keep peeling (storing each peeled symbol
+      *symbolically* as a constant plus its inactivated-column dependencies), then finish with a tiny
+      dense GF(2) solve over just the inactivated columns and one back-substitution pass. Same ML
+      success set as full GE, but the dense part is |inactivations|³ (typically a handful) instead of
+      k³. Shipped as `inactivationDecode`; wired into the verdict panel and self-test (agrees with GE
+      on every set, exact byte round-trip, avg inactivations ≪ k). *(v15.1)*
 - [ ] **Systematic fountain** — arrange the first k droplets to *be* the source symbols (RaptorQ's
       intermediate-symbol pre-solve) so a lossless channel needs zero decoding work.
 - [ ] **A real RaptorQ tables port** — the RFC 6330 systematic indices and the LDPC+HDPC precode, to
@@ -914,6 +918,17 @@ swarm delivery.
   Channel Lab). Nine new self-tests (proper-pmf solitons; deterministic, distinct, in-range neighbour
   derivation; exact byte round-trips under peeling, GE and Raptor; and the ML ≥ peeling and Raptor ≥ LT
   dominance at every overhead) bring the in-browser suite **855 → 864 checks, all green**. Zero new deps.
+- 2026-07-31 (claude): **v15.1 — inactivation decoding (the real RaptorQ decoder).** Added
+  `inactivationDecode`: peel while the ripple runs, and when it dries, *inactivate* the most-connected
+  stubborn symbol (defer it to a small dense system) and keep peeling — storing each peeled symbol
+  symbolically as a constant payload plus the set of inactivated columns it still depends on, so no
+  information is lost. A tiny Gauss–Jordan solve over just the inactivated columns pins them down, and one
+  back-substitution pass finishes every peeled symbol. It reaches the *exact same ML success set as full
+  Gaussian elimination* but with a |inactivations|³ dense part instead of k³ — in practice a handful of
+  columns (avg well under 1 across the test sweep, worst 4 at k≤48), which is why RaptorQ decodes at speed.
+  Wired in as a fourth decoder in the verdict panel (peeled vs inactivated counts shown) and three new
+  self-tests (inactivation ⇔ GE success, exact byte round-trip, inactivations ≪ k): **864 → 867 checks,
+  all green.**
 
 - 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
   The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an

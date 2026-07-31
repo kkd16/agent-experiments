@@ -11,6 +11,7 @@ import {
   ltEncode,
   peelDecode,
   geDecode,
+  inactivationDecode,
   buildPrecode,
   precodeIntermediate,
   raptorDecode,
@@ -68,6 +69,7 @@ export function Fountain() {
   // --- Decode the received set with every decoder (for the verdict panel) ---
   const peel = useMemo(() => peelDecode(received, L, W0), [received, L, W0])
   const ge = useMemo(() => geDecode(received, L, W0), [received, L, W0])
+  const inact = useMemo(() => inactivationDecode(received, L, W0), [received, L, W0])
   const rap = useMemo(() => (pre ? raptorDecode(received, pre, W0) : null), [received, pre, W0])
 
   // The "official" decode uses GE (optimal); Raptor when enabled.
@@ -215,9 +217,9 @@ export function Fountain() {
 
       <Panel
         title="Decoder verdict on this received set"
-        note="The same caught droplets, three decoders. Peeling only ever solves degree-1 droplets and stalls early; Gaussian elimination (the ML decoder) solves the whole linear system and succeeds at far lower overhead; Raptor's precode adds parity equations that bridge the gap. The official reconstruction below uses GE (or Raptor when enabled)."
+        note="The same caught droplets, four decoders. Peeling only ever solves degree-1 droplets and stalls early; Gaussian elimination (ML) solves the whole linear system and succeeds at far lower overhead; inactivation decoding matches GE's success but defers only a handful of stubborn symbols to a tiny dense solve (the RaptorQ trick — near-linear); Raptor's precode adds parity equations that bridge the gap. The official reconstruction below uses GE (or Raptor when enabled)."
       >
-        <div className="grid grid-3" style={{ marginBottom: 12 }}>
+        <div className="grid grid-4" style={{ marginBottom: 12 }}>
           <Stat
             label="Peeling (ripple)"
             value={peel.success ? 'decoded ✓' : `${peel.decoded}/${L}`}
@@ -227,6 +229,12 @@ export function Fountain() {
             label="Gaussian elimination"
             value={ge.success ? 'decoded ✓' : `rank ${ge.rank}/${L}`}
             sub={ge.success ? 'full rank — ML optimal' : `need ${L - ge.rank} more independent`}
+          />
+          <Stat
+            label="Inactivation (RaptorQ)"
+            value={inact.success ? 'decoded ✓' : 'incomplete'}
+            accent={inact.success && inact.inactivations <= 4}
+            sub={inact.success ? `${inact.peeled} peeled · ${inact.inactivations} inactivated` : 'rank-deficient set'}
           />
           <Stat
             label={pre ? 'Raptor (precode+LT)' : 'Raptor (off)'}
