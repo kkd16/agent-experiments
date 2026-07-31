@@ -17,6 +17,7 @@ import {
   raptorDecode,
   successCurve,
   overheadSamples,
+  erasureWaterfall,
   buildSystematic,
   systematicIntermediate,
   systematicDroplet,
@@ -152,6 +153,18 @@ export function Fountain() {
     [peel],
   )
   const maxRipple = Math.max(1, ...peel.steps.map((s) => s.rippleSize))
+
+  // --- Erasure waterfall (fixed transmission effort, sweep ε) ---------------
+  const waterfall = useMemo(() => {
+    const epsList = Array.from({ length: 19 }, (_, i) => (i + 1) * 0.025) // 0.025 .. 0.475
+    return erasureWaterfall(kind === 'ideal' ? idealSoliton(k) : robustSoliton(k, cParam, delta), {
+      eps: epsList,
+      sentMultiple: 1 + overhead,
+      trials: 80,
+      salt: 4,
+      precodeParities: useRaptor ? Math.max(1, parities) : 8,
+    })
+  }, [k, kind, cParam, delta, overhead, useRaptor, parities])
 
   // --- Systematic fountain (independent of the main decoder state) -----------
   const sysDistK: DegreeDist = useMemo(() => (kind === 'ideal' ? idealSoliton(k) : robustSoliton(k, cParam, delta)), [kind, k, cParam, delta])
@@ -424,6 +437,26 @@ export function Fountain() {
           </div>
         </Panel>
       </div>
+
+      <Panel
+        title="Erasure waterfall"
+        note={`Decode-failure probability as the channel erasure rate ε rises, at a fixed transmission effort (${Math.round((1 + overhead) * 100)}% of k sent). Few losses → everything decodes; past the point where survivors fall below k, failure climbs a cliff. The erasure-channel sibling of the BER waterfalls on the LDPC, polar and convolutional pages — with the ML (GE) and Raptor curves holding out far longer than greedy peeling.`}
+      >
+        <LineChart
+          series={[
+            { label: 'peeling', color: 'var(--pink)', points: waterfall.map((p) => [p.eps, p.failPeel]) },
+            { label: 'Gaussian elim. (ML)', color: 'var(--teal)', points: waterfall.map((p) => [p.eps, p.failGE]) },
+            { label: 'Raptor (precode+LT)', color: 'var(--violet)', points: waterfall.map((p) => [p.eps, p.failRaptor]) },
+          ]}
+          xDomain={[0, 0.5]}
+          yDomain={[0, 1]}
+          xLabel="channel erasure rate ε"
+          yLabel="P(decode fails)"
+          xFmt={(v) => v.toFixed(2)}
+          yFmt={(v) => v.toFixed(1)}
+        />
+        <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>k={k}, {Math.round((1 + overhead) * 100)}% of k sent · 80 Monte-Carlo trials per point</div>
+      </Panel>
 
       <Panel
         title="Systematic fountain — the first k droplets are the message"
