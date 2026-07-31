@@ -480,6 +480,71 @@ function DynamicsSection({ dyn }: { dyn: DynView }) {
   )
 }
 
+// The multi-DOF (free-body) dynamics panel view-model. Unlike the single-DOF
+// Eksergian panel it needs no driver: it runs the whole sketch as a Lagrange-multiplier
+// DAE. `supported` is false when the sketch has non-point free parameters.
+export type MBParamsView = { gravity: number; density: number; baseMass: number; damping: number }
+export type MultibodyView = {
+  on: boolean
+  supported: boolean
+  reason?: string
+  ndof: number
+  params: MBParamsView
+  readout: { T: number; V: number; E: number; px: number; py: number; Lz: number; history: DynSample[] } | null
+  onToggle: () => void
+  onReset: () => void
+  onChange: (patch: Partial<MBParamsView>) => void
+}
+
+function MultibodySection({ mb }: { mb: MultibodyView }) {
+  const r = mb.readout
+  const canRun = mb.supported && mb.ndof > 0
+  return (
+    <section className="pSection">
+      <h3>Free-Body Dynamics</h3>
+      <div className="chipRow">
+        <button className={`chip ${mb.on ? 'on' : ''}`} onClick={mb.onToggle} disabled={!canRun && !mb.on}>
+          {mb.on ? '■ Running ▸ held' : '▸ Free-body run'}
+        </button>
+        <button className="chip" onClick={mb.onReset} disabled={!mb.on}>
+          Reset motion
+        </button>
+        <span className="dofBadge" style={{ borderColor: '#57e6c9', color: '#57e6c9', padding: '2px 8px', fontSize: '11px' }}>
+          {mb.ndof} DOF
+        </span>
+      </div>
+      <p className="hint">
+        Let the <em>whole</em> sketch go at once — a multi-DOF <strong>Lagrange-multiplier DAE</strong>. Every free point is a
+        mass; each step is one saddle-point solve <strong>[[M, −Cᵀ],[C, 0]]·[q̈; λ] = [f; γ]</strong> from the exact
+        constraint Jacobian C, marched by RK4 with a coordinate projection that keeps every link rigid. Open chains and
+        free-floating bodies run — energy and momentum are conserved.
+      </p>
+      {!mb.supported && <p className="hint warn">{mb.reason ?? 'Not runnable as a point-mass system.'}</p>}
+      {mb.supported && mb.ndof === 0 && <p className="hint warn">Fully constrained (0 DOF) — nothing to release. Try a pendulum or the Floating Dumbbell.</p>}
+      <DynSlider label="Gravity g" value={mb.params.gravity} min={0} max={800} step={10} onChange={(v) => mb.onChange({ gravity: v })} />
+      <DynSlider label="Link density ρ" value={mb.params.density} min={0} max={0.06} step={0.002} onChange={(v) => mb.onChange({ density: v })} />
+      <DynSlider label="Point mass m₀" value={mb.params.baseMass} min={0.1} max={3} step={0.1} onChange={(v) => mb.onChange({ baseMass: v })} />
+      <DynSlider label="Damping c" value={mb.params.damping} min={0} max={0.6} step={0.01} onChange={(v) => mb.onChange({ damping: v })} />
+      <div className="statGrid">
+        <Stat label="kinetic T" value={r ? fmt(r.T) : '—'} />
+        <Stat label="potential V" value={r ? fmt(r.V) : '—'} />
+        <Stat label="total E" value={r ? fmt(r.E) : '—'} />
+        <Stat label="ang. mom. Lz" value={r ? fmt(r.Lz) : '—'} />
+      </div>
+      <div className="statGrid">
+        <Stat label="momentum pₓ" value={r ? fmt(r.px) : '—'} />
+        <Stat label="momentum p_y" value={r ? fmt(r.py) : '—'} />
+      </div>
+      <EnergyPlot history={r?.history ?? []} />
+      <div className="plotLegend">
+        <span><span className="swatch v" /> kinetic</span>
+        <span><span className="swatch a" /> potential</span>
+        <span className="muted">total (white) flat ⇒ energy conserved</span>
+      </div>
+    </section>
+  )
+}
+
 export function InfoPanel(props: {
   dof: DofReport
   solveInfo: SolveResult | null
@@ -488,6 +553,7 @@ export function InfoPanel(props: {
   redundant: Set<number>
   motion?: MotionData | null
   dynamics?: DynView | null
+  multibody?: MultibodyView | null
   canExportCsv?: boolean
   onExport?: (fmt: 'svg' | 'dxf' | 'csv') => void
   onRemoveConstraint: (id: number) => void
@@ -506,6 +572,7 @@ export function InfoPanel(props: {
   return (
     <aside className="panel">
       {props.dynamics && <DynamicsSection dyn={props.dynamics} />}
+      {props.multibody && <MultibodySection mb={props.multibody} />}
       {props.motion && <MotionSection motion={props.motion} />}
       <section className="pSection">
         <h3>Degrees of Freedom</h3>

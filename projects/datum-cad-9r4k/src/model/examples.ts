@@ -502,6 +502,59 @@ function fixedLengthRibbon(): BuiltExample {
   return { sketch: s }
 }
 
+// --- Session 9: free-body (multi-DOF) dynamics showcases -------------------
+// These carry no driver: they are meant to be released into the multi-DOF
+// Lagrange-multiplier dynamics (Free-body run), where gravity — or, for the
+// dumbbell, sheer inertia — drives every degree of freedom at once.
+
+// Double pendulum: a pivot and two equal rigid links. The canonical 2-DOF chaotic
+// system. Released from both links horizontal, it swings wildly while conserving
+// energy exactly (the constraint solver holds each link rigid).
+function doublePendulum(): BuiltExample {
+  const s = new Sketch()
+  const L = 78
+  const A = s.addPoint(0, 40, { fixed: true }) // pivot (up high so it has room to fall)
+  const B = s.addPoint(L, 40)
+  const C = s.addPoint(2 * L, 40)
+  s.addLine(A.id, B.id)
+  s.addLine(B.id, C.id)
+  s.addConstraint('distance', [A.id, B.id], L)
+  s.addConstraint('distance', [B.id, C.id], L)
+  return { sketch: s, tracePoints: [C.id] }
+}
+
+// Triple-pendulum chain: three links off a pivot, a 3-DOF open chain — the reach of
+// the DAE beyond anything a single generalized coordinate could describe.
+function triplePendulum(): BuiltExample {
+  const s = new Sketch()
+  const L = 58
+  const A = s.addPoint(0, 60, { fixed: true })
+  const B = s.addPoint(L, 60)
+  const C = s.addPoint(2 * L, 60)
+  const D = s.addPoint(3 * L, 60)
+  s.addLine(A.id, B.id)
+  s.addLine(B.id, C.id)
+  s.addLine(C.id, D.id)
+  s.addConstraint('distance', [A.id, B.id], L)
+  s.addConstraint('distance', [B.id, C.id], L)
+  s.addConstraint('distance', [C.id, D.id], L)
+  return { sketch: s, tracePoints: [D.id] }
+}
+
+// Free-floating dumbbell / spinner: two masses on a rigid link, no anchor. With
+// gravity off it drifts and spins forever, conserving linear AND angular momentum;
+// with gravity on it tumbles as it falls (the whole body is unconstrained — a 3-DOF
+// floating rigid body). The showcase Datum could not run before Session 9.
+function freeDumbbell(): BuiltExample {
+  const s = new Sketch()
+  const L = 120
+  const P = s.addPoint(-L / 2, 30)
+  const Q = s.addPoint(L / 2, 30)
+  s.addLine(P.id, Q.id)
+  s.addConstraint('distance', [P.id, Q.id], L)
+  return { sketch: s, tracePoints: [P.id, Q.id] }
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'four-bar', name: 'Four-Bar Linkage', blurb: 'Grashof crank-rocker tracing a coupler curve.', build: fourBar },
   { id: 'peaucellier', name: 'Peaucellier (exact line)', blurb: 'An inversor that draws a perfect straight line.', build: peaucellier },
@@ -519,6 +572,9 @@ export const EXAMPLES: Example[] = [
   { id: 'bead-on-curve', name: 'Bead on a Curve', blurb: 'A follower rides a spline profile at a solved parameter — driven to slide.', build: beadOnCurve },
   { id: 'ribbon', name: 'Ribbon of Fixed Length', blurb: 'A cubic dimensioned by its true arc length. Drag a handle; it keeps its length.', build: fixedLengthRibbon },
   { id: 'hexagon', name: 'Regular Hexagon', blurb: 'Equal edges on a circle snap to regular.', build: regularHexagon },
+  { id: 'double-pendulum', name: 'Double Pendulum', blurb: 'Two rigid links, 2-DOF chaos. Free-body run it under gravity.', build: doublePendulum },
+  { id: 'triple-pendulum', name: 'Triple Pendulum', blurb: 'A 3-DOF open chain. Release it and watch it thrash.', build: triplePendulum },
+  { id: 'free-dumbbell', name: 'Floating Dumbbell', blurb: 'Two masses, one rigid link, no anchor — it drifts and spins.', build: freeDumbbell },
   { id: 'blank', name: 'Blank Sketch', blurb: 'An empty canvas to draw your own.', build: blank },
 ]
 
