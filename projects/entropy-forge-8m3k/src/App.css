@@ -195,3 +195,19 @@ svg text { font-family: var(--mono); }
   font-size: 14px;
   color: var(--text);
 }
+
+/* Fountain-codes page: systematic symbol strip */
+.ef-sysstrip { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.ef-sysbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #0a0d13;
+  background: color-mix(in srgb, var(--green) 78%, transparent);
+  border-radius: 5px;
+}

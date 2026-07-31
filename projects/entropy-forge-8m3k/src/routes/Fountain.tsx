@@ -17,6 +17,10 @@ import {
   raptorDecode,
   successCurve,
   overheadSamples,
+  buildSystematic,
+  systematicIntermediate,
+  systematicDroplet,
+  systematicRecoverSource,
   type DegreeDist,
   type Droplet,
 } from '../lib/fountain'
@@ -148,6 +152,35 @@ export function Fountain() {
     [peel],
   )
   const maxRipple = Math.max(1, ...peel.steps.map((s) => s.rippleSize))
+
+  // --- Systematic fountain (independent of the main decoder state) -----------
+  const sysDistK: DegreeDist = useMemo(() => (kind === 'ideal' ? idealSoliton(k) : robustSoliton(k, cParam, delta)), [kind, k, cParam, delta])
+  const sysCode = useMemo(() => buildSystematic(k, sysDistK, 3), [k, sysDistK])
+  const sysInter = useMemo(() => systematicIntermediate(sources, sysCode), [sources, sysCode])
+  const sysRun = useMemo(() => {
+    const rng = new RNG(0x5157 + chanSeed * 2654435761)
+    const recv: { neighbors: number[]; data: Uint8Array }[] = []
+    let dropped = 0
+    for (let i = 0; i < k; i++) {
+      if (rng.float() < eps) dropped++
+      else recv.push(systematicDroplet(sysCode.seeds[i], sysInter, sysCode))
+    }
+    const kept = k - dropped
+    const target = Math.max(k, Math.round(k * (1 + overhead)))
+    let seed = 7_000_000
+    while (recv.length < target) recv.push(systematicDroplet(seed++, sysInter, sysCode))
+    const repairs = recv.length - kept
+    const dec = inactivationDecode(recv, k, W0)
+    let ok = false
+    if (dec.success) {
+      const src = systematicRecoverSource(dec.symbols, sysCode)
+      if (src.every(Boolean)) {
+        const b = symbolsToBytes(src, bytes.length)
+        ok = b.length === bytes.length && b.every((x, i) => x === bytes[i])
+      }
+    }
+    return { dropped, kept, repairs, received: recv.length, ok }
+  }, [k, sysCode, sysInter, eps, overhead, chanSeed, W0, bytes])
 
   const canGraph = drops.length <= 44 && L <= 26
 
@@ -391,6 +424,26 @@ export function Fountain() {
           </div>
         </Panel>
       </div>
+
+      <Panel
+        title="Systematic fountain — the first k droplets are the message"
+        note="A plain LT code scrambles everything, so even a lossless channel pays a full decode. A systematic code pre-solves an intermediate block C (Gꞏ C = source, G the k systematic seeds) so that the first k transmitted droplets reproduce the source symbols verbatim — zero decoding when nothing is lost — while extra repair droplets rebuild whatever the channel drops. This is what RaptorQ ships."
+      >
+        <div className="grid grid-4" style={{ marginBottom: 10 }}>
+          <Stat label="Systematic droplets" value={k} sub="carry the source verbatim" />
+          <Stat label="Lost to erasure" value={sysRun.dropped} accent={sysRun.dropped > 0} sub={`${sysRun.kept} arrived clean`} />
+          <Stat label="Repair droplets" value={sysRun.repairs} sub="rebuild the losses" />
+          <Stat label="Recovered" value={sysRun.ok ? 'exact ✓' : 'need more'} sub={sysRun.dropped === 0 ? 'clean → zero decode' : 'via repair symbols'} />
+        </div>
+        <div className="ef-sysstrip">
+          {Array.from({ length: k }, (_, i) => (
+            <span key={i} className="ef-sysbox" title={`systematic symbol ${i}`}>{i}</span>
+          ))}
+          <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>
+            + {sysRun.repairs} repair droplet{sysRun.repairs === 1 ? '' : 's'} in the stream
+          </span>
+        </div>
+      </Panel>
 
       <Panel title="Why a fountain?" note="The one-paragraph intuition.">
         <p className="lede" style={{ margin: 0 }}>
