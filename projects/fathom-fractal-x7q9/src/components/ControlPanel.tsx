@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import type { ColorMode, RenderParams } from '../fractal/types'
+import type { ColorMode, FractalFormula, RenderParams } from '../fractal/types'
+import { FORMULAS, formulaInfo } from '../fractal/types'
 import { recommendedIter } from '../fractal/useFractalEngine'
 import { PALETTES, paletteGradientCss } from '../webgl/palettes'
 
@@ -28,6 +29,7 @@ type Props = {
   onShare: () => void
   shareLabel: string
   onSetMode: (mode: 'mandelbrot' | 'julia') => void
+  onSetFormula: (formula: FractalFormula) => void
   onDive: () => void
   diving: boolean
 }
@@ -51,20 +53,36 @@ export default function ControlPanel({
   onShare,
   shareLabel,
   onSetMode,
+  onSetFormula,
   onDive,
   diving,
 }: Props) {
   const effectiveIter = params.autoIter ? recommendedIter(span) : params.maxIter
+  const formula = formulaInfo(params.formula)
+  const shadeOk = formula.holomorphic
 
   return (
     <div className="panel">
       <div className="panel-section">
+        <div className="section-title">Formula</div>
+        <div className="formula-grid">
+          {FORMULAS.map((f) => (
+            <button
+              key={f.id}
+              className={params.formula === f.id ? 'formula-btn active' : 'formula-btn'}
+              onClick={() => onSetFormula(f.id)}
+              title={f.blurb}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
         <div className="seg">
           <button
             className={params.mode === 'mandelbrot' ? 'seg-btn active' : 'seg-btn'}
             onClick={() => onSetMode('mandelbrot')}
           >
-            Mandelbrot
+            Parameter
           </button>
           <button
             className={params.mode === 'julia' ? 'seg-btn active' : 'seg-btn'}
@@ -193,10 +211,17 @@ export default function ControlPanel({
 
       <div className="panel-section">
         <div className="section-title">Shading</div>
+        {!shadeOk && (
+          <div className="section-note">
+            Relief &amp; DE need the analytic derivative — available on the power maps
+            (Mandelbrot / Cubic / Quartic).
+          </div>
+        )}
         <Row label="Relief lighting">
           <input
             type="checkbox"
-            checked={params.relief}
+            checked={params.relief && shadeOk}
+            disabled={!shadeOk}
             onChange={(e) => setParam('relief', e.target.checked)}
           />
         </Row>
@@ -207,14 +232,15 @@ export default function ControlPanel({
             max={6.28}
             step={0.05}
             value={params.lightAngle}
-            disabled={!params.relief}
+            disabled={!params.relief || !shadeOk}
             onChange={(e) => setParam('lightAngle', Number(e.target.value))}
           />
         </Row>
         <Row label="Outline filaments (DE)">
           <input
             type="checkbox"
-            checked={params.de}
+            checked={params.de && shadeOk}
+            disabled={!shadeOk}
             onChange={(e) => setParam('de', e.target.checked)}
           />
         </Row>
@@ -225,7 +251,7 @@ export default function ControlPanel({
             max={12}
             step={0.5}
             value={params.deStrength}
-            disabled={!params.de}
+            disabled={!params.de || !shadeOk}
             onChange={(e) => setParam('deStrength', Number(e.target.value))}
           />
         </Row>

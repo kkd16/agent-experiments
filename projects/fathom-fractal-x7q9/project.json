@@ -1,6 +1,6 @@
 {
   "title": "Fathom",
-  "description": "A GPU deep-zoom Mandelbrot & Julia explorer. Emulated double precision reaches ~1e13; a perturbation engine (BigInt reference orbit + float32 deltas with rebasing) then dives past 1e28. Stripe-average & orbit-trap colouring, normal-map relief lighting, interior shading, progressive rendering, an auto-dive, distance-estimation outlines, and shareable deep links.",
+  "description": "A GPU deep-zoom explorer for a family of escape-time fractals — Mandelbrot, cubic & quartic Multibrots, the Burning Ship, Tricorn, Celtic and Perpendicular sets — each in its parameter plane or any point's Julia set. Emulated double precision reaches ~1e13; a perturbation engine (BigInt reference orbit + float32 deltas with rebasing, now generalized to z^p+c) dives past 1e28. Stripe-average & orbit-trap colouring, normal-map relief, interior shading, progressive rendering, an auto-dive, distance-estimation outlines, and shareable deep links.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [

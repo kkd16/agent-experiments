@@ -80,6 +80,7 @@ export default function App() {
               onShare={onShare}
               shareLabel={shareLabel}
               onSetMode={actions.setMode}
+              onSetFormula={actions.setFormula}
               onDive={actions.toggleDive}
               diving={diving}
             />
@@ -92,10 +93,13 @@ export default function App() {
               </button>
               <strong>Drag</strong> to pan · <strong>scroll</strong> or <strong>double-click</strong>{' '}
               to zoom · <strong>shift-click</strong> a point to spin up its Julia set · <strong>arrow
-              keys</strong> pan, <strong>+/−</strong> zoom · pinch on touch. Past a zoom of ~1e9
-              Fathom switches to a <strong>perturbation</strong> engine — a high-precision reference
-              orbit computed on the CPU lets the GPU dive past 1e28, far beyond where ordinary float
-              renderers dissolve into blocks.
+              keys</strong> pan, <strong>+/−</strong> zoom · pinch on touch. Pick a{' '}
+              <strong>formula</strong> — Mandelbrot, the Burning Ship, Tricorn, Celtic, or the cubic
+              &amp; quartic Multibrots — then explore its parameter plane or any point's Julia set.
+              On the power maps, past a zoom of ~1e9 Fathom switches to a{' '}
+              <strong>perturbation</strong> engine — a high-precision reference orbit computed on the
+              CPU lets the GPU dive past 1e28, far beyond where ordinary float renderers dissolve
+              into blocks.
             </div>
           )}
         </>

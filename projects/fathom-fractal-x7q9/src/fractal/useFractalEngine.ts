@@ -3,8 +3,8 @@ import { FractalRenderer } from '../webgl/renderer'
 import type { FrameState } from '../webgl/renderer'
 import { computeReferenceOrbit } from './refOrbit'
 import { hpAddNumber, hpFromNumber, hpFromString, hpMul, hpToNumber, hpToString, type HP } from './hp'
-import type { Bookmark, Engine, HudInfo, RenderParams, Viewport } from './types'
-import { COLOR_MODE_INDEX, HOME, INITIAL_SPAN, JULIA_HOME } from './types'
+import type { Bookmark, Engine, FractalFormula, HudInfo, RenderParams, Viewport } from './types'
+import { COLOR_MODE_INDEX, FORMULAS, HOME, INITIAL_SPAN, formulaInfo, homeFor } from './types'
 import { decodeView, encodeView } from './share'
 
 const DF64_MIN_SCALE = 1e-14 // world units per pixel — the df64 precision floor
@@ -15,6 +15,7 @@ const MAX_SPAN = 6.0
 const DEFAULT_PARAMS: RenderParams = {
   maxIter: 320,
   autoIter: true,
+  formula: 'mandelbrot',
   mode: 'mandelbrot',
   juliaX: -0.8,
   juliaY: 0.156,
@@ -57,6 +58,7 @@ type EngineActions = {
   applyBookmark: (b: Bookmark) => void
   seedJuliaFromCenter: () => void
   setMode: (mode: 'mandelbrot' | 'julia') => void
+  setFormula: (formula: FractalFormula) => void
   zoomAtCenter: (factor: number) => void
   exportPng: () => void
   share: () => Promise<boolean>
@@ -74,7 +76,9 @@ export function useFractalEngine() {
   const animRef = useRef(0)
   // Signature of the currently uploaded reference orbit, to avoid recomputing it
   // when nothing that affects it has changed.
-  const orbitKeyRef = useRef<{ cx: HP; cy: HP; maxIter: number; len: number } | null>(null)
+  const orbitKeyRef = useRef<{ cx: HP; cy: HP; maxIter: number; power: number; len: number } | null>(
+    null,
+  )
   const urlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Progressive rendering: while the camera is moving we render at reduced
   // internal resolution (cheap), then re-render at full quality once it settles.
@@ -101,6 +105,7 @@ export function useFractalEngine() {
     span: HOME.span,
     magnification: 1,
     maxIter: DEFAULT_PARAMS.maxIter,
+    formula: 'mandelbrot',
     mode: 'mandelbrot',
     fps: 60,
     engine: 'df64',
@@ -118,37 +123,51 @@ export function useFractalEngine() {
     return vp.span / canvas.width
   }, [])
 
-  const engineFor = useCallback((span: number, mode: string): Engine => {
+  // The deep perturbation engine only applies to the parameter-plane power maps
+  // (z^p + c), whose critical orbit starts at Z0 = 0. Every other formula — and
+  // Julia mode — stays on the crisp-to-~1e13 df64 engine.
+  const engineFor = useCallback((span: number, mode: string, formula: FractalFormula): Engine => {
     const r = rendererRef.current
-    return mode === 'mandelbrot' && span < PERTURB_SPAN && !!r?.perturbationAvailable
+    return mode === 'mandelbrot' &&
+      formulaInfo(formula).perturbable &&
+      span < PERTURB_SPAN &&
+      !!r?.perturbationAvailable
       ? 'perturb'
       : 'df64'
   }, [])
 
   // Recompute + upload the reference orbit only when its inputs changed.
-  const ensureOrbit = useCallback((cx: HP, cy: HP, maxIter: number): number => {
+  const ensureOrbit = useCallback((cx: HP, cy: HP, maxIter: number, power: number): number => {
     const renderer = rendererRef.current
     if (!renderer) return 0
     const cur = orbitKeyRef.current
-    if (cur && cur.cx === cx && cur.cy === cy && cur.maxIter === maxIter) return cur.len
-    const orb = computeReferenceOrbit(cx, cy, maxIter)
+    if (cur && cur.cx === cx && cur.cy === cy && cur.maxIter === maxIter && cur.power === power)
+      return cur.len
+    const orb = computeReferenceOrbit(cx, cy, maxIter, power)
     renderer.setReferenceOrbit(orb.xs, orb.ys, orb.length)
-    orbitKeyRef.current = { cx, cy, maxIter, len: orb.length }
+    orbitKeyRef.current = { cx, cy, maxIter, power, len: orb.length }
     return orb.length
   }, [])
 
   const buildFrame = useCallback((): FrameState => {
     const vp = viewportRef.current
     const p = paramsRef.current
+    const f = formulaInfo(p.formula)
     const maxIter = p.autoIter ? recommendedIter(vp.span) : p.maxIter
     const scale = currentScale()
-    const perturbation = engineFor(vp.span, p.mode) === 'perturb'
-    const orbitLen = perturbation ? ensureOrbit(vp.cx, vp.cy, maxIter) : 0
+    const perturbation = engineFor(vp.span, p.mode, p.formula) === 'perturb'
+    const orbitLen = perturbation ? ensureOrbit(vp.cx, vp.cy, maxIter, f.power) : 0
+    // DE + relief require the analytic escape derivative, which only exists for
+    // the holomorphic power maps — gate them off elsewhere so the picture is
+    // never shaded by a meaningless derivative.
+    const shadeOk = f.holomorphic
     return {
       centerX: hpToNumber(vp.cx),
       centerY: hpToNumber(vp.cy),
       scale,
       maxIter,
+      formula: f.glslIndex,
+      power: f.power,
       mode: p.mode,
       juliaX: p.juliaX,
       juliaY: p.juliaY,
@@ -156,12 +175,12 @@ export function useFractalEngine() {
       colorOffset: p.colorOffset + phaseRef.current,
       aa: p.aa,
       paletteId: p.paletteId,
-      de: p.de,
+      de: p.de && shadeOk,
       deStrength: p.deStrength,
       colorMode: COLOR_MODE_INDEX[p.colorMode],
       featureFreq: p.featureFreq,
       interior: p.interior,
-      relief: p.relief,
+      relief: p.relief && shadeOk,
       lightAngle: p.lightAngle,
       lightHeight: p.lightHeight,
       perturbation,
@@ -199,9 +218,10 @@ export function useFractalEngine() {
       span: vp.span,
       magnification: INITIAL_SPAN / vp.span,
       maxIter: p.autoIter ? recommendedIter(vp.span) : p.maxIter,
+      formula: p.formula,
       mode: p.mode,
       fps: fpsRef.current,
-      engine: engineFor(vp.span, p.mode),
+      engine: engineFor(vp.span, p.mode, p.formula),
       colorMode: p.colorMode,
     })
   }, [engineFor])
@@ -233,8 +253,14 @@ export function useFractalEngine() {
     return { px: fragX - canvas.width / 2, py: fragY - canvas.height / 2 }
   }, [])
 
+  // Deepest world-units-per-pixel we allow the camera to reach. Only the power
+  // maps ride the perturbation engine to the float32 delta floor; anything else
+  // clamps at the df64 precision floor so a zoom never dissolves into blocks.
   const minScale = useCallback(() => {
-    return rendererRef.current?.perturbationAvailable ? PERTURB_MIN_SCALE : DF64_MIN_SCALE
+    const canPerturb =
+      rendererRef.current?.perturbationAvailable &&
+      formulaInfo(paramsRef.current.formula).perturbable
+    return canPerturb ? PERTURB_MIN_SCALE : DF64_MIN_SCALE
   }, [])
 
   const zoomAt = useCallback(
@@ -412,7 +438,7 @@ export function useFractalEngine() {
         const scale = currentScale()
         const jx = hpToNumber(viewportRef.current.cx) + px * scale
         const jy = hpToNumber(viewportRef.current.cy) + py * scale
-        viewportRef.current = cloneViewport(JULIA_HOME)
+        viewportRef.current = cloneViewport(homeFor(paramsRef.current.formula, 'julia'))
         cancelAnim()
         setParams((p) => ({ ...p, mode: 'julia', juliaX: jx, juliaY: jy }))
         publishHud()
@@ -537,7 +563,8 @@ export function useFractalEngine() {
   // --- imperative actions exposed to the UI ---
   const reset = useCallback(() => {
     cancelAnim()
-    viewportRef.current = cloneViewport(paramsRef.current.mode === 'julia' ? JULIA_HOME : HOME)
+    const p = paramsRef.current
+    viewportRef.current = cloneViewport(homeFor(p.formula, p.mode))
     phaseRef.current = 0
     publishHud()
     schedule()
@@ -551,9 +578,12 @@ export function useFractalEngine() {
         cy: hpFromString(b.centerY),
         span: b.span,
       }
+      const formula = b.formula ?? 'mandelbrot'
+      const prev = paramsRef.current
       phaseRef.current = 0
       setParams((p) => ({
         ...p,
+        formula,
         mode: b.mode,
         juliaX: b.juliaX ?? p.juliaX,
         juliaY: b.juliaY ?? p.juliaY,
@@ -564,17 +594,21 @@ export function useFractalEngine() {
         interior: b.interior ?? p.interior,
         relief: b.relief ?? p.relief,
       }))
-      // Julia bookmarks jump; Mandelbrot bookmarks get a cinematic dive.
-      if (b.mode === 'julia' || paramsRef.current.mode === 'julia') {
+      // A cinematic dive only reads well within one continuous plane; jump when
+      // the formula or the mode changes (a morph between different sets is noise).
+      const sameContext =
+        b.mode === 'mandelbrot' && prev.mode === 'mandelbrot' && formula === prev.formula
+      if (sameContext) {
+        flyTo(target)
+      } else {
+        cancelAnim()
         viewportRef.current = cloneViewport(target)
         publishHud()
         schedule()
         syncUrl()
-      } else {
-        flyTo(target)
       }
     },
-    [flyTo, publishHud, schedule, syncUrl],
+    [flyTo, publishHud, schedule, syncUrl, cancelAnim],
   )
 
   const seedJuliaFromCenter = useCallback(() => {
@@ -582,7 +616,7 @@ export function useFractalEngine() {
     const jx = hpToNumber(vp.cx)
     const jy = hpToNumber(vp.cy)
     cancelAnim()
-    viewportRef.current = cloneViewport(JULIA_HOME)
+    viewportRef.current = cloneViewport(homeFor(paramsRef.current.formula, 'julia'))
     setParams((p) => ({ ...p, mode: 'julia', juliaX: jx, juliaY: jy }))
     publishHud()
     schedule()
@@ -591,9 +625,26 @@ export function useFractalEngine() {
   const setMode = useCallback(
     (mode: 'mandelbrot' | 'julia') => {
       cancelAnim()
-      viewportRef.current = cloneViewport(mode === 'julia' ? JULIA_HOME : HOME)
+      viewportRef.current = cloneViewport(homeFor(paramsRef.current.formula, mode))
       phaseRef.current = 0
       setParams((p) => ({ ...p, mode }))
+      publishHud()
+      schedule()
+    },
+    [publishHud, schedule, cancelAnim],
+  )
+
+  // Switch the iteration formula, resetting to that formula's home camera and a
+  // sensible default Julia constant so a mid-zoom switch never lands off-set.
+  const setFormula = useCallback(
+    (formula: FractalFormula) => {
+      cancelAnim()
+      const info = formulaInfo(formula)
+      const mode = paramsRef.current.mode
+      viewportRef.current = cloneViewport(homeFor(formula, mode))
+      phaseRef.current = 0
+      orbitKeyRef.current = null // force a fresh reference orbit for the new degree
+      setParams((p) => ({ ...p, formula, juliaX: info.juliaCX, juliaY: info.juliaCY }))
       publishHud()
       schedule()
     },
@@ -690,12 +741,23 @@ export function useFractalEngine() {
       applyBookmark,
       seedJuliaFromCenter,
       setMode,
+      setFormula,
       zoomAtCenter,
       exportPng,
       share,
       toggleDive,
     }),
-    [reset, applyBookmark, seedJuliaFromCenter, setMode, zoomAtCenter, exportPng, share, toggleDive],
+    [
+      reset,
+      applyBookmark,
+      seedJuliaFromCenter,
+      setMode,
+      setFormula,
+      zoomAtCenter,
+      exportPng,
+      share,
+      toggleDive,
+    ],
   )
 
   const setParam = useCallback(<K extends keyof RenderParams>(key: K, value: RenderParams[K]) => {
@@ -748,6 +810,15 @@ export function useFractalEngine() {
         case 'R':
           reset()
           break
+        case 'f':
+        case 'F': {
+          // f cycles the formula forward, Shift+F backward.
+          const idx = FORMULAS.findIndex((f) => f.id === paramsRef.current.formula)
+          const dir = e.shiftKey ? -1 : 1
+          const next = FORMULAS[(idx + dir + FORMULAS.length) % FORMULAS.length]
+          setFormula(next.id)
+          break
+        }
         default:
           return
       }
@@ -755,7 +826,7 @@ export function useFractalEngine() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ready, panByFraction, zoomAtCenter, reset])
+  }, [ready, panByFraction, zoomAtCenter, reset, setFormula])
 
   return { canvasRef, params, setParam, hud, error, ready, refining, diving, actions }
 }

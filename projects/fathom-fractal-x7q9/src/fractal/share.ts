@@ -1,5 +1,6 @@
 import { hpFromString, hpToString } from './hp'
-import type { ColorMode, RenderParams, Viewport } from './types'
+import type { ColorMode, FractalFormula, RenderParams, Viewport } from './types'
+import { FORMULA_BY_ID } from './types'
 
 const COLOR_MODES: ColorMode[] = ['smooth', 'stripe', 'trapPoint', 'trapCross']
 
@@ -14,6 +15,7 @@ export function encodeView(vp: Viewport, p: RenderParams): string {
   // Keep enough digits in the centre to resolve a pixel at this span, plus slack.
   const digits = Math.round(clamp(-Math.log10(vp.span) + 8, 8, 64))
   const parts: string[] = [
+    `fm=${p.formula}`,
     `m=${p.mode === 'julia' ? 'j' : 'm'}`,
     `x=${hpToString(vp.cx, digits)}`,
     `y=${hpToString(vp.cy, digits)}`,
@@ -56,6 +58,11 @@ export function decodeView(hash: string): Decoded | null {
 
   const viewport: Viewport = { cx: hpFromString(xs), cy: hpFromString(ys), span }
   const params: Partial<RenderParams> = {}
+
+  const fm = map.get('fm')
+  if (fm && Object.prototype.hasOwnProperty.call(FORMULA_BY_ID, fm)) {
+    params.formula = fm as FractalFormula
+  }
 
   const mode = map.get('m')
   if (mode === 'j') params.mode = 'julia'
