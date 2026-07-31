@@ -18,9 +18,11 @@ import type { TestResult } from './solver/selftest'
 import { computeKinematics, computeMotionProfile } from './solver/kinematics'
 import { stepDynamics, evalDynamics, lumpedMasses, driverParamUnit, DEFAULT_DYN } from './solver/dynamics'
 import type { DynState, DynParams } from './solver/dynamics'
+import { buildSystem, mbStateAtRest, mbReadout, mbStepAdvance, mbVelocities, DEFAULT_MB } from './solver/multibody'
+import type { MBParams, MBState, MBSystem } from './solver/multibody'
 import { render } from './render/renderer'
 import type { RenderState, TracePath, MotionOverlay } from './render/renderer'
-import type { MotionData, DynView, DynSample } from './ui/components'
+import type { MotionData, DynView, DynSample, MultibodyView } from './ui/components'
 import { cubicPoint } from './solver/curve'
 import { pickEntity } from './render/picking'
 import { frameBounds, screenToWorld, worldToScreen, clamp } from './render/view'
@@ -59,6 +61,13 @@ export default function App() {
   const dynMassRef = useRef<Map<EntityId, number> | null>(null)
   const dynUnitRef = useRef<'rad' | 'len'>('rad')
   const dynEnergyHistRef = useRef<DynSample[]>([])
+  // --- multi-DOF (free-body) dynamics ------------------------------------
+  const mbOnRef = useRef(false)
+  const mbSysRef = useRef<MBSystem | null>(null)
+  const mbStateRef = useRef<MBState | null>(null)
+  const mbParamsRef = useRef<MBParams>({ ...DEFAULT_MB })
+  const mbEnergyHistRef = useRef<DynSample[]>([])
+  const mbVelRef = useRef<Map<EntityId, { vx: number; vy: number }> | null>(null)
   const tracesRef = useRef<Map<EntityId, [number, number][]>>(new Map())
   const traceTargetsRef = useRef<EntityId[]>([])
   const redundantRef = useRef<Set<EntityId>>(new Set())
@@ -94,6 +103,9 @@ export default function App() {
   const [dynOn, setDynOn] = useState(false)
   const [dynParams, setDynParams] = useState<DynParams>({ ...DEFAULT_DYN })
   const [dynReadout, setDynReadout] = useState<{ T: number; V: number; E: number; I: number; omega: number; history: DynSample[] } | null>(null)
+  const [mbOn, setMbOn] = useState(false)
+  const [mbParams, setMbParams] = useState<MBParams>({ ...DEFAULT_MB })
+  const [mbReadoutState, setMbReadoutState] = useState<{ T: number; V: number; E: number; px: number; py: number; Lz: number; history: DynSample[] } | null>(null)
   const [valuePrompt, setValuePrompt] = useState<ConstraintOption | null>(null)
   const [editDim, setEditDim] = useState<{ constraintId: EntityId; option: ConstraintOption } | null>(null)
   const [solveInfo, setSolveInfo] = useState<SolveResult | null>(null)
@@ -114,6 +126,7 @@ export default function App() {
   useEffect(() => void (showConstraintsRef.current = showConstraints), [showConstraints])
   useEffect(() => void (showGridRef.current = showGrid), [showGrid])
   useEffect(() => void (dynOnRef.current = dynOn), [dynOn])
+  useEffect(() => void (mbOnRef.current = mbOn), [mbOn])
 
   // Loading a new sketch (or switching examples) leaves any running physics behind
   // so the freshly-loaded mechanism starts at rest. Called from the load paths.
@@ -122,6 +135,13 @@ export default function App() {
     setDynOn(false)
     dynEnergyHistRef.current = []
     setDynReadout(null)
+    mbOnRef.current = false
+    setMbOn(false)
+    mbSysRef.current = null
+    mbStateRef.current = null
+    mbVelRef.current = null
+    mbEnergyHistRef.current = []
+    setMbReadoutState(null)
   }, [])
 
   // --- dynamics controls ---------------------------------------------------
@@ -130,6 +150,9 @@ export default function App() {
   const enterDynamics = useCallback(() => {
     const drv = driverRef.current
     if (!drv) return
+    // Free-body physics and single-DOF Eksergian physics are mutually exclusive.
+    mbOnRef.current = false
+    setMbOn(false)
     const unit = driverParamUnit(sketchRef.current, drv.constraint.id)
     if (!unit) {
       setMessage('Dynamics needs an angle or distance driver.')
@@ -174,6 +197,76 @@ export default function App() {
     // Mass depends only on the density / base-mass sliders; recompute when they move.
     if (dynOnRef.current && (patch.density !== undefined || patch.baseMass !== undefined)) {
       dynMassRef.current = lumpedMasses(sketchRef.current, next)
+    }
+  }, [])
+
+  // --- multi-DOF (free-body) dynamics controls ----------------------------
+  // Release the WHOLE sketch as a Lagrange-multiplier DAE: build the point-mass system
+  // (dropping any driver so its DOF is freed), seed it at rest from the current pose,
+  // and let the animation loop integrate every degree of freedom at once.
+  const enterMultibody = useCallback(() => {
+    // Single-DOF Eksergian physics and free-body physics are mutually exclusive.
+    dynOnRef.current = false
+    setDynOn(false)
+    const released = driverRef.current ? [driverRef.current.constraint.id] : []
+    const sys = buildSystem(sketchRef.current, released, mbParamsRef.current)
+    if (!sys.supported) {
+      setMessage(`Free-body run: ${sys.reason}.`)
+      return
+    }
+    if (sys.ndof === 0) {
+      setMessage('Free-body run: the sketch is fully constrained (0 DOF) — nothing to release.')
+      return
+    }
+    mbSysRef.current = sys
+    mbStateRef.current = mbStateAtRest(sys)
+    mbEnergyHistRef.current = []
+    mbVelRef.current = mbVelocities(sys, mbStateRef.current)
+    const ro = mbReadout(sys, mbStateRef.current, mbParamsRef.current)
+    setMbReadoutState({ T: ro.T, V: ro.V, E: ro.E, px: ro.px, py: ro.py, Lz: ro.Lz, history: [] })
+    mbOnRef.current = true
+    setMbOn(true)
+    setPlaying(true)
+    setMessage(`Free-body run — ${sys.ndof} degrees of freedom moving at once under the Lagrange-multiplier DAE.`)
+  }, [])
+
+  const exitMultibody = useCallback(() => {
+    mbOnRef.current = false
+    setMbOn(false)
+    setPlaying(false)
+    setMessage('Free-body physics paused — the sketch is held at its current pose.')
+  }, [])
+
+  const toggleMultibody = useCallback(() => {
+    if (mbOnRef.current) exitMultibody()
+    else enterMultibody()
+  }, [enterMultibody, exitMultibody])
+
+  // Bring the system to rest (zero velocity) at its current pose and clear the trace.
+  const resetMultibody = useCallback(() => {
+    const sys = mbSysRef.current
+    if (!sys) return
+    mbStateRef.current = { q: sys.clone.readParams(sys.refs), qd: new Float64Array(sys.n) }
+    mbEnergyHistRef.current = []
+    mbVelRef.current = mbVelocities(sys, mbStateRef.current)
+    tracesRef.current = new Map()
+    const ro = mbReadout(sys, mbStateRef.current, mbParamsRef.current)
+    setMbReadoutState({ T: ro.T, V: ro.V, E: ro.E, px: ro.px, py: ro.py, Lz: ro.Lz, history: [] })
+  }, [])
+
+  const updateMbParams = useCallback((patch: Partial<MBParams>) => {
+    const next = { ...mbParamsRef.current, ...patch }
+    mbParamsRef.current = next
+    setMbParams(next)
+    // Mass enters the system matrices; rebuild the running system's masses live so the
+    // sliders take effect mid-flight (positions & velocities carry over unchanged).
+    const sys = mbSysRef.current
+    if (mbOnRef.current && sys && (patch.density !== undefined || patch.baseMass !== undefined)) {
+      const rebuilt = buildSystem(sys.clone, [], next)
+      if (rebuilt.supported) {
+        rebuilt.clone.writeParams(rebuilt.refs, mbStateRef.current!.q)
+        mbSysRef.current = rebuilt
+      }
     }
   }, [])
 
@@ -454,7 +547,19 @@ export default function App() {
     // and at least one field is shown — otherwise the arrays stay off the render state.
     let motion: MotionOverlay | null = null
     const drv = driverRef.current
-    if (drv && (showVelocityRef.current || showAccelRef.current)) {
+    if (mbOnRef.current && mbSysRef.current && mbVelRef.current && showVelocityRef.current) {
+      // Free-body mode: the velocity field is the point velocities dq/dt straight from
+      // the DAE state (no driver / kinematic coefficients involved).
+      const vel = mbVelRef.current
+      const tracer = traceTargetsRef.current[0] ?? null
+      const tp = tracer !== null ? sketchRef.current.point(tracer) : null
+      const arrows = mbSysRef.current.points.map((mp) => {
+        const p = sketchRef.current.point(mp.id)
+        const v = vel.get(mp.id) ?? { vx: 0, vy: 0 }
+        return { x: p.x, y: p.y, vx: v.vx, vy: v.vy, ax: 0, ay: 0 }
+      })
+      motion = { arrows, showVelocity: true, showAccel: false, tracer, tracerPos: tp ? [tp.x, tp.y] : null }
+    } else if (drv && (showVelocityRef.current || showAccelRef.current)) {
       const k = computeKinematics(sketchRef.current, drv.constraint.id)
       if (k.ok) {
         const tracer = traceTargetsRef.current[0] ?? null
@@ -512,7 +617,28 @@ export default function App() {
           if (arr.length > 4000) arr.shift()
         }
       }
-      if (playingRef.current && driver && dynOnRef.current && dynMassRef.current) {
+      if (playingRef.current && mbOnRef.current && mbSysRef.current && mbStateRef.current) {
+        // Multi-DOF free-body physics: march the Lagrange-multiplier DAE on the private
+        // clone (each RK4 substep is a KKT solve + coordinate projection), then stream the
+        // free-point positions back onto the LIVE sketch by id so the renderer draws them.
+        const sys = mbSysRef.current
+        const stepDt = Math.min(dt, 0.033)
+        const r = mbStepAdvance(sys, mbStateRef.current, mbParamsRef.current, stepDt, (s) => void solve(s, { maxIterations: 120 }), 4)
+        mbStateRef.current = r.state
+        for (const mp of sys.points) {
+          const lp = sketchRef.current.get(mp.id)
+          if (lp && lp.kind === 'point') {
+            if (mp.xi >= 0) lp.x = r.state.q[mp.xi]
+            if (mp.yi >= 0) lp.y = r.state.q[mp.yi]
+          }
+        }
+        mbVelRef.current = mbVelocities(sys, r.state)
+        const hist = mbEnergyHistRef.current
+        hist.push({ T: r.readout.T, V: r.readout.V, E: r.readout.E })
+        if (hist.length > 240) hist.shift()
+        setMbReadoutState({ T: r.readout.T, V: r.readout.V, E: r.readout.E, px: r.readout.px, py: r.readout.py, Lz: r.readout.Lz, history: hist.slice() })
+        appendTraces()
+      } else if (playingRef.current && driver && dynOnRef.current && dynMassRef.current) {
         // Time-domain physics: integrate the Eksergian equation of motion. stepDynamics
         // marches (θ, θ̇) on the LIVE sketch (each RK4 stage warm-starts from the last
         // pose), leaving it solved at the new θ — exactly what we then draw.
@@ -927,6 +1053,26 @@ export default function App() {
     }
   }, [driver, dynOn, dynParams, dynReadout, toggleDynamics, resetDynamics, updateDynParams])
 
+  // The Free-Body (multi-DOF) panel view-model. Available for any sketch — it probes the
+  // current geometry (releasing the driver, if any) to report support + DOF count.
+  /* eslint-disable react-hooks/exhaustive-deps */
+  const mbView = useMemo<MultibodyView>(() => {
+    const released = driverRef.current ? [driverRef.current.constraint.id] : []
+    const probe = buildSystem(sketchRef.current, released, mbParamsRef.current)
+    return {
+      on: mbOn,
+      supported: probe.supported,
+      reason: probe.reason,
+      ndof: probe.ndof,
+      params: mbParams,
+      readout: mbReadoutState,
+      onToggle: toggleMultibody,
+      onReset: resetMultibody,
+      onChange: updateMbParams,
+    }
+  }, [rev, driver, mbOn, mbParams, mbReadoutState, toggleMultibody, resetMultibody, updateMbParams])
+  /* eslint-enable react-hooks/exhaustive-deps */
+
   // --- export --------------------------------------------------------------
   const downloadText = useCallback((filename: string, text: string, mime: string) => {
     const blob = new Blob([text], { type: mime })
@@ -1232,6 +1378,7 @@ export default function App() {
           redundant={conflicts.redundant}
           motion={motionData}
           dynamics={dynView}
+          multibody={mbView}
           canExportCsv={!!motionProfile}
           onExport={onExport}
           onRemoveConstraint={removeConstraint}

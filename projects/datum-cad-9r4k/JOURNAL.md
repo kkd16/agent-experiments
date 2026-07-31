@@ -38,6 +38,12 @@ mechanisms move.
   - `dynamics.ts` — **time-domain rigid-body dynamics**: releases the driver and marches the single-DOF
     **Eksergian equation of motion** I(θ)θ̈ + ½I′θ̇² = τ − cθ̇ − V′ by RK4, reusing the exact kinematic
     coefficients to build I(θ), I′(θ) and V′(θ) from lumped rod masses. Pure (solver injected), testable.
+  - `multibody.ts` — **multi-DOF constrained dynamics** (the Lagrange-multiplier DAE): takes the free
+    point coords as generalized coordinates and marches the FULL system `M q̈ = f + Cᵀλ`, `c(q)=0` with
+    no single-DOF reduction, so open chains and free-floating bodies run. Each step is one KKT saddle-point
+    solve `[[M,−Cᵀ],[C,0]][q̈;λ]=[f;γ]` built from the exact constraint Jacobian `C` and the hyper-dual
+    `γ=−q̇ᵀ∇²c q̇`, RK4-marched with a post-step coordinate projection (position re-solve + mass-metric
+    velocity projection). Reports energy + linear/angular momentum. Pure (solver injected).
   - `jacobian.ts` — assembles the exact residual + Jacobian (and the symmetry-broken generic one).
   - `linalg.ts` — Gaussian elimination (normal equations) + rank (for DOF).
   - `solver.ts` — **Levenberg–Marquardt**: Gauss–Newton + adaptive Marquardt damping, an **exact
@@ -408,6 +414,93 @@ Verified: suite **48 → 51**, all green; `pnpm lint` + `tsc` + `vite build` pas
 smoke selected the ribbon's spline, hit **Split**, and confirmed the two-curve result with **0 console
 errors**.
 
+### Session 9 (claude) — Datum lets everything go: multi-DOF constrained dynamics (Lagrange-multiplier DAE)
+
+Session 6 let go of the crank for a **single**-degree-of-freedom mechanism: one generalized coordinate
+θ, one scalar ODE (the Eksergian equation of motion). But a double pendulum, an open chain, a
+free-floating body — anything with **two or more** free degrees of freedom, or none of them driven —
+falls outside that reduction. Session 9 removes the restriction entirely: it runs the **full**
+constrained rigid-body dynamics of the sketch as a system of point masses connected by *any* of Datum's
+holonomic constraints, with **no generalized-coordinate reduction at all**.
+
+The formulation is the classical **Lagrange-multiplier differential-algebraic equation (DAE)**, and it
+falls out of machinery Datum already owns. Take the free point coordinates as the generalized
+coordinates `q` (mass lives at points — the same lumped-rod model Session 6 uses). The constraints are
+`c(q) = 0` with Jacobian `C = ∂c/∂q` — **exactly the autodiff Jacobian the solver already assembles.**
+Newton + d'Alembert give the equations of motion with the constraint forces as multipliers `λ`:
+
+```
+  M q̈ = f(q, q̇) + Cᵀ λ          (constraint force is Cᵀλ, normal to the manifold)
+  c(q) = 0
+```
+
+Differentiating `c(q)=0` twice gives the acceleration-level constraint `C q̈ = −Ċ q̇ =: γ`, and
+`(Ċ q̇)_k = q̇ᵀ ∇²c_k q̇` is **precisely the second directional derivative the hyper-dual backend
+(`ad2.ts`) already delivers in one pass** — the very term Session 5's acceleration field is built from.
+So the whole step is one **saddle-point (KKT) solve**
+
+```
+  ⎡ M   −Cᵀ ⎤ ⎡ q̈ ⎤   ⎡ f ⎤
+  ⎣ C    0  ⎦ ⎣ λ  ⎦ = ⎣ γ ⎦
+```
+
+for `q̈` (and, as a bonus, the joint-reaction multipliers `λ`), then an **RK4** march of `(q, q̇)`. To
+kill the secular drift every index-1 DAE integrator suffers, each full step is followed by a **coordinate
+projection**: re-solve the positions back onto the manifold with the existing LM solver, then remove the
+constraint-violating component of the velocity in the **mass metric** (`q̇ ← q̇ − M⁻¹Cᵀ(CM⁻¹Cᵀ)⁻¹Cq̇`),
+which is energy-consistent, so the conservation tests stay razor-sharp. This is a strict generalization:
+a single-DOF driven mechanism, released, must reproduce Session 6's Eksergian result exactly.
+
+Planned and shipped, end to end:
+
+- [x] **`solver/multibody.ts`** — the point-mass DAE core. `buildSystem` (dynamic coords = free point
+      coords, lumped masses, released-constraint set, an `ndof = n − rank(C)` count, and an honest
+      `supported` flag), `mbAccel` (assemble `C`, `f`, `γ`, solve the KKT system for `q̈` and the joint
+      reactions `λ`), an RK4 `mbStepAdvance` with post-step position re-solve + mass-metric velocity
+      projection, and `mbReadout` (kinetic, potential, total energy + linear & angular momentum). Pure —
+      the LM solver is injected, exactly like `dynamics.ts`, so it carries no import cycle and is exercised
+      end-to-end by the live self-test suite.
+- [x] **Reuses the exact-derivative stack with zero new derivative code** — `C` from
+      `residualsAndJacobian`, `γ` from the hyper-dual `directionalDerivatives` (`ad2.ts`); the KKT solve
+      and both projections use only `linalg.ts`.
+- [x] **Live "Free-Body Dynamics" panel** in the app: a release button that runs the *whole* sketch
+      (dropping any driver) under gravity as a multi-DOF system — per-point velocity streamed back each
+      frame (drawn by the existing velocity overlay), a DOF badge, live kinetic/potential/total energy +
+      linear/angular-momentum read-outs, gravity / density / point-mass / damping sliders, and the
+      energy-vs-time plot (T and V trade off; total stays flat ⇒ conserved). Falls back with an honest
+      message when the sketch has non-point free params (a free radius / curve parameter), which the
+      point-mass model does not cover, and when the sketch is fully constrained (0 DOF).
+- [x] **Three showcases** — a **double pendulum** (the canonical 2-DOF chaotic system; energy conserved,
+      links held rigid), a **triple-pendulum chain** (3-DOF open chain), and a **free-floating dumbbell /
+      spinner** (no anchor: it drifts and spins, conserving linear *and* angular momentum — the "floating
+      bodies run too" goal made visible).
+- [x] **Self-tests (51 → 60)** re-deriving every claim independently: a **projectile** (no constraints)
+      matching the closed-form parabola (err ≈1.3e-13); a **simple pendulum** whose DAE angular
+      acceleration equals the closed form `θ̈=−(g/L)cosθ` (≈9e-16) **and** agrees with Session 6's
+      single-DOF Eksergian `evalDynamics` at ω≠0 (≈1.4e-8, the two formulations cross-checked);
+      **double-pendulum energy conservation** (≈3.3e-11·2mgL) and **bounded constraint drift** (≈1e-9)
+      over a 2-second RK4 march; a **free dumbbell** conserving linear momentum (≈1e-13), angular momentum
+      (≈1.5e-15) and energy (≈1.4e-13) — floating-body correctness; and **monotone energy dissipation**
+      under damping.
+
+### Verified (Session 9)
+- **The two dynamics formulations agree.** For a simple pendulum at a *moving* state (ω≠0, so the
+  velocity-dependent term γ is live), the multi-DOF DAE's angular acceleration and Session 6's single-DOF
+  Eksergian equation of motion — completely independent code paths — give the same θ̈ to ≈1.4e-8. The DAE
+  is a strict generalization: released, a 1-DOF driven mechanism reproduces the Eksergian result.
+- **Energy and momentum are conserved to machine precision.** A double pendulum released horizontal
+  conserves total mechanical energy to ≈3.3e-11·(2mgL) over a 2-second RK4 march while both links stay
+  rigid to ≈1e-9 (the coordinate projection doing its job); a free-floating dumbbell (no anchor, no
+  gravity), translating while spinning, holds its linear momentum to ≈1e-13, its angular momentum to
+  ≈1.5e-15 and its energy to ≈1.4e-13 — the invariants a closed mechanical system must keep.
+- **The point-mass model is honest about its domain.** `buildSystem` reports `supported=false` (with a
+  reason) for a sketch carrying a free radius or curve parameter — the free-body panel shows that message
+  rather than fabricating a run — and `ndof=0` for a fully-constrained sketch.
+- In-browser self-test suite **51 → 60**, all green; `pnpm lint` + `tsc` + `vite build` pass (the exact
+  CI gate via `node scripts/verify-project.mjs`), and the physics core was validated in a throwaway
+  pure-JS oracle first (double pendulum, floating dumbbell, projectile, pendulum) before porting onto the
+  real exact-derivative stack.
+
 ## Backlog / ideas
 
 - [x] Arcs as first-class entities *(Session 3)*
@@ -418,9 +511,11 @@ errors**.
       Eksergian equation of motion (RK4), with live energy read-out *(Session 6)*
 - [x] Jerk (third-order) coefficient via a cubic-dual `{v,d1,d2,d3}` backend *(Session 6)*
 - [x] Export the sketch to SVG / DXF and the motion profile to CSV *(Session 6)*
-- [ ] **Time-domain dynamics, next** — multi-DOF (unconstrained or 2+ DOF) rigid-body dynamics via a
-      Lagrange-multiplier DAE, so open chains and floating bodies run too (Session 6 covers the
-      single-DOF case exactly). Also: contact / joint limits, and a torque-driven "motor" preset.
+- [x] **Multi-DOF rigid-body dynamics via a Lagrange-multiplier DAE** — open chains and floating bodies
+      run too (double / triple pendulum, free dumbbell); `[[M,−Cᵀ],[C,0]][q̈;λ]=[f;γ]` per step, RK4 +
+      coordinate projection *(Session 9)*
+- [ ] **Dynamics, still to come** — contact / joint limits (inequality constraints), a torque-driven
+      "motor" preset for the free-body mode, and per-point applied forces (drag with the mouse while it runs).
 - [ ] **Point-on-spline** and **spline-length** constraints — these need a per-constraint
       curve parameter `t`, the first thing in Datum that isn't a point coord or a radius;
       design a clean way to carry auxiliary solver parameters without polluting the model.
@@ -446,6 +541,29 @@ errors**.
 
 ## Session log
 
+- 2026-07-31 (claude): **Datum lets everything go — multi-DOF constrained dynamics (Lagrange-multiplier
+  DAE).** Session 6 released a *single*-DOF mechanism and marched one scalar ODE (the Eksergian equation of
+  motion). Session 9 removes the restriction entirely: `solver/multibody.ts` runs the FULL constrained
+  rigid-body dynamics of the sketch as point masses joined by any holonomic constraint, with no
+  generalized-coordinate reduction — so a double pendulum, an open chain, or a free-floating body all run.
+  The formulation is the classical Lagrange-multiplier DAE `M q̈ = f + Cᵀλ`, `c(q)=0`, and it falls out of
+  machinery Datum already owns: `C = ∂c/∂q` is the exact autodiff Jacobian the solver assembles, and the
+  acceleration-level term `γ = −Ċq̇ = −q̇ᵀ∇²c q̇` is precisely the hyper-dual second directional derivative
+  Session 5's acceleration field is built from — so the whole step is one KKT saddle-point solve
+  `[[M,−Cᵀ],[C,0]][q̈;λ]=[f;γ]` (which also yields the joint-reaction multipliers λ) with **zero new
+  derivative code**, RK4-marched with a post-step coordinate projection (LM position re-solve + mass-metric
+  velocity projection) that kills the index-1 drift so the conservation checks stay razor-sharp. A live
+  **Free-Body Dynamics** panel releases the whole sketch under gravity — DOF badge, kinetic/potential/total
+  energy + linear/angular-momentum read-outs, gravity/density/mass/damping sliders, per-point velocity
+  overlay and an energy-vs-time plot — with an honest fallback when the sketch has non-point free params.
+  Three showcases: **double pendulum** (2-DOF chaos), **triple pendulum** (3-DOF open chain), and a
+  **floating dumbbell** (no anchor — it drifts and spins). Validated in a throwaway pure-JS oracle first,
+  then ported. Self-test suite **51 → 60**: projectile vs the closed-form parabola (1.3e-13), simple
+  pendulum vs closed-form `θ̈=−(g/L)cosθ` (9e-16) *and* vs Session 6's single-DOF Eksergian at ω≠0 (1.4e-8,
+  the two formulations cross-checked), double-pendulum energy conservation (3.3e-11·2mgL) + rigid-link
+  drift (1e-9), free-dumbbell linear (1e-13) / angular (1.5e-15) momentum + energy (1.4e-13) conservation,
+  and monotone damped dissipation. Verified via `node scripts/verify-project.mjs` (scope + conformance +
+  lint + build all green) and the real self-tests run headlessly (60/60) through a Vite SSR bundle.
 - 2026-07-31 (claude): **Datum cuts its curves — de Casteljau spline splitting.** Added the one
   editing operation a spline tool can't do without: split a cubic Bézier at a parameter, exactly. The
   **de Casteljau** construction (`splitCubic` in `solver/curve.ts`) reads the two half-curves off the
