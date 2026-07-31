@@ -31,6 +31,7 @@ import { Gf2Studio } from './components/Gf2Studio'
 import { AigStudio } from './components/AigStudio'
 import { SymxStudio } from './components/SymxStudio'
 import { EgraphStudio } from './components/EgraphStudio'
+import { LtlStudio } from './components/LtlStudio'
 
 type Tab = 'solution' | 'stats' | 'count' | 'compile' | 'graph' | 'trace' | 'proof' | 'cnf'
 type Mode =
@@ -51,6 +52,7 @@ type Mode =
   | 'aig'
   | 'symx'
   | 'egraph'
+  | 'ltl'
   | 'lab'
 
 export default function App() {
@@ -149,6 +151,8 @@ export default function App() {
                                       ? 'Symbolic execution: verify imperative programs by discharging path conditions to the integer-linear core, with concrete counterexamples.'
                                       : mode === 'egraph'
                                       ? 'Equality saturation: an e-graph optimizes a term to its cheapest equivalent and proves algebraic identities — the “egg” technique.'
+                                      : mode === 'ltl'
+                                      ? 'Explicit-state LTL model checking: LTL → Büchi automaton, product with a Kripke structure, and emptiness by nested DFS — with counterexample lassos.'
                                       : 'An empirical lab that races CDCL heuristics across a benchmark suite.'}
             </p>
           </div>
@@ -205,6 +209,9 @@ export default function App() {
           <button className={mode === 'egraph' ? 'active' : ''} onClick={() => setMode('egraph')}>
             Congruence Studio
           </button>
+          <button className={mode === 'ltl' ? 'active' : ''} onClick={() => setMode('ltl')}>
+            Temporal Studio
+          </button>
           <button className={mode === 'lab' ? 'active' : ''} onClick={() => setMode('lab')}>
             Solver Lab
           </button>
@@ -227,6 +234,7 @@ export default function App() {
       {mode === 'aig' && <AigStudio />}
       {mode === 'symx' && <SymxStudio />}
       {mode === 'egraph' && <EgraphStudio />}
+      {mode === 'ltl' && <LtlStudio />}
       {mode === 'lab' && <SolverLab />}
 
       {mode === 'sat' && (
@@ -372,7 +380,15 @@ export default function App() {
         cost-based extraction, turning the same machine into an algebraic <b>optimizer</b> (strength
         reduction, factoring, identity collapse) and an equational <b>prover</b> (two terms are equal
         exactly when they share a class), every rewrite an integer identity and every result re-checked by
-        an independent exact BigInt evaluator — all hand-written in TypeScript.
+        an independent exact BigInt evaluator · plus a <b>Temporal Studio</b> that turns the same machinery on{' '}
+        <b>reactive systems</b> — a from-scratch explicit-state <b>LTL model checker</b> that compiles a temporal
+        specification's negation into a <b>Büchi automaton</b> by the <b>GPVW tableau</b> (with constant folding and
+        generalized-Büchi acceptance forcing every eventuality), takes the synchronous product with a Kripke structure —
+        <b>degeneralized on the fly</b> — and decides <b>emptiness by nested depth-first search</b>
+        (Courcoubetis–Vardi–Wolper–Yannakakis), returning a concrete <b>counterexample lasso</b> when a liveness or
+        safety property fails, every verdict and every counterexample refereed by an <b>independent word-level LTL
+        oracle</b> that agrees with the whole automaton pipeline on thousands of random formulas — all hand-written in
+        TypeScript.
       </footer>
     </div>
   )

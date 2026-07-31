@@ -236,6 +236,32 @@ conflict teaches the solver a new clause that prunes an exponential swath of the
   e-graph iteration by iteration, an iteration table, and an inline evaluator cross-check) and a
   **Prove** pane (two-term editor, a PROVED / NOT-PROVED / NOT-EQUAL verdict with a counterexample
   from the evaluator, and the merged e-graph), sharing a live rule-family toggle panel.
+- `src/ltl/*` — the **explicit-state LTL model checker** (Session 30), an eighteenth studio and the
+  first that reasons about **infinite behaviours of reactive systems** (liveness, not just the
+  interpolation studio's safety). `ast.ts` is the temporal object language — a full LTL grammar
+  (`! & | -> <->`, `X F G U R W`) with a canonical structural key, an atom collector and a
+  minimal-parenthesis pretty-printer; `parse.ts` is a precedence-climbing recursive-descent parser.
+  `nnf.ts` rewrites a formula into **negation normal form** over the reduced core
+  {true,false,atom,¬atom,∧,∨,X,U,R} and then **constant-folds** it (the fold is load-bearing: it
+  erases every `_ U true` / `_ R false` degeneracy that would otherwise defeat the acceptance test).
+  `buchi.ts` is the heart — the **Gerth–Peled–Vardi–Wolper (1995) tableau** that compiles a formula
+  into a *state-labeled generalized Büchi automaton*, with one acceptance set per `U` subformula
+  forcing every eventuality to be discharged. `kripke.ts` is the finite-state model + a textual DSL
+  parser (`state s [a,b] init`, `s -> t,u`) and a deadlock detector. `product.ts` takes the
+  synchronous **product** of the Kripke structure with B(¬φ), **degeneralizing** the generalized
+  acceptance on the fly (Baier–Katoen's k-copy construction). `emptiness.ts` decides the product
+  empty two independent ways — the textbook **nested depth-first search** (Courcoubetis–Vardi–
+  Wolper–Yannakakis) and a **BFS lasso extractor** for the shortest counterexample — and the
+  self-check requires them to agree. `check.ts` is the pipeline (`modelCheck`) that returns the
+  verdict plus a counterexample lasso projected back onto the system. `ltleval.ts` is the
+  **independent semantic oracle**: exact LTL over an ultimately-periodic word by fixpoint iteration,
+  sharing no code with the automaton. `examples.ts` is the curated gallery (mutual exclusion,
+  starvation, request/response, fairness, the U/W distinction) plus seeded random generators.
+  `selfcheck.ts` — `runLtlChecks()`: 6500+ assertions, headlined by a **2500-instance single-lasso
+  cross-check** where the full pipeline must agree with the oracle on random (formula, word) pairs.
+  UI: `components/LtlStudio.tsx` — a Kripke editor + LTL input, an SVG system graph with the
+  counterexample lasso highlighted (stem vs. loop), a Büchi-automaton view, a lasso trace, pipeline
+  stats, and the self-check.
 
 ## Correctness
 
@@ -1196,8 +1222,109 @@ correct and obviously well-founded; the oracle caught the bug instantly.)
       from-scratch retrograde game solver, turning the abstract verdict into "does Player 1 win?".
 - [ ] Run QBF off the main thread via the existing worker/task runner for larger instances.
 
+### Session 30 — from *safety* to *liveness*: an explicit-state LTL model checker
+
+SatForge already *proves programs safe* two ways — Craig interpolation and IC3/PDR, both in the
+Model Checker (`src/imc`). But those decide **safety** ("nothing bad ever happens") over a Boolean
+transition system: reachability of a bad state, discharged with SAT queries. They cannot phrase
+**liveness** — "something good *eventually* happens", "every request is *eventually* served",
+"the light turns green *infinitely often*". Liveness is the province of **temporal logic** and the
+**automata-theoretic** method that underlies SPIN and every explicit-state model checker: compile
+the *negated* specification into a Büchi automaton over infinite words, take its product with the
+system, and ask whether that product accepts anything — an **accepting cycle** is a concrete
+infinite counterexample. This session builds that pipeline from scratch, and refutes it against a
+completely independent word-level semantics.
+
+**The logic + front-end (`src/ltl/ast.ts`, `parse.ts`, `nnf.ts`).**
+
+- [x] A full **LTL** grammar and AST: Booleans `! & | -> <->`, the temporals `X` (next), `F`
+      (eventually), `G` (globally), `U` (until), `R` (release), `W` (weak until), with a canonical
+      structural key, a minimal-parenthesis printer, and a precedence-climbing parser.
+- [x] **Negation normal form** over the reduced core {true,false,atom,¬atom,∧,∨,X,U,R} via the
+      standard dualities (¬X≡X¬, ¬(aUb)≡¬aR¬b, F≡⊤U·, G≡⊥R·, aWb≡bR(a∨b)), then a **constant-folding**
+      pass. The fold is not cosmetic: the acceptance test discharges `a U b` exactly when `b ∈ Old`,
+      but a literal-`true` right-hand side is *dropped* rather than recorded — so `_ U true` /
+      `_ R false` degeneracies must be simplified away *before* the tableau. (The self-check caught
+      this the moment it existed: 7 of ~6500 cases failed until the fold went in.)
+
+**The automaton (`src/ltl/buchi.ts`) — the GPVW tableau.**
+
+- [x] The **Gerth–Peled–Vardi–Wolper (1995)** on-the-fly construction: grow a graph of tableau nodes
+      (Incoming / New / Old / Next), splitting `U`/`R`/`∨` by their fixpoint unrollings
+      (`aUb ≡ b ∨ (a ∧ X(aUb))`), merging nodes with identical Old & Next. Result: a
+      **state-labeled generalized Büchi automaton** over 2^AP.
+- [x] **Generalized acceptance** — one set per `U` subformula, F_{aUb} = {q : (aUb)∉Old(q) ∨ b∈Old(q)}
+      — which is exactly what forces every eventuality to be met infinitely often (no U left pending).
+- [x] Iterative expansion (explicit work stack) with a node budget, so a pathological formula degrades
+      to a clean error instead of blowing the stack.
+
+**The product + emptiness (`src/ltl/kripke.ts`, `product.ts`, `emptiness.ts`, `check.ts`).**
+
+- [x] A **Kripke structure** model + DSL parser (`state s [a,b] init` / `s -> t,u`) and a deadlock
+      detector.
+- [x] The synchronous **product** K × B(¬φ), with the generalized acceptance **degeneralized on the
+      fly** into ordinary Büchi by the Baier–Katoen k-copy construction — so a single accepting cycle
+      certifies every acceptance set is hit infinitely often.
+- [x] **Emptiness by nested DFS** (Courcoubetis–Vardi–Wolper–Yannakakis): an outer DFS that, on
+      finishing an accepting state, launches an inner DFS seeking a state still on the outer stack —
+      a cycle back through the accepting state. Iterative, linear.
+- [x] A second, independent **BFS lasso extractor** — shortest stem to an accepting state on a cycle,
+      plus the shortest cycle — used to hand the UI and the oracle a minimal counterexample, and
+      required to agree with the nested DFS on every random instance.
+- [x] `modelCheck(K, φ)` glues it together and **projects the counterexample lasso back onto the
+      system** as a stem + infinitely-repeated loop of system states, with full pipeline stats.
+
+**The oracle + gallery (`src/ltl/ltleval.ts`, `examples.ts`).**
+
+- [x] An **independent word-level LTL evaluator**: exact satisfaction over an ultimately-periodic
+      word by fixpoint iteration on the ρ-shaped position graph (least fixpoints for U/F, greatest for
+      R/G). It interprets the *surface* operators directly and shares **no code** with the tableau.
+- [x] A curated **gallery** — mutual-exclusion safety, starvation (liveness failure), a broken mutex,
+      request→response, a traffic-light fairness cycle, an until, and the strong/weak-until
+      distinction — each with its documented verdict, plus seeded random generators.
+
+**The studio (`src/components/LtlStudio.tsx`).** A new **Temporal Studio** mode: an LTL input + a
+Kripke DSL editor, a **HOLDS / VIOLATED** verdict, an SVG **system graph** with the counterexample
+lasso drawn over it (stem in one colour, loop in another), a **Büchi-automaton** view of B(¬φ) with
+its acceptance sets, a **lasso trace** (stem then a boxed "loop ∞" block), pipeline statistics
+(Büchi/product sizes, DFS work), the example gallery, and the self-check.
+
+**Cross-checks (folded into `selftest.ts`).** The headline is a **2500-instance single-lasso
+cross-check**: wrap a random word as a one-path Kripke structure (which has exactly one run) and the
+*entire* pipeline — NNF, tableau, degeneralized product, nested-DFS emptiness, counterexample
+extraction — must agree with the direct fixpoint semantics; agreement over thousands of random
+(formula, word) pairs is a decisive test that the Büchi construction is both **sound and complete**.
+Plus: parser/printer round-trips, NNF preserves meaning on every word, nested DFS agrees with the
+BFS lasso finder, every reported counterexample is a genuine violating run, a brute-force lasso
+enumerator never beats the checker, and the curated gallery lands on its verdicts. **6500+
+assertions, all green.**
+
+#### Future ideas
+
+- [ ] **CTL and CTL\*** model checking (branching time): a fixpoint (EU/EG/EX) checker for CTL, and the
+      automata-theoretic CTL\* procedure, cross-checked against the LTL engine on the shared fragment.
+- [ ] **On-the-fly / bit-state** product exploration so the product is never fully materialized —
+      nested DFS over states generated lazily, plus a hashing-based approximation for large systems.
+- [ ] **A concurrency front-end** — a tiny guarded-command / process language that *compiles* to a
+      Kripke structure (interleaving semantics), so mutual exclusion & fairness are checked on real
+      protocols (Peterson, Dekker, a bakery) rather than hand-drawn graphs.
+- [ ] **Fairness constraints** (weak/strong) as first-class Kripke annotations, folded into the
+      product's acceptance so liveness can be checked *under* fairness.
+- [ ] **A DBA/DRA minimization + a nicer LTL→BA** (e.g. the LTL2BA simplifications: contradiction &
+      redundancy pruning of tableau nodes) to shrink the automaton, with the oracle guarding equivalence.
+- [ ] **Symbolic LTL model checking** — reuse the BDD studio to represent the product symbolically and
+      compute the accepting-cycle fixpoint (Emerson–Lei), closing the loop with the existing engines.
+
 ## Session log
 
+- 2026-07-31 (claude): Went from *safety* to **liveness** — added an eighteenth studio, a from-scratch
+  **explicit-state LTL model checker** (`src/ltl/*`, `components/LtlStudio.tsx`). Compiles ¬φ into a
+  **Büchi automaton** by the GPVW tableau (with constant folding + generalized acceptance), takes the
+  **degeneralized product** with a Kripke structure, and decides **emptiness by nested DFS**,
+  returning a **counterexample lasso** when a property fails. Every verdict is refereed by an
+  independent word-level LTL oracle; the headline is a 2500-instance single-lasso cross-check with
+  zero mismatches. **6500+ new assertions, all green.** Wired into `App.tsx` as the Temporal Studio
+  and added a matching footer clause. See Session 30 above.
 - 2026-07-04 (claude): ASP Studio follow-up — **machine-checked answer-set certificates** + brave/cautious
   reasoning (`src/asp/certificate.ts`). Gives ASP the certificate every other prover here ships: for each
   reported answer set, `derivationOrder` emits a founded-set derivation sequence (each atom justified by a
