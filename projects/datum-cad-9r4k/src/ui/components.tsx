@@ -139,6 +139,8 @@ export function ConstraintPalette(props: {
   onAnchor: () => void
   onReverseArc: () => void
   canReverseArc: boolean
+  onSplitSpline: () => void
+  canSplitSpline: boolean
   selectionCount: number
 }) {
   return (
@@ -157,6 +159,12 @@ export function ConstraintPalette(props: {
           <button className="cBtn" onClick={props.onReverseArc} title="Swap the arc's endpoints — toggle the minor / major arc">
             <span className="cSym">↺</span>
             <span className="cLbl">Reverse</span>
+          </button>
+        )}
+        {props.canSplitSpline && (
+          <button className="cBtn" onClick={props.onSplitSpline} title="Split the spline into two curves (at a selected bead, else the midpoint) — exact, C1 at the join">
+            <span className="cSym">✂</span>
+            <span className="cLbl">Split</span>
           </button>
         )}
         {props.selectionCount > 0 && (

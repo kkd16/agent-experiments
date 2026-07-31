@@ -141,6 +141,29 @@ export function nearestParam(p0: Vec2, c0: Vec2, c1: Vec2, p1: Vec2, q: Vec2): n
   return t
 }
 
+// Split a cubic Bézier at parameter t into two cubics via the de Casteljau
+// construction. The two halves together retrace the original curve *exactly* — the
+// left one is the original restricted to [0,t] and the right one to [t,1], each
+// reparametrised to [0,1] — and they meet with matching tangent (C1) at the split
+// point. Returns the two control-point quadruples; the shared split point is
+// `left[3] === right[0]` in value.
+export function splitCubic(
+  p0: Vec2,
+  c0: Vec2,
+  c1: Vec2,
+  p1: Vec2,
+  t: number,
+): { left: [Vec2, Vec2, Vec2, Vec2]; right: [Vec2, Vec2, Vec2, Vec2] } {
+  const lerp = (a: Vec2, b: Vec2): Vec2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+  const l1 = lerp(p0, c0)
+  const h = lerp(c0, c1)
+  const r2 = lerp(c1, p1)
+  const l2 = lerp(l1, h)
+  const r1 = lerp(h, r2)
+  const s = lerp(l2, r1) // the point on the curve at t
+  return { left: [p0, l1, l2, s], right: [s, r1, r2, p1] }
+}
+
 // B″(t) = 6[(1−t)(C1−2C0+P0) + t(P1−2C1+C0)] — only needed for the Newton refinement
 // of nearestParam.
 function cubicSecond(p0: Vec2, c0: Vec2, c1: Vec2, p1: Vec2, t: number): Vec2 {

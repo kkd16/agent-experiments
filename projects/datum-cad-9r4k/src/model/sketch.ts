@@ -11,7 +11,7 @@ import type {
   SketchData,
   SplineEntity,
 } from './types'
-import { nearestParam } from '../solver/curve'
+import { nearestParam, splitCubic } from '../solver/curve'
 
 // A single solvable scalar parameter the solver may move. It is one of two kinds:
 //   • a *coordinate* — a point's x/y or a circle/arc radius, living on an entity, or
@@ -214,6 +214,54 @@ export class Sketch {
   removeConstraint(id: EntityId) {
     this.constraints = this.constraints.filter((c) => c.id !== id)
     this.constraintById.delete(id)
+  }
+
+  // Split a cubic Bézier spline at parameter `t` (0<t<1) via de Casteljau, replacing
+  // it with two cubics that together reproduce the original curve exactly and meet with
+  // matching tangent (C1) at the split point. The two new splines share that split
+  // point, so dragging it moves both halves together. If `atPoint` is given — a point
+  // already riding the curve at `t` (a point-on-spline bead) — it becomes the shared
+  // join; otherwise a fresh point is created there. The original spline, its two
+  // interior handles, and any constraint that referenced them are removed (that
+  // geometry no longer exists); the two endpoints are reused so chained neighbours stay
+  // attached.
+  splitSpline(id: EntityId, t: number, atPoint?: EntityId): { left: SplineEntity; right: SplineEntity } {
+    const s = this.spline(id)
+    const P = (pid: EntityId): [number, number] => {
+      const p = this.point(pid)
+      return [p.x, p.y]
+    }
+    const { left, right } = splitCubic(P(s.p0), P(s.c0), P(s.c1), P(s.p1), t)
+    const p0end = s.p0
+    const p1end = s.p1
+    const construction = s.construction ?? false
+
+    // The new interior handles.
+    const L1 = this.addPoint(left[1][0], left[1][1])
+    const L2 = this.addPoint(left[2][0], left[2][1])
+    const R1 = this.addPoint(right[1][0], right[1][1])
+    const R2 = this.addPoint(right[2][0], right[2][1])
+    // The shared split point: reuse the bead if given (moving it exactly onto the
+    // curve point), else create a fresh point.
+    let S: PointEntity
+    if (atPoint !== undefined) {
+      S = this.point(atPoint)
+      S.x = left[3][0]
+      S.y = left[3][1]
+    } else {
+      S = this.addPoint(left[3][0], left[3][1])
+    }
+
+    // Remove the original spline and its now-orphaned interior handles, plus every
+    // constraint that referenced any of them (including the bead's point-on-spline).
+    const toRemove = new Set<EntityId>([id, s.c0, s.c1])
+    this.entities = this.entities.filter((e) => !toRemove.has(e.id))
+    this.constraints = this.constraints.filter((c) => !c.entities.some((r) => toRemove.has(r)))
+
+    const newLeft = this.addSpline(p0end, L1.id, L2.id, S.id, construction)
+    const newRight = this.addSpline(S.id, R1.id, R2.id, p1end, construction)
+    this.reindex()
+    return { left: newLeft, right: newRight }
   }
 
   // Swap an arc's start and end points, flipping which side of the circle the arc
