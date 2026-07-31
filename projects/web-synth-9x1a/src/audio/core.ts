@@ -5,6 +5,7 @@ export class AudioCore {
   // Keep track of parameters to be able to map UI handles to Web Audio AudioParams
   private params: Map<string, AudioParam> = new Map();
   private masterGain: GainNode | null = null;
+  private masterLimiter: DynamicsCompressorNode | null = null;
 
   private constructor() {}
 
@@ -20,7 +21,16 @@ export class AudioCore {
       this.ctx = new (window.AudioContext || (window as unknown as Record<string, unknown>).webkitAudioContext)();
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 1.0;
-      this.masterGain.connect(this.ctx.destination);
+
+      this.masterLimiter = this.ctx.createDynamicsCompressor();
+      this.masterLimiter.threshold.value = -3;
+      this.masterLimiter.knee.value = 12;
+      this.masterLimiter.ratio.value = 20;
+      this.masterLimiter.attack.value = 0.005;
+      this.masterLimiter.release.value = 0.050;
+
+      this.masterGain.connect(this.masterLimiter);
+      this.masterLimiter.connect(this.ctx.destination);
     }
     return this.ctx;
   }

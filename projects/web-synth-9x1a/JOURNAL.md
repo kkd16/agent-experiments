@@ -18,10 +18,22 @@
 - [ ] Add ADSR Envelope Node
 - [ ] Add Sequencer Node
 - [x] Add Master Volume Control in Output Node
-- [ ] Add Panning Node
-- [ ] Add Distortion Node
+- [x] Add Panning Node
+- [x] Add Distortion Node
 - [ ] Add Chorus/Flanger Node
 - [x] Implement Node Deletion UI (e.g. Delete button on nodes)
 - [ ] Allow renaming nodes for better organization
 - [ ] Add Save/Load patches functionality
 - [x] Improve Visualizer with dual view (Waveform + Spectrum)
+
+## Expansion Phase 3 (Planned)
+- [x] Add Compressor Node
+- [x] Enable snap-to-grid in React Flow
+- [x] Add Master Limiter to AudioCore
+- [ ] Implement multi-node selection
+- [ ] Add copy/paste functionality for nodes
+- [ ] Add MIDI input support via Web MIDI API
+- [ ] Implement undo/redo functionality
+- [ ] Create a comprehensive preset library
+- [ ] Add polyphony support to Oscillator
+- [ ] Allow custom colors for different node types

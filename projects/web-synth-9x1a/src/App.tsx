@@ -5,6 +5,9 @@ import { OscillatorNode } from './components/nodes/OscillatorNode';
 import { NoiseNode } from './components/nodes/NoiseNode';
 import { LfoNode } from './components/nodes/LfoNode';
 import { GainNode } from './components/nodes/GainNode';
+import { PanningNode } from './components/nodes/PanningNode';
+import { DistortionNode } from './components/nodes/DistortionNode';
+import { CompressorNode } from './components/nodes/CompressorNode';
 import { FilterNode } from './components/nodes/FilterNode';
 import { DelayNode } from './components/nodes/DelayNode';
 import { ReverbNode } from './components/nodes/ReverbNode';
@@ -17,6 +20,9 @@ const nodeTypes = {
   oscillatorNode: OscillatorNode,
   noiseNode: NoiseNode,
   lfoNode: LfoNode,
+  compressorNode: CompressorNode,
+  distortionNode: DistortionNode,
+  panningNode: PanningNode,
   gainNode: GainNode,
   filterNode: FilterNode,
   delayNode: DelayNode,
@@ -63,6 +69,18 @@ export default function App() {
 
           <h2 className="text-xs font-semibold text-gray-400 uppercase mb-3">Processors</h2>
           <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => handleAddNode('compressorNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-cyan-400" />
+              Compressor
+            </button>
+            <button onClick={() => handleAddNode('distortionNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-orange-600" />
+              Distortion
+            </button>
+            <button onClick={() => handleAddNode('panningNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-yellow-400" />
+              Panning
+            </button>
             <button onClick={() => handleAddNode('gainNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Sliders size={18} className="mb-1 text-green-400" />
               Gain VCA
@@ -108,6 +126,8 @@ export default function App() {
           onConnect={onConnect}
           nodeTypes={nodeTypes}
           fitView
+          snapToGrid={true}
+          snapGrid={[16, 16]}
           className="bg-gray-900"
         >
           <Background color="#333" gap={16} />
