@@ -185,6 +185,32 @@ export default function Inspector({ node, isBase, dispatch }: InspectorProps) {
             />
           </>
         ) : null}
+        <Slider
+          label="Iridescence"
+          value={node.material.iridescence}
+          min={0}
+          max={1}
+          step={0.01}
+          format={(v) => (v <= 0 ? 'off' : v.toFixed(2))}
+          onChange={(iridescence) => dispatch({ type: 'patchMaterial', id, patch: { iridescence } })}
+        />
+        {node.material.iridescence > 0 ? (
+          <>
+            <p className="hint">
+              A thin-film coating: the specular highlight is tinted by wavelength interference and
+              shifts hue with the viewing angle — soap bubbles, oil slicks, anodised metal.
+            </p>
+            <Slider
+              label="Film thickness (nm)"
+              value={node.material.filmThickness}
+              min={100}
+              max={800}
+              step={5}
+              format={(v) => v.toFixed(0)}
+              onChange={(filmThickness) => dispatch({ type: 'patchMaterial', id, patch: { filmThickness } })}
+            />
+          </>
+        ) : null}
       </Section>
 
       <Section title="Glass">
@@ -202,6 +228,14 @@ export default function Inspector({ node, isBase, dispatch }: InspectorProps) {
               A dielectric surface: the path tracer splits each hit into a Fresnel reflection and a
               refraction (and the fast preview approximates a see-through). Best under Path trace.
             </p>
+            {node.material.roughness > 0.12 ? (
+              <p className="hint">
+                Roughness ≥ 0.12 frosts the glass — the refracted light scatters, so what shows
+                through blurs. Lower Roughness (Material) for clear glass, raise it for etched frost.
+              </p>
+            ) : (
+              <p className="hint">Raise the material Roughness to frost this glass (scatters the refraction).</p>
+            )}
             <Slider
               label="IOR"
               value={node.material.ior}

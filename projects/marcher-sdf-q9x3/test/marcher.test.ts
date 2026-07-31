@@ -99,6 +99,63 @@ describe('shader assembly', () => {
     expect(built.fragmentAccum, 'path tracer refracts the ray').toContain('refract(')
   })
 
+  it('carries the thin-film iridescence + physical-sky + frost machinery in every variant', () => {
+    const scene = defaultScene()
+    const irid = makeNode('sphere')
+    irid.material.iridescence = 1
+    irid.material.filmThickness = 420
+    const frostNode = makeNode('box')
+    frostNode.material.transmission = 1
+    frostNode.material.roughness = 0.5
+    scene.nodes = [irid, frostNode, ...scene.nodes]
+    scene.env.skyMode = 'physical'
+    scene.env.turbidity = 5
+    scene.render.integrator = 'pathtrace'
+    const built = buildShader(scene)
+    for (const variant of [built.fragment, built.fragmentAccum]) {
+      assertBalanced('surfaces', variant)
+      for (const sym of [
+        'uMatFilm',
+        'uSkyMode',
+        'uTurbidity',
+        'thinFilm(',
+        'iridescenceTint(',
+        'physicalSky(',
+        'raySphere(',
+      ]) {
+        expect(variant, `surfaces shader defines ${sym}`).toContain(sym)
+      }
+    }
+    // PI must be defined exactly once (skyColor uses it before the path tracer block).
+    const piDefs = (built.fragmentAccum.match(/#define PI /g) ?? []).length
+    expect(piDefs, 'PI is defined exactly once').toBe(1)
+    // The path tracer applies the iridescent tint and roughens refraction (frost).
+    expect(built.fragmentAccum, 'path tracer tints specular with iridescence').toContain('iridescenceTint(res.y')
+    expect(built.fragmentAccum, 'physical sky routes through envDome').toContain('uSkyMode == 1')
+  })
+
+  it('bakes the film + sky uniforms into the standalone export', () => {
+    const html = buildStandaloneHtml(PRESETS.find((p) => p.id === 'daybreak')!.build(), 'Sky')
+    for (const sym of ['uMatFilm', 'uSkyMode', 'uTurbidity', 'matFilm']) {
+      expect(html, `export ships ${sym}`).toContain(sym)
+    }
+    // A physical-sky preset bakes skyMode = 1 into the config.
+    expect(html, 'config marks the physical sky').toContain('"skyMode":1')
+  })
+
+  it('ships the iridescence, frost and physical-sky showcase presets', () => {
+    const iridescent = PRESETS.find((p) => p.id === 'iridescent')?.build()
+    expect(iridescent?.nodes.some((n) => n.material.iridescence > 0), 'Iridescent shimmers').toBe(true)
+    const frost = PRESETS.find((p) => p.id === 'frost')?.build()
+    expect(
+      frost?.nodes.some((n) => n.material.transmission > 0 && n.material.roughness > 0.2),
+      'Frost has rough glass',
+    ).toBe(true)
+    const daybreak = PRESETS.find((p) => p.id === 'daybreak')?.build()
+    expect(daybreak?.env.skyMode, 'Daybreak uses the physical sky').toBe('physical')
+    expect(daybreak?.sun.elevation, 'Daybreak sun sits low').toBeLessThan(15)
+  })
+
   it('wires the bloom passes and present composite', () => {
     const built = buildShader(defaultScene())
     // The present pass reads the bloom texture and its intensity.
@@ -209,6 +266,11 @@ describe('scene file round-trip', () => {
     expect(parsed?.nodes[0].material.ior).toBeGreaterThan(1)
     expect(parsed?.post.bloom).toBe(0)
     expect(parsed?.post.bloomThreshold).toBeGreaterThan(0)
+    // Session-6 fields backfill on an old save.
+    expect(parsed?.nodes[0].material.iridescence).toBe(0)
+    expect(parsed?.nodes[0].material.filmThickness).toBeGreaterThan(0)
+    expect(parsed?.env.skyMode).toBe('gradient')
+    expect(parsed?.env.turbidity).toBeGreaterThan(0)
   })
 
   it('rejects junk input', () => {

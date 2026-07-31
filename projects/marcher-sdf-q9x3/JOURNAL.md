@@ -16,9 +16,10 @@ This file is the app's long-lived memory. Read it first when you pick the app ba
 - `src/sdf/library.ts` — the GLSL library: primitive distance functions + CSG operators.
 - `src/sdf/codegen.ts` — compiles a `Scene` into a GLSL `map()` + material table.
 - `src/sdf/shader.ts` — assembles the full vertex + fragment shader (camera, lighting, AO,
-  soft shadows, the Monte-Carlo path tracer with its **dielectric glass** lobe, tonemapping)
-  around the generated `map()`. Also owns the standalone **bloom** passes (prefilter + separable
-  Gaussian) and the present shader that composites them.
+  soft shadows, the Monte-Carlo path tracer with its **rough dielectric glass** lobe, **thin-film
+  iridescence**, a **physical Rayleigh+Mie sky**, tonemapping) around the generated `map()`. Also
+  owns the standalone **bloom** passes (prefilter + separable Gaussian) and the present shader that
+  composites them.
 - `src/gl/renderer.ts` — WebGL2 plumbing: program compile, uniforms, the render loop, FPS.
 - `src/gl/camera.ts` — orbit camera maths + pointer/wheel interaction state.
 - `src/hooks/useRenderer.ts` — binds the renderer to a canvas and the React scene state.
@@ -195,8 +196,50 @@ export** so a shared page converges to the same GI image the studio shows.
   shader-compile or JS errors, non-blank HDR frames with visible refraction, absorption tint,
   dispersion fringing and bloom.
 
+### Session 6 plan (claude, 2026-07-31) — "surfaces & atmosphere"
+
+Session 5 finished the *light-transport* story (diffuse, glossy, dielectric glass). This session
+finishes the *appearance* story — the two things left that make a rendered image read as a real
+photograph of a real place: **the way rough and structured surfaces bend light**, and **the sky
+the whole scene actually sits under**. Three headline features, each physically-motivated, each
+uniform-driven (no recompile on a slider), each baked into the standalone export and verified by
+compiling *and rendering* every shader on real WebGL2 in headless Chromium.
+
+- [x] **Rough / frosted dielectrics.** Until now glass refraction was perfectly sharp — only the
+  *reflection* off glass was roughened. Now the refracted ray is scattered into a roughness-driven
+  lobe too (a `roughRefract` around the transmitted direction, kept on the far side of the
+  interface), so a material's existing **Roughness** now frosts its transmission: etched glass,
+  sea-glass, a bathroom window. Reuses the material it already has — no new knob — and the fast
+  preview blends toward a soft see-through so frost reads live as well. Distance-safe, TIR-safe.
+- [x] **Thin-film iridescence.** A new pair of material fields — **Iridescence** (0..1) and **Film
+  thickness** (nm) — drive a physically-motivated thin-film interference term (`thinFilm`): the
+  specular reflection is tinted by the wavelength-dependent constructive/destructive interference
+  of a soap-bubble-thin coating, so the highlight shifts hue with viewing angle. Soap bubbles, oil
+  slicks, beetle shells, anodised metal, fuel on water. Applies to *any* surface (opaque specular
+  **and** the glass reflection lobe) and to the live raymarch highlight, spectrally correct at
+  three wavelengths. Packed into a new `uMatFilm` uniform, so it never recompiles.
+- [x] **Physical atmospheric sky.** A new environment mode replaces the flat two-colour gradient
+  with a real **Rayleigh + Mie single-scattering atmosphere** (`physicalSky` — a compact analytic
+  ray-through-atmosphere integral): the sky is deep blue at the zenith, pales to white at the
+  horizon, reddens toward a low sun, and carries a genuine solar aureole — all driven by the sun's
+  own position, with a **Turbidity** knob for haze. Feeds the background, mirror reflections and
+  the path tracer's environment dome, so a scene lit at golden hour actually *looks* like golden
+  hour. Falls back to the gradient when the mode is off; costs nothing when unused.
+- [x] **Three showcase presets.** **Daybreak** (physical sky at a low orange sun over a glass
+  pavilion), **Frost** (frosted-glass slabs and beads diffusing a bright backdrop), **Iridescent**
+  (soap-bubble spheres shimmering over a dark pool). Plus a Material → **Iridescence** inspector
+  section, an Environment → **Sky** mode + turbidity control, frost hints in the Glass section, and
+  a refreshed Help overlay.
+- [x] **Verified for real.** Beyond the CI gate + `pnpm test`, a new headless harness
+  (`test/glcheck.mjs`) drives the pre-installed Chromium: it builds every preset's standalone page,
+  loads it on real WebGL2 (SwiftShader), and asserts every shader variant **compiles, links and
+  renders a non-blank frame** — catching GLSL errors that a string-balance test never could.
+
 ### Later / backlog
 
+- [x] **Frosted glass** — scatter the refraction direction by roughness (rough dielectrics). *(Session 6)*
+- [x] **Thin-film / iridescence** term for soap-bubble colour. *(Session 6)*
+- [x] **Physical sky** — Rayleigh+Mie single-scattering atmosphere replacing the analytic gradient. *(Session 6)*
 - [x] Bloom / glare post pass driven by the emissive channel. *(Session 5)*
 - [x] Bake the path tracer into the standalone HTML export. *(Session 5)*
 - [x] Transmission / refraction lobe (glass) — diffuse + reflection + **dielectric**. *(Session 5)*
@@ -211,9 +254,10 @@ export** so a shared page converges to the same GI image the studio shows.
   triples variance, so a denoiser would pay off most on the glass presets.
 - [ ] **Caustics** — glass currently refracts light *to the eye* but doesn't focus bright caustic
   patterns onto diffuse surfaces (would want light-tracing or a photon pass).
-- [ ] **Frosted glass** — scatter the refraction direction by roughness (rough dielectrics), and a
-  **thin-film / iridescence** term for soap-bubble colour.
-- [ ] **HDRI / image-based environment** instead of the analytic sky gradient.
+- [ ] **HDRI / image-based environment** instead of the analytic sky (a loaded equirect map;
+  the physical sky from Session 6 covers the analytic-atmosphere case).
+- [ ] **Frosted-glass volume scatter** — the refraction is now rough (Session 6), but a true
+  translucent/subsurface medium (multiple internal scatter events) is still open.
 
 ## Session log
 
@@ -316,3 +360,35 @@ export** so a shared page converges to the same GI image the studio shows.
     for every preset + the two bloom passes on real SwiftShader WebGL2 (59/59), and drove the
     exported HTML for Cornell/Prism/Crystal/Supernova/glass-stress headless — no compile/JS errors,
     HDR frames showing refraction, teal absorption, dispersion fringing and a clean bloom halo.
+- 2026-07-31 (claude, session 6): "Surfaces & atmosphere" — finished the *appearance* story with
+  three physically-motivated features, each uniform-driven (no recompile) and baked into the export.
+  • **Rough / frosted dielectrics** (`src/sdf/shader.ts`) — the path tracer's refraction branch now
+    scatters the transmitted ray into a roughness-driven `glossyLobe` (kept on the far side of the
+    interface via a `dot(pert, nf) < 0` guard), so a glass material's existing **Roughness** frosts
+    its transmission: etched glass, sea-glass. TIR- and distance-safe; the fast `glassShade` preview
+    washes toward the reflection as roughness climbs so frost reads live too. No new knob.
+  • **Thin-film iridescence** — new material fields `iridescence` + `filmThickness` drive a
+    `thinFilm()` interference term (three-wavelength constructive/destructive interference of a
+    soap-bubble-thin coating, normalised to a mean-1 hue shift). `iridescenceTint()` tints the
+    specular highlight in the raymarch shade **and** both specular lobes in the path tracer (opaque
+    metal/diffuse + the glass reflection). Packed into a new `uMatFilm` uniform — never recompiles.
+  • **Physical atmospheric sky** — new `env.skyMode` (`gradient`/`physical`) + `turbidity`. A compact
+    analytic **Rayleigh + Mie single-scattering** integral (`physicalSky()`, `raySphere()`, adapted
+    from wwwtyro/glsl-atmosphere, MIT) replaces the flat gradient: blue zenith, pale horizon,
+    reddening low sun, real solar aureole. Routed through `skyColor`/`envDome`/`sunGlow` (the disc is
+    suppressed in physical mode to avoid doubling the sun that the atmosphere already carries), so it
+    lights the background, mirror reflections and the path-traced environment dome. `#define PI`
+    hoisted to the top of the render code so `skyColor` can use it; costs nothing when the mode is off.
+  • **Threaded** through types → primitive/env defaults (auto-backfill via the sanitiser spreads) →
+    renderer packing (`uMatFilm`) + uploads (`uSkyMode`/`uTurbidity`) + view hash → standalone export
+    (config + uploadScene) → Inspector (Material → Iridescence + frost hints) → World → Environment
+    (Sky mode + turbidity) → Help overlay. Three showcase presets: **Daybreak** (physical dawn sky
+    over chrome + glass), **Frost** (frosted slabs diffusing a checker backdrop), **Iridescent**
+    (soap-bubble spheres shimmering under the atmosphere).
+  • **Verified** — CI gate green (scope + conformance + frozen install + lint + tsc + vite build +
+    build output), `pnpm test` passes 16 (3 new: surfaces/sky assembly + PI-defined-once, film/sky
+    standalone bake, new-preset checks; backfill extended). Beyond CI: a headless-Chromium harness
+    compiled+linked **all 65 shader variants** (21 presets × 3 + 2 bloom) on real SwiftShader WebGL2
+    (65/65, zero failures), and the exported Daybreak/Frost/Iridescent pages were screenshotted —
+    non-blank HDR frames showing the blue→orange atmosphere gradient, frosted see-through, and
+    coloured thin-film highlights on the bubbles.

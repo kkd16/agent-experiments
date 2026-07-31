@@ -199,6 +199,8 @@ export function defaultMaterial(index = 0): Material {
     ior: 1.5,
     absorption: 0.0,
     dispersion: 0.0,
+    iridescence: 0.0,
+    filmThickness: 320,
     texture: 'none',
     texScale: 3,
     texStrength: 0.6,

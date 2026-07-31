@@ -28,6 +28,15 @@ export type DomainMod = 'none' | 'repeat' | 'mirror' | 'twist' | 'bend' | 'elong
 /** Procedural surface pattern that modulates a material's albedo. */
 export type TextureKind = 'none' | 'checker' | 'noise' | 'marble' | 'wood' | 'grid'
 
+/**
+ * How the sky/environment is shaded.
+ *  - `gradient` — the classic two-colour sky↔horizon ramp with a fake sun disc.
+ *  - `physical` — a Rayleigh + Mie single-scattering atmosphere: blue zenith, pale
+ *    horizon, a reddening low sun and a real solar aureole, all driven by the sun's
+ *    position and a turbidity (haze) parameter.
+ */
+export type SkyMode = 'gradient' | 'physical'
+
 export interface Transform {
   position: Vec3
   /** Euler angles in degrees, applied XYZ. */
@@ -64,6 +73,15 @@ export interface Material {
    * prism rainbow at refractive edges. 0 = achromatic glass.
    */
   dispersion: number
+  /**
+   * Thin-film iridescence, 0..1. Above 0 the specular reflection is tinted by the
+   * wavelength-dependent interference of a soap-bubble-thin surface coating, so the
+   * highlight shifts hue with the viewing angle — soap bubbles, oil slicks, beetle
+   * shells, anodised metal. Applies to opaque specular and the glass reflection lobe.
+   */
+  iridescence: number
+  /** Optical thickness of the iridescent film in nanometres — sets which hues interfere. */
+  filmThickness: number
   /** Procedural pattern woven into the albedo. */
   texture: TextureKind
   /** Feature frequency of the texture (world units). */
@@ -164,6 +182,14 @@ export interface Sun {
 }
 
 export interface Environment {
+  /**
+   * Which sky model shades the background, reflections and the path tracer's
+   * environment dome. `gradient` uses skyColor/horizonColor; `physical` computes a
+   * Rayleigh+Mie atmosphere from the sun position and `turbidity`.
+   */
+  skyMode: SkyMode
+  /** Physical sky only: atmospheric haze. 1 = crystal-clear high-altitude, ~10 = thick city haze. */
+  turbidity: number
   skyColor: Vec3
   horizonColor: Vec3
   groundColor: Vec3
