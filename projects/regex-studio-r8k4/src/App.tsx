@@ -17,6 +17,7 @@ import { SynthesizePanel } from './components/SynthesizePanel';
 import { ExplainPanel } from './components/ExplainPanel';
 import { RedosPanel } from './components/RedosPanel';
 import { PikePanel } from './components/PikePanel';
+import { TaggedPanel } from './components/TaggedPanel';
 import { DerivativesPanel } from './components/DerivativesPanel';
 import { AntimirovPanel } from './components/AntimirovPanel';
 import { GlushkovPanel } from './components/GlushkovPanel';
@@ -53,6 +54,7 @@ type Tab =
   | 'extended'
   | 'debug'
   | 'pike'
+  | 'tagged'
   | 'language'
   | 'census'
   | 'ambiguity'
@@ -89,6 +91,7 @@ const TAB_GROUPS: { group: string; tabs: { id: Tab; label: string }[] }[] = [
       { id: 'extended', label: 'Extended &~' },
       { id: 'debug', label: 'Debugger' },
       { id: 'pike', label: 'Pike VM' },
+      { id: 'tagged', label: 'Tagged DFA' },
     ],
   },
   {
@@ -419,6 +422,8 @@ export default function App() {
             {tab === 'pike' && (
               <PikePanel ast={compiled.ast} groupCount={compiled.groupCount} notice={compiled.error ? 'Fix the pattern first.' : null} />
             )}
+
+            {tab === 'tagged' && <TaggedPanel compiled={compiled} text={text} onTextChange={setText} />}
 
             {tab === 'language' && <LanguagePanel dfa={compiled.minDfa} notice={automataNotice} />}
 
