@@ -111,6 +111,7 @@ import {
   precodeIntermediate,
   raptorDecode,
   successCurve,
+  overheadSamples,
 } from './fountain.ts'
 
 export interface TestCase {
@@ -595,6 +596,18 @@ function runFountainTests(results: TestCase[]): void {
     results.push({ group: G, name: 'inactivations ≪ k (near-linear dense part)', pass: cheap, detail: `${(totalInact / Math.max(1, successes)).toFixed(1)} avg over ${successes} decodes` })
   } catch (e) {
     results.push({ group: G, name: 'inactivation decoding', pass: false, detail: (e as Error).message })
+  }
+
+  // The overhead distribution: ML (GE) overhead concentrates low; peeling has a
+  // heavy tail. The mean overhead of GE must sit well below peeling's.
+  try {
+    const s = overheadSamples(robustSoliton(40), 160, 5)
+    const geLow = Number.isFinite(s.meanGE) && s.meanGE < s.meanPeel - 0.05
+    const geModest = s.meanGE < 0.4
+    results.push({ group: G, name: 'overhead: mean(GE) < mean(peeling)', pass: geLow, detail: `GE ${s.meanGE.toFixed(2)} vs peel ${s.meanPeel.toFixed(2)}` })
+    results.push({ group: G, name: 'overhead: GE decodes at a small overhead', pass: geModest, detail: `mean ${s.meanGE.toFixed(2)} of k` })
+  } catch (e) {
+    results.push({ group: G, name: 'overhead distribution', pass: false, detail: (e as Error).message })
   }
 }
 

@@ -887,10 +887,12 @@ swarm delivery.
       intermediate-symbol pre-solve) so a lossless channel needs zero decoding work.
 - [ ] **A real RaptorQ tables port** — the RFC 6330 systematic indices and the LDPC+HDPC precode, to
       show the standardised code beside our teaching LT/Raptor.
-- [ ] **Overhead histogram** — the distribution of "droplets needed to decode" over many trials
-      (not just the mean), the classic fountain-code failure-probability tail.
-- [ ] **Online codes / LT with a proper output-degree animation** — visualise the ripple *size* over
-      time as its own curve, next to the graph.
+- [x] **Overhead histogram** — the distribution of "droplets needed to decode" over many trials
+      (not just the mean), the classic fountain-code failure-probability tail. Shipped: `overheadSamples`
+      (peeling via fresh peels, GE via an online GF(2) rank basis) drives two histograms on the page —
+      GE's overhead concentrates just above 0, peeling's has a long heavy tail. *(v15.2)*
+- [x] **Ripple-size-over-time curve** — the pool of degree-1 droplets plotted at each release step of
+      the current decode, next to the graph. *(v15.2)*
 - [ ] **Wire a rateless mode into the Channel Lab** — gzip → fountain-encode → bursty *erasure*
       channel → decode → gunzip, the erasure-channel sibling of the existing RS end-to-end demo.
 
@@ -929,6 +931,15 @@ swarm delivery.
   Wired in as a fourth decoder in the verdict panel (peeled vs inactivated counts shown) and three new
   self-tests (inactivation ⇔ GE success, exact byte round-trip, inactivations ≪ k): **864 → 867 checks,
   all green.**
+- 2026-07-31 (claude): **v15.2 — the overhead distribution & the ripple curve.** Added `overheadSamples`:
+  for each trial, pour droplets one at a time and record the fraction beyond k at which each decoder first
+  succeeds — peeling via a fresh linear-time peel per droplet, GE via a cheap **online GF(2) rank basis**
+  (each droplet either lifts the rank or is dependent, O(k²/32)). The page gains two panels: an **overhead
+  histogram** where GE's mass concentrates just above 0 (mean ≈ +15–19% of k) while peeling's has a long
+  heavy tail (mean ≈ +48–56%, p90 ≈ +100%) — the textbook reason fountain codes pair a cheap peeler with a
+  dense finisher — and a **ripple-size-over-time** line chart (the pool of degree-1 droplets at each release
+  step of the live decode, straight from the peel trace). Two new self-tests (mean(GE) < mean(peeling), and
+  GE decodes at a small overhead): **867 → 869 checks, all green.**
 
 - 2026-07-25 (claude): **v14 — the real bzip2 (the genuine `.bz2`, byte-compatible with the tool).**
   The lab has hauled a `bzip-lite` toy around for a dozen versions and owned every real bzip2 part as an
