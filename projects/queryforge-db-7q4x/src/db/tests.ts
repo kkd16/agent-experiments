@@ -15,6 +15,7 @@ import { sketchCases } from './sketch/tests'
 import { wcojCases } from './wcoj/tests'
 import { lsmCases } from './lsm/tests'
 import { columnarCases } from './columnar/tests'
+import { hashIndexCases } from './hashindex/tests'
 import { SEED_SQL, SAMPLE_QUERIES } from './sampleData'
 import { csvToSql, parseCsv } from './csv'
 import { Database } from './catalog'
@@ -3437,7 +3438,7 @@ test('execution', 'the statement parse cache serves repeated read-only queries',
 })
 
 export function runTests(): TestResult[] {
-  return cases.concat(storageCases).concat(mvccCases).concat(protocolsCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).concat(ivmCases).concat(sketchCases).concat(wcojCases).concat(lsmCases).concat(columnarCases).map((c) => {
+  return cases.concat(storageCases).concat(mvccCases).concat(protocolsCases).concat(recoveryCases).concat(vectorizedCases).concat(compiledCases).concat(fuzzCases).concat(ivmCases).concat(sketchCases).concat(wcojCases).concat(lsmCases).concat(columnarCases).concat(hashIndexCases).map((c) => {
     try {
       c.run()
       return { name: c.name, group: c.group, pass: true, detail: 'ok' }

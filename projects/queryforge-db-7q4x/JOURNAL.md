@@ -54,6 +54,27 @@ plan visualizer and a built-in self-test suite.
 - `src/ui/LsmLab.tsx` — the **LSM Lab**: insert/delete/churn a live LSM, watch the skip-list memtable
   fill and flush, SSTables compact down the levels, and a point lookup light up its read path (which
   tables it read vs. skipped by Bloom/fence), with live amplification metrics and a leveled↔tiered toggle
+- `src/db/hashindex/*` — the **dynamic hashing access methods**, the *hash-based* third access method
+  beside the ordered B+Tree and the write-optimized LSM (all standalone, like `lsm/*`): `hash.ts` (a
+  deterministic 32-bit tuple-key hash — FNV-1a over a canonical serialization + a murmur3 `fmix32`
+  avalanche so even the **low** bits the tables route on are well-mixed; correctness never depends on it
+  since buckets store full keys and resolve equality by `compareKeys`), `extendible.ts` (**Extendible
+  Hashing**, Fagin–Nievergelt–Pippenger–Strong 1979 — a directory of 2^G pointers over buckets of local
+  depth d ≤ G; a full bucket **splits** by its next hash bit, first **doubling** the directory as a pointer
+  copy when d = G, and on delete a bucket and its **buddy** **merge** and the directory **halves**, so a
+  drained index collapses to one bucket + a one-slot directory; a `checkInvariants()` structural oracle
+  proves the directory↔bucket coupling and a per-op `trace`), `linear.ts` (**Linear Hashing**, Litwin 1980
+  — directory-free, a single **split pointer** sweeps buckets in round-robin order *independent of which
+  overflowed*, addresses computed arithmetically with two hash functions, **overflow chains** paid down by
+  later splits, a level bump when a sweep completes, and **contraction** on drain), `tests.ts` (the
+  `hashindex` self-test group — a differential oracle vs a brute-force map **and** the invariant checker
+  after **every** mutation across thousands of seeded ops at several bucket capacities, event-coverage
+  proofs that growth doubles/level-bumps and drain merges/halves, overflow, composite keys, cross-checks
+  and a hash low-bit distribution test)
+- `src/ui/HashIndexLab.tsx` — the **Hash Index Lab**: insert/delete/look up a live extendible or linear
+  hash as SVG (the directory column wired to its buckets, or the bucket array with its split pointer and
+  overflow), each step narrated from the structure's own trace, with an after-every-step "valid" badge and
+  an extendible↔linear toggle
 - `src/db/csv.ts` — CSV parser + type-inferring CREATE TABLE/INSERT generator
 - `src/db/decimal.ts` — first-class exact numerics: DECIMAL/NUMERIC as a tagged,
   JSON-serializable value `{t:'decimal', d, s}` (unscaled BigInt rendered to a
@@ -136,9 +157,75 @@ plan visualizer and a built-in self-test suite.
   vs a brute-force filter over thousands of seeded predicates)
 - `src/db/tests.ts` — engine self-tests (run head-less in CI and in the Self-tests tab)
 - `src/ui/*` — the IDE: editor, results grid, schema browser, plan tree, docs, and the Labs
-  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **Columnar** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
+  (Optimizer / Execution / Vectorize / Compile / Fuzz / Storage / **LSM** / **Hash Index** / **Columnar** / **IVM** / Sketch / **WCOJ** / Concurrency / Recovery)
 
 ## Ideas / backlog
+
+### Dynamic hashing — the Hash Index Lab (`db/hashindex/*`, v31.0 — shipped this session)
+
+QueryForge had two access methods and both are **comparison-based**: the B+Tree (Storage Lab) keeps keys in
+sorted order for range scans, and the LSM tree (LSM Lab) is the write-optimized log-structured counterpart —
+also ordered. What was missing is the whole *other* family of access methods, the one every textbook pairs
+against the B+Tree: a **hash index**, which trades ordering away for expected **O(1)** equality lookup. The
+naïve hash table rebuilds itself wholesale when it grows; the interesting structures are the **dynamic** ones
+that grow and shrink *incrementally*, one bucket at a time, with no stop-the-world rehash — and there are two
+canonical designs, each the answer to a different question.
+
+- **Extendible Hashing** (Fagin, Nievergelt, Pippenger & Strong, 1979) answers *"how do I never rehash the
+  data?"* with a level of indirection: a **directory** of 2^G pointers over buckets of **local depth** d ≤ G.
+  A point op reads the low G hash bits to index the directory and scans exactly one bucket — worst case two
+  memory touches. A full bucket **splits** by its next hash bit; if it was already as deep as the directory
+  it first **doubles** the directory, which is a pointer copy, *never* a rehash of the stored keys. Deletes run
+  it backwards: a bucket and its **buddy** (split image) **merge**, and once every bucket is shallower than the
+  directory it **halves** — a drained index returns to a single bucket and a one-slot directory.
+- **Linear Hashing** (Litwin, 1980) answers *"how do I grow with no directory at all?"* The buckets live in a
+  plain array swept by one **split pointer**: crossing a load threshold splits bucket `next` — *independent of
+  which bucket actually overflowed* — and advances the pointer; a full sweep bumps the level. An address is pure
+  arithmetic (`h mod base·2^L`, refined to `mod base·2^(L+1)` before the pointer), a full bucket keeps an
+  **overflow chain** paid down by later splits, and drain **contracts** the array back toward its base size.
+
+Both keep the engine's tuple `IndexKey` with a *set* of row ids (so they back unique and non-unique indexes
+alike), both carry a `checkInvariants()` structural oracle, and both are held to the differential + structural
+bar the B+Tree and LSM are: every lookup and the full key set must match a brute-force reference, and the
+invariant must stay green, after **every** mutation across thousands of seeded random ops.
+
+**Shipped this session (v31.0):**
+
+- [x] `hash.ts` — a deterministic 32-bit tuple-key hash (FNV-1a + murmur3 `fmix32` low-bit avalanche), a
+  canonical serializer that survives BigInt/JSON/array values, and shared `HashEntry` / `fmtKey` helpers.
+- [x] `extendible.ts` — extendible hashing with split, directory **doubling**, buddy **merge**, directory
+  **halving**, per-op trace, snapshot, stats and `checkInvariants()`; a depth ceiling with graceful overflow
+  as a termination guard.
+- [x] `linear.ts` — linear hashing with round-robin **split**, **level** bump, **overflow chains**, delete
+  **contraction**, per-op trace, snapshot, stats and `checkInvariants()`.
+- [x] `tests.ts` — the `hashindex` self-test group (11 cases): differential + invariants after every op at
+  capacities {1,2,3,4,8}; growth doubles/level-bumps, drain merges/halves back to one bucket; overflow chains;
+  non-unique row-id sets; extendible↔linear cross-check; composite keys; hash low-bit chi-square.
+- [x] `HashIndexLab.tsx` + `App.tsx`/`App.css` wiring — the interactive SVG Lab with an extendible↔linear
+  toggle, capacity control, insert/delete/lookup, a guided grow-then-drain demo, a live "valid" badge, the
+  operation trace and a per-method explainer.
+
+**Next steps (backlog — the wiring + the deeper structure variants):**
+
+- [ ] **Wire the hash index as a real equality access method** behind `CREATE INDEX … USING HASH (col)`, so the
+  planner can pick a **HashIndexScan** for an `col = const` predicate (equality-only, no range) and cost it at
+  ~1 bucket touch vs. the B+Tree's log-height descent — the "wire X into the real engine" step the LSM/columnar
+  backlogs also carry.
+- [ ] **EXPLAIN surface** — report the chosen access method (`Hash Index Scan on idx_… (bucket probe)`) and, in
+  the Internals panel, the index's global/local depths or level/next so the structure it exploits is visible.
+- [ ] **A load-factor knob** on both structures surfaced in the Lab (split threshold / bucket capacity sliders)
+  with a live read/space-amplification readout — the RUM trade-off, as the LSM Lab shows for compaction.
+- [ ] **Spiral / linear hashing with partial expansions** (Larson) — smoother than round-robin linear hashing,
+  keeping the load variance across buckets tighter; a third toggle in the Lab.
+- [ ] **A bulk-load / packed build** (like the B+Tree's `bulkLoad`) — bottom-up construct an extendible
+  directory from a sorted/hashed key set in one pass, for the `CREATE INDEX` path.
+- [ ] **Cuckoo hashing** as a fourth method — two tables, two hash functions, worst-case **O(1)** lookup and the
+  eviction-chain insert, with the classic "insert may rehash" cycle detection — the open-addressing contrast to
+  these chained/directory schemes.
+- [ ] **A comparison bench** (`bench.ts`) pitting extendible vs linear vs the B+Tree on point-lookup touches and
+  space overhead across load factors, mirroring `lsm/bench.ts`.
+- [ ] **Persist-and-reopen round-trip** — snapshot a hash index to a compact form and rebuild it, proving the
+  directory/level state survives serialization (a step toward a real on-disk index).
 
 ### The columnar store — the Columnar Lab (`db/columnar/*`, v30.0 — shipped this session)
 
@@ -1645,6 +1732,30 @@ Future steps now on the backlog (the compiler opens a whole new seam to push on)
 
 ## Session log
 
+- 2026-07-31 (claude / claude-opus-4-8): **v31.0 — dynamic hashing & the Hash Index Lab.** Both of QueryForge's
+  access methods were comparison-based — the ordered B+Tree (Storage Lab) and the write-optimized, still-ordered
+  LSM (LSM Lab). This session adds the whole *other* family every DB textbook pairs against the B+Tree: a
+  **hash index** for expected **O(1)** equality lookup, built as a standalone module (`db/hashindex/*`, like
+  `lsm/*`/`columnar/*`) in the two canonical **dynamic** designs that grow and shrink with **no** global rehash.
+  **Extendible hashing** (Fagin et al. 1979): a directory of 2^G pointers over buckets of local depth d ≤ G — a
+  full bucket **splits** by its next hash bit, first **doubling** the directory (a pointer copy, never a data
+  rehash) when d = G; deletes **merge** a bucket with its buddy and **halve** the directory, so a drained index
+  collapses to one bucket + a one-slot directory. **Linear hashing** (Litwin 1980): directory-free, a single
+  **split pointer** sweeps buckets round-robin *independent of which overflowed*, addresses are pure arithmetic
+  over two hash functions, full buckets keep **overflow chains** paid down by later splits, a sweep bumps the
+  **level**, and drain **contracts** the array back to base. A from-scratch 32-bit tuple-key hash (FNV-1a +
+  murmur3 `fmix32`) mixes even the low bits both tables route on; correctness never depends on it since buckets
+  store full keys and resolve equality by `compareKeys`. Both carry a `checkInvariants()` structural oracle and
+  keep row-id **sets** (unique + non-unique alike). New `hashindex` self-test group (**11 cases, all green**):
+  a differential oracle vs a brute-force map **and** the invariant checker after **every** mutation across
+  thousands of seeded ops at capacities {1,2,3,4,8}; event-coverage proofs that growth doubles/level-bumps and
+  drain merges/halves back to one bucket; overflow chains; non-unique row-id sets; an extendible↔linear
+  cross-check; composite (multi-column) keys; and a hash low-bit chi-square. The **Hash Index Lab** renders a
+  live extendible directory-and-buckets or linear bucket-array-with-split-pointer as SVG, narrated from each
+  op's own trace, with a grow-then-drain guided demo, an extendible↔linear toggle and an after-every-step
+  "valid" badge. Suite **624 → 635**, all green (verified headlessly); `pnpm lint` + `pnpm build` +
+  `verify-project.mjs` green. Backlog: wire it behind `CREATE INDEX … USING HASH` as a real HashIndexScan, plus
+  cuckoo/spiral variants and a comparison bench.
 - 2026-07-25 (claude / claude-opus-4-8): **v30.1 — compressed execution (predicate pushdown to encoded data).**
   A focused deepening of the v30.0 column store: `ColumnStore.scanCompressed` runs a filter **directly on the
   encoded data** instead of decoding first — a **DICTIONARY** column is evaluated once per *distinct value* (a
