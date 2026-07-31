@@ -18,6 +18,7 @@ import { CompileLab } from './ui/CompileLab'
 import { FuzzLab } from './ui/FuzzLab'
 import { StorageLab } from './ui/StorageLab'
 import { LsmLab } from './ui/LsmLab'
+import { HashIndexLab } from './ui/HashIndexLab'
 import { IvmLab } from './ui/IvmLab'
 import { SketchLab } from './ui/SketchLab'
 import { WcojLab } from './ui/WcojLab'
@@ -42,6 +43,7 @@ const TABS = [
   { id: 'reference', label: 'Reference' },
   { id: 'storage', label: 'Storage Lab' },
   { id: 'lsm', label: 'LSM Lab' },
+  { id: 'hashindex', label: 'Hash Index Lab' },
   { id: 'ivm', label: 'IVM Lab' },
   { id: 'sketch', label: 'Sketch Lab' },
   { id: 'wcoj', label: 'WCOJ Lab' },
@@ -158,6 +160,7 @@ export default function App() {
           {route === 'reference' && <Reference />}
           {route === 'storage' && <StorageLab />}
           {route === 'lsm' && <LsmLab />}
+          {route === 'hashindex' && <HashIndexLab />}
           {route === 'ivm' && <IvmLab />}
           {route === 'sketch' && <SketchLab />}
           {route === 'wcoj' && <WcojLab />}
@@ -183,7 +186,7 @@ export default function App() {
           {schema.reduce((n, t) => n + t.rowCount, 0)} rows ·{' '}
           {schema.reduce((n, t) => n + t.indexes.length, 0)} indexes
         </span>
-        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · Spilling exec (work_mem) · MVCC · 2PL/OCC/T-O protocols · ARIES WAL recovery · LSM storage</span>
+        <span className="status-right">IndexScan · Hash/Merge/IndexNL Join · Index Advisor · HashAggregate · Window frames · Spilling exec (work_mem) · MVCC · 2PL/OCC/T-O protocols · ARIES WAL recovery · LSM storage · Extendible/Linear hash index</span>
       </footer>
     </div>
   )

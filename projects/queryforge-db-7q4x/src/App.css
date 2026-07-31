@@ -2562,6 +2562,37 @@ body {
 .sl-note-list li { font-size: 12.5px; color: var(--txt-dim); line-height: 1.5; }
 .sl-note-list strong { color: var(--txt); }
 
+/* --- Hash Index Lab ------------------------------------------------------ */
+.hx-canvas-wrap { min-height: 220px; }
+.hx-caption { fill: var(--txt-faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.hx-edge { fill: none; stroke: var(--line-2); stroke-width: 1.3; opacity: 0.75; }
+.hx-edge.touched { stroke: var(--amber); stroke-width: 2; opacity: 1; }
+.hx-slot { fill: var(--bg-3); stroke: var(--line-2); stroke-width: 1; }
+.hx-slot.touched { stroke: var(--amber); stroke-width: 1.8; fill: color-mix(in srgb, var(--amber) 12%, var(--bg-3)); }
+.hx-slot-bits { fill: var(--txt); font-family: var(--mono); font-size: 11.5px; }
+.hx-slot-ptr { fill: var(--txt-faint); font-family: var(--mono); font-size: 10px; }
+.hx-bucket { fill: var(--bg-2); stroke: var(--line-2); stroke-width: 1.2; }
+.hx-bucket.touched { stroke: var(--amber); stroke-width: 2.2; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--amber) 50%, transparent)); }
+.hx-bucket.overfull { stroke: var(--red); }
+.hx-bucket-tag { fill: var(--accent); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.hx-bucket-fill { fill: var(--txt-faint); font-family: var(--mono); font-size: 10px; }
+.hx-key { fill: color-mix(in srgb, var(--accent) 16%, var(--bg-3)); stroke: color-mix(in srgb, var(--accent) 40%, var(--line-2)); stroke-width: 1; }
+.hx-key.overflow { fill: color-mix(in srgb, var(--amber) 20%, var(--bg-3)); stroke: color-mix(in srgb, var(--amber) 50%, var(--line-2)); }
+.hx-key.empty { fill: var(--bg-1); stroke: var(--line); stroke-dasharray: 3 3; }
+.hx-key-text { fill: var(--txt); font-family: var(--mono); font-size: 11.5px; }
+.hx-col { fill: var(--bg-2); stroke: var(--line-2); stroke-width: 1.2; }
+.hx-col.split { fill: color-mix(in srgb, var(--accent-2) 8%, var(--bg-2)); }
+.hx-col.touched { stroke: var(--amber); stroke-width: 2.2; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--amber) 50%, transparent)); }
+.hx-addr { fill: var(--txt-dim); font-family: var(--mono); font-size: 11px; }
+.hx-addr.split { fill: var(--accent-2); }
+.hx-next-marker { fill: var(--green); }
+.hx-overflow-div { stroke: var(--red); stroke-width: 1.2; stroke-dasharray: 3 2; }
+.sl-trace-item.k-double .sl-trace-kind, .sl-trace-item.k-levelup .sl-trace-kind { background: color-mix(in srgb, var(--green) 22%, var(--bg-3)); color: var(--green); }
+.sl-trace-item.k-halve .sl-trace-kind, .sl-trace-item.k-leveldown .sl-trace-kind { background: color-mix(in srgb, var(--violet) 24%, var(--bg-3)); color: var(--violet); }
+.sl-trace-item.k-overflow .sl-trace-kind { background: color-mix(in srgb, var(--amber) 22%, var(--bg-3)); color: var(--amber); }
+.sl-trace-item.k-found .sl-trace-kind { background: color-mix(in srgb, var(--accent-2) 22%, var(--bg-3)); color: var(--accent-2); }
+.sl-trace-item.k-miss .sl-trace-kind { background: color-mix(in srgb, var(--red) 20%, var(--bg-3)); color: var(--red); }
+
 @media (max-width: 900px) {
   .sl-lower { grid-template-columns: 1fr; }
 }
