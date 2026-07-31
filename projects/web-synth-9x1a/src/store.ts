@@ -17,7 +17,7 @@ import {
 
 import { audioCore } from './audio/core';
 import { OscillatorWrapper, NoiseWrapper, LfoWrapper } from './audio/nodes/sources';
-import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper } from './audio/nodes/processors';
+import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper } from './audio/nodes/processors';
 import { AnalyserWrapper } from './audio/nodes/visualizers';
 
 export type AppNode = Node;
@@ -120,6 +120,18 @@ export const useStore = create<AppState>((set, get) => ({
         wrapper = new LfoWrapper(id);
         initialData = { frequency: 5, type: 'sine', depth: 100 };
         break;
+      case 'compressorNode':
+        wrapper = new CompressorWrapper(id);
+        initialData = { threshold: -24, knee: 30, ratio: 12, attack: 0.003, release: 0.25 };
+        break;
+      case 'distortionNode':
+        wrapper = new DistortionWrapper(id);
+        initialData = { drive: 50 };
+        break;
+      case 'panningNode':
+        wrapper = new PanningWrapper(id);
+        initialData = { pan: 0 };
+        break;
       case 'gainNode':
         wrapper = new GainWrapper(id);
         initialData = { gain: 0.5 };
@@ -182,6 +194,16 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.depth !== undefined) wrapper.setDepth(data.depth);
     } else if (wrapper instanceof GainWrapper) {
       if (data.gain !== undefined) wrapper.setGain(data.gain);
+    } else if (wrapper instanceof CompressorWrapper) {
+      if (data.threshold !== undefined) wrapper.setThreshold(data.threshold);
+      if (data.knee !== undefined) wrapper.setKnee(data.knee);
+      if (data.ratio !== undefined) wrapper.setRatio(data.ratio);
+      if (data.attack !== undefined) wrapper.setAttack(data.attack);
+      if (data.release !== undefined) wrapper.setRelease(data.release);
+    } else if (wrapper instanceof DistortionWrapper) {
+      if (data.drive !== undefined) wrapper.setDrive(data.drive);
+    } else if (wrapper instanceof PanningWrapper) {
+      if (data.pan !== undefined) wrapper.setPan(data.pan);
     } else if (wrapper instanceof FilterWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.Q !== undefined) wrapper.setQ(data.Q);

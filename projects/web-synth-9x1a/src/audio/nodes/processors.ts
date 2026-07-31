@@ -199,3 +199,110 @@ export class ReverbWrapper {
     audioCore.unregisterNode(id);
   }
 }
+
+export class PanningWrapper {
+  public node: StereoPannerNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createStereoPanner();
+    this.node.pan.value = 0;
+
+    audioCore.registerNode(id, this.node);
+    audioCore.registerParam(`${id}.pan`, this.node.pan);
+  }
+
+  public setPan(value: number) {
+    this.node.pan.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public destroy(id: string) {
+    this.node.disconnect();
+    audioCore.unregisterNode(id);
+    audioCore.unregisterParam(`${id}.pan`);
+  }
+}
+
+export class DistortionWrapper {
+  public node: WaveShaperNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createWaveShaper();
+    this.node.oversample = '4x';
+    this.setDrive(50); // Default drive
+
+    audioCore.registerNode(id, this.node);
+  }
+
+  // Uses a polynomial curve for soft clipping/distortion
+  public setDrive(amount: number) {
+    const ctx = audioCore.getContext();
+    const k = typeof amount === 'number' ? amount : 50;
+    const n_samples = ctx.sampleRate;
+    const curve = new Float32Array(n_samples);
+    const deg = Math.PI / 180;
+
+    for (let i = 0; i < n_samples; ++i) {
+      const x = i * 2 / n_samples - 1;
+      curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+    }
+    this.node.curve = curve;
+  }
+
+  public destroy(id: string) {
+    this.node.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}
+
+export class CompressorWrapper {
+  public node: DynamicsCompressorNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createDynamicsCompressor();
+    this.node.threshold.value = -24;
+    this.node.knee.value = 30;
+    this.node.ratio.value = 12;
+    this.node.attack.value = 0.003;
+    this.node.release.value = 0.25;
+
+    audioCore.registerNode(id, this.node);
+    audioCore.registerParam(`${id}.threshold`, this.node.threshold);
+    audioCore.registerParam(`${id}.knee`, this.node.knee);
+    audioCore.registerParam(`${id}.ratio`, this.node.ratio);
+    audioCore.registerParam(`${id}.attack`, this.node.attack);
+    audioCore.registerParam(`${id}.release`, this.node.release);
+  }
+
+  public setThreshold(value: number) {
+    this.node.threshold.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public setKnee(value: number) {
+    this.node.knee.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public setRatio(value: number) {
+    this.node.ratio.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public setAttack(value: number) {
+    this.node.attack.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public setRelease(value: number) {
+    this.node.release.setValueAtTime(value, audioCore.getContext().currentTime);
+  }
+
+  public destroy(id: string) {
+    this.node.disconnect();
+    audioCore.unregisterNode(id);
+    audioCore.unregisterParam(`${id}.threshold`);
+    audioCore.unregisterParam(`${id}.knee`);
+    audioCore.unregisterParam(`${id}.ratio`);
+    audioCore.unregisterParam(`${id}.attack`);
+    audioCore.unregisterParam(`${id}.release`);
+  }
+}
