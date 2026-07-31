@@ -104,6 +104,7 @@ import {
   ltEncode,
   peelDecode,
   geDecode,
+  inactivationDecode,
   bytesToSymbols,
   symbolsToBytes,
   buildPrecode,
@@ -558,6 +559,42 @@ function runFountainTests(results: TestCase[]): void {
     results.push({ group: G, name: 'GE decodes reliably at ~40% overhead', pass: geStrong, detail: `p=${curve[curve.length - 1].pGE.toFixed(2)} at r=56` })
   } catch (e) {
     results.push({ group: G, name: 'decoder dominance', pass: false, detail: (e as Error).message })
+  }
+
+  // Inactivation decoding is ML — it succeeds on exactly the sets GE does, and it
+  // does so with only a handful of dense columns instead of a full k×k solve.
+  try {
+    let agree = true
+    let bytesOk = true
+    let totalInact = 0
+    let successes = 0
+    for (const k of [12, 20, 32]) {
+      const W = 4
+      const rng = new ChannelRNG(555 + k)
+      const len = k * W - 2
+      const bytes = new Uint8Array(len)
+      for (let i = 0; i < len; i++) bytes[i] = rng.u32() & 0xff
+      const sym = bytesToSymbols(bytes, W)
+      const dist = robustSoliton(k)
+      for (const mult of [0.9, 1.1, 1.4, 1.8]) {
+        const drops = ltEncode(sym, dist, Math.max(1, Math.round(k * mult)), { startSeed: 3000 + k * 100 + Math.round(mult * 10) })
+        const ge = geDecode(drops, k, W)
+        const ia = inactivationDecode(drops, k, W)
+        if (ge.success !== ia.success) agree = false
+        if (ia.success) {
+          const rec = symbolsToBytes(ia.symbols, len)
+          if (!(rec.length === len && rec.every((b, i) => b === bytes[i]))) bytesOk = false
+          totalInact += ia.inactivations
+          successes++
+        }
+      }
+    }
+    const cheap = successes > 0 && totalInact / successes < 12 // far below k
+    results.push({ group: G, name: 'inactivation decoder ⇔ GE success (both ML)', pass: agree, detail: 'k ∈ {12,20,32}' })
+    results.push({ group: G, name: 'inactivation decoder: exact byte round-trip', pass: bytesOk, detail: '' })
+    results.push({ group: G, name: 'inactivations ≪ k (near-linear dense part)', pass: cheap, detail: `${(totalInact / Math.max(1, successes)).toFixed(1)} avg over ${successes} decodes` })
+  } catch (e) {
+    results.push({ group: G, name: 'inactivation decoding', pass: false, detail: (e as Error).message })
   }
 }
 
