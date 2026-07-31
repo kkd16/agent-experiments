@@ -16,6 +16,7 @@ import {
   precodeIntermediate,
   raptorDecode,
   successCurve,
+  overheadSamples,
   type DegreeDist,
   type Droplet,
 } from '../lib/fountain'
@@ -127,6 +128,26 @@ export function Fountain() {
       precodeParities: useRaptor ? Math.max(1, parities) : 6,
     })
   }, [k, kind, cParam, delta, useRaptor, parities])
+
+  // --- Overhead distribution (Monte-Carlo, structural) ----------------------
+  const ohist = useMemo(() => {
+    const s = overheadSamples(kind === 'ideal' ? idealSoliton(k) : robustSoliton(k, cParam, delta), 160, 5, 3)
+    const bins = 15
+    const binW = 3 / bins // overhead 0..3
+    const bucket = (arr: number[]) => {
+      const h = new Array<number>(bins).fill(0)
+      for (const v of arr) h[Math.min(bins - 1, Math.floor(v / binW))]++
+      return h
+    }
+    return { peel: bucket(s.peel), ge: bucket(s.ge), meanPeel: s.meanPeel, meanGE: s.meanGE, binW, bins }
+  }, [k, kind, cParam, delta])
+
+  // --- Ripple size over the peeling run -------------------------------------
+  const rippleSeries = useMemo(
+    () => peel.steps.map((s, i) => [i + 1, s.rippleSize] as [number, number]),
+    [peel],
+  )
+  const maxRipple = Math.max(1, ...peel.steps.map((s) => s.rippleSize))
 
   const canGraph = drops.length <= 44 && L <= 26
 
@@ -324,6 +345,50 @@ export function Fountain() {
             markers={[{ x: 1, label: 'k', color: 'var(--amber)' }]}
           />
           <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>k={k}, 90 Monte-Carlo trials per point · success depends only on the droplet↔symbol structure, not the payload</div>
+        </Panel>
+      </div>
+
+      <div className="grid grid-2" style={{ gap: 16 }}>
+        <Panel
+          title="The ripple over the peeling run"
+          note="Luby's ripple = the pool of degree-1 droplets waiting to release a fresh symbol. Each release can spawn new degree-1 droplets (a chain reaction) or shrink it; decoding succeeds only if the ripple never hits zero before the last symbol. This is that pool's size at each step of the current decode."
+        >
+          {rippleSeries.length > 1 ? (
+            <LineChart
+              series={[{ label: 'ripple size', color: 'var(--amber)', points: rippleSeries }]}
+              xDomain={[1, rippleSeries.length]}
+              yDomain={[0, maxRipple]}
+              xLabel="release step"
+              yLabel="degree-1 droplets"
+              xFmt={(v) => v.toFixed(0)}
+              yFmt={(v) => v.toFixed(0)}
+              xTicks={Math.min(8, rippleSeries.length - 1)}
+              yTicks={Math.min(5, maxRipple)}
+            />
+          ) : (
+            <div className="muted" style={{ fontSize: 13 }}>Peeling released too few symbols to plot a ripple — lower ε or raise the overhead.</div>
+          )}
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{peel.steps.length} of {L} symbols peeled on this received set</div>
+        </Panel>
+
+        <Panel
+          title="Overhead distribution"
+          note="Over many trials, the fraction of droplets beyond k needed before each decoder first succeeds. The ML (GE) decoder's overhead concentrates just above zero; peeling's has a long, heavy tail — the classic reason fountain codes pair a cheap peeler with a dense finisher."
+        >
+          <ColumnChart
+            cols={ohist.ge.map((v, i) => ({ label: `${Math.round(i * ohist.binW * 100)}`, value: v }))}
+            color="var(--teal)"
+            height={110}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>GE overhead % · mean +{(ohist.meanGE * 100).toFixed(0)}%</div>
+          <div style={{ marginTop: 12 }}>
+            <ColumnChart
+              cols={ohist.peel.map((v, i) => ({ label: `${Math.round(i * ohist.binW * 100)}`, value: v }))}
+              color="var(--pink)"
+              height={110}
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>peeling overhead % · mean +{(ohist.meanPeel * 100).toFixed(0)}%</div>
+          </div>
         </Panel>
       </div>
 

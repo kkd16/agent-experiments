@@ -757,3 +757,80 @@ export function meanPeelOverhead(dist: DegreeDist, trials: number, salt: number,
   }
   return counted > 0 ? total / counted : NaN
 }
+
+/** Online GF(2) rank over L columns — add coefficient rows, track when rank hits L. */
+class GF2Rank {
+  private L: number
+  private words: number
+  private basisByPivot: (Uint32Array | null)[]
+  rank = 0
+  constructor(L: number) {
+    this.L = L
+    this.words = (L + 31) >> 5
+    this.basisByPivot = new Array(L).fill(null)
+  }
+  /** Add a row given as a list of set columns; returns true if the rank grew. */
+  add(cols: number[]): boolean {
+    const row = new Uint32Array(this.words)
+    for (const c of cols) row[c >> 5] |= 1 << (c & 31)
+    for (let c = 0; c < this.L; c++) {
+      if (!((row[c >> 5] >>> (c & 31)) & 1)) continue
+      const b = this.basisByPivot[c]
+      if (b) {
+        for (let w = 0; w < this.words; w++) row[w] ^= b[w]
+      } else {
+        this.basisByPivot[c] = row
+        this.rank++
+        return true
+      }
+    }
+    return false
+  }
+}
+
+export interface OverheadSamples {
+  /** Overhead fractions (received−k)/k at first successful decode, per trial. */
+  peel: number[]
+  ge: number[]
+  meanPeel: number
+  meanGE: number
+}
+
+/**
+ * The distribution of decode overhead — for each trial, pour droplets one at a time
+ * and record the fraction beyond k at which each decoder first succeeds. Peeling uses
+ * a fresh linear-time peel per droplet; GE uses an online GF(2) rank so it is cheap.
+ * The classic fountain-code picture: GE's overhead concentrates just above 0 while
+ * peeling's has a long, heavy tail.
+ */
+export function overheadSamples(dist: DegreeDist, trials: number, salt: number, cap = 3): OverheadSamples {
+  const k = dist.k
+  const peel: number[] = []
+  const ge: number[] = []
+  const maxR = Math.ceil(k * (1 + cap))
+  for (let t = 0; t < trials; t++) {
+    const base = (t + 1) * 3_000_017
+    const neigh: number[][] = []
+    const rank = new GF2Rank(k)
+    let received = 0
+    let gotPeel = false
+    let gotGE = false
+    while (received < maxR && !(gotPeel && gotGE)) {
+      const nb = deriveNeighbors(base + received, salt, dist, k)
+      neigh.push(nb)
+      rank.add(nb)
+      received++
+      if (received < k) continue
+      if (!gotGE && rank.rank === k) {
+        ge.push((received - k) / k)
+        gotGE = true
+      }
+      if (!gotPeel && peelSucceedsStruct(neigh, k) === k) {
+        peel.push((received - k) / k)
+        gotPeel = true
+      }
+    }
+  }
+  const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN)
+  return { peel, ge, meanPeel: mean(peel), meanGE: mean(ge) }
+}
