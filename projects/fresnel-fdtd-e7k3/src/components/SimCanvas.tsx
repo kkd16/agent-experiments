@@ -5,6 +5,7 @@ import { MATERIAL_BY_KEY } from '../sim/materials';
 
 interface Props {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  arrowsRef: React.RefObject<HTMLCanvasElement | null>;
   controller: SimController;
   toolRef: React.RefObject<ToolState>;
   /** bumped whenever sources/probes change; a changed value re-renders markers */
@@ -12,7 +13,14 @@ interface Props {
   onStructureChange: () => void;
 }
 
-export function SimCanvas({ canvasRef, controller, toolRef, revision, onStructureChange }: Props) {
+export function SimCanvas({
+  canvasRef,
+  arrowsRef,
+  controller,
+  toolRef,
+  revision,
+  onStructureChange,
+}: Props) {
   const painting = useRef(false);
   const sim = controller.sim;
 
@@ -101,6 +109,7 @@ export function SimCanvas({ canvasRef, controller, toolRef, revision, onStructur
           onPointerLeave={endPaint}
           onPointerCancel={endPaint}
         />
+        <canvas ref={arrowsRef} className="stage__arrows" aria-hidden />
         <div className="stage__markers">
           {sim.sources.map((s) => (
             <span

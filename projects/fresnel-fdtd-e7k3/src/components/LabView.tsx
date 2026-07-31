@@ -7,10 +7,15 @@ import type { ToolState } from './types';
 
 export function LabView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const arrowsRef = useRef<HTMLCanvasElement>(null);
   const [revision, setRevision] = useState(0);
   const bump = useCallback(() => setRevision((r) => r + 1), []);
   // The hook loads a default scene once the renderer exists; bump so markers show.
-  const { params, setParams, stats, glError, controller } = useSimulation(canvasRef, bump);
+  const { params, setParams, stats, glError, controller } = useSimulation(
+    canvasRef,
+    arrowsRef,
+    bump,
+  );
 
   const [tool, setTool] = useState<ToolState>({
     tool: 'source',
@@ -49,6 +54,7 @@ export function LabView() {
       <div className="lab__stage-col">
         <SimCanvas
           canvasRef={canvasRef}
+          arrowsRef={arrowsRef}
           controller={controller}
           toolRef={toolRef}
           revision={revision}
