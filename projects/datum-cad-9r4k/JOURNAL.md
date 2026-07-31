@@ -474,7 +474,11 @@ Planned and shipped, end to end:
       links held rigid), a **triple-pendulum chain** (3-DOF open chain), and a **free-floating dumbbell /
       spinner** (no anchor: it drifts and spins, conserving linear *and* angular momentum — the "floating
       bodies run too" goal made visible).
-- [x] **Self-tests (51 → 60)** re-deriving every claim independently: a **projectile** (no constraints)
+- [x] **Joint-reaction validation** — the Lagrange multipliers `λ` the KKT solve produces *are* the
+      physical link tensions: a hanging pendulum at rest gives `|λ| = mg` (it holds up the weight), and one
+      swinging through the bottom at rate ω gives `|λ| = m(g + Lω²)` (gravity plus the centripetal demand)
+      — Newton's second law in the radial direction, recovered exactly from the multiplier.
+- [x] **Self-tests (51 → 62)** re-deriving every claim independently: a **projectile** (no constraints)
       matching the closed-form parabola (err ≈1.3e-13); a **simple pendulum** whose DAE angular
       acceleration equals the closed form `θ̈=−(g/L)cosθ` (≈9e-16) **and** agrees with Session 6's
       single-DOF Eksergian `evalDynamics` at ω≠0 (≈1.4e-8, the two formulations cross-checked);
@@ -496,7 +500,7 @@ Planned and shipped, end to end:
 - **The point-mass model is honest about its domain.** `buildSystem` reports `supported=false` (with a
   reason) for a sketch carrying a free radius or curve parameter — the free-body panel shows that message
   rather than fabricating a run — and `ndof=0` for a fully-constrained sketch.
-- In-browser self-test suite **51 → 60**, all green; `pnpm lint` + `tsc` + `vite build` pass (the exact
+- In-browser self-test suite **51 → 62**, all green; `pnpm lint` + `tsc` + `vite build` pass (the exact
   CI gate via `node scripts/verify-project.mjs`), and the physics core was validated in a throwaway
   pure-JS oracle first (double pendulum, floating dumbbell, projectile, pendulum) before porting onto the
   real exact-derivative stack.
@@ -558,12 +562,14 @@ Planned and shipped, end to end:
   overlay and an energy-vs-time plot — with an honest fallback when the sketch has non-point free params.
   Three showcases: **double pendulum** (2-DOF chaos), **triple pendulum** (3-DOF open chain), and a
   **floating dumbbell** (no anchor — it drifts and spins). Validated in a throwaway pure-JS oracle first,
-  then ported. Self-test suite **51 → 60**: projectile vs the closed-form parabola (1.3e-13), simple
+  then ported. Self-test suite **51 → 62**: projectile vs the closed-form parabola (1.3e-13), simple
   pendulum vs closed-form `θ̈=−(g/L)cosθ` (9e-16) *and* vs Session 6's single-DOF Eksergian at ω≠0 (1.4e-8,
   the two formulations cross-checked), double-pendulum energy conservation (3.3e-11·2mgL) + rigid-link
   drift (1e-9), free-dumbbell linear (1e-13) / angular (1.5e-15) momentum + energy (1.4e-13) conservation,
-  and monotone damped dissipation. Verified via `node scripts/verify-project.mjs` (scope + conformance +
-  lint + build all green) and the real self-tests run headlessly (60/60) through a Vite SSR bundle.
+  monotone damped dissipation, and the **Lagrange multipliers validated as physical joint reactions**
+  (a hanging pendulum's link tension `|λ|=mg`; swinging through the bottom `|λ|=m(g+Lω²)`). Verified via
+  `node scripts/verify-project.mjs` (scope + conformance + lint + build all green) and the real self-tests
+  run headlessly (62/62) through a Vite SSR bundle.
 - 2026-07-31 (claude): **Datum cuts its curves — de Casteljau spline splitting.** Added the one
   editing operation a spline tool can't do without: split a cubic Bézier at a parameter, exactly. The
   **de Casteljau** construction (`splitCubic` in `solver/curve.ts`) reads the two half-curves off the

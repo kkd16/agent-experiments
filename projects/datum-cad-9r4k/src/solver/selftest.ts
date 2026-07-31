@@ -1372,6 +1372,50 @@ export function runSelfTests(): TestResult[] {
     check('multibody damping dissipates energy monotonically', monotone && prev < E0 - 1e-3, `E ${E0.toFixed(0)} → ${prev.toFixed(0)}`)
   }
 
+  // A bare pendulum for the joint-reaction (Lagrange-multiplier) tests: anchor fixed at
+  // the origin, bob hanging straight down at distance L. The one distance constraint's
+  // multiplier λ is the physical link tension (its constraint force Cᵀλ supports the bob).
+  const buildHanging = (L: number, m: number, g: number) => {
+    const s = new Sketch()
+    const A = s.addPoint(0, 0, { fixed: true })
+    const B = s.addPoint(0, -L)
+    s.addConstraint('distance', [A.id, B.id], L)
+    const p: MBParams = { gravity: g, density: 0, baseMass: m, damping: 0 }
+    const sys = buildSystem(s, [], p)
+    return { s, sys, p, bob: B.id }
+  }
+
+  // 61. Joint reaction, static: a pendulum hanging at rest is in equilibrium — the DAE
+  //     returns q̈≈0 and the distance-constraint multiplier |λ| equals the weight mg it
+  //     must hold up. This validates the Lagrange multipliers the KKT solve produces.
+  {
+    const L = 80
+    const g = 500
+    const m = 1.3
+    const { sys, p, bob } = buildHanging(L, m, g)
+    const st = mkState(sys, new Map([[bob, { x: 0, y: -L, vx: 0, vy: 0 }]]))
+    const acc = mbAccel(sys, st, p)
+    const qddMag = Math.hypot(acc.qdd[sys.points[0].xi], acc.qdd[sys.points[0].yi])
+    const tension = Math.abs(acc.lambda[0])
+    check('multibody joint reaction = tension (static)', qddMag < 1e-6 && Math.abs(tension - m * g) < 1e-3, `|q̈| ${qddMag.toExponential(1)}, |λ| ${tension.toFixed(2)} (want ${(m * g).toFixed(2)})`)
+  }
+
+  // 62. Joint reaction, at speed: swinging through the bottom at rate ω, the tension must
+  //     carry gravity PLUS the centripetal demand, |λ| = m(g + Lω²) — Newton's second law
+  //     in the radial direction, recovered exactly from the multiplier.
+  {
+    const L = 80
+    const g = 500
+    const m = 1
+    const w = 2.5
+    const { sys, p, bob } = buildHanging(L, m, g)
+    const st = mkState(sys, new Map([[bob, { x: 0, y: -L, vx: w * L, vy: 0 }]])) // tangential at the bottom
+    const acc = mbAccel(sys, st, p)
+    const tension = Math.abs(acc.lambda[0])
+    const want = m * (g + L * w * w)
+    check('multibody joint reaction = gravity + centripetal', Math.abs(tension - want) / want < 1e-6, `|λ| ${tension.toFixed(1)} (want ${want.toFixed(1)})`)
+  }
+
   return out
 }
 
