@@ -35,6 +35,19 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
     });
   };
 
+  const setCell = (r: number, c: number, state: boolean) => {
+    setGrid((prevGrid) => {
+      if (prevGrid[r][c] === state) return prevGrid;
+      const newGrid = prevGrid.map((row, i) =>
+        i === r ? row.map((cell, j) => (j === c ? state : cell)) : row
+      );
+      if (state) {
+        onCellBirth(r, c);
+      }
+      return newGrid;
+    });
+  };
+
   const nextGeneration = useCallback(() => {
     setGrid((currentGrid) => {
       const newGrid = currentGrid.map((rowArr, r) =>
@@ -85,6 +98,7 @@ export function useGameOfLife(rows: number, cols: number, onCellBirth: (row: num
     isRunning,
     setIsRunning,
     toggleCell,
+    setCell,
     nextGeneration,
     clearGrid,
     randomizeGrid,

@@ -13,12 +13,18 @@ An interactive grid running Conway's Game of Life, mapped to the Web Audio API t
 - [x] Add a master volume slider
 - [x] Implement stereo panning based on horizontal column position
 - [x] Support optional wrap-around (toroidal) grid edges
-- [ ] Add click-and-drag support for painting cells on the grid
+- [x] Add click-and-drag support for painting cells on the grid
 - [ ] Add a preset selector with classic Game of Life patterns (e.g. Glider, Gosper Glider Gun, Pulsar)
-- [ ] Allow customizing the musical scale (e.g., minor, major, chromatic)
-- [ ] Add different wave shapes (sine, square, sawtooth) as a UI control
+- [x] Allow customizing the musical scale (e.g., minor, major, chromatic)
+- [x] Add different wave shapes (sine, square, sawtooth) as a UI control
 - [ ] Implement a history feature to step backward
 - [ ] Add visual flair (e.g., cell color mapped to pitch or age)
+- [x] Add control to change the root note base frequency
+- [ ] Implement a responsive grid that fits the screen instead of fixed 20x30
+- [ ] Add a dark/light mode toggle
+- [ ] Add a visual piano roll to highlight recently played notes
+- [ ] Allow custom grid dimensions (rows and columns inputs)
+- [ ] Export and import custom grid patterns via JSON
 
 ## Session Log
 - 2026-06-13: Project initialized from template.

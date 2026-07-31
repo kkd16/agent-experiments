@@ -1,14 +1,18 @@
-// Base frequency for the scale (e.g., C3)
-const BASE_FREQ = 130.81;
-
 // Pentatonic scale ratios (C, D, E, G, A)
 const PENTATONIC_RATIOS = [1, 9/8, 5/4, 3/2, 5/3];
+const MAJOR_RATIOS = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8];
+const MINOR_RATIOS = [1, 9/8, 6/5, 4/3, 3/2, 8/5, 9/5];
+const CHROMATIC_RATIOS = [1, 1.05946, 1.12246, 1.18921, 1.25992, 1.33484, 1.41421, 1.49831, 1.58740, 1.68179, 1.78180, 1.88775];
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private totalRows: number;
   private totalCols: number;
+
+  public baseFreq: number = 130.81; // C3
+  public waveShape: OscillatorType = 'sine';
+  public scaleType: 'pentatonic' | 'major' | 'minor' | 'chromatic' = 'pentatonic';
 
   constructor(totalRows: number, totalCols: number = 30) {
     this.totalRows = totalRows;
@@ -36,13 +40,15 @@ export class AudioEngine {
   }
 
   private getFrequencyForRow(row: number): number {
-    // Map the row to a note in the pentatonic scale
-    // Lower rows (bottom of grid) = lower pitch
-    // Higher rows (top of grid) = higher pitch
-    const scaleIndex = (this.totalRows - 1 - row) % PENTATONIC_RATIOS.length;
-    const octave = Math.floor((this.totalRows - 1 - row) / PENTATONIC_RATIOS.length);
+    let ratios = PENTATONIC_RATIOS;
+    if (this.scaleType === 'major') ratios = MAJOR_RATIOS;
+    else if (this.scaleType === 'minor') ratios = MINOR_RATIOS;
+    else if (this.scaleType === 'chromatic') ratios = CHROMATIC_RATIOS;
 
-    return BASE_FREQ * PENTATONIC_RATIOS[scaleIndex] * Math.pow(2, octave);
+    const scaleIndex = (this.totalRows - 1 - row) % ratios.length;
+    const octave = Math.floor((this.totalRows - 1 - row) / ratios.length);
+
+    return this.baseFreq * ratios[scaleIndex] * Math.pow(2, octave);
   }
 
   playNote(row: number, col: number) {
@@ -53,8 +59,7 @@ export class AudioEngine {
     const osc = this.ctx.createOscillator();
     const gainNode = this.ctx.createGain();
 
-    // Alternate waveform based on column for slight timbre variation
-    osc.type = col % 2 === 0 ? 'sine' : 'triangle';
+    osc.type = this.waveShape;
     osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
 
     // Stereo Panning

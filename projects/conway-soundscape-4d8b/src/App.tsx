@@ -10,6 +10,10 @@ export default function App() {
   const [audioStarted, setAudioStarted] = useState(false);
   const [speed, setSpeed] = useState(200);
   const [volume, setVolume] = useState(30); // 0-100 range
+  const [baseFreq, setBaseFreq] = useState(130.81);
+  const [waveShape, setWaveShape] = useState<OscillatorType>('sine');
+  const [scaleType, setScaleType] = useState<'pentatonic' | 'major' | 'minor' | 'chromatic'>('pentatonic');
+  const [isDragging, setIsDragging] = useState(false);
   const audioEngineRef = useRef<AudioEngine | null>(null);
 
   useEffect(() => {
@@ -27,6 +31,7 @@ export default function App() {
     isRunning,
     setIsRunning,
     toggleCell,
+    setCell,
     nextGeneration,
     clearGrid,
     randomizeGrid,
@@ -58,6 +63,24 @@ export default function App() {
       audioEngineRef.current.setVolume(volume);
     }
   }, [volume, audioStarted]);
+
+  useEffect(() => {
+    if (audioEngineRef.current) {
+      audioEngineRef.current.baseFreq = baseFreq;
+    }
+  }, [baseFreq]);
+
+  useEffect(() => {
+    if (audioEngineRef.current) {
+      audioEngineRef.current.waveShape = waveShape;
+    }
+  }, [waveShape]);
+
+  useEffect(() => {
+    if (audioEngineRef.current) {
+      audioEngineRef.current.scaleType = scaleType;
+    }
+  }, [scaleType]);
 
   const handleToggleRunning = () => {
     if (!audioStarted) {
@@ -134,21 +157,59 @@ export default function App() {
                 />
                 Wrap Edges
               </label>
+              <label>
+                Base Freq:
+                <input
+                  type="number"
+                  value={baseFreq}
+                  onChange={(e) => setBaseFreq(Number(e.target.value))}
+                  style={{ width: '80px' }}
+                />
+              </label>
+              <label>
+                Wave:
+                <select value={waveShape} onChange={(e) => setWaveShape(e.target.value as OscillatorType)}>
+                  <option value="sine">Sine</option>
+                  <option value="square">Square</option>
+                  <option value="sawtooth">Sawtooth</option>
+                  <option value="triangle">Triangle</option>
+                </select>
+              </label>
+              <label>
+                Scale:
+                <select value={scaleType} onChange={(e) => setScaleType(e.target.value as 'pentatonic' | 'major' | 'minor' | 'chromatic')}>
+                  <option value="pentatonic">Pentatonic</option>
+                  <option value="major">Major</option>
+                  <option value="minor">Minor</option>
+                  <option value="chromatic">Chromatic</option>
+                </select>
+              </label>
             </div>
 
             <div className="stats">
               Generation: {generation} | Audio: {audioStarted ? 'On' : 'Off'}
             </div>
 
-            <div className="grid-container" style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)` }}>
+            <div
+              className="grid-container"
+              style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)` }}
+              onMouseDown={() => setIsDragging(true)}
+              onMouseUp={() => setIsDragging(false)}
+              onMouseLeave={() => setIsDragging(false)}
+            >
               {grid.map((rowArr, rowIndex) =>
                 rowArr.map((cell, colIndex) => (
                   <div
                     key={`${rowIndex}-${colIndex}`}
                     className={`cell ${cell ? 'alive' : ''}`}
-                    onClick={() => {
+                    onMouseDown={() => {
                       if (!audioStarted) startAudio();
                       toggleCell(rowIndex, colIndex);
+                    }}
+                    onMouseEnter={() => {
+                      if (isDragging) {
+                        setCell(rowIndex, colIndex, true);
+                      }
                     }}
                   />
                 ))
