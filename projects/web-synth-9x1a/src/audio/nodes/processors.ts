@@ -389,3 +389,124 @@ export class ChorusWrapper {
     audioCore.unregisterNode(id);
   }
 }
+
+export class BitcrusherWrapper {
+  public node: WaveShaperNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createWaveShaper();
+    this.setBitDepth(8);
+
+    audioCore.registerNode(id, this.node);
+  }
+
+  public setBitDepth(bits: number) {
+    const ctx = audioCore.getContext();
+    const steps = Math.pow(2, bits);
+    const n_samples = ctx.sampleRate;
+    const curve = new Float32Array(n_samples);
+
+    for (let i = 0; i < n_samples; ++i) {
+      const x = (i * 2) / n_samples - 1;
+      // Quantize
+      curve[i] = Math.round(x * steps) / steps;
+    }
+    this.node.curve = curve;
+  }
+
+  public destroy(id: string) {
+    this.node.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}
+
+export class TremoloWrapper {
+  public inputNode: GainNode;
+  public lfo: OscillatorNode;
+  public lfoGain: GainNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.inputNode = ctx.createGain();
+    this.lfo = ctx.createOscillator();
+    this.lfoGain = ctx.createGain();
+
+    this.inputNode.gain.value = 1.0;
+    this.lfo.type = 'sine';
+
+    // Modulation values
+    this.lfo.frequency.value = 5.0; // rate
+    this.lfoGain.gain.value = 0.5; // depth
+
+    this.lfo.connect(this.lfoGain);
+
+    // Modulate the gain of inputNode
+    this.lfoGain.connect(this.inputNode.gain);
+
+    this.lfo.start();
+
+    audioCore.registerNode(id, this.inputNode);
+  }
+
+  public setRate(rate: number) {
+    this.lfo.frequency.setValueAtTime(rate, audioCore.getContext().currentTime);
+  }
+
+  public setDepth(depth: number) {
+    this.lfoGain.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
+  }
+
+  public destroy(id: string) {
+    this.lfo.stop();
+    this.lfo.disconnect();
+    this.lfoGain.disconnect();
+    this.inputNode.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}
+
+export class RingModulatorWrapper {
+  public inputNode: GainNode;
+  public modOsc: OscillatorNode;
+  public modGain: GainNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.inputNode = ctx.createGain();
+    this.modOsc = ctx.createOscillator();
+    this.modGain = ctx.createGain();
+
+    // We want to multiply the input signal by the modulator.
+    // In Web Audio API, if an oscillator connects to a gain parameter,
+    // it adds to the gain's value.
+    // The oscillator goes from -1 to 1.
+    // If we set gain.value to 0, it will go from -1 to 1, perfectly multiplying the input (Ring Modulation).
+    this.inputNode.gain.value = 0;
+
+    this.modOsc.type = 'sine';
+    this.modOsc.frequency.value = 400; // Carrier freq
+
+    this.modOsc.connect(this.inputNode.gain);
+
+    this.modOsc.start();
+
+    audioCore.registerNode(id, this.inputNode);
+  }
+
+  public setFrequency(freq: number) {
+    this.modOsc.frequency.setValueAtTime(freq, audioCore.getContext().currentTime);
+  }
+
+  public setType(type: OscillatorType) {
+    this.modOsc.type = type;
+  }
+
+  public destroy(id: string) {
+    this.modOsc.stop();
+    this.modOsc.disconnect();
+    this.modGain.disconnect();
+    this.inputNode.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}

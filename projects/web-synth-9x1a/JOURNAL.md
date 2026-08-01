@@ -38,10 +38,10 @@
 - [ ] Add polyphony support to Oscillator
 - [x] Allow custom colors for different node types
 ## Expansion Phase 4 (New Improvements)
-- [ ] Add Bitcrusher Node
+- [x] Add Bitcrusher Node
 - [ ] Add Phaser Node
-- [ ] Add Ring Modulator Node
-- [ ] Add Tremolo Node
+- [x] Add Ring Modulator Node
+- [x] Add Tremolo Node
 - [ ] Implement Node Bypassing
 - [ ] Add Dark/Light Theme Toggle
 - [ ] Add Auto-Panning Node
@@ -50,3 +50,15 @@
 - [ ] Improve UI for Mobile Devices
 - [ ] Add Node Groups
 - [ ] Add Keyboard shortcuts for common actions
+
+## Expansion Phase 5 (Future Improvements)
+- [ ] Add Pitch Shift Node
+- [ ] Add Arpeggiator Node
+- [ ] Add Wavefolder Node
+- [ ] Add Granular Synth Node
+- [ ] Add Multi-band Compressor Node
+- [ ] Implement preset sharing via URL
+- [ ] Add oscilloscope visualization modes
+- [ ] Add MIDI output support
+- [ ] Implement node cloning shortcut
+- [ ] Add contextual help for nodes
