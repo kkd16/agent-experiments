@@ -328,6 +328,77 @@ the horizon function gains a term, `Δ = r² − 2Mr + a² + Q²`.
 - [x] **Ship green + headless-verified**: `node scripts/verify-project.mjs event-horizon-q7v3` (scope
       + conformance + lint + tsc + build) **and** driven in Chromium against the production build.
 
+## v7 — "Orbits" (the matter release)
+
+v1–v6 traced one thing, exhaustively: **light**. Every pixel, every self-test, every geodesic in the
+app is a *null* geodesic. But a black hole's most visceral physics is what it does to **matter** — the
+precessing orbits, the innermost stable circular orbit, the plunge — and the app had never tumbled a
+single massive particle. v7 adds the app's first **timelike** geodesic tracer and turns it into a full
+orbital-mechanics lab. The physics is the same Kerr–Newman spacetime and the same Hamiltonian equations
+of motion; the only change is the mass-shell normalisation `gᵘᵛ p_u p_v = −1` instead of `= 0`. That one
+sign gives matter an ISCO (which light has not), makes bound orbits **precess** instead of close
+(Mercury's perihelion advance — GR's first triumph), and makes sub-separatrix orbits **plunge**.
+
+### New physics package (`src/physics/orbits.ts`), pure + headless-testable
+
+- [x] **Equatorial Kerr–Newman timelike machinery.** The inverse metric at θ = π/2, the velocity part
+      of the mass shell `U(r)`, and the radial function `R(r) = (dr/dτ)² = gʳʳ·(−1 − U)` — the particle
+      lives where `R ≥ 0`, its zeros are periapsis/apoapsis, a double zero is a circular orbit. Reduces to
+      the textbook `R = E² − (1−2M/r)(1+L²/r²)` at a = Q = 0.
+- [x] **`orbitFromApsides` — the conserved (E, L) from a periapsis/apoapsis pair.** Both radii are turning
+      points (`U = −1`), so subtracting the two equations gives a quadratic in `E/L`; back-substitution
+      fixes the magnitude. Exact for Kerr–Newman, prograde/retrograde selectable.
+- [x] **`circularOrbit` — the double-root limit** (`U = −1` and `U′ = 0`) — and `circularBPT`, the
+      Bardeen–Press–Teukolsky closed form kept as the verification oracle. Plus `iscoSigned`
+      (prograde/retrograde ISCO), `marginallyBound` (the E = 1 capture orbit), and `omega` (dφ/dt).
+- [x] **Path-recording RK4 integrator** in proper time τ: records the world-plane polyline **and** the
+      cumulative τ at each point (so the animation can advance by *proper time* — the star faithfully
+      speeds up at periapsis), detects periapsis passages to measure the **precession** and the radial /
+      azimuthal periods, accumulates coordinate time for the **time-dilation** read-out, holds the mass
+      shell `|2H+1|` to ~1e-12, and classifies the fate (bound / plunge / unbound).
+
+### New "Orbit Lab" tab (`src/components/OrbitLab.tsx`)
+
+- [x] **Animated top-down orbit view.** The traced rosette with a bright, proper-time-paced star and a
+      fading trail; the horizon shadow, ISCO ring, ergosphere, prograde/retrograde light rings and the
+      marginally-bound circle drawn to scale (world radius ρ = √(r²+a²), matching the Geodesic Explorer).
+      Static layers are rendered once to an offscreen canvas and blitted each frame; only the star + trail
+      redraw — smooth at 60 fps.
+- [x] **Live `R(r)` effective-potential inset** beside the orbit: the radial function with its forbidden
+      band shaded, the turning points and ISCO marked, and the particle's current radius tracked in real
+      time — the phase-space picture next to the real-space one.
+- [x] **Controls + transport + presets.** Spin, charge (capped by the extremal budget), periapsis and
+      apoapsis, prograde/retrograde; play/pause + speed; six presets (Precessing rosette, Zoom–whirl,
+      Plunge, Near-circular, Retrograde, Charged Kerr–Newman). Rich read-outs: E, L, eccentricity,
+      precession per orbit, radial & orbital periods (proper and coordinate), the two-clock time dilation,
+      ISCO / horizon / marginally-bound reference, and a live orbit classification.
+
+### Verification & docs
+
+- [x] **New self-test group "Timelike orbits (matter)" — 11 checks.** Circular `E, L` = Bardeen–Press–
+      Teukolsky (rel < 1e-4 over 4 spins × 2 senses × 4 radii); circular Ω = the GR-Kepler law incl.
+      charge; apsides fix `R(r_p) = R(r_a) = 0` (~1e-16, Kerr–Newman); integrated perihelion precession =
+      **exact GR** `2π[(1−6M/a)^{−1/2}−1]` near-circular (rel < 4e-3) and → Einstein's weak-field
+      `6πM/[a(1−e²)]` in the far field (< 1.5%); the ISCO is marginally stable (`R″ = 0`) and splits
+      prograde/retrograde with spin; the marginally-bound orbit has E = 1 exactly; a zoom–whirl orbit
+      holds `2H = −1` while precessing ~150°/orbit; the separatrix cleanly divides plunging from turning
+      orbits; and the orbiting clock runs slow, deeper = slower. **The live suite goes from 33 → 44 checks.**
+- [x] **Physics-primer section** "Orbits of matter: precession, the ISCO & zoom–whirl"; new `#/orbits`
+      route + **Orbits** tab + the `M` keyboard shortcut.
+- [x] **Validated the physics in a throwaway vite-SSR Node oracle first** (16 checks — circular vs BPT,
+      Ω vs Kepler, ISCO stability, precession convergence vs step size proving the integrator, not the
+      formula, is exact), then ported. Ship green (scope + conformance + lint + tsc + build) and driven
+      headless in Chromium against the production build.
+
+### Ideas / future backlog
+
+- [ ] Render a **lensed orbiting hotspot** in the main GPU view — a bright clump following a real timelike
+      geodesic (a Sgr A* flare), lensed and Doppler-beamed by the existing shader.
+- [ ] **Spherical (non-equatorial) orbits** with Carter's constant — the 3-D analogue, tracing the polar
+      oscillation as well as the radial one.
+- [ ] A **"drop a star" mode** in the main render: click to launch a test particle and watch its 3-D
+      world-line lensed live.
+
 ## Session log
 
 - 2026-07-05 (claude, opus-4.8): created from template. Built the full v1 described above —
@@ -412,3 +483,26 @@ the horizon function gains a term, `Δ = r² − 2Mr + a² + Q²`.
   suite runs **33/33 in headless Node**, and driven in Chromium against the production build:
   Reissner–Nordström, Kerr–Newman and extremal-charge scenes render with a visibly smaller shadow,
   the Observatory charge slider shrinks the critical curve live, zero console/shader errors.
+- 2026-08-01 (claude, opus-4.8): **v7 "Orbits"**. Gave the app its first tracer of **matter** —
+  timelike geodesics — after six versions that traced only light. New pure `src/physics/orbits.ts`:
+  the equatorial Kerr–Newman inverse metric and radial function `R(r) = (dr/dτ)²`, an exact
+  `orbitFromApsides` solver for the conserved `(E, L)` of a periapsis/apoapsis pair (and its
+  double-root `circularOrbit` limit), the Bardeen–Press–Teukolsky closed form kept as an oracle,
+  prograde/retrograde ISCO + marginally-bound helpers, and a proper-time RK4 integrator that records
+  the world-line **and** its cumulative τ (so the animation advances by proper time), measures the
+  perihelion **precession** and the radial/orbital periods, tracks the two-clock **time dilation**, and
+  classifies bound / plunge / unbound while holding `2H = −1` to ~1e-12. New **Orbit Lab** tab
+  (`#/orbits`, `M` key): an animated top-down view of the precessing rosette with a proper-time-paced
+  star, the horizon/ISCO/ergosphere/light-rings/marginally-bound circles to scale, a live `R(r)`
+  effective-potential inset, spin/charge/periapsis/apoapsis + prograde controls, play/pause + speed,
+  six presets (Precessing rosette, Zoom–whirl, Plunge, Near-circular, Retrograde, Charged Kerr–Newman)
+  and full read-outs (E, L, eccentricity, precession/orbit, periods, dτ/dt, ISCO/horizon/marg-bound).
+  New primer section and a **"Timelike orbits (matter)"** self-test group: circular `E,L` = BPT
+  (<1e-4), Ω = GR-Kepler, apsides fix `R=0` (~1e-16), precession = **exact GR** near-circular and →
+  Einstein's `6πM/[a(1−e²)]` in the far field, ISCO marginal stability `R″=0` + prograde/retrograde
+  split, `r_mb` has E=1, a zoom–whirl orbit conserves the shell while precessing ~150°, the separatrix
+  divides plunge from turn, and the orbiting clock runs slow — the live suite goes **33 → 44 checks**.
+  Validated all the physics in a throwaway vite-SSR Node oracle first (16 checks; step-size sweep
+  proved the *integrator* is exact and the weak-field *formula* is the leading-order term), then ported.
+  Purely additive — no shader/renderer files touched. Full gate green (scope + conformance + lint + tsc
+  + build), suite **44/44 in headless Node**, and driven in Chromium against the production build.

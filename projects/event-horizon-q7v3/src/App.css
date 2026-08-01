@@ -905,3 +905,71 @@ input[type='range']::-moz-range-thumb {
     grid-column: 2;
   }
 }
+
+/* ---------------------------------------------------------------- orbit lab */
+.orbit .geo__stage {
+  position: relative;
+}
+.orbit__transport {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(6, 9, 15, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+  backdrop-filter: blur(6px);
+}
+.orbit__speed {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.orbit__speed input {
+  width: 96px;
+}
+.orbit__fate {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.32em 0.75em;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(6, 9, 15, 0.6);
+  backdrop-filter: blur(6px);
+  color: var(--accent);
+}
+.orbit__fate--plunge {
+  color: #ff8a6a;
+  border-color: rgba(255, 120, 90, 0.5);
+}
+.orbit__fate--invalid,
+.orbit__fate--unbound {
+  color: #9aa3b8;
+}
+.orbit__pot {
+  margin-top: 0.3rem;
+}
+.orbit__pot-canvas {
+  display: block;
+  width: 100%;
+  height: 120px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #080b12;
+  margin: 0.35rem 0 0.5rem;
+}
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: #ffd9ad;
+  font-size: 0.92em;
+}

@@ -5,7 +5,7 @@
 // renderer's own equatorial integrator. Everything runs in the browser (and headless in Node), so
 // the claims are re-checkable on every load, not just asserted in a comment.
 
-import { B_CRIT, M, ISCO, PHOTON_SPHERE, DEFAULT_PARAMS, kerrHorizon, kerrISCO, kerrPhotonOrbit, chargeQ2 } from '../state'
+import { B_CRIT, M, ISCO, PHOTON_SPHERE, DEFAULT_PARAMS, kerrHorizon, kerrISCO, kerrPhotonOrbit, kerrOmega, chargeQ2 } from '../state'
 import type { Params } from '../types'
 import { tracePhoton, cameraRay, aberrate, observerVelocity } from './probe'
 import {
@@ -30,6 +30,7 @@ import {
   traceKerr3D,
   bisectEquatorialShadowEdges,
 } from './cpu-geodesic'
+import { circularOrbit, circularBPT, orbitFromApsides, radialFunction, omega, iscoSigned, marginallyBound, traceOrbit } from './orbits'
 
 export interface TestResult {
   name: string
@@ -518,6 +519,179 @@ export function runSelfTests(): TestResult[] {
       ok ? 0 : 1,
       0.5,
       'Kerr–Newman (charge)',
+    )
+  }
+
+  // ---- Timelike orbits: the matter tracer, proven against closed-form GR --------------------------
+  {
+    // The general circular-orbit solver must reproduce the Bardeen–Press–Teukolsky closed form.
+    let worstEL = 0
+    for (const aStar of [0, 0.3, 0.6, 0.9]) {
+      for (const pro of [true, false]) {
+        for (const r of [4, 6, 10, 20]) {
+          const num = circularOrbit(r, aStar, pro, 0)
+          const bpt = circularBPT(r, aStar, pro)
+          worstEL = Math.max(worstEL, rel(num.E, bpt.E), rel(Math.abs(num.L), Math.abs(bpt.L)))
+        }
+      }
+    }
+    add(
+      'Circular orbit E, L = Bardeen–Press–Teukolsky',
+      `max relative error in (E, L) over 4 spins × 2 senses × 4 radii = ${worstEL.toExponential(2)}`,
+      worstEL,
+      1e-4,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // The circular-orbit coordinate frequency Ω = dφ/dt must equal the GR-Kepler law (charge-aware).
+    let worst = 0
+    for (const aStar of [0, 0.5, 0.9]) {
+      for (const cStar of [0, 0.4]) {
+        for (const r of [5, 9, 16]) {
+          const el = circularOrbit(r, aStar, true, cStar)
+          const om = omega(r, el.E, el.L, aStar * M, (cStar * M) ** 2)
+          worst = Math.max(worst, rel(om, kerrOmega(aStar, r, cStar)))
+        }
+      }
+    }
+    add(
+      'Circular Ω = GR-Kepler √(Mr−Q²)/(r²+a√(Mr−Q²))',
+      `max relative error over 3 spins × 2 charges × 3 radii = ${worst.toExponential(2)}`,
+      worst,
+      1e-3,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // The (E, L) built from a periapsis/apoapsis pair must make R(r) vanish at both — for Kerr–Newman.
+    let worst = 0
+    for (const [rp, ra] of [[6, 20], [4, 10], [8, 40], [5, 6]] as const) {
+      for (const [aStar, cStar] of [[0, 0], [0.6, 0], [0.6, 0.3]] as const) {
+        const el = orbitFromApsides(rp, ra, aStar, true, cStar)
+        const q2 = (cStar * M) ** 2
+        if (!el.ok) { worst = 1; continue }
+        worst = Math.max(
+          worst,
+          Math.abs(radialFunction(rp, el.E, el.L, aStar * M, q2)),
+          Math.abs(radialFunction(ra, el.E, el.L, aStar * M, q2)),
+        )
+      }
+    }
+    add(
+      'Apsides fix R(r_peri) = R(r_apo) = 0',
+      `max |R| at the requested turning points over 4 apsis pairs × 3 (a*,Q*) = ${worst.toExponential(2)}`,
+      worst,
+      1e-6,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // Integrated perihelion precession of a near-circular orbit = exact GR 2π[(1−6M/a)^{−1/2} − 1].
+    let worst = 0
+    for (const aSm of [30, 12]) {
+      const e = 0.03
+      const tr = traceOrbit({ spin: 0, charge: 0, rPeri: aSm * (1 - e), rApo: aSm * (1 + e), prograde: true, maxPeriods: 1, recordPath: false })
+      const exact = 2 * Math.PI * (Math.pow(1 - 6 * M / aSm, -0.5) - 1)
+      worst = Math.max(worst, rel(tr.precession, exact))
+    }
+    add(
+      'Perihelion precession = exact GR (near-circular)',
+      `integrated advance vs 2π[(1−6M/a)^{−1/2}−1], max rel error = ${worst.toExponential(2)}`,
+      worst,
+      4e-3,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // In the far field the integrated precession recovers Einstein's weak-field 6πM/[a(1−e²)].
+    const aSm = 300
+    const e = 0.15
+    const tr = traceOrbit({ spin: 0, charge: 0, rPeri: aSm * (1 - e), rApo: aSm * (1 + e), prograde: true, maxPeriods: 1, recordPath: false })
+    const weak = (6 * Math.PI * M) / (aSm * (1 - e * e))
+    add(
+      'Weak-field precession → 6πM/[a(1−e²)] (Einstein)',
+      `integrated = ${(tr.precession * 180 / Math.PI).toFixed(3)}° vs weak-field ${(weak * 180 / Math.PI).toFixed(3)}° per orbit`,
+      rel(tr.precession, weak),
+      1.5e-2,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // ISCO physics: the circular (E, L) at the ISCO is marginally stable (R'' = 0), the ISCO is 6M
+    // at a = 0, and frame dragging splits prograde (inside) from retrograde (outside).
+    let worstR2 = 0
+    for (const aStar of [0, 0.5, 0.9]) {
+      const r = iscoSigned(aStar, true)
+      const el = circularOrbit(r, aStar, true, 0)
+      const hh = 1e-3
+      const d2 = (radialFunction(r + hh, el.E, el.L, aStar * M, 0) - 2 * radialFunction(r, el.E, el.L, aStar * M, 0) + radialFunction(r - hh, el.E, el.L, aStar * M, 0)) / (hh * hh)
+      worstR2 = Math.max(worstR2, Math.abs(d2))
+    }
+    add(
+      "ISCO is marginally stable: R''(r_isco) = 0",
+      `max |d²R/dr²| at the prograde ISCO over 3 spins = ${worstR2.toExponential(2)}`,
+      worstR2,
+      3e-3,
+      'Timelike orbits (matter)',
+    )
+    const isco0 = Math.abs(iscoSigned(0, true) - ISCO)
+    const split = iscoSigned(0.9, true) < iscoSigned(0.9, false) ? 0 : 1
+    add(
+      'ISCO = 6M at a=0; prograde < retrograde when spinning',
+      `r_isco(0) = ${iscoSigned(0, true).toFixed(4)} rs; a*=0.9: prograde ${iscoSigned(0.9, true).toFixed(3)} < retrograde ${iscoSigned(0.9, false).toFixed(3)} rs`,
+      Math.max(isco0, split),
+      1e-6,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // The marginally-bound circular orbit has E = 1 exactly (parabolic capture threshold).
+    const r = marginallyBound(0, true)
+    const el = circularOrbit(r, 0, true, 0)
+    add(
+      'Marginally-bound orbit has E = 1 (r_mb = 4M)',
+      `r_mb(0) = ${r.toFixed(4)} rs (= 2 rs), circular E there = ${el.E.toFixed(6)}`,
+      Math.max(Math.abs(el.E - 1), Math.abs(r - 2) * 1e-3),
+      1e-5,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // A strong-field bound orbit conserves the mass shell 2H = −1 while precessing hard; an orbit with
+    // periapsis inside the ISCO has no inner turning point and plunges through the horizon.
+    const zoom = traceOrbit({ spin: 0.9, charge: 0, rPeri: 2.2, rApo: 12, prograde: true, maxPeriods: 1, recordPath: false })
+    add(
+      'Zoom–whirl orbit conserves 2H = −1',
+      `max |2H+1| = ${zoom.maxShellDrift.toExponential(2)} while precessing ${(zoom.precession * 180 / Math.PI).toFixed(0)}° per orbit`,
+      zoom.maxShellDrift,
+      1e-3,
+      'Timelike orbits (matter)',
+    )
+    // The Schwarzschild separatrix for r_a = 18M (= 9 rs) sits at periapsis ≈ 2.25 rs (p = 6+2e, M):
+    // an orbit just outside it still turns around, one just inside plunges. Straddle it both ways.
+    const bound = traceOrbit({ spin: 0, charge: 0, rPeri: 2.6, rApo: 9, prograde: true, maxPeriods: 1, recordPath: false })
+    const plunge = traceOrbit({ spin: 0, charge: 0, rPeri: 2.0, rApo: 9, prograde: true, maxPeriods: 1, recordPath: false })
+    add(
+      'Separatrix: orbits inside it plunge, outside they turn',
+      `r_a = 9 rs: periapsis 2.6 rs ⇒ ${bound.fate}, periapsis 2.0 rs ⇒ ${plunge.fate} (separatrix ≈ 2.25 rs)`,
+      bound.fate === 'bound' && plunge.fate === 'plunge' ? 0 : 1,
+      0.5,
+      'Timelike orbits (matter)',
+    )
+  }
+  {
+    // Gravitational + motional time dilation: the orbiting clock runs slow (dτ/dt < 1), and more so
+    // for a deeper orbit.
+    const wide = traceOrbit({ spin: 0, charge: 0, rPeri: 18, rApo: 22, prograde: true, maxPeriods: 1, recordPath: false })
+    const tight = traceOrbit({ spin: 0, charge: 0, rPeri: 4, rApo: 6, prograde: true, maxPeriods: 1, recordPath: false })
+    const ok = wide.timeDilationAvg < 1 && tight.timeDilationAvg < 1 && tight.timeDilationMin < wide.timeDilationMin
+    add(
+      'Orbiting clock runs slow, deeper = slower',
+      `dτ/dt: r≈20 orbit = ${wide.timeDilationAvg.toFixed(3)}, r≈5 orbit = ${tight.timeDilationAvg.toFixed(3)} (min ${tight.timeDilationMin.toFixed(3)})`,
+      ok ? 0 : 1,
+      0.5,
+      'Timelike orbits (matter)',
     )
   }
 

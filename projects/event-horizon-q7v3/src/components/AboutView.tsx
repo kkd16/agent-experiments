@@ -244,6 +244,44 @@ export default function AboutView() {
           tracing the photon you are actually seeing.
         </p>
 
+        <h2>Orbits of matter: precession, the ISCO &amp; zoom–whirl</h2>
+        <p>
+          Every other view here traces <em>light</em>. The <strong>Orbit Lab</strong> (press <code>M</code>)
+          traces <strong>matter</strong> — the world-line of a massive test particle. The geometry is the
+          same Kerr–Newman spacetime and the equations of motion are the same Hamiltonian ones; the only
+          change is the mass-shell normalisation of the four-momentum:
+        </p>
+        <pre className="eq">light:  gᵘᵛ p_ᵤ p_ᵥ = 0        matter:  gᵘᵛ p_ᵤ p_ᵥ = −1</pre>
+        <p>
+          That single <code>−1</code> is the whole story. In the equatorial plane a timelike geodesic still
+          conserves an energy <code>E</code> and angular momentum <code>L</code>, and the radial motion
+          obeys <code>(dr/dτ)² = R(r)</code> — the particle is trapped between the two zeros of{' '}
+          <code>R</code>, its periapsis and apoapsis. Give the Lab those two radii and it solves for the
+          exact <code>(E, L)</code> and integrates the orbit.
+        </p>
+        <p>
+          Unlike a Newtonian ellipse, the orbit <strong>does not close</strong>: the periapsis creeps
+          forward every lap. This is <strong>perihelion precession</strong> — the 43 arc-seconds per century
+          of Mercury that was general relativity’s first observational triumph. In the weak field the advance
+          per orbit tends to Einstein’s <code>6πM / [a(1−e²)]</code>; wind the periapsis down toward the
+          light-ring and it explodes into a <strong>zoom–whirl</strong> orbit that winds several times around
+          the throat before swinging back out — a trajectory with no Newtonian analogue at all.
+        </p>
+        <p>
+          Matter also has something light does not: an <strong>innermost stable circular orbit</strong>, the
+          ISCO, at <code>6M</code> for a static hole and marching inward with prograde spin. It is where the
+          circular-orbit minimum of <code>R(r)</code> becomes an inflection (<code>R″ = 0</code>) — beyond it
+          no stable circular orbit exists, and an eccentric orbit whose periapsis crosses the{' '}
+          <strong>separatrix</strong> loses its inner turning point and <strong>plunges</strong> through the
+          horizon. The Lab draws the ISCO, the ergosphere and the light rings for scale, plots{' '}
+          <code>R(r)</code> live beside the orbit, and reads off the two clocks — the orbiting particle’s
+          proper time runs at <code>dτ/dt</code> of a distant one, slowest at periapsis where it is deepest
+          in the well and moving fastest. Everything the Lab shows is re-derived and checked in the{' '}
+          <strong>Observatory</strong>’s “Timelike orbits” self-test group: the circular <code>E, L</code>
+          against Bardeen–Press–Teukolsky, the precession against exact GR, the ISCO against marginal
+          stability, and the mass shell held to <code>~10⁻¹²</code> along real integrated world-lines.
+        </p>
+
         <h2>Light echoes: the photon ring</h2>
         <p>
           A photon that grazes close enough to the hole doesn’t just bend — it can loop the shadow one or
