@@ -89,7 +89,11 @@ function HelpView() {
     ['Cancel a wire', 'Esc, or click empty space'],
     ['Flip an input', 'Click the input switch'],
     ['Move a part', 'Drag its body'],
-    ['Select / delete', 'Click it, then press Del'],
+    ['Select many', 'Shift-click parts, or Shift-drag a box'],
+    ['Duplicate / delete', 'Ctrl+D to clone, Del to remove'],
+    ['Undo / redo', 'Ctrl+Z / Ctrl+Shift+Z'],
+    ['Copy / paste', 'Ctrl+C, then Ctrl+V'],
+    ['Edit a part', 'Select it — rename, set clock rate, in the inspector'],
     ['Pan the board', 'Drag empty space'],
     ['Zoom', 'Mouse wheel'],
   ]
@@ -110,8 +114,15 @@ function HelpView() {
       <h4>Try this</h4>
       <p className="msg">
         Load <b>4-bit hex counter</b> from the examples menu and press Run — four flip-flops ripple-divide the
-        clock and drive a seven-segment digit through 0–F. Or open <b>Half adder</b> and hit the truth table
-        to see A ⊕ B and A · B enumerated.
+        clock and drive a seven-segment digit through 0–F. Open the <b>∿ Analyzer</b> to watch each stage as a
+        timing diagram (and download it as CSV). Or open <b>Half adder</b> and hit the truth table to see
+        A ⊕ B and A · B enumerated.
+      </p>
+      <h4>Analyzer & sharing</h4>
+      <p className="msg">
+        The <b>∿ Analyzer</b> records every input, clock, flip-flop and LED as a stepped waveform against a shared
+        time axis — hover for a time cursor, or export the trace as CSV. <b>↗ Share</b> packs the whole circuit into
+        a link that reopens it exactly, and every edit is undoable with Ctrl+Z.
       </p>
       <h4>How the simulator works</h4>
       <p className="msg">

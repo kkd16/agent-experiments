@@ -205,6 +205,44 @@ const comparator2 = (): Snapshot =>
     .wire('and', 0, 'eq', 0)
     .done()
 
+const shiftReg = (): Snapshot =>
+  new Build()
+    .add('din', 'INPUT', 40, 90).label('din', 'Din')
+    .add('clk', 'CLOCK', 40, 260, '0.6')
+    .add('f0', 'DFF', 240, 150)
+    .add('f1', 'DFF', 440, 150)
+    .add('f2', 'DFF', 640, 150)
+    .add('q0', 'OUTPUT', 840, 120).label('q0', 'Q0')
+    .add('q1', 'OUTPUT', 840, 210).label('q1', 'Q1')
+    .add('q2', 'OUTPUT', 840, 300).label('q2', 'Q2')
+    // Synchronous 3-stage shift register: every edge moves Din one stage right.
+    // (Correct only because the engine samples all flip-flops before committing.)
+    .wire('din', 0, 'f0', 0)
+    .wire('f0', 0, 'f1', 0)
+    .wire('f1', 0, 'f2', 0)
+    .wire('clk', 0, 'f0', 1).wire('clk', 0, 'f1', 1).wire('clk', 0, 'f2', 1)
+    .wire('f0', 0, 'q0', 0).wire('f1', 0, 'q1', 0).wire('f2', 0, 'q2', 0)
+    .done()
+
+const johnson = (): Snapshot => {
+  const b = new Build()
+  b.add('clk', 'CLOCK', 40, 300, '0.5')
+  const xs = [220, 400, 580, 760]
+  for (let i = 0; i < 4; i++) {
+    b.add(`f${i}`, 'DFF', xs[i], 150)
+    b.wire('clk', 0, `f${i}`, 1)
+    b.add(`q${i}`, 'OUTPUT', xs[i] + 8, 40).label(`q${i}`, `Q${i}`)
+    b.wire(`f${i}`, 0, `q${i}`, 0)
+  }
+  // Twisted-ring counter: the last stage's Q' feeds back to the first stage's D,
+  // producing an 8-state 0000→1000→1100→1110→1111→0111→0011→0001 walk.
+  b.wire('f3', 1, 'f0', 0)
+  b.wire('f0', 0, 'f1', 0)
+  b.wire('f1', 0, 'f2', 0)
+  b.wire('f2', 0, 'f3', 0)
+  return b.done()
+}
+
 export const EXAMPLES: Example[] = [
   { id: 'half-adder', title: 'Half adder', note: 'A ⊕ B → Sum, A · B → Carry. Open the truth table.', build: halfAdder },
   { id: 'full-adder', title: 'Full adder', note: 'Three inputs, ripple-carry cell of every ALU.', build: fullAdder },
@@ -216,5 +254,7 @@ export const EXAMPLES: Example[] = [
   { id: 'gated-latch', title: 'Gated D latch', note: 'Transparent while Enable is high; drop it to hold the bit.', build: gatedLatch },
   { id: 't-counter', title: '2-bit T counter', note: 'Two T flip-flops ripple-count 0→3. Run with the Analyzer open.', build: tCounter },
   { id: 'comparator', title: '2-bit comparator', note: 'A=B via XNOR + AND. Open the truth table.', build: comparator2 },
+  { id: 'shift-reg', title: '3-bit shift register', note: 'Toggle Din, then Step — one bit marches across per edge. Analyzer on.', build: shiftReg },
+  { id: 'johnson', title: '4-bit Johnson counter', note: 'A twisted ring cycles 8 states. Run with the Analyzer open.', build: johnson },
   { id: 'hex-counter', title: '4-bit hex counter', note: 'Ripple counter driving a 7-segment digit. Press Run.', build: hexCounter },
 ]

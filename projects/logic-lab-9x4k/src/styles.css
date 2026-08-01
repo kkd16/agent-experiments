@@ -377,6 +377,112 @@ svg.scope {
   stroke: var(--on);
   filter: drop-shadow(0 0 2px var(--on-glow));
 }
+.scope-cursor {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+/* ---- inspector (floating card for the selected part) ---- */
+.inspector {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 210px;
+  background: linear-gradient(180deg, #141a26, #10141d);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+  z-index: 5;
+  overflow: hidden;
+}
+.inspector header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.inspector .ikind {
+  font-size: 10px;
+  font-weight: 700;
+  color: #cfe3ff;
+  background: #1c2740;
+  border: 1px solid #33507e;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.inspector header b {
+  font-size: 13px;
+}
+.inspector header .close {
+  margin-left: auto;
+  padding: 2px 6px;
+}
+.ibody {
+  padding: 10px;
+}
+.ifield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.ifield > span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.ifield input {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+  width: 100%;
+}
+.ifield input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ifield .irow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ifield .irow small {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.toggle {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  width: 46px;
+  height: 30px;
+  color: #5b6577;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.toggle.on {
+  color: var(--on);
+  border-color: var(--on);
+  box-shadow: 0 0 0 1px var(--on) inset;
+}
+.ihint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 
 /* ---- side panel (truth table / help) ---- */
 .drawer {

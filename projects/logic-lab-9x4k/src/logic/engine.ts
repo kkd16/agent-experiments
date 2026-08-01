@@ -163,47 +163,47 @@ export class Engine {
   }
 
   private advanceSeq(): boolean {
-    let changed = false
+    // Two-phase: compute every memory cell's next Q from the CURRENT outputs, then
+    // commit them together. Without this, a register of D flip-flops sharing one
+    // clock would read a neighbour's freshly-written value and "shoot through"
+    // several stages in a single edge; two-phase makes synchronous registers correct.
+    const updates: { comp: Comp; q: boolean }[] = []
     for (const comp of this.comps.values()) {
       if (comp.kind === 'DFF') {
         const ins = this.inputs(comp)
-        const d = ins[0]
         const clk = ins[1]
-        if (clk && !comp.prevClk) changed = setQ(comp, d) || changed
+        if (clk && !comp.prevClk) updates.push({ comp, q: ins[0] })
         comp.prevClk = clk
       } else if (comp.kind === 'TFF') {
         // T flip-flop: rising edge toggles Q when T is high, otherwise holds.
         const ins = this.inputs(comp)
-        const t = ins[0]
         const clk = ins[1]
-        if (clk && !comp.prevClk && t) changed = setQ(comp, !comp.outs[0]) || changed
+        if (clk && !comp.prevClk && ins[0]) updates.push({ comp, q: !comp.outs[0] })
         comp.prevClk = clk
       } else if (comp.kind === 'JKFF') {
         // JK flip-flop: on a rising edge, JK selects hold(00)/reset(01)/set(10)/toggle(11).
         const ins = this.inputs(comp)
-        const j = ins[0]
-        const k = ins[1]
         const clk = ins[2]
         if (clk && !comp.prevClk) {
           const q = comp.outs[0]
-          const next = j && k ? !q : j ? true : k ? false : q
-          changed = setQ(comp, next) || changed
+          const j = ins[0]
+          const k = ins[1]
+          updates.push({ comp, q: j && k ? !q : j ? true : k ? false : q })
         }
         comp.prevClk = clk
       } else if (comp.kind === 'DLATCH') {
         // Level-sensitive: transparent while Enable is high, holds its last value otherwise.
         const ins = this.inputs(comp)
-        const d = ins[0]
-        const en = ins[1]
-        if (en) changed = setQ(comp, d) || changed
+        if (ins[1]) updates.push({ comp, q: ins[0] })
       } else if (comp.kind === 'SRLATCH') {
         const ins = this.inputs(comp)
         const s = ins[0]
         const r = ins[1]
-        const q = s ? true : r ? false : comp.outs[0]
-        changed = setQ(comp, q) || changed
+        updates.push({ comp, q: s ? true : r ? false : comp.outs[0] })
       }
     }
+    let changed = false
+    for (const u of updates) changed = setQ(u.comp, u.q) || changed
     return changed
   }
 
