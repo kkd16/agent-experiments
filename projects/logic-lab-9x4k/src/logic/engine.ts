@@ -20,6 +20,22 @@ export interface Snapshot {
   wires: Wire[]
 }
 
+/** A single traced signal in the logic analyzer. */
+export interface Probe {
+  id: string
+  label: string
+  role: 'in' | 'clk' | 'q' | 'out'
+}
+
+/** One recorded moment: the value of every probe at time `t` (seconds). */
+export interface TraceSample {
+  t: number
+  v: boolean[]
+}
+
+const TRACE_CAP = 4000
+
+
 export class Engine {
   comps: Map<string, Comp> = new Map()
   wires: Wire[] = []
@@ -27,6 +43,14 @@ export class Engine {
   private feed: Map<string, PinRef> = new Map()
   /** Whether the last step failed to reach a stable state (oscillation). */
   unstable = false
+
+  // ---- logic analyzer -------------------------------------------------------
+  /** Simulated wall-clock, in seconds, accumulated across steps while tracing. */
+  time = 0
+  /** Signals sampled into the trace, fixed for the life of a recording. */
+  traceProbes: Probe[] = []
+  /** Recorded waveform samples, oldest first, capped at TRACE_CAP. */
+  trace: TraceSample[] = []
 
   private rebuildFeed() {
     this.feed.clear()
@@ -76,6 +100,21 @@ export class Engine {
 
   removeWire(id: string) {
     this.wires = this.wires.filter((w) => w.id !== id)
+    this.rebuildFeed()
+  }
+
+  /** Remove several components (and their wires) at once, rebuilding the feed once. */
+  removeComps(ids: Iterable<string>) {
+    const set = ids instanceof Set ? ids : new Set(ids)
+    for (const id of set) this.comps.delete(id)
+    this.wires = this.wires.filter((w) => !set.has(w.from.comp) && !set.has(w.to.comp))
+    this.rebuildFeed()
+  }
+
+  /** Insert already-built components and wires (e.g. a duplicated group), feed rebuilt once. */
+  addCluster(comps: Comp[], wires: Wire[]) {
+    for (const c of comps) this.comps.set(c.id, c)
+    for (const w of wires) this.wires.push(w)
     this.rebuildFeed()
   }
 
@@ -130,24 +169,39 @@ export class Engine {
         const ins = this.inputs(comp)
         const d = ins[0]
         const clk = ins[1]
+        if (clk && !comp.prevClk) changed = setQ(comp, d) || changed
+        comp.prevClk = clk
+      } else if (comp.kind === 'TFF') {
+        // T flip-flop: rising edge toggles Q when T is high, otherwise holds.
+        const ins = this.inputs(comp)
+        const t = ins[0]
+        const clk = ins[1]
+        if (clk && !comp.prevClk && t) changed = setQ(comp, !comp.outs[0]) || changed
+        comp.prevClk = clk
+      } else if (comp.kind === 'JKFF') {
+        // JK flip-flop: on a rising edge, JK selects hold(00)/reset(01)/set(10)/toggle(11).
+        const ins = this.inputs(comp)
+        const j = ins[0]
+        const k = ins[1]
+        const clk = ins[2]
         if (clk && !comp.prevClk) {
-          if (comp.outs[0] !== d) {
-            comp.outs[0] = d
-            comp.outs[1] = !d
-            changed = true
-          }
+          const q = comp.outs[0]
+          const next = j && k ? !q : j ? true : k ? false : q
+          changed = setQ(comp, next) || changed
         }
         comp.prevClk = clk
+      } else if (comp.kind === 'DLATCH') {
+        // Level-sensitive: transparent while Enable is high, holds its last value otherwise.
+        const ins = this.inputs(comp)
+        const d = ins[0]
+        const en = ins[1]
+        if (en) changed = setQ(comp, d) || changed
       } else if (comp.kind === 'SRLATCH') {
         const ins = this.inputs(comp)
         const s = ins[0]
         const r = ins[1]
         const q = s ? true : r ? false : comp.outs[0]
-        if (comp.outs[0] !== q) {
-          comp.outs[0] = q
-          comp.outs[1] = !q
-          changed = true
-        }
+        changed = setQ(comp, q) || changed
       }
     }
     return changed
@@ -165,6 +219,56 @@ export class Engine {
       }
     }
     this.solve()
+    this.time += dt
+    this.record()
+  }
+
+  // ---- logic analyzer -------------------------------------------------------
+  /** The value currently on a probe (out pin for sources / flip-flops, driven pin for LEDs). */
+  private probeValue(p: Probe): boolean {
+    const c = this.comps.get(p.id)
+    if (!c) return false
+    if (p.role === 'out') return this.inputValue(c, 0)
+    return c.outs[0] ?? false
+  }
+
+  /** Enumerate the interesting signals to plot, ordered top-to-bottom by board position. */
+  buildProbes(): Probe[] {
+    const probes: Probe[] = []
+    for (const c of this.comps.values()) {
+      if (c.kind === 'INPUT') probes.push({ id: c.id, label: labelOr(c, 'IN'), role: 'in' })
+      // CLOCK stores its period in `label`, so it never names the probe — use a fixed tag.
+      else if (c.kind === 'CLOCK') probes.push({ id: c.id, label: 'CLK', role: 'clk' })
+      else if (c.kind === 'OUTPUT') probes.push({ id: c.id, label: labelOr(c, 'LED'), role: 'out' })
+      else if (c.kind === 'DFF' || c.kind === 'TFF' || c.kind === 'JKFF' || c.kind === 'DLATCH' || c.kind === 'SRLATCH')
+        probes.push({ id: c.id, label: labelOr(c, 'Q'), role: 'q' })
+    }
+    const pos = (id: string) => this.comps.get(id)
+    return probes.sort((a, b) => {
+      const ca = pos(a.id)!
+      const cb = pos(b.id)!
+      return ca.y - cb.y || ca.x - cb.x
+    })
+  }
+
+  /** Begin a fresh recording: fix the probe set, reset the clock, capture t=0. */
+  beginTrace() {
+    this.traceProbes = this.buildProbes()
+    this.trace = []
+    this.time = 0
+    this.record()
+  }
+
+  clearTrace() {
+    this.trace = []
+    this.time = 0
+    this.traceProbes = []
+  }
+
+  private record() {
+    if (this.traceProbes.length === 0) return
+    this.trace.push({ t: this.time, v: this.traceProbes.map((p) => this.probeValue(p)) })
+    if (this.trace.length > TRACE_CAP) this.trace.splice(0, this.trace.length - TRACE_CAP)
   }
 
   /** Solve combinational + sequential to steady state without advancing time. */
@@ -194,10 +298,25 @@ export class Engine {
     // (e.g. an upstream Q' sitting at 1 reading as a false→1 rising edge).
     this.settle()
     for (const comp of this.comps.values()) {
-      if (comp.kind === 'DFF') comp.prevClk = this.inputs(comp)[1]
+      if (comp.kind === 'DFF' || comp.kind === 'TFF') comp.prevClk = this.inputs(comp)[1]
+      else if (comp.kind === 'JKFF') comp.prevClk = this.inputs(comp)[2]
     }
     this.solve()
   }
+}
+
+/** A component's trimmed label, or a fallback tag when it has none. */
+function labelOr(comp: Comp, fallback: string): string {
+  const l = (comp.label ?? '').trim()
+  return l.length ? l : fallback
+}
+
+/** Write a two-output flip-flop's Q / Q' pair, returning whether anything changed. */
+function setQ(comp: Comp, q: boolean): boolean {
+  if (comp.outs[0] === q && comp.outs[1] === !q) return false
+  comp.outs[0] = q
+  comp.outs[1] = !q
+  return true
 }
 
 // Clock period (seconds) is stored in comp.label as a number string; default 1s.
@@ -210,6 +329,7 @@ export function defaultOuts(kind: Kind): boolean[] {
   const n = kindMeta(kind).numOut
   if (kind === 'CONST1') return [true]
   // two-output memory cells start with Q=0, Q'=1 so the complement is valid
-  if (kind === 'DFF' || kind === 'SRLATCH') return [false, true]
+  if (kind === 'DFF' || kind === 'TFF' || kind === 'JKFF' || kind === 'DLATCH' || kind === 'SRLATCH')
+    return [false, true]
   return new Array(n).fill(false)
 }

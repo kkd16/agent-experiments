@@ -103,6 +103,11 @@ button.btn.primary.running {
 button.btn.ghost {
   background: transparent;
 }
+button.btn.on {
+  border-color: var(--accent);
+  color: #d8f2ff;
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
 button.btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -283,6 +288,94 @@ svg.board.panning {
 .led-on {
   fill: var(--on);
   stroke: var(--on);
+}
+.selbox {
+  fill: rgba(92, 200, 255, 0.08);
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+/* ---- logic analyzer (bottom timing panel) ---- */
+.analyzer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 250px;
+  max-height: 55%;
+  background: linear-gradient(180deg, #0e131d, #0b0f17);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  z-index: 6;
+}
+.analyzer header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.analyzer header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.analyzer header .meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.analyzer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 10px;
+}
+svg.scope {
+  display: block;
+}
+.scope-row {
+  fill: transparent;
+}
+.scope-row.alt {
+  fill: rgba(255, 255, 255, 0.018);
+}
+.scope-grid {
+  stroke: #1a2130;
+  stroke-width: 1;
+}
+.scope-axis {
+  stroke: #263042;
+  stroke-width: 1;
+}
+.scope-name {
+  fill: #cdd6e6;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+.scope-name.role-in { fill: #7cc0ff; }
+.scope-name.role-clk { fill: #ffcf6b; }
+.scope-name.role-q { fill: #b79bff; }
+.scope-name.role-out { fill: #58e39a; }
+.scope-role {
+  fill: #5b6577;
+  font-size: 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.scope-wave {
+  fill: none;
+  stroke: #45516a;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.scope-wave.hot {
+  stroke: var(--on);
+  filter: drop-shadow(0 0 2px var(--on-glow));
 }
 
 /* ---- side panel (truth table / help) ---- */

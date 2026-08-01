@@ -19,6 +19,9 @@ export type Kind =
   | 'XNOR'
   | 'MUX2'
   | 'DFF'
+  | 'TFF'
+  | 'JKFF'
+  | 'DLATCH'
   | 'SRLATCH'
 
 export type Category = 'io' | 'gate' | 'block'
@@ -54,6 +57,9 @@ const meta: Record<Kind, KindMeta> = {
   XNOR: { label: 'XNOR', short: 'XNOR', category: 'gate', numIn: 2, numOut: 1, inLabels: ['', ''], outLabels: [''], stateful: false, blurb: '1 when the inputs match.' },
   MUX2: { label: 'Mux 2:1', short: 'MUX', category: 'block', numIn: 3, numOut: 1, inLabels: ['a', 'b', 's'], outLabels: ['y'], stateful: false, blurb: 'Selects a or b based on the s line.' },
   DFF: { label: 'D Flip-Flop', short: 'DFF', category: 'block', numIn: 2, numOut: 2, inLabels: ['D', '>'], outLabels: ['Q', "Q'"], stateful: true, blurb: 'Captures D on each rising clock edge.' },
+  TFF: { label: 'T Flip-Flop', short: 'TFF', category: 'block', numIn: 2, numOut: 2, inLabels: ['T', '>'], outLabels: ['Q', "Q'"], stateful: true, blurb: 'Toggles Q on a rising edge while T is 1 — a divide-by-two.' },
+  JKFF: { label: 'JK Flip-Flop', short: 'JKFF', category: 'block', numIn: 3, numOut: 2, inLabels: ['J', 'K', '>'], outLabels: ['Q', "Q'"], stateful: true, blurb: 'Universal edge-triggered cell: hold / reset / set / toggle.' },
+  DLATCH: { label: 'D Latch', short: 'DL', category: 'block', numIn: 2, numOut: 2, inLabels: ['D', 'E'], outLabels: ['Q', "Q'"], stateful: true, blurb: 'Transparent while Enable is 1, holds when it drops.' },
   SRLATCH: { label: 'SR Latch', short: 'SR', category: 'block', numIn: 2, numOut: 2, inLabels: ['S', 'R'], outLabels: ['Q', "Q'"], stateful: true, blurb: 'Set/Reset memory cell.' },
 }
 

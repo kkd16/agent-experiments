@@ -4,7 +4,7 @@ import type { Kind } from '../logic/kinds'
 const GROUPS: { title: string; kinds: Kind[] }[] = [
   { title: 'Sources & I/O', kinds: ['INPUT', 'OUTPUT', 'CLOCK', 'CONST1', 'CONST0', 'SEG7'] },
   { title: 'Logic gates', kinds: ['AND', 'OR', 'NOT', 'NAND', 'NOR', 'XOR', 'XNOR', 'BUF'] },
-  { title: 'Blocks', kinds: ['MUX2', 'DFF', 'SRLATCH'] },
+  { title: 'Blocks', kinds: ['MUX2', 'DFF', 'TFF', 'JKFF', 'DLATCH', 'SRLATCH'] },
 ]
 
 interface Props {
@@ -46,7 +46,8 @@ export default function Palette({ tool, setTool }: Props) {
         ) : (
           <>
             Pick a part, then click the board. Drag an output pin's dot to an input to wire them. Click an{' '}
-            <b>Input</b> to flip it. <kbd>Del</kbd> removes the selection.
+            <b>Input</b> to flip it. <kbd>Shift</kbd>-drag to box-select; <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates,{' '}
+            <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes, <kbd>Del</kbd> removes.
           </>
         )}
       </div>

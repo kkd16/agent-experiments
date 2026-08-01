@@ -146,6 +146,65 @@ const nandUniversal = (): Snapshot =>
     .wire('n4', 0, 'xor', 0)
     .done()
 
+const jkToggle = (): Snapshot =>
+  new Build()
+    .add('one', 'CONST1', 60, 110)
+    .add('clk', 'CLOCK', 60, 250, '0.6')
+    .add('jk', 'JKFF', 280, 150)
+    .add('q', 'OUTPUT', 500, 160).label('q', 'Q')
+    // J=K=1 makes a JK flip-flop toggle on every rising edge — a divide-by-two.
+    .wire('one', 0, 'jk', 0)
+    .wire('one', 0, 'jk', 1)
+    .wire('clk', 0, 'jk', 2)
+    .wire('jk', 0, 'q', 0)
+    .done()
+
+const gatedLatch = (): Snapshot =>
+  new Build()
+    .add('d', 'INPUT', 60, 120).label('d', 'D')
+    .add('e', 'INPUT', 60, 240).label('e', 'En')
+    .add('dl', 'DLATCH', 280, 150)
+    .add('q', 'OUTPUT', 500, 160).label('q', 'Q')
+    // While En=1 the latch is transparent (Q follows D); drop En to freeze the bit.
+    .wire('d', 0, 'dl', 0)
+    .wire('e', 0, 'dl', 1)
+    .wire('dl', 0, 'q', 0)
+    .done()
+
+const tCounter = (): Snapshot =>
+  new Build()
+    .add('one', 'CONST1', 40, 110)
+    .add('clk', 'CLOCK', 40, 260, '0.5')
+    .add('t0', 'TFF', 240, 160)
+    .add('t1', 'TFF', 460, 160)
+    .add('q0', 'OUTPUT', 680, 140).label('q0', 'b0')
+    .add('q1', 'OUTPUT', 680, 250).label('q1', 'b1')
+    // Two toggling T flip-flops; stage 1 clocks off stage 0's Q' so the pair counts 0→3.
+    .wire('one', 0, 't0', 0)
+    .wire('one', 0, 't1', 0)
+    .wire('clk', 0, 't0', 1)
+    .wire('t0', 1, 't1', 1)
+    .wire('t0', 0, 'q0', 0)
+    .wire('t1', 0, 'q1', 0)
+    .done()
+
+const comparator2 = (): Snapshot =>
+  new Build()
+    .add('a0', 'INPUT', 40, 80).label('a0', 'A0')
+    .add('a1', 'INPUT', 40, 180).label('a1', 'A1')
+    .add('b0', 'INPUT', 40, 320).label('b0', 'B0')
+    .add('b1', 'INPUT', 40, 420).label('b1', 'B1')
+    .add('x0', 'XNOR', 260, 120)
+    .add('x1', 'XNOR', 260, 340)
+    .add('and', 'AND', 480, 230)
+    .add('eq', 'OUTPUT', 700, 240).label('eq', 'A=B')
+    // Equality bit-by-bit (XNOR), AND-ed together: 1 only when the two 2-bit numbers match.
+    .wire('a0', 0, 'x0', 0).wire('b0', 0, 'x0', 1)
+    .wire('a1', 0, 'x1', 0).wire('b1', 0, 'x1', 1)
+    .wire('x0', 0, 'and', 0).wire('x1', 0, 'and', 1)
+    .wire('and', 0, 'eq', 0)
+    .done()
+
 export const EXAMPLES: Example[] = [
   { id: 'half-adder', title: 'Half adder', note: 'A ⊕ B → Sum, A · B → Carry. Open the truth table.', build: halfAdder },
   { id: 'full-adder', title: 'Full adder', note: 'Three inputs, ripple-carry cell of every ALU.', build: fullAdder },
@@ -153,5 +212,9 @@ export const EXAMPLES: Example[] = [
   { id: 'nand', title: 'XOR from NAND', note: 'NAND is universal — four of them make XOR.', build: nandUniversal },
   { id: 'sr-latch', title: 'SR latch (NOR)', note: 'Cross-coupled NORs remember one bit. Run it.', build: srLatch },
   { id: 'toggle', title: 'T flip-flop', note: 'Q̄→D turns a D-FF into a divide-by-two. Press Run.', build: toggle },
+  { id: 'jk-toggle', title: 'JK toggle', note: 'J=K=1 → the JK flip-flop toggles every edge. Open the Analyzer.', build: jkToggle },
+  { id: 'gated-latch', title: 'Gated D latch', note: 'Transparent while Enable is high; drop it to hold the bit.', build: gatedLatch },
+  { id: 't-counter', title: '2-bit T counter', note: 'Two T flip-flops ripple-count 0→3. Run with the Analyzer open.', build: tCounter },
+  { id: 'comparator', title: '2-bit comparator', note: 'A=B via XNOR + AND. Open the truth table.', build: comparator2 },
   { id: 'hex-counter', title: '4-bit hex counter', note: 'Ripple counter driving a 7-segment digit. Press Run.', build: hexCounter },
 ]

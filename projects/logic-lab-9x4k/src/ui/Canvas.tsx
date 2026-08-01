@@ -6,6 +6,7 @@ import { bodyHeight, bodyWidth, inputPin, outputPin, snap } from '../logic/geome
 import { kindMeta } from '../logic/kinds'
 import type { Kind } from '../logic/kinds'
 import type { Selection, View } from './types'
+import { selectedComps } from './types'
 
 interface Props {
   engine: Engine
@@ -16,6 +17,8 @@ interface Props {
   selection: Selection
   setSelection: (s: Selection) => void
   commit: () => void
+  beginMutation: () => void
+  endMutation: () => void
 }
 
 const SEG7_MAP: Record<number, string> = {
@@ -24,17 +27,30 @@ const SEG7_MAP: Record<number, string> = {
   12: '1001110', 13: '0111101', 14: '1001111', 15: '1000111',
 }
 
+type Drag =
+  | null
+  | { mode: 'group'; ids: string[]; primary: string; origins: Map<string, { x: number; y: number }>; sx: number; sy: number; moved: boolean }
+  | { mode: 'pan'; sx: number; sy: number; vx: number; vy: number }
+  | { mode: 'box'; base: string[]; ax: number; ay: number }
+
+interface Box { ax: number; ay: number; bx: number; by: number }
+
+function boxHit(c: Comp, x0: number, y0: number, x1: number, y1: number): boolean {
+  const w = bodyWidth(c.kind)
+  const h = bodyHeight(c.kind)
+  return c.x < x1 && c.x + w > x0 && c.y < y1 && c.y + h > y0
+}
+
 export default function Canvas(props: Props) {
-  const { engine, view, setView, tool, onPlace, selection, setSelection, commit } = props
+  const { engine, view, setView, tool, onPlace, selection, setSelection, commit, beginMutation, endMutation } = props
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [pending, setPending] = useState<PinRef | null>(null)
   const [cursor, setCursor] = useState({ x: 0, y: 0 })
   const [panning, setPanning] = useState(false)
-  const drag = useRef<
-    | null
-    | { mode: 'comp'; id: string; ox: number; oy: number; sx: number; sy: number; moved: boolean }
-    | { mode: 'pan'; sx: number; sy: number; vx: number; vy: number }
-  >(null)
+  const [box, setBox] = useState<Box | null>(null)
+  const drag = useRef<Drag>(null)
+
+  const selIds = selectedComps(selection)
 
   function toWorld(clientX: number, clientY: number) {
     const r = svgRef.current!.getBoundingClientRect()
@@ -49,7 +65,7 @@ export default function Canvas(props: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // ---- pointer handlers on the background -----------------------------------
+  // ---- background pointer handlers ------------------------------------------
   function onBgDown(e: React.PointerEvent) {
     if (e.button === 1 || e.button === 2) return
     const w = toWorld(e.clientX, e.clientY)
@@ -57,8 +73,14 @@ export default function Canvas(props: Props) {
       onPlace(tool, snap(w.x - bodyWidth(tool) / 2), snap(w.y - bodyHeight(tool) / 2))
       return
     }
-    // click on empty space: cancel wiring, deselect, start pan
     setPending(null)
+    if (e.shiftKey) {
+      // Shift-drag on empty space rubber-bands a selection box (additive).
+      drag.current = { mode: 'box', base: selIds, ax: w.x, ay: w.y }
+      setBox({ ax: w.x, ay: w.y, bx: w.x, by: w.y })
+      svgRef.current?.setPointerCapture(e.pointerId)
+      return
+    }
     setSelection(null)
     drag.current = { mode: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y }
     setPanning(true)
@@ -72,35 +94,51 @@ export default function Canvas(props: Props) {
     if (!d) return
     if (d.mode === 'pan') {
       setView({ ...view, x: d.vx + (e.clientX - d.sx), y: d.vy + (e.clientY - d.sy) })
+    } else if (d.mode === 'box') {
+      const x0 = Math.min(d.ax, w.x), x1 = Math.max(d.ax, w.x)
+      const y0 = Math.min(d.ay, w.y), y1 = Math.max(d.ay, w.y)
+      setBox({ ax: d.ax, ay: d.ay, bx: w.x, by: w.y })
+      const hits = new Set(d.base)
+      for (const c of engine.comps.values()) if (boxHit(c, x0, y0, x1, y1)) hits.add(c.id)
+      setSelection(hits.size ? { kind: 'comp', ids: [...hits] } : null)
     } else {
-      const c = engine.comps.get(d.id)
-      if (!c) return
-      const nx = d.ox + (e.clientX - d.sx) / view.scale
-      const ny = d.oy + (e.clientY - d.sy) / view.scale
-      if (Math.abs(nx - d.ox) > 2 || Math.abs(ny - d.oy) > 2) d.moved = true
-      c.x = nx
-      c.y = ny
+      const dx = (e.clientX - d.sx) / view.scale
+      const dy = (e.clientY - d.sy) / view.scale
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) d.moved = true
+      for (const id of d.ids) {
+        const c = engine.comps.get(id)
+        const o = d.origins.get(id)
+        if (c && o) {
+          c.x = o.x + dx
+          c.y = o.y + dy
+        }
+      }
       commit()
     }
   }
 
   function onUp(e: React.PointerEvent) {
     const d = drag.current
-    if (d && d.mode === 'comp') {
-      const c = engine.comps.get(d.id)
-      if (c) {
-        if (!d.moved && c.kind === 'INPUT') {
-          c.outs[0] = !c.outs[0]
-          engine.solve()
-        } else {
-          c.x = snap(c.x)
-          c.y = snap(c.y)
+    if (d && d.mode === 'group') {
+      const primary = engine.comps.get(d.primary)
+      if (!d.moved && d.ids.length === 1 && primary && primary.kind === 'INPUT') {
+        primary.outs[0] = !primary.outs[0]
+        engine.solve()
+      } else if (d.moved) {
+        for (const id of d.ids) {
+          const c = engine.comps.get(id)
+          if (c) {
+            c.x = snap(c.x)
+            c.y = snap(c.y)
+          }
         }
-        commit()
       }
+      commit()
+      endMutation()
     }
     drag.current = null
     setPanning(false)
+    setBox(null)
     try {
       svgRef.current?.releasePointerCapture(e.pointerId)
     } catch {
@@ -110,11 +148,25 @@ export default function Canvas(props: Props) {
 
   // ---- element handlers -----------------------------------------------------
   function onCompDown(e: React.PointerEvent, c: Comp) {
-    if (tool) return // let background place instead
+    if (tool) return
     e.stopPropagation()
-    setSelection({ kind: 'comp', id: c.id })
     setPending(null)
-    drag.current = { mode: 'comp', id: c.id, ox: c.x, oy: c.y, sx: e.clientX, sy: e.clientY, moved: false }
+    const inSel = selIds.includes(c.id)
+    if (e.shiftKey) {
+      // toggle membership, no drag
+      const next = inSel ? selIds.filter((id) => id !== c.id) : [...selIds, c.id]
+      setSelection(next.length ? { kind: 'comp', ids: next } : null)
+      return
+    }
+    const groupIds = inSel && selIds.length > 1 ? selIds : [c.id]
+    if (!inSel) setSelection({ kind: 'comp', ids: [c.id] })
+    const origins = new Map<string, { x: number; y: number }>()
+    for (const id of groupIds) {
+      const g = engine.comps.get(id)
+      if (g) origins.set(id, { x: g.x, y: g.y })
+    }
+    beginMutation()
+    drag.current = { mode: 'group', ids: groupIds, primary: c.id, origins, sx: e.clientX, sy: e.clientY, moved: false }
     svgRef.current?.setPointerCapture(e.pointerId)
   }
 
@@ -122,11 +174,13 @@ export default function Canvas(props: Props) {
     e.stopPropagation()
     if (pending) {
       if (!isOutput) {
+        beginMutation()
         engine.addWire(pending, ref)
+        endMutation()
         commit()
         setPending(null)
       } else {
-        setPending(ref) // restart from a different output
+        setPending(ref)
       }
     } else if (isOutput) {
       setPending(ref)
@@ -153,6 +207,7 @@ export default function Canvas(props: Props) {
   // ---- render ---------------------------------------------------------------
   const comps = Array.from(engine.comps.values())
   const cls = `board${tool ? ' placing' : ''}${panning ? ' panning' : ''}`
+  const selWire = selection?.kind === 'wire' ? selection.id : null
 
   return (
     <svg
@@ -182,7 +237,7 @@ export default function Canvas(props: Props) {
           const on = src.outs[w.from.pin] ?? false
           const dx = Math.max(30, Math.abs(b.x - a.x) * 0.5)
           const path = `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`
-          const sel = selection?.kind === 'wire' && selection.id === w.id
+          const sel = selWire === w.id
           return (
             <g key={w.id}>
               <path className="wire hit" d={path} onPointerDown={(e) => onWireDown(e, w.id)} />
@@ -208,12 +263,24 @@ export default function Canvas(props: Props) {
             key={c.id}
             c={c}
             engine={engine}
-            selected={selection?.kind === 'comp' && selection.id === c.id}
+            selected={selIds.includes(c.id)}
             pendingActive={!!pending}
             onCompDown={onCompDown}
             onPinDown={onPinDown}
           />
         ))}
+
+        {/* selection box */}
+        {box && (
+          <rect
+            className="selbox"
+            x={Math.min(box.ax, box.bx)}
+            y={Math.min(box.ay, box.by)}
+            width={Math.abs(box.bx - box.ax)}
+            height={Math.abs(box.by - box.ay)}
+            pointerEvents="none"
+          />
+        )}
       </g>
     </svg>
   )
