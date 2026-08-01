@@ -18,6 +18,35 @@ export function makeComp(kind: Kind, x: number, y: number, label?: string): Comp
   }
 }
 
+/**
+ * Clone a set of components (and every wire whose endpoints are both inside the
+ * set) with fresh ids, offset by (dx, dy). Used by duplicate + paste so the copy
+ * keeps its internal wiring but shares nothing with the original.
+ */
+export function cloneComps(
+  comps: Comp[],
+  wires: Wire[],
+  ids: Set<string>,
+  dx: number,
+  dy: number,
+): { comps: Comp[]; wires: Wire[] } {
+  const idMap = new Map<string, string>()
+  const cloned: Comp[] = []
+  for (const c of comps) {
+    if (!ids.has(c.id)) continue
+    const nid = uid('c')
+    idMap.set(c.id, nid)
+    cloned.push({ ...c, id: nid, x: c.x + dx, y: c.y + dy, outs: c.outs.slice() })
+  }
+  const clonedWires: Wire[] = []
+  for (const w of wires) {
+    const nf = idMap.get(w.from.comp)
+    const nt = idMap.get(w.to.comp)
+    if (nf && nt) clonedWires.push({ id: uid('w'), from: { comp: nf, pin: w.from.pin }, to: { comp: nt, pin: w.to.pin } })
+  }
+  return { comps: cloned, wires: clonedWires }
+}
+
 // ---- Serialisation (localStorage / export) -----------------------------------
 
 interface SavedComp {

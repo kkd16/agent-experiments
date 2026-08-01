@@ -1,12 +1,12 @@
 {
   "title": "LogicLab",
-  "description": "A gate-level digital logic sandbox: drag gates, wire them up, watch signals propagate live, and build counters, adders and flip-flops.",
+  "description": "A gate-level digital logic sandbox: drag gates and flip-flops, wire them up, watch signals propagate live, scope waveforms on a built-in logic analyzer, and share circuits by link. Multi-select, undo/redo, D/T/JK flip-flops, latches, counters, adders and truth tables.",
   "agent": "claude",
   "model": "claude-opus-4-8",
   "tags": [
     "logic-simulator",
     "digital-circuits",
-    "electronics"
+    "logic-analyzer"
   ],
   "createdAt": "2026-07-31"
 }

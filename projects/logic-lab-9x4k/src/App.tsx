@@ -1,22 +1,28 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './styles.css'
 import { Engine } from './logic/engine'
-import { makeComp, serialize, deserialize } from './logic/factory'
+import { makeComp, serialize, deserialize, cloneComps } from './logic/factory'
 import type { SavedCircuit } from './logic/factory'
+import type { Comp, Wire } from './logic/geometry'
 import { bodyHeight, bodyWidth } from './logic/geometry'
 import type { Kind } from './logic/kinds'
 import { EXAMPLES } from './logic/examples'
+import { History } from './logic/history'
+import { shareUrl, readHashCircuit } from './logic/share'
 import Canvas from './ui/Canvas'
 import Palette from './ui/Palette'
 import Drawer from './ui/Drawer'
+import Analyzer from './ui/Analyzer'
 import type { Selection, View } from './ui/types'
+import { selectedComps } from './ui/types'
 
 const STORAGE_KEY = 'logiclab.save.v1'
 
 export default function App() {
   const [engine] = useState(() => {
     const e = new Engine()
-    e.load(EXAMPLES.find((x) => x.id === 'hex-counter')!.build())
+    const shared = readHashCircuit()
+    e.load(shared ? deserialize(shared) : EXAMPLES.find((x) => x.id === 'hex-counter')!.build())
     return e
   })
 
@@ -29,12 +35,33 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null)
   const [view, setView] = useState<View>({ x: 60, y: 40, scale: 1 })
   const [drawer, setDrawer] = useState<'truth' | 'help' | null>(null)
+  const [analyzerOpen, setAnalyzerOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+
+  // ---- undo/redo history + clipboard ----------------------------------------
+  const history = useRef(new History())
+  const clipboard = useRef<{ comps: Comp[]; wires: Wire[] } | null>(null)
+  const pasteN = useRef(0)
+  const [histState, setHistState] = useState({ undo: false, redo: false })
+  const refreshHistory = useCallback(
+    () => setHistState({ undo: history.current.canUndo(), redo: history.current.canRedo() }),
+    [],
+  )
+  const snapJSON = useCallback(() => JSON.stringify(serialize(engine.snapshot())), [engine])
+  const beginMutation = useCallback(() => history.current.begin(snapJSON()), [snapJSON])
+  const endMutation = useCallback(() => {
+    history.current.commit(snapJSON())
+    refreshHistory()
+  }, [snapJSON, refreshHistory])
 
   const flash = useCallback((m: string) => {
     setToast(m)
     window.setTimeout(() => setToast((t) => (t === m ? null : t)), 1600)
   }, [])
+
+  const restartTrace = useCallback(() => {
+    if (analyzerOpen) engine.beginTrace()
+  }, [analyzerOpen, engine])
 
   // ---- simulation loop ------------------------------------------------------
   useEffect(() => {
@@ -52,58 +79,162 @@ export default function App() {
     return () => cancelAnimationFrame(raf)
   }, [running, speed, engine, bump])
 
+  const toggleRun = useCallback(() => {
+    setRunning((r) => {
+      const next = !r
+      if (next && analyzerOpen) engine.beginTrace()
+      return next
+    })
+  }, [analyzerOpen, engine])
+
+  // ---- undo / redo / duplicate / copy / paste -------------------------------
+  const applyState = useCallback(
+    (json: string | null) => {
+      if (json == null) return
+      engine.load(deserialize(JSON.parse(json) as SavedCircuit))
+      setSelection(null)
+      setRunning(false)
+      restartTrace()
+      refreshHistory()
+      bump()
+    },
+    [engine, restartTrace, refreshHistory, bump],
+  )
+  const undo = useCallback(() => applyState(history.current.undo(snapJSON())), [applyState, snapJSON])
+  const redo = useCallback(() => applyState(history.current.redo(snapJSON())), [applyState, snapJSON])
+
+  const duplicate = useCallback(() => {
+    const ids = selectedComps(selection)
+    if (!ids.length) return
+    beginMutation()
+    const { comps, wires } = cloneComps(Array.from(engine.comps.values()), engine.wires, new Set(ids), 40, 40)
+    engine.addCluster(comps, wires)
+    engine.solve()
+    setSelection({ kind: 'comp', ids: comps.map((c) => c.id) })
+    endMutation()
+    bump()
+  }, [engine, selection, beginMutation, endMutation, bump])
+
+  const copy = useCallback(() => {
+    const ids = new Set(selectedComps(selection))
+    if (!ids.size) return
+    const comps = Array.from(engine.comps.values()).filter((c) => ids.has(c.id)).map((c) => ({ ...c, outs: c.outs.slice() }))
+    const wires = engine.wires.filter((w) => ids.has(w.from.comp) && ids.has(w.to.comp)).map((w) => ({ ...w }))
+    clipboard.current = { comps, wires }
+    pasteN.current = 0
+    flash(`Copied ${comps.length} part${comps.length > 1 ? 's' : ''}.`)
+  }, [engine, selection, flash])
+
+  const paste = useCallback(() => {
+    const cb = clipboard.current
+    if (!cb || !cb.comps.length) return
+    beginMutation()
+    pasteN.current += 1
+    const off = 30 + pasteN.current * 20
+    const ids = new Set(cb.comps.map((c) => c.id))
+    const { comps, wires } = cloneComps(cb.comps, cb.wires, ids, off, off)
+    engine.addCluster(comps, wires)
+    engine.solve()
+    setSelection({ kind: 'comp', ids: comps.map((c) => c.id) })
+    endMutation()
+    bump()
+  }, [engine, beginMutation, endMutation, bump])
+
+  const selectAll = useCallback(() => {
+    const ids = Array.from(engine.comps.keys())
+    setSelection(ids.length ? { kind: 'comp', ids } : null)
+  }, [engine])
+
+  const deleteSelection = useCallback(() => {
+    if (selection?.kind === 'comp' && selection.ids.length) {
+      beginMutation()
+      engine.removeComps(selection.ids)
+      setSelection(null)
+      engine.solve()
+      endMutation()
+      bump()
+    } else if (selection?.kind === 'wire') {
+      beginMutation()
+      engine.removeWire(selection.id)
+      setSelection(null)
+      engine.solve()
+      endMutation()
+      bump()
+    }
+  }, [selection, engine, beginMutation, endMutation, bump])
+
   // ---- keyboard -------------------------------------------------------------
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const el = e.target as HTMLElement
       if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selection?.kind === 'comp') {
-          engine.removeComp(selection.id)
-          setSelection(null)
-          engine.solve()
-          bump()
-        } else if (selection?.kind === 'wire') {
-          engine.removeWire(selection.id)
-          setSelection(null)
-          engine.solve()
-          bump()
-        }
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
+      } else if (mod && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault()
+        redo()
+      } else if (mod && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault()
+        duplicate()
+      } else if (mod && (e.key === 'c' || e.key === 'C')) {
+        copy()
+      } else if (mod && (e.key === 'v' || e.key === 'V')) {
+        paste()
+      } else if (mod && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        selectAll()
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        deleteSelection()
       } else if (e.key === ' ') {
         e.preventDefault()
-        setRunning((r) => !r)
+        toggleRun()
       } else if (e.key === 'Escape') {
         setTool(null)
+        setSelection(null)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selection, engine, bump])
+  }, [undo, redo, duplicate, copy, paste, selectAll, deleteSelection, toggleRun])
 
   // ---- actions --------------------------------------------------------------
   const onPlace = useCallback(
     (kind: Kind, x: number, y: number) => {
+      beginMutation()
       const c = makeComp(kind, x, y)
       engine.addComp(c)
       engine.solve()
-      setSelection({ kind: 'comp', id: c.id })
+      setSelection({ kind: 'comp', ids: [c.id] })
+      endMutation()
       bump()
     },
-    [engine, bump],
+    [engine, bump, beginMutation, endMutation],
+  )
+
+  const loadCircuit = useCallback(
+    (snap: { comps: Comp[]; wires: Wire[] }, note?: string, resetView = true) => {
+      beginMutation()
+      engine.load(snap)
+      setSelection(null)
+      setRunning(false)
+      if (resetView) setView({ x: 40, y: 30, scale: 1 })
+      restartTrace()
+      endMutation()
+      bump()
+      if (note) flash(note)
+    },
+    [engine, bump, flash, beginMutation, endMutation, restartTrace],
   )
 
   const loadExample = useCallback(
     (id: string) => {
       const ex = EXAMPLES.find((e) => e.id === id)
-      if (!ex) return
-      engine.load(ex.build())
-      setSelection(null)
-      setRunning(false)
-      setView({ x: 40, y: 30, scale: 1 })
-      bump()
-      flash(ex.note)
+      if (ex) loadCircuit(ex.build(), ex.note)
     },
-    [engine, bump, flash],
+    [loadCircuit],
   )
 
   const doSave = useCallback(() => {
@@ -123,30 +254,52 @@ export default function App() {
         return
       }
       const data = JSON.parse(raw) as SavedCircuit
-      engine.load(deserialize(data))
-      setSelection(null)
-      setRunning(false)
-      bump()
-      flash('Loaded your saved circuit.')
+      loadCircuit(deserialize(data), 'Loaded your saved circuit.', false)
     } catch {
       flash('Load failed.')
     }
-  }, [engine, bump, flash])
+  }, [loadCircuit, flash])
+
+  const doShare = useCallback(() => {
+    const url = shareUrl(serialize(engine.snapshot()))
+    try {
+      const hash = url.includes('#') ? '#' + url.split('#')[1] : ''
+      window.history.replaceState(null, '', hash || window.location.pathname)
+    } catch {
+      // ignore — address-bar update is best-effort
+    }
+    try {
+      navigator.clipboard?.writeText(url).then(
+        () => flash('Share link copied to clipboard.'),
+        () => flash('Share link is in the address bar.'),
+      )
+    } catch {
+      flash('Share link is in the address bar.')
+    }
+  }, [engine, flash])
 
   const doClear = useCallback(() => {
-    engine.load({ comps: [], wires: [] })
-    setSelection(null)
-    setRunning(false)
-    bump()
-  }, [engine, bump])
+    loadCircuit({ comps: [], wires: [] }, undefined, false)
+  }, [loadCircuit])
 
   const doReset = useCallback(() => {
     engine.reset()
+    restartTrace()
     bump()
-  }, [engine, bump])
+  }, [engine, bump, restartTrace])
 
   const doStep = useCallback(() => {
     engine.step(0.12)
+    bump()
+  }, [engine, bump])
+
+  const toggleAnalyzer = useCallback(() => {
+    setAnalyzerOpen((o) => {
+      const next = !o
+      if (next) engine.beginTrace()
+      else engine.clearTrace()
+      return next
+    })
     bump()
   }, [engine, bump])
 
@@ -188,6 +341,7 @@ export default function App() {
   }, [])
 
   const count = engine.comps.size
+  const selCount = selectedComps(selection).length
 
   return (
     <div className="app">
@@ -197,7 +351,7 @@ export default function App() {
           <span>digital circuit sandbox</span>
         </div>
 
-        <button className={`btn primary${running ? ' running' : ''}`} onClick={() => setRunning((r) => !r)}>
+        <button className={`btn primary${running ? ' running' : ''}`} onClick={toggleRun}>
           {running ? '❚❚ Pause' : '▶ Run'}
         </button>
         <button className="btn" onClick={doStep} disabled={running} title="Advance one step">
@@ -205,6 +359,13 @@ export default function App() {
         </button>
         <button className="btn" onClick={doReset} title="Clear signal state">
           ↺ Reset
+        </button>
+
+        <button className="btn" onClick={undo} disabled={!histState.undo} title="Undo (Ctrl+Z)">
+          ↶
+        </button>
+        <button className="btn" onClick={redo} disabled={!histState.redo} title="Redo (Ctrl+Shift+Z)">
+          ↷
         </button>
 
         <div className="slider">
@@ -228,8 +389,11 @@ export default function App() {
           ))}
         </select>
 
-        <button className="btn" onClick={() => setDrawer((d) => (d === 'truth' ? null : 'truth'))}>
+        <button className={`btn${drawer === 'truth' ? ' on' : ''}`} onClick={() => setDrawer((d) => (d === 'truth' ? null : 'truth'))}>
           ⊞ Truth table
+        </button>
+        <button className={`btn${analyzerOpen ? ' on' : ''}`} onClick={toggleAnalyzer} title="Timing diagram / logic analyzer">
+          ∿ Analyzer
         </button>
 
         <div className="spacer" />
@@ -237,6 +401,10 @@ export default function App() {
         <span className={`pill${engine.unstable ? ' warn' : ''}`}>
           {engine.unstable ? (
             '⚠ oscillating'
+          ) : selCount > 1 ? (
+            <>
+              <b>{selCount}</b> selected
+            </>
           ) : (
             <>
               <b>{count}</b> parts
@@ -254,6 +422,9 @@ export default function App() {
           +
         </button>
 
+        <button className="btn" onClick={doShare} title="Copy a shareable link to this circuit">
+          ↗ Share
+        </button>
         <button className="btn" onClick={doSave} title="Save to this browser">
           Save
         </button>
@@ -280,8 +451,11 @@ export default function App() {
           selection={selection}
           setSelection={setSelection}
           commit={bump}
+          beginMutation={beginMutation}
+          endMutation={endMutation}
         />
         <Drawer tab={drawer} engine={engine} onClose={() => setDrawer(null)} />
+        {analyzerOpen && <Analyzer engine={engine} onClose={toggleAnalyzer} onClear={() => { engine.beginTrace(); bump() }} />}
         {toast && <div className="toast">{toast}</div>}
       </div>
     </div>
