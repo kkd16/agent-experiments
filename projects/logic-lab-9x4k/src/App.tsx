@@ -13,6 +13,7 @@ import Canvas from './ui/Canvas'
 import Palette from './ui/Palette'
 import Drawer from './ui/Drawer'
 import Analyzer from './ui/Analyzer'
+import Inspector from './ui/Inspector'
 import type { Selection, View } from './ui/types'
 import { selectedComps } from './ui/types'
 
@@ -455,6 +456,16 @@ export default function App() {
           endMutation={endMutation}
         />
         <Drawer tab={drawer} engine={engine} onClose={() => setDrawer(null)} />
+        {selection?.kind === 'comp' && selection.ids.length === 1 && (
+          <Inspector
+            engine={engine}
+            compId={selection.ids[0]}
+            commit={bump}
+            beginMutation={beginMutation}
+            endMutation={endMutation}
+            onDelete={deleteSelection}
+          />
+        )}
         {analyzerOpen && <Analyzer engine={engine} onClose={toggleAnalyzer} onClear={() => { engine.beginTrace(); bump() }} />}
         {toast && <div className="toast">{toast}</div>}
       </div>

@@ -1,4 +1,7 @@
+import { useRef, useState } from 'react'
+import type * as React from 'react'
 import type { Engine, Probe } from '../logic/engine'
+import { traceToCsv } from '../logic/exporter'
 
 interface Props {
   engine: Engine
@@ -44,10 +47,27 @@ function wavePath(samples: { t: number; v: boolean[] }[], idx: number, x0: numbe
   return d
 }
 
+/** Trigger a client-side download; silently no-ops if the environment blocks it. */
+function download(name: string, text: string) {
+  try {
+    const blob = new Blob([text], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  } catch {
+    // downloads may be blocked (e.g. sandboxed preview) — ignore
+  }
+}
+
 export default function Analyzer({ engine, onClose, onClear }: Props) {
   const probes = engine.traceProbes
   const samples = engine.trace
   const labels = displayLabels(probes)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const [cursor, setCursor] = useState<number | null>(null) // viewBox x, or null
 
   const tStart = samples.length ? samples[0].t : 0
   const tEnd = samples.length ? samples[samples.length - 1].t : 1
@@ -55,6 +75,15 @@ export default function Analyzer({ engine, onClose, onClear }: Props) {
   const x0 = GUTTER + PAD
   const x1 = PLOT_W - PAD
   const totalH = Math.max(ROW_H, probes.length * ROW_H) + 8
+
+  function onScopeMove(e: React.PointerEvent) {
+    const el = svgRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const vbX = ((e.clientX - r.left) / r.width) * PLOT_W
+    setCursor(vbX >= GUTTER && vbX <= PLOT_W ? vbX : null)
+  }
+  const cursorTime = cursor != null ? tStart + ((cursor - x0) / (x1 - x0)) * tSpan : null
 
   return (
     <div className="analyzer">
@@ -64,8 +93,17 @@ export default function Analyzer({ engine, onClose, onClear }: Props) {
           {probes.length === 0
             ? 'no signals yet'
             : `${probes.length} signal${probes.length > 1 ? 's' : ''} · ${samples.length} samples · ${tEnd.toFixed(2)}s`}
+          {cursorTime != null && probes.length > 0 && ` · cursor ${Math.max(0, cursorTime).toFixed(2)}s`}
         </span>
         <div className="spacer" />
+        <button
+          className="btn ghost"
+          disabled={probes.length === 0 || samples.length === 0}
+          onClick={() => download('logiclab-trace.csv', traceToCsv(probes, samples))}
+          title="Download the recorded waveforms as CSV"
+        >
+          ⤓ CSV
+        </button>
         <button className="btn ghost" onClick={onClear} title="Erase recorded waveforms">
           Clear trace
         </button>
@@ -80,7 +118,16 @@ export default function Analyzer({ engine, onClose, onClear }: Props) {
             their waveforms are recorded here — a live timing diagram of the circuit.
           </p>
         ) : (
-          <svg className="scope" viewBox={`0 0 ${PLOT_W} ${totalH}`} preserveAspectRatio="none" width="100%" height={totalH}>
+          <svg
+            ref={svgRef}
+            className="scope"
+            viewBox={`0 0 ${PLOT_W} ${totalH}`}
+            preserveAspectRatio="none"
+            width="100%"
+            height={totalH}
+            onPointerMove={onScopeMove}
+            onPointerLeave={() => setCursor(null)}
+          >
             {probes.map((p, r) => {
               const on = samples.length ? samples[samples.length - 1].v[r] : false
               // Row-local coordinates: the whole group is translated down by r*ROW_H,
@@ -100,6 +147,7 @@ export default function Analyzer({ engine, onClose, onClear }: Props) {
               )
             })}
             <line x1={GUTTER} y1={0} x2={GUTTER} y2={totalH} className="scope-axis" />
+            {cursor != null && <line x1={cursor} y1={0} x2={cursor} y2={totalH} className="scope-cursor" />}
           </svg>
         )}
       </div>
