@@ -20,9 +20,16 @@ export interface Target {
   start: Vec
   /** True marginal means, when known — used to score sampler accuracy. */
   trueMean?: Vec
+  /**
+   * log of the true normalising constant log ∫ π̃, when it has a closed form —
+   * the ground truth the SMC sampler's evidence estimate is scored against.
+   */
+  trueLogZ?: number
   /** Human names for the two coordinates (defaults to x / y). */
   axes?: [string, string]
 }
+
+const LOG_2PI = Math.log(2 * Math.PI)
 
 // ── Correlated bivariate Gaussian ───────────────────────────────────────────
 function gaussian(rho: number): Target {
@@ -46,6 +53,7 @@ function gaussian(rho: number): Target {
     view: [-4, 4, -4, 4],
     start: [0, 0],
     trueMean: [0, 0],
+    trueLogZ: LOG_2PI + 0.5 * Math.log(1 - rho * rho),
   }
 }
 
@@ -71,6 +79,8 @@ function banana(a = 1, b = 5): Target {
     // u-marginal is N(1, 10) (the v integral is constant), and v|u ~ N(u², ·),
     // so E[u] = 1 and E[v] = E[u²] = Var(u) + E[u]² = 10 + 1 = 11.
     trueMean: [1, 11],
+    // ∫ = √(π/b)·√(20π) = 2π for these constants.
+    trueLogZ: LOG_2PI,
   }
 }
 
@@ -92,6 +102,8 @@ function ring(r0 = 3, sigma = 0.35): Target {
     view: [-5, 5, -5, 5],
     start: [3, 0],
     trueMean: [0, 0],
+    // Z = ∫₀^∞ 2πr·N(r;r0,σ) dr = 2π·r0·σ·√(2π) (lower-tail truncation ~1e-16).
+    trueLogZ: Math.log(2 * Math.PI * r0 * sigma * Math.sqrt(2 * Math.PI)),
   }
 }
 
@@ -132,6 +144,8 @@ function mixture(): Target {
     view: [-5, 5, -5, 5],
     start: [0, 0],
     trueMean: [0, 0],
+    // Four near-non-overlapping wells, each ∫ = 2π·s2.
+    trueLogZ: Math.log(4 * 2 * Math.PI * s2),
   }
 }
 
@@ -156,6 +170,8 @@ function funnel(): Target {
     view: [-9, 9, -6, 6],
     start: [0, 0],
     trueMean: [0, 0],
+    // ∫∫ = √(2π)·√(18π) after integrating x then v.
+    trueLogZ: 0.5 * LOG_2PI + 0.5 * Math.log(18 * Math.PI),
   }
 }
 
@@ -233,6 +249,8 @@ function studentT(nu = 2.5, rho = 0.6): Target {
     view: [-9, 9, -9, 9],
     start: [0, 0],
     trueMean: [0, 0],
+    // (νπ)·√|Σ|·Γ(ν/2)/Γ((ν+2)/2) for the 2-D Student-t (ν=2.5, ρ=0.6).
+    trueLogZ: 1.6147335,
   }
 }
 
@@ -265,6 +283,8 @@ function squiggle(b = 2, w = 1.2, sx = 1.5, sy = 0.45): Target {
     view: [-4.5, 4.5, -4, 4],
     start: [0, 0],
     trueMean: [0, 0],
+    // Gaussian in u times Gaussian in (v−m(u)): Z = 2π·sx·sy.
+    trueLogZ: Math.log(2 * Math.PI * sx * sy),
   }
 }
 
@@ -311,6 +331,8 @@ function twinCraters(): Target {
     view: [-4.5, 4.5, -5, 5],
     start: [0, 0],
     trueMean: [0, 0],
+    // ∫(e^{f1}+e^{f2}) = 2·√(π/kx)·√(π/kr) = 4π for these constants.
+    trueLogZ: Math.log(4 * Math.PI),
   }
 }
 

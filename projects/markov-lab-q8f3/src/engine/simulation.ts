@@ -57,7 +57,14 @@ export interface LiveStats {
   mcseY?: number
   /** Total-variation distance from the sampled to the analytic distribution. */
   tvDist?: number
+  /** log of the target's true normalising constant, when known (SMC evidence check). */
+  trueLogZ?: number
 }
+
+// Sampler internals that converge (or are monotone) rather than fluctuate: the
+// UI wants their *current* value, not a lagging EMA. Everything else (NUTS
+// depth, accept-prob) stays smoothed.
+const INFO_PASSTHROUGH = ['eps', 'logZ', 'beta', 'essFrac', 'phi', 'hband']
 
 export class Simulation {
   readonly target: Target
@@ -187,7 +194,9 @@ export class Simulation {
   private liveInfo(): Record<string, number> | undefined {
     if (!this.lastInfo) return undefined
     const out = { ...this.infoEma }
-    if (this.lastInfo.eps !== undefined) out.eps = this.lastInfo.eps
+    for (const k of INFO_PASSTHROUGH) {
+      if (this.lastInfo[k] !== undefined) out[k] = this.lastInfo[k]
+    }
     return out
   }
 
@@ -206,6 +215,7 @@ export class Simulation {
         gradEvals: this.sampler.gradEvals,
         essPerKEval: 0, usedForStats: n,
         info: this.liveInfo(),
+        trueLogZ: this.target.trueLogZ,
       }
     }
     const essX = effectiveSampleSize(sx)
@@ -235,6 +245,7 @@ export class Simulation {
       mcseX: essX > 0 ? sdX / Math.sqrt(essX) : undefined,
       mcseY: essY > 0 ? sdY / Math.sqrt(essY) : undefined,
       tvDist: tvDistance(this.target, sx, sy),
+      trueLogZ: this.target.trueLogZ,
     }
   }
 

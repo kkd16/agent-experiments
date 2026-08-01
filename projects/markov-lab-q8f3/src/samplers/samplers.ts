@@ -768,6 +768,299 @@ function makeHitAndRun(target: Target, rng: RNG, p: Record<string, number>): Sam
   return s
 }
 
+// ── Stein Variational Gradient Descent (Liu & Wang 2016) ────────────────────
+// Not a Markov chain: a *deterministic transport*. A fixed population of
+// particles all move at once down the kernelised Stein gradient
+//   φ*(xᵢ) = 1/N Σⱼ [ k(xⱼ,xᵢ)·∇log π(xⱼ) + ∇_{xⱼ}k(xⱼ,xᵢ) ].
+// The first term drags every particle toward higher density; the second — the
+// kernel's own gradient — is a *repulsion* that keeps the particles apart, so
+// instead of piling onto the mode the swarm spreads out to *tile* the whole
+// density and then holds a stationary, well-spaced configuration. RBF kernel
+// with the median-heuristic bandwidth h² = med²/log N; AdaGrad-with-momentum
+// step (as in the reference implementation) so no per-target ε tuning is needed.
+// The swarm is drawn through the `chains` overlay; the diagnostics rail (built
+// for an ergodic chain) is not the right lens here — watch the particles, and
+// the driving force ‖φ‖ → 0 as they settle.
+function makeSVGD(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const N = Math.max(4, Math.round(p.particles))
+  const eps = p.step
+  const bwScale = Math.max(0.1, p.bwscale)
+  const alpha = 0.9 // RMSProp memory for the AdaGrad-with-momentum step
+  const fudge = 1e-6
+  const d = target.start.length
+  // Scatter the particles so the swarm starts with volume to spread from.
+  const xs: Vec[] = []
+  for (let k = 0; k < N; k++) xs.push(target.start.map((v) => v + rng.normal(0, 1.5)))
+  const hist: Vec[] = xs.map(() => new Array<number>(d).fill(0)) // per-dim grad² memory
+
+  let gEvals = 0
+  let dEvals = 1
+
+  const s: Sampler = {
+    x: xs[0].slice(),
+    logp: target.logDensity(xs[0]),
+    densityEvals: 1,
+    gradEvals: 0,
+    step(): StepResult {
+      // ∇log π at every particle.
+      const grads: Vec[] = xs.map((x) => {
+        gEvals++
+        return target.gradLogDensity(x)
+      })
+      // Median-heuristic bandwidth from the pairwise distances.
+      const sq: number[][] = Array.from({ length: N }, () => new Array<number>(N).fill(0))
+      const dists: number[] = []
+      for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+          const dx = xs[i][0] - xs[j][0]
+          const dy = xs[i][1] - xs[j][1]
+          const s2 = dx * dx + dy * dy
+          sq[i][j] = s2
+          sq[j][i] = s2
+          dists.push(Math.sqrt(s2))
+        }
+      }
+      dists.sort((a, b) => a - b)
+      const med = dists.length ? dists[dists.length >> 1] : 1
+      const h2 = Math.max(1e-6, (bwScale * med * med) / Math.log(N + 1))
+      // φ*(xᵢ): attractive (weighted gradient) + repulsive (kernel gradient).
+      const phi: Vec[] = xs.map(() => [0, 0])
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const k = j === i ? 1 : Math.exp(-sq[i][j] / h2)
+          const c = (2 / h2) * k
+          phi[i][0] += k * grads[j][0] + c * (xs[i][0] - xs[j][0])
+          phi[i][1] += k * grads[j][1] + c * (xs[i][1] - xs[j][1])
+        }
+        phi[i][0] /= N
+        phi[i][1] /= N
+      }
+      // AdaGrad-with-momentum update, per particle per coordinate.
+      let phiSq = 0
+      for (let i = 0; i < N; i++) {
+        for (let c = 0; c < d; c++) {
+          hist[i][c] = alpha * hist[i][c] + (1 - alpha) * phi[i][c] * phi[i][c]
+          xs[i][c] += (eps * phi[i][c]) / (fudge + Math.sqrt(hist[i][c]))
+          phiSq += phi[i][c] * phi[i][c]
+        }
+      }
+      this.x = xs[0].slice()
+      this.logp = target.logDensity(this.x)
+      dEvals++
+      this.densityEvals = dEvals
+      this.gradEvals = gEvals
+      return {
+        x: this.x,
+        logp: this.logp,
+        accepted: true,
+        chains: xs.map((x) => x.slice()),
+        info: { phi: Math.sqrt(phiSq / N), hband: Math.sqrt(h2) },
+      }
+    },
+  }
+  return s
+}
+
+// ── Sequential Monte Carlo — adaptive tempering + model evidence ─────────────
+// (Del Moral, Doucet & Jasra 2006.) The one method in the studio that measures
+// what every Markov chain throws away: the *normalising constant* Z = ∫ π̃.
+// A population of weighted particles is transported from a **normalised**
+// Gaussian reference π₀ (so Z₀ = 1) to the unnormalised target along the
+// geometric path  log πβ = (1−β)·log π₀ + β·log π̃. The temperature ladder is
+// chosen *adaptively* — each rung bisects Δβ so the post-reweight effective
+// sample size stays at a target fraction — with importance reweighting, then
+// **systematic resampling** when the weights degenerate, then a
+// preconditioned-RWM move (proposal shaped by the particles' own empirical
+// covariance, so nothing needs tuning) that re-mixes each particle under πβ.
+// Accumulating log Σ Wᵢ·e^{Δβ·(log π̃−log π₀)} over the rungs gives an unbiased
+// estimate of Z (hence log Z on screen). For the logistic target that is the
+// Bayesian **model evidence**. Once β reaches 1 the sampler keeps running as a
+// population MCMC on the target, so the studio streams on and log Z is frozen.
+function makeSMC(target: Target, rng: RNG, p: Record<string, number>): Sampler {
+  const N = Math.max(8, Math.round(p.particles))
+  const nMoves = Math.max(1, Math.round(p.moves))
+  const width = Math.max(0.3, p.basewidth) // base width as a fraction of the view
+  const essTarget = 0.5 // adaptive-ladder target ESS fraction
+  const d = target.start.length
+  // A normalised, axis-aligned Gaussian reference framed to the target's own
+  // view — centred on the window, one σ per axis — so the base broadly covers
+  // the target's mass whatever its shape or offset (Z₀ = 1 by construction).
+  const centre: Vec = []
+  const sig: Vec = []
+  for (let i = 0; i < d; i++) {
+    centre.push((target.view[2 * i] + target.view[2 * i + 1]) / 2)
+    sig.push(Math.max(0.3, (width * (target.view[2 * i + 1] - target.view[2 * i])) / 2))
+  }
+  let norm0 = -(d / 2) * Math.log(2 * Math.PI)
+  for (let i = 0; i < d; i++) norm0 -= Math.log(sig[i])
+  const lp0 = (x: Vec): number => {
+    let q = 0
+    for (let i = 0; i < d; i++) {
+      const z = (x[i] - centre[i]) / sig[i]
+      q += z * z
+    }
+    return -0.5 * q + norm0
+  }
+
+  // Particles + cached component log-densities (base and target).
+  const xs: Vec[] = []
+  const l0: number[] = [] // log π₀(xᵢ)
+  const lT: number[] = [] // log π̃(xᵢ)  (unnormalised target)
+  let dEvals = 0
+  for (let k = 0; k < N; k++) {
+    const x = centre.map((cc, i) => cc + rng.normal(0, sig[i])) // draw from the normalised base
+    xs.push(x)
+    l0.push(lp0(x))
+    lT.push(target.logDensity(x))
+    dEvals++
+  }
+  let logW = new Array<number>(N).fill(-Math.log(N)) // normalised log weights
+  let beta = 0
+  let logZ = 0
+  let essFrac = 1
+  let moveAcc = 0
+  let moveTot = 0
+
+  const logsumexp = (a: number[]): number => {
+    let m = -Infinity
+    for (const v of a) if (v > m) m = v
+    if (!isFinite(m)) return m
+    let sum = 0
+    for (const v of a) sum += Math.exp(v - m)
+    return m + Math.log(sum)
+  }
+  const essOf = (lw: number[]): number =>
+    Math.exp(2 * logsumexp(lw) - logsumexp(lw.map((v) => 2 * v)))
+
+  // Preconditioned-RWM sweep of every particle at inverse temperature b.
+  const moveAll = (b: number) => {
+    let mx = 0
+    let my = 0
+    let sw = 0
+    for (let i = 0; i < N; i++) {
+      const w = Math.exp(logW[i])
+      sw += w
+      mx += w * xs[i][0]
+      my += w * xs[i][1]
+    }
+    mx /= sw
+    my /= sw
+    let cxx = 0
+    let cxy = 0
+    let cyy = 0
+    for (let i = 0; i < N; i++) {
+      const w = Math.exp(logW[i]) / sw
+      const ax = xs[i][0] - mx
+      const ay = xs[i][1] - my
+      cxx += w * ax * ax
+      cxy += w * ax * ay
+      cyy += w * ay * ay
+    }
+    const L = cholesky([
+      [cxx + 1e-6, cxy],
+      [cxy, cyy + 1e-6],
+    ])
+    const scale = 2.38 / Math.sqrt(d) // Roberts-Rosenthal optimal RWM scaling
+    for (let m = 0; m < nMoves; m++) {
+      for (let i = 0; i < N; i++) {
+        const jmp = matVec(L, rng.normalVec(d))
+        const prop = [xs[i][0] + scale * jmp[0], xs[i][1] + scale * jmp[1]]
+        const pl0 = lp0(prop)
+        const plT = target.logDensity(prop)
+        dEvals++
+        const cur = (1 - b) * l0[i] + b * lT[i]
+        const nxt = (1 - b) * pl0 + b * plT
+        moveTot++
+        if (Math.log(rng.next()) < nxt - cur) {
+          xs[i] = prop
+          l0[i] = pl0
+          lT[i] = plT
+          moveAcc++
+        }
+      }
+    }
+  }
+
+  const systematicResample = () => {
+    const cum: number[] = []
+    let acc = 0
+    for (const v of logW) {
+      acc += Math.exp(v)
+      cum.push(acc)
+    }
+    const u0 = rng.next() / N
+    const nx: Vec[] = []
+    const n0: number[] = []
+    const nT: number[] = []
+    let j = 0
+    for (let k = 0; k < N; k++) {
+      const u = u0 + k / N
+      while (j < N - 1 && u > cum[j]) j++
+      nx.push(xs[j].slice())
+      n0.push(l0[j])
+      nT.push(lT[j])
+    }
+    for (let k = 0; k < N; k++) {
+      xs[k] = nx[k]
+      l0[k] = n0[k]
+      lT[k] = nT[k]
+    }
+    logW = new Array<number>(N).fill(-Math.log(N))
+  }
+
+  const anneal = () => {
+    const G = xs.map((_, i) => lT[i] - l0[i]) // tempering energy log π̃ − log π₀
+    const remaining = 1 - beta
+    const essAtDb = (db: number): number => essOf(logW.map((v, i) => v + db * G[i]))
+    // Adaptive Δβ: bisect so the reweighted ESS ≈ essTarget·N (else jump to 1).
+    let db: number
+    if (essAtDb(remaining) >= essTarget * N) {
+      db = remaining
+    } else {
+      let lo = 0
+      let hi = remaining
+      for (let it = 0; it < 40; it++) {
+        const mid = 0.5 * (lo + hi)
+        if (essAtDb(mid) > essTarget * N) lo = mid
+        else hi = mid
+      }
+      db = 0.5 * (lo + hi)
+    }
+    // Evidence increment: log Σ Wᵢ·e^{Δβ·Gᵢ} (logW normalised ⇒ logsumexp = 0).
+    logZ += logsumexp(logW.map((v, i) => v + db * G[i]))
+    // Reweight + renormalise.
+    const nlw = logW.map((v, i) => v + db * G[i])
+    const z = logsumexp(nlw)
+    logW = nlw.map((v) => v - z)
+    beta += db
+    essFrac = essOf(logW) / N
+    if (essFrac < 0.5) systematicResample()
+    moveAll(beta)
+  }
+
+  const s: Sampler = {
+    x: xs[0].slice(),
+    logp: lT[0],
+    densityEvals: dEvals,
+    gradEvals: 0,
+    step(): StepResult {
+      if (beta < 1 - 1e-9) anneal()
+      else moveAll(1) // β = 1 reached: persist as a population MCMC on the target
+      this.x = xs[0].slice()
+      this.logp = lT[0]
+      this.densityEvals = dEvals
+      return {
+        x: this.x,
+        logp: this.logp,
+        accepted: true,
+        chains: xs.map((x) => x.slice()),
+        info: { beta, logZ, essFrac, acc: moveTot ? moveAcc / moveTot : 0 },
+      }
+    },
+  }
+  return s
+}
+
 export const SAMPLERS: SamplerDef[] = [
   {
     id: 'rwm',
@@ -893,6 +1186,30 @@ export const SAMPLERS: SamplerDef[] = [
     usesGradient: false,
     params: [{ key: 'step', label: 'bracket w', min: 0.2, max: 6, step: 0.05, default: 2, log: true }],
     create: makeHitAndRun,
+  },
+  {
+    id: 'svgd',
+    name: 'Stein Variational GD',
+    blurb: 'A deterministic swarm that flows downhill while repelling itself — it tiles the density instead of walking it.',
+    usesGradient: true,
+    params: [
+      { key: 'particles', label: 'particles', min: 8, max: 80, step: 1, default: 40, integer: true },
+      { key: 'step', label: 'step ε', min: 0.02, max: 1.5, step: 0.01, default: 0.3, log: true },
+      { key: 'bwscale', label: 'bandwidth ×', min: 0.2, max: 3, step: 0.05, default: 1 },
+    ],
+    create: makeSVGD,
+  },
+  {
+    id: 'smc',
+    name: 'Sequential Monte Carlo',
+    blurb: 'Anneals a weighted population from a Gaussian to the target — and reads off log Z, the evidence a chain can’t.',
+    usesGradient: false,
+    params: [
+      { key: 'particles', label: 'particles', min: 12, max: 160, step: 1, default: 80, integer: true },
+      { key: 'moves', label: 'moves / rung', min: 1, max: 10, step: 1, default: 5, integer: true },
+      { key: 'basewidth', label: 'base width', min: 0.3, max: 1.5, step: 0.05, default: 1 },
+    ],
+    create: makeSMC,
   },
 ]
 
