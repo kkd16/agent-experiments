@@ -289,6 +289,22 @@ const priorityDemo = (): Snapshot =>
     .wire('enc', 0, 'o0', 0).wire('enc', 1, 'o1', 0).wire('enc', 2, 'v', 0)
     .done()
 
+const mux4Demo = (): Snapshot =>
+  new Build()
+    .add('d0', 'INPUT', 60, 70).label('d0', 'd0')
+    .add('d1', 'INPUT', 60, 150).label('d1', 'd1')
+    .add('d2', 'INPUT', 60, 230).label('d2', 'd2')
+    .add('d3', 'INPUT', 60, 310).label('d3', 'd3')
+    .add('s0', 'INPUT', 60, 420).label('s0', 's0')
+    .add('s1', 'INPUT', 60, 500).label('s1', 's1')
+    .add('mux', 'MUX4', 300, 180)
+    .add('y', 'OUTPUT', 520, 240).label('y', 'y')
+    // The 2-bit select routes one of d0..d3 through to y.
+    .wire('d0', 0, 'mux', 0).wire('d1', 0, 'mux', 1).wire('d2', 0, 'mux', 2).wire('d3', 0, 'mux', 3)
+    .wire('s0', 0, 'mux', 4).wire('s1', 0, 'mux', 5)
+    .wire('mux', 0, 'y', 0)
+    .done()
+
 export const EXAMPLES: Example[] = [
   { id: 'half-adder', title: 'Half adder', note: 'A ⊕ B → Sum, A · B → Carry. Open the truth table.', build: halfAdder },
   { id: 'full-adder', title: 'Full adder', note: 'Three inputs, ripple-carry cell of every ALU.', build: fullAdder },
@@ -303,6 +319,7 @@ export const EXAMPLES: Example[] = [
   { id: 'decoder', title: '2:4 decoder', note: 'The address lights exactly one output (when enabled). Truth table it.', build: decoderDemo },
   { id: 'adder2', title: '2-bit adder', note: 'Two full-adder blocks ripple a carry. Truth table shows a+b.', build: adder2 },
   { id: 'priority', title: '4:2 priority encoder', note: 'Highest active input wins; V flags any input set.', build: priorityDemo },
+  { id: 'mux4', title: '4:1 multiplexer', note: 'The 2-bit select routes one of four data inputs to y.', build: mux4Demo },
   { id: 'shift-reg', title: '3-bit shift register', note: 'Toggle Din, then Step — one bit marches across per edge. Analyzer on.', build: shiftReg },
   { id: 'johnson', title: '4-bit Johnson counter', note: 'A twisted ring cycles 8 states. Run with the Analyzer open.', build: johnson },
   { id: 'hex-counter', title: '4-bit hex counter', note: 'Ripple counter driving a 7-segment digit. Press Run.', build: hexCounter },

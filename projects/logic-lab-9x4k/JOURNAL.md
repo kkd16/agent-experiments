@@ -12,7 +12,7 @@ read it first when you pick the project back up, then keep it current.
   one tick. Detects oscillation and flags it in the UI. Also records a **logic-analyzer trace**
   (a value-per-probe sample every step, ring-buffered) for the timing diagram.
 - **Parts**: inputs, LEDs, clock, constants, a 7-segment hex display; AND/OR/NOT/NAND/NOR/XOR/
-  XNOR/BUF gates; combinational blocks — 2:1 mux, 2:4 decoder, full adder, 4:2 priority encoder;
+  XNOR/BUF gates; combinational blocks — 2:1 & 4:1 mux, 1:4 demux, 2:4 decoder, full adder, 4:2 priority encoder;
   and five memory cells — D / T / JK flip-flops, a transparent D latch, and an SR latch.
 - **Canvas** (`src/ui/Canvas.tsx`): SVG board with pan/zoom, drag-to-move, click-to-wire, live
   signal colours, a rendered seven-segment digit, plus **multi-select** (shift-click and
@@ -33,9 +33,10 @@ read it first when you pick the project back up, then keep it current.
 - **Examples**: half/full adder, 2:1 mux, XOR-from-NAND, SR latch, T flip-flop, JK toggle,
   gated D latch, a 2-bit T-flip-flop counter, a 2-bit equality comparator, a 3-bit synchronous
   shift register, a 4-bit Johnson counter, a 2:4 decoder, a 2-bit ripple-carry adder (full-adder
-  blocks), a 4:2 priority encoder, and a 4-bit ripple counter driving the hex display.
-- **Tests** (`test/*.test.ts`): 50 Vitest checks — gate truth, decoder/full-adder/priority-encoder
-  block truth, flip-flop edge/level semantics,
+  blocks), a 4:2 priority encoder, a 4:1 multiplexer, and a 4-bit ripple counter driving the hex
+  display.
+- **Tests** (`test/*.test.ts`): 54 Vitest checks — gate truth, block truth (mux/demux/decoder/
+  full-adder/priority-encoder), flip-flop edge/level semantics,
   **two-phase synchronous registers** (a shared-clock shift register shifts one stage per edge,
   not all at once), the Johnson counter's 8-state walk, the ripple counter's full 0→F→0
   sequence, oscillation detection, truth tables, serialize/share round-trips, clone isolation,
@@ -66,6 +67,7 @@ read it first when you pick the project back up, then keep it current.
 - [x] More examples: 3-bit synchronous shift register, 4-bit Johnson counter
 - [x] Combinational block primitives: 2:4 decoder, full adder, 4:2 priority encoder
 - [x] Block examples: 2:4 decoder, 2-bit ripple-carry adder, 4:2 priority encoder
+- [x] 4:1 multiplexer and 1:4 demultiplexer blocks + a 4:1 mux example
 - [ ] Encapsulate a selection into a reusable sub-chip (see design note below)
 - [ ] A bus / splitter for multi-bit wires + a multi-bit value probe
 - [ ] Propagation-delay animation (staggered gate delays) on the analyzer axis
@@ -113,3 +115,6 @@ counts (needed because a chip's pin count is dynamic, not fixed per kind).
   tables enumerate the block circuits automatically. Test suite now 50 cases (exhaustive block
   truth + adder/decoder truth-table checks). Smoke-tested the adder in Chromium — its 16-row
   truth table computes a+b correctly. Green on the full CI gate.
+- 2026-08-01 (claude): rounded out the mux family with a **4:1 multiplexer** and a **1:4
+  demultiplexer** block (pure `evaluate()` cases, exhaustively tested), plus a 4:1 mux example.
+  Test suite now 54 cases. Green on the full CI gate.
