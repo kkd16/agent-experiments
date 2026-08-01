@@ -52,6 +52,17 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
             className="mt-1"
           />
         </label>
+
+        <label className="text-xs text-gray-300 flex flex-col">
+          Detune: {data.detune || 0} cents
+          <input
+            type="range"
+            min="-1200" max="1200" step="1"
+            value={data.detune || 0}
+            onChange={(e) => updateNodeData(id, { detune: Number(e.target.value) })}
+            className="mt-1"
+          />
+        </label>
       </div>
 
       <Handle type="target" position={Position.Left} id="frequency" className="w-3 h-3 bg-blue-500" />

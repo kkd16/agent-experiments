@@ -1,5 +1,5 @@
 import { Handle, Position } from '@xyflow/react';
-import { Volume2 } from 'lucide-react';
+import { Volume2, VolumeX } from 'lucide-react';
 import { audioCore } from '../../audio/core';
 import { useState } from 'react';
 
@@ -8,6 +8,7 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
   const updateNodeData = useStore((state) => state.updateNodeData);
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(1.0);
+  const [isMuted, setIsMuted] = useState(false);
 
   const togglePlay = async () => {
     if (!isPlaying) {
@@ -16,6 +17,16 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
     } else {
       audioCore.getContext().suspend();
       setIsPlaying(false);
+    }
+  };
+
+  const toggleMute = () => {
+    if (isMuted) {
+      setIsMuted(false);
+      audioCore.setMasterVolume(masterVolume);
+    } else {
+      setIsMuted(true);
+      audioCore.setMasterVolume(0);
     }
   };
 
@@ -37,7 +48,9 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
           title="Custom Color"
         />
         </div>
-        <Volume2 size={18} className="text-red-400" />
+        <button onClick={toggleMute} className="text-red-400 hover:text-red-300">
+          {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+        </button>
       </div>
 
       <button
@@ -62,7 +75,9 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
           onChange={(e) => {
             const vol = parseFloat(e.target.value);
             setMasterVolume(vol);
-            audioCore.setMasterVolume(vol);
+            if (!isMuted) {
+              audioCore.setMasterVolume(vol);
+            }
           }}
           className="w-full accent-red-500"
         />
