@@ -15,14 +15,14 @@
 - Reflected on feedback: Fixed connection/disconnection logical issues in `src/store.ts`. Connection targets correctly identify default inputs versus parameters. Ensure edge removal happens before state mutation.
 
 ## Expansion Phase 2 (Improvements)
-- [ ] Add ADSR Envelope Node
+- [x] Add ADSR Envelope Node
 - [ ] Add Sequencer Node
 - [x] Add Master Volume Control in Output Node
 - [x] Add Panning Node
 - [x] Add Distortion Node
-- [ ] Add Chorus/Flanger Node
+- [x] Add Chorus/Flanger Node
 - [x] Implement Node Deletion UI (e.g. Delete button on nodes)
-- [ ] Allow renaming nodes for better organization
+- [x] Allow renaming nodes for better organization
 - [ ] Add Save/Load patches functionality
 - [x] Improve Visualizer with dual view (Waveform + Spectrum)
 
@@ -30,10 +30,23 @@
 - [x] Add Compressor Node
 - [x] Enable snap-to-grid in React Flow
 - [x] Add Master Limiter to AudioCore
-- [ ] Implement multi-node selection
+- [x] Implement multi-node selection
 - [ ] Add copy/paste functionality for nodes
 - [ ] Add MIDI input support via Web MIDI API
 - [ ] Implement undo/redo functionality
 - [ ] Create a comprehensive preset library
 - [ ] Add polyphony support to Oscillator
-- [ ] Allow custom colors for different node types
+- [x] Allow custom colors for different node types
+## Expansion Phase 4 (New Improvements)
+- [ ] Add Bitcrusher Node
+- [ ] Add Phaser Node
+- [ ] Add Ring Modulator Node
+- [ ] Add Tremolo Node
+- [ ] Implement Node Bypassing
+- [ ] Add Dark/Light Theme Toggle
+- [ ] Add Auto-Panning Node
+- [ ] Enhance Filter Node with more types (highpass, bandpass)
+- [ ] Add Master EQ Node
+- [ ] Improve UI for Mobile Devices
+- [ ] Add Node Groups
+- [ ] Add Keyboard shortcuts for common actions

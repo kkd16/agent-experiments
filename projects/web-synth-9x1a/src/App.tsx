@@ -1,4 +1,4 @@
-import { ReactFlow, Background, Controls, MiniMap } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, SelectionMode } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useStore } from './store';
 import { OscillatorNode } from './components/nodes/OscillatorNode';
@@ -13,6 +13,8 @@ import { DelayNode } from './components/nodes/DelayNode';
 import { ReverbNode } from './components/nodes/ReverbNode';
 import { AnalyserNode } from './components/nodes/AnalyserNode';
 import { OutputNode } from './components/nodes/OutputNode';
+import { AdsrNode } from './components/nodes/AdsrNode';
+import { ChorusNode } from './components/nodes/ChorusNode';
 import { Settings, Waves, Sliders, AudioWaveform, Activity, MonitorPlay } from 'lucide-react';
 import { useState } from 'react';
 
@@ -28,6 +30,8 @@ const nodeTypes = {
   delayNode: DelayNode,
   reverbNode: ReverbNode,
   analyserNode: AnalyserNode,
+  adsrNode: AdsrNode,
+  chorusNode: ChorusNode,
   outputNode: OutputNode,
 };
 
@@ -65,6 +69,10 @@ export default function App() {
               <Activity size={18} className="mb-1 text-blue-400" />
               LFO
             </button>
+            <button onClick={() => handleAddNode('adsrNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors col-span-2">
+              <Activity size={18} className="mb-1 text-indigo-400" />
+              Envelope
+            </button>
           </div>
 
           <h2 className="text-xs font-semibold text-gray-400 uppercase mb-3">Processors</h2>
@@ -97,6 +105,10 @@ export default function App() {
               <Settings size={18} className="mb-1 text-pink-400" />
               Reverb
             </button>
+            <button onClick={() => handleAddNode('chorusNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors col-span-2">
+              <Settings size={18} className="mb-1 text-teal-400" />
+              Chorus
+            </button>
           </div>
 
           <h2 className="text-xs font-semibold text-gray-400 uppercase mb-3">Tools</h2>
@@ -128,6 +140,9 @@ export default function App() {
           fitView
           snapToGrid={true}
           snapGrid={[16, 16]}
+          selectionMode={SelectionMode.Partial}
+          deleteKeyCode={['Backspace', 'Delete']}
+          selectionKeyCode={['Shift', 'Meta', 'Control']}
           className="bg-gray-900"
         >
           <Background color="#333" gap={16} />
