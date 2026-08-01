@@ -4,7 +4,7 @@ import type { Kind } from '../logic/kinds'
 const GROUPS: { title: string; kinds: Kind[] }[] = [
   { title: 'Sources & I/O', kinds: ['INPUT', 'OUTPUT', 'CLOCK', 'CONST1', 'CONST0', 'SEG7'] },
   { title: 'Logic gates', kinds: ['AND', 'OR', 'NOT', 'NAND', 'NOR', 'XOR', 'XNOR', 'BUF'] },
-  { title: 'Blocks', kinds: ['MUX2', 'DFF', 'TFF', 'JKFF', 'DLATCH', 'SRLATCH'] },
+  { title: 'Blocks', kinds: ['MUX2', 'DEC24', 'FADD', 'ENC42', 'DFF', 'TFF', 'JKFF', 'DLATCH', 'SRLATCH'] },
 ]
 
 interface Props {
