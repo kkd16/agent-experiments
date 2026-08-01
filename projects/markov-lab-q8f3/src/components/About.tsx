@@ -60,6 +60,14 @@ const SAMPLER_ROWS: Row[] = [
     name: 'Hit-and-Run',
     text: 'A gradient-free sampler that dodges the axis-alignment trap. Each step picks a uniformly random *direction* and samples a new point along that entire line from the 1-D conditional (by slice sampling, so nothing to tune along the line). Because the direction is isotropic, it glides along a tilted correlation ridge that grinds coordinate-wise Gibbs to a halt — and its long lines can even hop between separated modes.',
   },
+  {
+    name: 'Stein Variational GD — transport, not a chain',
+    text: 'The odd one out: not a Markov chain at all, but a deterministic flow (Liu & Wang 2016). A fixed swarm of particles all move at once down the kernelised Stein gradient φ*(xᵢ) = 1/N Σⱼ [ k(xⱼ,xᵢ)·∇log π(xⱼ) + ∇_{xⱼ}k(xⱼ,xᵢ) ]. Read the two terms: the first is a kernel-weighted average of the uphill gradients — it drags every particle toward mass; the second is the gradient of the kernel itself, a *repulsion* that pushes neighbours apart. Attraction alone would collapse the whole swarm onto the mode; the repulsion is exactly what makes it spread out to *tile* the density and hold a stationary, evenly-spaced configuration instead. The bandwidth of the RBF kernel is set live by the median heuristic (h² = med²/log N), and an AdaGrad step keeps it stable without per-target tuning. Because it converges to a fixed point rather than wandering ergodically, the trace/ESS/R̂ rail is the *wrong* lens here — watch the swarm (keep the ensemble overlay on) and the ‖φ‖ readout decay to zero as it settles.',
+  },
+  {
+    name: 'Sequential Monte Carlo — and the evidence',
+    text: 'A population importance method that measures the one thing every chain above throws away: the normalising constant Z = ∫ π̃ (Del Moral, Doucet & Jasra 2006). It starts with weighted particles drawn from a *normalised* Gaussian reference (so Z₀ = 1) and transports them to the target along a temperature path log πβ = (1−β)·log π₀ + β·log π̃. Each rung: pick Δβ *adaptively* (bisect it so the reweighted effective sample size holds at half the population), multiply in the importance weights e^{Δβ·(log π̃−log π₀)}, **resample** when the weights concentrate, then move every particle with a preconditioned random walk (proposal shaped by the particles’ own covariance — no tuning). The product of the average incremental weights across the ladder is an unbiased estimate of Z, shown on screen as log Z. On the analytic targets the panel prints it against the exact value; on the **Logistic Posterior** it is the Bayesian *model evidence*, the denominator of Bayes’ theorem, which has no closed form. Once β hits 1 the sampler keeps running as a population MCMC so the studio streams on.',
+  },
 ]
 
 const TUNING_ROWS: Row[] = [
@@ -114,6 +122,10 @@ const DIAG_ROWS: Row[] = [
     name: 'MCSE — the ± on the estimate',
     text: 'Monte-Carlo standard error, sd/√ESS: the actual uncertainty on the running-mean estimate that finitely many *effective* samples buy you. It closes the loop from ESS (“how many independent draws am I worth?”) to the number those draws produce (“…so how tight is my answer?”). Halving MCSE takes four times the effective samples.',
   },
+  {
+    name: 'log Z — the evidence a chain can’t see (SMC only)',
+    text: 'The normalising constant Z = ∫ π̃ — the total mass under the un-normalised density. Every Markov chain here is deliberately blind to it: they only ever use *ratios* π(x*)/π(x), in which Z cancels, which is precisely why they can sample a density known only up to that constant. The price is that no single chain can tell you Z. The SMC sampler recovers it as a by-product of its annealing, and the panel scores it live: for the analytic targets it prints “estimate / true” and colours the error (the residual is the expected small downward Jensen bias of log-of-an-unbiased-estimate — add particles and watch it shrink); for the logistic posterior, where Z is the model evidence with no closed form, it prints the estimate alone. β shows the annealing progress (1.000 = done) and the weight-ESS shows the particle health that resampling keeps alive.',
+  },
 ]
 
 export default function About({ onClose }: { onClose: () => void }) {
@@ -136,6 +148,14 @@ export default function About({ onClose }: { onClose: () => void }) {
             density. The art is making that walk explore quickly instead of getting stuck. The
             glowing heatmap is the true target; the moving dot is the chain; the accumulating cloud
             is the distribution it is rebuilding from scratch.
+          </p>
+          <p className="modal-lead">
+            Two of the methods here break that single-chain mold on purpose. <b>Stein Variational
+            GD</b> replaces the random walk with a <em>deterministic</em> swarm that flows downhill
+            while repelling itself, tiling the density in one shot. <b>Sequential Monte Carlo</b>
+            carries a whole weighted <em>population</em> from an easy Gaussian to the target — and, as
+            a by-product, measures the normalising constant Z (the model <em>evidence</em>) that every
+            Markov chain is mathematically blind to. Watch both as populations, not as a single dot.
           </p>
 
           <h3>The samplers</h3>
@@ -164,6 +184,25 @@ export default function About({ onClose }: { onClose: () => void }) {
 
           <h3>Things to try</h3>
           <ul className="about-list">
+            <li>
+              Select <b>Stein Variational GD</b> on the <b>Ring</b> and keep the ensemble overlay on:
+              watch the particles fan out and lock into an evenly-spaced necklace around the circle —
+              the kernel <em>repulsion</em> tiling the density instead of collapsing onto it — while the{' '}
+              <b>‖φ‖ force</b> readout decays toward zero. Nudge <b>bandwidth ×</b> down and the swarm
+              over-spreads; push it up and the particles clump.
+            </li>
+            <li>
+              Open <b>Sequential Monte Carlo</b> on the <b>correlated Gaussian</b> and read <b>log Z</b>:
+              it converges to ≈ 1.197 — the exact log(2π√(1−ρ²)) — printed right beside the truth. Now
+              switch to the <b>Logistic Posterior</b>: the same number becomes the <em>Bayesian model
+              evidence</em>, which has no closed form, computed live from a chain-free population.
+            </li>
+            <li>
+              On SMC, drag <b>particles</b> from a handful up to the max and watch the <b>log Z</b> error
+              shrink — the small negative bias is the Jensen gap of a log-of-unbiased estimate, and it
+              melts as the population grows. Then watch <b>β</b> race 0 → 1 as the swarm anneals off the
+              Gaussian reference onto the target.
+            </li>
             <li>
               Race <b>Riemannian MALA</b> against plain <b>MALA</b> on <b>Neal’s funnel</b>: RMMALA’s
               curvature-aware metric lets a single ε reach deep into the neck (watch its <b>trace · x</b>

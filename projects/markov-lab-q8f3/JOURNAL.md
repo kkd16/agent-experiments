@@ -7,11 +7,13 @@ real Bayesian workflow lives and dies by (ESS, split-R̂, autocorrelation,
 efficiency) ticking alongside.
 
 Everything is written by hand in TypeScript: the PRNG, the linear algebra, the
-thirteen samplers (spanning reversible MCMC, a curvature-aware Riemannian metric,
-an affine-invariant ensemble, and a non-reversible continuous-time process), the
-target densities *and their analytic gradients*, and the diagnostics — down to a
-total-variation distance to each target's true distribution. No stats library, no
-plotting library — every pixel and every number is ours.
+fifteen samplers (spanning reversible MCMC, a curvature-aware Riemannian metric,
+an affine-invariant ensemble, a non-reversible continuous-time PDMP, a
+deterministic Stein-variational particle flow, and an evidence-estimating
+Sequential Monte Carlo sampler), the target densities *and their analytic
+gradients*, and the diagnostics — down to a total-variation distance to each
+target's true distribution and a live estimate of its normalising constant. No
+stats library, no plotting library — every pixel and every number is ours.
 
 ## Why it's interesting
 
@@ -74,6 +76,53 @@ break a fixed step size no matter how you tune it.
       across the stat panel and every diagnostic)
 - [x] Shareable permalink of the full config (target + sampler + params + seed). *(session 2)*
 - [x] More targets: a warped bimodal; a 2-D marginal of Neal's funnel in 3-D. *(session 2 — added Squiggle + Twin-Crater bimodal-banana)*
+
+### Session 5 plan (this session) — "transport & evidence: population methods and what a chain can't measure"
+
+Sessions 1–4 built out the reversible-MCMC canon, an ensemble, a non-reversible
+PDMP and a curvature-aware metric — fifteen ways to *walk* a density. Session 5
+adds two things a single walking chain fundamentally is *not*: a **deterministic
+transport** method that moves a whole population at once, and a **population
+importance** method that, uniquely, measures the one number MCMC throws away —
+the **normalising constant** (the model evidence). Both verified numerically
+against the exact shipped code.
+
+- [x] **SVGD — Stein Variational Gradient Descent** (Liu & Wang 2016). Not a
+      Markov chain at all: a fixed population of particles moves *deterministically*
+      down the kernelised Stein gradient
+      `φ*(xᵢ) = 1/N Σⱼ [ k(xⱼ,xᵢ)∇log π(xⱼ) + ∇_{xⱼ}k(xⱼ,xᵢ) ]` — the first term
+      pulls every particle uphill, the second (the kernel's own gradient) is a
+      *repulsion* that stops them collapsing to the mode, so the swarm spreads out
+      to *tile* the density and then holds a stationary, well-spaced configuration.
+      RBF kernel with the median-heuristic bandwidth `h² = med²/log N`, AdaGrad step
+      for stability. The swarm draws through the existing `chains` overlay; reports
+      the mean driving force ‖φ‖ (→ 0 at convergence) and the live bandwidth.
+- [x] **SMC — adaptive tempered Sequential Monte Carlo** (Del Moral, Doucet &
+      Jasra 2006). A population of weighted particles is transported from a
+      *normalised* Gaussian reference to the target along a temperature path
+      `log πβ = (1−β)·log π₀ + β·log π̃`, with the ladder chosen **adaptively** by
+      bisecting Δβ to hold a target ESS, importance-reweighting at each rung,
+      **systematic resampling** when the weight ESS drops, and a preconditioned-RWM
+      move (empirical-covariance Cholesky, no tuning) that keeps each particle
+      mixing under πβ. Once β reaches 1 it persists as a population MCMC so the
+      studio keeps streaming samples. Its headline output is the running estimate
+      of **log Z**, the log normalising constant — for the logistic target that is
+      literally the **Bayesian model evidence**, a quantity no single chain in this
+      studio can produce.
+- [x] **Model-evidence readout + ground-truth check.** Add the analytic
+      normalising constant `trueLogZ` to every closed-form target (all but the
+      logistic have one), and surface SMC's live `log Z` estimate against it in the
+      stat panel with a signed error — a self-verifying evidence meter. Extend the
+      engine's info pass-through so converged quantities (`logZ`, `β`, ‖φ‖,
+      bandwidth) show their *current* value, not a lagging EMA.
+- [x] **Verification.** Bundle the exact shipped samplers/targets with a vite
+      lib-build and run in Node: SVGD must recover the Gaussian's moments; SMC's
+      `log Z` must match each target's analytic normaliser, and the logistic
+      evidence must match an independent fine-grid quadrature.
+- [x] **About + metadata.** Two new sampler entries, an evidence-diagnostic entry,
+      new "things to try" (watch SVGD's repulsion tile the ring; read SMC's log Z
+      off the Gaussian against 1.197…), and a refreshed card advertising fifteen
+      samplers + evidence estimation.
 
 ### Session 4 plan (this session) — "geometry: beating the funnel, and sampling along lines"
 
@@ -337,3 +386,46 @@ can send someone.
   Documented both in the About modal (two new sampler entries + two new "things
   to try") and refreshed the card metadata (thirteen samplers). Note: the
   interactive-Bayesian-demo backlog item remains open for a future session.
+- 2026-08-01 (claude): v5.0 — "transport & evidence: population methods and what
+  a chain can't measure". Two new samplers (now fifteen) that both deliberately
+  break the single-chain mold, gate green (scope + conformance + lint + build),
+  both verified numerically against the *exact* shipped code (bundled with a vite
+  lib-build and run in Node):
+  1. **Stein Variational Gradient Descent** (`makeSVGD`; Liu & Wang 2016): a
+     *deterministic* particle flow, not a Markov chain. A fixed swarm moves down
+     the kernelised Stein gradient φ*(xᵢ) = 1/N Σⱼ[k(xⱼ,xᵢ)∇logπ(xⱼ) +
+     ∇_{xⱼ}k(xⱼ,xᵢ)] — a kernel-weighted uphill pull plus the kernel's own
+     gradient as a *repulsion*, so instead of collapsing onto the mode the swarm
+     spreads to **tile** the density. RBF kernel with the median-heuristic
+     bandwidth h² = med²/logN, AdaGrad-with-momentum step (no per-target tuning).
+     Drawn through the `chains` overlay; reports ‖φ‖ (→0 at convergence) and the
+     live bandwidth. **Verified**: on the correlated Gaussian the 60-particle
+     swarm recovers mean ≈ (0.18,−0.18), var ≈ (0.91,0.91) and corr = 0.849 (true
+     0.85 — the slight variance deflation is the known finite-particle SVGD bias).
+  2. **Sequential Monte Carlo** (`makeSMC`; Del Moral, Doucet & Jasra 2006): the
+     one method here that measures the normalising constant Z = ∫π̃ every chain is
+     blind to. A weighted population is transported from a **normalised**,
+     view-framed Gaussian reference (Z₀ = 1) to the target along
+     logπβ = (1−β)logπ₀ + βlogπ̃, the ladder chosen *adaptively* by bisecting Δβ to
+     hold weight-ESS at ½N, with importance reweighting, **systematic resampling**,
+     and a preconditioned-RWM move (proposal from the particles' own covariance —
+     no tuning). Accumulating log Σ Wᵢe^{Δβ(logπ̃−logπ₀)} over the rungs gives an
+     unbiased estimate of Z; once β reaches 1 it persists as a population MCMC so
+     the studio streams on. **Verified**: added the analytic normaliser `trueLogZ`
+     to all eight closed-form targets and, at N=2000 (mean of 8 seeds), SMC's log Z
+     matches every one to |err| < 0.10 (gauss +/−0.015, ring −0.005, mixture
+     −0.003, funnel +0.004, studentt −0.048, squiggle −0.011, twin −0.012, banana
+     −0.097 — the banana's curved valley is the hardest for RWM moves); and the
+     **logistic model evidence** (no closed form) matches an independent
+     1400×1800 grid quadrature to −0.015 (est −1.457 vs grid −1.443). At the live
+     default (N=80) the estimate lands within ≈ ±0.1–0.2 with the expected small
+     downward Jensen bias that shrinks as particles are added.
+  3. **Evidence readout.** The stat panel now shows SMC's live "log Z (estimate /
+     true)" with a colour-coded error, plus β (annealing progress) and weight-ESS;
+     SVGD shows ‖φ‖ and bandwidth. Extended the engine's `info` pass-through so
+     these converged quantities display their current value rather than a lagging
+     EMA. Documented both samplers + the evidence diagnostic in the About modal
+     (two sampler entries, an evidence entry, three new "things to try", and a new
+     intro paragraph on population/transport methods) and refreshed the card
+     (fifteen samplers + evidence estimation). The interactive-Bayesian-demo
+     backlog item remains open for a future session.

@@ -79,6 +79,59 @@ export default function Stats({ s, axes = ['x', 'y'] }: { s: LiveStats; axes?: [
       hint: 'mean tree depth (~log₂ of the leapfrog steps NUTS takes per sample)',
     })
   }
+  // SVGD internals: the driving force (→0 at convergence) and kernel bandwidth.
+  if (s.info?.phi !== undefined) {
+    cells.push({
+      label: '‖φ‖ force',
+      value: fmt(s.info.phi, 3),
+      hint: 'mean magnitude of the Stein driving force per particle — it decays toward 0 as the swarm settles into a stationary tiling of the density',
+    })
+  }
+  if (s.info?.hband !== undefined) {
+    cells.push({
+      label: 'bandwidth h',
+      value: fmt(s.info.hband, 2),
+      hint: 'RBF kernel bandwidth, set live by the median heuristic — the length-scale of the particles’ mutual repulsion',
+    })
+  }
+  // SMC internals: annealing progress, weight health, and the evidence estimate.
+  if (s.info?.beta !== undefined) {
+    cells.push({
+      label: 'β (anneal)',
+      value: fmt(s.info.beta, 3),
+      cls: s.info.beta >= 0.999 ? 'good' : 'warn',
+      hint: 'inverse temperature of the tempering path: 0 = the Gaussian reference, 1 = the full target. The evidence is final once β reaches 1.',
+    })
+  }
+  if (s.info?.essFrac !== undefined) {
+    cells.push({
+      label: 'weight ESS',
+      value: `${(s.info.essFrac * 100).toFixed(0)}%`,
+      hint: 'effective sample size of the importance weights, as a fraction of the population — drops as a rung reweights, resets to 100% after resampling',
+    })
+  }
+  if (s.info?.logZ !== undefined) {
+    const err = s.trueLogZ !== undefined ? s.info.logZ - s.trueLogZ : undefined
+    cells.push({
+      label: 'log Z (evidence)',
+      value:
+        s.trueLogZ !== undefined
+          ? `${fmt(s.info.logZ, 3)} / ${fmt(s.trueLogZ, 3)}`
+          : fmt(s.info.logZ, 3),
+      cls:
+        err === undefined
+          ? ''
+          : Math.abs(err) < 0.1
+            ? 'good'
+            : Math.abs(err) < 0.3
+              ? 'warn'
+              : 'bad',
+      hint:
+        s.trueLogZ !== undefined
+          ? 'SMC estimate of the log normalising constant vs its exact analytic value (est / true) — the one number a single Markov chain cannot produce'
+          : 'SMC estimate of the log normalising constant — here the log Bayesian model evidence, which has no closed form',
+    })
+  }
   if (s.meanErr !== undefined) {
     cells.push({
       label: 'mean err',
