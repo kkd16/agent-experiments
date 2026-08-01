@@ -12,8 +12,8 @@ read it first when you pick the project back up, then keep it current.
   one tick. Detects oscillation and flags it in the UI. Also records a **logic-analyzer trace**
   (a value-per-probe sample every step, ring-buffered) for the timing diagram.
 - **Parts**: inputs, LEDs, clock, constants, a 7-segment hex display; AND/OR/NOT/NAND/NOR/XOR/
-  XNOR/BUF gates; 2:1 mux, and five memory cells — D / T / JK flip-flops, a transparent D latch,
-  and an SR latch.
+  XNOR/BUF gates; combinational blocks — 2:1 mux, 2:4 decoder, full adder, 4:2 priority encoder;
+  and five memory cells — D / T / JK flip-flops, a transparent D latch, and an SR latch.
 - **Canvas** (`src/ui/Canvas.tsx`): SVG board with pan/zoom, drag-to-move, click-to-wire, live
   signal colours, a rendered seven-segment digit, plus **multi-select** (shift-click and
   shift-drag rubber band) and **group move**.
@@ -32,8 +32,10 @@ read it first when you pick the project back up, then keep it current.
   `#c=…` hash, so a design can be shared or bookmarked and auto-loads on open.
 - **Examples**: half/full adder, 2:1 mux, XOR-from-NAND, SR latch, T flip-flop, JK toggle,
   gated D latch, a 2-bit T-flip-flop counter, a 2-bit equality comparator, a 3-bit synchronous
-  shift register, a 4-bit Johnson counter, and a 4-bit ripple counter driving the hex display.
-- **Tests** (`test/*.test.ts`): 44 Vitest checks — gate truth, flip-flop edge/level semantics,
+  shift register, a 4-bit Johnson counter, a 2:4 decoder, a 2-bit ripple-carry adder (full-adder
+  blocks), a 4:2 priority encoder, and a 4-bit ripple counter driving the hex display.
+- **Tests** (`test/*.test.ts`): 50 Vitest checks — gate truth, decoder/full-adder/priority-encoder
+  block truth, flip-flop edge/level semantics,
   **two-phase synchronous registers** (a shared-clock shift register shifts one stage per edge,
   not all at once), the Johnson counter's 8-state walk, the ripple counter's full 0→F→0
   sequence, oscillation detection, truth tables, serialize/share round-trips, clone isolation,
@@ -62,6 +64,8 @@ read it first when you pick the project back up, then keep it current.
 - [x] Per-part inspector: rename labels, set clock period, flip an input
 - [x] Analyzer time cursor + CSV trace export
 - [x] More examples: 3-bit synchronous shift register, 4-bit Johnson counter
+- [x] Combinational block primitives: 2:4 decoder, full adder, 4:2 priority encoder
+- [x] Block examples: 2:4 decoder, 2-bit ripple-carry adder, 4:2 priority encoder
 - [ ] Encapsulate a selection into a reusable sub-chip (see design note below)
 - [ ] A bus / splitter for multi-bit wires + a multi-bit value probe
 - [ ] Propagation-delay animation (staggered gate delays) on the analyzer axis
@@ -102,3 +106,10 @@ counts (needed because a chip's pin count is dynamic, not fixed per kind).
   suite now 44 cases across two files (the shift-register test is what pins down the two-phase
   fix). Smoke-tested in Chromium: inspector opens on select, the Johnson counter's twisted-ring
   waveforms read correctly. Green on the full CI gate.
+- 2026-08-01 (claude): added three combinational **block primitives** — a 2:4 decoder, a full
+  adder, and a 4:2 priority encoder — each a pure `evaluate()` case that slots into the existing
+  per-kind model (multi-output, no engine changes). New examples wire them up: a 2:4 decoder, a
+  2-bit ripple-carry adder built from two full-adder blocks, and a 4:2 priority encoder. Truth
+  tables enumerate the block circuits automatically. Test suite now 50 cases (exhaustive block
+  truth + adder/decoder truth-table checks). Smoke-tested the adder in Chromium — its 16-row
+  truth table computes a+b correctly. Green on the full CI gate.

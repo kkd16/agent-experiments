@@ -243,6 +243,52 @@ const johnson = (): Snapshot => {
   return b.done()
 }
 
+const decoderDemo = (): Snapshot =>
+  new Build()
+    .add('a0', 'INPUT', 60, 110).label('a0', 'a0')
+    .add('a1', 'INPUT', 60, 210).label('a1', 'a1')
+    .add('en', 'INPUT', 60, 310).label('en', 'en')
+    .add('dec', 'DEC24', 280, 150)
+    .add('y0', 'OUTPUT', 500, 110).label('y0', 'out0')
+    .add('y1', 'OUTPUT', 500, 190).label('y1', 'out1')
+    .add('y2', 'OUTPUT', 500, 270).label('y2', 'out2')
+    .add('y3', 'OUTPUT', 500, 350).label('y3', 'out3')
+    .wire('a0', 0, 'dec', 0).wire('a1', 0, 'dec', 1).wire('en', 0, 'dec', 2)
+    .wire('dec', 0, 'y0', 0).wire('dec', 1, 'y1', 0).wire('dec', 2, 'y2', 0).wire('dec', 3, 'y3', 0)
+    .done()
+
+const adder2 = (): Snapshot =>
+  new Build()
+    .add('a0', 'INPUT', 40, 80).label('a0', 'a0')
+    .add('a1', 'INPUT', 40, 170).label('a1', 'a1')
+    .add('b0', 'INPUT', 40, 300).label('b0', 'b0')
+    .add('b1', 'INPUT', 40, 390).label('b1', 'b1')
+    .add('z', 'CONST0', 40, 500)
+    .add('fa0', 'FADD', 260, 120)
+    .add('fa1', 'FADD', 260, 330)
+    .add('s0', 'OUTPUT', 500, 120).label('s0', 's0')
+    .add('s1', 'OUTPUT', 500, 300).label('s1', 's1')
+    .add('co', 'OUTPUT', 500, 400).label('co', 'cout')
+    // Two full-adder blocks chained by their carry make a 2-bit ripple adder.
+    .wire('a0', 0, 'fa0', 0).wire('b0', 0, 'fa0', 1).wire('z', 0, 'fa0', 2)
+    .wire('a1', 0, 'fa1', 0).wire('b1', 0, 'fa1', 1).wire('fa0', 1, 'fa1', 2)
+    .wire('fa0', 0, 's0', 0).wire('fa1', 0, 's1', 0).wire('fa1', 1, 'co', 0)
+    .done()
+
+const priorityDemo = (): Snapshot =>
+  new Build()
+    .add('i0', 'INPUT', 60, 90).label('i0', 'i0')
+    .add('i1', 'INPUT', 60, 180).label('i1', 'i1')
+    .add('i2', 'INPUT', 60, 270).label('i2', 'i2')
+    .add('i3', 'INPUT', 60, 360).label('i3', 'i3')
+    .add('enc', 'ENC42', 280, 160)
+    .add('o0', 'OUTPUT', 500, 130).label('o0', 'o0')
+    .add('o1', 'OUTPUT', 500, 210).label('o1', 'o1')
+    .add('v', 'OUTPUT', 500, 290).label('v', 'valid')
+    .wire('i0', 0, 'enc', 0).wire('i1', 0, 'enc', 1).wire('i2', 0, 'enc', 2).wire('i3', 0, 'enc', 3)
+    .wire('enc', 0, 'o0', 0).wire('enc', 1, 'o1', 0).wire('enc', 2, 'v', 0)
+    .done()
+
 export const EXAMPLES: Example[] = [
   { id: 'half-adder', title: 'Half adder', note: 'A ⊕ B → Sum, A · B → Carry. Open the truth table.', build: halfAdder },
   { id: 'full-adder', title: 'Full adder', note: 'Three inputs, ripple-carry cell of every ALU.', build: fullAdder },
@@ -254,6 +300,9 @@ export const EXAMPLES: Example[] = [
   { id: 'gated-latch', title: 'Gated D latch', note: 'Transparent while Enable is high; drop it to hold the bit.', build: gatedLatch },
   { id: 't-counter', title: '2-bit T counter', note: 'Two T flip-flops ripple-count 0→3. Run with the Analyzer open.', build: tCounter },
   { id: 'comparator', title: '2-bit comparator', note: 'A=B via XNOR + AND. Open the truth table.', build: comparator2 },
+  { id: 'decoder', title: '2:4 decoder', note: 'The address lights exactly one output (when enabled). Truth table it.', build: decoderDemo },
+  { id: 'adder2', title: '2-bit adder', note: 'Two full-adder blocks ripple a carry. Truth table shows a+b.', build: adder2 },
+  { id: 'priority', title: '4:2 priority encoder', note: 'Highest active input wins; V flags any input set.', build: priorityDemo },
   { id: 'shift-reg', title: '3-bit shift register', note: 'Toggle Din, then Step — one bit marches across per edge. Analyzer on.', build: shiftReg },
   { id: 'johnson', title: '4-bit Johnson counter', note: 'A twisted ring cycles 8 states. Run with the Analyzer open.', build: johnson },
   { id: 'hex-counter', title: '4-bit hex counter', note: 'Ripple counter driving a 7-segment digit. Press Run.', build: hexCounter },
