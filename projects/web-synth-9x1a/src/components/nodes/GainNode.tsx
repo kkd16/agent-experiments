@@ -28,8 +28,17 @@ export function GainNode({ id, data }: { id: string, data: Record<string, any> }
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Mute
+          <input
+            type="checkbox"
+            checked={data.muted || false}
+            onChange={(e) => updateNodeData(id, { muted: e.target.checked })}
+            className="ml-2 accent-green-500"
+          />
+        </label>
         <label className="text-xs text-gray-300 flex flex-col">
-          Level: {data.gain?.toFixed(2)}
+          Level: {data.gain !== undefined ? data.gain.toFixed(2) : '0.50'}
           <input
             type="range"
             min="0" max="2" step="0.01"
@@ -38,6 +47,12 @@ export function GainNode({ id, data }: { id: string, data: Record<string, any> }
             className="mt-1"
           />
         </label>
+        <button
+          onClick={() => updateNodeData(id, { gain: 0.5, muted: false })}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
+        >
+          Reset to Default
+        </button>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-green-500" />

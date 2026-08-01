@@ -233,8 +233,11 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.type !== undefined) wrapper.setType(data.type);
       if (data.depth !== undefined) wrapper.setDepth(data.depth);
 
+    } else if (wrapper instanceof NoiseWrapper) {
+      if (data.type !== undefined) wrapper.setType(data.type);
     } else if (wrapper instanceof GainWrapper) {
       if (data.gain !== undefined) wrapper.setGain(data.gain);
+      if (data.muted !== undefined) wrapper.setMute(data.muted);
     } else if (wrapper instanceof CompressorWrapper) {
       if (data.threshold !== undefined) wrapper.setThreshold(data.threshold);
       if (data.knee !== undefined) wrapper.setKnee(data.knee);

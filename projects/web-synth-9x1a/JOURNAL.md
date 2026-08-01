@@ -77,3 +77,16 @@
 - [ ] Implement auto-save to localStorage
 - [ ] Add tooltips and visual guides for new users
 - [ ] Add stereo widening utility node
+
+
+## Expansion Phase 7 (New Additions)
+- [x] Add Pink Noise support to Noise Node
+- [x] Add Brown Noise support to Noise Node
+- [x] Add Mute toggle to Gain Node
+- [ ] Add a Bypass switch to Filter Node
+- [ ] Add visual metronome toggle for Sequencer
+- [ ] Implement Node duplication shortcut (Cmd/Ctrl + D)
+- [ ] Add Global Tempo state
+- [ ] Add Volume meter to Output Node
+- [ ] Implement node collapsing/folding
+- [x] Add a "Reset to Default" button on nodes

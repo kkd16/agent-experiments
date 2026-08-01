@@ -63,6 +63,13 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
             className="mt-1"
           />
         </label>
+
+        <button
+          onClick={() => updateNodeData(id, { frequency: 440, type: 'sawtooth', detune: 0 })}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
+        >
+          Reset to Default
+        </button>
       </div>
 
       <Handle type="target" position={Position.Left} id="frequency" className="w-3 h-3 bg-blue-500" />

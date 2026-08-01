@@ -2,6 +2,8 @@ import { audioCore } from '../core';
 
 export class GainWrapper {
   public node: GainNode;
+  private currentGain: number = 0.5;
+  private isMuted: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -13,7 +15,19 @@ export class GainWrapper {
   }
 
   public setGain(value: number) {
-    this.node.gain.setValueAtTime(value, audioCore.getContext().currentTime);
+    this.currentGain = value;
+    if (!this.isMuted) {
+      this.node.gain.setValueAtTime(value, audioCore.getContext().currentTime);
+    }
+  }
+
+  public setMute(mute: boolean) {
+    this.isMuted = mute;
+    if (this.isMuted) {
+      this.node.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      this.node.gain.setValueAtTime(this.currentGain, audioCore.getContext().currentTime);
+    }
   }
 
   public destroy(id: string) {

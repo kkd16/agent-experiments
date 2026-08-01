@@ -25,7 +25,20 @@ export function NoiseNode({ id, data }: { id: string, data: Record<string, any> 
         </div>
         <button onClick={() => removeNode(id)} className="text-gray-500 hover:text-red-400"><X size={14} /></button>
       </div>
-      <div className="text-xs text-gray-400 italic">White Noise</div>
+      <div className="flex flex-col gap-2 mt-2">
+        <label className="text-xs text-gray-300 flex flex-col">
+          Type
+          <select
+            value={data.type || 'white'}
+            onChange={(e) => updateNodeData(id, { type: e.target.value })}
+            className="mt-1 bg-gray-700 border border-gray-600 text-xs p-1 rounded"
+          >
+            <option value="white">White Noise</option>
+            <option value="pink">Pink Noise</option>
+            <option value="brown">Brown Noise</option>
+          </select>
+        </label>
+      </div>
       <Handle type="source" position={Position.Right} id="out" className="w-3 h-3 bg-gray-400" />
     </div>
   );
