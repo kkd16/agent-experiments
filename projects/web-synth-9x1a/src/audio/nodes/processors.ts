@@ -306,3 +306,86 @@ export class CompressorWrapper {
     audioCore.unregisterParam(`${id}.release`);
   }
 }
+
+export class ChorusWrapper {
+  public inputNode: GainNode;
+  public delayNode: DelayNode;
+  public lfo: OscillatorNode;
+  public lfoGain: GainNode;
+  public dryNode: GainNode;
+  public wetNode: GainNode;
+  public outputNode: GainNode;
+
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+
+    this.inputNode = ctx.createGain();
+    this.delayNode = ctx.createDelay();
+    this.lfo = ctx.createOscillator();
+    this.lfoGain = ctx.createGain();
+    this.dryNode = ctx.createGain();
+    this.wetNode = ctx.createGain();
+    this.outputNode = ctx.createGain();
+
+    // Setup initial values
+    this.delayNode.delayTime.value = 0.03; // 30ms base delay
+    this.lfo.type = 'sine';
+    this.lfo.frequency.value = 1.5; // 1.5Hz rate
+    this.lfoGain.gain.value = 0.005; // Mod depth
+
+    this.dryNode.gain.value = 0.5;
+    this.wetNode.gain.value = 0.5;
+
+    // Routing
+    this.inputNode.connect(this.dryNode);
+    this.inputNode.connect(this.delayNode);
+    this.delayNode.connect(this.wetNode);
+    this.dryNode.connect(this.outputNode);
+    this.wetNode.connect(this.outputNode);
+
+    // Modulation
+    this.lfo.connect(this.lfoGain);
+    this.lfoGain.connect(this.delayNode.delayTime);
+    this.lfo.start();
+
+    // Expose output node using the Reverb hack methodology
+    (this.inputNode as any).connect = (destination: any) => {
+        return this.outputNode.connect(destination);
+    };
+
+    (this.inputNode as any).disconnect = (destination?: any) => {
+        if (destination) {
+            this.outputNode.disconnect(destination);
+        } else {
+            this.outputNode.disconnect();
+        }
+    };
+
+    audioCore.registerNode(id, this.inputNode);
+  }
+
+  public setRate(rate: number) {
+    this.lfo.frequency.setValueAtTime(rate, audioCore.getContext().currentTime);
+  }
+
+  public setDepth(depth: number) {
+    this.lfoGain.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
+  }
+
+  public setMix(mix: number) {
+    this.dryNode.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
+    this.wetNode.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
+  }
+
+  public destroy(id: string) {
+    this.inputNode.disconnect();
+    this.delayNode.disconnect();
+    this.lfo.stop();
+    this.lfo.disconnect();
+    this.lfoGain.disconnect();
+    this.dryNode.disconnect();
+    this.wetNode.disconnect();
+    this.outputNode.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}

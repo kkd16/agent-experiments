@@ -113,3 +113,62 @@ export class SequencerWrapper {
     this.stop();
   }
 }
+
+export class AdsrWrapper {
+  public constantSource: ConstantSourceNode;
+  public gainNode: GainNode;
+  public id: string;
+  public attack: number = 0.1;
+  public decay: number = 0.1;
+  public sustain: number = 0.5;
+  public release: number = 0.3;
+
+  constructor(id: string) {
+    this.id = id;
+    const ctx = audioCore.getContext();
+    this.constantSource = ctx.createConstantSource();
+    this.constantSource.offset.value = 1.0;
+
+    this.gainNode = ctx.createGain();
+    this.gainNode.gain.value = 0; // Starts at 0
+
+    this.constantSource.connect(this.gainNode);
+    this.constantSource.start();
+
+    // Register gain node as output
+    audioCore.registerNode(id, this.gainNode);
+  }
+
+  public setAttack(val: number) { this.attack = val; }
+  public setDecay(val: number) { this.decay = val; }
+  public setSustain(val: number) { this.sustain = val; }
+  public setRelease(val: number) { this.release = val; }
+
+  public triggerAttack() {
+    const ctx = audioCore.getContext();
+    const now = ctx.currentTime;
+    const gain = this.gainNode.gain;
+
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(0, now);
+    gain.linearRampToValueAtTime(1, now + this.attack);
+    gain.linearRampToValueAtTime(this.sustain, now + this.attack + this.decay);
+  }
+
+  public triggerRelease() {
+    const ctx = audioCore.getContext();
+    const now = ctx.currentTime;
+    const gain = this.gainNode.gain;
+
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(0, now + this.release);
+  }
+
+  public destroy(id: string) {
+    this.constantSource.stop();
+    this.constantSource.disconnect();
+    this.gainNode.disconnect();
+    audioCore.unregisterNode(id);
+  }
+}

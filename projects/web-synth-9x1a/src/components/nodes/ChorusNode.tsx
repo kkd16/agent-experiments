@@ -2,7 +2,7 @@ import { X } from 'lucide-react';
 import { Handle, Position } from '@xyflow/react';
 import { useStore } from '../../store';
 
-export function OscillatorNode({ id, data }: { id: string, data: Record<string, any> }) {
+export function ChorusNode({ id, data }: { id: string, data: Record<string, any> }) {
   const updateNodeData = useStore((state) => state.updateNodeData);
   const removeNode = useStore(state => state.removeNode);
 
@@ -11,9 +11,9 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
       <div className="flex justify-between items-center mb-2 border-b border-gray-600 pb-1">
         <div className="flex items-center">
         <input
-          value={data.label || 'Oscillator'}
+          value={data.label || 'Chorus'}
           onChange={(e) => updateNodeData(id, { label: e.target.value })}
-          className={`bg-transparent outline-none w-24 text-sm font-bold ${data.color ? '' : 'text-blue-400'}`}
+          className={`bg-transparent outline-none w-24 text-sm font-bold ${data.color ? '' : 'text-teal-400'}`}
           style={data.color ? { color: data.color } : {}}
         />
         <input
@@ -29,33 +29,41 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
 
       <div className="flex flex-col gap-2">
         <label className="text-xs text-gray-300 flex flex-col">
-          Type
-          <select
-            value={data.type || 'sawtooth'}
-            onChange={(e) => updateNodeData(id, { type: e.target.value })}
-            className="mt-1 bg-gray-700 border border-gray-600 text-xs p-1 rounded"
-          >
-            <option value="sine">Sine</option>
-            <option value="square">Square</option>
-            <option value="sawtooth">Sawtooth</option>
-            <option value="triangle">Triangle</option>
-          </select>
+          Rate: {data.rate} Hz
+          <input
+            type="range"
+            min="0.1" max="10" step="0.1"
+            value={data.rate || 1.5}
+            onChange={(e) => updateNodeData(id, { rate: Number(e.target.value) })}
+            className="mt-1"
+          />
         </label>
 
         <label className="text-xs text-gray-300 flex flex-col">
-          Frequency: {data.frequency} Hz
+          Depth: {data.depth}
           <input
             type="range"
-            min="20" max="2000"
-            value={data.frequency || 440}
-            onChange={(e) => updateNodeData(id, { frequency: Number(e.target.value) })}
+            min="0.001" max="0.02" step="0.001"
+            value={data.depth || 0.005}
+            onChange={(e) => updateNodeData(id, { depth: Number(e.target.value) })}
+            className="mt-1"
+          />
+        </label>
+
+        <label className="text-xs text-gray-300 flex flex-col">
+          Mix: {data.mix}
+          <input
+            type="range"
+            min="0" max="1" step="0.01"
+            value={data.mix !== undefined ? data.mix : 0.5}
+            onChange={(e) => updateNodeData(id, { mix: Number(e.target.value) })}
             className="mt-1"
           />
         </label>
       </div>
 
-      <Handle type="target" position={Position.Left} id="frequency" className="w-3 h-3 bg-blue-500" />
-      <Handle type="source" position={Position.Right} id="out" className="w-3 h-3 bg-blue-500" />
+      <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-teal-500" />
+      <Handle type="source" position={Position.Right} id="out" className="w-3 h-3 bg-teal-500" />
     </div>
   );
 }

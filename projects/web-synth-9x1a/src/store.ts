@@ -17,8 +17,9 @@ import {
 
 import { audioCore } from './audio/core';
 import { OscillatorWrapper, NoiseWrapper, LfoWrapper } from './audio/nodes/sources';
-import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper } from './audio/nodes/processors';
+import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper, ChorusWrapper } from './audio/nodes/processors';
 import { AnalyserWrapper } from './audio/nodes/visualizers';
+import { AdsrWrapper } from './audio/nodes/control';
 
 export type AppNode = Node;
 
@@ -31,6 +32,7 @@ type AppState = {
   addNode: (type: string, position: { x: number; y: number }) => void;
   updateNodeData: (id: string, data: Record<string, any>) => void;
   removeNode: (id: string) => void;
+  triggerNode: (id: string, event: 'attack' | 'release') => void;
   audioNodes: Map<string, any>; // Store instances of wrappers
 };
 
@@ -116,6 +118,10 @@ export const useStore = create<AppState>((set, get) => ({
       case 'noiseNode':
         wrapper = new NoiseWrapper(id);
         break;
+      case 'adsrNode':
+        wrapper = new AdsrWrapper(id);
+        initialData = { attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.3 };
+        break;
       case 'lfoNode':
         wrapper = new LfoWrapper(id);
         initialData = { frequency: 5, type: 'sine', depth: 100 };
@@ -139,6 +145,10 @@ export const useStore = create<AppState>((set, get) => ({
       case 'filterNode':
         wrapper = new FilterWrapper(id);
         initialData = { frequency: 1000, Q: 1, type: 'lowpass' };
+        break;
+      case 'chorusNode':
+        wrapper = new ChorusWrapper(id);
+        initialData = { rate: 1.5, depth: 0.005, mix: 0.5 };
         break;
       case 'delayNode':
         wrapper = new DelayWrapper(id);
@@ -167,6 +177,17 @@ export const useStore = create<AppState>((set, get) => ({
     set({ nodes: [...get().nodes, newNode] });
   },
 
+  triggerNode: (id: string, event: 'attack' | 'release') => {
+    const wrapper = get().audioNodes.get(id);
+    if (wrapper) {
+      if (event === 'attack' && typeof wrapper.triggerAttack === 'function') {
+        wrapper.triggerAttack();
+      } else if (event === 'release' && typeof wrapper.triggerRelease === 'function') {
+        wrapper.triggerRelease();
+      }
+    }
+  },
+
   removeNode: (id: string) => {
     get().onNodesChange([{ type: 'remove', id }]);
   },
@@ -192,6 +213,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
       if (data.depth !== undefined) wrapper.setDepth(data.depth);
+
     } else if (wrapper instanceof GainWrapper) {
       if (data.gain !== undefined) wrapper.setGain(data.gain);
     } else if (wrapper instanceof CompressorWrapper) {
@@ -212,7 +234,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.delayTime !== undefined) wrapper.setDelayTime(data.delayTime);
       if (data.feedback !== undefined) wrapper.setFeedback(data.feedback);
     } else if (wrapper instanceof ReverbWrapper) {
-      if (data.mix !== undefined) wrapper.setMix(data.mix);
+
       if (data.decay !== undefined) wrapper.setDecay(data.decay);
     }
   },

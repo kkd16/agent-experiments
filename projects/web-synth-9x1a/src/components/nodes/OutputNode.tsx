@@ -3,7 +3,9 @@ import { Volume2 } from 'lucide-react';
 import { audioCore } from '../../audio/core';
 import { useState } from 'react';
 
-export function OutputNode() {
+import { useStore } from '../../store';
+export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: Record<string, any> }) {
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(1.0);
 
@@ -20,7 +22,21 @@ export function OutputNode() {
   return (
     <div className="bg-gray-800 border-2 border-red-500 rounded-md p-4 min-w-[150px] shadow-[0_0_15px_rgba(239,68,68,0.3)]">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-bold text-red-400">Master Output</div>
+        <div className="flex items-center">
+        <input
+          value={data.label || 'Master Output'}
+          onChange={(e) => updateNodeData(id, { label: e.target.value })}
+          className={`bg-transparent outline-none w-24 text-sm font-bold ${data.color ? '' : 'text-red-400'}`}
+          style={data.color ? { color: data.color } : {}}
+        />
+        <input
+          type="color"
+          value={data.color || '#ffffff'}
+          onChange={(e) => updateNodeData(id, { color: e.target.value })}
+          className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer ml-2 opacity-50 hover:opacity-100"
+          title="Custom Color"
+        />
+        </div>
         <Volume2 size={18} className="text-red-400" />
       </div>
 
