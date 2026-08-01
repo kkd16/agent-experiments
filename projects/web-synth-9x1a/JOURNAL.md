@@ -45,7 +45,7 @@
 - [ ] Implement Node Bypassing
 - [ ] Add Dark/Light Theme Toggle
 - [ ] Add Auto-Panning Node
-- [ ] Enhance Filter Node with more types (highpass, bandpass)
+- [x] Enhance Filter Node with more types (highpass, bandpass)
 - [ ] Add Master EQ Node
 - [ ] Improve UI for Mobile Devices
 - [ ] Add Node Groups
@@ -62,3 +62,18 @@
 - [ ] Add MIDI output support
 - [ ] Implement node cloning shortcut
 - [ ] Add contextual help for nodes
+
+## Expansion Phase 6 (Added Improvements)
+- [x] Add a Master Mute button to Output Node
+- [x] Add a "Clear All Nodes" button to the sidebar
+- [x] Add a Detune control to the Oscillator Node
+- [ ] Add a visual metronome for the Sequencer Node
+- [ ] Implement Node grouping and encapsulation
+- [ ] Allow recording Master Output to a .wav file
+- [ ] Add a Spectrum Analyzer with log-scale frequencies
+- [ ] Implement custom keyboard shortcuts for node creation
+- [ ] Add a saturation/tape warmth node
+- [ ] Implement variable LFO waveforms
+- [ ] Implement auto-save to localStorage
+- [ ] Add tooltips and visual guides for new users
+- [ ] Add stereo widening utility node

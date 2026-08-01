@@ -18,7 +18,7 @@ import { AnalyserNode } from './components/nodes/AnalyserNode';
 import { OutputNode } from './components/nodes/OutputNode';
 import { AdsrNode } from './components/nodes/AdsrNode';
 import { ChorusNode } from './components/nodes/ChorusNode';
-import { Settings, Waves, Sliders, AudioWaveform, Activity, MonitorPlay } from 'lucide-react';
+import { Settings, Waves, Sliders, AudioWaveform, Activity, MonitorPlay, X } from 'lucide-react';
 import { useState } from 'react';
 
 const nodeTypes = {
@@ -42,7 +42,7 @@ const nodeTypes = {
 };
 
 export default function App() {
-  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode } = useStore();
+  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode, clearAllNodes } = useStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const handleAddNode = (type: string) => {
@@ -134,6 +134,10 @@ export default function App() {
             <button onClick={() => handleAddNode('analyserNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <MonitorPlay size={18} className="mb-1 text-teal-400" />
               Oscilloscope
+            </button>
+            <button onClick={() => clearAllNodes()} className="flex flex-col items-center justify-center p-3 bg-red-900/50 hover:bg-red-800/60 rounded-lg text-xs transition-colors text-red-300">
+              <X size={18} className="mb-1 text-red-400" />
+              Clear All
             </button>
           </div>
         </div>

@@ -32,6 +32,7 @@ type AppState = {
   addNode: (type: string, position: { x: number; y: number }) => void;
   updateNodeData: (id: string, data: Record<string, any>) => void;
   removeNode: (id: string) => void;
+  clearAllNodes: () => void;
   triggerNode: (id: string, event: 'attack' | 'release') => void;
   audioNodes: Map<string, any>; // Store instances of wrappers
 };
@@ -113,7 +114,7 @@ export const useStore = create<AppState>((set, get) => ({
     switch (type) {
       case 'oscillatorNode':
         wrapper = new OscillatorWrapper(id);
-        initialData = { frequency: 440, type: 'sawtooth' };
+        initialData = { frequency: 440, type: 'sawtooth', detune: 0 };
         break;
       case 'noiseNode':
         wrapper = new NoiseWrapper(id);
@@ -204,6 +205,11 @@ export const useStore = create<AppState>((set, get) => ({
     get().onNodesChange([{ type: 'remove', id }]);
   },
 
+  clearAllNodes: () => {
+    const nodesToRemove = get().nodes.filter(n => n.id !== 'output').map(n => ({ type: 'remove', id: n.id }));
+    get().onNodesChange(nodesToRemove as any);
+  },
+
   updateNodeData: (id: string, data: Record<string, any>) => {
     set({
       nodes: get().nodes.map((node) => {
@@ -221,6 +227,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (wrapper instanceof OscillatorWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
+      if (data.detune !== undefined) wrapper.setDetune(data.detune);
     } else if (wrapper instanceof LfoWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);

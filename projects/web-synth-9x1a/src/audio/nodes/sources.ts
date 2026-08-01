@@ -23,6 +23,10 @@ export class OscillatorWrapper {
     this.node.frequency.setValueAtTime(freq, audioCore.getContext().currentTime);
   }
 
+  public setDetune(cents: number) {
+    this.node.detune.setValueAtTime(cents, audioCore.getContext().currentTime);
+  }
+
   public destroy(id: string) {
     this.node.stop();
     audioCore.unregisterNode(id);
