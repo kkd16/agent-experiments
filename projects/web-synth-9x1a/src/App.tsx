@@ -7,6 +7,9 @@ import { LfoNode } from './components/nodes/LfoNode';
 import { GainNode } from './components/nodes/GainNode';
 import { PanningNode } from './components/nodes/PanningNode';
 import { DistortionNode } from './components/nodes/DistortionNode';
+import { BitcrusherNode } from './components/nodes/BitcrusherNode';
+import { TremoloNode } from './components/nodes/TremoloNode';
+import { RingModulatorNode } from './components/nodes/RingModulatorNode';
 import { CompressorNode } from './components/nodes/CompressorNode';
 import { FilterNode } from './components/nodes/FilterNode';
 import { DelayNode } from './components/nodes/DelayNode';
@@ -23,6 +26,9 @@ const nodeTypes = {
   noiseNode: NoiseNode,
   lfoNode: LfoNode,
   compressorNode: CompressorNode,
+  ringModulatorNode: RingModulatorNode,
+  tremoloNode: TremoloNode,
+  bitcrusherNode: BitcrusherNode,
   distortionNode: DistortionNode,
   panningNode: PanningNode,
   gainNode: GainNode,
@@ -81,13 +87,25 @@ export default function App() {
               <Sliders size={18} className="mb-1 text-cyan-400" />
               Compressor
             </button>
+            <button onClick={() => handleAddNode('bitcrusherNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-purple-600" />
+              Bitcrusher
+            </button>
             <button onClick={() => handleAddNode('distortionNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Sliders size={18} className="mb-1 text-orange-600" />
               Distortion
             </button>
+            <button onClick={() => handleAddNode('tremoloNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-blue-400" />
+              Tremolo
+            </button>
             <button onClick={() => handleAddNode('panningNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Sliders size={18} className="mb-1 text-yellow-400" />
               Panning
+            </button>
+            <button onClick={() => handleAddNode('ringModulatorNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              <Sliders size={18} className="mb-1 text-pink-500" />
+              Ring Mod
             </button>
             <button onClick={() => handleAddNode('gainNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Sliders size={18} className="mb-1 text-green-400" />

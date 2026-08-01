@@ -17,7 +17,7 @@ import {
 
 import { audioCore } from './audio/core';
 import { OscillatorWrapper, NoiseWrapper, LfoWrapper } from './audio/nodes/sources';
-import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper, ChorusWrapper } from './audio/nodes/processors';
+import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper, ChorusWrapper, BitcrusherWrapper, TremoloWrapper, RingModulatorWrapper } from './audio/nodes/processors';
 import { AnalyserWrapper } from './audio/nodes/visualizers';
 import { AdsrWrapper } from './audio/nodes/control';
 
@@ -130,9 +130,17 @@ export const useStore = create<AppState>((set, get) => ({
         wrapper = new CompressorWrapper(id);
         initialData = { threshold: -24, knee: 30, ratio: 12, attack: 0.003, release: 0.25 };
         break;
+      case 'bitcrusherNode':
+        wrapper = new BitcrusherWrapper(id);
+        initialData = { bits: 8 };
+        break;
       case 'distortionNode':
         wrapper = new DistortionWrapper(id);
         initialData = { drive: 50 };
+        break;
+      case 'tremoloNode':
+        wrapper = new TremoloWrapper(id);
+        initialData = { rate: 5, depth: 0.5 };
         break;
       case 'panningNode':
         wrapper = new PanningWrapper(id);
@@ -141,6 +149,10 @@ export const useStore = create<AppState>((set, get) => ({
       case 'gainNode':
         wrapper = new GainWrapper(id);
         initialData = { gain: 0.5 };
+        break;
+      case 'ringModulatorNode':
+        wrapper = new RingModulatorWrapper(id);
+        initialData = { frequency: 400, type: 'sine' };
         break;
       case 'filterNode':
         wrapper = new FilterWrapper(id);
@@ -229,6 +241,14 @@ export const useStore = create<AppState>((set, get) => ({
     } else if (wrapper instanceof FilterWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.Q !== undefined) wrapper.setQ(data.Q);
+      if (data.type !== undefined) wrapper.setType(data.type);
+    } else if (wrapper instanceof BitcrusherWrapper) {
+      if (data.bits !== undefined) wrapper.setBitDepth(data.bits);
+    } else if (wrapper instanceof TremoloWrapper) {
+      if (data.rate !== undefined) wrapper.setRate(data.rate);
+      if (data.depth !== undefined) wrapper.setDepth(data.depth);
+    } else if (wrapper instanceof RingModulatorWrapper) {
+      if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
     } else if (wrapper instanceof DelayWrapper) {
       if (data.delayTime !== undefined) wrapper.setDelayTime(data.delayTime);
