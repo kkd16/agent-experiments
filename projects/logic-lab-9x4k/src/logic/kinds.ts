@@ -18,6 +18,8 @@ export type Kind =
   | 'XOR'
   | 'XNOR'
   | 'MUX2'
+  | 'MUX4'
+  | 'DMX14'
   | 'DEC24'
   | 'FADD'
   | 'ENC42'
@@ -59,6 +61,8 @@ const meta: Record<Kind, KindMeta> = {
   XOR: { label: 'XOR', short: 'XOR', category: 'gate', numIn: 2, numOut: 1, inLabels: ['', ''], outLabels: [''], stateful: false, blurb: '1 when the inputs differ.' },
   XNOR: { label: 'XNOR', short: 'XNOR', category: 'gate', numIn: 2, numOut: 1, inLabels: ['', ''], outLabels: [''], stateful: false, blurb: '1 when the inputs match.' },
   MUX2: { label: 'Mux 2:1', short: 'MUX', category: 'block', numIn: 3, numOut: 1, inLabels: ['a', 'b', 's'], outLabels: ['y'], stateful: false, blurb: 'Selects a or b based on the s line.' },
+  MUX4: { label: 'Mux 4:1', short: 'MUX4', category: 'block', numIn: 6, numOut: 1, inLabels: ['0', '1', '2', '3', 's0', 's1'], outLabels: ['y'], stateful: false, blurb: 'Routes one of four data inputs to y, chosen by the 2-bit select.' },
+  DMX14: { label: 'Demux 1:4', short: 'DMX', category: 'block', numIn: 3, numOut: 4, inLabels: ['d', 's0', 's1'], outLabels: ['0', '1', '2', '3'], stateful: false, blurb: 'Steers the data bit to one of four outputs; the rest stay low.' },
   DEC24: { label: 'Decoder 2:4', short: 'DEC', category: 'block', numIn: 3, numOut: 4, inLabels: ['a0', 'a1', 'en'], outLabels: ['0', '1', '2', '3'], stateful: false, blurb: 'Drives one of four outputs high, chosen by the 2-bit address (gated by en).' },
   FADD: { label: 'Full Adder', short: 'FADD', category: 'block', numIn: 3, numOut: 2, inLabels: ['A', 'B', 'Ci'], outLabels: ['S', 'Co'], stateful: false, blurb: 'One-bit adder: S = A⊕B⊕Cin, Co = the carry. Chain them for a ripple adder.' },
   ENC42: { label: 'Priority Enc 4:2', short: 'ENC', category: 'block', numIn: 4, numOut: 3, inLabels: ['0', '1', '2', '3'], outLabels: ['o0', 'o1', 'V'], stateful: false, blurb: 'Encodes the highest active input to a 2-bit code; V flags any input set.' },
@@ -96,6 +100,17 @@ export function evaluate(kind: Kind, ins: boolean[]): boolean[] {
       return [(ins[0] ?? false) === (ins[1] ?? false)]
     case 'MUX2':
       return [(ins[2] ?? false) ? (ins[1] ?? false) : (ins[0] ?? false)]
+    case 'MUX4': {
+      // 4:1 mux: select s1s0 picks one of the four data inputs.
+      const sel = (ins[4] ? 1 : 0) | (ins[5] ? 2 : 0)
+      return [ins[sel] ?? false]
+    }
+    case 'DMX14': {
+      // 1:4 demux: the data bit appears on the selected output, others are low.
+      const d = ins[0] ?? false
+      const sel = (ins[1] ? 1 : 0) | (ins[2] ? 2 : 0)
+      return [d && sel === 0, d && sel === 1, d && sel === 2, d && sel === 3]
+    }
     case 'DEC24': {
       // 2:4 decoder: address a1a0 selects one output, all low unless en is high.
       const en = ins[2] ?? false
