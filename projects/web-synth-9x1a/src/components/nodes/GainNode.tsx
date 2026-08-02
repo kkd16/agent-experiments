@@ -37,6 +37,15 @@ export function GainNode({ id, data }: { id: string, data: Record<string, any> }
             className="ml-2 accent-green-500"
           />
         </label>
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Invert Phase
+          <input
+            type="checkbox"
+            checked={data.invertPhase || false}
+            onChange={(e) => updateNodeData(id, { invertPhase: e.target.checked })}
+            className="ml-2 accent-green-500"
+          />
+        </label>
         <label className="text-xs text-gray-300 flex flex-col">
           Level: {data.gain !== undefined ? data.gain.toFixed(2) : '0.50'}
           <input

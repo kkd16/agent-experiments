@@ -17,6 +17,7 @@ import { ReverbNode } from './components/nodes/ReverbNode';
 import { AnalyserNode } from './components/nodes/AnalyserNode';
 import { OutputNode } from './components/nodes/OutputNode';
 import { AdsrNode } from './components/nodes/AdsrNode';
+import { DcOffsetNode } from './components/nodes/DcOffsetNode';
 import { ChorusNode } from './components/nodes/ChorusNode';
 import { Settings, Waves, Sliders, AudioWaveform, Activity, MonitorPlay, X } from 'lucide-react';
 import { useState } from 'react';
@@ -37,6 +38,7 @@ const nodeTypes = {
   reverbNode: ReverbNode,
   analyserNode: AnalyserNode,
   adsrNode: AdsrNode,
+  dcOffsetNode: DcOffsetNode,
   chorusNode: ChorusNode,
   outputNode: OutputNode,
 };
@@ -70,6 +72,9 @@ export default function App() {
             <button onClick={() => handleAddNode('noiseNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
               <Waves size={18} className="mb-1 text-gray-400" />
               Noise
+            </button>
+            <button onClick={() => handleAddNode('dcOffsetNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors">
+              DC Offset
             </button>
             <button onClick={() => handleAddNode('lfoNode')} className="flex flex-col items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition-colors col-span-2">
               <Activity size={18} className="mb-1 text-blue-400" />

@@ -4,6 +4,7 @@ export class GainWrapper {
   public node: GainNode;
   private currentGain: number = 0.5;
   private isMuted: boolean = false;
+  private invertPhase: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -14,20 +15,24 @@ export class GainWrapper {
     audioCore.registerParam(`${id}.gain`, this.node.gain);
   }
 
+  public setInvertPhase(invert: boolean) {
+    this.invertPhase = invert;
+    this.applyGain();
+  }
+
   public setGain(value: number) {
     this.currentGain = value;
-    if (!this.isMuted) {
-      this.node.gain.setValueAtTime(value, audioCore.getContext().currentTime);
-    }
+    this.applyGain();
   }
 
   public setMute(mute: boolean) {
     this.isMuted = mute;
-    if (this.isMuted) {
-      this.node.gain.setValueAtTime(0, audioCore.getContext().currentTime);
-    } else {
-      this.node.gain.setValueAtTime(this.currentGain, audioCore.getContext().currentTime);
-    }
+    this.applyGain();
+  }
+
+  private applyGain() {
+    const val = this.isMuted ? 0 : (this.invertPhase ? -this.currentGain : this.currentGain);
+    this.node.gain.setValueAtTime(val, audioCore.getContext().currentTime);
   }
 
   public destroy(id: string) {
@@ -37,16 +42,45 @@ export class GainWrapper {
 }
 
 export class FilterWrapper {
+  public inputNode: GainNode;
   public node: BiquadFilterNode;
+  public dryGain: GainNode;
+  public wetGain: GainNode;
+  public outputNode: GainNode;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
+
+    this.inputNode = ctx.createGain();
     this.node = ctx.createBiquadFilter();
     this.node.type = 'lowpass';
     this.node.frequency.value = 1000;
     this.node.Q.value = 1;
+    this.dryGain = ctx.createGain();
+    this.dryGain.gain.value = 0;
+    this.wetGain = ctx.createGain();
+    this.wetGain.gain.value = 1;
+    this.outputNode = ctx.createGain();
 
-    audioCore.registerNode(id, this.node);
+    this.inputNode.connect(this.node);
+    this.inputNode.connect(this.dryGain);
+    this.node.connect(this.wetGain);
+    this.dryGain.connect(this.outputNode);
+    this.wetGain.connect(this.outputNode);
+
+    (this.inputNode as any).connect = (dest: any, output?: number, input?: number) => {
+      if (output !== undefined && input !== undefined) return this.outputNode.connect(dest, output, input);
+      if (output !== undefined) return this.outputNode.connect(dest, output);
+      return this.outputNode.connect(dest);
+    };
+    (this.inputNode as any).disconnect = (dest?: any, output?: number, input?: number) => {
+      if (dest && output !== undefined && input !== undefined) return this.outputNode.disconnect(dest, output, input);
+      if (dest && output !== undefined) return this.outputNode.disconnect(dest, output);
+      if (dest) return this.outputNode.disconnect(dest);
+      return this.outputNode.disconnect();
+    };
+
+    audioCore.registerNode(id, this.inputNode);
     audioCore.registerParam(`${id}.frequency`, this.node.frequency);
     audioCore.registerParam(`${id}.Q`, this.node.Q);
   }
@@ -63,7 +97,17 @@ export class FilterWrapper {
     this.node.Q.setValueAtTime(q, audioCore.getContext().currentTime);
   }
 
+  public setBypass(bypass: boolean) {
+    this.dryGain.gain.value = bypass ? 1 : 0;
+    this.wetGain.gain.value = bypass ? 0 : 1;
+  }
+
   public destroy(id: string) {
+    this.inputNode.disconnect();
+    this.node.disconnect();
+    this.dryGain.disconnect();
+    this.wetGain.disconnect();
+    this.outputNode.disconnect();
     audioCore.unregisterNode(id);
     audioCore.unregisterParam(`${id}.frequency`);
     audioCore.unregisterParam(`${id}.Q`);

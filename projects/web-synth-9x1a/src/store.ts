@@ -16,7 +16,7 @@ import {
 } from '@xyflow/react';
 
 import { audioCore } from './audio/core';
-import { OscillatorWrapper, NoiseWrapper, LfoWrapper } from './audio/nodes/sources';
+import { OscillatorWrapper, NoiseWrapper, LfoWrapper, DcOffsetWrapper } from './audio/nodes/sources';
 import { GainWrapper, FilterWrapper, DelayWrapper, ReverbWrapper, PanningWrapper, DistortionWrapper, CompressorWrapper, ChorusWrapper, BitcrusherWrapper, TremoloWrapper, RingModulatorWrapper } from './audio/nodes/processors';
 import { AnalyserWrapper } from './audio/nodes/visualizers';
 import { AdsrWrapper } from './audio/nodes/control';
@@ -118,6 +118,10 @@ export const useStore = create<AppState>((set, get) => ({
         break;
       case 'noiseNode':
         wrapper = new NoiseWrapper(id);
+        break;
+      case 'dcOffsetNode':
+        wrapper = new DcOffsetWrapper(id);
+        initialData = { offset: 0 };
         break;
       case 'adsrNode':
         wrapper = new AdsrWrapper(id);
@@ -235,9 +239,12 @@ export const useStore = create<AppState>((set, get) => ({
 
     } else if (wrapper instanceof NoiseWrapper) {
       if (data.type !== undefined) wrapper.setType(data.type);
+    } else if (wrapper instanceof DcOffsetWrapper) {
+      if (data.offset !== undefined) wrapper.setOffset(data.offset);
     } else if (wrapper instanceof GainWrapper) {
       if (data.gain !== undefined) wrapper.setGain(data.gain);
       if (data.muted !== undefined) wrapper.setMute(data.muted);
+      if (data.invertPhase !== undefined) wrapper.setInvertPhase(data.invertPhase);
     } else if (wrapper instanceof CompressorWrapper) {
       if (data.threshold !== undefined) wrapper.setThreshold(data.threshold);
       if (data.knee !== undefined) wrapper.setKnee(data.knee);
@@ -252,6 +259,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.Q !== undefined) wrapper.setQ(data.Q);
       if (data.type !== undefined) wrapper.setType(data.type);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof BitcrusherWrapper) {
       if (data.bits !== undefined) wrapper.setBitDepth(data.bits);
     } else if (wrapper instanceof TremoloWrapper) {
@@ -265,6 +273,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.feedback !== undefined) wrapper.setFeedback(data.feedback);
     } else if (wrapper instanceof ReverbWrapper) {
 
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
       if (data.decay !== undefined) wrapper.setDecay(data.decay);
     }
   },
