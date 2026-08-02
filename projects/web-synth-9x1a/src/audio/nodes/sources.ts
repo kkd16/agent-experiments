@@ -161,3 +161,17 @@ export class LfoWrapper {
     audioCore.unregisterParam(`${id}.depth`);
   }
 }
+
+export class DcOffsetWrapper {
+  public node: ConstantSourceNode;
+  constructor(id: string) {
+    const ctx = audioCore.getContext();
+    this.node = ctx.createConstantSource();
+    this.node.offset.value = 0;
+    this.node.start();
+    audioCore.registerNode(id, this.node);
+    audioCore.registerParam(`${id}.offset`, this.node.offset);
+  }
+  public setOffset(v: number) { this.node.offset.setValueAtTime(v, audioCore.getContext().currentTime); }
+  public destroy(id: string) { this.node.stop(); audioCore.unregisterNode(id); audioCore.unregisterParam(`${id}.offset`); }
+}

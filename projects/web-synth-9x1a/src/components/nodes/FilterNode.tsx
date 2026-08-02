@@ -28,6 +28,15 @@ export function FilterNode({ id, data }: { id: string, data: Record<string, any>
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Bypass
+          <input
+            type="checkbox"
+            checked={data.bypass || false}
+            onChange={(e) => updateNodeData(id, { bypass: e.target.checked })}
+            className="ml-2 accent-orange-500"
+          />
+        </label>
         <label className="text-xs text-gray-300 flex flex-col">
           Type
           <select

@@ -90,3 +90,17 @@
 - [ ] Add Volume meter to Output Node
 - [ ] Implement node collapsing/folding
 - [x] Add a "Reset to Default" button on nodes
+
+## Expansion Phase 8 (New Improvements)
+- [x] Fix Reverb Node Mix control wiring in store
+- [ ] Fix AudioCore to support separate input and output nodes for complex effects
+- [ ] Add Dry/Wet mix control to Delay Node
+- [x] Add Phase Inversion toggle to Gain Node
+- [x] Implement Node Bypassing for Filter Node
+- [ ] Add a Clipping Indicator to Output Node
+- [x] Add a DC Offset Node
+- [ ] Implement auto-pan LFO sync in Panning Node
+- [ ] Add an Invert Phase option to Oscillator Node
+- [ ] Add a "Randomize Parameters" button to node UIs
+- [ ] Implement Node Bypassing for Delay Node
+- [ ] Add a Drive/Saturation parameter to the Filter Node
