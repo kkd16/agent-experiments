@@ -2,6 +2,9 @@ import { audioCore } from '../core';
 
 export class OscillatorWrapper {
   public node: OscillatorNode;
+  public output: GainNode;
+  private baseFreq: number = 440;
+  private octave: number = 0;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -10,7 +13,11 @@ export class OscillatorWrapper {
     this.node.frequency.value = 440;
     this.node.start();
 
-    audioCore.registerNode(id, this.node);
+    this.output = ctx.createGain();
+    this.output.gain.value = 1;
+    this.node.connect(this.output);
+
+    audioCore.registerNode(id, this.output);
     audioCore.registerParam(`${id}.frequency`, this.node.frequency);
     audioCore.registerParam(`${id}.detune`, this.node.detune);
   }
@@ -20,7 +27,17 @@ export class OscillatorWrapper {
   }
 
   public setFrequency(freq: number) {
-    this.node.frequency.setValueAtTime(freq, audioCore.getContext().currentTime);
+    this.baseFreq = freq;
+    this.node.frequency.setValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime);
+  }
+
+  public setOctave(oct: number) {
+    this.octave = oct;
+    this.node.frequency.setValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime);
+  }
+
+  public setInvertPhase(invert: boolean) {
+    this.output.gain.setValueAtTime(invert ? -1 : 1, audioCore.getContext().currentTime);
   }
 
   public setDetune(cents: number) {
@@ -29,6 +46,8 @@ export class OscillatorWrapper {
 
   public destroy(id: string) {
     this.node.stop();
+    this.node.disconnect();
+    this.output.disconnect();
     audioCore.unregisterNode(id);
     audioCore.unregisterParam(`${id}.frequency`);
     audioCore.unregisterParam(`${id}.detune`);

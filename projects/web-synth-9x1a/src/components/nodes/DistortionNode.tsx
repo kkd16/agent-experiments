@@ -28,6 +28,16 @@ export function DistortionNode({ id, data }: { id: string, data: Record<string, 
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Bypass
+          <input
+            type="checkbox"
+            checked={data.bypass || false}
+            onChange={(e) => updateNodeData(id, { bypass: e.target.checked })}
+            className="ml-2 accent-orange-600"
+          />
+        </label>
+
         <label className="text-xs text-gray-300 flex flex-col">
           Drive: {data.drive !== undefined ? data.drive : 50}
           <input
@@ -35,6 +45,17 @@ export function DistortionNode({ id, data }: { id: string, data: Record<string, 
             min="0" max="400" step="1"
             value={data.drive !== undefined ? data.drive : 50}
             onChange={(e) => updateNodeData(id, { drive: Number(e.target.value) })}
+            className="mt-1"
+          />
+        </label>
+
+        <label className="text-xs text-gray-300 flex flex-col">
+          Mix: {data.mix !== undefined ? data.mix.toFixed(2) : '1.00'}
+          <input
+            type="range"
+            min="0" max="1" step="0.01"
+            value={data.mix !== undefined ? data.mix : 1.0}
+            onChange={(e) => updateNodeData(id, { mix: Number(e.target.value) })}
             className="mt-1"
           />
         </label>

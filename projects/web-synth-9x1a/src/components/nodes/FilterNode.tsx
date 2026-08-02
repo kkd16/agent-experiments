@@ -48,6 +48,9 @@ export function FilterNode({ id, data }: { id: string, data: Record<string, any>
             <option value="highpass">Highpass</option>
             <option value="bandpass">Bandpass</option>
             <option value="notch">Notch</option>
+            <option value="peaking">Peaking</option>
+            <option value="lowshelf">Low Shelf</option>
+            <option value="highshelf">High Shelf</option>
           </select>
         </label>
 
@@ -67,11 +70,25 @@ export function FilterNode({ id, data }: { id: string, data: Record<string, any>
           <input
             type="range"
             min="0" max="20" step="0.1"
-            value={data.Q || 1}
+            value={data.Q !== undefined ? data.Q : 1}
             onChange={(e) => updateNodeData(id, { Q: Number(e.target.value) })}
             className="mt-1"
           />
         </label>
+
+        <button
+          onClick={() => {
+            const types = ['lowpass', 'highpass', 'bandpass', 'notch', 'peaking', 'lowshelf', 'highshelf'];
+            updateNodeData(id, {
+              frequency: Math.floor(Math.random() * (10000 - 20) + 20),
+              Q: Math.random() * 20,
+              type: types[Math.floor(Math.random() * types.length)]
+            });
+          }}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
+        >
+          Randomize
+        </button>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-orange-500" />
