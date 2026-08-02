@@ -28,6 +28,15 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Invert Phase
+          <input
+            type="checkbox"
+            checked={data.invertPhase || false}
+            onChange={(e) => updateNodeData(id, { invertPhase: e.target.checked })}
+            className="ml-2 accent-blue-500"
+          />
+        </label>
         <label className="text-xs text-gray-300 flex flex-col">
           Type
           <select
@@ -64,12 +73,44 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
           />
         </label>
 
-        <button
-          onClick={() => updateNodeData(id, { frequency: 440, type: 'sawtooth', detune: 0 })}
-          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
-        >
-          Reset to Default
-        </button>
+        <label className="text-xs text-gray-300 flex flex-col">
+          Octave
+          <select
+            value={data.octave || 0}
+            onChange={(e) => updateNodeData(id, { octave: Number(e.target.value) })}
+            className="mt-1 bg-gray-700 border border-gray-600 text-xs p-1 rounded"
+          >
+            <option value="-2">-2</option>
+            <option value="-1">-1</option>
+            <option value="0">0</option>
+            <option value="1">+1</option>
+            <option value="2">+2</option>
+          </select>
+        </label>
+
+        <div className="flex gap-1 mt-1">
+          <button
+            onClick={() => updateNodeData(id, { frequency: 440, type: 'sawtooth', detune: 0, octave: 0, invertPhase: false })}
+            className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors"
+          >
+            Reset
+          </button>
+          <button
+            onClick={() => {
+              const types = ['sine', 'square', 'sawtooth', 'triangle'];
+              updateNodeData(id, {
+                frequency: Math.floor(Math.random() * (2000 - 20) + 20),
+                type: types[Math.floor(Math.random() * types.length)],
+                detune: Math.floor(Math.random() * 2400 - 1200),
+                octave: Math.floor(Math.random() * 5 - 2),
+                invertPhase: Math.random() > 0.5
+              });
+            }}
+            className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors"
+          >
+            Randomize
+          </button>
+        </div>
       </div>
 
       <Handle type="target" position={Position.Left} id="frequency" className="w-3 h-3 bg-blue-500" />

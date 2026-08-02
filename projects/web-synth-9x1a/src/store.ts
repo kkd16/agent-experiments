@@ -232,6 +232,8 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
       if (data.detune !== undefined) wrapper.setDetune(data.detune);
+      if (data.octave !== undefined) wrapper.setOctave(data.octave);
+      if (data.invertPhase !== undefined) wrapper.setInvertPhase(data.invertPhase);
     } else if (wrapper instanceof LfoWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
@@ -253,6 +255,8 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.release !== undefined) wrapper.setRelease(data.release);
     } else if (wrapper instanceof DistortionWrapper) {
       if (data.drive !== undefined) wrapper.setDrive(data.drive);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof PanningWrapper) {
       if (data.pan !== undefined) wrapper.setPan(data.pan);
     } else if (wrapper instanceof FilterWrapper) {
@@ -271,6 +275,8 @@ export const useStore = create<AppState>((set, get) => ({
     } else if (wrapper instanceof DelayWrapper) {
       if (data.delayTime !== undefined) wrapper.setDelayTime(data.delayTime);
       if (data.feedback !== undefined) wrapper.setFeedback(data.feedback);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof ReverbWrapper) {
 
       if (data.mix !== undefined) wrapper.setMix(data.mix);
