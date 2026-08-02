@@ -6,6 +6,8 @@ export class AudioCore {
   private params: Map<string, AudioParam> = new Map();
   private masterGain: GainNode | null = null;
   private masterLimiter: DynamicsCompressorNode | null = null;
+  private masterAnalyser: AnalyserNode | null = null;
+  private analyserData: Float32Array | null = null;
 
   private constructor() {}
 
@@ -30,9 +32,20 @@ export class AudioCore {
       this.masterLimiter.release.value = 0.050;
 
       this.masterGain.connect(this.masterLimiter);
-      this.masterLimiter.connect(this.ctx.destination);
+      this.masterAnalyser = this.ctx.createAnalyser();
+      this.masterLimiter.connect(this.masterAnalyser);
+      this.masterAnalyser.connect(this.ctx.destination);
+      this.analyserData = new Float32Array(this.masterAnalyser.fftSize);
     }
     return this.ctx;
+  }
+
+  public getMasterAnalyserData(): Float32Array | null {
+    if (this.masterAnalyser && this.analyserData) {
+      this.masterAnalyser.getFloatTimeDomainData(this.analyserData as any);
+      return this.analyserData;
+    }
+    return null;
   }
 
   public async resumeContext() {

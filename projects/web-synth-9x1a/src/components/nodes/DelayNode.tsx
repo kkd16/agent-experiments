@@ -81,6 +81,17 @@ export function DelayNode({ id, data }: { id: string, data: Record<string, any> 
         >
           Randomize
         </button>
+        <button
+          onClick={() => updateNodeData(id, {
+            delayTime: 0.5,
+            feedback: 0.5,
+            mix: 0.5,
+            bypass: false
+          })}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
+        >
+          Reset to Default
+        </button>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-purple-500" />

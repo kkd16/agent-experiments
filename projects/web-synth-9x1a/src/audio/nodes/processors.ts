@@ -215,6 +215,7 @@ export class ReverbWrapper {
   public dryNode: GainNode;
   public wetNode: GainNode;
   public outputNode: GainNode;
+  public isBypassed: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -235,74 +236,62 @@ export class ReverbWrapper {
     this.dryNode.connect(this.outputNode);
     this.wetNode.connect(this.outputNode);
 
-    // Generate a simple impulse response for default reverb
-    this.setDecay(2.0); // 2 seconds decay default
+    this.generateImpulseResponse(2.0, 2.0);
 
-    // Register node (input -> inputNode, output is outputNode conceptually,
-    // but audioCore's connect assumes a single AudioNode interface.
-    // To support input and output from this wrapper, we register inputNode
-    // and rely on our audioCore.connect logic to handle single nodes or params.
-    // We actually need to expose outputNode to be connected *from*.
-    // Wait, the current audioCore registerNode stores *one* node per ID which
-    // is used for both input and output. We can work around this by registering
-    // the outputNode as the main node, and overriding how connections are made,
-    // or we can register inputNode and override disconnect.
-    // Actually, in our current architecture, registerNode stores ONE AudioNode.
-    // Let's create a custom interface or wrapper logic in audioCore? No, we
-    // can just register the input node for incoming connections, but we must
-    // make sure outgoing connections come from the outputNode.
-    // Wait, audioCore.getNode(id) is used for BOTH source and target.
-    // So if source.connect is called, we need source to be outputNode.
-    // If we register outputNode, incoming connections will hit outputNode.
-    // Let's register inputNode, and we'll need to update audioCore or we can
-    // hack it by exposing a connect method.
-    // Wait, if we register inputNode, then incoming edges connect to inputNode.
-    // If outgoing edges connect from Reverb, audioCore will call source.connect,
-    // meaning inputNode.connect. This is a flaw in the current AudioCore for
-    // composite nodes.
-    // Let's modify audioCore slightly to handle composite nodes, or we can just
-    // expose outputNode by patching its connect/disconnect methods.
-
-    // Hack for now: Register inputNode, but override its connect/disconnect methods
-    // to act on the outputNode.
-
-    (this.inputNode as any).connect = (destination: any) => {
-        return this.outputNode.connect(destination);
+    // Provide generic connect/disconnect by hooking the input node
+    (this.inputNode as any).connect = (dest: any, output?: number, input?: number) => {
+        if (output !== undefined && input !== undefined) return this.outputNode.connect(dest, output, input);
+        if (output !== undefined) return this.outputNode.connect(dest, output);
+        return this.outputNode.connect(dest);
     };
-
-    (this.inputNode as any).disconnect = (destination?: any) => {
-        if (destination) {
-            this.outputNode.disconnect(destination);
-        } else {
-            this.outputNode.disconnect();
-        }
+    (this.inputNode as any).disconnect = (dest?: any, output?: number, input?: number) => {
+        if (dest && output !== undefined && input !== undefined) return this.outputNode.disconnect(dest, output, input);
+        if (dest && output !== undefined) return this.outputNode.disconnect(dest, output);
+        if (dest) return this.outputNode.disconnect(dest);
+        return this.outputNode.disconnect();
     };
 
     audioCore.registerNode(id, this.inputNode);
   }
 
-  // Generate a synthetic impulse response
+  public setMix(mix: number) {
+    if (this.isBypassed) return;
+    this.dryNode.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
+    this.wetNode.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
+  }
+
+  public setBypass(bypass: boolean) {
+    this.isBypassed = bypass;
+    if (bypass) {
+      this.dryNode.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+      this.wetNode.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      // Need to restore original mix, which might be lost.
+      // It's handled by updateNodeData usually sending mix alongside bypass.
+      // But just in case, we will let store.ts or React handle the state.
+    }
+  }
+
   public setDecay(decay: number) {
+    this.generateImpulseResponse(decay, 2.0);
+  }
+
+  private generateImpulseResponse(duration: number, decay: number) {
     const ctx = audioCore.getContext();
-    const length = ctx.sampleRate * decay;
-    const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+    const sampleRate = ctx.sampleRate;
+    const length = sampleRate * duration;
+    const impulse = ctx.createBuffer(2, length, sampleRate);
     const left = impulse.getChannelData(0);
     const right = impulse.getChannelData(1);
 
     for (let i = 0; i < length; i++) {
-        const n = i; // decay envelope
-        const envelope = Math.pow(1 - n / length, 2.0); // exponential decay
-        left[i] = (Math.random() * 2 - 1) * envelope;
-        right[i] = (Math.random() * 2 - 1) * envelope;
+      const n = i; // decay
+      left[i] = (Math.random() * 2 - 1) * Math.pow(1 - n / length, decay);
+      right[i] = (Math.random() * 2 - 1) * Math.pow(1 - n / length, decay);
     }
 
+    // Create new convolver if needed? No, can just set buffer
     this.convolver.buffer = impulse;
-  }
-
-  public setMix(mix: number) { // 0.0 to 1.0
-    // Equal power crossfade
-    this.dryNode.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
-    this.wetNode.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
   }
 
   public destroy(id: string) {
@@ -317,21 +306,60 @@ export class ReverbWrapper {
 
 export class PanningWrapper {
   public node: StereoPannerNode;
+  public lfo: OscillatorNode;
+  public lfoGain: GainNode;
+  private isAutoPan: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
     this.node = ctx.createStereoPanner();
     this.node.pan.value = 0;
 
+    this.lfo = ctx.createOscillator();
+    this.lfo.type = 'sine';
+    this.lfo.frequency.value = 1.0;
+
+    this.lfoGain = ctx.createGain();
+    this.lfoGain.gain.value = 0.0;
+
+    this.lfo.connect(this.lfoGain);
+    this.lfoGain.connect(this.node.pan);
+
+    this.lfo.start();
+
     audioCore.registerNode(id, this.node);
     audioCore.registerParam(`${id}.pan`, this.node.pan);
   }
 
   public setPan(value: number) {
-    this.node.pan.setValueAtTime(value, audioCore.getContext().currentTime);
+    if (!this.isAutoPan) {
+      this.node.pan.setValueAtTime(value, audioCore.getContext().currentTime);
+    }
+  }
+
+  public setAutoPan(enabled: boolean) {
+    this.isAutoPan = enabled;
+    if (enabled) {
+      // lfo gain is non-zero, let it run
+    } else {
+      this.lfoGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    }
+  }
+
+  public setAutoPanRate(rate: number) {
+    this.lfo.frequency.setValueAtTime(rate, audioCore.getContext().currentTime);
+  }
+
+  public setAutoPanDepth(depth: number) {
+    if (this.isAutoPan) {
+      this.lfoGain.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
+    }
   }
 
   public destroy(id: string) {
+    this.lfo.stop();
+    this.lfo.disconnect();
+    this.lfoGain.disconnect();
     this.node.disconnect();
     audioCore.unregisterNode(id);
     audioCore.unregisterParam(`${id}.pan`);

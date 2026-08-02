@@ -26,6 +26,15 @@ export function ReverbNode({ id, data }: { id: string; data: any }) {
           <span className="absolute left-0 text-[10px] text-gray-400 leading-4">IN</span>
         </div>
 
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Bypass</span>
+          <input
+            type="checkbox"
+            checked={data.bypass || false}
+            onChange={(e) => updateNodeData(id, { bypass: e.target.checked })}
+            className="ml-2 accent-pink-500"
+          />
+        </label>
         <div className="flex flex-col gap-1">
           <div className="flex justify-between">
             <label className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Decay</label>
@@ -57,6 +66,16 @@ export function ReverbNode({ id, data }: { id: string; data: any }) {
             className="w-full accent-pink-500"
           />
         </div>
+        <button
+          onClick={() => updateNodeData(id, {
+            decay: 2.0,
+            mix: 0.5,
+            bypass: false
+          })}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors"
+        >
+          RESET TO DEFAULT
+        </button>
 
         <div className="relative mt-2 h-4">
           <Handle

@@ -59,6 +59,16 @@ export function DistortionNode({ id, data }: { id: string, data: Record<string, 
             className="mt-1"
           />
         </label>
+        <button
+          onClick={() => updateNodeData(id, {
+            drive: 50,
+            mix: 1.0,
+            bypass: false
+          })}
+          className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors"
+        >
+          Reset to Default
+        </button>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-orange-600" />

@@ -118,3 +118,43 @@
 - [x] Add a "Randomize Parameters" button to Delay Node
 - [x] Add a "Randomize Parameters" button to Filter Node
 - [x] Add a "Randomize Parameters" button to Oscillator Node
+
+
+## Expansion Phase 10 (New Additions)
+- [ ] Implement auto-pan LFO sync in Panning Node
+- [ ] Add a Clipping Indicator to Output Node
+- [ ] Fix AudioCore to support separate input and output nodes for complex effects
+- [ ] Add a visual metronome for the Sequencer Node
+- [ ] Add tooltips and visual guides for new users
+- [ ] Add stereo widening utility node
+- [ ] Add Global Tempo state
+- [ ] Implement node collapsing/folding
+
+
+## Expansion Phase 11 (New Additions)
+- [x] Add Clipping Indicator to Output Node
+- [ ] Add Master Volume clipping protection (soft clip limit)
+- [x] Implement auto-pan LFO sync in Panning Node (internal LFO)
+- [ ] Add dry/wet control to Chorus Node
+- [ ] Add a Drive/Saturation parameter to the Filter Node
+- [ ] Add an envelope follower node
+- [ ] Add a Wavefolder Node
+- [x] Implement bypass switch for Reverb Node
+- [x] Add a "Reset to Default" button to Delay Node
+- [x] Add a "Reset to Default" button to Distortion Node
+- [x] Add a "Reset to Default" button to Filter Node
+- [x] Add a "Reset to Default" button to Reverb Node
+
+## Expansion Phase 11 (New Additions)
+- [ ] Add Clipping Indicator to Output Node
+- [ ] Add Master Volume clipping protection (soft clip limit)
+- [ ] Implement auto-pan LFO sync in Panning Node (internal LFO)
+- [ ] Add dry/wet control to Chorus Node
+- [ ] Add a Drive/Saturation parameter to the Filter Node
+- [ ] Add an envelope follower node
+- [ ] Add a Wavefolder Node
+- [ ] Implement bypass switch for Reverb Node
+- [ ] Add a "Reset to Default" button to Delay Node
+- [ ] Add a "Reset to Default" button to Distortion Node
+- [ ] Add a "Reset to Default" button to Filter Node
+- [ ] Add a "Reset to Default" button to Reverb Node
