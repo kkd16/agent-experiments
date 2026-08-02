@@ -258,6 +258,26 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.mix !== undefined) wrapper.setMix(data.mix);
       if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof PanningWrapper) {
+      if (data.autoPan !== undefined) {
+        wrapper.setAutoPan(data.autoPan);
+        if (!data.autoPan) {
+          const currentNode = get().nodes.find(n => n.id === id);
+          if (currentNode && currentNode.data.pan !== undefined) {
+            wrapper.setPan(currentNode.data.pan as number);
+          } else {
+            wrapper.setPan(0);
+          }
+        } else {
+          // ensure depth and rate are applied if just toggled
+          const currentNode = get().nodes.find(n => n.id === id);
+          if (currentNode) {
+            if (currentNode.data.autoPanRate !== undefined) wrapper.setAutoPanRate(currentNode.data.autoPanRate as number);
+            if (currentNode.data.autoPanDepth !== undefined) wrapper.setAutoPanDepth(currentNode.data.autoPanDepth as number);
+          }
+        }
+      }
+      if (data.autoPanRate !== undefined) wrapper.setAutoPanRate(data.autoPanRate);
+      if (data.autoPanDepth !== undefined) wrapper.setAutoPanDepth(data.autoPanDepth);
       if (data.pan !== undefined) wrapper.setPan(data.pan);
     } else if (wrapper instanceof FilterWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
@@ -278,8 +298,18 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.mix !== undefined) wrapper.setMix(data.mix);
       if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof ReverbWrapper) {
-
-      if (data.mix !== undefined) wrapper.setMix(data.mix);
+      if (data.bypass !== undefined) {
+        wrapper.setBypass(data.bypass);
+        if (!data.bypass) {
+          const currentNode = get().nodes.find(n => n.id === id);
+          if (currentNode && currentNode.data.mix !== undefined) {
+            wrapper.setMix(currentNode.data.mix as number);
+          } else {
+            wrapper.setMix(0.5);
+          }
+        }
+      }
+      if (data.mix !== undefined && !data.bypass) wrapper.setMix(data.mix);
       if (data.decay !== undefined) wrapper.setDecay(data.decay);
     }
   },

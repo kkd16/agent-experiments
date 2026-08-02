@@ -1,7 +1,7 @@
 import { Handle, Position } from '@xyflow/react';
 import { Volume2, VolumeX } from 'lucide-react';
 import { audioCore } from '../../audio/core';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 import { useStore } from '../../store';
 export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: Record<string, any> }) {
@@ -9,6 +9,41 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(1.0);
   const [isMuted, setIsMuted] = useState(false);
+  const [isClipping, setIsClipping] = useState(false);
+  const clipRef = useRef<boolean>(false);
+  const animFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const updateClipping = () => {
+      const data = audioCore.getMasterAnalyserData();
+      let clipping = false;
+      if (data) {
+        for (let i = 0; i < data.length; i++) {
+          if (Math.abs(data[i]) > 0.99) {
+            clipping = true;
+            break;
+          }
+        }
+      }
+
+      if (clipping && !clipRef.current) {
+        setIsClipping(true);
+        clipRef.current = true;
+      } else if (!clipping && clipRef.current) {
+        // Simple hold time could be added, but frame by frame is fine for simple visual
+        setIsClipping(false);
+        clipRef.current = false;
+      }
+
+      animFrameRef.current = requestAnimationFrame(updateClipping);
+    };
+
+    animFrameRef.current = requestAnimationFrame(updateClipping);
+
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, []);
 
   const togglePlay = async () => {
     if (!isPlaying) {
@@ -31,7 +66,7 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
   };
 
   return (
-    <div className="bg-gray-800 border-2 border-red-500 rounded-md p-4 min-w-[150px] shadow-[0_0_15px_rgba(239,68,68,0.3)]">
+    <div className="bg-gray-800 border-2 border-red-500 rounded-md p-4 min-w-[150px] shadow-[0_0_15px_rgba(239,68,68,0.3)] relative">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center">
         <input
@@ -52,6 +87,7 @@ export function OutputNode({ id = 'output', data = {} }: { id?: string, data?: R
           {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </button>
       </div>
+      <div className="absolute top-2 right-12 w-3 h-3 rounded-full border border-gray-900" style={{ backgroundColor: isClipping ? '#ff0000' : '#4b0000', boxShadow: isClipping ? '0 0 8px #ff0000' : 'none', transition: 'background-color 0.1s' }} title="Clipping Indicator" />
 
       <button
         onClick={togglePlay}

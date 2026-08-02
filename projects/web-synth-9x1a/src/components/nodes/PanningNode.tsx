@@ -28,6 +28,16 @@ export function PanningNode({ id, data }: { id: string, data: Record<string, any
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Auto-Pan
+          <input
+            type="checkbox"
+            checked={data.autoPan || false}
+            onChange={(e) => updateNodeData(id, { autoPan: e.target.checked })}
+            className="ml-2 accent-yellow-500"
+          />
+        </label>
+
         <label className="text-xs text-gray-300 flex flex-col">
           Pan: {data.pan?.toFixed(2)}
           <input
@@ -38,6 +48,31 @@ export function PanningNode({ id, data }: { id: string, data: Record<string, any
             className="mt-1"
           />
         </label>
+
+        {data.autoPan && (
+          <>
+            <label className="text-xs text-gray-300 flex flex-col">
+              Rate: {data.autoPanRate?.toFixed(2) || '1.00'} Hz
+              <input
+                type="range"
+                min="0.1" max="20" step="0.1"
+                value={data.autoPanRate !== undefined ? data.autoPanRate : 1.0}
+                onChange={(e) => updateNodeData(id, { autoPanRate: Number(e.target.value) })}
+                className="mt-1 accent-yellow-500"
+              />
+            </label>
+            <label className="text-xs text-gray-300 flex flex-col">
+              Depth: {data.autoPanDepth?.toFixed(2) || '1.00'}
+              <input
+                type="range"
+                min="0" max="1" step="0.01"
+                value={data.autoPanDepth !== undefined ? data.autoPanDepth : 1.0}
+                onChange={(e) => updateNodeData(id, { autoPanDepth: Number(e.target.value) })}
+                className="mt-1 accent-yellow-500"
+              />
+            </label>
+          </>
+        )}
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-yellow-500" />
