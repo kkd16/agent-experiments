@@ -40,7 +40,10 @@ export function BitcrusherNode({ id, data }: { id: string, data: Record<string, 
           />
         </label>
         <label className="text-xs text-gray-300 flex flex-col">Mix: {data.mix !== undefined ? data.mix.toFixed(2) : '1.00'}<input type="range" min="0" max="1" step="0.01" value={data.mix !== undefined ? data.mix : 1.0} onChange={(e) => updateNodeData(id, { mix: Number(e.target.value) })} className="mt-1" /></label>
-        <button onClick={() => updateNodeData(id, { bits: 8, mix: 1.0, bypass: false })} className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors">Reset to Default</button>
+        <div className="flex gap-1 mt-1">
+          <button onClick={() => updateNodeData(id, { bits: 8, mix: 1.0, bypass: false })} className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors">Reset</button>
+          <button onClick={() => updateNodeData(id, { bits: Math.floor(Math.random() * 16) + 1, mix: Math.random(), bypass: false })} className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors">Randomize</button>
+        </div>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-orange-500" />

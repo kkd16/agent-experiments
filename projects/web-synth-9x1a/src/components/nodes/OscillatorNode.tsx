@@ -37,6 +37,16 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
             className="ml-2 accent-blue-500"
           />
         </label>
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">
+          Sub-Oscillator
+          <input
+            type="checkbox"
+            checked={data.subOscEnabled || false}
+            onChange={(e) => updateNodeData(id, { subOscEnabled: e.target.checked })}
+            className="ml-2 accent-blue-500"
+          />
+        </label>
+
         <label className="text-xs text-gray-300 flex flex-col">
           Type
           <select
@@ -72,6 +82,17 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
             className="mt-1"
           />
         </label>
+        <label className="text-xs text-gray-300 flex flex-col">
+          Fine Tune: {data.fineTune || 0} cents
+          <input
+            type="range"
+            min="-100" max="100" step="1"
+            value={data.fineTune || 0}
+            onChange={(e) => updateNodeData(id, { fineTune: Number(e.target.value) })}
+            className="mt-1"
+          />
+        </label>
+
 
         <label className="text-xs text-gray-300 flex flex-col">
           Octave
@@ -88,9 +109,21 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
           </select>
         </label>
 
+
+        <label className="text-xs text-gray-300 flex flex-col">
+          Glide: {data.glideTime || 0}s
+          <input
+            type="range"
+            min="0" max="2" step="0.01"
+            value={data.glideTime || 0}
+            onChange={(e) => updateNodeData(id, { glideTime: Number(e.target.value) })}
+            className="mt-1"
+          />
+        </label>
+
         <div className="flex gap-1 mt-1">
           <button
-            onClick={() => updateNodeData(id, { frequency: 440, type: 'sawtooth', detune: 0, octave: 0, invertPhase: false })}
+            onClick={() => updateNodeData(id, { frequency: 440, type: 'sawtooth', detune: 0, octave: 0, invertPhase: false, glideTime: 0, subOscEnabled: false, fineTune: 0 })}
             className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors"
           >
             Reset
@@ -103,7 +136,10 @@ export function OscillatorNode({ id, data }: { id: string, data: Record<string, 
                 type: types[Math.floor(Math.random() * types.length)],
                 detune: Math.floor(Math.random() * 2400 - 1200),
                 octave: Math.floor(Math.random() * 5 - 2),
-                invertPhase: Math.random() > 0.5
+                invertPhase: Math.random() > 0.5,
+                glideTime: Math.round(Math.random() * 200) / 100,
+                subOscEnabled: Math.random() > 0.5,
+                fineTune: Math.floor(Math.random() * 200 - 100)
               });
             }}
             className="flex-1 bg-gray-700 hover:bg-gray-600 text-[10px] py-1 rounded text-gray-300 transition-colors"
