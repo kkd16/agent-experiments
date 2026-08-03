@@ -28,6 +28,7 @@ export function TremoloNode({ id, data }: { id: string, data: Record<string, any
       </div>
 
       <div className="flex flex-col gap-2">
+        <label className="text-xs text-gray-300 flex items-center justify-between mb-1">Bypass<input type="checkbox" checked={data.bypass || false} onChange={(e) => updateNodeData(id, { bypass: e.target.checked })} className="ml-2 accent-blue-500" /></label>
         <label className="text-xs text-gray-300 flex flex-col">
           Rate: {data.rate || 5} Hz
           <input
@@ -48,6 +49,9 @@ export function TremoloNode({ id, data }: { id: string, data: Record<string, any
             className="mt-1"
           />
         </label>
+        <label className="text-xs text-gray-300 flex flex-col">Mix: {data.mix !== undefined ? data.mix.toFixed(2) : '1.00'}<input type="range" min="0" max="1" step="0.01" value={data.mix !== undefined ? data.mix : 1.0} onChange={(e) => updateNodeData(id, { mix: Number(e.target.value) })} className="mt-1" /></label>
+        <button onClick={() => updateNodeData(id, { rate: Math.random() * 20, depth: Math.random(), mix: Math.random() })} className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors">Randomize</button>
+        <button onClick={() => updateNodeData(id, { rate: 5, depth: 0.5, mix: 1.0, bypass: false })} className="mt-1 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded text-gray-300 transition-colors">Reset to Default</button>
       </div>
 
       <Handle type="target" position={Position.Left} id="in" className="w-3 h-3 bg-blue-500" />

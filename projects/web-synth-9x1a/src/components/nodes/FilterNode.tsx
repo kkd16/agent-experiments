@@ -38,6 +38,10 @@ export function FilterNode({ id, data }: { id: string, data: Record<string, any>
           />
         </label>
         <label className="text-xs text-gray-300 flex flex-col">
+          Drive: {data.drive !== undefined ? data.drive : 50}
+          <input type="range" min="0" max="400" step="1" value={data.drive !== undefined ? data.drive : 50} onChange={(e) => updateNodeData(id, { drive: Number(e.target.value) })} className="mt-1" />
+        </label>
+        <label className="text-xs text-gray-300 flex flex-col">
           Type
           <select
             value={data.type || 'lowpass'}

@@ -158,3 +158,15 @@
 - [ ] Add a "Reset to Default" button to Distortion Node
 - [ ] Add a "Reset to Default" button to Filter Node
 - [ ] Add a "Reset to Default" button to Reverb Node
+
+## Expansion Phase 12 (New Improvements)
+- [x] Add a Drive/Saturation parameter to the Filter Node
+- [x] Add Bypass switch to Chorus Node
+- [x] Add Bypass switch to Bitcrusher Node
+- [x] Add Bypass switch to Compressor Node
+- [x] Add "Reset to Default" button to Chorus Node
+- [x] Add "Reset to Default" button to Compressor Node
+- [x] Add "Reset to Default" button to Bitcrusher Node
+- [x] Add "Randomize Parameters" button to Chorus Node
+- [x] Add "Randomize Parameters" button to Tremolo Node
+- [x] Add Bypass switch to Tremolo Node

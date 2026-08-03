@@ -47,6 +47,7 @@ export class FilterWrapper {
   public dryGain: GainNode;
   public wetGain: GainNode;
   public outputNode: GainNode;
+  public driveNode: WaveShaperNode;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -54,6 +55,7 @@ export class FilterWrapper {
     this.inputNode = ctx.createGain();
     this.node = ctx.createBiquadFilter();
     this.node.type = 'lowpass';
+    this.driveNode = ctx.createWaveShaper();
     this.node.frequency.value = 1000;
     this.node.Q.value = 1;
     this.dryGain = ctx.createGain();
@@ -64,7 +66,8 @@ export class FilterWrapper {
 
     this.inputNode.connect(this.node);
     this.inputNode.connect(this.dryGain);
-    this.node.connect(this.wetGain);
+    this.node.connect(this.driveNode);
+    this.driveNode.connect(this.wetGain);
     this.dryGain.connect(this.outputNode);
     this.wetGain.connect(this.outputNode);
 
@@ -83,6 +86,19 @@ export class FilterWrapper {
     audioCore.registerNode(id, this.inputNode);
     audioCore.registerParam(`${id}.frequency`, this.node.frequency);
     audioCore.registerParam(`${id}.Q`, this.node.Q);
+  }
+
+  public setDrive(amount: number) {
+    const ctx = audioCore.getContext();
+    const k = typeof amount === 'number' ? amount : 50;
+    const n_samples = ctx.sampleRate;
+    const curve = new Float32Array(n_samples);
+    const deg = Math.PI / 180;
+    for (let i = 0; i < n_samples; ++i) {
+      const x = i * 2 / n_samples - 1;
+      curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+    }
+    this.driveNode.curve = curve;
   }
 
   public setType(type: BiquadFilterType) {
@@ -105,6 +121,7 @@ export class FilterWrapper {
   public destroy(id: string) {
     this.inputNode.disconnect();
     this.node.disconnect();
+    this.driveNode.disconnect();
     this.dryGain.disconnect();
     this.wetGain.disconnect();
     this.outputNode.disconnect();
@@ -454,18 +471,49 @@ export class DistortionWrapper {
 }
 
 export class CompressorWrapper {
+  public inputNode: GainNode;
   public node: DynamicsCompressorNode;
+  public dryGain: GainNode;
+  public wetGain: GainNode;
+  public outputNode: GainNode;
+  public isBypassed: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
+    this.inputNode = ctx.createGain();
     this.node = ctx.createDynamicsCompressor();
+    this.dryGain = ctx.createGain();
+    this.wetGain = ctx.createGain();
+    this.outputNode = ctx.createGain();
+
+    this.dryGain.gain.value = 0;
+    this.wetGain.gain.value = 1;
+
+    this.inputNode.connect(this.dryGain);
+    this.inputNode.connect(this.node);
+    this.node.connect(this.wetGain);
+    this.dryGain.connect(this.outputNode);
+    this.wetGain.connect(this.outputNode);
+
+    (this.inputNode as any).connect = (dest: any, output?: number, input?: number) => {
+      if (output !== undefined && input !== undefined) return this.outputNode.connect(dest, output, input);
+      if (output !== undefined) return this.outputNode.connect(dest, output);
+      return this.outputNode.connect(dest);
+    };
+    (this.inputNode as any).disconnect = (dest?: any, output?: number, input?: number) => {
+      if (dest && output !== undefined && input !== undefined) return this.outputNode.disconnect(dest, output, input);
+      if (dest && output !== undefined) return this.outputNode.disconnect(dest, output);
+      if (dest) return this.outputNode.disconnect(dest);
+      return this.outputNode.disconnect();
+    };
+
     this.node.threshold.value = -24;
     this.node.knee.value = 30;
     this.node.ratio.value = 12;
     this.node.attack.value = 0.003;
     this.node.release.value = 0.25;
 
-    audioCore.registerNode(id, this.node);
+    audioCore.registerNode(id, this.inputNode);
     audioCore.registerParam(`${id}.threshold`, this.node.threshold);
     audioCore.registerParam(`${id}.knee`, this.node.knee);
     audioCore.registerParam(`${id}.ratio`, this.node.ratio);
@@ -493,8 +541,29 @@ export class CompressorWrapper {
     this.node.release.setValueAtTime(value, audioCore.getContext().currentTime);
   }
 
+  public setMix(mix: number) {
+    if (this.isBypassed) return;
+    this.dryGain.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
+    this.wetGain.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
+  }
+
+  public setBypass(bypass: boolean) {
+    this.isBypassed = bypass;
+    if (bypass) {
+      this.dryGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      this.dryGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+    }
+  }
+
   public destroy(id: string) {
+    this.inputNode.disconnect();
     this.node.disconnect();
+    this.dryGain.disconnect();
+    this.wetGain.disconnect();
+    this.outputNode.disconnect();
     audioCore.unregisterNode(id);
     audioCore.unregisterParam(`${id}.threshold`);
     audioCore.unregisterParam(`${id}.knee`);
@@ -512,6 +581,7 @@ export class ChorusWrapper {
   public dryNode: GainNode;
   public wetNode: GainNode;
   public outputNode: GainNode;
+  public isBypassed: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -569,7 +639,19 @@ export class ChorusWrapper {
     this.lfoGain.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
   }
 
+  public setBypass(bypass: boolean) {
+    this.isBypassed = bypass;
+    if (bypass) {
+      this.dryNode.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+      this.wetNode.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      this.dryNode.gain.setValueAtTime(0.5, audioCore.getContext().currentTime);
+      this.wetNode.gain.setValueAtTime(0.5, audioCore.getContext().currentTime);
+    }
+  }
+
   public setMix(mix: number) {
+    if (this.isBypassed) return;
     this.dryNode.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
     this.wetNode.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
   }
@@ -588,14 +670,61 @@ export class ChorusWrapper {
 }
 
 export class BitcrusherWrapper {
+  public inputNode: GainNode;
   public node: WaveShaperNode;
+  public dryGain: GainNode;
+  public wetGain: GainNode;
+  public outputNode: GainNode;
+  public isBypassed: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
+    this.inputNode = ctx.createGain();
     this.node = ctx.createWaveShaper();
-    this.setBitDepth(8);
+    this.dryGain = ctx.createGain();
+    this.wetGain = ctx.createGain();
+    this.outputNode = ctx.createGain();
 
-    audioCore.registerNode(id, this.node);
+    this.dryGain.gain.value = 0;
+    this.wetGain.gain.value = 1;
+
+    this.inputNode.connect(this.dryGain);
+    this.inputNode.connect(this.node);
+    this.node.connect(this.wetGain);
+    this.dryGain.connect(this.outputNode);
+    this.wetGain.connect(this.outputNode);
+
+    (this.inputNode as any).connect = (dest: any, output?: number, input?: number) => {
+      if (output !== undefined && input !== undefined) return this.outputNode.connect(dest, output, input);
+      if (output !== undefined) return this.outputNode.connect(dest, output);
+      return this.outputNode.connect(dest);
+    };
+    (this.inputNode as any).disconnect = (dest?: any, output?: number, input?: number) => {
+      if (dest && output !== undefined && input !== undefined) return this.outputNode.disconnect(dest, output, input);
+      if (dest && output !== undefined) return this.outputNode.disconnect(dest, output);
+      if (dest) return this.outputNode.disconnect(dest);
+      return this.outputNode.disconnect();
+    };
+
+    this.setBitDepth(8);
+    audioCore.registerNode(id, this.inputNode);
+  }
+
+  public setMix(mix: number) {
+    if (this.isBypassed) return;
+    this.dryGain.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
+    this.wetGain.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
+  }
+
+  public setBypass(bypass: boolean) {
+    this.isBypassed = bypass;
+    if (bypass) {
+      this.dryGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      this.dryGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+    }
   }
 
   public setBitDepth(bits: number) {
@@ -613,7 +742,11 @@ export class BitcrusherWrapper {
   }
 
   public destroy(id: string) {
+    this.inputNode.disconnect();
     this.node.disconnect();
+    this.dryGain.disconnect();
+    this.wetGain.disconnect();
+    this.outputNode.disconnect();
     audioCore.unregisterNode(id);
   }
 }
@@ -622,15 +755,27 @@ export class TremoloWrapper {
   public inputNode: GainNode;
   public lfo: OscillatorNode;
   public lfoGain: GainNode;
+  public dryGain: GainNode;
+  public wetGain: GainNode;
+  public outputNode: GainNode;
+  public effectGain: GainNode;
+  public isBypassed: boolean = false;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
     this.inputNode = ctx.createGain();
     this.lfo = ctx.createOscillator();
     this.lfoGain = ctx.createGain();
+    this.dryGain = ctx.createGain();
+    this.wetGain = ctx.createGain();
+    this.outputNode = ctx.createGain();
+    this.effectGain = ctx.createGain();
 
     this.inputNode.gain.value = 1.0;
     this.lfo.type = 'sine';
+
+    this.dryGain.gain.value = 0;
+    this.wetGain.gain.value = 1;
 
     // Modulation values
     this.lfo.frequency.value = 5.0; // rate
@@ -638,8 +783,26 @@ export class TremoloWrapper {
 
     this.lfo.connect(this.lfoGain);
 
-    // Modulate the gain of inputNode
-    this.lfoGain.connect(this.inputNode.gain);
+    // Modulate the gain of effectGain instead of inputNode
+    this.lfoGain.connect(this.effectGain.gain);
+
+    this.inputNode.connect(this.dryGain);
+    this.inputNode.connect(this.effectGain);
+    this.effectGain.connect(this.wetGain);
+    this.dryGain.connect(this.outputNode);
+    this.wetGain.connect(this.outputNode);
+
+    (this.inputNode as any).connect = (dest: any, output?: number, input?: number) => {
+      if (output !== undefined && input !== undefined) return this.outputNode.connect(dest, output, input);
+      if (output !== undefined) return this.outputNode.connect(dest, output);
+      return this.outputNode.connect(dest);
+    };
+    (this.inputNode as any).disconnect = (dest?: any, output?: number, input?: number) => {
+      if (dest && output !== undefined && input !== undefined) return this.outputNode.disconnect(dest, output, input);
+      if (dest && output !== undefined) return this.outputNode.disconnect(dest, output);
+      if (dest) return this.outputNode.disconnect(dest);
+      return this.outputNode.disconnect();
+    };
 
     this.lfo.start();
 
@@ -654,11 +817,32 @@ export class TremoloWrapper {
     this.lfoGain.gain.setValueAtTime(depth, audioCore.getContext().currentTime);
   }
 
+  public setMix(mix: number) {
+    if (this.isBypassed) return;
+    this.dryGain.gain.setValueAtTime(Math.cos(mix * 0.5 * Math.PI), audioCore.getContext().currentTime);
+    this.wetGain.gain.setValueAtTime(Math.cos((1.0 - mix) * 0.5 * Math.PI), audioCore.getContext().currentTime);
+  }
+
+  public setBypass(bypass: boolean) {
+    this.isBypassed = bypass;
+    if (bypass) {
+      this.dryGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+    } else {
+      this.dryGain.gain.setValueAtTime(0, audioCore.getContext().currentTime);
+      this.wetGain.gain.setValueAtTime(1, audioCore.getContext().currentTime);
+    }
+  }
+
   public destroy(id: string) {
     this.lfo.stop();
     this.lfo.disconnect();
     this.lfoGain.disconnect();
     this.inputNode.disconnect();
+    this.dryGain.disconnect();
+    this.wetGain.disconnect();
+    this.effectGain.disconnect();
+    this.outputNode.disconnect();
     audioCore.unregisterNode(id);
   }
 }
