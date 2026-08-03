@@ -253,6 +253,8 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.ratio !== undefined) wrapper.setRatio(data.ratio);
       if (data.attack !== undefined) wrapper.setAttack(data.attack);
       if (data.release !== undefined) wrapper.setRelease(data.release);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
     } else if (wrapper instanceof DistortionWrapper) {
       if (data.drive !== undefined) wrapper.setDrive(data.drive);
       if (data.mix !== undefined) wrapper.setMix(data.mix);
@@ -284,14 +286,24 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.Q !== undefined) wrapper.setQ(data.Q);
       if (data.type !== undefined) wrapper.setType(data.type);
       if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
+      if (data.drive !== undefined) wrapper.setDrive(data.drive);
     } else if (wrapper instanceof BitcrusherWrapper) {
       if (data.bits !== undefined) wrapper.setBitDepth(data.bits);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
     } else if (wrapper instanceof TremoloWrapper) {
       if (data.rate !== undefined) wrapper.setRate(data.rate);
       if (data.depth !== undefined) wrapper.setDepth(data.depth);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
     } else if (wrapper instanceof RingModulatorWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);
+    } else if (wrapper instanceof ChorusWrapper) {
+      if (data.rate !== undefined) wrapper.setRate(data.rate);
+      if (data.depth !== undefined) wrapper.setDepth(data.depth);
+      if (data.mix !== undefined) wrapper.setMix(data.mix);
+      if (data.bypass !== undefined) wrapper.setBypass(data.bypass);
     } else if (wrapper instanceof DelayWrapper) {
       if (data.delayTime !== undefined) wrapper.setDelayTime(data.delayTime);
       if (data.feedback !== undefined) wrapper.setFeedback(data.feedback);
