@@ -170,3 +170,16 @@
 - [x] Add "Randomize Parameters" button to Chorus Node
 - [x] Add "Randomize Parameters" button to Tremolo Node
 - [x] Add Bypass switch to Tremolo Node
+
+
+## Expansion Phase 13 (New Features)
+- [x] Add Glide (Portamento) control to Oscillator Node
+- [ ] Add Symmetry/Pulse Width control to Oscillator Node (for Square/Triangle waves)
+- [x] Add Sub-Oscillator toggle (mix in an octave down) to Oscillator Node
+- [x] Add Fine Tuning (Cents) control to Oscillator Node
+- [ ] Implement Bypass switch for Pitch Shift Node (if it existed, or add Pitch Shift node)
+- [ ] Add Dry/Wet control to Bitcrusher Node
+- [ ] Add Drive control to Gain Node to act as a preamp
+- [ ] Add LFO Destination selection in LFO Node (pitch, filter, amp)
+- [x] Add 'Randomize Parameters' button to Bitcrusher Node
+- [ ] Add a visual meter (VU meter style) to Gain Node

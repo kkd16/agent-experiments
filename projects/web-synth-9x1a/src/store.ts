@@ -234,6 +234,9 @@ export const useStore = create<AppState>((set, get) => ({
       if (data.detune !== undefined) wrapper.setDetune(data.detune);
       if (data.octave !== undefined) wrapper.setOctave(data.octave);
       if (data.invertPhase !== undefined) wrapper.setInvertPhase(data.invertPhase);
+      if (data.glideTime !== undefined) wrapper.setGlideTime(data.glideTime);
+      if (data.subOscEnabled !== undefined) wrapper.setSubOscEnabled(data.subOscEnabled);
+      if (data.fineTune !== undefined) wrapper.setFineTune(data.fineTune);
     } else if (wrapper instanceof LfoWrapper) {
       if (data.frequency !== undefined) wrapper.setFrequency(data.frequency);
       if (data.type !== undefined) wrapper.setType(data.type);

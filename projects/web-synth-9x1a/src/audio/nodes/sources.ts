@@ -5,6 +5,11 @@ export class OscillatorWrapper {
   public output: GainNode;
   private baseFreq: number = 440;
   private octave: number = 0;
+  private glideTime: number = 0;
+  private fineTune: number = 0;
+  private detuneAmt: number = 0;
+  private subOsc: OscillatorNode;
+  private subGain: GainNode;
 
   constructor(id: string) {
     const ctx = audioCore.getContext();
@@ -15,6 +20,15 @@ export class OscillatorWrapper {
 
     this.output = ctx.createGain();
     this.output.gain.value = 1;
+    this.subOsc = ctx.createOscillator();
+    this.subOsc.type = 'square';
+    this.subOsc.frequency.value = 220;
+    this.subOsc.start();
+    this.subGain = ctx.createGain();
+    this.subGain.gain.value = 0;
+    this.subOsc.connect(this.subGain);
+    this.subGain.connect(this.output);
+
     this.node.connect(this.output);
 
     audioCore.registerNode(id, this.output);
@@ -28,12 +42,23 @@ export class OscillatorWrapper {
 
   public setFrequency(freq: number) {
     this.baseFreq = freq;
-    this.node.frequency.setValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime);
+    this.node.frequency.linearRampToValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime + this.glideTime);
+    this.subOsc.frequency.linearRampToValueAtTime(this.baseFreq * Math.pow(2, this.octave - 1), audioCore.getContext().currentTime + this.glideTime);
+    this.subOsc.frequency.linearRampToValueAtTime(this.baseFreq * Math.pow(2, this.octave - 1), audioCore.getContext().currentTime + this.glideTime);
   }
 
   public setOctave(oct: number) {
     this.octave = oct;
-    this.node.frequency.setValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime);
+    this.node.frequency.linearRampToValueAtTime(this.baseFreq * Math.pow(2, this.octave), audioCore.getContext().currentTime + this.glideTime);
+    this.subOsc.frequency.linearRampToValueAtTime(this.baseFreq * Math.pow(2, this.octave - 1), audioCore.getContext().currentTime + this.glideTime);
+  }
+
+  public setGlideTime(time: number) {
+    this.glideTime = time;
+  }
+
+  public setSubOscEnabled(enabled: boolean) {
+    this.subGain.gain.setValueAtTime(enabled ? 0.5 : 0, audioCore.getContext().currentTime);
   }
 
   public setInvertPhase(invert: boolean) {
@@ -41,11 +66,23 @@ export class OscillatorWrapper {
   }
 
   public setDetune(cents: number) {
-    this.node.detune.setValueAtTime(cents, audioCore.getContext().currentTime);
+    this.detuneAmt = cents;
+    this.updateDetune();
+  }
+
+  public setFineTune(cents: number) {
+    this.fineTune = cents;
+    this.updateDetune();
+  }
+
+  private updateDetune() {
+    this.node.detune.setValueAtTime(this.detuneAmt + this.fineTune, audioCore.getContext().currentTime);
   }
 
   public destroy(id: string) {
-    this.node.stop();
+this.node.stop();
+    if (this.subOsc) { this.subOsc.stop(); this.subOsc.disconnect(); }
+    if (this.subGain) { this.subGain.disconnect(); }
     this.node.disconnect();
     this.output.disconnect();
     audioCore.unregisterNode(id);
@@ -75,7 +112,7 @@ export class NoiseWrapper {
 
   private generateAndPlayNoise() {
     if (this.node) {
-      this.node.stop();
+  this.node.stop();
       this.node.disconnect();
     }
 
@@ -126,7 +163,7 @@ export class NoiseWrapper {
 
   public destroy(id: string) {
     if (this.node) {
-      this.node.stop();
+  this.node.stop();
       this.node.disconnect();
     }
     this.output.disconnect();
@@ -172,7 +209,7 @@ export class LfoWrapper {
   }
 
   public destroy(id: string) {
-    this.node.stop();
+this.node.stop();
     this.node.disconnect();
     this.depthNode.disconnect();
     audioCore.unregisterNode(id);
