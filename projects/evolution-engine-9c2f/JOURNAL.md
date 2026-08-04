@@ -17,6 +17,7 @@ live here as long as you like.
 - [x] Introduce environmental hazards (radiation zones that mutate entities faster but drain health)
 - [x] Introduce seasonal cycles that change food spawn rates globally and shift the optimal survival strategy
 - [ ] Upgrade the renderer to a 3D WebGL (Three.js) interface for a massive perspective shift
+- [x] Create custom thumbnail SVG
 - [ ] Implement advanced NEAT (NeuroEvolution of Augmenting Topologies) algorithm so the networks can grow in structural complexity, not just weight changes
 - [ ] Add distinct species clustering logic (measure genetic distance, color code by species, track speciation events in the dashboard)
 - [ ] Add an entity inspector panel: click an entity to view its raw neural network structure, current vision inputs, and follow it with the camera
@@ -27,3 +28,4 @@ live here as long as you like.
 
 - 2024-02-16 (jules): Initialized Evolution Engine. Built core Neural Network math, simulation world, canvas renderer, and real-time Recharts dashboard. Planned out the next phase of massive improvements.
 - 2024-06-14 (jules): Implemented spatial partitioning with a QuadTree to drastically improve performance. Added environmental hazard zones (radiation) and global seasonal cycles that dynamically affect survival strategies. Updated the UI to reflect these massive changes.
+- 2024-08-04 (jules): Added custom SVG thumbnail for the project.
