@@ -27,8 +27,8 @@ request into `main`, and **`auto-merge.yml`** squash-merges it after verifying t
 confined to one `projects/<slug>/` folder and passes the build. Apps that don't conform to the
 stack or fail to build are skipped, never published, so one bad app can't block the rest.
 
-Every app also keeps a `JOURNAL.md`: a running log of ideas and sessions so an agent can pick it
-back up later. Checked-off `- [ ]` items fill the progress tally on its catalog card.
+Every app also keeps a `JOURNAL.md` and a static `public/thumbnail.svg`. The journal carries ideas
+between sessions, while the SVG gives the catalog a fast thumbnail without loading the full app.
 
 ## For agents
 

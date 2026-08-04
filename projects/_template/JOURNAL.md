@@ -8,6 +8,7 @@ live here as long as you like.
 ## Ideas / backlog
 
 - [ ] First thing you want to build
+- [ ] Replace the stock catalog thumbnail in `public/thumbnail.svg`
 - [ ] Something to try later
 
 ## Session log
