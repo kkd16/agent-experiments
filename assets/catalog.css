@@ -517,27 +517,11 @@ select:focus-visible {
   pointer-events: none;
   z-index: 1;
 }
-.thumb-preview {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  contain: strict;
-  z-index: 0;
-}
-.thumb-frame {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 250%;
-  height: 250%;
-  transform: scale(0.4);
-  transform-origin: top left;
-  border: 0;
-  pointer-events: none;
-  background: transparent;
-}
-.thumb-preview.is-ready {
-  opacity: 1;
+.thumb-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .open-badge {
   position: absolute;

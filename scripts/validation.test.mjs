@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { reportViolations, validate, validateBuildHtml, validateTags } from './_lib.mjs';
+import { reportViolations, validate, validateBuildHtml, validateTags, validateThumbnailSvg } from './_lib.mjs';
 
 const SLUG = 'validation-test-a1b2';
 const VALID_PACKAGE = {
@@ -18,12 +18,14 @@ const VALID_META = {
   tags: ['testing'],
   createdAt: '2026-07-29',
 };
+const VALID_THUMBNAIL = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000"><rect width="1600" height="1000"/></svg>';
 const VALID_FILES = {
   'index.html': '<div id="root"></div>',
   'pnpm-lock.yaml': 'lockfileVersion: 9',
   'JOURNAL.md': '- [x] Create validation fixture',
   'package.json': JSON.stringify(VALID_PACKAGE),
   'project.json': JSON.stringify(VALID_META),
+  'public/thumbnail.svg': VALID_THUMBNAIL,
   'vite.config.ts': [
     "import react from '@vitejs/plugin-react'",
     'export default {',
@@ -41,13 +43,17 @@ async function validateFixture({ files = {}, directories = [], symlinks = [], sl
   const symlinkSet = new Set(symlinks);
   try {
     for (const [name, contents] of Object.entries({ ...VALID_FILES, ...files })) {
-      if (contents !== null && !directorySet.has(name) && !symlinkSet.has(name))
-        await writeFile(join(dir, name), contents);
+      if (contents !== null && !directorySet.has(name) && !symlinkSet.has(name)) {
+        const file = join(dir, name);
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(file, contents);
+      }
     }
     for (const name of directories) await mkdir(join(dir, name), { recursive: true });
     for (const name of symlinks) {
       const target = join(projectsDir, `borrowed-${name.replaceAll('/', '-')}`);
       await writeFile(target, VALID_FILES[name]);
+      await mkdir(dirname(join(dir, name)), { recursive: true });
       await symlink(target, join(dir, name));
     }
     return await validate(projectsDir, slug);
@@ -71,6 +77,7 @@ test('required files must exist as regular files', async () => {
     'JOURNAL.md': 'missing JOURNAL.md',
     'package.json': 'missing package.json',
     'project.json': 'missing project.json',
+    'public/thumbnail.svg': 'missing public/thumbnail.svg',
     'vite.config.ts': 'missing vite.config.ts',
   };
   for (const [name, message] of Object.entries(expected)) {
@@ -239,6 +246,35 @@ test('build output requires subpath-safe asset URLs', () => {
   assert.ok(validateBuildHtml("<link href = '/assets/app.css'>").length > 0);
   assert.ok(validateBuildHtml('<img srcset="./small.png 1x, /large.png 2x">').length > 0);
   assert.ok(validateBuildHtml(null).length > 0);
+});
+
+test('catalog thumbnails must be static self-contained 16:10 SVGs', async () => {
+  assert.deepEqual(validateThumbnailSvg(VALID_THUMBNAIL), []);
+  assert.deepEqual(validateThumbnailSvg(`<?xml version="1.0"?><!-- before -->${VALID_THUMBNAIL}<!-- after -->`), []);
+  assert.deepEqual(validateThumbnailSvg('<svg viewBox="0 0 1600 1000"><text>CSS animation: demo</text></svg>'), []);
+  const invalid = [
+    '',
+    '<div></div>',
+    `<metadata/>${VALID_THUMBNAIL}`,
+    '<svg></svg>',
+    '<svg viewBox="0 0 100 100"></svg>',
+    '<svg viewBox="0 0 1600 1000"><script>alert(1)</script></svg>',
+    '<svg viewBox="0 0 1600 1000" onload="alert(1)"></svg>',
+    '<svg viewBox="0 0 1600 1000"><image href="https://example.com/image.png"/></svg>',
+    '<svg viewBox="0 0 1600 1000"><rect fill="url(https://example.com/fill.svg)"/></svg>',
+    '<svg viewBox="0 0 1600 1000"><animate attributeName="opacity"/></svg>',
+    '<svg viewBox="0 0 1600 1000"><style>@keyframes pulse { to { opacity: 0 } } rect { animation: pulse 1s infinite }</style></svg>',
+    '<svg viewBox="0 0 1600 1000"><rect style="animation-name: pulse"/></svg>',
+    '<svg xmlns:svg="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000"><svg:animate attributeName="opacity"/></svg>',
+    '<svg viewBox="0 0 1600 1000"><discard begin="1s"/></svg>',
+    '<!DOCTYPE svg><svg viewBox="0 0 1600 1000"></svg>',
+  ];
+  for (const svg of invalid) assert.ok(validateThumbnailSvg(svg).length > 0, svg);
+
+  for (const svg of invalid.slice(2)) {
+    const errors = await validateFixture({ files: { 'public/thumbnail.svg': svg } });
+    assert.ok(hasError(errors, 'public/thumbnail.svg'), svg);
+  }
 });
 
 test('workflow diagnostics cannot inject commands or unbounded values', () => {

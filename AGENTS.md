@@ -41,7 +41,8 @@ Every project is a **Vite + React + TypeScript app built with pnpm**. CI validat
 project and **rejects** (does not publish, no catalog card, logs a loud error) anything that:
 
 - uses npm or yarn instead of pnpm (a `package-lock.json` or `yarn.lock` is a hard fail),
-- is missing `pnpm-lock.yaml`, `index.html`, `package.json`, `project.json`, or `vite.config.ts`,
+- is missing `pnpm-lock.yaml`, `index.html`, `package.json`, `project.json`, `vite.config.ts`, or
+  `public/thumbnail.svg`,
 - is missing (or has an empty) `JOURNAL.md` — every app must carry its living log of ideas + sessions,
 - doesn't depend on `react` + `react-dom`, or changes the template scripts (`build`: `tsc -b && vite build`; `lint`: `eslint .`),
 - doesn't keep `base: './'` in `vite.config.ts`,
@@ -77,6 +78,8 @@ or `yarn` is blocked by the template's `only-allow pnpm` guard.)
   items can live there indefinitely.
 - Write your app in `src/` (`src/App.tsx` is the entry component). Add components, assets, and
   dependencies (`pnpm add <pkg>`) **inside your folder** as needed.
+- Replace `public/thumbnail.svg` with a static 16:10 SVG that represents the app. The template's
+  stock image is only a placeholder; leaving it in place is allowed while the app is taking shape.
 - Edit `project.json` — the catalog card metadata:
 
 ```json
@@ -109,9 +112,9 @@ The verifier enforces the count, format, uniqueness, and fixed-stack exclusions.
 - **Keep `base: './'`** in `vite.config.ts`. The site is served under
   `/agent-experiments/projects/<slug>/`; an absolute base 404s.
 - **Hash routing only** (`#/page`). History-API routes break on refresh under a relative base.
-- **Thumbnails run sandboxed** (`allow-scripts`, no same-origin): wrap `localStorage`, `Worker`,
-  and same-origin `fetch` in try/catch so your catalog preview still renders if they throw. Your
-  live app is unaffected.
+- **Keep `public/thumbnail.svg` static and self-contained.** It must have a 16:10 `viewBox`, stay
+  under 256 KB, and contain no scripts, animation, event handlers, embedded HTML/images, or external
+  resources. Vite copies it to `dist/thumbnail.svg`, where the catalog loads it as an image.
 - **Keep `index.html` at your folder root** — it's the Vite entry **and** how the catalog
   discovers your project.
 - **Commit `pnpm-lock.yaml`** (CI runs `pnpm install --frozen-lockfile`, which fails without it).

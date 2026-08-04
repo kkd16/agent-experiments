@@ -23,6 +23,7 @@ async function isRegularFile(p) {
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_TAGS = 3;
 const MAX_TAG_LENGTH = 24;
+const MAX_THUMBNAIL_BYTES = 256_000;
 const RESERVED_TAGS = new Set([
   'pnpm',
   'react',
@@ -112,6 +113,54 @@ export function validateBuildHtml(html) {
   return [];
 }
 
+export function validateThumbnailSvg(svg) {
+  if (typeof svg !== 'string') return ['must be readable text'];
+  const errors = [];
+  if (Buffer.byteLength(svg, 'utf8') > MAX_THUMBNAIL_BYTES)
+    errors.push(`must be no larger than ${MAX_THUMBNAIL_BYTES / 1000} KB`);
+
+  const document = svg.trim();
+  const root = document.match(
+    /^(?:<\?xml\b[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(<svg\b[^>]*>)/i,
+  )?.[1];
+  if (!root || !/<\/svg\s*>(?:\s*<!--[\s\S]*?-->)*\s*$/i.test(document))
+    return [...errors, 'must contain a complete <svg> root'];
+
+  const values = root.match(/\bviewBox\s*=\s*["']([^"']+)["']/)?.[1]
+    ?.trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (!values || values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
+    errors.push('must define a numeric viewBox');
+  } else {
+    const [, , width, height] = values;
+    if (width <= 0 || height <= 0 || Math.abs(width / height - 1.6) > 0.001)
+      errors.push('viewBox must use a 16:10 aspect ratio');
+  }
+
+  const cssAnimation =
+    /<style\b[^>]*>[\s\S]*?(?:@(?:-[a-z]+-)?keyframes\b|\banimation(?:-[a-z-]+)?\s*:)[\s\S]*?<\/style\s*>/i.test(
+      svg,
+    ) ||
+    /\bstyle\s*=\s*(?:"[^"]*\banimation(?:-[a-z-]+)?\s*:[^"]*"|'[^']*\banimation(?:-[a-z-]+)?\s*:[^']*')/i.test(
+      svg,
+    );
+  if (
+    /<\s*(?:[a-z_][\w.-]*:)?(?:script|foreignObject|iframe|object|embed|image|audio|video|animate\w*|set|discard)\b|<!DOCTYPE\b/i.test(
+      svg,
+    ) || cssAnimation
+  )
+    errors.push('must be static and self-contained');
+  if (/\son[a-z]+\s*=/i.test(svg)) errors.push('must not contain event handlers');
+  const externalUrl = [...svg.matchAll(/\burl\(([^)]*)\)/gi)].some(([, value]) => {
+    const target = value.trim().replace(/^(['"])(.*)\1$/, '$2');
+    return !target.startsWith('#');
+  });
+  if (/\b(?:href|xlink:href)\s*=\s*["'](?!#)/i.test(svg) || /@import\b/i.test(svg) || externalUrl)
+    errors.push('must not load external resources');
+  return errors;
+}
+
 // Golden Rule: in scope only if every changed file is under one projects/<slug>/. → { slug } | { skip }
 export function classifyScope(files) {
   if (files.length === 0) return { skip: 'no changed files (branch already merged or empty)' };
@@ -182,6 +231,7 @@ export async function readMeta(projectsDir, slug) {
   return {
     slug,
     path: `projects/${slug}/`,
+    thumbnail: `projects/${slug}/thumbnail.svg`,
     title: str(meta.title) || humanize(slug),
     description: str(meta.description),
     agent: str(meta.agent),
@@ -208,6 +258,14 @@ export async function validate(projectsDir, slug) {
     errors.push('missing JOURNAL.md — every app needs a project journal (ideas + session log)');
   } else if (!(await readFile(journal, 'utf8').catch(() => '')).trim()) {
     errors.push('JOURNAL.md is empty — record your ideas/backlog and session log there');
+  }
+
+  const thumbnail = join(dir, 'public', 'thumbnail.svg');
+  if (!(await isRegularFile(thumbnail))) {
+    errors.push('missing public/thumbnail.svg — add a static 16:10 SVG for the catalog card');
+  } else {
+    const svg = await readFile(thumbnail, 'utf8').catch(() => null);
+    errors.push(...validateThumbnailSvg(svg).map((error) => `public/thumbnail.svg ${error}`));
   }
 
   const packageFile = join(dir, 'package.json');
