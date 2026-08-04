@@ -45,8 +45,17 @@
   };
 
   const state = { all: [], q: "", tags: new Set(), agent: "", status: "all", sort: "new", view: "grid" };
-  let io = null;
+  let thumbController = null;
   let firstPaint = true;
+
+  // A preview is a complete third-party app, not a cheap image. Keep the number
+  // of live browsing contexts deliberately small and stagger their startup so
+  // several canvas/WebGL/worker-heavy projects cannot monopolize the main
+  // thread at once.
+  const THUMB_LIMIT = 2;
+  const THUMB_MARGIN = 120;
+  const THUMB_START_GAP = 300;
+  const THUMB_LOAD_TIMEOUT = 12_000;
 
   const shipped = (p) => p.progress && p.progress.total > 0 && p.progress.done === p.progress.total;
   const active = (p) => p.progress && p.progress.total > 0 && p.progress.done < p.progress.total;
@@ -133,7 +142,7 @@
     return `
       <article class="card" style="animation-delay:${Math.min(i, 12) * 45}ms">
         <div class="thumb" style="--h:${hueFromSlug(p.slug)}">
-          <iframe class="thumb-frame" data-src="${esc(p.path)}" inert tabindex="-1" aria-hidden="true" sandbox="allow-scripts"></iframe>
+          <div class="thumb-preview" data-src="${esc(p.path)}" data-preview-state="idle" aria-hidden="true"></div>
           <span class="open-badge" aria-hidden="true">↗</span>
         </div>
         <div class="card-body">
@@ -186,29 +195,188 @@
     statsEl.hidden = false;
   }
 
+  function stopThumbs() {
+    thumbController?.stop();
+    thumbController = null;
+  }
+
   function setupThumbs() {
-    if (io) io.disconnect();
-    const frames = grid.querySelectorAll(".thumb-frame");
-    if (!("IntersectionObserver" in window)) {
-      frames.forEach((f) => {
-        if (f.dataset.src) f.src = f.dataset.src;
-      });
-      return;
+    stopThumbs();
+    const frames = [...grid.querySelectorAll(".thumb-preview")];
+    if (!frames.length) return;
+
+    const visible = new Set();
+    const active = new Set();
+    const failed = new Set();
+    const loadTimers = new Map();
+    const liveFrames = new Map();
+    const order = new Map(frames.map((frame, i) => [frame, i]));
+    let desired = new Set();
+    let observer = null;
+    let idleHandle = 0;
+    let startTimer = 0;
+    let pendingFrame = null;
+    let stopped = false;
+
+    const requestIdle = (fn) => {
+      if ("requestIdleCallback" in window) return window.requestIdleCallback(fn, { timeout: 700 });
+      return window.setTimeout(fn, 80);
+    };
+    const cancelIdle = (id) => {
+      if (!id) return;
+      if ("cancelIdleCallback" in window) window.cancelIdleCallback(id);
+      else window.clearTimeout(id);
+    };
+    const clearLoadTimer = (frame) => {
+      const timer = loadTimers.get(frame);
+      if (timer) window.clearTimeout(timer);
+      loadTimers.delete(frame);
+    };
+
+    function deactivate(frame, nextState = "idle") {
+      clearLoadTimer(frame);
+      active.delete(frame);
+      frame.classList.remove("is-loading", "is-ready");
+      frame.dataset.previewState = nextState;
+      liveFrames.get(frame)?.remove();
+      liveFrames.delete(frame);
     }
-    io = new IntersectionObserver(
+
+    function activate(frame) {
+      if (
+        stopped ||
+        document.hidden ||
+        !frame.isConnected ||
+        !desired.has(frame) ||
+        !frame.dataset.src
+      ) {
+        frame.dataset.previewState = "idle";
+        return;
+      }
+      active.add(frame);
+      frame.dataset.previewState = "loading";
+      frame.classList.add("is-loading");
+      const iframe = document.createElement("iframe");
+      iframe.className = "thumb-frame";
+      iframe.loading = "lazy";
+      iframe.inert = true;
+      iframe.tabIndex = -1;
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.setAttribute("sandbox", "allow-scripts");
+      iframe.addEventListener("load", () => {
+        if (frame.dataset.previewState !== "loading" || liveFrames.get(frame) !== iframe) return;
+        clearLoadTimer(frame);
+        frame.dataset.previewState = "ready";
+        frame.classList.remove("is-loading");
+        frame.classList.add("is-ready");
+      });
+      iframe.src = frame.dataset.src;
+      liveFrames.set(frame, iframe);
+      frame.replaceChildren(iframe);
+      loadTimers.set(
+        frame,
+        window.setTimeout(() => {
+          if (frame.dataset.previewState !== "loading") return;
+          failed.add(frame);
+          deactivate(frame, "failed");
+          reconcile();
+        }, THUMB_LOAD_TIMEOUT),
+      );
+    }
+
+    function cancelPendingStart() {
+      cancelIdle(idleHandle);
+      idleHandle = 0;
+      if (startTimer) window.clearTimeout(startTimer);
+      startTimer = 0;
+      if (pendingFrame?.dataset.previewState === "queued") {
+        pendingFrame.dataset.previewState = "idle";
+      }
+      pendingFrame = null;
+    }
+
+    function scheduleNext() {
+      if (stopped || document.hidden || pendingFrame || startTimer || active.size >= THUMB_LIMIT) return;
+      const next = [...desired].find(
+        (frame) =>
+          frame.isConnected &&
+          !active.has(frame) &&
+          !failed.has(frame) &&
+          frame.dataset.previewState !== "queued",
+      );
+      if (!next) return;
+      pendingFrame = next;
+      next.dataset.previewState = "queued";
+      idleHandle = requestIdle(() => {
+        idleHandle = 0;
+        const frame = pendingFrame;
+        pendingFrame = null;
+        if (frame) activate(frame);
+        startTimer = window.setTimeout(() => {
+          startTimer = 0;
+          scheduleNext();
+        }, THUMB_START_GAP);
+      });
+    }
+
+    const viewportDistance = (frame) => {
+      const rect = frame.getBoundingClientRect();
+      return Math.abs((rect.top + rect.bottom) / 2 - window.innerHeight / 2);
+    };
+
+    function reconcile() {
+      if (stopped) return;
+      cancelPendingStart();
+      if (document.hidden) {
+        desired = new Set();
+        active.forEach((frame) => deactivate(frame));
+        return;
+      }
+
+      const candidates = [...visible].filter((frame) => frame.isConnected && !failed.has(frame));
+      candidates.sort(
+        (a, b) => viewportDistance(a) - viewportDistance(b) || order.get(a) - order.get(b),
+      );
+      desired = new Set(candidates.slice(0, THUMB_LIMIT));
+
+      for (const frame of [...active]) {
+        if (!desired.has(frame)) deactivate(frame);
+      }
+      scheduleNext();
+    }
+
+    const setVisible = (frame, isVisible) => {
+      if (isVisible) visible.add(frame);
+      else {
+        visible.delete(frame);
+        failed.delete(frame); // retry a timed-out app after it leaves and returns
+      }
+    };
+
+    observer = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) {
-          const f = e.target;
-          if (e.isIntersecting) {
-            if (f.dataset.src && f.getAttribute("src") !== f.dataset.src) f.src = f.dataset.src;
-          } else if (f.getAttribute("src")) {
-            f.removeAttribute("src");
-          }
-        }
+        for (const entry of entries) setVisible(entry.target, entry.isIntersecting);
+        reconcile();
       },
-      { rootMargin: "400px 0px" },
+      { rootMargin: `${THUMB_MARGIN}px 0px` },
     );
-    frames.forEach((f) => io.observe(f));
+    frames.forEach((frame) => observer.observe(frame));
+
+    const onVisibilityChange = () => reconcile();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    thumbController = {
+      stop() {
+        if (stopped) return;
+        stopped = true;
+        observer?.disconnect();
+        cancelPendingStart();
+        for (const frame of [...active]) deactivate(frame);
+        for (const timer of loadTimers.values()) window.clearTimeout(timer);
+        loadTimers.clear();
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      },
+    };
   }
 
   function clearAll() {
@@ -226,6 +394,7 @@
     const intro = firstPaint && list.length;
     grid.className = "grid" + (state.view === "list" ? " list" : "") + (intro ? " intro" : "");
     if (!list.length) {
+      stopThumbs();
       grid.innerHTML = "";
       statusEl.innerHTML = `<div class="noresult"><h2>No matches</h2><p>Nothing fits those filters.</p><button type="button" class="clear" data-clear>Clear filters ✕</button></div>`;
     } else {

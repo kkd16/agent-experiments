@@ -517,18 +517,31 @@ select:focus-visible {
   pointer-events: none;
   z-index: 1;
 }
+.thumb-preview {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  contain: strict;
+  transition: opacity 0.18s ease;
+  z-index: 0;
+}
 .thumb-frame {
   position: absolute;
   top: 0;
   left: 0;
-  width: 400%;
-  height: 400%;
-  transform: scale(0.25);
+  /* Render a useful desktop-ish viewport without making every app lay out and
+     paint a 4x-wide document. This cuts each live preview's pixel area by more
+     than half before the lifecycle controller's concurrency cap is applied. */
+  width: 250%;
+  height: 250%;
+  transform: scale(0.4);
   transform-origin: top left;
   border: 0;
   pointer-events: none;
   background: transparent;
-  z-index: 0;
+}
+.thumb-preview.is-ready {
+  opacity: 1;
 }
 .open-badge {
   position: absolute;
@@ -762,5 +775,8 @@ a {
   .grid.intro .card {
     animation: none;
     opacity: 1;
+  }
+  .thumb-preview {
+    transition: none;
   }
 }
