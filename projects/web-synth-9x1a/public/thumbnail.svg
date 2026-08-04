@@ -1,24 +1,92 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
-  <title id="title">Project thumbnail placeholder</title>
-  <desc id="desc">Replace this stock placeholder with an SVG that represents the project.</desc>
+  <title id="title">Web Modular Synth Thumbnail</title>
+  <desc id="desc">A thumbnail representing a modular synthesizer graph</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#111827"/>
-      <stop offset="0.55" stop-color="#312e81"/>
-      <stop offset="1" stop-color="#0f766e"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e1b4b"/>
     </linearGradient>
-    <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
-      <path d="M80 0H0V80" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#4c1d95" stroke-opacity="0.3" stroke-width="1"/>
     </pattern>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
   </defs>
-  <rect width="1600" height="1000" fill="url(#background)"/>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
   <rect width="1600" height="1000" fill="url(#grid)"/>
-  <g transform="translate(800 360)" fill="none" stroke="#a7f3d0" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="-150" y="-150" width="300" height="300" rx="56" stroke-opacity="0.25" stroke-width="8"/>
-    <path d="M-82 58-18-18l54 54 38-46 76 92H-150Z" stroke-width="18"/>
-    <circle cx="66" cy="-70" r="30" fill="#a7f3d0" stroke="none"/>
+
+  <!-- Connections -->
+  <path d="M450 300 C600 300, 600 500, 750 500" fill="none" stroke="#a78bfa" stroke-width="6" stroke-dasharray="8 8" filter="url(#glow)"/>
+  <path d="M450 700 C600 700, 600 560, 750 560" fill="none" stroke="#34d399" stroke-width="6" filter="url(#glow)"/>
+  <path d="M1050 530 C1200 530, 1200 500, 1350 500" fill="none" stroke="#60a5fa" stroke-width="8" filter="url(#glow)"/>
+
+  <!-- Oscillator Node 1 -->
+  <g transform="translate(150 200)">
+    <rect width="300" height="200" rx="16" fill="#1e293b" stroke="#6366f1" stroke-width="4"/>
+    <rect width="300" height="48" rx="16" fill="#6366f1"/>
+    <path d="M0 48 h300" stroke="#6366f1" stroke-width="4"/>
+    <text x="24" y="32" fill="#ffffff" font-family="sans-serif" font-size="24" font-weight="bold">Oscillator (Sine)</text>
+
+    <!-- Sine wave visualizer -->
+    <path d="M30 120 Q75 70, 150 120 T270 120" fill="none" stroke="#818cf8" stroke-width="4"/>
+
+    <!-- Output port -->
+    <circle cx="300" cy="100" r="12" fill="#a78bfa"/>
   </g>
-  <text x="800" y="650" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="32" font-weight="700" letter-spacing="8" text-anchor="middle">PROJECT THUMBNAIL</text>
-  <text x="800" y="748" fill="#ffffff" font-family="ui-sans-serif, system-ui, sans-serif" font-size="74" font-weight="700" text-anchor="middle">Replace me with an SVG</text>
-  <text x="800" y="824" fill="#99f6e4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" text-anchor="middle">public/thumbnail.svg · 16:10</text>
+
+  <!-- Oscillator Node 2 -->
+  <g transform="translate(150 600)">
+    <rect width="300" height="200" rx="16" fill="#1e293b" stroke="#10b981" stroke-width="4"/>
+    <rect width="300" height="48" rx="16" fill="#10b981"/>
+    <path d="M0 48 h300" stroke="#10b981" stroke-width="4"/>
+    <text x="24" y="32" fill="#ffffff" font-family="sans-serif" font-size="24" font-weight="bold">Oscillator (Saw)</text>
+
+    <!-- Saw wave visualizer -->
+    <path d="M30 150 L150 90 V150 L270 90 V150" fill="none" stroke="#34d399" stroke-width="4"/>
+
+    <!-- Output port -->
+    <circle cx="300" cy="100" r="12" fill="#34d399"/>
+  </g>
+
+  <!-- Filter/Mixer Node -->
+  <g transform="translate(750 380)">
+    <rect width="300" height="300" rx="16" fill="#1e293b" stroke="#3b82f6" stroke-width="4"/>
+    <rect width="300" height="48" rx="16" fill="#3b82f6"/>
+    <path d="M0 48 h300" stroke="#3b82f6" stroke-width="4"/>
+    <text x="24" y="32" fill="#ffffff" font-family="sans-serif" font-size="24" font-weight="bold">Lowpass Filter</text>
+
+    <!-- Input ports -->
+    <circle cx="0" cy="120" r="12" fill="#a78bfa"/>
+    <circle cx="0" cy="180" r="12" fill="#34d399"/>
+
+    <!-- Dials -->
+    <circle cx="150" cy="140" r="40" fill="#0f172a" stroke="#60a5fa" stroke-width="4"/>
+    <path d="M150 140 L115 115" stroke="#93c5fd" stroke-width="6" stroke-linecap="round"/>
+
+    <circle cx="100" cy="240" r="24" fill="#0f172a" stroke="#94a3b8" stroke-width="3"/>
+    <circle cx="200" cy="240" r="24" fill="#0f172a" stroke="#94a3b8" stroke-width="3"/>
+
+    <!-- Output port -->
+    <circle cx="300" cy="150" r="12" fill="#60a5fa"/>
+  </g>
+
+  <!-- Audio Destination Node -->
+  <g transform="translate(1350 430)">
+    <rect width="200" height="140" rx="16" fill="#1e293b" stroke="#f59e0b" stroke-width="4"/>
+    <rect width="200" height="48" rx="16" fill="#f59e0b"/>
+    <path d="M0 48 h200" stroke="#f59e0b" stroke-width="4"/>
+    <text x="24" y="32" fill="#ffffff" font-family="sans-serif" font-size="24" font-weight="bold">Output</text>
+
+    <!-- Input port -->
+    <circle cx="0" cy="70" r="12" fill="#60a5fa"/>
+
+    <!-- Speaker icon -->
+    <path d="M70 110 V90 L90 70 H110 V130 H90 L70 110 Z" fill="#fbbf24"/>
+    <path d="M125 80 Q140 100 125 120" fill="none" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+    <path d="M140 65 Q165 100 140 135" fill="none" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
 </svg>
