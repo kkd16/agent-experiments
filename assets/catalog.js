@@ -222,9 +222,17 @@
     function reconcile() {
       if (stopped) return;
       window.clearTimeout(startTimer);
+      const center = window.innerHeight / 2;
+      const distance = (preview) => {
+        const rect = preview.getBoundingClientRect();
+        return Math.abs((rect.top + rect.bottom) / 2 - center);
+      };
       const wanted = document.hidden
         ? []
-        : previews.filter((preview) => visible.has(preview)).slice(0, THUMB_LIMIT);
+        : previews
+            .filter((preview) => visible.has(preview))
+            .sort((a, b) => distance(a) - distance(b))
+            .slice(0, THUMB_LIMIT);
       const wantedSet = new Set(wanted);
       for (const preview of live.keys()) {
         if (!wantedSet.has(preview)) unload(preview);
@@ -247,7 +255,7 @@
         }
         reconcile();
       },
-      { rootMargin: "120px 0px" },
+      { rootMargin: "120px 0px", threshold: [0, 0.25, 0.5, 0.75, 1] },
     );
     previews.forEach((preview) => observer.observe(preview));
 
