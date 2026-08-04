@@ -45,8 +45,10 @@
   };
 
   const state = { all: [], q: "", tags: new Set(), agent: "", status: "all", sort: "new", view: "grid" };
-  let io = null;
+  let teardownThumbs = () => {};
   let firstPaint = true;
+
+  const THUMB_LIMIT = 2;
 
   const shipped = (p) => p.progress && p.progress.total > 0 && p.progress.done === p.progress.total;
   const active = (p) => p.progress && p.progress.total > 0 && p.progress.done < p.progress.total;
@@ -133,7 +135,7 @@
     return `
       <article class="card" style="animation-delay:${Math.min(i, 12) * 45}ms">
         <div class="thumb" style="--h:${hueFromSlug(p.slug)}">
-          <iframe class="thumb-frame" data-src="${esc(p.path)}" inert tabindex="-1" aria-hidden="true" sandbox="allow-scripts"></iframe>
+          <div class="thumb-preview" data-src="${esc(p.path)}" aria-hidden="true"></div>
           <span class="open-badge" aria-hidden="true">↗</span>
         </div>
         <div class="card-body">
@@ -187,28 +189,78 @@
   }
 
   function setupThumbs() {
-    if (io) io.disconnect();
-    const frames = grid.querySelectorAll(".thumb-frame");
-    if (!("IntersectionObserver" in window)) {
-      frames.forEach((f) => {
-        if (f.dataset.src) f.src = f.dataset.src;
-      });
-      return;
+    teardownThumbs();
+    const previews = [...grid.querySelectorAll(".thumb-preview")];
+    if (!previews.length) return;
+
+    const visible = new Set();
+    const live = new Map();
+    let startTimer = 0;
+    let stopped = false;
+
+    function unload(preview) {
+      preview.classList.remove("is-ready");
+      preview.replaceChildren();
+      live.delete(preview);
     }
-    io = new IntersectionObserver(
+
+    function load(preview) {
+      if (live.has(preview) || !preview.dataset.src) return;
+      const iframe = document.createElement("iframe");
+      iframe.className = "thumb-frame";
+      iframe.inert = true;
+      iframe.tabIndex = -1;
+      iframe.setAttribute("sandbox", "allow-scripts");
+      iframe.addEventListener("load", () => {
+        if (live.get(preview) === iframe) preview.classList.add("is-ready");
+      });
+      iframe.src = preview.dataset.src;
+      live.set(preview, iframe);
+      preview.replaceChildren(iframe);
+    }
+
+    function reconcile() {
+      if (stopped) return;
+      window.clearTimeout(startTimer);
+      const wanted = document.hidden
+        ? []
+        : previews.filter((preview) => visible.has(preview)).slice(0, THUMB_LIMIT);
+      const wantedSet = new Set(wanted);
+      for (const preview of live.keys()) {
+        if (!wantedSet.has(preview)) unload(preview);
+      }
+      const pending = wanted.filter((preview) => !live.has(preview));
+      const start = () => {
+        const preview = pending.shift();
+        if (!preview || document.hidden || !visible.has(preview)) return;
+        load(preview);
+        if (pending.length) startTimer = window.setTimeout(start, 250);
+      };
+      if (pending.length) startTimer = window.setTimeout(start, 80);
+    }
+
+    const observer = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) {
-          const f = e.target;
-          if (e.isIntersecting) {
-            if (f.dataset.src && f.getAttribute("src") !== f.dataset.src) f.src = f.dataset.src;
-          } else if (f.getAttribute("src")) {
-            f.removeAttribute("src");
-          }
+        for (const entry of entries) {
+          if (entry.isIntersecting) visible.add(entry.target);
+          else visible.delete(entry.target);
         }
+        reconcile();
       },
-      { rootMargin: "400px 0px" },
+      { rootMargin: "120px 0px" },
     );
-    frames.forEach((f) => io.observe(f));
+    previews.forEach((preview) => observer.observe(preview));
+
+    const onVisibilityChange = () => reconcile();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    teardownThumbs = () => {
+      stopped = true;
+      observer.disconnect();
+      window.clearTimeout(startTimer);
+      for (const preview of [...live.keys()]) unload(preview);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }
 
   function clearAll() {
@@ -226,6 +278,7 @@
     const intro = firstPaint && list.length;
     grid.className = "grid" + (state.view === "list" ? " list" : "") + (intro ? " intro" : "");
     if (!list.length) {
+      teardownThumbs();
       grid.innerHTML = "";
       statusEl.innerHTML = `<div class="noresult"><h2>No matches</h2><p>Nothing fits those filters.</p><button type="button" class="clear" data-clear>Clear filters ✕</button></div>`;
     } else {
