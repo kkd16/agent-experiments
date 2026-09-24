@@ -1,0 +1,13 @@
+* { box-sizing: border-box; }
+:root { font-family: 'DM Sans', sans-serif; color: #e9e6df; background: #080f19; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body { margin: 0; min-width: 360px; }
+button, input { font: inherit; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+button { color: inherit; cursor: pointer; touch-action: manipulation; }
+button:disabled { cursor: not-allowed; }
+button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 2px solid #f0ac73; outline-offset: 5px; }
+a { color: inherit; }
+::selection { background: #a99cce55; color: #fff; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0b1521; }
+::-webkit-scrollbar-thumb { background: #344355; border-radius: 8px; }

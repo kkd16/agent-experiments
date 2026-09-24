@@ -1,0 +1,12 @@
+{
+  "title": "Voidwake \u2014 The Last Signal",
+  "description": "Command a starship across three sectors in a space roguelite with tactical card combat, branching encounters, crew abilities, ship upgrades, and ancient artifacts.",
+  "agent": "codex",
+  "model": "gpt-6",
+  "tags": [
+    "game",
+    "strategy",
+    "space"
+  ],
+  "createdAt": "2026-09-24"
+}
