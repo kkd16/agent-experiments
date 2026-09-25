@@ -16,6 +16,8 @@ import type { Progress } from './game/progress'
 import { BIOMES } from './game/types'
 import type { GameMode, GameState, ShipId } from './game/types'
 import { FlightStatus, FlightDebrief } from './FlightExtras'
+import { FlightPreferences } from './FlightPreferences'
+import { displayScale } from './game/presentation'
 import { FlightInput } from './game/input'
 import {
   courseFromHash,
@@ -107,7 +109,7 @@ export default function App() {
   const [view, setView] = useState(() => snapshot(engine.state))
   const [mode, setMode] = useState<GameMode>('voyage')
   const [modal, setModal] = useState<
-    'help' | 'hangar' | 'log' | 'share' | 'atlas' | null
+    'help' | 'hangar' | 'log' | 'share' | 'atlas' | 'settings' | null
   >(() => (expeditionFromHash(window.location.hash) ? 'atlas' : null))
   const [result, setResult] = useState<ReturnType<typeof settleRun> | null>(
     null,
@@ -121,11 +123,17 @@ export default function App() {
       : '',
   )
   const [storageAvailable, setStorageAvailable] = useState(true)
-  const [reducedMotion, setReducedMotion] = useState(
+  const [systemReducedMotion, setSystemReducedMotion] = useState(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   )
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
+  const wakeRef = useRef(() => {})
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [pauseReason, setPauseReason] = useState('')
+  const reducedMotion =
+    progress.motion === 'reduced' ||
+    (progress.motion === 'system' && systemReducedMotion)
   const settledRef = useRef(false)
   const runDateRef = useRef(today())
   const [runMissions, setRunMissions] = useState(() =>
@@ -140,11 +148,17 @@ export default function App() {
     setStorageAvailable(saveProgress(next))
   }, [])
 
-  const pause = useCallback(() => {
-    controls.clear()
-    engine.pause()
-    setView(snapshot(engine.state))
-  }, [controls, engine])
+  const pause = useCallback(
+    (reason = '') => {
+      controls.clear()
+      engine.pause()
+      audio.update(engine.state)
+      setPauseReason(reason)
+      setView(snapshot(engine.state))
+      wakeRef.current()
+    },
+    [audio, controls, engine],
+  )
 
   const startRun = useCallback(
     (options?: { seed?: number; mode?: GameMode; expeditionId?: string }) => {
@@ -189,6 +203,7 @@ export default function App() {
       controls.clear()
       settledRef.current = false
       setResult(null)
+      setPauseReason('')
       setRunMissions(
         MISSIONS.filter(
           (mission) => !progressRef.current.completed.includes(mission.id),
@@ -198,7 +213,7 @@ export default function App() {
       audio.setEnabled(progressRef.current.sound)
       void audio.unlock()
       setView(snapshot(engine.state))
-      canvasRef.current?.focus({ preventScroll: true })
+      wakeRef.current()
     },
     [audio, controls, engine, ghosts, mode, sharedSeed],
   )
@@ -214,10 +229,13 @@ export default function App() {
   )
 
   const resume = useCallback(() => {
+    controls.clear()
     engine.resume()
+    void audio.unlock()
+    setPauseReason('')
     setView(snapshot(engine.state))
-    canvasRef.current?.focus({ preventScroll: true })
-  }, [engine])
+    wakeRef.current()
+  }, [audio, controls, engine])
 
   const goHome = () => {
     const homeMode = mode === 'expedition' ? 'voyage' : mode
@@ -265,17 +283,19 @@ export default function App() {
     setView(snapshot(engine.state))
   }
 
-  const openModal = (next: 'help' | 'hangar' | 'log' | 'share' | 'atlas') => {
+  const openModal = (
+    next: 'help' | 'hangar' | 'log' | 'share' | 'atlas' | 'settings',
+  ) => {
     if (engine.state.phase === 'running') pause()
     setModal(next)
   }
 
-  const toggleSound = () => {
+  const toggleSound = useCallback(() => {
     const enabled = !progressRef.current.sound
     audio.setEnabled(enabled)
     void audio.unlock()
     commitProgress({ ...progressRef.current, sound: enabled })
-  }
+  }, [audio, commitProgress])
 
   const selectShip = (id: ShipId) => {
     const ship = SHIPS.find((item) => item.id === id)!
@@ -393,7 +413,7 @@ export default function App() {
 
   useEffect(() => {
     const query = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const change = () => setReducedMotion(query.matches)
+    const change = () => setSystemReducedMotion(query.matches)
     query.addEventListener('change', change)
     return () => query.removeEventListener('change', change)
   }, [])
@@ -413,43 +433,124 @@ export default function App() {
     let width = 0
     let height = 0
     let dpr = 1
+    let frame = 0
+    let timer = 0
+    let dirty = true
+    let visible = true
+    let previous = performance.now()
+    let lastDraw = -Infinity
+    let lastHud = 0
+    let connected: boolean | null = null
+
+    const cancel = () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+      frame = 0
+      timer = 0
+    }
+    const wake = () => {
+      cancel()
+      dirty = true
+      previous = performance.now()
+      if (!document.hidden) frame = requestAnimationFrame(tick)
+    }
+    wakeRef.current = wake
+
     const resize = () => {
       const bounds = host.getBoundingClientRect()
+      const scale = displayScale(
+        bounds.width,
+        bounds.height,
+        window.devicePixelRatio,
+        progress.detail,
+      )
+      if (width === bounds.width && height === bounds.height && dpr === scale)
+        return
       width = bounds.width
       height = bounds.height
-      dpr = Math.min(window.devicePixelRatio || 1, 2)
-      canvas.width = Math.round(width * dpr)
-      canvas.height = Math.round(height * dpr)
+      dpr = scale
+      const pixelsWide = Math.max(1, Math.round(width * dpr))
+      const pixelsHigh = Math.max(1, Math.round(height * dpr))
+      if (canvas.width !== pixelsWide) canvas.width = pixelsWide
+      if (canvas.height !== pixelsHigh) canvas.height = pixelsHigh
+      wake()
     }
-    const observer = new ResizeObserver(resize)
-    observer.observe(host)
-    resize()
-    let frame = 0
-    let previous = performance.now()
-    let lastHud = 0
-    const tick = (now: number) => {
-      const dt = Math.min((now - previous) / 1000, 0.05)
+    const pollController = () => {
+      let pads: (Gamepad | null)[] = []
+      try {
+        pads = Array.from(navigator.getGamepads?.() ?? [])
+      } catch {
+        /* Optional browser capability. */
+      }
+      const pad = controller.read(pads)
+      if (connected !== pad.connected) {
+        connected = pad.connected
+        setControllerConnected(connected)
+      }
+      if (pad.disconnected && engine.state.phase === 'running') {
+        pause(
+          'Your controller disconnected. Reconnect it or use the keyboard to continue.',
+        )
+        return
+      }
+      if (!modal && !document.hidden && document.hasFocus()) {
+        if (pad.pause) {
+          if (engine.state.phase === 'running') pause()
+          else if (engine.state.phase === 'paused') resume()
+        } else if (pad.start && engine.state.phase === 'ready') startRun()
+        else if (pad.start && engine.state.phase === 'ended') retryRun()
+        controls.set(
+          'dive',
+          'gamepad',
+          engine.state.phase === 'running' && pad.dive,
+        )
+        controls.set(
+          'boost',
+          'gamepad',
+          engine.state.phase === 'running' && pad.boost,
+        )
+      } else controls.release('gamepad')
+    }
+    function tick(now: number) {
+      frame = 0
+      timer = 0
+      // One clock owns input, simulation, sound, and drawing. Idle screens only
+      // poll a controller; hidden tabs do not schedule any work.
+      const dt = Math.min(Math.max(0, (now - previous) / 1000), 0.1)
       previous = now
-      engine.step(dt, controls.value(now))
+      if (document.hidden) return
+      pollController()
+      const active = visible && !modal
+      if (active) engine.step(dt, controls.value(now))
       if (engine.state.phase === 'running')
         recorderRef.current.record(engine.state)
       audio.update(engine.state)
-      context.setTransform(dpr, 0, 0, dpr, 0, 0)
-      renderWorld(
-        context,
-        engine.state,
-        width,
-        height,
-        now / 1000,
-        reducedMotion,
-        engine.state.mode === 'daily' &&
-          progressRef.current.daily.date === runDateRef.current
-          ? progressRef.current.daily.best
-          : progressRef.current.best,
-        progressRef.current.ghost
-          ? ghostAt(ghostRef.current, engine.state.time)
-          : null,
-      )
+      const running = engine.state.phase === 'running'
+      const ambient = engine.state.phase === 'ready' && !reducedMotion
+      if (
+        visible &&
+        (dirty || (active && (running || (ambient && now - lastDraw >= 32))))
+      ) {
+        context!.setTransform(dpr, 0, 0, dpr, 0, 0)
+        const scene = engine.presentation()
+        renderWorld(
+          context!,
+          scene,
+          width,
+          height,
+          now / 1000,
+          reducedMotion,
+          scene.mode === 'daily' &&
+            progressRef.current.daily.date === runDateRef.current
+            ? progressRef.current.daily.best
+            : progressRef.current.best,
+          progressRef.current.ghost
+            ? ghostAt(ghostRef.current, scene.time)
+            : null,
+        )
+        dirty = false
+        lastDraw = now
+      }
       if (engine.state.phase === 'ended' && !settledRef.current) {
         settledRef.current = true
         controls.clear()
@@ -464,25 +565,117 @@ export default function App() {
         commitProgress(settled.progress)
         setResult(settled)
         setView(snapshot(engine.state))
-      } else if (engine.state.phase === 'running' && now - lastHud > 90) {
+      } else if (running && now - lastHud > 90) {
         setView(snapshot(engine.state))
         lastHud = now
       }
-      frame = requestAnimationFrame(tick)
+      // An input edge may have called wake() during this tick. Keep one callback.
+      cancel()
+      if (active && running) frame = requestAnimationFrame(tick)
+      else if (active && ambient) {
+        timer = window.setTimeout(() => {
+          frame = requestAnimationFrame(tick)
+        }, 24)
+      } else timer = window.setTimeout(() => tick(performance.now()), 100)
     }
-    frame = requestAnimationFrame(tick)
+    const visibility = () => {
+      if (document.hidden) {
+        if (engine.state.phase === 'running')
+          pause('Your flight waited while you were away.')
+        controls.clear()
+        cancel()
+      } else wake()
+    }
+    const observer = new ResizeObserver(resize)
+    observer.observe(host)
+    const intersection = new IntersectionObserver(([entry]) => {
+      const nextVisible = entry.isIntersecting
+      if (visible === nextVisible) return
+      visible = nextVisible
+      if (!visible && engine.state.phase === 'running')
+        pause('Your flight paused while the horizon was out of view.')
+      wake()
+    })
+    intersection.observe(host)
+    document.addEventListener('visibilitychange', visibility)
+    window.addEventListener('resize', resize)
+    window.addEventListener('gamepadconnected', wake)
+    window.addEventListener('gamepaddisconnected', wake)
+    resize()
+    wake()
     return () => {
-      cancelAnimationFrame(frame)
+      cancel()
       observer.disconnect()
+      intersection.disconnect()
+      document.removeEventListener('visibilitychange', visibility)
+      window.removeEventListener('resize', resize)
+      window.removeEventListener('gamepadconnected', wake)
+      window.removeEventListener('gamepaddisconnected', wake)
+      controls.release('gamepad')
+      wakeRef.current = () => {}
     }
-  }, [audio, commitProgress, controls, engine, ghosts, reducedMotion])
+  }, [
+    audio,
+    commitProgress,
+    controller,
+    controls,
+    engine,
+    ghosts,
+    modal,
+    pause,
+    progress.detail,
+    reducedMotion,
+    resume,
+    retryRun,
+    startRun,
+  ])
+
+  useEffect(() => {
+    wakeRef.current()
+    if (modal) return
+    const stage = stageRef.current
+    if (view.phase === 'paused') {
+      stage
+        ?.querySelector<HTMLButtonElement>('.pause-card .primary')
+        ?.focus({ preventScroll: true })
+      return
+    }
+    if (view.phase !== 'running') return
+    const bounds = stage?.getBoundingClientRect()
+    if (bounds && (bounds.top < 0 || bounds.bottom > window.innerHeight)) {
+      stage?.scrollIntoView({ block: 'center', behavior: 'instant' })
+    }
+    canvasRef.current?.focus({ preventScroll: true })
+  }, [view.phase, view.seed, view.ship, view.trail, modal])
+
+  useEffect(() => {
+    const changed = () => {
+      const fullscreen = document.fullscreenElement === stageRef.current
+      setIsFullscreen(fullscreen)
+      if (!fullscreen && engine.state.phase === 'running')
+        pause('Fullscreen closed. Your flight is waiting here.')
+      if (!fullscreen)
+        stageRef.current?.scrollIntoView({
+          block: 'center',
+          behavior: 'instant',
+        })
+      wakeRef.current()
+    }
+    document.addEventListener('fullscreenchange', changed)
+    return () => document.removeEventListener('fullscreenchange', changed)
+  }, [engine, pause])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (modal || event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.ctrlKey || event.metaKey || event.altKey) return
       const target = event.target as HTMLElement
       if (target.closest('input, select, textarea, [contenteditable=true]'))
         return
+      if (event.code === 'KeyM' && !event.repeat) {
+        toggleSound()
+        return
+      }
+      if (modal) return
       if (event.code === 'Space' && target.closest('button, a')) return
       if (
         [
@@ -498,8 +691,8 @@ export default function App() {
         event.preventDefault()
       if (event.repeat) return
       if (event.code === 'Space' || event.code === 'ArrowDown') {
-        if (engine.state.phase === 'ready' || engine.state.phase === 'ended')
-          startRun()
+        if (engine.state.phase === 'ready') startRun()
+        else if (engine.state.phase === 'ended') retryRun()
         if (engine.state.phase === 'running')
           controls.set('dive', event.code, true)
       }
@@ -507,8 +700,10 @@ export default function App() {
         event.code === 'ShiftLeft' ||
         event.code === 'ShiftRight' ||
         event.code === 'ArrowUp'
-      )
-        controls.set('boost', event.code, true)
+      ) {
+        if (engine.state.phase === 'running' && !target.closest('button, a'))
+          controls.set('boost', event.code, true)
+      }
       if (event.code === 'Escape' || event.code === 'KeyP') {
         if (engine.state.phase === 'running') pause()
         else if (engine.state.phase === 'paused') resume()
@@ -530,65 +725,19 @@ export default function App() {
         controls.release(event.code)
     }
     const blur = () => {
-      if (engine.state.phase === 'running') pause()
+      if (engine.state.phase === 'running')
+        pause('Your flight waited while you were away.')
       controls.clear()
-    }
-    const visibility = () => {
-      if (document.hidden) blur()
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', blur)
-    document.addEventListener('visibilitychange', visibility)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
-      document.removeEventListener('visibilitychange', visibility)
     }
-  }, [controls, engine, modal, pause, resume, startRun, retryRun])
-
-  useEffect(() => {
-    let frame = 0
-    let connected: boolean | null = null
-    const poll = () => {
-      let pads: (Gamepad | null)[] = []
-      try {
-        pads = Array.from(navigator.getGamepads?.() ?? [])
-      } catch {
-        /* Optional browser capability. */
-      }
-      const pad = controller.read(pads)
-      if (connected !== pad.connected) {
-        connected = pad.connected
-        setControllerConnected(connected)
-      }
-      if (pad.disconnected && engine.state.phase === 'running') pause()
-      if (!modal && !document.hidden && document.hasFocus()) {
-        if (pad.pause) {
-          if (engine.state.phase === 'running') pause()
-          else if (engine.state.phase === 'paused') resume()
-        } else if (pad.start && engine.state.phase === 'ready') startRun()
-        else if (pad.start && engine.state.phase === 'ended') retryRun()
-        controls.set(
-          'dive',
-          'gamepad',
-          engine.state.phase === 'running' && pad.dive,
-        )
-        controls.set(
-          'boost',
-          'gamepad',
-          engine.state.phase === 'running' && pad.boost,
-        )
-      } else controls.release('gamepad')
-      frame = requestAnimationFrame(poll)
-    }
-    frame = requestAnimationFrame(poll)
-    return () => {
-      cancelAnimationFrame(frame)
-      controls.release('gamepad')
-    }
-  }, [controller, controls, engine, modal, pause, resume, startRun, retryRun])
+  }, [controls, engine, modal, pause, resume, startRun, retryRun, toggleSound])
 
   useEffect(() => () => audio.dispose(), [audio])
 
@@ -626,7 +775,7 @@ export default function App() {
     MODES.find((item) => item.id === mode)?.description ?? activeRoute?.subtitle
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${reducedMotion ? 'reduced-motion' : ''}`}>
       <header className="site-header">
         <a
           className="brand"
@@ -692,7 +841,7 @@ export default function App() {
           <span>
             <i /> MADE FOR ONE MORE RUN
           </span>
-          <span>NEW: SKY CHAINS · THERMALS · GHOST RACES</span>
+          <span>SIX EXPEDITIONS · ONE ENDLESS HORIZON</span>
         </div>
         <section
           className={`flight-stage phase-${view.phase} ${view.biome >= 2 || (view.biome === 1 && view.distance % 1000 > 800) ? 'night-world' : ''} ${reducedMotion ? 'reduced-motion' : ''}`}
@@ -706,7 +855,11 @@ export default function App() {
             role="img"
             aria-label="Dune surfing game. Hold Space or touch to dive. Release to soar. Shift for solar burst. P to pause."
             onPointerDown={(event) => {
-              if (engine.state.phase !== 'running') return
+              if (
+                engine.state.phase !== 'running' ||
+                (event.pointerType === 'mouse' && event.button !== 0)
+              )
+                return
               event.preventDefault()
               event.currentTarget.focus({ preventScroll: true })
               event.currentTarget.setPointerCapture(event.pointerId)
@@ -721,6 +874,7 @@ export default function App() {
             onLostPointerCapture={(event) =>
               controls.release(`pointer-${event.pointerId}`)
             }
+            onContextMenu={(event) => event.preventDefault()}
           >
             Sunwake is an interactive dune-surfing game. Your browser needs
             canvas support to play.
@@ -738,21 +892,33 @@ export default function App() {
               )}
             </div>
             <div className="world-tools">
+              <button
+                className="stage-icon"
+                aria-label="Flight settings"
+                title="Flight settings"
+                onClick={() => openModal('settings')}
+              >
+                <Icon name="settings" size={18} />
+              </button>
               {inRun && (
                 <button
                   className="stage-icon"
                   aria-label={playing ? 'Pause flight' : 'Resume flight'}
-                  onClick={playing ? pause : resume}
+                  onClick={() => (playing ? pause() : resume())}
                 >
                   <Icon name={playing ? 'pause' : 'play'} size={18} />
                 </button>
               )}
               <button
                 className="stage-icon"
-                aria-label="Toggle fullscreen"
+                aria-label={
+                  isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+                }
+                title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                aria-pressed={isFullscreen}
                 onClick={() => void fullscreen()}
               >
-                <Icon name="expand" size={17} />
+                <Icon name={isFullscreen ? 'collapse' : 'expand'} size={17} />
               </button>
             </div>
           </div>
@@ -917,7 +1083,9 @@ export default function App() {
                 <div className="touch-dive">
                   <button
                     aria-label="Hold to dive, release to soar"
-                    className="dive-button"
+                    className={`dive-button ${view.diving ? 'is-held' : ''}`}
+                    aria-pressed={view.diving}
+                    disabled={!playing}
                     onKeyDown={(event) => {
                       if (event.code === 'Space' || event.code === 'Enter') {
                         event.preventDefault()
@@ -935,6 +1103,11 @@ export default function App() {
                       controls.release('button-Enter')
                     }}
                     onPointerDown={(event) => {
+                      if (
+                        engine.state.phase !== 'running' ||
+                        (event.pointerType === 'mouse' && event.button !== 0)
+                      )
+                        return
                       event.preventDefault()
                       event.currentTarget.setPointerCapture(event.pointerId)
                       controls.set('dive', `pointer-${event.pointerId}`, true)
@@ -953,13 +1126,19 @@ export default function App() {
                   </button>
                 </div>
                 <button
-                  className={`burst-button ${boostReady ? 'charged' : ''}`}
+                  className={`burst-button ${boostReady && playing ? 'charged' : ''}`}
                   disabled={!boostReady || !playing}
                   onClick={() => {
                     controls.pulse(performance.now())
                     canvasRef.current?.focus({ preventScroll: true })
                   }}
-                  aria-label={`Solar burst, ${Math.min(100, Math.round((view.player.charge / 65) * 100))}% ready`}
+                  aria-label={
+                    view.player.boostTime > 0
+                      ? `Solar burst active, ${view.player.boostTime.toFixed(1)} seconds remaining`
+                      : boostReady
+                        ? 'Solar burst ready'
+                        : `Solar burst charging, ${Math.min(100, Math.round((view.player.charge / 65) * 100))}%`
+                  }
                 >
                   <span
                     className="burst-fill"
@@ -973,7 +1152,7 @@ export default function App() {
                       ? `BURST · ${view.player.boostTime.toFixed(1)}s`
                       : boostReady
                         ? 'SOLAR BURST'
-                        : 'BUILD YOUR FLOW'}
+                        : `CHARGE · ${Math.min(100, Math.round((view.player.charge / 65) * 100))}%`}
                   </span>
                   <kbd>SHIFT</kbd>
                 </button>
@@ -990,11 +1169,15 @@ export default function App() {
               >
                 <span className="eyebrow">A MOMENT IN THE SUN</span>
                 <h2>
-                  The horizon
-                  <br />
+                  The horizon <br />
                   can wait.
                 </h2>
                 <p>Your flight is paused at {number(view.distance)} m.</p>
+                {pauseReason && (
+                  <p className="pause-reason" role="status">
+                    {pauseReason}
+                  </p>
+                )}
                 <button className="button primary" onClick={resume}>
                   <Icon name="play" size={17} /> Keep flying
                 </button>
@@ -1007,7 +1190,10 @@ export default function App() {
                 </button>
                 <button
                   className="quiet-button"
-                  onClick={() => engine.finish()}
+                  onClick={() => {
+                    engine.finish()
+                    wakeRef.current()
+                  }}
                 >
                   End this flight
                 </button>
@@ -1136,6 +1322,11 @@ export default function App() {
                       : 'Storage is unavailable. Your journey lasts for this session.'}
                 </span>
               </div>
+            </div>
+          )}
+          {notice && isFullscreen && (
+            <div className="notice stage-notice" role="status">
+              {notice}
             </div>
           )}
         </section>
@@ -1351,6 +1542,37 @@ export default function App() {
           onEmbark={(id) => startRun({ expeditionId: id })}
         />
       )}
+      {modal === 'settings' && (
+        <Modal
+          title="Flight settings"
+          className="settings-modal"
+          onClose={() => setModal(null)}
+        >
+          <span className="eyebrow">YOUR OWN KIND OF FLIGHT</span>
+          <h2>
+            A little more
+            <br />
+            your speed.
+          </h2>
+          <p className="modal-intro">Tune the sights, sounds, and guidance.</p>
+          <FlightPreferences
+            progress={progress}
+            onChange={commitProgress}
+            onSound={toggleSound}
+          />
+          <button
+            className="button primary"
+            onClick={() => {
+              setModal(null)
+              if (engine.state.phase === 'paused') resume()
+            }}
+          >
+            {inRun ? 'Keep flying' : 'Back to the sky'}{' '}
+            <Icon name="arrow" size={18} />
+          </button>
+        </Modal>
+      )}
+
       {modal === 'help' && (
         <Modal title="How to fly" onClose={() => setModal(null)}>
           <span className="eyebrow">A FIELD GUIDE TO THE SKY</span>
@@ -1442,35 +1664,11 @@ export default function App() {
               </span>
             </div>
           </div>
-          <div className="flight-preferences">
-            <h3>Make the flight yours</h3>
-            <button
-              role="switch"
-              aria-checked={progress.coach}
-              onClick={() =>
-                commitProgress({ ...progress, coach: !progress.coach })
-              }
-            >
-              <span>
-                Flight coaching
-                <small>Live cues for holding, releasing, and landing.</small>
-              </span>
-              <i className={progress.coach ? 'on' : ''} />
-            </button>
-            <button
-              role="switch"
-              aria-checked={progress.ghost}
-              onClick={() =>
-                commitProgress({ ...progress, ghost: !progress.ghost })
-              }
-            >
-              <span>
-                Race your ghost
-                <small>See your best flight on a course you revisit.</small>
-              </span>
-              <i className={progress.ghost ? 'on' : ''} />
-            </button>
-          </div>
+          <FlightPreferences
+            progress={progress}
+            onChange={commitProgress}
+            onSound={toggleSound}
+          />
           <div className="controller-guide">
             <Icon name="controller" size={26} />
             <div>
@@ -1731,7 +1929,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {notice && (
+      {notice && !isFullscreen && (
         <div className="notice" role="status">
           {notice}
         </div>

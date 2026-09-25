@@ -29,6 +29,8 @@ type IconName =
   | 'map'
   | 'seal'
   | 'controller'
+  | 'settings'
+  | 'collapse'
 
 export function Icon({
   name,
@@ -40,6 +42,14 @@ export function Icon({
   className?: string
 }) {
   const paths: Record<IconName, ReactNode> = {
+    settings: (
+      <>
+        <path d="M4 7h16M4 17h16" />
+        <circle cx="9" cy="7" r="3" fill="currentColor" stroke="none" />
+        <circle cx="15" cy="17" r="3" fill="currentColor" stroke="none" />
+      </>
+    ),
+    collapse: <path d="M9 3v6H3m18 0h-6V3M3 15h6v6m6 0v-6h6" />,
     map: (
       <>
         <path d="m3 5 6-3 6 3 6-3v17l-6 3-6-3-6 3Zm6-3v17m6-14v17" />
@@ -265,10 +275,16 @@ export function Modal({
   className?: string
 }) {
   const ref = useRef<HTMLDialogElement>(null)
+  const backdropPress = useRef(false)
   useEffect(() => {
     const dialog = ref.current
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     dialog?.showModal()
-    return () => dialog?.close()
+    return () => {
+      dialog?.close()
+      document.body.style.overflow = previousOverflow
+    }
   }, [])
   return (
     <dialog
@@ -279,11 +295,16 @@ export function Modal({
         event.preventDefault()
         onClose()
       }}
+      onPointerDown={(event) => {
+        backdropPress.current = event.target === event.currentTarget
+      }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose()
+        if (backdropPress.current && event.target === event.currentTarget)
+          onClose()
+        backdropPress.current = false
       }}
     >
-      <div className="modal-inner">
+      <div className="modal-closebar">
         <button
           className="icon-button modal-close"
           aria-label="Close dialog"
@@ -291,8 +312,8 @@ export function Modal({
         >
           <Icon name="close" />
         </button>
-        {children}
       </div>
+      <div className="modal-inner">{children}</div>
     </dialog>
   )
 }

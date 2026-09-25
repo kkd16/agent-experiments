@@ -2,6 +2,7 @@ import { terrain } from './engine'
 import type { GhostPosition } from './replay'
 import { expeditionById } from './expeditions'
 import { trailById } from './cosmetics'
+import { TerrainSamples } from './presentation'
 import { WORLD_HEIGHT } from './types'
 import type { Entity, GameState, ShipId } from './types'
 
@@ -70,6 +71,7 @@ const PALETTES: readonly Palette[] = [
 ]
 
 const TAU = Math.PI * 2
+const terrainCaches = new WeakMap<CanvasRenderingContext2D, TerrainSamples>()
 
 function mix(a: number, b: number, t: number) {
   return a + (b - a) * t
@@ -346,10 +348,15 @@ function ground(
   palette: string[],
   bottom: number,
 ) {
+  let samples = terrainCaches.get(ctx)
+  if (!samples) {
+    samples = new TerrainSamples()
+    terrainCaches.set(ctx, samples)
+  }
   const dune = new Path2D()
   dune.moveTo(-20, bottom + 10)
   for (let x = -20; x <= w + 24; x += 8)
-    dune.lineTo(x, terrain(x + camera, seed))
+    dune.lineTo(x, samples.height(x + camera, seed))
   dune.lineTo(w + 24, bottom + 10)
   dune.closePath()
   const fill = ctx.createLinearGradient(0, 400, 0, Math.max(760, bottom))
@@ -371,7 +378,7 @@ function ground(
       const worldX = x + camera
       const depth = 12 + line * 17 + line * line * 1.55
       const y =
-        terrain(worldX - line * 7, seed) +
+        samples.height(worldX - line * 7, seed) +
         depth +
         Math.sin(worldX * 0.005 + line * 0.42) * line * 2.4
       if (x === -24) ctx.moveTo(x, y)
@@ -391,7 +398,7 @@ function ground(
   for (let i = segment - 1; i < segment + Math.ceil(w / 110) + 2; i++) {
     const worldX = i * 110 + random(i + seed) * 70
     const x = worldX - camera
-    const y = terrain(worldX, seed) + 35 + random(i + 8) * 120
+    const y = samples.height(worldX, seed) + 35 + random(i + 8) * 120
     ctx.beginPath()
     ctx.moveTo(x, y)
     ctx.quadraticCurveTo(x + 10, y - 3, x + 23, y - 1)
@@ -403,7 +410,7 @@ function ground(
 
   ctx.beginPath()
   for (let x = -16; x <= w + 16; x += 8) {
-    const y = terrain(x + camera, seed)
+    const y = samples.height(x + camera, seed)
     if (x === -16) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   }

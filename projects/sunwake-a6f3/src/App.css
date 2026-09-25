@@ -2382,19 +2382,6 @@ footer > span:last-child {
     -webkit-user-select: none;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-  }
-  .button:hover:not(:disabled) {
-    transform: none;
-  }
-}
-
 /* Quiet surfaces keep mode choices legible over every dune silhouette. */
 .mode-selector {
   width: max-content;
@@ -3368,7 +3355,7 @@ footer > span:last-child {
   }
 }
 @media (min-width: 650px) and (max-height: 650px) and (orientation: landscape) {
-  .flight-stage:fullscreen .results-card {
+  .flight-stage .results-card {
     display: grid;
     grid-template-columns: 1fr 1.2fr;
     grid-template-areas:
@@ -3383,65 +3370,65 @@ footer > span:last-child {
     width: min(680px, 100%);
     padding: 18px 24px;
   }
-  .flight-stage:fullscreen .result-kicker {
+  .flight-stage .result-kicker {
     grid-area: kicker;
     font-size: 7px;
     letter-spacing: 0.6px;
   }
-  .flight-stage:fullscreen .result-distance {
+  .flight-stage .result-distance {
     grid-area: distance;
     font-size: 58px;
     line-height: 1;
     margin: 6px 0;
   }
-  .flight-stage:fullscreen .results-card h2 {
+  .flight-stage .results-card h2 {
     grid-area: title;
     font-size: 21px;
     margin-top: 6px;
   }
-  .flight-stage:fullscreen .result-reason {
+  .flight-stage .result-reason {
     grid-area: reason;
     font-size: 10px;
   }
-  .flight-stage:fullscreen .result-stats {
+  .flight-stage .result-stats {
     grid-area: stats;
     align-self: center;
     padding: 14px 0;
     margin: 0;
   }
-  .flight-stage:fullscreen .completed-missions {
+  .flight-stage .completed-missions {
     grid-area: missions;
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: center;
     font-size: 8px;
   }
-  .flight-stage:fullscreen .flight-debrief {
+  .flight-stage .flight-debrief {
     display: none;
   }
-  .flight-stage:fullscreen .result-buttons {
+  .flight-stage .result-buttons {
     grid-area: buttons;
     flex-direction: row;
     margin-top: 12px;
   }
-  .flight-stage:fullscreen .replay-actions {
+  .flight-stage .replay-actions {
     grid-area: replay;
     margin-top: 5px;
   }
-  .flight-stage:fullscreen .saved-note {
+  .flight-stage .saved-note {
     grid-area: saved;
     margin-top: 4px;
   }
-  .flight-stage:fullscreen .route-progress {
+  .flight-stage .route-progress {
     display: none;
   }
-  .flight-stage:fullscreen .flight-benefits {
+  .flight-stage .flight-benefits {
     top: 190px;
   }
-  .flight-stage:fullscreen .sky-chain {
+  .flight-stage .sky-chain {
     top: 150px;
   }
-  .flight-stage:fullscreen .flight-event {
+  .flight-stage .flight-event {
     top: 32%;
   }
 }
@@ -3540,5 +3527,254 @@ footer > span:last-child {
   }
   .log-score {
     font-size: 11px;
+  }
+}
+
+/* Flight comfort: stable instruments, reachable controls, and quiet menus. */
+.world-tools {
+  flex-shrink: 0;
+  gap: 6px;
+}
+.region-label {
+  min-width: 0;
+}
+.region-label > span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.distance-readout,
+.speed-readout,
+.run-pickups,
+.sunlight-readout,
+.expedition-clock,
+.result-distance,
+.objective-item {
+  font-variant-numeric: tabular-nums;
+}
+.flight-stage {
+  contain: layout paint;
+}
+.stage-overlay {
+  overflow-y: auto;
+  align-items: safe center;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+.pause-card {
+  max-width: 100%;
+}
+.pause-card .pause-reason {
+  max-width: 260px;
+  margin: -10px auto 20px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #725967;
+}
+.dive-button.is-held {
+  background: #faefd755;
+  box-shadow: inset 0 0 0 1px #ffefd37d;
+}
+.dive-button:active {
+  transform: translateY(1px);
+}
+.stage-notice {
+  position: absolute;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 12;
+}
+.modal {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #c3a5ae transparent;
+}
+.modal-closebar {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.modal-closebar .modal-close {
+  position: relative;
+  top: auto;
+  right: auto;
+  margin: 10px;
+  flex: none;
+  color: #725967;
+  background: #faf7f2f2;
+  border: 1px solid #e6d9d0;
+  box-shadow: 0 3px 10px #342c400c;
+  pointer-events: auto;
+}
+.preference-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 134px;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 0;
+  border-top: 1px solid #e6d9d0;
+  font-size: 12px;
+}
+.preference-choice select {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 8px;
+  font: inherit;
+  color: #594552;
+  background: #f5eee7;
+  border: 1px solid #d9c7c6;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.flight-preferences .preferences-note {
+  margin-top: 8px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #88727f;
+}
+.settings-modal .modal-inner {
+  padding-bottom: 28px;
+}
+.settings-modal .modal-intro {
+  margin-bottom: 24px;
+}
+.settings-modal .flight-preferences h3 {
+  display: none;
+}
+.settings-modal .flight-preferences {
+  padding-top: 4px;
+}
+.settings-modal .button {
+  width: 100%;
+}
+.reduced-motion *,
+.reduced-motion *::before,
+.reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+.reduced-motion .button:hover:not(:disabled) {
+  transform: none;
+}
+.flight-stage:fullscreen .world-topline {
+  top: max(14px, env(safe-area-inset-top));
+  left: max(18px, env(safe-area-inset-left));
+  right: max(18px, env(safe-area-inset-right));
+}
+.flight-stage:fullscreen .flight-bottom {
+  left: max(18px, env(safe-area-inset-left));
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(15px, env(safe-area-inset-bottom));
+}
+@media (max-width: 570px) {
+  .preference-choice {
+    grid-template-columns: minmax(0, 1fr) 115px;
+    gap: 12px;
+  }
+  .flight-preferences small {
+    font-size: 10px;
+  }
+  .stage-icon,
+  .phase-running .stage-icon,
+  .phase-paused .stage-icon {
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    min-height: 42px;
+  }
+  .world-tools {
+    gap: 4px;
+  }
+  .world-topline {
+    right: 12px;
+    left: 17px;
+  }
+  .region-label {
+    max-width: calc(100% - 142px);
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 10px;
+  }
+  .region-label > span:first-of-type {
+    max-width: calc(100% - 22px);
+  }
+  .daily-tag {
+    margin-left: 21px;
+  }
+}
+@media (max-height: 480px) and (min-width: 571px) {
+  .paused-overlay {
+    padding: 45px 14px 10px;
+  }
+  .pause-card {
+    padding: 14px 35px;
+  }
+  .pause-card h2 {
+    font-size: 27px;
+    margin: 8px 0;
+  }
+  .pause-card h2 br {
+    display: none;
+  }
+  .pause-card p {
+    margin-bottom: 12px;
+  }
+  .pause-card .pause-reason {
+    margin: 0 auto 10px;
+    max-width: 340px;
+    font-size: 10px;
+  }
+  .pause-card .quiet-button {
+    margin-top: 8px;
+    min-height: 28px;
+  }
+}
+.phase-paused .world-topline {
+  z-index: 6;
+}
+@media (max-width: 570px) {
+  .region-label {
+    letter-spacing: 0.06em;
+  }
+}
+.flight-preferences small {
+  color: #7c6473;
+}
+@media (max-width: 570px) {
+  .dive-button,
+  .burst-button {
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    padding-inline: 8px;
+  }
+  .run-pickups {
+    font-size: 10px;
+  }
+  .sunlight-readout .hud-label {
+    font-size: 7px;
+  }
+  .sunlight-readout b {
+    font-size: 10px;
+  }
+  .energy-hint {
+    font-size: 8px;
+    line-height: 1.45;
+  }
+}
+@media (max-width: 570px) {
+  .flight-coach,
+  .flight-event {
+    bottom: 149px;
+    width: max-content;
+    max-width: calc(100% - 34px);
+  }
+}
+@media (max-height: 480px) and (min-width: 650px) {
+  .flight-stage:not(:fullscreen) {
+    height: max(300px, calc(100dvh - 24px));
   }
 }

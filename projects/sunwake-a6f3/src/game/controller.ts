@@ -19,7 +19,8 @@ export class ControllerInput {
           item.mapping === 'standard' &&
           item.index === this.index,
       ) ?? pads.find((item) => item?.connected && item.mapping === 'standard')
-    const disconnected = this.index !== null && !pad
+    // Losing the active pad is a disconnect even if another pad is available.
+    const disconnected = this.index !== null && pad?.index !== this.index
     const changed = Boolean(pad && pad.index !== this.index)
     if (changed || disconnected) {
       this.previousDive = false
@@ -34,8 +35,8 @@ export class ControllerInput {
       connected: Boolean(pad),
       dive,
       boost: held(1) || held(2) || held(6),
-      start: dive && !this.previousDive,
-      pause: menu && !this.previousMenu,
+      start: dive && !this.previousDive && !disconnected,
+      pause: menu && !this.previousMenu && !disconnected,
       disconnected,
     }
     this.previousDive = dive

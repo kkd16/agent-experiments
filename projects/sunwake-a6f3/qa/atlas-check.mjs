@@ -153,7 +153,7 @@ try{
   },true)
 
   await scenario('atlas-landscape-finish',{width:844,height:390},async page=>{
-    await page.getByRole('button',{name:'Toggle fullscreen',exact:true}).click()
+    await page.getByRole('button',{name:'Enter fullscreen',exact:true}).click()
     // A modal remains usable while the stage occupies fullscreen.
     await page.getByRole('button',{name:'Six expeditions await'}).click()
     await depart(page);await page.clock.runFor(19000)
