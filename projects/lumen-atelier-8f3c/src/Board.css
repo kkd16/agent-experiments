@@ -2,8 +2,12 @@
   width: 100%;
   position: relative;
   isolation: isolate;
+  background: radial-gradient(ellipse at 50% 43%, color-mix(in srgb, var(--garden-atmosphere) 16%, transparent), transparent 72%), color-mix(in srgb, var(--garden-base) 80%, #10282c);
   -webkit-tap-highlight-color: transparent;
 }
+
+.garden-scene--flat { padding: 47px 0 33px; }
+.garden-stage .garden-scene--flat .garden-board { max-height: 630px; }
 
 .garden-board {
   display: block;
@@ -16,7 +20,7 @@
 
 .orbit-line {
   fill: none;
-  stroke: #90a788;
+  stroke: var(--garden-leaf);
   stroke-opacity: .14;
   stroke-width: .7px;
   stroke-dasharray: 2 9;
@@ -64,11 +68,47 @@
 .tile-hint-mark { animation: hint-nod 1.7s ease-in-out infinite; }
 .channel-bloom { opacity: .8; }
 .channel-light { animation: light-arrive 550ms ease both; }
+.channel-flow {
+  stroke-dasharray: 4 96;
+  animation: channel-flow 3.3s linear infinite;
+  opacity: .8;
+}
+.light-frontier { animation: frontier-glow 2.6s ease-in-out infinite; }
 .sun-halo { opacity: .85; }
 .garden-mote { animation: drift-mote 8s ease-in-out infinite; pointer-events: none; }
 .garden-crystal--lit .crystal-float { animation: crystal-float 4s ease-in-out infinite; }
 .garden-scene--awakened .garden-mote { fill: #f2d893; }
 .garden-scene--awakened .scene-atmosphere { filter: brightness(1.15); }
+.garden-scene--awakened .garden-flower { animation: flower-open 850ms cubic-bezier(.2,.65,.3,1) both; }
+.crystal-petals { animation: flower-open 700ms cubic-bezier(.2,.65,.3,1) both; }
+.crystal-awakening-ring { transform-origin: 0 1px; animation: crystal-awakening 950ms ease-out both; }
+.crystal-aura { animation: aura-wake 1s ease-out both; }
+
+@keyframes channel-flow {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes frontier-glow {
+  0%, 100% { opacity: .65; }
+  50% { opacity: 1; }
+}
+
+@keyframes flower-open {
+  from { opacity: 0; transform: scale(.3); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes crystal-awakening {
+  from { opacity: .9; transform: scale(.45); }
+  to { opacity: 0; transform: scale(1.9); }
+}
+
+@keyframes aura-wake {
+  0% { opacity: 0; }
+  30% { opacity: .8; }
+  100% { opacity: .43; }
+}
 
 @keyframes drift-mote {
   0%, 100% { opacity: .1; transform: translate(0, 4px); }
@@ -105,4 +145,8 @@
     animation: none !important;
     transition: none !important;
   }
+  .channel-flow, .crystal-awakening-ring { display: none; }
 }
+
+.reduce-motion .channel-flow,
+.reduce-motion .crystal-awakening-ring { display: none; }

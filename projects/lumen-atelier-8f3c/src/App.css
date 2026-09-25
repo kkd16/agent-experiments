@@ -340,3 +340,39 @@
 @media(max-width:700px){
   .main-nav button{font-size:11px}.page-heading p{font-size:11px}.stage-coordinate{font-size:8px}.stage-coordinate small{font-size:7px}.stage-weather{font-size:12px}.light-status{font-size:9px}.interaction-note{font-size:8px;flex-wrap:wrap;row-gap:3px}.interaction-note>span:last-child,.interaction-note>i:last-of-type{display:none}.garden-toolbar button{font-size:11px}.toolbar-end .hint-button{font-size:10px}.garden-notes{grid-template-columns:43px 1fr 108px;gap:0 10px}.garden-notes .objective-sigil{width:43px}.garden-notes>.eyebrow{font-size:6px;letter-spacing:.7px}.garden-notes>.objective-copy{font-size:10px}.garden-notes>h2{font-size:26px}.garden-notes .reward-guide>span:last-child{font-size:7px;line-height:1.6}.garden-notes .move-stats small{font-size:6px}.trail-name{font-size:7px;line-height:1.4;min-height:28px}.trail-heading .eyebrow,.trail-heading>span:last-child{font-size:8px}.page-footer>span:first-child{display:none}.page-footer>span:last-child{font-size:8px;margin:auto}.trail-levels{row-gap:17px}.stage-top{inset:15px 16px auto}.stage-bottom{left:16px;right:16px;bottom:13px}.chapter-card-body>p{font-size:10px;min-height:72px}.chapter-card-body .text-button{font-size:9px}.atlas-intro p{font-size:11px}.card-level-list button{font-size:10px}.workshop-form>p{font-size:12px}.workshop-form label{font-size:11px}.select-wrap select{font-size:11px}.workshop-form .input-note{font-size:10px}.workshop-promise{font-size:9px}.memory>p{font-size:12px}.memory .text-button{font-size:10px}.guide-steps p{font-size:11px}.guide-steps h3{font-size:12px}.mechanics-grid{grid-template-columns:1fr}.mechanics-grid p{font-size:12px}.mechanics-grid h4{font-size:13px}.guide-bottom{flex-direction:column;gap:0}.keyboard-guide{padding-top:0}.guide-bottom p{font-size:12px}.guide-content>.primary-button{width:100%}.guide-steps{grid-template-columns:1fr;gap:9px}.guide-steps>div{padding:15px 15px 15px 56px;min-height:82px}.guide-steps svg{position:absolute;left:17px;top:19px}.guide-steps>div>span{display:none}.toast{font-size:12px}.win-panel>.primary-button{font-size:10px}
 }
+
+/* Second Bloom: tools for building, revisiting, and reading the garden. */
+.stage-view-tools{display:flex;gap:7px;pointer-events:auto}
+.view-toggle.selected{background:#baca9238;color:#f2e8b4;border-color:#c5d59a77}
+.mechanic-reminder{display:flex;align-items:flex-start;gap:16px;border-top:1px solid var(--line);padding:13px 2px 11px;color:#6a7e5c}
+.mechanic-reminder>span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:10px;font-weight:600;line-height:1.7;color:#70855f}
+.mechanic-reminder>p{font-size:11px;line-height:1.7;margin:0;color:#77866a}
+.interaction-note kbd{font:inherit;border:1px solid #cfd9c1;padding:1px 3px;border-radius:2px}
+.trail-dots.in-progress{font:500 8px 'DM Sans',sans-serif;color:#71894e;margin-top:4px;line-height:1.4}
+.resume-tag{margin-left:auto;color:#688549;font-size:8px;padding:3px 5px;border:1px solid #d0ddbc;border-radius:3px;white-space:nowrap}
+.card-level-list button>.resume-tag+svg{margin-left:0}
+.resume-gardens{border:1px solid #d5dfc8;border-radius:5px;padding:20px;margin:0 0 25px;background:#e9efdf99}
+.resume-heading{display:flex;align-items:center;gap:11px;margin-bottom:16px;color:#7a9160}
+.resume-heading h2{font-family:var(--serif);font-size:24px;line-height:1.2;font-weight:500;margin:0;color:#50683e}
+.resume-heading p{font-size:11px;color:#859572;margin:4px 0 0;line-height:1.6}
+.resume-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.resume-list>button{background:#f4f6ec;display:flex;align-items:center;gap:11px;text-align:left;border:1px solid #d9e3cb;padding:13px;border-radius:4px;min-width:0}
+.resume-list>button:hover{background:#f9fbf1;border-color:#a7ba90}
+.resume-list>button>.sigil{width:35px;flex-shrink:0;color:#93a676}
+.resume-list>button>span{min-width:0;flex:1}
+.resume-list strong{display:block;font-weight:500;font-size:11px;color:#607a4d}
+.resume-list small{display:block;font-size:9px;color:#8c9c79;margin-top:5px;line-height:1.6}
+.resume-list>button>svg:last-child{color:#809867;flex-shrink:0}
+.workshop-tabs{display:flex;align-items:center;gap:5px;border-bottom:1px solid #d4dfc8;margin:-4px 0 26px;padding-bottom:10px}
+.workshop-tabs>button{display:flex;align-items:center;gap:9px;padding:11px 17px;background:none;font-size:12px;color:#899a76;border-radius:4px;border:1px solid transparent}
+.workshop-tabs>button:hover{color:#4f6b3a;background:#e5ecda}
+.workshop-tabs>button.selected{color:#4f6b3a;background:#e2ebd5;border-color:#cddcbc}
+.new-label{font-size:7px;letter-spacing:1px;line-height:1;background:#b6c898;color:#42622b;padding:4px;border-radius:2px;margin-left:3px}
+.high-contrast .mechanic-reminder>p,.high-contrast .resume-heading p,.high-contrast .resume-list small{color:#506b40}
+@media(max-width:1250px){.garden-toolbar .tool-group{gap:6px}.resume-list{grid-template-columns:1fr}.resume-list>button{padding:10px 13px}.resume-list small{font-size:10px}.resume-list strong{font-size:12px}.resume-list>button>.sigil{width:36px}}
+@media(max-width:700px){.garden-toolbar{gap:5px;flex-wrap:wrap}.garden-toolbar .tool-group{gap:5px}.garden-toolbar .toolbar-end{gap:5px;margin-left:auto}.garden-toolbar button{font-size:10px;gap:4px;padding:3px}.toolbar-end .hint-button{font-size:10px;padding:8px}.tool-divider{margin:0 2px}.mechanic-reminder{flex-direction:column;gap:4px;padding:12px 0}.mechanic-reminder>span{font-size:10px}.mechanic-reminder>p{font-size:11px;line-height:1.7}.interaction-note{padding-top:3px}.stage-view-tools{gap:5px}.trail-dots.in-progress{font-size:6px}.workshop-tabs{gap:5px;margin-bottom:20px}.workshop-tabs>button{padding:10px 9px;font-size:11px;gap:6px}.workshop-tabs .new-label{font-size:6px;margin-left:0}.resume-gardens{padding:17px}.resume-heading h2{font-size:23px}.resume-heading p{font-size:10px}.resume-list{gap:8px}}
+@media(max-width:390px){.garden-toolbar button{font-size:9px}.toolbar-end .hint-button{font-size:9px;padding:8px 6px}.garden-toolbar .tool-group{gap:3px}.garden-toolbar .toolbar-end{gap:3px}.garden-toolbar .sound-toggle{padding:2px}.stage-coordinate{max-width:175px}.new-label{display:none!important}}
+.interaction-note .view-shortcut{display:inline-flex;align-items:center;gap:5px;background:none;font-size:inherit;padding:3px;color:#70865b;border-bottom:1px dotted #b9c7a8;border-radius:0}
+.interaction-note .view-shortcut:hover{color:#405d2f}
+@media(max-width:700px){.interaction-note>span:nth-of-type(2),.interaction-note>i{display:none}.interaction-note .view-shortcut{font-size:9px}.interaction-note>span:first-child{font-size:9px}}
+.high-contrast .garden-tile .tile-surface{stroke:var(--garden-deep);stroke-width:1.8px}

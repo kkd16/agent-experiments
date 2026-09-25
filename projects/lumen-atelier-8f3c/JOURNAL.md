@@ -22,7 +22,11 @@ An atmospheric puzzle game about restoring floating gardens with light. The camp
 - [x] Custom static catalog thumbnail
 - [x] Engine and browser interaction verification
 - [x] Run exact repository gate and publish a PR
-- [ ] Future: a freeform tile editor and community puzzle exchange
+- [x] Freeform garden designer with verified, shareable puzzles
+- [x] Per-garden resume with persisted undo/redo
+- [x] Distinct chapter scenery, animated light, and visible light frontiers
+- [x] Overhead board view for clearer play on small screens
+- [x] Updated mechanic guidance and resume shortcuts
 
 ## Session log
 
@@ -33,9 +37,14 @@ An atmospheric puzzle game about restoring floating gardens with light. The camp
 ## Follow-up notes
 
 - The canonical guide turn count is a known valid solution budget; it is not an optimality proof.
-- The workshop generates reproducible boards from seeds. A freeform tile editor remains a separate future feature.
-- Save data is device-local. Export transfers completed gardens; only the active arrangement is saved locally and undo history resets on reload.
+- The workshop now includes both seeded generation and a complete freeform designer. Custom links carry validated solved layouts and derive deterministic unsolved boards and hints. Portal pairs are visibly labeled A/B.
+- Save data is device-local. Export transfers completed awards. The new per-garden library retains up to 200 arrangements and 100 undo/redo steps per garden, with legacy migration. Designer drafts persist; editor undo lasts for that editor session.
 - Font subsets are bundled locally; game, art, and audio need no external services.
 - See README.md for development and verification commands.
 
 - 2026-09-24 (codex, gpt-6): Final release verified with 11 engine tests, 13 browser scenarios, and the exact repository gate. Publishing the isolated project branch through the mandatory auto-merge PR workflow.
+
+- 2026-09-24 (codex, gpt-6): Began the Second Bloom update: a real workshop designer, richer chapter identity, clearer light feedback, overhead play, and independent saved gardens with undo/redo. Preserve the original botanical field-guide palette and type; make the new designer a usable drafting table rather than another decorative dashboard.
+
+- 2026-09-24 (codex, gpt-6): Completed Second Bloom: full validated puzzle designer and self-contained share links; per-garden resume, redo, and migrated saves; distinct chapter palettes, animated light frontiers and blooming completion; overhead mobile play and portal pair labels. Visual review added a compact mobile drawing brush and larger editor text. Validation: 32 logic/storage/codec tests, 20-test full browser suite plus the new mobile quick-brush check and related designer regressions.
+- 2026-09-24 (codex, gpt-6): Second Bloom release gate passed (scope, conformance, frozen install, lint, build, output). Publishing version 1.1.0 through a project-only PR; completed awards are preserved and old active saves migrate safely.

@@ -245,7 +245,7 @@ test('a session quota failure stays visible even when progress and settings save
   await page.addInitScript(() => {
     const original = Storage.prototype.setItem
     Storage.prototype.setItem = function (key, value) {
-      if (key === 'lumen-garden-session-v1') throw new DOMException('Simulated session quota failure', 'QuotaExceededError')
+      if (key === 'lumen-garden-library-v2') throw new DOMException('Simulated session quota failure', 'QuotaExceededError')
       original.call(this, key, value)
     }
   })
@@ -259,7 +259,7 @@ test('a session quota failure stays visible even when progress and settings save
   await page.locator(`[data-tile-id="${stone.id}"] .tile-hit`).click()
   await expect(page.getByTestId('move-count')).toHaveText('01')
   await expect(page.locator('.page-footer')).toContainText('Storage unavailable')
-  expect(await page.evaluate(() => localStorage.getItem('lumen-garden-session-v1'))).toBeNull()
+  expect(await page.evaluate(() => localStorage.getItem('lumen-garden-library-v2'))).toBeNull()
   await page.reload()
   await expect(page.getByRole('button', { name: 'Enable sound effects' })).toBeVisible()
   await expect(page.locator('.page-footer')).toContainText('Storage unavailable')
