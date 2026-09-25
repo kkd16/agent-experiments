@@ -21,6 +21,11 @@ type IconName =
   | 'soar'
   | 'ring'
   | 'restart'
+  | 'shield'
+  | 'magnet'
+  | 'ghost'
+  | 'journal'
+  | 'share'
 
 export function Icon({
   name,
@@ -32,6 +37,34 @@ export function Icon({
   className?: string
 }) {
   const paths: Record<IconName, ReactNode> = {
+    shield: (
+      <>
+        <path d="m12 2 8 4-1 9-7 7-7-7-1-9Z" />
+        <path d="m8 12 3 3 5-6" />
+      </>
+    ),
+    magnet: (
+      <>
+        <path d="M5 3v11a7 7 0 0 0 14 0V3h-5v11a2 2 0 0 1-4 0V3Z" />
+        <path d="M5 8h5m4 0h5" />
+      </>
+    ),
+    ghost: (
+      <>
+        <path d="M5 21V9a7 7 0 0 1 14 0v12l-3-3-4 3-4-3Z" />
+        <path d="M9 9v2m6-2v2" />
+      </>
+    ),
+    journal: (
+      <>
+        <path d="M6 3h13v18H6a3 3 0 0 1 0-6h13M6 3a3 3 0 0 0-3 3v12m5-11h7m-7 4h5" />
+      </>
+    ),
+    share: (
+      <>
+        <path d="M12 15V2m-5 5 5-5 5 5M5 12H3v9h18v-9h-2" />
+      </>
+    ),
     sun: (
       <>
         <circle cx="12" cy="12" r="4" />

@@ -20,7 +20,7 @@ after(() => {
 })
 
 const run = (overrides = {}) => ({
-  phase: 'ended', mode: 'voyage', distance: 1000, score: 4000, sparks: 20,
+  phase: 'ended', mode: 'voyage', seed: 42, time: 30, perfectLandings: 0, skyChains: 0, distance: 1000, score: 4000, sparks: 20,
   rings: 10, cleanLandings: 8, maxAirtime: 7, bestCombo: 10, boosts: 6, nearMisses: 6,
   ...overrides,
 })
@@ -117,7 +117,9 @@ test('free flight tracks practice distance without awarding sparks, missions, or
   }
   const before = structuredClone(progress)
   const result = settleRun(progress, run({ mode: 'zen', distance: 100000, sparks: 20000, score: 900000 }), '2026-09-25')
-  assert.deepEqual(result.progress, { ...progress, totalDistance: 102000, totalRuns: 4 })
+  assert.deepEqual(result.progress, { ...progress, totalDistance: 102000, totalRuns: 4, history: result.progress.history })
+  assert.equal(result.progress.history[0].mode, 'zen')
+  assert.equal(result.progress.history[0].distance, 100000)
   assert.equal(result.earned, 0)
   assert.deepEqual(result.completed, [])
   assert.equal(result.newBest, false)
@@ -150,4 +152,25 @@ test('daily terrain seeds are repeatable, date-dependent unsigned integers', () 
   assert.equal(dailySeed('2026-09-24'), dailySeed('2026-09-24'))
   assert.notEqual(dailySeed('2026-09-24'), dailySeed('2026-09-25'))
   assert.equal(dailySeed('2026-09-24') >>> 0, dailySeed('2026-09-24'))
+})
+
+
+test('old saves retain earned progress and receive new preference/history defaults', () => {
+  storage.set(key, JSON.stringify({ version: 1, bank: 160, best: 2400, owned: ['sol', 'manta'], selected: 'manta', completed: ['first-light'] }))
+  const saved = loadProgress()
+  assert.equal(saved.bank, 160)
+  assert.equal(saved.best, 2400)
+  assert.equal(saved.selected, 'manta')
+  assert.equal(saved.coach, true)
+  assert.equal(saved.ghost, true)
+  assert.deepEqual(saved.history, [])
+})
+
+test('flight history is bounded, ordered, reloadable, and rejects corrupt rows', () => {
+  let progress = freshProgress()
+  for (let i = 0; i < 20; i++) progress = settleRun(progress, run({ seed: i + 1, distance: 100 + i }), '2026-09-25').progress
+  assert.equal(progress.history.length, 12)
+  assert.equal(progress.history[0].seed, 20)
+  saveProgress({ ...progress, history: [{ bad: true }, ...progress.history] })
+  assert.deepEqual(loadProgress().history, progress.history)
 })

@@ -78,9 +78,12 @@ const courseA = create()
 const courseB = create()
 run(courseA, 10, () => ({ dive: true, boost: false }))
 run(courseB, 10, (_, time) => ({ dive: time % 1.5 < 0.75, boost: false }))
-const commonA = courseA.state.entities.filter(entity => entity.x > 5000 && entity.x < 6000)
-const commonB = courseB.state.entities.filter(entity => entity.x > 5000 && entity.x < 6000)
-assert.ok(commonA.length > 0)
+const farX = Math.max(courseA.state.player.x, courseB.state.player.x) + 250
+const sharedIds = new Set(courseB.state.entities.filter(entity => entity.x > farX).map(entity => entity.id))
+const commonA = courseA.state.entities.filter(entity => sharedIds.has(entity.id) && entity.x > farX)
+const idsA = new Set(commonA.map(entity => entity.id))
+const commonB = courseB.state.entities.filter(entity => idsA.has(entity.id))
+assert.ok(commonA.length >= 6)
 assert.deepEqual(commonA, commonB)
 
 // Sunlight ends Voyage, but Zen is genuinely endless, including obstacle contacts.
@@ -92,7 +95,7 @@ const zen = create({ mode: 'zen' })
 zen.state.player.energy = 0
 run(zen, 240, engine => ({
   dive: terrainSlope(engine.state.player.x, engine.state.seed) > 0.02,
-  boost: engine.state.player.charge >= 65,
+  boost: engine.state.player.charge >= 65 && engine.state.player.boostTime <= 0,
 }))
 assert.equal(zen.state.phase, 'running')
 assert.equal(zen.state.player.energy, 100)
@@ -113,7 +116,7 @@ run(soaring, 90, engine => {
   lowestY = Math.min(lowestY, player.y)
   return {
     dive: player.grounded && terrainSlope(player.x, seed) > -0.3,
-    boost: player.charge >= 65 && !player.grounded && player.vy > -120,
+    boost: player.charge >= 65 && player.boostTime <= 0 && !player.grounded && player.vy > -120,
   }
 })
 assert.ok(soaring.state.maxAirtime >= 3, 'The three-second flight mission must be achievable')
@@ -126,3 +129,59 @@ assert.equal(zen.state.distance, 0)
 assert.equal(zen.state.player.y, terrain(200, options.seed) - 14)
 
 console.log('Engine checks passed: fixed clock, pause, launch, bursts, collision grace, seeded course, sunlight, advanced airtime, and four-minute bounded Zen run.')
+
+
+// New pickups change real gameplay, not merely the decoration.
+const gifted = create({ mode: 'zen' })
+gifted.state.time = 10
+const put = kind => { const p = gifted.state.player; gifted.state.entities = [{ id: -50, kind, x: p.x + 3, y: p.y, radius: 28, phase: 0, collected: false }] }
+put('shield'); gifted.step(1 / 120, input)
+assert.equal(gifted.state.player.shield, true)
+put('rock'); gifted.step(1 / 120, input)
+assert.equal(gifted.state.player.shield, false)
+assert.equal(gifted.state.hits, 0)
+assert.ok(gifted.state.player.invincible > 1)
+for (let i = 0; i < 3; i++) { put('ring'); gifted.step(1 / 120, input) }
+assert.equal(gifted.state.skyChains, 1)
+assert.equal(gifted.state.ringChain, 0)
+assert.ok(gifted.state.player.magnetTime > 7)
+gifted.state.player.grounded = true
+gifted.state.player.y = terrain(gifted.state.player.x, gifted.state.seed) - 14
+put('thermal'); gifted.step(1 / 120, input)
+assert.equal(gifted.state.thermalsRidden, 1)
+assert.equal(gifted.state.player.grounded, false)
+assert.ok(gifted.state.player.vy < -350)
+
+// Every regional boundary remains position- and slope-continuous.
+for (let index = 1; index <= 12; index++) {
+  const x = 200 + index * 10000
+  assert.ok(Math.abs(terrain(x + .001, 42) - terrain(x - .001, 42)) < .01)
+  assert.ok(Math.abs(terrainSlope(x + .001, 42) - terrainSlope(x - .001, 42)) < .001)
+}
+console.log('Expansion checks passed: shields, chain rewards, thermals, and continuous region profiles.')
+
+
+const magnet = create({ mode: 'zen' })
+magnet.state.player.magnetTime = 10
+magnet.state.entities = [{ id: -70, kind: 'spark', x: magnet.state.player.x + 60, y: magnet.state.player.y - 85, radius: 9, phase: 0, collected: false }]
+run(magnet, .6)
+assert.equal(magnet.state.magneticSparks, 1, 'The magnet must collect sparks outside the ordinary hull reach')
+const fastMagnet = create({ mode: 'zen' })
+Object.assign(fastMagnet.state.player, { magnetTime: 10, vx: 900, vy: -100, y: 250, grounded: false, boostTime: 1 })
+fastMagnet.state.entities = [{ id: -71, kind: 'spark', x: fastMagnet.state.player.x - 100, y: 190, radius: 9, phase: 0, collected: false }]
+run(fastMagnet, .4)
+assert.equal(fastMagnet.state.magneticSparks, 1, 'A spark must catch a skiff moving at burst speed')
+const missed = create()
+missed.state.ringChain = 2
+missed.state.chainDeadline = 20
+missed.state.entities = [{ id: -80, kind: 'ring', x: missed.state.player.x - 85, y: 120, radius: 32, phase: 0, collected: false }]
+missed.step(1 / 120, input)
+assert.equal(missed.state.ringChain, 0, 'Missing a ring must break a chain')
+const repeatBurst = create()
+repeatBurst.state.player.charge = 100
+repeatBurst.step(1 / 60, { dive: false, boost: true })
+repeatBurst.step(1 / 60, input)
+repeatBurst.state.player.charge = 100
+repeatBurst.step(1 / 60, { dive: false, boost: true })
+assert.equal(repeatBurst.state.boosts, 1, 'An active burst cannot be renewed before it ends')
+console.log('Pickup checks passed: magnet attraction, missed-ring reset, and active-burst guard.')
