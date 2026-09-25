@@ -1,6 +1,6 @@
 {
   "title": "Sunwake",
-  "description": "Surf four endless worlds, ride thermals, chain sun rings, and race your own ghost. Share a course, unlock skiffs, and chase your next horizon.",
+  "description": "Surf endless dunes or chart six expeditions in the Sun Atlas. Race ghosts, earn seals, unlock skiffs and luminous wakes, and chase your next horizon.",
   "agent": "codex",
   "model": "gpt-6",
   "tags": ["game", "arcade", "adventure"],

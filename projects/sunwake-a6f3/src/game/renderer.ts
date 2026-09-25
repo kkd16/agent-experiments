@@ -1,5 +1,7 @@
 import { terrain } from './engine'
 import type { GhostPosition } from './replay'
+import { expeditionById } from './expeditions'
+import { trailById } from './cosmetics'
 import { WORLD_HEIGHT } from './types'
 import type { Entity, GameState, ShipId } from './types'
 
@@ -704,9 +706,21 @@ function drawShip(
   charge: number,
 ) {
   const sail =
-    ship === 'manta' ? '#b798db' : ship === 'comet' ? '#ec8a67' : palette[11]
+    ship === 'kestrel'
+      ? '#e9bb72'
+      : ship === 'manta'
+        ? '#b798db'
+        : ship === 'comet'
+          ? '#ec8a67'
+          : palette[11]
   const sailLight =
-    ship === 'manta' ? '#dfcbf3' : ship === 'comet' ? '#ffe0a6' : '#c8f1d8'
+    ship === 'kestrel'
+      ? '#fff0ca'
+      : ship === 'manta'
+        ? '#dfcbf3'
+        : ship === 'comet'
+          ? '#ffe0a6'
+          : '#c8f1d8'
   const ink = palette[9]
   const flutter = Math.sin(time * 6) * 2
 
@@ -722,7 +736,27 @@ function drawShip(
   // Each craft has an immediately different silhouette, with a shared sailmaking language.
   ctx.strokeStyle = ink
   ctx.lineWidth = 2
-  if (ship === 'manta') {
+  if (ship === 'kestrel') {
+    for (const offset of [0, 26]) {
+      ctx.fillStyle = offset === 0 ? sailLight : sail
+      ctx.beginPath()
+      ctx.moveTo(3, -69 + offset)
+      ctx.lineTo(46 + flutter, -42 + offset)
+      ctx.lineTo(3, -33 + offset)
+      ctx.lineTo(-36, -58 + offset)
+      ctx.closePath()
+      ctx.fill()
+      ctx.stroke()
+    }
+    ctx.beginPath()
+    ctx.moveTo(3, -71)
+    ctx.lineTo(3, 5)
+    ctx.moveTo(-21, -49)
+    ctx.lineTo(-16, -22)
+    ctx.moveTo(34, -41)
+    ctx.lineTo(34, -14)
+    ctx.stroke()
+  } else if (ship === 'manta') {
     ctx.fillStyle = sail
     ctx.beginPath()
     ctx.moveTo(2, -37)
@@ -882,11 +916,27 @@ function player(
         if (i === 0) ctx.moveTo(tx, point.y + 9)
         else ctx.lineTo(tx, point.y + 9)
       })
-      ctx.strokeStyle = palette[10]
+      ctx.strokeStyle =
+        state.trail === 'sunlight' ? palette[10] : trailById(state.trail).color
       ctx.globalAlpha = layer === 0 ? 0.1 : craft.boostTime > 0 ? 0.68 : 0.34
       ctx.lineWidth = layer === 0 ? 12 : 2
       ctx.lineCap = 'round'
       ctx.stroke()
+    }
+    if (state.trail === 'stardust' || state.trail === 'aurora') {
+      const trail = trailById(state.trail)
+      craft.trail.forEach((point, i) => {
+        if (i % 7) return
+        ctx.globalAlpha = Math.max(0, point.life * 0.8)
+        ctx.fillStyle = trail.accent
+        diamond(
+          ctx,
+          point.x - camera,
+          point.y + 9 + Math.sin(i) * 7,
+          state.trail === 'stardust' ? 3.6 : 2.5,
+        )
+        ctx.fill()
+      })
     }
     ctx.globalAlpha = 1
     ctx.lineCap = 'butt'
@@ -1069,6 +1119,77 @@ function regionAtmosphere(
   ctx.restore()
 }
 
+function expeditionBeacons(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  camera: number,
+  width: number,
+  time: number,
+  palette: string[],
+) {
+  const route = expeditionById(state.expeditionId)
+  if (!route) return
+  for (let index = 1; index <= 3; index++) {
+    const worldX = state.startX + (route.distance * 10 * index) / 3
+    const x = worldX - camera
+    if (x < -130 || x > width + 130) continue
+    const y = terrain(worldX, state.seed)
+    const finish = index === 3
+    const lit = state.checkpoints >= index || (finish && state.arrived)
+    ctx.save()
+    const glow = ctx.createLinearGradient(0, y - 390, 0, y)
+    glow.addColorStop(0, '#fff2c600')
+    glow.addColorStop(1, lit ? '#c2ffda66' : '#ffe9b23d')
+    ctx.fillStyle = glow
+    ctx.beginPath()
+    ctx.moveTo(x - 90, y - 390)
+    ctx.lineTo(x + 90, y - 390)
+    ctx.lineTo(x + 25, y)
+    ctx.lineTo(x - 25, y)
+    ctx.closePath()
+    ctx.fill()
+    ctx.strokeStyle = lit ? '#c9ffe1' : '#fff1c3'
+    ctx.lineWidth = finish ? 4 : 2
+    ctx.beginPath()
+    ctx.ellipse(
+      x,
+      y - 110,
+      finish ? 79 : 49,
+      finish ? 114 : 84,
+      0,
+      Math.PI,
+      TAU,
+    )
+    ctx.lineTo(x + (finish ? 79 : 49), y - 8)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(x - (finish ? 79 : 49), y - 110)
+    ctx.lineTo(x - (finish ? 79 : 49), y - 8)
+    ctx.stroke()
+    ctx.fillStyle = palette[9]
+    ctx.globalAlpha = 0.65
+    ctx.fillRect(x - 10, y - 37, 20, 37)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = '#fff0ba'
+    diamond(
+      ctx,
+      x,
+      y - (finish ? 235 : 204) + Math.sin(time * 2) * 3,
+      finish ? 13 : 8,
+    )
+    ctx.fill()
+    ctx.font = '600 11px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = '#fff6d9'
+    ctx.fillText(
+      finish ? 'DESTINATION' : `BEACON ${index}`,
+      x,
+      y - (finish ? 260 : 229),
+    )
+    ctx.restore()
+  }
+}
+
 /** Draw in CSS pixels without changing the caller's device-pixel-ratio transform. */
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
@@ -1093,13 +1214,13 @@ export function renderWorld(
   const bottom = height / scale - verticalOffset
   const camera = state.player.x - w * (ready ? 0.64 : 0.25)
   const time = reducedMotion ? 0 : ready ? ambientTime : state.time
-  const palette = colors(state.distance)
+  const palette = colors(state.worldDistance)
 
   ctx.save()
   ctx.scale(scale, scale)
   ctx.translate(0, verticalOffset)
   ctx.lineJoin = 'round'
-  sky(ctx, w, camera, time, palette, ready, state.distance, top, bottom)
+  sky(ctx, w, camera, time, palette, ready, state.worldDistance, top, bottom)
   regionAtmosphere(ctx, state, w, camera, time, palette)
   mountains(ctx, w, camera, palette)
 
@@ -1112,7 +1233,9 @@ export function renderWorld(
     )
   }
   ground(ctx, w, camera, state.seed, palette, bottom)
-  personalHorizon(ctx, state, w, camera, scale, personalBest, palette)
+  if (state.mode !== 'expedition')
+    personalHorizon(ctx, state, w, camera, scale, personalBest, palette)
+  expeditionBeacons(ctx, state, camera, w, time, palette)
 
   for (const entity of state.entities) {
     const x = entity.x - camera

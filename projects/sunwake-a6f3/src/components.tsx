@@ -26,6 +26,9 @@ type IconName =
   | 'ghost'
   | 'journal'
   | 'share'
+  | 'map'
+  | 'seal'
+  | 'controller'
 
 export function Icon({
   name,
@@ -37,6 +40,23 @@ export function Icon({
   className?: string
 }) {
   const paths: Record<IconName, ReactNode> = {
+    map: (
+      <>
+        <path d="m3 5 6-3 6 3 6-3v17l-6 3-6-3-6 3Zm6-3v17m6-14v17" />
+      </>
+    ),
+    seal: (
+      <>
+        <circle cx="12" cy="10" r="7" />
+        <path d="m8 16-2 6 6-3 6 3-2-6M12 6l1.2 2.5L16 9l-2 2 .5 3-2.5-1.5L9.5 14l.5-3-2-2 2.8-.5Z" />
+      </>
+    ),
+    controller: (
+      <>
+        <path d="M8 6h8c4 0 5 4 6 10s-4 5-6 1H8c-2 4-7 5-6-1S4 6 8 6Z" />
+        <path d="M8 9v6m-3-3h6m5-2h.1m3 3h.1" />
+      </>
+    ),
     shield: (
       <>
         <path d="m12 2 8 4-1 9-7 7-7-7-1-9Z" />
@@ -172,6 +192,7 @@ export function ShipArt({
     sol: ['#77d3c7', '#b7eee1'],
     manta: ['#b798db', '#dfcbf3'],
     comet: ['#ec8a67', '#ffe0a6'],
+    kestrel: ['#e9bb72', '#fff0ca'],
   }
   const [main, light] = colors[ship]
   return (
@@ -188,7 +209,18 @@ export function ShipArt({
         fill="none"
         opacity=".5"
       />
-      {ship === 'manta' ? (
+      {ship === 'kestrel' ? (
+        <>
+          <path d="m109 23 60 38-60 7-46-34 46 48 54-3-54 15Z" fill={main} />
+          <path d="m109 23 18 38 42 0-60 7-46-34Z" fill={light} />
+          <path
+            d="m72 37 37 27 48-2M109 24v66"
+            stroke="#876840"
+            strokeWidth="2"
+            fill="none"
+          />
+        </>
+      ) : ship === 'manta' ? (
         <>
           <path d="m64 91 36-57 15 39 53-43-24 59-30 11Z" fill={main} />
           <path d="m100 34 15 39 53-43-54 65Z" fill={light} />

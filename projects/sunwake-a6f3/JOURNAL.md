@@ -18,7 +18,8 @@ Palette: ink plum #342c40, chalk #faf7f2, sand #f3ba7b, apricot #ef986f, rose #b
 - [x] Original static 16:10 catalog thumbnail.
 - [x] Prepare and verify a single-project release for the automatic PR publishing workflow.
 - [x] Shareable courses and local best-run ghost replays.
-- [ ] Future: more skiff silhouettes.
+- [x] More skiff silhouettes: the two-wing Kestrel, earned through the Sun Atlas.
+- [ ] Future: additional expedition chapters.
 
 ## Session log
 
@@ -65,3 +66,28 @@ Palette: ink plum #342c40, chalk #faf7f2, sand #f3ba7b, apricot #ef986f, rose #b
 - Verification: 22 progress/replay/input checks and expanded engine checks pass, including deterministic frame rates, four-minute free flight, shields, chains, thermals, magnet pursuit at burst speed, and smooth terrain. Twelve production browser scenarios pass with clean consoles, covering old flows plus shared-route ghosts, log replay, independent inputs, preferences, blocked clipboard/storage, and landscape fullscreen. The exact publication gate passes. Final visual review covered desktop, 320/390 px portrait, 844 px landscape, violet islands, and blue aurora. Landscape touch controls retain their styling, and the results fit without scrolling.
 
 - 2026-09-24 (codex / gpt-6): Thoroughly expanded Sunwake's flight mechanics, replay loop, world variation, coaching, and saved history; balanced the new rewards, preserved existing progress, and passed the exact gate plus engine/unit/browser coverage. Version 0.2 is ready for the automatic PR publishing workflow.
+
+## Third journey — Sun Atlas plan
+
+- [x] Six finite expeditions across the four regions, finish beacons, checkpoints, route conditions, and three replayable seals per route.
+- [x] Persistent expedition progress, honest reward isolation, unlockable wakes, and the Kestrel skiff; preserve existing saves and version-2 course links.
+- [x] An illustrated Sun Atlas, clear live objectives, expedition results, and quick same-route retries.
+- [x] Standard controller support with independent input and safe disconnect behavior.
+- [x] Better flight feedback, cosmetic settings, mobile/fullscreen layouts, and meaningful regression coverage.
+- [x] Balance every expedition, pass the exact gate, and prepare the update for automatic PR publishing.
+
+Design: preserve the warm sail-and-dunes world, Bricolage display and DM Sans body, plum #342c40, chalk #faf7f2, amber #f3ba7b, rose #b86783, turquoise #75d8ce, and violet #b798db. The new signature is a charted ribbon of six destinations across a painted atlas, with seals stamped into each route. The atlas stays a focused dialog; the playable horizon stays the main page's centerpiece. Cosmetics express progress without changing the physics of existing competitive modes.
+
+## Version 0.3 decisions and validation
+
+- Six authored routes run from 650 to 2,400 m, beginning in different regions. Their conditions include tailwind, fragile light, a half-lit lantern, and buoyant air. Two intermediate beacons each grant 12 sunlight and 8 charge; crossing the destination ends the run automatically. Aborting or running out of light never earns seals.
+- Each route offers arrival, finesse, and swift seals. Finesse targets landings, rings, sparks, clean navigation, or thermals; swift targets range from 16 to 52 seconds. Seals accumulate across attempts and pay 40 light once each. Finishing a route opens the next. Expedition runs award collected sparks and track history/lifetime distance, with separate times/seals and no changes to Voyage/Daily records, challenges, or ghosts.
+- Version-2 course physics are retained exactly. Twelve 100-second simulations across four seeds and all three original modes matched every pre-existing state field against the deployed 0.2 engine. Expedition URLs use a separate versioned atlas route; links open route details and retain the normal progression requirement. Ghost recording remains exclusive to the original competitive modes.
+- Three seals unlock Seafoam, six Wild violet, twelve Aurora and the Kestrel, and eighteen Stardust. The hangar previews all four skiffs and five wakes. Unlock announcements link directly to the hangar. Cosmetic selection persists and cannot load before its seal requirement is met.
+- The illustrated map has numbered routes, readable locked previews, persistent seals, and route-specific objectives. A sticky mobile departure control keeps the action available while scrolling. Results distinguish this flight's seals from already collected seals, show crossing time to hundredths, and offer the next expedition. Swift boundaries tolerate floating-point drift without rewarding a late simulation tick.
+- Standard Gamepad input supports bottom-face/right-trigger dives, right/left-face or left-trigger bursts, Menu pause/resume, and start/result retries. Independent input sources preserve keyboard/touch holds. Disconnecting pauses the run. Paused flights also have a same-route restart button and R shortcut; R after results repeats the course.
+- Priority flight messages preserve important chain, checkpoint, and damage feedback. Checkpoints and arrival gain audio cues. The static catalog thumbnail now shows a destination beacon. Normal rendering and input remain bounded; no new runtime libraries or services were added.
+- Verification: exact repository gate passes; expanded engine checks and 33 unit tests pass. All six expeditions achieve all three seals in deterministic simulations, and arrival is identical at 30/60/144 Hz. Twelve existing browser scenarios plus seven atlas/controller scenarios pass. Real UI automation earned all three first-route seals, unlocked Seafoam, and selected the wake. Gamepad behavior was tested with simulated standard API data, not physical hardware.
+- Visual review covered the desktop atlas, mobile atlas at 320/390 px, a three-seal mobile finish, the hangar/Kestrel, fullscreen landscape results, and the new static thumbnail. Screenshots and exploratory scripts stay ignored under `qa/artifacts/`.
+
+- 2026-09-24 (codex / gpt-6): Built and balanced the Sun Atlas expansion, preserved old saves and course physics, added collectible wakes/Kestrel and controller support, and passed engine/unit/browser/publication checks. Version 0.3 is ready for the automatic pull-request publishing workflow.

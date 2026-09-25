@@ -1,6 +1,7 @@
+import type { TrailId } from './cosmetics'
 export type GamePhase = 'ready' | 'running' | 'paused' | 'ended'
-export type GameMode = 'voyage' | 'daily' | 'zen'
-export type ShipId = 'sol' | 'manta' | 'comet'
+export type GameMode = 'voyage' | 'daily' | 'zen' | 'expedition'
+export type ShipId = 'sol' | 'manta' | 'comet' | 'kestrel'
 export type EntityKind =
   | 'spark'
   | 'ring'
@@ -23,6 +24,8 @@ export type EventKind =
   | 'chain'
   | 'perfect'
   | 'thermal'
+  | 'checkpoint'
+  | 'arrival'
 
 export interface Player {
   x: number
@@ -75,6 +78,12 @@ export interface GameState {
   mode: GameMode
   seed: number
   ship: ShipId
+  trail: TrailId
+  expeditionId: string | null
+  startX: number
+  worldDistance: number
+  checkpoints: number
+  arrived: boolean
   time: number
   distance: number
   score: number
@@ -116,6 +125,8 @@ export interface RunOptions {
   mode: GameMode
   ship: ShipId
   seed: number
+  trail?: TrailId
+  expeditionId?: string
 }
 
 export const WORLD_HEIGHT = 720

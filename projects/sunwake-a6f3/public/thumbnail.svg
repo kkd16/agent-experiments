@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" role="img" aria-labelledby="title desc">
   <title id="title">Sunwake — Ride the last light</title>
-  <desc id="desc">A turquoise solar skiff soars over rose and plum dunes beneath a giant apricot sun.</desc>
+  <desc id="desc">A turquoise solar skiff soars toward a glowing destination beacon over rose and plum dunes beneath a giant apricot sun.</desc>
   <defs>
     <linearGradient id="sky" x1="800" y1="0" x2="800" y2="1000" gradientUnits="userSpaceOnUse"><stop stop-color="#f9ead2"/><stop offset=".53" stop-color="#f4bc89"/><stop offset="1" stop-color="#dc8d81"/></linearGradient>
     <linearGradient id="sun" x1="1150" y1="172" x2="1150" y2="645" gradientUnits="userSpaceOnUse"><stop stop-color="#f08b43"/><stop offset="1" stop-color="#e88b69"/></linearGradient>
@@ -37,11 +37,12 @@
     <path d="m1163 533 6 11-6 11-6-11zm61-31 6 11-6 11-6-11zm63-14 6 11-6 11-6-11z"/>
     <circle cx="997" cy="687" r="3"/><circle cx="964" cy="703" r="2"/><circle cx="925" cy="719" r="2.7"/><circle cx="879" cy="739" r="1.6"/>
   </g>
-  <ellipse cx="1390" cy="484" rx="21" ry="38" transform="rotate(13 1390 484)" stroke="#ffedaf" stroke-width="5"/>
-  <ellipse cx="1390" cy="484" rx="28" ry="44" transform="rotate(13 1390 484)" stroke="#ffedaf" stroke-opacity=".3" stroke-width="1"/>
+  <path d="m1335 302 165 0-39 299-98-23Z" fill="#fff1c3" opacity=".08"/>
+  <path d="M1355 580V445a58 82 0 0 1 116 0v166" stroke="#fff1c3" stroke-width="5" opacity=".8"/>
+  <path d="m1413 330 10 16-10 16-10-16Z" fill="#fff1c3"/>
   <path d="m672 314 11-5 12 5m30-12 8-4 8 4m694-103 9-5 11 5" stroke="#815868" stroke-width="3" stroke-linecap="round"/>
   <g fill="#352d40" font-family="Arial, Helvetica, sans-serif">
-    <text x="108" y="128" font-size="19" font-weight="700" letter-spacing="6">AN ENDLESS LITTLE ADVENTURE</text>
+    <text x="108" y="128" font-size="19" font-weight="700" letter-spacing="6">ENDLESS SKIES. SIX NEW DESTINATIONS.</text>
     <text x="96" y="308" font-size="173" font-weight="900" letter-spacing="-10">SUNWAKE</text>
     <text x="108" y="371" font-size="33" letter-spacing=".5">Ride the last light.</text>
   </g>

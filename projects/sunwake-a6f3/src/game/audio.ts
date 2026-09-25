@@ -63,15 +63,20 @@ export class SunwakeAudio {
     for (const event of freshEvents)
       this.lastEventId = Math.max(this.lastEventId, event.id)
     const running = state.phase === 'running'
+    const arrival = freshEvents.some((event) => event.kind === 'arrival')
     const context = this.context
-    if (context && this.master && running !== this.running) {
+    if (context && this.master && (running !== this.running || arrival)) {
       const now = context.currentTime
       this.master.gain.cancelScheduledValues(now)
       this.master.gain.setTargetAtTime(
-        this.enabled && running ? 0.5 : 0,
+        this.enabled && (running || arrival) ? 0.5 : 0,
         now,
         0.06,
       )
+      if (arrival) {
+        this.master.gain.setTargetAtTime(0, now + 0.9, 0.2)
+        this.windGain?.gain.setTargetAtTime(0, now, 0.08)
+      }
     }
     this.running = running
     if (!this.enabled || !context || context.state !== 'running') return
@@ -87,7 +92,7 @@ export class SunwakeAudio {
       this.windFilter?.frequency.cancelScheduledValues(now)
       this.windFilter?.frequency.setTargetAtTime(250 + speed * 1050, now, 0.2)
     }
-    if (running) {
+    if (running || arrival) {
       if (collectedSpark) this.event('spark', state.combo)
       for (const event of freshEvents.slice(-6))
         this.event(event.kind, state.combo)
@@ -218,6 +223,15 @@ export class SunwakeAudio {
       case 'thermal':
         this.tone(329.63, 0.8, 0.06)
         this.tone(493.88, 0.9, 0.04, 0.16)
+        break
+      case 'checkpoint':
+        this.tone(440, 0.7, 0.07)
+        this.tone(659.25, 0.8, 0.06, 0.12)
+        break
+      case 'arrival':
+        ;[440, 554.37, 659.25, 880].forEach((note, i) =>
+          this.tone(note, 1, 0.08, i * 0.14),
+        )
         break
       case 'end':
         break

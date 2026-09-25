@@ -76,7 +76,7 @@ function validGhost(raw: unknown): raw is GhostRun {
     !Number.isInteger(value.seed) ||
     value.seed < 1 ||
     value.seed > 0xffffffff ||
-    !['sol', 'manta', 'comet'].includes(value.ship)
+    !['sol', 'manta', 'comet', 'kestrel'].includes(value.ship)
   )
     return false
   if (
@@ -135,7 +135,7 @@ export class GhostLibrary {
     return this.runs.find((run) => run.seed === seed) ?? null
   }
   remember(run: GhostRun, mode: GameMode): boolean {
-    if (mode === 'zen' || !validGhost(run)) return false
+    if (mode === 'zen' || mode === 'expedition' || !validGhost(run)) return false
     const previous = this.get(run.seed)
     if (previous && previous.distance >= run.distance) return false
     this.runs = [
