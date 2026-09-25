@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookOpen, Check, ChevronDown, ChevronRight, CircleHelp, Compass, Copy, Flower2, Grid2X2, Headphones, Leaf, Lightbulb, Maximize, Moon, RotateCcw, Settings2, Shuffle, Sparkles, Sprout, Sun, Trophy, Undo2, Volume2, VolumeX, WandSparkles, Wind, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, BookOpen, Check, ChevronDown, ChevronRight, CircleHelp, Compass, Copy, Flower2, Grid2X2, Headphones, Leaf, Lightbulb, Maximize, Moon, PencilRuler, Redo2, RotateCcw, Settings2, Shuffle, Sparkles, Sprout, Sun, Trophy, Undo2, Volume2, VolumeX, WandSparkles, Wind, X } from 'lucide-react'
 import Board from './Board'
 import { CHAPTERS, LEVELS, dailyLevel, generateLevel, getHint, rotateTile, simulate } from './game'
-import type { Level, Tile } from './game'
+import type { Level } from './game'
+import CustomGarden from './CustomGarden'
+import { decodeCustomLevel } from './custom'
+import { getSessionSummaries, loadSession, newSession, saveSession } from './sessions'
+import type { GardenSession as Session } from './sessions'
 import { exportProgress, importProgress, loadProgress, saveProgress } from './progress'
 import type { Progress } from './progress'
 import { GardenAudio } from './audio'
@@ -11,40 +15,36 @@ import './App.css'
 
 type Page = 'play' | 'atlas' | 'daily' | 'workshop' | 'journal'
 type Modal = 'guide' | 'settings' | 'achievements' | null
-type Snapshot = { tiles: Tile[]; moves: number }
-type Session = Snapshot & { level: Level; history: Snapshot[]; hints: number; hintId: string | null; hintRotation: number | null; won: boolean }
-const SESSION_KEY = 'lumen-garden-session-v1'
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI']
 const MECHANICS = ['Light & turns', 'Branching paths', 'Rooted stones', 'One-way gates', 'Woven channels', 'Paired portals']
 const today = () => new Date().toISOString().slice(0, 10)
 const countCompleted = (progress: Progress) => LEVELS.filter(level => progress.completed[level.id]).length
 
-function makeSession(level: Level, restore = false): Session {
-  const base: Session = { level, tiles: level.tiles.map(tile => ({ ...tile })), moves: 0, history: [], hints: 0, hintId: null, hintRotation: null, won: false }
-  if (restore) {
-    try {
-      const saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null')
-      if (saved?.id === level.id && Array.isArray(saved.rotations) && saved.rotations.length === level.tiles.length && saved.rotations.every((n: unknown) => Number.isInteger(n) && Number(n) >= 0 && Number(n) <= 3) && Number.isInteger(saved.moves) && saved.moves >= 0 && Number.isInteger(saved.hints) && saved.hints >= 0) {
-        base.tiles = base.tiles.map((tile, i) => ({ ...tile, rotation: tile.fixed || ['source', 'crystal', 'rock'].includes(tile.kind) ? tile.rotation : saved.rotations[i] }))
-        base.moves = saved.moves
-        base.hints = saved.hints
-        base.won = simulate(base.tiles).solved
-      }
-    } catch { /* A damaged session must never prevent a fresh garden. */ }
-  }
-  return base
+function loadOverheadPreference(): boolean {
+  try { return localStorage.getItem('lumen-overhead-view') === 'true' } catch { return false }
 }
 
-function parseRoute(hash: string, progress: Progress): { page: Page; level: Level } {
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+function parseRoute(hash: string, progress: Progress): { page: Page; level: Level; error?: string; workshopMode?: 'seed' | 'design' } {
   const parts = hash.replace(/^#\/?/, '').split('/')
   const fallback = LEVELS.find(level => level.id === progress.currentLevel) || LEVELS[0]
-  if (parts[0] === 'daily') return { page: 'daily', level: dailyLevel(/^\d{4}-\d{2}-\d{2}$/.test(parts[1] || '') ? parts[1] : today()) }
+  if (parts[0] === 'daily') return { page: 'daily', level: dailyLevel(isCalendarDate(parts[1] || '') ? parts[1] : today()) }
+  if (parts[0] === 'custom') {
+    const level = decodeCustomLevel(parts[1] || '')
+    return level ? { page: 'play', level } : { page: 'workshop', level: fallback, workshopMode: 'design', error: 'This garden link is incomplete or invalid. Ask for a new link, or design a garden of your own.' }
+  }
   if (parts[0] === 'seed') {
     const seed = /^\d{1,10}$/.test(parts[1] || '') ? Number(parts[1]) >>> 0 : 108
     const chapter = /^[0-5]$/.test(parts[2] || '') ? Number(parts[2]) : 0
     return { page: 'play', level: generateLevel(seed, chapter) }
   }
-  if (['atlas', 'workshop', 'journal'].includes(parts[0])) return { page: parts[0] as Page, level: fallback }
+  if (parts[0] === 'workshop') return { page: 'workshop', level: fallback, workshopMode: parts[1] === 'design' ? 'design' : 'seed' }
+  if (['atlas', 'journal'].includes(parts[0])) return { page: parts[0] as Page, level: fallback }
   return { page: 'play', level: LEVELS.find(level => level.id === parts[1]) || fallback }
 }
 
@@ -111,10 +111,13 @@ export default function App() {
   })
   const [progress, setProgress] = useState<Progress>(initial.progress)
   const [page, setPage] = useState<Page>(initial.route.page)
-  const [session, setSession] = useState<Session>(() => makeSession(initial.route.level, true))
+  const [session, setSession] = useState<Session>(() => loadSession(initial.route.level))
   const [modal, setModal] = useState<Modal>(null)
-  const [toast, setToast] = useState('')
+  const [toast, setToast] = useState(initial.route.error || '')
   const [focusMode, setFocusMode] = useState(false)
+  const [overhead, setOverhead] = useState(loadOverheadPreference)
+  const [savedGardens, setSavedGardens] = useState(getSessionSummaries)
+  const [workshopMode, setWorkshopMode] = useState<'seed' | 'design'>(initial.route.workshopMode || (initial.route.level.id.startsWith('custom-') ? 'design' : 'seed'))
   const [atlasChapter, setAtlasChapter] = useState<number | null>(null)
   const [workshopChapter, setWorkshopChapter] = useState(2)
   const [seed, setSeed] = useState('314159')
@@ -135,6 +138,8 @@ export default function App() {
   const totalBlooms = LEVELS.reduce((sum, level) => sum + (progress.completed[level.id]?.stars || 0), 0)
   const isGarden = page === 'play' || page === 'daily'
   const isCampaign = LEVELS.some(level => level.id === session.level.id)
+  const isCustom = session.level.id.startsWith('custom-')
+  const unfinished = LEVELS.filter(level => savedGardens[level.id]?.moves > 0 && !savedGardens[level.id].won && !progress.completed[level.id]).sort((a, b) => savedGardens[b.id].updatedAt.localeCompare(savedGardens[a.id].updatedAt)).slice(0, 3)
   const chapterLevels = LEVELS.filter(level => level.chapter === session.level.chapter)
   const chapterComplete = chapterLevels.filter(level => progress.completed[level.id]).length
   const activeLevelNumber = isCampaign ? session.level.index % 8 + 1 : null
@@ -157,9 +162,11 @@ export default function App() {
     const handleHash = () => {
       const route = parseRoute(window.location.hash, progressRef.current)
       setPage(route.page)
+      if (route.workshopMode) setWorkshopMode(route.workshopMode)
+      if (route.error) { setToast(route.error); setWorkshopMode('design') }
       setMobileChapters(false)
       if (route.page === 'play' || route.page === 'daily') {
-        setSession(makeSession(route.level, true))
+        setSession(loadSession(route.level))
         if (LEVELS.some(level => level.id === route.level.id)) setProgress(current => ({ ...current, currentLevel: route.level.id }))
       }
     }
@@ -181,10 +188,9 @@ export default function App() {
   }, [progress])
   useEffect(() => {
     if (!isGarden) return
-    let saved = true
-    try { localStorage.setItem(SESSION_KEY, JSON.stringify({ id: session.level.id, rotations: session.tiles.map(tile => tile.rotation), moves: session.moves, hints: session.hints })) } catch { saved = false }
+    const saved = saveSession(session)
     let active = true
-    queueMicrotask(() => { if (active) setSessionStorageOk(saved) })
+    queueMicrotask(() => { if (active) { setSessionStorageOk(saved); setSavedGardens(getSessionSummaries()) } })
     return () => { active = false }
   }, [session, isGarden])
   useEffect(() => {
@@ -200,7 +206,9 @@ export default function App() {
     if (window.location.hash === `#/${path}`) {
       const route = parseRoute(`#/${path}`, progress)
       setPage(route.page)
-      setSession(makeSession(route.level, true))
+      if (route.workshopMode) setWorkshopMode(route.workshopMode)
+      if (route.error) setToast(route.error)
+      setSession(loadSession(route.level))
     } else window.location.hash = `/${path}`
     window.scrollTo({ top: 0, behavior: 'instant' })
   }
@@ -222,7 +230,7 @@ export default function App() {
     if (!tile || tile.fixed || ['source', 'crystal', 'rock'].includes(tile.kind)) return
     const difference = target === undefined ? 1 : Math.min((target - tile.rotation + 4) % 4, (tile.rotation - target + 4) % 4)
     const tiles = current.tiles.map(item => item.id === id ? target === undefined ? rotateTile(item, delta) : { ...item, rotation: target } : item)
-    const next: Session = { ...current, tiles, moves: current.moves + difference, history: [...current.history.slice(-499), { tiles: current.tiles, moves: current.moves }], hintId: null, hintRotation: null, won: simulate(tiles).solved }
+    const next: Session = { ...current, tiles, moves: current.moves + difference, history: [...current.history.slice(-99), { tiles: current.tiles, moves: current.moves }], future: [], hintId: null, hintRotation: null, won: simulate(tiles).solved }
     stateRef.current = next
     setSession(next)
     if (next.won) rememberWin(next)
@@ -233,14 +241,31 @@ export default function App() {
     const current = stateRef.current
     const previous = current.history.at(-1)
     if (!previous) return
-    const next = { ...current, ...previous, history: current.history.slice(0, -1), won: false, hintId: null, hintRotation: null }
+    const next = { ...current, ...previous, history: current.history.slice(0, -1), future: [...current.future.slice(-99), { tiles: current.tiles, moves: current.moves }], won: simulate(previous.tiles).solved, hintId: null, hintRotation: null }
     stateRef.current = next
     setSession(next)
     audio.current?.play('rotate')
   }
 
+  function redo() {
+    const current = stateRef.current
+    const following = current.future.at(-1)
+    if (!following) return
+    const next: Session = { ...current, ...following, history: [...current.history.slice(-99), { tiles: current.tiles, moves: current.moves }], future: current.future.slice(0, -1), won: simulate(following.tiles).solved, hintId: null, hintRotation: null }
+    stateRef.current = next
+    setSession(next)
+    if (next.won) rememberWin(next)
+    else audio.current?.play('rotate')
+  }
+
+  function toggleOverhead() {
+    const next = !overhead
+    setOverhead(next)
+    try { localStorage.setItem('lumen-overhead-view', String(next)) } catch { /* View remains usable without storage. */ }
+  }
+
   function restart() {
-    const next = makeSession(stateRef.current.level)
+    const next = newSession(stateRef.current.level)
     stateRef.current = next
     setSession(next)
     audio.current?.play('reset')
@@ -266,10 +291,12 @@ export default function App() {
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey || modal || !isGarden || (event.target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName))) return
-      if (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'u') { event.preventDefault(); undo() }
+      if (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z')) { event.preventDefault(); redo() }
+      else if (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'u') { event.preventDefault(); undo() }
       if (event.key.toLowerCase() === 'r') { event.preventDefault(); restart() }
       if (event.key.toLowerCase() === 'h') { event.preventDefault(); hint() }
       if (event.key === '?') setModal('guide')
+      if (event.key.toLowerCase() === 'v') toggleOverhead()
       if (event.key === 'Escape') setFocusMode(false)
     }
     window.addEventListener('keydown', handleKey)
@@ -300,7 +327,7 @@ export default function App() {
   }
 
   function nextGarden() {
-    if (!isCampaign) { navigate(page === 'daily' ? 'atlas' : 'workshop'); return }
+    if (!isCampaign) { navigate(page === 'daily' ? 'atlas' : isCustom ? 'workshop/design' : 'workshop'); return }
     const next = LEVELS[session.level.index + 1]
     if (next) navigate(`play/${next.id}`)
     else navigate('journal')
@@ -347,18 +374,19 @@ export default function App() {
 
       <main id="main-content" className="main-content" tabIndex={-1}>
         {isGarden && <>
-          <div className="page-heading"><div><button className="breadcrumb" onClick={() => navigate('atlas')}><span>{page === 'daily' ? 'THE DAILY RITUAL' : !isCampaign ? 'AN UNCHARTED GARDEN' : `CHAPTER ${ROMAN[session.level.chapter]}`}</span><span className="breadcrumb-line" /><span>{page === 'daily' ? session.level.id.slice(6) : chapter.title}</span></button><h1>{session.level.title}<span className="title-flower">✳</span></h1><p>{session.level.subtitle}</p></div><button className="quiet-button guide-link" onClick={() => setModal('guide')}><BookOpen size={16} />Field guide<ArrowRight size={14} /></button></div>
+          <div className="page-heading"><div><button className="breadcrumb" onClick={() => navigate('atlas')}><span>{page === 'daily' ? 'THE DAILY RITUAL' : isCustom ? 'A HANDMADE GARDEN' : !isCampaign ? 'AN UNCHARTED GARDEN' : `CHAPTER ${ROMAN[session.level.chapter]}`}</span><span className="breadcrumb-line" /><span>{page === 'daily' ? session.level.id.slice(6) : chapter.title}</span></button><h1>{session.level.title}<span className="title-flower">✳</span></h1><p>{session.level.subtitle}</p></div><button className="quiet-button guide-link" onClick={() => setModal('guide')}><BookOpen size={16} />Field guide<ArrowRight size={14} /></button></div>
 
           <div className="play-layout">
             <section className={`garden-container ${session.won ? 'garden-complete' : ''}`} aria-label="Puzzle garden" ref={gameArea}>
               <div className="garden-stage" style={{ '--chapter-color': chapter.color } as CSSProperties}>
-                <div className="stage-top"><div className="stage-coordinate"><span className="live-dot" />{page === 'daily' ? 'TODAY’S GARDEN' : isCampaign ? `GARDEN ${String(session.level.index + 1).padStart(2, '0')}` : 'THE WORKSHOP'}<small>{session.level.size} × {session.level.size} · {MECHANICS[session.level.chapter]}</small></div><button className="stage-focus" onClick={() => setFocusMode(!focusMode)} title={focusMode ? 'Leave focus mode' : 'Focus mode'} aria-label={focusMode ? 'Leave focus mode' : 'Focus mode'}>{focusMode ? <X size={17} /> : <Maximize size={17} />}</button></div>
-                <Board level={session.level} tiles={session.tiles} simulation={simulation} onRotate={commitRotation} hintId={session.hintId} disabled={session.won} />
-                <div className="stage-bottom"><span className="light-status"><span className={`status-beacon ${simulation.litCrystals > 0 ? 'lit' : ''}`} /><strong>{simulation.litCrystals}<span> / {simulation.totalCrystals}</span></strong> crystals awake</span><span className="stage-weather"><Wind size={14} /><span>{session.won ? 'The garden remembers.' : 'Follow the light.'}</span></span></div>
+                <div className="stage-top"><div className="stage-coordinate"><span className="live-dot" />{page === 'daily' ? 'TODAY’S GARDEN' : isCustom ? 'THE GARDEN STUDIO' : isCampaign ? `GARDEN ${String(session.level.index + 1).padStart(2, '0')}` : 'THE WORKSHOP'}<small>{session.level.size} × {session.level.size} · {MECHANICS[session.level.chapter]}</small></div><div className="stage-view-tools"><button className={`stage-focus view-toggle ${overhead ? 'selected' : ''}`} onClick={toggleOverhead} title={overhead ? 'Isometric view (V)' : 'Overhead view (V)'} aria-label={overhead ? 'Switch to isometric view' : 'Switch to overhead view'} aria-pressed={overhead}><Grid2X2 size={17} /></button><button className="stage-focus" onClick={() => setFocusMode(!focusMode)} title={focusMode ? 'Leave focus mode' : 'Focus mode'} aria-label={focusMode ? 'Leave focus mode' : 'Focus mode'}>{focusMode ? <X size={17} /> : <Maximize size={17} />}</button></div></div>
+                <Board level={session.level} tiles={session.tiles} simulation={simulation} onRotate={commitRotation} hintId={session.hintId} disabled={session.won} flat={overhead} />
+                <div className="stage-bottom"><span className="light-status" role="status" aria-live="polite"><span className={`status-beacon ${simulation.litCrystals > 0 ? 'lit' : ''}`} /><strong>{simulation.litCrystals}<span> / {simulation.totalCrystals}</span></strong> crystals awake</span><span className="stage-weather"><Wind size={14} /><span>{session.won ? 'The garden remembers.' : 'Follow the light.'}</span></span></div>
                 {session.won && <div className="restored-banner" role="status"><Sparkles size={16} /> A little corner of the world, alight.</div>}
               </div>
-              <div className="garden-toolbar"><div className="tool-group"><button onClick={undo} disabled={!session.history.length} title="Undo (Z)"><Undo2 size={17} /><span>Undo</span><kbd>Z</kbd></button><span className="tool-divider" /><button onClick={restart} title="Restart (R)"><RotateCcw size={16} /><span>Restart</span><kbd>R</kbd></button></div><div className="toolbar-end"><button className="sound-toggle" onClick={() => changeSetting('sound', !progress.sound)} title="Toggle sound" aria-label={progress.sound ? 'Mute sound effects' : 'Enable sound effects'}>{progress.sound ? <Volume2 size={17} /> : <VolumeX size={17} />}</button><button className="hint-button" onClick={hint} disabled={session.won} title="Hint (H)"><Lightbulb size={16} /><span>{session.hintId ? 'Turn this stone' : 'A gentle nudge'}</span><kbd>H</kbd></button></div></div>
-              <p className="interaction-note"><span><span className="mouse-symbol" /> Click a stone to rotate</span><i /><span>Shift + click to turn back</span><i /><span>Take your time.</span></p>
+              <div className="garden-toolbar"><div className="tool-group"><button onClick={undo} disabled={!session.history.length} title="Undo (Z)"><Undo2 size={17} /><span>Undo</span><kbd>Z</kbd></button><button onClick={redo} disabled={!session.future.length} title="Redo (Y)"><Redo2 size={17} /><span>Redo</span><kbd>Y</kbd></button><span className="tool-divider" /><button onClick={restart} title="Restart (R)"><RotateCcw size={16} /><span>Restart</span><kbd>R</kbd></button></div><div className="toolbar-end"><button className="sound-toggle" onClick={() => changeSetting('sound', !progress.sound)} title="Toggle sound" aria-label={progress.sound ? 'Mute sound effects' : 'Enable sound effects'}>{progress.sound ? <Volume2 size={17} /> : <VolumeX size={17} />}</button><button className="hint-button" onClick={hint} disabled={session.won} title="Hint (H)"><Lightbulb size={16} /><span>{session.hintId ? 'Turn this stone' : 'A gentle nudge'}</span><kbd>H</kbd></button></div></div>
+              <div className="mechanic-reminder"><span><Leaf size={13} />{MECHANICS[session.level.chapter]}</span><p>{chapter.mechanic}</p></div>
+              <p className="interaction-note"><span><span className="mouse-symbol" /> Tap or click a stone to rotate</span><i /><span>Shift + click to turn back</span><i /><button className="view-shortcut" onClick={toggleOverhead}>{overhead ? 'Isometric view' : 'Overhead view'}<Grid2X2 size={11} /></button></p>
             </section>
 
             <aside className="garden-notes" aria-label="Garden objective">
@@ -367,7 +395,7 @@ export default function App() {
               <span className="eyebrow">{session.won ? 'LIGHT HAS FOUND ITS WAY' : 'A SMALL ACT OF RESTORATION'}</span>
               <h2>{session.won ? 'A garden, reborn.' : 'Let there be light.'}</h2>
               <p className="objective-copy">{session.won ? completed === 48 ? 'Every garden is awake. You have carried the light all the way home.' : 'Every crystal is awake. Somewhere, an old keeper is smiling.' : 'Turn the stone channels. Guide the light from its source to every sleeping crystal.'}</p>
-              {session.won ? <div className="win-panel"><Blooms count={earnedStars} /><p>{earnedStars === 3 ? 'A beautiful, effortless restoration.' : earnedStars === 2 ? 'You found your own way through.' : 'A little help. A little light.'}</p><button className="primary-button" onClick={nextGarden}>{isCampaign ? session.level.index === 47 ? 'Read the final memory' : 'Next garden' : page === 'daily' ? 'Explore the journey' : 'Create another garden'}<ArrowRight size={17} /></button><button className="text-button" onClick={shareGarden}><Copy size={13} />Share this garden</button></div> : <>
+              {session.won ? <div className="win-panel"><Blooms count={earnedStars} /><p>{earnedStars === 3 ? 'A beautiful, effortless restoration.' : earnedStars === 2 ? 'You found your own way through.' : 'A little help. A little light.'}</p><button className="primary-button" onClick={nextGarden}>{isCampaign ? session.level.index === 47 ? 'Read the final memory' : 'Next garden' : page === 'daily' ? 'Explore the journey' : isCustom ? 'Back to the studio' : 'Create another garden'}<ArrowRight size={17} /></button><button className="text-button" onClick={shareGarden}><Copy size={13} />Share this garden</button></div> : <>
                 <div className="objective-progress"><span>{simulation.litCrystals === simulation.totalCrystals ? 'All crystals restored' : 'Crystals restored'}<strong>{simulation.litCrystals} / {simulation.totalCrystals}</strong></span><div>{Array.from({ length: simulation.totalCrystals }, (_, i) => <span key={i} className={i < simulation.litCrystals ? 'lit' : ''} />)}</div></div>
                 <div className="move-stats"><div><span className="stat-number" data-testid="move-count">{String(session.moves).padStart(2, '0')}</span><small>YOUR TURNS</small></div><span className="stat-separator" /><div><span className="stat-number target">{String(session.level.par).padStart(2, '0')}</span><small>GARDENER’S GUIDE</small></div></div>
                 <div className="reward-guide"><Blooms count={3} /><span>Within {session.level.par} turns, without hints.<br />Every solution is a good solution.</span></div>
@@ -378,23 +406,27 @@ export default function App() {
             </aside>
           </div>
 
-          {isCampaign ? <section className="chapter-trail" aria-label="Gardens in this chapter"><div className="trail-heading"><span className="eyebrow">{chapter.title.toUpperCase()}</span><span>{chapterComplete} of 8 restored</span></div><div className="trail-levels">{chapterLevels.map((level, i) => <button key={level.id} onClick={() => navigate(`play/${level.id}`)} className={`trail-level ${session.level.id === level.id ? 'current' : ''} ${progress.completed[level.id] ? 'completed' : ''}`} aria-label={`Garden ${i + 1}: ${level.title}${progress.completed[level.id] ? ', restored' : ''}`} aria-current={session.level.id === level.id ? 'step' : undefined}><span className="trail-node">{progress.completed[level.id] ? <Sprout size={19} /> : <span>{String(i + 1).padStart(2, '0')}</span>}</span><span className="trail-name">{level.title}</span>{progress.completed[level.id] ? <Blooms count={progress.completed[level.id].stars} /> : <span className="trail-dots">···</span>}</button>)}</div></section> : <section className="special-footer"><div><Sun size={20} /><span>{page === 'daily' ? 'The same sky. The same garden. A new possibility every day.' : 'Every seed is a different place to begin.'}</span></div><button className="quiet-button" onClick={shareGarden}><Copy size={15} />Share garden</button></section>}
+          {isCampaign ? <section className="chapter-trail" aria-label="Gardens in this chapter"><div className="trail-heading"><span className="eyebrow">{chapter.title.toUpperCase()}</span><span>{chapterComplete} of 8 restored</span></div><div className="trail-levels">{chapterLevels.map((level, i) => <button key={level.id} onClick={() => navigate(`play/${level.id}`)} className={`trail-level ${session.level.id === level.id ? 'current' : ''} ${progress.completed[level.id] ? 'completed' : ''}`} aria-label={`Garden ${i + 1}: ${level.title}${progress.completed[level.id] ? ', restored' : ''}`} aria-current={session.level.id === level.id ? 'step' : undefined}><span className="trail-node">{progress.completed[level.id] ? <Sprout size={19} /> : <span>{String(i + 1).padStart(2, '0')}</span>}</span><span className="trail-name">{level.title}</span>{progress.completed[level.id] ? <Blooms count={progress.completed[level.id].stars} /> : <span className={`trail-dots ${savedGardens[level.id]?.moves ? 'in-progress' : ''}`}>{savedGardens[level.id]?.moves ? 'In progress' : '···'}</span>}</button>)}</div></section> : <section className="special-footer"><div><Sun size={20} /><span>{page === 'daily' ? 'The same sky. The same garden. A new possibility every day.' : isCustom ? 'A little light, left here by another keeper.' : 'Every seed is a different place to begin.'}</span></div><button className="quiet-button" onClick={shareGarden}><Copy size={15} />Share garden</button></section>}
         </>}
 
         {page === 'atlas' && <>
           <div className="page-heading"><div><span className="eyebrow">AN EXPEDITION IN SIX CHAPTERS</span><h1>A world waiting for light.</h1><p>Forty-eight quiet places. A thousand ways to begin.</p></div><div className="atlas-total"><strong>{completed}<span>/48</span></strong><small>GARDENS RESTORED</small></div></div>
           <div className="atlas-intro"><Sprout size={20} /><p>Every chapter is open. Follow the journey, or wander wherever your curiosity takes you.</p><span>{totalBlooms} / 144 blooms</span></div>
+          {unfinished.length > 0 && <section className="resume-gardens" aria-label="Unfinished gardens"><div className="resume-heading"><Sprout size={17} /><div><h2>Right where you left the light.</h2><p>Your turns and undo history are waiting in each garden.</p></div></div><div className="resume-list">{unfinished.map(level => <button key={level.id} onClick={() => navigate(`play/${level.id}`)}><Sigil chapter={level.chapter} /><span><strong>{level.title}</strong><small>{savedGardens[level.id].moves} turns · {CHAPTERS[level.chapter].title}</small></span><ArrowRight size={16} /></button>)}</div></section>}
           <div className="atlas-grid">{CHAPTERS.map((item, i) => {
             const levels = LEVELS.filter(level => level.chapter === i)
             const done = levels.filter(level => progress.completed[level.id]).length
-            return <article key={item.id} className={`chapter-card chapter-card-${i}`}><button className="chapter-card-art" onClick={() => { setAtlasChapter(atlasChapter === i ? null : i) }} aria-label={`Explore ${item.title}`} aria-expanded={atlasChapter === i}><span className="card-roman">{ROMAN[i]}</span><div className="card-orbit" /><Sigil chapter={i} /><span className="art-caption">{MECHANICS[i]}</span><span className="art-arrow"><ArrowRight size={20} /></span></button><div className="chapter-card-body"><span className="eyebrow">CHAPTER {ROMAN[i]} · 8 GARDENS</span><h2>{item.title}</h2><p>{item.description}</p><div className="card-progress"><span><span style={{ width: `${done / 8 * 100}%` }} /></span><small>{done} / 8</small></div><button className="text-button" onClick={() => navigate(`play/${(levels.find(level => !progress.completed[level.id]) || levels[0]).id}`)}>{done === 8 ? 'Return to the garden' : done > 0 ? 'Continue exploring' : 'Begin this chapter'}<ArrowRight size={15} /></button></div>{atlasChapter === i && <div className="card-level-list">{levels.map((level, n) => <button key={level.id} onClick={() => navigate(`play/${level.id}`)}><span>{String(n + 1).padStart(2, '0')}</span>{level.title}{progress.completed[level.id] ? <Check size={14} /> : <ChevronRight size={14} />}</button>)}</div>}</article>
+            return <article key={item.id} className={`chapter-card chapter-card-${i}`}><button className="chapter-card-art" onClick={() => { setAtlasChapter(atlasChapter === i ? null : i) }} aria-label={`Explore ${item.title}`} aria-expanded={atlasChapter === i}><span className="card-roman">{ROMAN[i]}</span><div className="card-orbit" /><Sigil chapter={i} /><span className="art-caption">{MECHANICS[i]}</span><span className="art-arrow"><ArrowRight size={20} /></span></button><div className="chapter-card-body"><span className="eyebrow">CHAPTER {ROMAN[i]} · 8 GARDENS</span><h2>{item.title}</h2><p>{item.description}</p><div className="card-progress"><span><span style={{ width: `${done / 8 * 100}%` }} /></span><small>{done} / 8</small></div><button className="text-button" onClick={() => navigate(`play/${(levels.find(level => !progress.completed[level.id]) || levels[0]).id}`)}>{done === 8 ? 'Return to the garden' : done > 0 ? 'Continue exploring' : 'Begin this chapter'}<ArrowRight size={15} /></button></div>{atlasChapter === i && <div className="card-level-list">{levels.map((level, n) => <button key={level.id} onClick={() => navigate(`play/${level.id}`)}><span>{String(n + 1).padStart(2, '0')}</span>{level.title}{savedGardens[level.id]?.moves > 0 && !savedGardens[level.id].won && <small className="resume-tag">Resume</small>}{progress.completed[level.id] ? <Check size={14} /> : <ChevronRight size={14} />}</button>)}</div>}</article>
           })}</div>
         </>}
 
         {page === 'workshop' && <>
           <div className="page-heading"><div><span className="eyebrow">BEYOND THE KNOWN GARDENS</span><h1>Make room for wonder.</h1><p>A seed, a little curiosity, and a garden that has never been yours before.</p></div><WandSparkles className="page-heading-icon" size={34} strokeWidth={1} /></div>
+          <div className="workshop-tabs" role="group" aria-label="Workshop mode"><button className={workshopMode === 'seed' ? 'selected' : ''} aria-pressed={workshopMode === 'seed'} onClick={() => navigate('workshop')}><Sprout size={16} /><span>Grow from a seed</span></button><button className={workshopMode === 'design' ? 'selected' : ''} aria-pressed={workshopMode === 'design'} onClick={() => navigate('workshop/design')}><PencilRuler size={16} /><span>Design a garden</span><span className="new-label">NEW</span></button></div>
+          {workshopMode === 'design' ? <CustomGarden onPlay={code => navigate(`custom/${code}`)} onNotice={setToast} onShare={code => { void copyText(`${window.location.href.split('#')[0]}#/custom/${code}`, 'Puzzle link copied. Your garden is ready for a friend.') }} /> : <>
           <div className="workshop-layout"><div className="workshop-art"><div className="workshop-orbit orbit-one" /><div className="workshop-orbit orbit-two" /><Sigil chapter={workshopChapter} /><span className="eyebrow">POSSIBILITY TAKES ROOT</span><h2>One seed.<br /><i>Endless beginnings.</i></h2><span className="seed-art-number">Nº {seed || '0'}</span></div><div className="workshop-form"><span className="eyebrow">YOUR GARDEN RECIPE</span><h2>Plant a new puzzle.</h2><p>Choose a chapter’s rules and give your garden a seed. The same recipe always grows the same puzzle, ready to share.</p><label htmlFor="chapter-style">Garden style</label><div className="select-wrap"><select id="chapter-style" value={workshopChapter} onChange={event => setWorkshopChapter(Number(event.target.value))}>{CHAPTERS.map((item, i) => <option key={item.id} value={i}>{ROMAN[i]} · {item.title} — {MECHANICS[i]}</option>)}</select><ChevronDown size={16} /></div><label htmlFor="garden-seed">Seed number</label><div className="seed-input"><input id="garden-seed" value={seed} inputMode="numeric" maxLength={10} onChange={event => setSeed(event.target.value.replace(/\D/g, ''))} onKeyDown={event => { if (event.key === 'Enter') launchWorkshop() }} /><button className="icon-button" aria-label="Choose a random seed" title="Surprise me" onClick={() => setSeed(String(crypto.getRandomValues(new Uint32Array(1))[0]))}><Shuffle size={18} /></button></div><p className="input-note">Any whole number from 0 to 4,294,967,295.</p><button className="primary-button" onClick={launchWorkshop}><Sprout size={18} />Grow this garden<ArrowRight size={17} /></button><div className="workshop-promise"><Check size={15} /><span>Every garden has a verified path to the light.</span></div></div></div>
           <section className="workshop-presets"><span className="eyebrow">A FEW SEEDS TO GET YOU STARTED</span><div>{[{ seed: 1729, chapter: 0, title: 'An easy morning', description: 'A small, quiet place to find your rhythm.' }, { seed: 271828, chapter: 3, title: 'The long way home', description: 'One-way paths reward a patient eye.' }, { seed: 1618033, chapter: 5, title: 'Somewhere, elsewhere', description: 'Step through a door in the light.' }].map(item => <button key={item.seed} onClick={() => navigate(`seed/${item.seed}/${item.chapter}`)}><Sigil chapter={item.chapter} /><span><strong>{item.title}</strong><small>{item.description}</small></span><ArrowRight size={17} /></button>)}</div></section>
+          </>}
         </>}
 
         {page === 'journal' && <>
@@ -412,7 +444,7 @@ export default function App() {
     </div>
 
     {modal && <Dialog title={modal === 'guide' ? 'A field guide to light.' : modal === 'settings' ? 'Make yourself at home.' : 'Small things, beautifully done.'} onClose={onCloseModal} wide={modal === 'guide'}>
-      {modal === 'guide' && <div className="guide-content"><p className="dialog-intro">Nothing is lost. Nothing is timed. Turn the channels until the light reaches every crystal.</p><div className="guide-steps"><div><span>01</span><Sun /><h3>Find the source</h3><p>The golden lantern is always alight. Follow its channel into the garden.</p></div><div><span>02</span><RotateCcw /><h3>Turn the stones</h3><p>Click a stone to rotate it clockwise. Its channel must meet the next stone’s channel.</p></div><div><span>03</span><Sparkles /><h3>Wake every crystal</h3><p>Connect all the crystals to the source. Light travels automatically along joined channels.</p></div></div><h3 className="guide-section-title">The shapes of a garden</h3><div className="mechanics-grid">{[{ symbol: '└', name: 'Channels', text: 'Straight stones and corners carry light through their open ends.' }, { symbol: '┬', name: 'Branches', text: 'A branch sends light down every connected arm. Find more than one path.' }, { symbol: '◈', name: 'Rooted stones', text: 'Stones marked with small pins cannot turn. Sources and crystals stay still, too.' }, { symbol: '↑', name: 'One-way gates', text: 'Light can only pass in the arrow’s direction. Turning the gate changes its direction.' }, { symbol: '╪', name: 'Bridges', text: 'Two channels cross but never join. North connects south; east connects west.' }, { symbol: '◎', name: 'Portals', text: 'Matching letters share a doorway. Light entering one leaves through its partner.' }].map(item => <div key={item.name}><span className="mechanic-symbol">{item.symbol}</span><div><h4>{item.name}</h4><p>{item.text}</p></div></div>)}</div><div className="guide-bottom"><div><h3>A little help is always here.</h3><p>Hints first mark a stone, then offer to turn it for you. Earn three blooms within the gardener’s guide without hints; two for any unassisted solution; one with a helping hand. Every garden remains open.</p></div><div className="keyboard-guide"><span><kbd>Tab</kbd> Select stone</span><span><kbd>Enter</kbd> / <kbd>Space</kbd> Turn</span><span><kbd>Shift</kbd> + click / Enter · Reverse</span><span><kbd>Z</kbd> Undo <kbd>R</kbd> Restart <kbd>H</kbd> Hint</span></div></div><button className="primary-button" onClick={onCloseModal}>Let’s find the light<ArrowRight size={17} /></button></div>}
+      {modal === 'guide' && <div className="guide-content"><p className="dialog-intro">Nothing is timed. Turn the channels until the light reaches every crystal. Tiny golden marks show where the light is waiting for a connection. Switch to overhead view for a clearer view of every channel.</p><div className="guide-steps"><div><span>01</span><Sun /><h3>Find the source</h3><p>The golden lantern is always alight. Follow its channel into the garden.</p></div><div><span>02</span><RotateCcw /><h3>Turn the stones</h3><p>Click a stone to rotate it clockwise. Its channel must meet the next stone’s channel.</p></div><div><span>03</span><Sparkles /><h3>Wake every crystal</h3><p>Connect all the crystals to the source. Light travels automatically along joined channels.</p></div></div><h3 className="guide-section-title">The shapes of a garden</h3><div className="mechanics-grid">{[{ symbol: '└', name: 'Channels', text: 'Straight stones and corners carry light through their open ends.' }, { symbol: '┬', name: 'Branches', text: 'A branch sends light down every connected arm. Find more than one path.' }, { symbol: '◈', name: 'Rooted stones', text: 'Stones marked with small pins cannot turn. Sources and crystals stay still, too.' }, { symbol: '↑', name: 'One-way gates', text: 'Light can only pass in the arrow’s direction. Turning the gate changes its direction.' }, { symbol: '╪', name: 'Bridges', text: 'Two channels cross but never join. North connects south; east connects west.' }, { symbol: '◎', name: 'Portals', text: 'Matching letters share a doorway. Light entering one leaves through its partner.' }].map(item => <div key={item.name}><span className="mechanic-symbol">{item.symbol}</span><div><h4>{item.name}</h4><p>{item.text}</p></div></div>)}</div><div className="guide-bottom"><div><h3>A little help is always here.</h3><p>Hints first mark a stone, then offer to turn it for you. Earn three blooms within the gardener’s guide without hints; two for any unassisted solution; one with a helping hand. Every garden remains open.</p></div><div className="keyboard-guide"><span><kbd>Tab</kbd> Select stone</span><span><kbd>Enter</kbd> / <kbd>Space</kbd> Turn</span><span><kbd>Shift</kbd> + click / Enter · Reverse</span><span><kbd>Z</kbd> Undo <kbd>Y</kbd> Redo</span><span><kbd>R</kbd> Restart <kbd>H</kbd> Hint <kbd>V</kbd> View</span></div></div><button className="primary-button" onClick={onCloseModal}>Let’s find the light<ArrowRight size={17} /></button></div>}
       {modal === 'settings' && <div className="settings-content"><p className="dialog-intro">A little space, just the way you like it.</p><SettingRow title="Sound effects" description="Soft notes when the stones turn and crystals wake." enabled={progress.sound} onToggle={() => changeSetting('sound', !progress.sound)} icon={<Volume2 size={19} />} /><SettingRow title="Garden ambience" description="A quiet, drifting soundscape. Starts only when you choose." enabled={ambient} onToggle={toggleAmbience} icon={<Headphones size={19} />} /><SettingRow title="Reduce motion" description="Still the drifting light and decorative animations." enabled={progress.reduceMotion} onToggle={() => changeSetting('reduceMotion', !progress.reduceMotion)} icon={<Wind size={19} />} /><SettingRow title="Stronger contrast" description="Darker text and more distinct garden outlines." enabled={progress.highContrast} onToggle={() => changeSetting('highContrast', !progress.highContrast)} icon={<Sun size={19} />} /><div className="backup-section"><h3>Keep your journey close.</h3><p>Your progress stays in this browser. Copy a backup to take your completed gardens to another device.</p><div className="backup-actions"><button className="secondary-button" onClick={() => { const text = exportProgress(progress); setBackupText(text); void copyText(text, 'Progress backup copied.') }}><ArrowDownToLine size={15} />Export progress</button><label className="secondary-button file-input"><ArrowUpFromLine size={15} />Read backup file<input type="file" accept=".json,.txt,application/json,text/plain" onChange={async event => { const file = event.target.files?.[0]; if (file && file.size < 1000000) setImportText(await file.text()); else if (file) setToast('Please choose a backup smaller than 1 MB.') }} /></label></div>{backupText && <><label htmlFor="backup-output">Copy this backup or garden link</label><textarea id="backup-output" readOnly value={backupText} onFocus={event => event.target.select()} /></>}<label htmlFor="backup-import">Paste a progress backup</label><textarea id="backup-import" value={importText} onChange={event => setImportText(event.target.value)} placeholder="Your Lumen backup goes here…" /><button className="secondary-button" disabled={!importText.trim()} onClick={() => { const imported = importProgress(importText); if (!imported) { setToast('That backup could not be read. Check that you copied the entire Lumen backup.'); return } const merged = { ...progress.completed }; for (const [id, record] of Object.entries(imported.completed)) { const old = merged[id]; merged[id] = old ? { ...record, stars: Math.max(record.stars, old.stars), moves: Math.min(record.moves, old.moves), hints: Math.min(record.hints, old.hints) } : record } const next = { ...progress, completed: merged }; setProgress(next); setProgressStorageOk(saveProgress(next)); setImportText(''); setToast('Your gardens are safely restored. Existing progress was kept.') }}><Check size={15} />Import and keep existing progress</button></div><p className="settings-footnote">Made for unhurried minds. No accounts, no ads, no clocks.</p></div>}
       {modal === 'achievements' && <div className="achievements-content"><p className="dialog-intro">{totalBlooms} of 144 campaign blooms collected. Every little light counts.</p><div className="achievement-grid">{achievements.map(item => <div key={item.title} className={`achievement ${item.achieved ? 'achieved' : ''}`}><span className="achievement-icon"><item.icon size={25} strokeWidth={1.3} /></span><div><h3>{item.title}</h3><p>{item.detail}</p></div>{item.achieved && <Check size={17} />}</div>)}</div><div className="achievement-total"><Flower2 size={22} /><span>{achievements.filter(item => item.achieved).length} of {achievements.length} keepsakes found</span></div></div>}
     </Dialog>}
