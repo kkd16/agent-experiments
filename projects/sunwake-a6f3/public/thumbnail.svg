@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Sunwake — Ride the last light</title>
+  <desc id="desc">A turquoise solar skiff soars over rose and plum dunes beneath a giant apricot sun.</desc>
+  <defs>
+    <linearGradient id="sky" x1="800" y1="0" x2="800" y2="1000" gradientUnits="userSpaceOnUse"><stop stop-color="#f9ead2"/><stop offset=".53" stop-color="#f4bc89"/><stop offset="1" stop-color="#dc8d81"/></linearGradient>
+    <linearGradient id="sun" x1="1150" y1="172" x2="1150" y2="645" gradientUnits="userSpaceOnUse"><stop stop-color="#f08b43"/><stop offset="1" stop-color="#e88b69"/></linearGradient>
+    <linearGradient id="front" x1="800" y1="640" x2="800" y2="1000" gradientUnits="userSpaceOnUse"><stop stop-color="#735064"/><stop offset="1" stop-color="#44374f"/></linearGradient>
+    <linearGradient id="sail" x1="974" y1="509" x2="1080" y2="647" gradientUnits="userSpaceOnUse"><stop stop-color="#b4f3da"/><stop offset="1" stop-color="#67bdbb"/></linearGradient>
+    <linearGradient id="trail" x1="368" y1="712" x2="1060" y2="701" gradientUnits="userSpaceOnUse"><stop stop-color="#ffebbd" stop-opacity="0"/><stop offset="1" stop-color="#fff6cd"/></linearGradient>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v1000H0z"/>
+  <circle cx="1160" cy="385" r="270" stroke="#eeb98c" stroke-opacity=".5" stroke-width="1.5"/>
+  <circle cx="1160" cy="385" r="237" fill="url(#sun)"/>
+  <path d="M0 595C158 627 233 389 429 458c178 63 230 161 442 92s373-15 729 60v390H0Z" fill="#e0aa8c"/>
+  <path d="M0 657c195-81 346-200 535-90s318 143 500 29 390-87 565-21v425H0Z" fill="#d18e81"/>
+  <path d="M1235 541V442c0-55 86-55 86 0v83l-22-5v-77c0-26-42-26-42 0v94Z" fill="#ba807b"/>
+  <path d="M1218 542h120l-11-19h-99Z" fill="#ba807b"/>
+  <path d="M1384 565v-40h19v43m-240-35v-35h14v38" stroke="#ba807b" stroke-width="9"/>
+  <path d="M0 785c165-38 243-211 431-216 160-5 269 226 450 165s341-196 491-163 175 89 228 100v329H0Z" fill="#b57079"/>
+  <path d="M0 779c166-35 241-213 431-210 160 3 269 226 450 165s341-196 491-163" stroke="#efbf9e" stroke-opacity=".48" stroke-width="3"/>
+  <path d="M0 830C137 893 274 738 485 765s254 157 448 57 398-192 667-59v237H0Z" fill="#925e71"/>
+  <path d="M0 912c280-130 330-122 601-2s378-167 567-135 286 110 432 100v125H0Z" fill="url(#front)"/>
+  <path d="M430 722c94-9 122 51 241 59s278-96 365-117" stroke="url(#trail)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M358 749c138 7 180 44 293 43s270-78 362-115" stroke="url(#trail)" stroke-width="1.5" stroke-linecap="round" opacity=".65"/>
+  <g transform="rotate(-17 1051 650)">
+    <path d="m1012 646 108 7c-16 27-95 29-133 7Z" fill="#342c40"/>
+    <path d="m1000 648 117 4c-12 12-75 19-117 9Z" fill="#8ce2cf"/>
+    <path d="m1041 643 6-141 4 141" fill="#3d4e53"/>
+    <path d="m1055 517 58 115-58 1Z" fill="url(#sail)"/>
+    <path d="m1040 532-62 99 62 4Z" fill="#7ed4c5"/>
+    <path d="m1060 532 10 84 27 6Z" fill="#f7efcc" opacity=".5"/>
+    <path d="m1033 642-10-25 5-20 11 18 9 28" fill="#423644"/>
+    <circle cx="1031" cy="590" r="8" fill="#423644"/>
+    <path d="m1025 597-27 3 20-12" fill="#f4d18d"/>
+  </g>
+  <g fill="#fff0be">
+    <path d="m1163 533 6 11-6 11-6-11zm61-31 6 11-6 11-6-11zm63-14 6 11-6 11-6-11z"/>
+    <circle cx="997" cy="687" r="3"/><circle cx="964" cy="703" r="2"/><circle cx="925" cy="719" r="2.7"/><circle cx="879" cy="739" r="1.6"/>
+  </g>
+  <ellipse cx="1390" cy="484" rx="21" ry="38" transform="rotate(13 1390 484)" stroke="#ffedaf" stroke-width="5"/>
+  <ellipse cx="1390" cy="484" rx="28" ry="44" transform="rotate(13 1390 484)" stroke="#ffedaf" stroke-opacity=".3" stroke-width="1"/>
+  <path d="m672 314 11-5 12 5m30-12 8-4 8 4m694-103 9-5 11 5" stroke="#815868" stroke-width="3" stroke-linecap="round"/>
+  <g fill="#352d40" font-family="Arial, Helvetica, sans-serif">
+    <text x="108" y="128" font-size="19" font-weight="700" letter-spacing="6">AN ENDLESS LITTLE ADVENTURE</text>
+    <text x="96" y="308" font-size="173" font-weight="900" letter-spacing="-10">SUNWAKE</text>
+    <text x="108" y="371" font-size="33" letter-spacing=".5">Ride the last light.</text>
+  </g>
+  <g stroke="#faf1d9" stroke-width="1.5" opacity=".7"><circle cx="112" cy="909" r="13"/><path d="M112 890v-5m0 43v5m-19-24h-5m43 0h5m-37-13-4-4m30 30 4 4m-30-4-4 4m30-30 4-4"/></g>
+  <text x="152" y="917" fill="#faf1d9" font-family="Arial, Helvetica, sans-serif" font-size="20" letter-spacing="4">HOLD TO DIVE. RELEASE TO FLY.</text>
+  <path d="M1518 908h-52m37-14 15 14-15 14" stroke="#faf1d9" stroke-width="2"/>
+</svg>
