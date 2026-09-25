@@ -1,4 +1,7 @@
 import { BIOMES } from './types.ts'
+import { expeditionById } from './expeditions.ts'
+import type { Expedition } from './expeditions'
+import { trailById } from './cosmetics.ts'
 import type {
   Entity,
   EventKind,
@@ -92,6 +95,7 @@ export function terrainSlope(x: number, seed: number): number {
 
 export class SunwakeEngine {
   state: GameState
+  private route: Expedition | null = null
   private accumulator = 0
   private nextChunk = 0
   private nextEntity = 0
@@ -111,11 +115,29 @@ export class SunwakeEngine {
   }
 
   private initialState(options: RunOptions): GameState {
+    const route =
+      options.mode === 'expedition'
+        ? expeditionById(options.expeditionId)
+        : null
+    this.route = route
+    const seed = route?.seed ?? options.seed
+    const startX = START_X + (route?.start ?? 0) * 10
+    this.nextChunk = Math.floor(startX / CHUNK)
     return {
       phase: 'ready',
-      mode: options.mode,
+      mode: route
+        ? 'expedition'
+        : options.mode === 'expedition'
+          ? 'voyage'
+          : options.mode,
       ship: options.ship,
-      seed: options.seed,
+      trail: options.trail ?? 'sunlight',
+      seed,
+      expeditionId: route?.id ?? null,
+      startX,
+      worldDistance: route?.start ?? 0,
+      checkpoints: 0,
+      arrived: false,
       time: 0,
       distance: 0,
       score: 0,
@@ -140,17 +162,17 @@ export class SunwakeEngine {
       flightCue: 'dive',
       landing: 'none',
       landingAt: -10,
-      biome: 0,
+      biome: Math.floor((route?.start ?? 0) / 1000) % BIOMES.length,
       reason: '',
       shake: 0,
       player: {
-        x: START_X,
-        y: terrain(START_X, options.seed) - HULL,
+        x: startX,
+        y: terrain(startX, seed) - HULL,
         vx: 360,
         vy: 0,
-        rotation: Math.atan(terrainSlope(START_X, options.seed)),
+        rotation: Math.atan(terrainSlope(startX, seed)),
         grounded: true,
-        energy: 100,
+        energy: route?.energy ?? 100,
         charge: 25,
         invincible: 0,
         boostTime: 0,
@@ -216,6 +238,7 @@ export class SunwakeEngine {
 
   private tick(dt: number, input: GameInput): void {
     const state = this.state
+    const route = this.route
     const player = state.player
     state.time += dt
     state.diving = input.dive
@@ -248,13 +271,15 @@ export class SunwakeEngine {
     } else {
       player.vx += ((input.dive ? 420 : 445) - player.vx) * dt * 0.12
       if (boosting) player.vx += 145 * dt
-      player.vy += (input.dive ? 1550 : boosting ? 245 : 445) * dt
+      player.vy +=
+        (input.dive ? 1550 : boosting ? 245 : 445) * dt * (route?.gravity ?? 1)
       player.vy = Math.min(player.vy, 1100)
       this.airDuration += dt
       state.airtime += dt
       state.maxAirtime = Math.max(state.maxAirtime, this.airDuration)
     }
 
+    player.vx += (route?.wind ?? 0) * dt
     player.vx = clamp(player.vx, 230, boosting ? 940 : 740)
     player.x += player.vx * dt
     const slope = terrainSlope(player.x, state.seed)
@@ -288,8 +313,9 @@ export class SunwakeEngine {
       : clamp(Math.atan2(player.vy, player.vx) * 0.72, -0.72, 0.85)
     player.rotation +=
       (targetRotation - player.rotation) * (1 - Math.exp(-dt * 12))
-    state.distance = Math.max(0, (player.x - START_X) / 10)
-    const biome = Math.floor(state.distance / 1000) % BIOMES.length
+    state.distance = Math.max(0, (player.x - state.startX) / 10)
+    state.worldDistance = Math.max(0, (player.x - START_X) / 10)
+    const biome = Math.floor(state.worldDistance / 1000) % BIOMES.length
     if (biome !== state.biome) {
       state.biome = biome
       this.event('biome', BIOMES[biome].name)
@@ -314,12 +340,34 @@ export class SunwakeEngine {
       .slice(-6)
     state.score = Math.floor(state.distance * 3 + this.scoreBonus)
 
+    if (route) {
+      while (
+        state.checkpoints < 2 &&
+        state.distance >= (route.distance * (state.checkpoints + 1)) / 3
+      ) {
+        state.checkpoints++
+        player.energy = Math.min(100, player.energy + 12)
+        this.charge(8)
+        this.event('checkpoint', `Beacon ${state.checkpoints} · +12 sunlight`)
+        this.spray(player.x, player.y, 28, '#b9f3dc', 200)
+      }
+      if (state.distance >= route.distance) {
+        state.arrived = true
+        state.phase = 'ended'
+        state.reason = `${route.name} complete. The beacon is glowing.`
+        this.event('arrival', 'Beacon reached!')
+        this.spray(player.x, player.y - 35, 60, '#ffe1a4', 330)
+        return
+      }
+    }
+
     if (state.mode !== 'zen') {
       // The opening stretch is deliberately generous while the pilot learns the sail.
       player.energy = Math.max(
         0,
         player.energy -
           dt *
+            (route?.drain ?? 1) *
             (state.time < 8
               ? 0.35
               : 4.5 + clamp((state.distance - 1800) / 4000, 0, 1) * 2),
@@ -484,6 +532,7 @@ export class SunwakeEngine {
       // Obstacles never share a chunk with the first lesson. Every obstacle has an open route.
       if (
         base > 4100 &&
+        (!this.route || base > state.startX + 550) &&
         index % 4 !== 2 &&
         index % 6 !== 3 &&
         index % 7 !== 4 &&
@@ -701,7 +750,11 @@ export class SunwakeEngine {
           player.x - 20,
           player.y + 10,
           1,
-          player.boostTime > 0 ? '#95ebdb' : '#f4d8b2',
+          state.trail === 'sunlight'
+            ? player.boostTime > 0
+              ? '#95ebdb'
+              : '#f4d8b2'
+            : trailById(state.trail).color,
           55,
         )
       }

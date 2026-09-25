@@ -3,6 +3,7 @@ import { formatTime } from './game/progress'
 import { BIOMES } from './game/types'
 import type { GameState } from './game/types'
 import type { GhostRun } from './game/replay'
+import { expeditionById, swiftMet } from './game/expeditions'
 
 export function FlightStatus({
   state,
@@ -13,7 +14,10 @@ export function FlightStatus({
   coach: boolean
   ghostDelta: number | null
 }) {
-  const next = (Math.floor(state.distance / 1000) + 1) * 1000
+  const route = expeditionById(state.expeditionId)
+  const next =
+    route?.distance ?? (Math.floor(state.worldDistance / 1000) + 1) * 1000
+  const remaining = next - (route ? state.distance : state.worldDistance)
   const upcoming = BIOMES[(state.biome + 1) % 4]
   const cue =
     state.flightCue === 'release'
@@ -27,19 +31,33 @@ export function FlightStatus({
     <>
       <div
         className="route-progress"
-        aria-label={`${Math.ceil(next - state.distance)} meters to ${upcoming.short}`}
+        aria-label={`${Math.ceil(remaining)} meters to ${route ? 'the destination' : upcoming.short}`}
       >
         <div>
-          <span>{BIOMES[state.biome].short}</span>
+          <span>{route?.name ?? BIOMES[state.biome].short}</span>
           <span>
-            {upcoming.short} <b>{Math.ceil(next - state.distance)} m</b>
+            {route ? 'Destination' : upcoming.short}{' '}
+            <b>{Math.ceil(remaining)} m</b>
           </span>
         </div>
         <div className="route-track">
-          <i style={{ width: `${(state.distance % 1000) / 10}%` }} />
+          <i
+            style={{
+              width: `${route ? Math.min(100, (state.distance / route.distance) * 100) : (state.worldDistance % 1000) / 10}%`,
+            }}
+          />
         </div>
       </div>
       <div className="flight-benefits">
+        {route && (
+          <span
+            className={`expedition-clock ${!swiftMet(route, state.time) ? 'over-par' : ''}`}
+          >
+            <Icon name="seal" size={15} />
+            <b>{state.time.toFixed(1)}s</b>
+            <span>/ {route.par}s swift seal</span>
+          </span>
+        )}
         {state.player.shield && (
           <span className="benefit-shield">
             <Icon name="shield" size={15} /> Shield ready

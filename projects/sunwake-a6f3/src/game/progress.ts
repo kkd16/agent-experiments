@@ -1,4 +1,14 @@
 import type { GameMode, GameState, ShipId } from './types'
+import {
+  expeditionById,
+  expeditionMedals,
+  medalCount,
+  readExpeditions,
+  sealCount,
+} from './expeditions.ts'
+import type { ExpeditionRecords } from './expeditions'
+import { TRAILS, trailById } from './cosmetics.ts'
+import type { TrailId } from './cosmetics'
 
 export interface FlightLog {
   id: string
@@ -12,6 +22,7 @@ export interface FlightLog {
   rings: number
   perfect: number
   chains: number
+  expeditionId?: string
 }
 
 export interface Progress {
@@ -29,6 +40,8 @@ export interface Progress {
   history: FlightLog[]
   coach: boolean
   ghost: boolean
+  expeditions: ExpeditionRecords
+  trail: TrailId
 }
 
 export interface Mission {
@@ -58,6 +71,7 @@ export const SHIPS: {
   subtitle: string
   price: number
   color: string
+  seals?: number
 }[] = [
   {
     id: 'sol',
@@ -79,6 +93,14 @@ export const SHIPS: {
     subtitle: 'Leave a little stardust.',
     price: 400,
     color: '#ec8a67',
+  },
+  {
+    id: 'kestrel',
+    name: 'Kestrel',
+    subtitle: 'Two wings. Every horizon.',
+    price: 0,
+    color: '#e9bb72',
+    seals: 12,
   },
 ]
 
@@ -236,7 +258,12 @@ function validDate(value: unknown): value is string {
 }
 
 function isShip(value: unknown): value is ShipId {
-  return value === 'sol' || value === 'manta' || value === 'comet'
+  return (
+    value === 'sol' ||
+    value === 'manta' ||
+    value === 'comet' ||
+    value === 'kestrel'
+  )
 }
 
 export function freshProgress(): Progress {
@@ -255,6 +282,8 @@ export function freshProgress(): Progress {
     history: [],
     coach: true,
     ghost: true,
+    expeditions: {},
+    trail: 'sunlight',
   }
 }
 
@@ -268,7 +297,9 @@ function readHistory(raw: unknown): FlightLog[] {
         typeof row.id === 'string' &&
         row.id.length < 80 &&
         validDate(row.date) &&
-        ['voyage', 'daily', 'zen'].includes(row.mode) &&
+        ['voyage', 'daily', 'zen', 'expedition'].includes(row.mode) &&
+        (row.mode !== 'expedition' ||
+          expeditionById(row.expeditionId)?.seed === row.seed) &&
         Number.isInteger(row.seed) &&
         row.seed > 0 &&
         row.seed <= 0xffffffff &&
@@ -311,6 +342,7 @@ function historyEntry(
     rings: count(state.rings),
     perfect: count(state.perfectLandings),
     chains: count(state.skyChains),
+    ...(state.expeditionId ? { expeditionId: state.expeditionId } : {}),
   }
   return [entry, ...progress.history].slice(0, 12)
 }
@@ -326,11 +358,19 @@ export function loadProgress(): Progress {
     )
       return freshProgress()
     const data = raw as Record<string, unknown>
+    const expeditions = readExpeditions(data.expeditions)
+    const seals = sealCount(expeditions)
     const owned: ShipId[] = ['sol']
     if (Array.isArray(data.owned)) {
       for (const id of data.owned)
-        if (isShip(id) && !owned.includes(id)) owned.push(id)
+        if (
+          isShip(id) &&
+          !owned.includes(id) &&
+          (id !== 'kestrel' || seals >= 12)
+        )
+          owned.push(id)
     }
+    if (seals >= 12 && !owned.includes('kestrel')) owned.push('kestrel')
     const knownMissions = new Set(MISSIONS.map((mission) => mission.id))
     const completed = Array.isArray(data.completed)
       ? [
@@ -364,6 +404,11 @@ export function loadProgress(): Progress {
       coach: data.coach !== false,
       ghost: data.ghost !== false,
       history: readHistory(data.history),
+      expeditions,
+      trail:
+        trailById(data.trail).seals <= seals
+          ? trailById(data.trail).id
+          : 'sunlight',
       daily: {
         date,
         best:
@@ -402,9 +447,22 @@ export function settleRun(
   earned: number
   completed: typeof MISSIONS
   newBest: boolean
+  expedition: {
+    routeId: string
+    medals: number
+    newMedals: number
+    totalMedals: number
+    unlocked: string[]
+  } | null
 } {
   if (state.phase !== 'ended')
-    return { progress, earned: 0, completed: [], newBest: false }
+    return {
+      progress,
+      earned: 0,
+      completed: [],
+      newBest: false,
+      expedition: null,
+    }
   const runDate = validDate(date) ? date : today()
   const history = historyEntry(progress, state, runDate)
   if (state.mode === 'zen') {
@@ -418,6 +476,51 @@ export function settleRun(
       earned: 0,
       completed: [],
       newBest: false,
+      expedition: null,
+    }
+  }
+  if (state.mode === 'expedition') {
+    const route = expeditionById(state.expeditionId)
+    const previous = route ? progress.expeditions[route.id] : undefined
+    const medals = route ? expeditionMedals(route, state) : 0
+    const oldMedals = previous?.medals ?? 0
+    const newMedals = medals & ~oldMedals
+    const totalMedals = oldMedals | medals
+    const expeditions = { ...progress.expeditions }
+    if (route)
+      expeditions[route.id] = {
+        medals: totalMedals,
+        bestTime:
+          medals & 1
+            ? Math.min(previous?.bestTime || Infinity, state.time)
+            : (previous?.bestTime ?? 0),
+        attempts: count((previous?.attempts ?? 0) + 1),
+      }
+    const owned = [...progress.owned]
+    const beforeSeals = sealCount(progress.expeditions)
+    const afterSeals = sealCount(expeditions)
+    const unlocked = TRAILS.filter(
+      (trail) => trail.seals > beforeSeals && trail.seals <= afterSeals,
+    ).map((trail) => `${trail.name} wake`)
+    if (beforeSeals < 12 && afterSeals >= 12) unlocked.unshift('Kestrel skiff')
+    if (afterSeals >= 12 && !owned.includes('kestrel')) owned.push('kestrel')
+    const earned = route ? count(state.sparks) + medalCount(newMedals) * 40 : 0
+    return {
+      progress: {
+        ...progress,
+        history,
+        expeditions,
+        owned,
+        bank: count(progress.bank + earned),
+        totalRuns: count(progress.totalRuns + 1),
+        totalDistance: count(progress.totalDistance + count(state.distance)),
+      },
+      earned,
+      completed: [],
+      newBest: false,
+      expedition: route
+        ? { routeId: route.id, medals, newMedals, totalMedals, unlocked }
+        : null,
     }
   }
   // Snapshot eligibility before awarding so a single run never skips ahead in the journal.
@@ -455,6 +558,7 @@ export function settleRun(
     earned,
     completed,
     newBest: distance > progress.best,
+    expedition: null,
   }
 }
 

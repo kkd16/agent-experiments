@@ -25,7 +25,26 @@ import {
   ghostAt,
 } from './game/replay'
 import type { GhostRun } from './game/replay'
+import {
+  AtlasInvitation,
+  SunAtlas,
+  ExpeditionObjectives,
+  ExpeditionResult,
+  WakeSelector,
+} from './Atlas'
+import {
+  EXPEDITIONS,
+  expeditionById,
+  expeditionFromHash,
+  expeditionHash,
+  routeUnlocked,
+  sealCount,
+} from './game/expeditions'
+import { ControllerInput } from './game/controller'
+import { trailById } from './game/cosmetics'
+import type { TrailId } from './game/cosmetics'
 import './App.css'
+import './Atlas.css'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const randomSeed = () => Math.floor(Math.random() * 2147483646) + 1
@@ -59,6 +78,15 @@ export default function App() {
     courseFromHash(window.location.hash),
   )
   const [controls] = useState(() => new FlightInput())
+  const [controller] = useState(() => new ControllerInput())
+  const [controllerConnected, setControllerConnected] = useState(false)
+  const [atlasSelection, setAtlasSelection] = useState(
+    () =>
+      expeditionFromHash(window.location.hash)?.id ??
+      EXPEDITIONS.find((route) => !(progress.expeditions[route.id]?.medals & 1))
+        ?.id ??
+      EXPEDITIONS[0].id,
+  )
   const [ghosts] = useState(() => new GhostLibrary())
   const ghostRef = useRef<GhostRun | null>(null)
   const recorderRef = useRef(new FlightRecorder())
@@ -72,20 +100,23 @@ export default function App() {
         mode: 'voyage',
         ship: progress.selected,
         seed: sharedSeed ?? 92847,
+        trail: progress.trail,
       }),
   )
   const [audio] = useState(() => new SunwakeAudio())
   const [view, setView] = useState(() => snapshot(engine.state))
   const [mode, setMode] = useState<GameMode>('voyage')
   const [modal, setModal] = useState<
-    'help' | 'hangar' | 'log' | 'share' | null
-  >(null)
+    'help' | 'hangar' | 'log' | 'share' | 'atlas' | null
+  >(() => (expeditionFromHash(window.location.hash) ? 'atlas' : null))
   const [result, setResult] = useState<ReturnType<typeof settleRun> | null>(
     null,
   )
   const [notice, setNotice] = useState(() =>
-    window.location.hash.startsWith('#/course/') &&
-    courseFromHash(window.location.hash) === null
+    (window.location.hash.startsWith('#/course/') &&
+      courseFromHash(window.location.hash) === null) ||
+    (window.location.hash.startsWith('#/expedition/') &&
+      !expeditionFromHash(window.location.hash))
       ? 'This course link is unsupported. Choose a new Voyage below.'
       : '',
   )
@@ -116,19 +147,41 @@ export default function App() {
   }, [controls, engine])
 
   const startRun = useCallback(
-    (options?: { seed?: number; mode?: GameMode }) => {
+    (options?: { seed?: number; mode?: GameMode; expeditionId?: string }) => {
       const date = today()
       runDateRef.current = date
-      const runMode = options?.mode ?? mode
-      const seed =
-        runMode === 'daily'
+      const route = expeditionById(
+        options?.expeditionId ??
+          (mode === 'expedition' && !options?.mode
+            ? engine.state.expeditionId
+            : null),
+      )
+      if (route && !routeUnlocked(route.id, progressRef.current.expeditions)) {
+        setAtlasSelection(route.id)
+        setModal('atlas')
+        return
+      }
+      const runMode = route
+        ? 'expedition'
+        : (options?.mode ?? (mode === 'expedition' ? 'voyage' : mode))
+      const seed = route
+        ? route.seed
+        : runMode === 'daily'
           ? dailySeed(date)
           : (options?.seed ?? sharedSeed ?? randomSeed())
       setMode(runMode)
-      engine.reset({ mode: runMode, ship: progressRef.current.selected, seed })
+      engine.reset({
+        mode: runMode,
+        ship: progressRef.current.selected,
+        seed,
+        expeditionId: route?.id,
+        trail: progressRef.current.trail,
+      })
+      if (route) setAtlasSelection(route.id)
       recorderRef.current = new FlightRecorder()
       recorderRef.current.record(engine.state)
-      const ghost = runMode === 'zen' ? null : ghosts.get(seed)
+      const ghost =
+        runMode === 'zen' || runMode === 'expedition' ? null : ghosts.get(seed)
       ghostRef.current = ghost
       setGhostRun(ghost)
       setFlightTrace(null)
@@ -150,6 +203,16 @@ export default function App() {
     [audio, controls, engine, ghosts, mode, sharedSeed],
   )
 
+  const retryRun = useCallback(
+    () =>
+      startRun({
+        seed: engine.state.seed,
+        mode: engine.state.mode,
+        expeditionId: engine.state.expeditionId ?? undefined,
+      }),
+    [engine, startRun],
+  )
+
   const resume = useCallback(() => {
     engine.resume()
     setView(snapshot(engine.state))
@@ -157,10 +220,26 @@ export default function App() {
   }, [engine])
 
   const goHome = () => {
+    const homeMode = mode === 'expedition' ? 'voyage' : mode
+    setMode(homeMode)
+    if (mode === 'expedition') {
+      setSharedSeed(null)
+      window.history.replaceState(
+        null,
+        '',
+        window.location.pathname + window.location.search,
+      )
+    }
     engine.reset({
-      mode,
+      mode: homeMode,
       ship: progressRef.current.selected,
-      seed: mode === 'daily' ? dailySeed(today()) : (sharedSeed ?? 92847),
+      seed:
+        mode === 'daily'
+          ? dailySeed(today())
+          : mode === 'expedition'
+            ? 92847
+            : (sharedSeed ?? 92847),
+      trail: progressRef.current.trail,
     })
     controls.clear()
     setResult(null)
@@ -181,11 +260,12 @@ export default function App() {
       mode: next,
       ship: progress.selected,
       seed: next === 'daily' ? dailySeed(today()) : 92847,
+      trail: progress.trail,
     })
     setView(snapshot(engine.state))
   }
 
-  const openModal = (next: 'help' | 'hangar' | 'log' | 'share') => {
+  const openModal = (next: 'help' | 'hangar' | 'log' | 'share' | 'atlas') => {
     if (engine.state.phase === 'running') pause()
     setModal(next)
   }
@@ -201,6 +281,8 @@ export default function App() {
     const ship = SHIPS.find((item) => item.id === id)!
     const current = progressRef.current
     const owned = current.owned.includes(id)
+    if (!owned && ship.seals && sealCount(current.expeditions) < ship.seals)
+      return
     if (!owned && current.bank < ship.price) return
     const next = {
       ...current,
@@ -210,20 +292,45 @@ export default function App() {
     }
     commitProgress(next)
     if (engine.state.phase === 'ready') {
-      engine.reset({ mode, ship: id, seed: engine.state.seed })
+      engine.reset({
+        mode,
+        ship: id,
+        seed: engine.state.seed,
+        trail: current.trail,
+      })
+      setView(snapshot(engine.state))
+    }
+  }
+
+  const selectTrail = (id: TrailId) => {
+    if (trailById(id).seals > sealCount(progressRef.current.expeditions)) return
+    commitProgress({ ...progressRef.current, trail: id })
+    if (engine.state.phase === 'ready') {
+      engine.reset({
+        mode,
+        ship: progressRef.current.selected,
+        seed: engine.state.seed,
+        trail: id,
+      })
       setView(snapshot(engine.state))
     }
   }
 
   const shareCourse = async () => {
     const url = new URL(window.location.href)
-    url.hash = courseHash(engine.state.seed)
+    url.hash = engine.state.expeditionId
+      ? expeditionHash(engine.state.expeditionId)
+      : courseHash(engine.state.seed)
     setShareUrl(url.href)
     if (engine.state.phase === 'running') pause()
     try {
       if (!navigator.clipboard) throw new Error('Clipboard unavailable')
       await navigator.clipboard.writeText(url.href)
-      setNotice('Course link copied. Anyone can fly the same dunes.')
+      setNotice(
+        engine.state.expeditionId
+          ? 'Expedition link copied. Find it in the Sun Atlas.'
+          : 'Course link copied. Anyone can fly the same dunes.',
+      )
     } catch {
       setModal('share')
     }
@@ -247,8 +354,21 @@ export default function App() {
 
   useEffect(() => {
     const navigate = () => {
+      const route = expeditionFromHash(window.location.hash)
+      if (route) {
+        controls.clear()
+        engine.pause()
+        setAtlasSelection(route.id)
+        setModal('atlas')
+        setView(snapshot(engine.state))
+        return
+      }
       const seed = courseFromHash(window.location.hash)
-      if (seed === null && window.location.hash.startsWith('#/course/')) {
+      if (
+        seed === null &&
+        (window.location.hash.startsWith('#/course/') ||
+          window.location.hash.startsWith('#/expedition/'))
+      ) {
         setNotice('This course link is unsupported. Choose a new Voyage below.')
         return
       }
@@ -259,10 +379,12 @@ export default function App() {
         mode: 'voyage',
         ship: progressRef.current.selected,
         seed: seed ?? 92847,
+        trail: progressRef.current.trail,
       })
       ghostRef.current = null
       setGhostRun(null)
       setResult(null)
+      setModal(null)
       setView(snapshot(engine.state))
     }
     window.addEventListener('hashchange', navigate)
@@ -391,7 +513,11 @@ export default function App() {
         if (engine.state.phase === 'running') pause()
         else if (engine.state.phase === 'paused') resume()
       }
-      if (event.code === 'KeyR' && engine.state.phase === 'ended') startRun()
+      if (
+        event.code === 'KeyR' &&
+        (engine.state.phase === 'ended' || engine.state.phase === 'paused')
+      )
+        retryRun()
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'Space' || event.code === 'ArrowDown')
@@ -420,26 +546,84 @@ export default function App() {
       window.removeEventListener('blur', blur)
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [controls, engine, modal, pause, resume, startRun])
+  }, [controls, engine, modal, pause, resume, startRun, retryRun])
+
+  useEffect(() => {
+    let frame = 0
+    let connected: boolean | null = null
+    const poll = () => {
+      let pads: (Gamepad | null)[] = []
+      try {
+        pads = Array.from(navigator.getGamepads?.() ?? [])
+      } catch {
+        /* Optional browser capability. */
+      }
+      const pad = controller.read(pads)
+      if (connected !== pad.connected) {
+        connected = pad.connected
+        setControllerConnected(connected)
+      }
+      if (pad.disconnected && engine.state.phase === 'running') pause()
+      if (!modal && !document.hidden && document.hasFocus()) {
+        if (pad.pause) {
+          if (engine.state.phase === 'running') pause()
+          else if (engine.state.phase === 'paused') resume()
+        } else if (pad.start && engine.state.phase === 'ready') startRun()
+        else if (pad.start && engine.state.phase === 'ended') retryRun()
+        controls.set(
+          'dive',
+          'gamepad',
+          engine.state.phase === 'running' && pad.dive,
+        )
+        controls.set(
+          'boost',
+          'gamepad',
+          engine.state.phase === 'running' && pad.boost,
+        )
+      } else controls.release('gamepad')
+      frame = requestAnimationFrame(poll)
+    }
+    frame = requestAnimationFrame(poll)
+    return () => {
+      cancelAnimationFrame(frame)
+      controls.release('gamepad')
+    }
+  }, [controller, controls, engine, modal, pause, resume, startRun, retryRun])
 
   useEffect(() => () => audio.dispose(), [audio])
 
   const playing = view.phase === 'running'
   const inRun = playing || view.phase === 'paused'
   const biome = BIOMES[view.biome % BIOMES.length]
+  const activeRoute = expeditionById(view.expeditionId)
+  const seals = sealCount(progress.expeditions)
+  const nextRoute = activeRoute
+    ? EXPEDITIONS[EXPEDITIONS.indexOf(activeRoute) + 1]
+    : null
   const nextMissions =
     view.phase === 'ready' || view.phase === 'ended'
       ? MISSIONS.filter((m) => !progress.completed.includes(m.id)).slice(0, 3)
       : runMissions
   const lastEvent = [...view.events]
-    .reverse()
-    .find((event) => event.kind !== 'spark' && view.time - event.time < 2.2)
+    .filter((event) => event.kind !== 'spark' && view.time - event.time < 2.2)
+    .sort((a, b) => {
+      const priority = (kind: string) =>
+        kind === 'hit'
+          ? 6
+          : ['checkpoint', 'biome', 'chain'].includes(kind)
+            ? 5
+            : ['power', 'perfect'].includes(kind)
+              ? 3
+              : 1
+      return priority(b.kind) - priority(a.kind) || b.time - a.time
+    })[0]
   const boostReady = view.player.charge >= 65 && view.player.boostTime <= 0
   const ghostPosition = progress.ghost ? ghostAt(ghostRun, view.time) : null
   const ghostDelta = ghostPosition
     ? (view.player.x - ghostPosition.x) / 10
     : null
-  const modeDescription = MODES.find((item) => item.id === mode)!.description
+  const modeDescription =
+    MODES.find((item) => item.id === mode)?.description ?? activeRoute?.subtitle
 
   return (
     <div className="app-shell">
@@ -547,6 +731,11 @@ export default function App() {
               <span>{biome.short}</span>
               {mode === 'daily' && <span className="daily-tag">DAILY</span>}
               {mode === 'zen' && <span className="daily-tag">FREE FLIGHT</span>}
+              {activeRoute && (
+                <span className="daily-tag expedition-tag">
+                  {activeRoute.name}
+                </span>
+              )}
             </div>
             <div className="world-tools">
               {inRun && (
@@ -623,6 +812,13 @@ export default function App() {
                   m
                 </p>
               )}
+              <button
+                className="atlas-shortcut"
+                onClick={() => openModal('atlas')}
+              >
+                <Icon name="map" size={16} /> Six expeditions await{' '}
+                <Icon name="arrow" size={14} />
+              </button>
             </div>
           )}
           {view.phase === 'ready' && (
@@ -803,6 +999,13 @@ export default function App() {
                   <Icon name="play" size={17} /> Keep flying
                 </button>
                 <button
+                  className="quiet-button restart-route"
+                  onClick={retryRun}
+                >
+                  <Icon name="restart" size={14} /> Restart this route{' '}
+                  <kbd>R</kbd>
+                </button>
+                <button
                   className="quiet-button"
                   onClick={() => engine.finish()}
                 >
@@ -815,23 +1018,29 @@ export default function App() {
           {view.phase === 'ended' && result && (
             <div className="stage-overlay results-overlay">
               <div
-                className="results-card"
+                className={`results-card ${activeRoute ? 'expedition-results-card' : ''}`}
                 role="region"
                 aria-label="Flight results"
                 aria-live="polite"
               >
                 <div className="result-kicker">
                   <Icon name={result.newBest ? 'flag' : 'sun'} size={18} />
-                  {result.newBest
-                    ? 'A NEW PERSONAL HORIZON'
-                    : mode === 'zen'
-                      ? 'A LITTLE TIME WELL SPENT'
-                      : 'EVERY FLIGHT IS A NEW STORY'}
+                  {activeRoute
+                    ? activeRoute.name.toUpperCase()
+                    : result.newBest
+                      ? 'A NEW PERSONAL HORIZON'
+                      : mode === 'zen'
+                        ? 'A LITTLE TIME WELL SPENT'
+                        : 'EVERY FLIGHT IS A NEW STORY'}
                 </div>
                 <h2>
-                  {result.newBest
-                    ? 'Look how far you flew.'
-                    : 'The sky will miss you.'}
+                  {activeRoute
+                    ? view.arrived
+                      ? 'Beacon reached.'
+                      : 'The route is waiting.'
+                    : result.newBest
+                      ? 'Look how far you flew.'
+                      : 'The sky will miss you.'}
                 </h2>
                 <div className="result-distance">
                   {number(view.distance)}
@@ -872,21 +1081,47 @@ export default function App() {
                     ))}
                   </div>
                 )}
-                <FlightDebrief state={view} trace={flightTrace} />
+                {result.expedition ? (
+                  <ExpeditionResult
+                    state={view}
+                    {...result.expedition}
+                    onHangar={() => openModal('hangar')}
+                  />
+                ) : (
+                  <FlightDebrief state={view} trace={flightTrace} />
+                )}
                 <div className="result-buttons">
-                  <button className="button primary" onClick={() => startRun()}>
-                    One more horizon <Icon name="arrow" size={18} />
+                  <button
+                    className="button primary"
+                    onClick={() =>
+                      activeRoute && view.arrived
+                        ? nextRoute
+                          ? startRun({ expeditionId: nextRoute.id })
+                          : openModal('atlas')
+                        : startRun()
+                    }
+                  >
+                    {activeRoute
+                      ? view.arrived
+                        ? nextRoute
+                          ? 'Next expedition'
+                          : 'Back to the atlas'
+                        : 'Try expedition again'
+                      : 'One more horizon'}{' '}
+                    <Icon name="arrow" size={18} />
                   </button>
                   <button className="button secondary" onClick={goHome}>
                     Back to shore
                   </button>
                 </div>
                 <div className="replay-actions">
-                  <button onClick={() => startRun({ seed: view.seed })}>
-                    <Icon name="ghost" size={15} />
-                    {mode === 'zen'
-                      ? 'Fly this route again'
-                      : 'Race this route'}
+                  <button onClick={retryRun}>
+                    <Icon name={activeRoute ? 'restart' : 'ghost'} size={15} />
+                    {activeRoute
+                      ? 'Retry this expedition'
+                      : mode === 'zen'
+                        ? 'Fly this route again'
+                        : 'Race this route'}
                   </button>
                   <button onClick={() => void shareCourse()}>
                     <Icon name="share" size={14} />
@@ -942,96 +1177,114 @@ export default function App() {
           </button>
         </div>
 
-        <section className="missions-section" aria-label="Flight challenges">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">SMALL WINS. BIG ADVENTURES.</span>
-              <h2>
-                Your next horizons<span>.</span>
-              </h2>
-            </div>
-            <button className="hangar-link" onClick={() => openModal('hangar')}>
-              <span className="hangar-ship">
-                <ShipArt ship={progress.selected} />
-              </span>
-              <span>
-                The hangar <Icon name="arrow" size={18} />
-              </span>
-            </button>
-          </div>
-          <div className="mission-list">
-            {nextMissions.length === 0 ? (
-              <div className="all-complete">
-                <Icon name="flag" size={25} />
-                <div>
-                  <strong>Every horizon, discovered.</strong>
-                  <p>
-                    You’ve completed every challenge. How far can your next
-                    flight go?
-                  </p>
-                </div>
+        {controllerConnected && (
+          <p className="controller-connected">
+            <Icon name="controller" size={18} /> Controller ready{' '}
+            <span>A / RT dive · B / X burst · Menu pause</span>
+          </p>
+        )}
+        <AtlasInvitation
+          records={progress.expeditions}
+          onOpen={() => openModal('atlas')}
+        />
+
+        {activeRoute && view.phase !== 'ready' ? (
+          <ExpeditionObjectives state={view} route={activeRoute} />
+        ) : (
+          <section className="missions-section" aria-label="Flight challenges">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">SMALL WINS. BIG ADVENTURES.</span>
+                <h2>
+                  Your next horizons<span>.</span>
+                </h2>
               </div>
-            ) : (
-              nextMissions.map((mission, index) => {
-                const value =
-                  inRun && mode !== 'zen'
-                    ? Math.min(view[mission.kind] as number, mission.target)
-                    : 0
-                const completed = value >= mission.target
-                return (
-                  <div
-                    className={`mission-card ${completed ? 'mission-achieved' : ''}`}
-                    key={mission.id}
-                  >
-                    <div className={`mission-symbol symbol-${index}`}>
-                      <Icon
-                        name={
-                          completed
-                            ? 'check'
-                            : mission.kind === 'distance'
-                              ? 'flag'
-                              : mission.kind === 'rings'
-                                ? 'ring'
-                                : mission.kind === 'maxAirtime'
-                                  ? 'wind'
-                                  : 'spark'
-                        }
-                        size={23}
-                      />
-                    </div>
-                    <div className="mission-content">
-                      <h3>{mission.title}</h3>
-                      <p>{mission.description}</p>
-                      <div
-                        className="mission-meter"
-                        role="progressbar"
-                        aria-label={mission.title}
-                        aria-valuenow={Math.floor(value)}
-                        aria-valuemin={0}
-                        aria-valuemax={mission.target}
-                      >
-                        <i
-                          style={{
-                            width: `${(value / mission.target) * 100}%`,
-                          }}
+              <button
+                className="hangar-link"
+                onClick={() => openModal('hangar')}
+              >
+                <span className="hangar-ship">
+                  <ShipArt ship={progress.selected} />
+                </span>
+                <span>
+                  The hangar <Icon name="arrow" size={18} />
+                </span>
+              </button>
+            </div>
+            <div className="mission-list">
+              {nextMissions.length === 0 ? (
+                <div className="all-complete">
+                  <Icon name="flag" size={25} />
+                  <div>
+                    <strong>Every horizon, discovered.</strong>
+                    <p>
+                      You’ve completed every challenge. How far can your next
+                      flight go?
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                nextMissions.map((mission, index) => {
+                  const value =
+                    inRun && mode !== 'zen'
+                      ? Math.min(view[mission.kind] as number, mission.target)
+                      : 0
+                  const completed = value >= mission.target
+                  return (
+                    <div
+                      className={`mission-card ${completed ? 'mission-achieved' : ''}`}
+                      key={mission.id}
+                    >
+                      <div className={`mission-symbol symbol-${index}`}>
+                        <Icon
+                          name={
+                            completed
+                              ? 'check'
+                              : mission.kind === 'distance'
+                                ? 'flag'
+                                : mission.kind === 'rings'
+                                  ? 'ring'
+                                  : mission.kind === 'maxAirtime'
+                                    ? 'wind'
+                                    : 'spark'
+                          }
+                          size={23}
                         />
                       </div>
-                      {inRun && mode !== 'zen' && (
-                        <span className="mission-count">
-                          {Math.floor(value)} / {mission.target}
-                        </span>
-                      )}
+                      <div className="mission-content">
+                        <h3>{mission.title}</h3>
+                        <p>{mission.description}</p>
+                        <div
+                          className="mission-meter"
+                          role="progressbar"
+                          aria-label={mission.title}
+                          aria-valuenow={Math.floor(value)}
+                          aria-valuemin={0}
+                          aria-valuemax={mission.target}
+                        >
+                          <i
+                            style={{
+                              width: `${(value / mission.target) * 100}%`,
+                            }}
+                          />
+                        </div>
+                        {inRun && mode !== 'zen' && (
+                          <span className="mission-count">
+                            {Math.floor(value)} / {mission.target}
+                          </span>
+                        )}
+                      </div>
+                      <span className="mission-reward">
+                        +{mission.reward}
+                        <Icon name="spark" size={12} />
+                      </span>
                     </div>
-                    <span className="mission-reward">
-                      +{mission.reward}
-                      <Icon name="spark" size={12} />
-                    </span>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </section>
+                  )
+                })
+              )}
+            </div>
+          </section>
+        )}
 
         <section
           className="journey-section"
@@ -1090,6 +1343,14 @@ export default function App() {
         </span>
       </footer>
 
+      {modal === 'atlas' && (
+        <SunAtlas
+          records={progress.expeditions}
+          initialId={atlasSelection}
+          onClose={() => setModal(null)}
+          onEmbark={(id) => startRun({ expeditionId: id })}
+        />
+      )}
       {modal === 'help' && (
         <Modal title="How to fly" onClose={() => setModal(null)}>
           <span className="eyebrow">A FIELD GUIDE TO THE SKY</span>
@@ -1210,6 +1471,25 @@ export default function App() {
               <i className={progress.ghost ? 'on' : ''} />
             </button>
           </div>
+          <div className="controller-guide">
+            <Icon name="controller" size={26} />
+            <div>
+              <h3>Bring a controller.</h3>
+              <p>
+                On a standard Xbox or PlayStation controller: hold the bottom
+                face button or right trigger to dive; the right or left face
+                button bursts. Menu pauses and resumes. Press the bottom button
+                on the welcome screen to launch, or on the results screen to
+                retry the same route.
+              </p>
+              <small>
+                {controllerConnected
+                  ? 'Controller connected and ready.'
+                  : 'Connect a controller, then press a button to wake it.'}{' '}
+                Disconnecting pauses your flight.
+              </small>
+            </div>
+          </div>
           <div className="help-note">
             <Icon name="wind" size={20} />
             <p>
@@ -1286,9 +1566,11 @@ export default function App() {
                     <p>
                       {run.mode === 'daily'
                         ? 'Daily flight'
-                        : run.mode === 'zen'
-                          ? 'Free flight'
-                          : 'Voyage'}{' '}
+                        : run.mode === 'expedition'
+                          ? expeditionById(run.expeditionId)?.name
+                          : run.mode === 'zen'
+                            ? 'Free flight'
+                            : 'Voyage'}{' '}
                       · {run.date} · {formatTime(run.duration)}
                     </p>
                   </div>
@@ -1303,7 +1585,13 @@ export default function App() {
                     onClick={() =>
                       startRun({
                         seed: run.seed,
-                        mode: run.mode === 'zen' ? 'zen' : 'voyage',
+                        mode:
+                          run.mode === 'zen'
+                            ? 'zen'
+                            : run.mode === 'expedition'
+                              ? 'expedition'
+                              : 'voyage',
+                        expeditionId: run.expeditionId,
                       })
                     }
                   >
@@ -1385,7 +1673,10 @@ export default function App() {
                   <button
                     className={`button ${selected ? 'selected-ship' : 'secondary'}`}
                     disabled={
-                      selected || (!owned && progress.bank < ship.price)
+                      selected ||
+                      (!owned &&
+                        (progress.bank < ship.price ||
+                          Boolean(ship.seals && seals < ship.seals)))
                     }
                     onClick={() => selectShip(ship.id)}
                   >
@@ -1396,6 +1687,10 @@ export default function App() {
                       </>
                     ) : owned ? (
                       'Select skiff'
+                    ) : ship.seals ? (
+                      <>
+                        <Icon name="seal" size={15} /> {ship.seals} atlas seals
+                      </>
                     ) : (
                       <>
                         <Icon
@@ -1410,6 +1705,11 @@ export default function App() {
               )
             })}
           </div>
+          <WakeSelector
+            seals={seals}
+            selected={progress.trail}
+            onSelect={selectTrail}
+          />
           <p className="hangar-note">
             All skiffs fly alike. Style is the only advantage.{' '}
             {inRun && 'Your selection takes flight next run.'}
