@@ -1,0 +1,108 @@
+.garden-scene {
+  width: 100%;
+  position: relative;
+  isolation: isolate;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.garden-board {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.orbit-line {
+  fill: none;
+  stroke: #90a788;
+  stroke-opacity: .14;
+  stroke-width: .7px;
+  stroke-dasharray: 2 9;
+}
+
+.orbit-line--inner {
+  stroke-opacity: .065;
+  stroke-dasharray: none;
+}
+
+.garden-tile .tile-lift {
+  transition: transform 160ms ease, filter 220ms ease;
+  pointer-events: none;
+}
+
+.garden-tile--rotatable:has(.tile-hit:hover) .tile-lift,
+.garden-tile--rotatable:has(.tile-hit:focus-visible) .tile-lift {
+  transform: translateY(-4px);
+  filter: brightness(1.055);
+}
+
+.garden-tile--rotatable .tile-hit { cursor: pointer; }
+.garden-tile .tile-hit[aria-disabled='true'] { cursor: default; }
+.garden-tile .tile-hit { outline: none; }
+.garden-tile .tile-hit:focus { outline: none; }
+
+.tile-hit .tile-interaction-outline {
+  transition: stroke 150ms ease, fill 150ms ease;
+}
+
+.tile-hit:focus-visible .tile-interaction-outline {
+  stroke: #ffecb4;
+  stroke-width: 2.5px;
+  fill: #fff0b41a;
+}
+
+.garden-tile--hint .tile-interaction-outline {
+  stroke: #ffe7a0;
+  stroke-width: 2px;
+  stroke-dasharray: 5 3;
+  fill: #fff0b412;
+  animation: hint-outline 2s ease-in-out infinite;
+}
+
+.tile-hint-mark { animation: hint-nod 1.7s ease-in-out infinite; }
+.channel-bloom { opacity: .8; }
+.channel-light { animation: light-arrive 550ms ease both; }
+.sun-halo { opacity: .85; }
+.garden-mote { animation: drift-mote 8s ease-in-out infinite; pointer-events: none; }
+.garden-crystal--lit .crystal-float { animation: crystal-float 4s ease-in-out infinite; }
+.garden-scene--awakened .garden-mote { fill: #f2d893; }
+.garden-scene--awakened .scene-atmosphere { filter: brightness(1.15); }
+
+@keyframes drift-mote {
+  0%, 100% { opacity: .1; transform: translate(0, 4px); }
+  50% { opacity: .75; transform: translate(5px, -6px); }
+}
+
+@keyframes light-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes crystal-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes hint-nod {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes hint-outline {
+  0%, 100% { stroke-opacity: .7; }
+  50% { stroke-opacity: 1; }
+}
+
+@media (hover: none) {
+  .garden-tile--rotatable:has(.tile-hit:hover) .tile-lift { transform: none; filter: none; }
+  .garden-tile--rotatable:has(.tile-hit:active) .tile-lift { transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .garden-board *, .garden-board *::before, .garden-board *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
