@@ -26,24 +26,68 @@ function noise(seed: number, coordinate: number): number {
   return ((value ^ (value >>> 16)) >>> 0) / 4294967296
 }
 
-/** Smooth, analytically continuous dunes shared by simulation and renderer. */
-export function terrain(x: number, seed: number): number {
-  const phase = noise(seed, 1) * TAU
+/** Continuous region profiles: long swells, steep dunes, close ripples, and broad bowls. */
+const PROFILES = [
+  [132, 66],
+  [154, 87],
+  [113, 58],
+  [174, 77],
+] as const
+let cachedSeed = NaN
+let cachedPhase = 0
+function phaseFor(seed: number): number {
+  if (seed !== cachedSeed) {
+    cachedSeed = seed
+    cachedPhase = noise(seed, 1) * TAU
+  }
+  return cachedPhase
+}
+function profile(
+  x: number,
+  phase: number,
+  region: number,
+  slope: boolean,
+): number {
+  const [length, height] = PROFILES[region]
+  const swell = x / 2700 + phase
+  const wave = x / length + phase + Math.sin(swell) * 0.65
+  if (slope)
+    return (
+      Math.cos(wave) * (1 / length + (Math.cos(swell) * 0.65) / 2700) * height +
+      (Math.cos(x / 311 + phase * 0.7) * 25) / 311 +
+      (Math.cos(x / 67 + phase * 1.3) * 8) / 67
+    )
   return (
     523 +
-    Math.sin(x / 132 + phase) * 66 +
+    Math.sin(wave) * height +
     Math.sin(x / 311 + phase * 0.7) * 25 +
     Math.sin(x / 67 + phase * 1.3) * 8
   )
 }
-
-export function terrainSlope(x: number, seed: number): number {
-  const phase = noise(seed, 1) * TAU
+function dune(x: number, seed: number, slope: boolean): number {
+  const phase = phaseFor(seed)
+  const progress = Math.max(0, (x - START_X) / 10000)
+  const region = Math.floor(progress) % 4
+  const t = clamp(((progress % 1) - 0.8) / 0.2, 0, 1)
+  const current = profile(x, phase, region, slope)
+  if (t === 0) return current
+  const next = profile(x, phase, (region + 1) % 4, slope)
+  const blend = t * t * t * (t * (t * 6 - 15) + 10)
+  const result = current + (next - current) * blend
+  if (!slope) return result
+  const derivative = (30 * t * t * (t - 1) * (t - 1)) / 2000
   return (
-    Math.cos(x / 132 + phase) * (66 / 132) +
-    Math.cos(x / 311 + phase * 0.7) * (25 / 311) +
-    Math.cos(x / 67 + phase * 1.3) * (8 / 67)
+    result +
+    (profile(x, phase, (region + 1) % 4, false) -
+      profile(x, phase, region, false)) *
+      derivative
   )
+}
+export function terrain(x: number, seed: number): number {
+  return dune(x, seed, false)
+}
+export function terrainSlope(x: number, seed: number): number {
+  return dune(x, seed, true)
 }
 
 export class SunwakeEngine {
@@ -84,6 +128,18 @@ export class SunwakeEngine {
       maxAirtime: 0,
       nearMisses: 0,
       boosts: 0,
+      hits: 0,
+      perfectLandings: 0,
+      skyChains: 0,
+      ringChain: 0,
+      chainDeadline: 0,
+      magneticSparks: 0,
+      thermalsRidden: 0,
+      maxSpeed: 360,
+      diving: false,
+      flightCue: 'dive',
+      landing: 'none',
+      landingAt: -10,
       biome: 0,
       reason: '',
       shake: 0,
@@ -98,6 +154,8 @@ export class SunwakeEngine {
         charge: 25,
         invincible: 0,
         boostTime: 0,
+        shield: false,
+        magnetTime: 0,
         trail: [],
       },
       entities: [],
@@ -160,12 +218,21 @@ export class SunwakeEngine {
     const state = this.state
     const player = state.player
     state.time += dt
+    state.diving = input.dive
+    player.magnetTime = Math.max(0, player.magnetTime - dt)
+    if (state.time > state.chainDeadline) state.ringChain = 0
     state.shake = Math.max(0, state.shake - dt * 3.5)
     player.invincible = Math.max(0, player.invincible - dt)
     player.boostTime = Math.max(0, player.boostTime - dt)
     this.launchCooldown = Math.max(0, this.launchCooldown - dt)
 
-    if (input.boost && !this.lastBoost && player.charge >= 65) this.boost()
+    if (
+      input.boost &&
+      !this.lastBoost &&
+      player.charge >= 65 &&
+      player.boostTime <= 0
+    )
+      this.boost()
     const boosting = player.boostTime > 0
     const oldSlope = terrainSlope(player.x, state.seed)
     const released = this.lastDive && !input.dive
@@ -230,8 +297,14 @@ export class SunwakeEngine {
       this.spray(player.x, player.y, 35, '#fae2ad', 240)
     }
 
+    state.maxSpeed = Math.max(state.maxSpeed, player.vx)
+    state.flightCue = player.grounded
+      ? slope > -0.07
+        ? 'dive'
+        : 'release'
+      : 'glide'
     this.populate()
-    this.collide()
+    this.collide(dt)
     this.effects(dt, input.dive)
     state.entities = state.entities.filter(
       (entity) => entity.x > player.x - 260,
@@ -245,7 +318,11 @@ export class SunwakeEngine {
       // The opening stretch is deliberately generous while the pilot learns the sail.
       player.energy = Math.max(
         0,
-        player.energy - dt * (state.time < 8 ? 0.35 : 1.65),
+        player.energy -
+          dt *
+            (state.time < 8
+              ? 0.35
+              : 4.5 + clamp((state.distance - 1800) / 4000, 0, 1) * 2),
       )
       if (player.energy <= 0) {
         state.phase = 'ended'
@@ -276,20 +353,39 @@ export class SunwakeEngine {
     const flew = this.airDuration > 0.42
     const clean =
       flew && ((slope > 0.09 && impact < 590) || Math.abs(impact) < 200)
+    const perfect =
+      clean && slope > 0.12 && Math.abs(impact) < 430 && this.airDuration > 0.65
+    state.landing = perfect
+      ? 'perfect'
+      : clean
+        ? 'clean'
+        : flew
+          ? 'rough'
+          : 'none'
+    if (flew) state.landingAt = state.time
     player.y = ground
     player.grounded = true
     player.vy = slope * player.vx
     this.launchCooldown = Math.max(this.launchCooldown, 0.18)
     if (clean) {
       state.cleanLandings++
+      if (perfect) {
+        state.perfectLandings++
+        this.charge(8)
+        this.scoreBonus += 120 * Math.max(1, state.combo)
+      }
       this.addCombo()
-      player.charge = Math.min(100, player.charge + 14)
+      this.charge(14)
       player.energy = Math.min(100, player.energy + 1.5)
       player.vx = Math.min(760, player.vx + 32 + Math.max(0, slope) * 45)
       this.scoreBonus += 80 * Math.max(1, state.combo)
       this.event(
-        'landing',
-        state.combo > 1 ? `Silky landing · ×${state.combo}` : 'Silky landing',
+        perfect ? 'perfect' : 'landing',
+        perfect
+          ? `Perfect landing · ×${state.combo}`
+          : state.combo > 1
+            ? `Silky landing · ×${state.combo}`
+            : 'Silky landing',
       )
       this.spray(player.x, player.y + 12, 20, '#a2efe0', 160)
     } else if (flew) {
@@ -298,6 +394,14 @@ export class SunwakeEngine {
       this.spray(player.x, player.y + 12, 10, '#f2cda2', 100)
     }
     this.airDuration = 0
+  }
+
+  private charge(amount: number): void {
+    const player = this.state.player
+    player.charge = Math.min(
+      100,
+      player.charge + amount * (player.boostTime > 0 ? 0.3 : 1),
+    )
   }
 
   private boost(): void {
@@ -341,20 +445,51 @@ export class SunwakeEngine {
           r(3 + i) * TAU,
         )
       }
-      const ringX = base + 640
-      this.entity(
-        'ring',
-        ringX,
-        terrain(ringX, state.seed) - (105 + r(10) * 105),
-        30,
-        r(11) * TAU,
-      )
+      if (index % 6 === 3) {
+        // Three aligned gates invite a deliberate arcing flight across a safe chunk.
+        const xs = [base + 270, base + 440, base + 610]
+        const ceiling = Math.min(...xs.map((x) => terrain(x, state.seed))) - 65
+        xs.forEach((x, i) =>
+          this.entity('ring', x, ceiling - (i === 1 ? 28 : 0), 35, r(11) * TAU),
+        )
+      } else {
+        const ringX = base + 640
+        this.entity(
+          'ring',
+          ringX,
+          terrain(ringX, state.seed) - (85 + r(10) * 100),
+          32,
+          r(11) * TAU,
+        )
+      }
+      const powerChunk = index > 1 && (index % 8 === 3 || index % 8 === 5)
+      if (powerChunk) {
+        const x = base + 110
+        this.entity(
+          index % 8 === 3 ? 'shield' : 'magnet',
+          x,
+          terrain(x, state.seed) - 45,
+          24,
+          r(21) * TAU,
+        )
+      }
+      if (index > 1 && index % 7 === 4) {
+        const x = base + 180
+        this.entity('thermal', x, terrain(x, state.seed) - 115, 55, r(22) * TAU)
+      }
       if (index > 0 && index % 4 === 2) {
         const x = base + 130
         this.entity('sunwell', x, terrain(x, state.seed) - 38, 23, r(12) * TAU)
       }
       // Obstacles never share a chunk with the first lesson. Every obstacle has an open route.
-      if (base > 4100 && index % 4 !== 2 && r(14) > 0.2) {
+      if (
+        base > 4100 &&
+        index % 4 !== 2 &&
+        index % 6 !== 3 &&
+        index % 7 !== 4 &&
+        !powerChunk &&
+        r(14) > 0.12
+      ) {
         const x = base + 160
         if (r(15) < 0.56) {
           this.entity(
@@ -395,14 +530,52 @@ export class SunwakeEngine {
     })
   }
 
-  private collide(): void {
+  private collide(dt: number): void {
     const state = this.state
     const player = state.player
     for (const entity of state.entities) {
-      if (entity.collected || Math.abs(entity.x - player.x) > 110) continue
-      const dx = entity.x - player.x
-      const dy = entity.y - player.y
-      const distance = Math.hypot(dx, dy)
+      if (entity.collected) continue
+      if (
+        entity.kind === 'ring' &&
+        !entity.missed &&
+        entity.x < player.x - 80
+      ) {
+        entity.missed = true
+        state.ringChain = 0
+      }
+      if (Math.abs(entity.x - player.x) > 210) continue
+      if (entity.kind === 'thermal') {
+        if (
+          !state.diving &&
+          Math.abs(entity.x - player.x) < 65 &&
+          player.y > entity.y - 145 &&
+          player.y < entity.y + 135
+        ) {
+          entity.collected = true
+          player.grounded = false
+          player.vy = Math.min(player.vy, -390)
+          player.y -= 2
+          this.launchCooldown = 0.3
+          state.thermalsRidden++
+          this.charge(10)
+          this.scoreBonus += 150
+          this.event('thermal', 'Rising wind · ride the thermal')
+          this.spray(player.x, player.y, 20, '#baf3e1', 180)
+        }
+        continue
+      }
+      let dx = entity.x - player.x
+      let dy = entity.y - player.y
+      let distance = Math.hypot(dx, dy)
+      if (entity.kind === 'spark' && player.magnetTime > 0 && distance < 195) {
+        // Pull faster than the skiff can fly, including during a solar burst.
+        const attraction = Math.min(1, (1750 * dt) / Math.max(1, distance))
+        entity.x -= dx * attraction
+        entity.y -= dy * attraction
+        dx = entity.x - player.x
+        dy = entity.y - player.y
+        distance = Math.hypot(dx, dy)
+      }
       const hazard = entity.kind === 'rock' || entity.kind === 'storm'
       const reach =
         entity.radius + (hazard ? 10 : entity.kind === 'spark' ? 23 : 20)
@@ -412,8 +585,20 @@ export class SunwakeEngine {
             entity.collected = true
             this.scoreBonus += 100
             this.spray(entity.x, entity.y, 20, '#fce2bd', 220)
+          } else if (
+            player.invincible <= 0 &&
+            state.time > 8 &&
+            player.shield
+          ) {
+            entity.collected = true
+            player.shield = false
+            player.invincible = 1.5
+            this.event('power', 'Sun shield saved your flow')
+            this.spray(player.x, player.y, 32, '#aef5dc', 220)
           } else if (player.invincible <= 0 && state.time > 8) {
             entity.collected = true
+            state.hits++
+            state.ringChain = 0
             player.invincible = 1.8
             player.energy = Math.max(
               state.mode === 'zen' ? 100 : 0,
@@ -425,9 +610,11 @@ export class SunwakeEngine {
             state.shake = 0.72
             this.event(
               'hit',
-              entity.kind === 'rock'
-                ? 'Rough sand · −25 sunlight'
-                : 'Storm brushed · −25 sunlight',
+              state.mode === 'zen'
+                ? 'A bump in the breeze · keep flying'
+                : entity.kind === 'rock'
+                  ? 'Rough sand · −25 sunlight'
+                  : 'Storm brushed · −25 sunlight',
             )
             this.spray(player.x, player.y, 24, '#ee927e', 210)
           }
@@ -436,21 +623,42 @@ export class SunwakeEngine {
           const multiplier = Math.max(1, state.combo)
           if (entity.kind === 'spark') {
             state.sparks++
-            player.energy = Math.min(100, player.energy + 0.55)
-            player.charge = Math.min(100, player.charge + 2)
+            if (player.magnetTime > 0) state.magneticSparks++
+            player.energy = Math.min(100, player.energy + 0.38)
+            this.charge(2)
             this.scoreBonus += 15 * multiplier
             this.spray(entity.x, entity.y, 5, '#ffecaf', 85)
           } else if (entity.kind === 'ring') {
             state.rings++
             this.addCombo()
             player.energy = Math.min(100, player.energy + 5)
-            player.charge = Math.min(100, player.charge + 15)
+            this.charge(15)
             this.scoreBonus += 120 * Math.max(1, state.combo)
             this.event('ring', `Sun ring · ×${Math.max(1, state.combo)}`)
             this.spray(entity.x, entity.y, 22, '#ffdea0', 180)
+            state.ringChain++
+            state.chainDeadline = state.time + 9
+            if (state.ringChain >= 3) {
+              state.ringChain = 0
+              state.skyChains++
+              player.magnetTime = Math.max(player.magnetTime, 8)
+              player.energy = Math.min(100, player.energy + 12)
+              this.charge(25)
+              this.scoreBonus += 600 * Math.max(1, state.combo)
+              this.event('chain', 'Sky chain! · light magnet + bonus')
+              this.spray(player.x, player.y, 40, '#cdefff', 260)
+            }
+          } else if (entity.kind === 'shield') {
+            player.shield = true
+            this.event('power', 'Sun shield · one free hit')
+            this.spray(entity.x, entity.y, 24, '#b1f2d2', 160)
+          } else if (entity.kind === 'magnet') {
+            player.magnetTime = 10
+            this.event('power', 'Light magnet · 10 seconds')
+            this.spray(entity.x, entity.y, 24, '#c9c2ff', 160)
           } else {
             player.energy = Math.min(100, player.energy + 20)
-            player.charge = Math.min(100, player.charge + 12)
+            this.charge(12)
             this.scoreBonus += 100
             this.event('spark', 'Sunwell · +20 sunlight')
             this.spray(entity.x, entity.y, 26, '#a4eee0', 180)
@@ -464,7 +672,7 @@ export class SunwakeEngine {
       ) {
         entity.nearMissed = true
         state.nearMisses++
-        player.charge = Math.min(100, player.charge + 7)
+        this.charge(7)
         this.scoreBonus += 60 * Math.max(1, state.combo)
         this.event('near', 'Close call · +7 charge')
       }

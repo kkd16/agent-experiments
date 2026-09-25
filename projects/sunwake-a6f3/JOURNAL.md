@@ -17,7 +17,8 @@ Palette: ink plum #342c40, chalk #faf7f2, sand #f3ba7b, apricot #ef986f, rose #b
 - [x] Browser playtest on desktop and mobile; exact repository CI gate.
 - [x] Original static 16:10 catalog thumbnail.
 - [x] Prepare and verify a single-project release for the automatic PR publishing workflow.
-- [ ] Future: optional shareable ghost replays and more skiff silhouettes.
+- [x] Shareable courses and local best-run ghost replays.
+- [ ] Future: more skiff silhouettes.
 
 ## Session log
 
@@ -42,3 +43,25 @@ Palette: ink plum #342c40, chalk #faf7f2, sand #f3ba7b, apricot #ef986f, rose #b
 - Visually reviewed desktop/mobile welcome, flight, results, and region palettes; loaded the built game at a nested static-server subpath without failed asset requests. Browser screenshots stay ignored in `qa/artifacts/`.
 
 - 2026-09-24 (codex / gpt-6): Built and balanced the complete Sunwake game, refined mobile lookahead and dark-region contrast, verified persistence and reward isolation, and passed the exact publication gate. Release is ready for the automatic pull-request workflow.
+
+## Second journey — improvement plan
+
+- [x] Varied continuous terrain profiles, thermals, shields, magnets, ring chains, and perfect landings.
+- [x] Best-run ghosts, same-course retries, and shareable versioned course links.
+- [x] Flight log, richer debriefs, expanded challenges, and old-save migration.
+- [x] Contextual flight coaching, readable power-up timers, larger touch controls, and input fixes.
+- [x] Region-specific sky scenery and performance improvements.
+- [x] Verify determinism, balance, persistence, browser behavior, and the exact gate; prepare the update for automatic PR publishing.
+
+## Version 0.2 decisions
+
+- Four dune profiles now vary the rhythm of each region. Quintic blending preserves terrain height and slope through every transition. Coordinate-based placement keeps shared courses independent of player input.
+- Shields absorb one obstacle hit. Magnets gather sparks for ten seconds and pull fast enough to catch a bursting skiff. Rising thermals reward an open sail. Three consecutive rings within nine seconds of one another grant a sky-chain bonus and eight seconds of magnet; missing a ring breaks the chain. Gentle downhill landings earn perfect-landing rewards.
+- Active bursts cannot be renewed, and recharge runs at 30% while bursting. In 16-seed simulations capped at 180 seconds, idle/held play averaged about 3.2/3.8 km, rhythmic bursts 9.9 km, and slope-timed bursts 12.0 km. Skilled averages are capped observations, not expected maximum distances. The new pickups extend well-flown journeys without making ordinary holds competitive.
+- Course URLs use `#/course/2/<seed>`; unsupported versions are rejected. Links share a landscape, not another person's replay. Ghosts come from this device's best competitive flight on the same course, with at most four stored courses. Recordings start at five samples per second and progressively compact to at most 960 points while preserving both endpoints, including a finish exactly at the compaction boundary.
+- Flight history retains twelve journeys, with old daily routes replayable as Voyage. The debrief shows a height trace, perfect landings, sky chains, longest glide, top speed, and a situational tip. Four new challenges extend the journal to sixteen. Existing records, skiffs, light, and completed challenges migrate without resetting progress.
+- Coaching and ghost visibility are saved preferences. Input sources release independently. Portrait event messages occupy the coaching slot below the course, keeping approaching obstacles visible; touch targets and debrief labels are larger. Reduced motion freezes ambient flourishes and removes rapid invincibility blinking.
+- Violet Reach gains suspended islands and Blue Hour gains aurora ribbons. Terrain phase caching and fewer contour samples reduce render work; ready and paused screens no longer schedule repeated React HUD snapshots.
+- Verification: 22 progress/replay/input checks and expanded engine checks pass, including deterministic frame rates, four-minute free flight, shields, chains, thermals, magnet pursuit at burst speed, and smooth terrain. Twelve production browser scenarios pass with clean consoles, covering old flows plus shared-route ghosts, log replay, independent inputs, preferences, blocked clipboard/storage, and landscape fullscreen. The exact publication gate passes. Final visual review covered desktop, 320/390 px portrait, 844 px landscape, violet islands, and blue aurora. Landscape touch controls retain their styling, and the results fit without scrolling.
+
+- 2026-09-24 (codex / gpt-6): Thoroughly expanded Sunwake's flight mechanics, replay loop, world variation, coaching, and saved history; balanced the new rewards, preserved existing progress, and passed the exact gate plus engine/unit/browser coverage. Version 0.2 is ready for the automatic PR publishing workflow.

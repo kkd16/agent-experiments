@@ -1,9 +1,28 @@
 export type GamePhase = 'ready' | 'running' | 'paused' | 'ended'
 export type GameMode = 'voyage' | 'daily' | 'zen'
 export type ShipId = 'sol' | 'manta' | 'comet'
-export type EntityKind = 'spark' | 'ring' | 'storm' | 'rock' | 'sunwell'
+export type EntityKind =
+  | 'spark'
+  | 'ring'
+  | 'storm'
+  | 'rock'
+  | 'sunwell'
+  | 'shield'
+  | 'magnet'
+  | 'thermal'
 export type EventKind =
-  'spark' | 'ring' | 'landing' | 'hit' | 'boost' | 'near' | 'biome' | 'end'
+  | 'spark'
+  | 'ring'
+  | 'landing'
+  | 'hit'
+  | 'boost'
+  | 'near'
+  | 'biome'
+  | 'end'
+  | 'power'
+  | 'chain'
+  | 'perfect'
+  | 'thermal'
 
 export interface Player {
   x: number
@@ -16,6 +35,8 @@ export interface Player {
   charge: number
   invincible: number
   boostTime: number
+  shield: boolean
+  magnetTime: number
   trail: { x: number; y: number; life: number }[]
 }
 
@@ -28,6 +49,7 @@ export interface Entity {
   collected: boolean
   nearMissed?: boolean
   phase: number
+  missed?: boolean
 }
 
 export interface Particle {
@@ -65,6 +87,18 @@ export interface GameState {
   maxAirtime: number
   nearMisses: number
   boosts: number
+  hits: number
+  perfectLandings: number
+  skyChains: number
+  ringChain: number
+  chainDeadline: number
+  magneticSparks: number
+  thermalsRidden: number
+  maxSpeed: number
+  diving: boolean
+  flightCue: 'dive' | 'release' | 'glide'
+  landing: 'none' | 'rough' | 'clean' | 'perfect'
+  landingAt: number
   biome: number
   player: Player
   entities: Entity[]

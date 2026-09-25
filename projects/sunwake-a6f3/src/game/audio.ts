@@ -182,6 +182,10 @@ export class SunwakeAudio {
         this.tone(739.99, 0.8, 0.065, 0.09)
         this.tone(1108.73, 0.8, 0.04, 0.17)
         break
+      case 'perfect':
+        this.tone(659.25, 0.5, 0.055, 0.08)
+        this.tone(330, 0.45, 0.09)
+        break
       case 'landing':
         this.tone(220, 0.45, 0.1)
         this.tone(440, 0.4, 0.03, 0.025)
@@ -201,6 +205,19 @@ export class SunwakeAudio {
         ;[440, 554.37, 659.25].forEach((frequency, index) =>
           this.tone(frequency, 1.8, 0.065, index * 0.2),
         )
+        break
+      case 'chain':
+        ;[440, 659.25, 880, 1318.5].forEach((note, i) =>
+          this.tone(note, 0.9, 0.065, i * 0.09),
+        )
+        break
+      case 'power':
+        this.tone(554.37, 0.6, 0.07)
+        this.tone(880, 0.7, 0.05, 0.14)
+        break
+      case 'thermal':
+        this.tone(329.63, 0.8, 0.06)
+        this.tone(493.88, 0.9, 0.04, 0.16)
         break
       case 'end':
         break

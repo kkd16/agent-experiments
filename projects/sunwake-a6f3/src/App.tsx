@@ -5,6 +5,7 @@ import { renderWorld } from './game/renderer'
 import { SunwakeAudio } from './game/audio'
 import {
   dailySeed,
+  formatTime,
   loadProgress,
   MISSIONS,
   saveProgress,
@@ -13,7 +14,17 @@ import {
 } from './game/progress'
 import type { Progress } from './game/progress'
 import { BIOMES } from './game/types'
-import type { GameInput, GameMode, GameState, ShipId } from './game/types'
+import type { GameMode, GameState, ShipId } from './game/types'
+import { FlightStatus, FlightDebrief } from './FlightExtras'
+import { FlightInput } from './game/input'
+import {
+  courseFromHash,
+  courseHash,
+  FlightRecorder,
+  GhostLibrary,
+  ghostAt,
+} from './game/replay'
+import type { GhostRun } from './game/replay'
 import './App.css'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -44,30 +55,46 @@ const MODES: { id: GameMode; label: string; description: string }[] = [
 
 export default function App() {
   const [progress, setProgress] = useState(loadProgress)
+  const [sharedSeed, setSharedSeed] = useState(() =>
+    courseFromHash(window.location.hash),
+  )
+  const [controls] = useState(() => new FlightInput())
+  const [ghosts] = useState(() => new GhostLibrary())
+  const ghostRef = useRef<GhostRun | null>(null)
+  const recorderRef = useRef(new FlightRecorder())
+  const [ghostRun, setGhostRun] = useState<GhostRun | null>(null)
+  const [flightTrace, setFlightTrace] = useState<GhostRun | null>(null)
+  const [shareUrl, setShareUrl] = useState('')
   const progressRef = useRef(progress)
   const [engine] = useState(
     () =>
       new SunwakeEngine({
         mode: 'voyage',
         ship: progress.selected,
-        seed: 92847,
+        seed: sharedSeed ?? 92847,
       }),
   )
   const [audio] = useState(() => new SunwakeAudio())
   const [view, setView] = useState(() => snapshot(engine.state))
   const [mode, setMode] = useState<GameMode>('voyage')
-  const [modal, setModal] = useState<'help' | 'hangar' | null>(null)
+  const [modal, setModal] = useState<
+    'help' | 'hangar' | 'log' | 'share' | null
+  >(null)
   const [result, setResult] = useState<ReturnType<typeof settleRun> | null>(
     null,
   )
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState(() =>
+    window.location.hash.startsWith('#/course/') &&
+    courseFromHash(window.location.hash) === null
+      ? 'This course link is unsupported. Choose a new Voyage below.'
+      : '',
+  )
   const [storageAvailable, setStorageAvailable] = useState(true)
   const [reducedMotion, setReducedMotion] = useState(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   )
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<GameInput>({ dive: false, boost: false })
   const settledRef = useRef(false)
   const runDateRef = useRef(today())
   const [runMissions, setRunMissions] = useState(() =>
@@ -83,33 +110,45 @@ export default function App() {
   }, [])
 
   const pause = useCallback(() => {
-    inputRef.current = { dive: false, boost: false }
+    controls.clear()
     engine.pause()
     setView(snapshot(engine.state))
-  }, [engine])
+  }, [controls, engine])
 
-  const startRun = useCallback(() => {
-    const date = today()
-    runDateRef.current = date
-    engine.reset({
-      mode,
-      ship: progressRef.current.selected,
-      seed: mode === 'daily' ? dailySeed(date) : randomSeed(),
-    })
-    inputRef.current = { dive: false, boost: false }
-    settledRef.current = false
-    setResult(null)
-    setRunMissions(
-      MISSIONS.filter(
-        (mission) => !progressRef.current.completed.includes(mission.id),
-      ).slice(0, 3),
-    )
-    engine.start()
-    audio.setEnabled(progressRef.current.sound)
-    void audio.unlock()
-    setView(snapshot(engine.state))
-    canvasRef.current?.focus({ preventScroll: true })
-  }, [audio, engine, mode])
+  const startRun = useCallback(
+    (options?: { seed?: number; mode?: GameMode }) => {
+      const date = today()
+      runDateRef.current = date
+      const runMode = options?.mode ?? mode
+      const seed =
+        runMode === 'daily'
+          ? dailySeed(date)
+          : (options?.seed ?? sharedSeed ?? randomSeed())
+      setMode(runMode)
+      engine.reset({ mode: runMode, ship: progressRef.current.selected, seed })
+      recorderRef.current = new FlightRecorder()
+      recorderRef.current.record(engine.state)
+      const ghost = runMode === 'zen' ? null : ghosts.get(seed)
+      ghostRef.current = ghost
+      setGhostRun(ghost)
+      setFlightTrace(null)
+      setModal(null)
+      controls.clear()
+      settledRef.current = false
+      setResult(null)
+      setRunMissions(
+        MISSIONS.filter(
+          (mission) => !progressRef.current.completed.includes(mission.id),
+        ).slice(0, 3),
+      )
+      engine.start()
+      audio.setEnabled(progressRef.current.sound)
+      void audio.unlock()
+      setView(snapshot(engine.state))
+      canvasRef.current?.focus({ preventScroll: true })
+    },
+    [audio, controls, engine, ghosts, mode, sharedSeed],
+  )
 
   const resume = useCallback(() => {
     engine.resume()
@@ -118,14 +157,26 @@ export default function App() {
   }, [engine])
 
   const goHome = () => {
-    engine.reset({ mode, ship: progressRef.current.selected, seed: 92847 })
-    inputRef.current = { dive: false, boost: false }
+    engine.reset({
+      mode,
+      ship: progressRef.current.selected,
+      seed: mode === 'daily' ? dailySeed(today()) : (sharedSeed ?? 92847),
+    })
+    controls.clear()
     setResult(null)
+    setGhostRun(null)
+    ghostRef.current = null
     setView(snapshot(engine.state))
   }
 
   const selectMode = (next: GameMode) => {
     setMode(next)
+    setSharedSeed(null)
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + window.location.search,
+    )
     engine.reset({
       mode: next,
       ship: progress.selected,
@@ -134,7 +185,7 @@ export default function App() {
     setView(snapshot(engine.state))
   }
 
-  const openModal = (next: 'help' | 'hangar') => {
+  const openModal = (next: 'help' | 'hangar' | 'log' | 'share') => {
     if (engine.state.phase === 'running') pause()
     setModal(next)
   }
@@ -164,6 +215,20 @@ export default function App() {
     }
   }
 
+  const shareCourse = async () => {
+    const url = new URL(window.location.href)
+    url.hash = courseHash(engine.state.seed)
+    setShareUrl(url.href)
+    if (engine.state.phase === 'running') pause()
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(url.href)
+      setNotice('Course link copied. Anyone can fly the same dunes.')
+    } catch {
+      setModal('share')
+    }
+  }
+
   const fullscreen = async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen()
@@ -179,6 +244,30 @@ export default function App() {
       )
     }
   }
+
+  useEffect(() => {
+    const navigate = () => {
+      const seed = courseFromHash(window.location.hash)
+      if (seed === null && window.location.hash.startsWith('#/course/')) {
+        setNotice('This course link is unsupported. Choose a new Voyage below.')
+        return
+      }
+      controls.clear()
+      setSharedSeed(seed)
+      setMode('voyage')
+      engine.reset({
+        mode: 'voyage',
+        ship: progressRef.current.selected,
+        seed: seed ?? 92847,
+      })
+      ghostRef.current = null
+      setGhostRun(null)
+      setResult(null)
+      setView(snapshot(engine.state))
+    }
+    window.addEventListener('hashchange', navigate)
+    return () => window.removeEventListener('hashchange', navigate)
+  }, [controls, engine])
 
   useEffect(() => {
     const query = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -219,7 +308,9 @@ export default function App() {
     const tick = (now: number) => {
       const dt = Math.min((now - previous) / 1000, 0.05)
       previous = now
-      engine.step(dt, inputRef.current)
+      engine.step(dt, controls.value(now))
+      if (engine.state.phase === 'running')
+        recorderRef.current.record(engine.state)
       audio.update(engine.state)
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       renderWorld(
@@ -229,11 +320,20 @@ export default function App() {
         height,
         now / 1000,
         reducedMotion,
-        progressRef.current.best,
+        engine.state.mode === 'daily' &&
+          progressRef.current.daily.date === runDateRef.current
+          ? progressRef.current.daily.best
+          : progressRef.current.best,
+        progressRef.current.ghost
+          ? ghostAt(ghostRef.current, engine.state.time)
+          : null,
       )
       if (engine.state.phase === 'ended' && !settledRef.current) {
         settledRef.current = true
-        inputRef.current = { dive: false, boost: false }
+        controls.clear()
+        const trace = recorderRef.current.finish(engine.state)
+        ghosts.remember(trace, engine.state.mode)
+        setFlightTrace(trace)
         const settled = settleRun(
           progressRef.current,
           engine.state,
@@ -242,7 +342,7 @@ export default function App() {
         commitProgress(settled.progress)
         setResult(settled)
         setView(snapshot(engine.state))
-      } else if (now - lastHud > 90) {
+      } else if (engine.state.phase === 'running' && now - lastHud > 90) {
         setView(snapshot(engine.state))
         lastHud = now
       }
@@ -253,7 +353,7 @@ export default function App() {
       cancelAnimationFrame(frame)
       observer.disconnect()
     }
-  }, [audio, commitProgress, engine, reducedMotion])
+  }, [audio, commitProgress, controls, engine, ghosts, reducedMotion])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -278,14 +378,15 @@ export default function App() {
       if (event.code === 'Space' || event.code === 'ArrowDown') {
         if (engine.state.phase === 'ready' || engine.state.phase === 'ended')
           startRun()
-        if (engine.state.phase === 'running') inputRef.current.dive = true
+        if (engine.state.phase === 'running')
+          controls.set('dive', event.code, true)
       }
       if (
         event.code === 'ShiftLeft' ||
         event.code === 'ShiftRight' ||
         event.code === 'ArrowUp'
       )
-        inputRef.current.boost = true
+        controls.set('boost', event.code, true)
       if (event.code === 'Escape' || event.code === 'KeyP') {
         if (engine.state.phase === 'running') pause()
         else if (engine.state.phase === 'paused') resume()
@@ -294,17 +395,17 @@ export default function App() {
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'Space' || event.code === 'ArrowDown')
-        inputRef.current.dive = false
+        controls.release(event.code)
       if (
         event.code === 'ShiftLeft' ||
         event.code === 'ShiftRight' ||
         event.code === 'ArrowUp'
       )
-        inputRef.current.boost = false
+        controls.release(event.code)
     }
     const blur = () => {
       if (engine.state.phase === 'running') pause()
-      inputRef.current = { dive: false, boost: false }
+      controls.clear()
     }
     const visibility = () => {
       if (document.hidden) blur()
@@ -319,7 +420,7 @@ export default function App() {
       window.removeEventListener('blur', blur)
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [engine, modal, pause, resume, startRun])
+  }, [controls, engine, modal, pause, resume, startRun])
 
   useEffect(() => () => audio.dispose(), [audio])
 
@@ -333,7 +434,11 @@ export default function App() {
   const lastEvent = [...view.events]
     .reverse()
     .find((event) => event.kind !== 'spark' && view.time - event.time < 2.2)
-  const boostReady = view.player.charge >= 65
+  const boostReady = view.player.charge >= 65 && view.player.boostTime <= 0
+  const ghostPosition = progress.ghost ? ghostAt(ghostRun, view.time) : null
+  const ghostDelta = ghostPosition
+    ? (view.player.x - ghostPosition.x) / 10
+    : null
   const modeDescription = MODES.find((item) => item.id === mode)!.description
 
   return (
@@ -385,6 +490,13 @@ export default function App() {
           >
             <Icon name={progress.sound ? 'sound' : 'mute'} />
           </button>
+          <button
+            className="icon-button log-button"
+            onClick={() => openModal('log')}
+            aria-label="Open flight log"
+          >
+            <Icon name="journal" size={19} />
+          </button>
           <button className="help-link" onClick={() => openModal('help')}>
             How to fly <span>↗</span>
           </button>
@@ -396,7 +508,7 @@ export default function App() {
           <span>
             <i /> MADE FOR ONE MORE RUN
           </span>
-          <span>NO DOWNLOAD. JUST A LITTLE DAYDREAM.</span>
+          <span>NEW: SKY CHAINS · THERMALS · GHOST RACES</span>
         </div>
         <section
           className={`flight-stage phase-${view.phase} ${view.biome >= 2 || (view.biome === 1 && view.distance % 1000 > 800) ? 'night-world' : ''} ${reducedMotion ? 'reduced-motion' : ''}`}
@@ -414,17 +526,17 @@ export default function App() {
               event.preventDefault()
               event.currentTarget.focus({ preventScroll: true })
               event.currentTarget.setPointerCapture(event.pointerId)
-              inputRef.current.dive = true
+              controls.set('dive', `pointer-${event.pointerId}`, true)
             }}
-            onPointerUp={() => {
-              inputRef.current.dive = false
-            }}
-            onPointerCancel={() => {
-              inputRef.current.dive = false
-            }}
-            onLostPointerCapture={() => {
-              inputRef.current.dive = false
-            }}
+            onPointerUp={(event) =>
+              controls.release(`pointer-${event.pointerId}`)
+            }
+            onPointerCancel={(event) =>
+              controls.release(`pointer-${event.pointerId}`)
+            }
+            onLostPointerCapture={(event) =>
+              controls.release(`pointer-${event.pointerId}`)
+            }
           >
             Sunwake is an interactive dune-surfing game. Your browser needs
             canvas support to play.
@@ -473,7 +585,7 @@ export default function App() {
               </p>
               <button
                 className="button primary launch-button"
-                onClick={startRun}
+                onClick={() => startRun()}
               >
                 Let’s fly <Icon name="arrow" size={22} />
               </button>
@@ -489,7 +601,19 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <p className="mode-description">{modeDescription}</p>
+              <p className="mode-description">
+                {sharedSeed
+                  ? `Shared course · ${sharedSeed.toString(36).toUpperCase()}`
+                  : modeDescription}
+              </p>
+              {sharedSeed && (
+                <button
+                  className="clear-course"
+                  onClick={() => selectMode('voyage')}
+                >
+                  Return to random skies
+                </button>
+              )}
               {mode === 'daily' && (
                 <p className="daily-best">
                   {today()} · Your daily best:{' '}
@@ -533,7 +657,9 @@ export default function App() {
                     {number(view.score)} pts
                   </span>
                 </div>
-                <div className="sunlight-readout">
+                <div
+                  className={`sunlight-readout ${view.player.energy < 23 ? 'low-sun' : ''}`}
+                >
                   <span className="hud-label">
                     <Icon name="sun" size={13} /> SUNLIGHT{' '}
                     <b>
@@ -554,7 +680,9 @@ export default function App() {
                   <span className="energy-hint">
                     {mode === 'zen'
                       ? 'The sun is yours. Take your time.'
-                      : 'Collect light. Keep the dream alive.'}
+                      : view.player.energy < 23
+                        ? 'Sunlight fading · follow the gold'
+                        : 'Collect light. Keep the dream alive.'}
                   </span>
                 </div>
               </div>
@@ -579,12 +707,11 @@ export default function App() {
                   {lastEvent.text}
                 </div>
               )}
-              {playing && view.distance < 180 && (
-                <div className="inflight-tip">
-                  <kbd>HOLD</kbd> dive into the slope <span>·</span>{' '}
-                  <kbd>RELEASE</kbd> catch the sky
-                </div>
-              )}
+              <FlightStatus
+                state={view}
+                coach={progress.coach}
+                ghostDelta={ghostDelta}
+              />
               <div className="flight-bottom">
                 <div className="speed-readout">
                   <Icon name="wind" size={20} />
@@ -598,32 +725,33 @@ export default function App() {
                     onKeyDown={(event) => {
                       if (event.code === 'Space' || event.code === 'Enter') {
                         event.preventDefault()
-                        inputRef.current.dive = true
+                        controls.set('dive', `button-${event.code}`, true)
                       }
                     }}
                     onKeyUp={(event) => {
                       if (event.code === 'Space' || event.code === 'Enter') {
                         event.preventDefault()
-                        inputRef.current.dive = false
+                        controls.release(`button-${event.code}`)
                       }
                     }}
                     onBlur={() => {
-                      inputRef.current.dive = false
+                      controls.release('button-Space')
+                      controls.release('button-Enter')
                     }}
                     onPointerDown={(event) => {
                       event.preventDefault()
                       event.currentTarget.setPointerCapture(event.pointerId)
-                      inputRef.current.dive = true
+                      controls.set('dive', `pointer-${event.pointerId}`, true)
                     }}
-                    onPointerUp={() => {
-                      inputRef.current.dive = false
-                    }}
-                    onPointerCancel={() => {
-                      inputRef.current.dive = false
-                    }}
-                    onLostPointerCapture={() => {
-                      inputRef.current.dive = false
-                    }}
+                    onPointerUp={(event) =>
+                      controls.release(`pointer-${event.pointerId}`)
+                    }
+                    onPointerCancel={(event) =>
+                      controls.release(`pointer-${event.pointerId}`)
+                    }
+                    onLostPointerCapture={(event) =>
+                      controls.release(`pointer-${event.pointerId}`)
+                    }
                   >
                     <Icon name="dive" /> HOLD TO DIVE
                   </button>
@@ -632,10 +760,7 @@ export default function App() {
                   className={`burst-button ${boostReady ? 'charged' : ''}`}
                   disabled={!boostReady || !playing}
                   onClick={() => {
-                    inputRef.current.boost = true
-                    window.setTimeout(() => {
-                      inputRef.current.boost = false
-                    }, 150)
+                    controls.pulse(performance.now())
                     canvasRef.current?.focus({ preventScroll: true })
                   }}
                   aria-label={`Solar burst, ${Math.min(100, Math.round((view.player.charge / 65) * 100))}% ready`}
@@ -649,7 +774,7 @@ export default function App() {
                   <Icon name="spark" size={19} />
                   <span>
                     {view.player.boostTime > 0
-                      ? 'SUNWAKE!'
+                      ? `BURST · ${view.player.boostTime.toFixed(1)}s`
                       : boostReady
                         ? 'SOLAR BURST'
                         : 'BUILD YOUR FLOW'}
@@ -662,7 +787,11 @@ export default function App() {
 
           {view.phase === 'paused' && (
             <div className="stage-overlay paused-overlay">
-              <div className="pause-card">
+              <div
+                className="pause-card"
+                role="region"
+                aria-label="Flight paused"
+              >
                 <span className="eyebrow">A MOMENT IN THE SUN</span>
                 <h2>
                   The horizon
@@ -685,7 +814,12 @@ export default function App() {
 
           {view.phase === 'ended' && result && (
             <div className="stage-overlay results-overlay">
-              <div className="results-card">
+              <div
+                className="results-card"
+                role="region"
+                aria-label="Flight results"
+                aria-live="polite"
+              >
                 <div className="result-kicker">
                   <Icon name={result.newBest ? 'flag' : 'sun'} size={18} />
                   {result.newBest
@@ -738,12 +872,25 @@ export default function App() {
                     ))}
                   </div>
                 )}
+                <FlightDebrief state={view} trace={flightTrace} />
                 <div className="result-buttons">
-                  <button className="button primary" onClick={startRun}>
+                  <button className="button primary" onClick={() => startRun()}>
                     One more horizon <Icon name="arrow" size={18} />
                   </button>
                   <button className="button secondary" onClick={goHome}>
                     Back to shore
+                  </button>
+                </div>
+                <div className="replay-actions">
+                  <button onClick={() => startRun({ seed: view.seed })}>
+                    <Icon name="ghost" size={15} />
+                    {mode === 'zen'
+                      ? 'Fly this route again'
+                      : 'Race this route'}
+                  </button>
+                  <button onClick={() => void shareCourse()}>
+                    <Icon name="share" size={14} />
+                    Copy course link
                   </button>
                 </div>
                 <span className="saved-note">
@@ -855,13 +1002,25 @@ export default function App() {
                     <div className="mission-content">
                       <h3>{mission.title}</h3>
                       <p>{mission.description}</p>
-                      <div className="mission-meter">
+                      <div
+                        className="mission-meter"
+                        role="progressbar"
+                        aria-label={mission.title}
+                        aria-valuenow={Math.floor(value)}
+                        aria-valuemin={0}
+                        aria-valuemax={mission.target}
+                      >
                         <i
                           style={{
                             width: `${(value / mission.target) * 100}%`,
                           }}
                         />
                       </div>
+                      {inRun && mode !== 'zen' && (
+                        <span className="mission-count">
+                          {Math.floor(value)} / {mission.target}
+                        </span>
+                      )}
                     </div>
                     <span className="mission-reward">
                       +{mission.reward}
@@ -994,6 +1153,63 @@ export default function App() {
               </div>
             </div>
           </div>
+          <div className="finds-guide">
+            <h3>A few gifts from the sky</h3>
+            <div>
+              <span>
+                <Icon name="shield" size={21} />
+                <b>Sun shield</b>
+                <small>Absorbs one hit. Keeps your flow.</small>
+              </span>
+              <span>
+                <Icon name="magnet" size={21} />
+                <b>Light magnet</b>
+                <small>Draws nearby sparks toward you.</small>
+              </span>
+              <span>
+                <Icon name="wind" size={21} />
+                <b>Rising thermals</b>
+                <small>Release inside the arrows to ride the lift.</small>
+              </span>
+              <span>
+                <Icon name="ring" size={21} />
+                <b>Sky chains</b>
+                <small>
+                  Link three rings within nine seconds without missing one for a
+                  magnet and bonus.
+                </small>
+              </span>
+            </div>
+          </div>
+          <div className="flight-preferences">
+            <h3>Make the flight yours</h3>
+            <button
+              role="switch"
+              aria-checked={progress.coach}
+              onClick={() =>
+                commitProgress({ ...progress, coach: !progress.coach })
+              }
+            >
+              <span>
+                Flight coaching
+                <small>Live cues for holding, releasing, and landing.</small>
+              </span>
+              <i className={progress.coach ? 'on' : ''} />
+            </button>
+            <button
+              role="switch"
+              aria-checked={progress.ghost}
+              onClick={() =>
+                commitProgress({ ...progress, ghost: !progress.ghost })
+              }
+            >
+              <span>
+                Race your ghost
+                <small>See your best flight on a course you revisit.</small>
+              </span>
+              <i className={progress.ghost ? 'on' : ''} />
+            </button>
+          </div>
           <div className="help-note">
             <Icon name="wind" size={20} />
             <p>
@@ -1004,6 +1220,127 @@ export default function App() {
           </div>
           <button className="button primary" onClick={() => setModal(null)}>
             The sky is yours <Icon name="arrow" size={18} />
+          </button>
+        </Modal>
+      )}
+
+      {modal === 'log' && (
+        <Modal
+          title="Flight log"
+          className="log-modal"
+          onClose={() => setModal(null)}
+        >
+          <span className="eyebrow">EVERY HORIZON LEAVES A TRACE</span>
+          <h2>
+            Your flight log<span>.</span>
+          </h2>
+          <p className="modal-intro">
+            Your last twelve journeys. Revisit a course, find a better line.
+          </p>
+          <div className="log-summary">
+            <div>
+              <strong>
+                {number(progress.best)}
+                <small> m</small>
+              </strong>
+              <span>FURTHEST FLIGHT</span>
+            </div>
+            <div>
+              <strong>{number(progress.bestScore)}</strong>
+              <span>BEST SCORE</span>
+            </div>
+            <div>
+              <strong>
+                {progress.completed.length}
+                <small> / {MISSIONS.length}</small>
+              </strong>
+              <span>CHALLENGES</span>
+            </div>
+          </div>
+          {progress.history.length === 0 ? (
+            <div className="log-empty">
+              <Icon name="journal" size={32} />
+              <h3>The first page is yours.</h3>
+              <p>Finish a flight to start your collection of horizons.</p>
+            </div>
+          ) : (
+            <div className="flight-log-list">
+              {progress.history.map((run) => (
+                <div className="flight-log-row" key={run.id}>
+                  <span className={`log-mode log-${run.mode}`}>
+                    <Icon
+                      name={
+                        run.mode === 'daily'
+                          ? 'sun'
+                          : run.mode === 'zen'
+                            ? 'wind'
+                            : 'flag'
+                      }
+                      size={18}
+                    />
+                  </span>
+                  <div>
+                    <strong>
+                      {number(run.distance)} <small>m</small>
+                    </strong>
+                    <p>
+                      {run.mode === 'daily'
+                        ? 'Daily flight'
+                        : run.mode === 'zen'
+                          ? 'Free flight'
+                          : 'Voyage'}{' '}
+                      · {run.date} · {formatTime(run.duration)}
+                    </p>
+                  </div>
+                  <span className="log-score">
+                    {number(run.score)}
+                    <small>POINTS</small>
+                  </span>
+                  <button
+                    className="icon-button"
+                    aria-label={`Replay ${number(run.distance)} meter course`}
+                    title="Replay this course"
+                    onClick={() =>
+                      startRun({
+                        seed: run.seed,
+                        mode: run.mode === 'zen' ? 'zen' : 'voyage',
+                      })
+                    }
+                  >
+                    <Icon name="restart" size={18} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="log-note">
+            Replays use the original course. Your best ghost is kept for your
+            four most recent improved courses. Past daily courses replay as
+            Voyages.
+          </p>
+        </Modal>
+      )}
+      {modal === 'share' && (
+        <Modal title="Share this course" onClose={() => setModal(null)}>
+          <span className="eyebrow">A HORIZON WORTH SHARING</span>
+          <h2>
+            Same dunes.
+            <br />A different story.
+          </h2>
+          <p className="modal-intro">
+            Copy this link to challenge a friend to the same course. Your
+            records and ghost stay on your device.
+          </p>
+          <label className="share-field">
+            COURSE LINK
+            <input
+              readOnly
+              value={shareUrl}
+              onFocus={(event) => event.target.select()}
+            />
+          </label>
+          <button className="button primary" onClick={() => setModal(null)}>
+            Back to the sky <Icon name="arrow" size={18} />
           </button>
         </Modal>
       )}

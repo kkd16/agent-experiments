@@ -1,4 +1,5 @@
 import { terrain } from './engine'
+import type { GhostPosition } from './replay'
 import { WORLD_HEIGHT } from './types'
 import type { Entity, GameState, ShipId } from './types'
 
@@ -238,7 +239,7 @@ function mountains(
     const offset = camera * (0.065 + layer * 0.07)
     ctx.beginPath()
     ctx.moveTo(-30, 740)
-    for (let x = -30; x <= w + 30; x += 15) {
+    for (let x = -30; x <= w + 30; x += 22) {
       const pointX = x + offset
       const jagged =
         layer === 0
@@ -364,7 +365,7 @@ function ground(
     line++
   ) {
     ctx.beginPath()
-    for (let x = -24; x <= w + 24; x += 15) {
+    for (let x = -24; x <= w + 24; x += 22) {
       const worldX = x + camera
       const depth = 12 + line * 17 + line * line * 1.55
       const y =
@@ -425,7 +426,71 @@ function collectible(
   const pulse = Math.sin(time * 3 + phase)
   ctx.save()
   ctx.translate(x, y)
-  if (kind === 'spark') {
+  if (kind === 'shield' || kind === 'magnet') {
+    ctx.fillStyle = kind === 'shield' ? '#72d9c7' : '#c0a7ed'
+    ctx.strokeStyle = '#fff5df'
+    ctx.lineWidth = 1.8
+    ctx.beginPath()
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 2
+      const px = Math.cos(angle) * 27,
+        py = Math.sin(angle) * 27
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    }
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+    ctx.strokeStyle = kind === 'shield' ? '#376d69' : '#6b508c'
+    ctx.lineWidth = 2.5
+    ctx.beginPath()
+    if (kind === 'shield') {
+      ctx.moveTo(0, -13)
+      ctx.lineTo(11, -8)
+      ctx.lineTo(9, 6)
+      ctx.quadraticCurveTo(5, 12, 0, 16)
+      ctx.quadraticCurveTo(-8, 11, -10, 4)
+      ctx.lineTo(-11, -8)
+      ctx.closePath()
+      ctx.moveTo(-5, 0)
+      ctx.lineTo(-1, 5)
+      ctx.lineTo(6, -5)
+    } else {
+      ctx.moveTo(-9, -12)
+      ctx.lineTo(-9, 3)
+      ctx.bezierCurveTo(-9, 17, 9, 17, 9, 3)
+      ctx.lineTo(9, -12)
+      ctx.moveTo(-13, -5)
+      ctx.lineTo(-5, -5)
+      ctx.moveTo(5, -5)
+      ctx.lineTo(13, -5)
+    }
+    ctx.stroke()
+    ctx.globalAlpha = 0.3
+    circle(ctx, 0, 0, 35 + pulse * 2)
+    ctx.stroke()
+  } else if (kind === 'thermal') {
+    const glow = ctx.createLinearGradient(0, -145, 0, 115)
+    glow.addColorStop(0, '#c6fff000')
+    glow.addColorStop(0.5, '#c6fff027')
+    glow.addColorStop(1, '#c6fff065')
+    ctx.fillStyle = glow
+    ctx.fillRect(-48, -145, 96, 260)
+    ctx.strokeStyle = '#dbffde'
+    ctx.lineWidth = 2
+    for (let i = 0; i < 5; i++) {
+      const yy = 105 - mod(time * 55 + i * 50, 250)
+      ctx.globalAlpha = (yy + 145) / 330
+      ctx.beginPath()
+      ctx.moveTo(-15, yy + 10)
+      ctx.quadraticCurveTo(0, yy - 14, 15, yy + 10)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 0.75
+    ctx.beginPath()
+    ctx.ellipse(0, 116, 48, 9, 0, 0, TAU)
+    ctx.stroke()
+  } else if (kind === 'spark') {
     const glow = ctx.createRadialGradient(0, 0, 1, 0, 0, 24)
     glow.addColorStop(0, '#fff0b34a')
     glow.addColorStop(1, '#fff0b300')
@@ -794,6 +859,7 @@ function player(
   camera: number,
   time: number,
   palette: string[],
+  reducedMotion: boolean,
 ) {
   const craft = state.player
   const charge = Math.min(1, Math.max(0, craft.charge / 100))
@@ -841,6 +907,34 @@ function player(
     ctx.quadraticCurveTo(-79, 21, -20, 15)
     ctx.fill()
   }
+  if (craft.shield) {
+    ctx.strokeStyle = '#bdffdf'
+    ctx.fillStyle = '#94e1d318'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.ellipse(0, -22, 48, 59, 0, 0, TAU)
+    ctx.fill()
+    ctx.stroke()
+  }
+  if (craft.magnetTime > 0) {
+    ctx.strokeStyle = '#e7d1ff'
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.5
+    for (let i = 0; i < 2; i++) {
+      ctx.beginPath()
+      ctx.ellipse(
+        0,
+        -22,
+        57 + i * 15,
+        31 + i * 12,
+        -0.3,
+        time + i * Math.PI,
+        time + i * Math.PI + 2.8,
+      )
+      ctx.stroke()
+    }
+    ctx.globalAlpha = 1
+  }
   if (craft.invincible > 0 || craft.boostTime > 0) {
     ctx.strokeStyle = palette[11]
     ctx.globalAlpha =
@@ -851,7 +945,8 @@ function player(
     ctx.stroke()
     ctx.globalAlpha = 1
   }
-  if (craft.invincible > 0 && Math.sin(time * 23) > 0.45) ctx.globalAlpha = 0.55
+  if (craft.invincible > 0 && (reducedMotion || Math.sin(time * 12) > 0.45))
+    ctx.globalAlpha = 0.55
   drawShip(ctx, state.ship, time, palette, charge)
   ctx.restore()
 
@@ -874,6 +969,106 @@ function player(
   }
 }
 
+function drawGhost(
+  ctx: CanvasRenderingContext2D,
+  point: GhostPosition,
+  camera: number,
+  scale: number,
+) {
+  const x = point.x - camera
+  if (point.finished || x < -80) return
+  ctx.save()
+  ctx.translate(x, point.y)
+  ctx.rotate(point.angle)
+  ctx.strokeStyle = '#fff9e3a6'
+  ctx.fillStyle = '#fff9e312'
+  ctx.lineWidth = 1.6
+  ctx.setLineDash([4, 4])
+  ctx.beginPath()
+  ctx.moveTo(-35, 3)
+  ctx.quadraticCurveTo(0, 22, 35, -1)
+  ctx.lineTo(-35, 3)
+  ctx.moveTo(3, 2)
+  ctx.lineTo(3, -67)
+  ctx.lineTo(31, -25)
+  ctx.lineTo(3, -13)
+  ctx.fill()
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.beginPath()
+  ctx.moveTo(-12, -23)
+  ctx.lineTo(-15, -7)
+  ctx.lineTo(-6, 2)
+  ctx.moveTo(-11, -19)
+  ctx.lineTo(3, -17)
+  ctx.stroke()
+  circle(ctx, -12, -29, 5)
+  ctx.stroke()
+  ctx.rotate(-point.angle)
+  ctx.fillStyle = '#fff9e3c9'
+  ctx.font = `600 ${Math.max(10, 8 / scale)}px sans-serif`
+  ctx.textAlign = 'center'
+  ctx.fillText('YOUR GHOST', 0, -87)
+  ctx.restore()
+}
+function regionAtmosphere(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  w: number,
+  camera: number,
+  time: number,
+  palette: string[],
+) {
+  ctx.save()
+  if (state.biome === 2) {
+    // Slow, suspended fragments make the violet reach feel lighter than the dunes.
+    for (let i = 0; i < 6; i++) {
+      const x = mod(i * 320 - camera * 0.11, w + 320) - 100
+      const y = 220 + random(i + 81) * 120 + Math.sin(time * 0.3 + i) * 4
+      ctx.fillStyle = palette[4]
+      ctx.globalAlpha = 0.33
+      ctx.beginPath()
+      ctx.moveTo(x - 29, y)
+      ctx.lineTo(x + 26, y - 7)
+      ctx.lineTo(x + 5, y + 44)
+      ctx.closePath()
+      ctx.fill()
+      ctx.strokeStyle = '#f3d6f7'
+      ctx.globalAlpha = 0.18
+      ctx.lineWidth = 0.8
+      ctx.beginPath()
+      ctx.ellipse(x, y - 7, 42, 9, -0.18, 0, TAU)
+      ctx.stroke()
+    }
+  }
+  if (state.biome === 3) {
+    for (let ribbon = 0; ribbon < 3; ribbon++) {
+      const glow = ctx.createLinearGradient(0, 70, 0, 285)
+      glow.addColorStop(0, '#b7f8e200')
+      glow.addColorStop(0.6, '#b7f8e21c')
+      glow.addColorStop(1, '#d8bdf200')
+      ctx.fillStyle = glow
+      ctx.beginPath()
+      ctx.moveTo(-20, 30)
+      for (let x = -20; x <= w + 30; x += 25)
+        ctx.lineTo(
+          x,
+          120 + ribbon * 40 + Math.sin(x * 0.004 + time * 0.12 + ribbon) * 40,
+        )
+      for (let x = w + 30; x >= -20; x -= 25)
+        ctx.lineTo(
+          x,
+          190 +
+            ribbon * 40 +
+            Math.sin(x * 0.004 + time * 0.12 + ribbon + 0.5) * 55,
+        )
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+  ctx.restore()
+}
+
 /** Draw in CSS pixels without changing the caller's device-pixel-ratio transform. */
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
@@ -883,6 +1078,7 @@ export function renderWorld(
   ambientTime: number,
   reducedMotion: boolean,
   personalBest = 0,
+  ghost: GhostPosition | null = null,
 ): void {
   if (width <= 0 || height <= 0) return
   const ready = state.phase === 'ready'
@@ -896,7 +1092,7 @@ export function renderWorld(
   const top = -verticalOffset
   const bottom = height / scale - verticalOffset
   const camera = state.player.x - w * (ready ? 0.64 : 0.25)
-  const time = reducedMotion ? state.time : ambientTime
+  const time = reducedMotion ? 0 : ready ? ambientTime : state.time
   const palette = colors(state.distance)
 
   ctx.save()
@@ -904,6 +1100,7 @@ export function renderWorld(
   ctx.translate(0, verticalOffset)
   ctx.lineJoin = 'round'
   sky(ctx, w, camera, time, palette, ready, state.distance, top, bottom)
+  regionAtmosphere(ctx, state, w, camera, time, palette)
   mountains(ctx, w, camera, palette)
 
   ctx.save()
@@ -938,7 +1135,8 @@ export function renderWorld(
     ctx.fill()
   }
   ctx.globalAlpha = 1
-  player(ctx, state, camera, time, palette)
+  if (ghost && !ready) drawGhost(ctx, ghost, camera, scale)
+  player(ctx, state, camera, time, palette, reducedMotion)
   ctx.restore()
 
   if (!reducedMotion && state.phase === 'running' && state.player.vx > 500) {

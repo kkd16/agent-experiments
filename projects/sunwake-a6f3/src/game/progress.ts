@@ -1,4 +1,18 @@
-import type { GameState, ShipId } from './types'
+import type { GameMode, GameState, ShipId } from './types'
+
+export interface FlightLog {
+  id: string
+  date: string
+  mode: GameMode
+  seed: number
+  distance: number
+  score: number
+  duration: number
+  sparks: number
+  rings: number
+  perfect: number
+  chains: number
+}
 
 export interface Progress {
   version: 1
@@ -12,6 +26,9 @@ export interface Progress {
   completed: string[]
   daily: { date: string; best: number }
   sound: boolean
+  history: FlightLog[]
+  coach: boolean
+  ghost: boolean
 }
 
 export interface Mission {
@@ -28,6 +45,10 @@ export interface Mission {
     | 'bestCombo'
     | 'boosts'
     | 'nearMisses'
+    | 'perfectLandings'
+    | 'skyChains'
+    | 'thermalsRidden'
+    | 'magneticSparks'
   target: number
 }
 
@@ -160,6 +181,41 @@ export const MISSIONS: Mission[] = [
   },
 ]
 
+MISSIONS.push(
+  {
+    id: 'sky-weaver',
+    title: 'Sky weaver',
+    description: 'Link 3 rings without missing one',
+    kind: 'skyChains',
+    target: 1,
+    reward: 75,
+  },
+  {
+    id: 'wind-rider',
+    title: 'Wind rider',
+    description: 'Ride 3 thermals in one flight',
+    kind: 'thermalsRidden',
+    target: 3,
+    reward: 75,
+  },
+  {
+    id: 'golden-touch',
+    title: 'Golden touch',
+    description: 'Make 5 perfect landings in one flight',
+    kind: 'perfectLandings',
+    target: 5,
+    reward: 100,
+  },
+  {
+    id: 'magnetic-personality',
+    title: 'Magnetic personality',
+    description: 'Attract 30 sparks in one flight',
+    kind: 'magneticSparks',
+    target: 30,
+    reward: 100,
+  },
+)
+
 const SAVE_KEY = 'sunwake.progress.v1'
 const MAX_VALUE = 1_000_000_000_000
 const today = () => new Date().toISOString().slice(0, 10)
@@ -196,7 +252,67 @@ export function freshProgress(): Progress {
     completed: [],
     daily: { date: today(), best: 0 },
     sound: false,
+    history: [],
+    coach: true,
+    ghost: true,
   }
+}
+
+function readHistory(raw: unknown): FlightLog[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is FlightLog => {
+      if (!item || typeof item !== 'object') return false
+      const row = item as FlightLog
+      return (
+        typeof row.id === 'string' &&
+        row.id.length < 80 &&
+        validDate(row.date) &&
+        ['voyage', 'daily', 'zen'].includes(row.mode) &&
+        Number.isInteger(row.seed) &&
+        row.seed > 0 &&
+        row.seed <= 0xffffffff &&
+        [
+          'distance',
+          'score',
+          'duration',
+          'sparks',
+          'rings',
+          'perfect',
+          'chains',
+        ].every((key) => {
+          const n = row[key as keyof FlightLog]
+          return (
+            typeof n === 'number' &&
+            Number.isFinite(n) &&
+            n >= 0 &&
+            n <= MAX_VALUE
+          )
+        })
+      )
+    })
+    .slice(0, 12)
+    .map((row) => ({ ...row }))
+}
+function historyEntry(
+  progress: Progress,
+  state: GameState,
+  date: string,
+): FlightLog[] {
+  const entry: FlightLog = {
+    id: `${date}-${progress.totalRuns + 1}-${state.seed}`,
+    date,
+    mode: state.mode,
+    seed: state.seed,
+    distance: count(state.distance),
+    score: count(state.score),
+    duration: count(state.time),
+    sparks: count(state.sparks),
+    rings: count(state.rings),
+    perfect: count(state.perfectLandings),
+    chains: count(state.skyChains),
+  }
+  return [entry, ...progress.history].slice(0, 12)
 }
 
 export function loadProgress(): Progress {
@@ -245,6 +361,9 @@ export function loadProgress(): Progress {
           : 'sol',
       completed,
       sound: data.sound === true,
+      coach: data.coach !== false,
+      ghost: data.ghost !== false,
+      history: readHistory(data.history),
       daily: {
         date,
         best:
@@ -286,10 +405,13 @@ export function settleRun(
 } {
   if (state.phase !== 'ended')
     return { progress, earned: 0, completed: [], newBest: false }
+  const runDate = validDate(date) ? date : today()
+  const history = historyEntry(progress, state, runDate)
   if (state.mode === 'zen') {
     return {
       progress: {
         ...progress,
+        history,
         totalDistance: count(progress.totalDistance + count(state.distance)),
         totalRuns: count(progress.totalRuns + 1),
       },
@@ -309,10 +431,10 @@ export function settleRun(
     count(state.sparks) +
     completed.reduce((sum, mission) => sum + mission.reward, 0)
   const distance = count(state.distance)
-  const runDate = validDate(date) ? date : today()
   const dailyBest = progress.daily.date === runDate ? progress.daily.best : 0
   const next: Progress = {
     ...progress,
+    history,
     bank: count(progress.bank + earned),
     best: Math.max(progress.best, distance),
     bestScore: Math.max(progress.bestScore, count(state.score)),
@@ -335,3 +457,8 @@ export function settleRun(
     newBest: distance > progress.best,
   }
 }
+
+export const formatTime = (seconds: number) =>
+  `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, '0')}`
