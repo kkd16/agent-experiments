@@ -34,6 +34,9 @@
 * {
   box-sizing: border-box;
 }
+html {
+  scrollbar-gutter: stable;
+}
 body {
   margin: 0;
   min-width: 320px;
@@ -59,7 +62,9 @@ button {
   color: inherit;
 }
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+select:focus-visible,
+input:focus-visible {
   outline: 3px solid #438e86;
   outline-offset: 5px;
 }

@@ -108,6 +108,7 @@ export class SunwakeEngine {
   private scoreBonus = 0
   private trailClock = 0
   private exhaustClock = 0
+  private previousPose: { x: number; y: number; rotation: number } | null = null
 
   constructor(options: RunOptions) {
     this.state = this.initialState(options)
@@ -187,6 +188,7 @@ export class SunwakeEngine {
   }
 
   reset(options: RunOptions): void {
+    this.previousPose = null
     this.accumulator = 0
     this.nextChunk = 0
     this.nextEntity = 0
@@ -211,6 +213,7 @@ export class SunwakeEngine {
     if (this.state.phase === 'running') {
       this.state.phase = 'paused'
       this.accumulator = 0
+      this.previousPose = null
     }
   }
 
@@ -231,8 +234,33 @@ export class SunwakeEngine {
       return
     this.accumulator += Math.min(dt, 0.1)
     while (this.accumulator + 1e-9 >= STEP && this.state.phase === 'running') {
+      const { x, y, rotation } = this.state.player
+      this.previousPose = { x, y, rotation }
       this.tick(STEP, input)
       this.accumulator -= STEP
+    }
+  }
+
+  /** Interpolate presentation only; collisions, recordings, and scores use state. */
+  presentation(): GameState {
+    const state = this.state
+    const previous = this.previousPose
+    if (state.phase !== 'running' || !previous) return state
+    const alpha = clamp(this.accumulator / STEP, 0, 1)
+    const x = previous.x + (state.player.x - previous.x) * alpha
+    return {
+      ...state,
+      time: Math.max(0, state.time - STEP * (1 - alpha)),
+      distance: Math.max(0, (x - state.startX) / 10),
+      worldDistance: Math.max(0, (x - START_X) / 10),
+      player: {
+        ...state.player,
+        x,
+        y: previous.y + (state.player.y - previous.y) * alpha,
+        rotation:
+          previous.rotation +
+          (state.player.rotation - previous.rotation) * alpha,
+      },
     }
   }
 

@@ -304,7 +304,7 @@ try {
 
   await scenario('landscape-fullscreen-touch-and-results', { width: 844, height: 390 }, async page => {
     await page.goto(`${baseURL}/#/course/2/3j`, { waitUntil: 'networkidle' })
-    await page.getByRole('button', { name: 'Toggle fullscreen', exact: true }).click()
+    await page.getByRole('button', { name: 'Enter fullscreen', exact: true }).click()
     assert.ok(await page.evaluate(() => Boolean(document.fullscreenElement)))
     await fly(page)
     const dive = page.getByRole('button', { name: 'Hold to dive, release to soar', exact: true })

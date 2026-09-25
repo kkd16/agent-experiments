@@ -1,6 +1,6 @@
 import type { EventKind, GameState } from './types'
 
-/** A small, gesture-unlocked instrument: no downloads, timers, or unbounded voices. */
+/** A small, gesture-unlocked instrument with bounded voices and quiet-time suspension. */
 export class SunwakeAudio {
   private context: AudioContext | null = null
   private master: GainNode | null = null
@@ -15,15 +15,18 @@ export class SunwakeAudio {
   private lastGameTime = -1
   private lastUpdate = -1
   private lastSparks = 0
+  private suspendTimer: ReturnType<typeof setTimeout> | null = null
 
   async unlock(): Promise<void> {
     // React StrictMode deliberately disposes and reuses the instance in development.
     // A new user gesture may safely revive it after that cleanup.
     this.disposed = false
+    if (!this.enabled) return
     try {
       if (!this.context) this.create()
       if (this.enabled && this.context?.state === 'suspended')
         await this.context.resume()
+      if (!this.running) this.suspendWhenQuiet(250)
     } catch {
       // Sound is optional; browser audio policies must never interrupt a run.
     }
@@ -31,6 +34,8 @@ export class SunwakeAudio {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled
+    if (this.suspendTimer !== null) clearTimeout(this.suspendTimer)
+    this.suspendTimer = null
     const context = this.context
     if (!context || this.disposed) return
     const now = context.currentTime
@@ -65,6 +70,10 @@ export class SunwakeAudio {
     const running = state.phase === 'running'
     const arrival = freshEvents.some((event) => event.kind === 'arrival')
     const context = this.context
+    if (running && this.suspendTimer !== null) {
+      clearTimeout(this.suspendTimer)
+      this.suspendTimer = null
+    }
     if (context && this.master && (running !== this.running || arrival)) {
       const now = context.currentTime
       this.master.gain.cancelScheduledValues(now)
@@ -77,6 +86,7 @@ export class SunwakeAudio {
         this.master.gain.setTargetAtTime(0, now + 0.9, 0.2)
         this.windGain?.gain.setTargetAtTime(0, now, 0.08)
       }
+      if (!running) this.suspendWhenQuiet(arrival ? 1700 : 250)
     }
     this.running = running
     if (!this.enabled || !context || context.state !== 'running') return
@@ -103,6 +113,8 @@ export class SunwakeAudio {
     if (this.disposed) return
     this.disposed = true
     this.enabled = false
+    if (this.suspendTimer !== null) clearTimeout(this.suspendTimer)
+    this.suspendTimer = null
     for (const source of [...this.continuous, ...this.voices]) {
       try {
         source.stop()
@@ -122,6 +134,16 @@ export class SunwakeAudio {
     this.master = null
     this.windGain = null
     this.windFilter = null
+  }
+
+  private suspendWhenQuiet(delay: number): void {
+    if (this.suspendTimer !== null) clearTimeout(this.suspendTimer)
+    this.suspendTimer = setTimeout(() => {
+      this.suspendTimer = null
+      if (!this.running && this.context?.state === 'running') {
+        void this.context.suspend().catch(() => {})
+      }
+    }, delay)
   }
 
   private create(): void {

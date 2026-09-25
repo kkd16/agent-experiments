@@ -14,7 +14,8 @@ Catch rising thermals, chain three rings for a light magnet, carry a sun shield 
 | Soar | Release | Release |
 | Solar burst | Shift or ↑ | Burst button when charged |
 | Pause / resume | P or Escape | Pause / resume button |
-| Start / retry | Space; R while paused or after a run retries the same route | Let’s fly / replay controls |
+| Start / retry | Space starts; after results Space or R retries the same course. R also restarts a paused flight. | Let’s fly / replay controls |
+| Mute / unmute | M | Sound button or Flight settings |
 
 - **Voyage:** a fresh course each run, sunlight management, personal records and challenge rewards.
 - **Daily flight:** the same course for the same UTC date, with a personal daily record. No online leaderboard or account.
@@ -25,9 +26,9 @@ Catch rising thermals, chain three rings for a light magnet, carry a sun shield 
 - **Course links:** share the exact landscape with a versioned URL. Recipients race their own local ghosts; the link shares the course, not your saved replay.
 - **Flight log:** revisit the last twelve journeys, replay any course, and compare distance, duration, score, and light collected. Historical daily courses replay as Voyage.
 
-The flight guide explains each pickup and lets you switch coaching or ghost visibility off. Your debrief includes a height trace, perfect landings, sky chains, longest glide, top speed, and a tip for the next journey. Sixteen challenges reward progress through the game.
+Flight settings are always available from the sliders button above the horizon, including in fullscreen and while paused. Choose automatic, sharp, or light scenery; follow your device’s motion preference or select reduced/full motion; toggle sounds, coaching, and your ghost. Choices are saved and never change the physics. The flight guide also explains each pickup. Your debrief includes a height trace, perfect landings, sky chains, longest glide, top speed, and a tip for the next journey. Sixteen challenges reward progress through the game.
 
-Progress is stored on this device with `localStorage`. Existing Sunwake records, unlocks, and earned light survive the update. If browser storage is blocked, the game and ghost replay still work for the current session. Audio starts only after a gesture and can be muted. The game pauses on focus loss and follows the system’s reduced-motion preference.
+Progress is stored on this device with `localStorage`. Existing Sunwake records, unlocks, and earned light survive the update. If browser storage is blocked, the game and ghost replay still work for the current session. Audio starts only after a gesture and can be muted. The game pauses on focus loss, when scrolled out of view, or when leaving fullscreen, with a short explanation. Launching or resuming reveals and focuses the game. Returning to the tab never resumes a flight without your input.
 
 Standard controllers also work: hold the bottom face button or right trigger to dive; use the right/left face button or left trigger to burst; Menu pauses/resumes. The bottom face button starts from the welcome screen and retries from results. Releasing one input never cancels another held input. Disconnecting the active controller pauses the flight. Browser support uses the standard Gamepad mapping; a button press may be needed before the browser detects it.
 
@@ -45,6 +46,12 @@ Standard controllers also work: hold the bottom face button or right trigger to 
 Each route awards an arrival seal and two optional skill/speed seals. All seals require reaching the finish. You can collect them across separate attempts; each new seal pays 40 light once. Two intermediate beacons restore 12 sunlight each. Route times and seals have their own records; expedition modifiers never affect Voyage/Daily records, missions, or ghosts. Collected sparks still become spendable light.
 
 Three seals unlock the Seafoam wake; six unlock Wild violet; twelve unlock Kestrel and Aurora; all eighteen unlock Stardust. These rewards change appearance only. Existing version-2 course links and ghosts retain their exact physics. Expedition links use a separate `#/expedition/1/<route>` format and open the atlas, where the route's normal unlock requirements apply.
+
+## Smoothness and battery use
+
+Flight still uses the original deterministic 120 Hz physics. Presentation interpolates between ticks, so high-refresh screens no longer repeat skiff/camera positions. Slow render frames can catch up through 100 ms without slowing the flight clock. Recorded ghosts and rewards use the actual simulation, never the interpolated picture.
+
+One scheduler handles controllers, simulation, sound, and drawing. Paused screens, results, and menu backgrounds only redraw when something changes; hidden tabs schedule no loop work. The welcome scene animates at about 30 FPS, or stays still with reduced motion. Automatic detail limits large canvases to roughly two million pixels; sharp and light options are explicit alternatives. Bounded, render-only terrain samples reuse nearby heights with less than 0.02 logical-pixel error in the checked courses. Audio is never constructed for muted play and suspends after a pause or the finish chime.
 
 ## Develop
 
@@ -73,9 +80,10 @@ For browser checks, install a Playwright Chromium browser (`pnpm exec playwright
 ```sh
 SUNWAKE_URL=http://127.0.0.1:4179 node qa/browser-check.mjs
 SUNWAKE_URL=http://127.0.0.1:4179 node qa/atlas-check.mjs
+SUNWAKE_URL=http://127.0.0.1:4179 node qa/polish-check.mjs
 ```
 
-Set `CHROMIUM_PATH` if using an existing browser executable. The suites exercise the real canvas loop and React UI, including desktop/touch/controller controls, pause/resume, once-per-run rewards, saved purchases, repeatable daily flights, shared courses, ghost accuracy, history replay, preferences, blocked clipboard/storage, expedition arrivals and unlocks, three-seal flights, dialogs, and portrait/landscape layouts. Local screenshots are ignored under `qa/artifacts/`.
+Set `CHROMIUM_PATH` if using an existing browser executable. The suites exercise the real canvas loop and React UI, including desktop/touch/controller controls, pause/resume, once-per-run rewards, saved purchases, repeatable daily flights, shared courses, ghost accuracy, history replay, preferences, blocked clipboard/storage, expedition arrivals and unlocks, three-seal flights, dialogs, and portrait/landscape layouts. The polish suite also checks idle/hidden render counts, slow-frame timing, graphics/motion persistence, sticky dialog dismissal, scroll/focus restoration, controller handoff, right-click isolation, fullscreen exit, and audio suspension. Local screenshots are ignored under `qa/artifacts/`.
 
 The exact repository publishing gate, from the repository root:
 
@@ -86,6 +94,8 @@ node scripts/verify-project.mjs sunwake-a6f3
 ## Code map
 
 - `src/game/engine.ts`: fixed-timestep physics, terrain, seeded pickups and hazards, collision handling, and scoring.
+- `src/game/presentation.ts`: bounded terrain samples and display pixel budgets.
+- `src/FlightPreferences.tsx`: saved sound, guidance, graphics, and motion controls.
 - `src/game/renderer.ts`: layered landscapes, skiffs, effects, region transitions, and the personal-best flag.
 - `src/game/progress.ts`: validated saves, challenges, daily seeds, and cosmetic unlocks.
 - `src/game/replay.ts`: versioned course links, bounded recordings, saved ghosts, and interpolation.

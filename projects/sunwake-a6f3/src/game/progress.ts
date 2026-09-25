@@ -9,6 +9,7 @@ import {
 import type { ExpeditionRecords } from './expeditions'
 import { TRAILS, trailById } from './cosmetics.ts'
 import type { TrailId } from './cosmetics'
+import type { DisplayDetail, MotionPreference } from './presentation'
 
 export interface FlightLog {
   id: string
@@ -42,6 +43,8 @@ export interface Progress {
   ghost: boolean
   expeditions: ExpeditionRecords
   trail: TrailId
+  detail: DisplayDetail
+  motion: MotionPreference
 }
 
 export interface Mission {
@@ -284,6 +287,8 @@ export function freshProgress(): Progress {
     ghost: true,
     expeditions: {},
     trail: 'sunlight',
+    detail: 'auto',
+    motion: 'system',
   }
 }
 
@@ -403,6 +408,14 @@ export function loadProgress(): Progress {
       sound: data.sound === true,
       coach: data.coach !== false,
       ghost: data.ghost !== false,
+      detail:
+        data.detail === 'sharp' || data.detail === 'light'
+          ? data.detail
+          : 'auto',
+      motion:
+        data.motion === 'reduced' || data.motion === 'full'
+          ? data.motion
+          : 'system',
       history: readHistory(data.history),
       expeditions,
       trail:
